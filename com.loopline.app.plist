@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+Loopline daemon LaunchAgent — auto-starts at login.
+
+Install:
+  cp com.loopline.app.plist ~/Library/LaunchAgents/
+  launchctl load ~/Library/LaunchAgents/com.loopline.app.plist
+
+Uninstall:
+  launchctl unload ~/Library/LaunchAgents/com.loopline.app.plist
+  rm ~/Library/LaunchAgents/com.loopline.app.plist
+
+The WorkingDirectory should point to your loopline project root so that
+config/settings.yaml is resolved correctly. Adjust ProgramArguments to the
+absolute path of your loopline-app script (inside the project venv).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.loopline.app</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <!-- Replace with the absolute path to loopline-app in your venv. -->
+    <string>/Users/andrastakacs.private/Coding/loopline/.venv/bin/loopline-app</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/andrastakacs.private/Coding/loopline</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Restart automatically if the daemon exits unexpectedly. -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/andrastakacs.private/Coding/loopline/logs/loopline-daemon.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/andrastakacs.private/Coding/loopline/logs/loopline-daemon.log</string>
+
+  <!-- Give the UI time to start before LaunchAgent considers it hung. -->
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+</dict>
+</plist>

@@ -21,9 +21,8 @@ dependencies = [
 ]
 
 [project.scripts]
-loopline-gmail = "loopline.main:main"
-loopline-drive = "loopline.drive_main:main"
-loopline-slack = "loopline.slack_main:main"
+loopline-bridge = "loopline.bridge_main:main"
+loopline-app    = "loopline.daemon_main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
