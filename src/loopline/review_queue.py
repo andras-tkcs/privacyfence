@@ -23,6 +23,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,8 @@ class PendingReview:
     # Optional rich display metadata for the UI (e.g. email body preview).
     # Keys depend on the tool; see floating_window.py for rendering logic.
     display_hint: dict = field(default_factory=dict)
+    connector: str = ""
+    tool: str = ""
 
 
 class ReviewQueue:
@@ -65,6 +68,8 @@ class ReviewQueue:
         raw_data: Any,
         filtered_data: Any,
         display_hint: dict | None = None,
+        connector: str = "",
+        tool: str = "",
     ) -> asyncio.Future:
         """Register a pending review and return a Future to await.
 
@@ -85,6 +90,8 @@ class ReviewQueue:
             future=future,
             loop=loop,
             display_hint=display_hint or {},
+            connector=connector,
+            tool=tool,
         )
         with self._lock:
             self._pending[request_id] = review
@@ -113,6 +120,23 @@ class ReviewQueue:
 
         review.loop.call_soon_threadsafe(_resolve)
         logger.info("Review approved id=%s tool=%s", request_id, review.tool_name)
+        try:
+            from .audit_log import AuditEntry, current_week, get_audit_logger
+            get_audit_logger().record(AuditEntry(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                week=current_week(),
+                request_id=review.request_id,
+                connector=review.connector,
+                tool=review.tool,
+                tool_name=review.tool_name,
+                summary=review.summary,
+                sender=review.sender,
+                decision="approved",
+                auto_accept_rule="",
+                latency_seconds=time.time() - review.created_at,
+            ))
+        except Exception as exc:
+            logger.warning("Audit log failed: %s", exc)
         return True
 
     def reject(self, request_id: str, reason: str = "Rejected by user") -> bool:
@@ -137,6 +161,23 @@ class ReviewQueue:
             review.tool_name,
             reason,
         )
+        try:
+            from .audit_log import AuditEntry, current_week, get_audit_logger
+            get_audit_logger().record(AuditEntry(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                week=current_week(),
+                request_id=review.request_id,
+                connector=review.connector,
+                tool=review.tool,
+                tool_name=review.tool_name,
+                summary=review.summary,
+                sender=review.sender,
+                decision="rejected",
+                auto_accept_rule="",
+                latency_seconds=time.time() - review.created_at,
+            ))
+        except Exception as exc:
+            logger.warning("Audit log failed: %s", exc)
         return True
 
     def fail(self, request_id: str, exc: Exception) -> bool:

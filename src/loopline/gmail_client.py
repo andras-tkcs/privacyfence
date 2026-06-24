@@ -25,8 +25,8 @@ from googleapiclient.errors import HttpError
 
 logger = logging.getLogger(__name__)
 
-# Read-only scope. We never request write/send scopes - this tool only reads.
-SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+# Modify scope: allows reading and modifying messages/labels, creating drafts.
+SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
 
 class GmailClientError(Exception):
@@ -276,6 +276,102 @@ class GmailClient:
             "list_threads query=%r returned %d summaries", query, len(summaries)
         )
         return summaries
+
+    # ------------------------------------------------------------------ #
+    # Write operations
+    # ------------------------------------------------------------------ #
+    def create_draft(
+        self, to: str, subject: str, body: str, cc: str = "", bcc: str = ""
+    ) -> dict:
+        """Create a Gmail draft and return its id."""
+        import email.mime.text
+        import email.mime.multipart
+        import base64
+
+        msg = email.mime.text.MIMEText(body)
+        msg["to"] = to
+        msg["subject"] = subject
+        if cc:
+            msg["cc"] = cc
+        if bcc:
+            msg["bcc"] = bcc
+
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+        service = self._get_service()
+        try:
+            draft = (
+                service.users()
+                .drafts()
+                .create(userId="me", body={"message": {"raw": raw}})
+                .execute()
+            )
+        except HttpError as exc:
+            raise GmailClientError(f"create_draft failed: {exc}") from exc
+        draft_id = draft.get("id", "")
+        logger.info("create_draft: draft_id=%s to=%s", draft_id, to)
+        return {"draft_id": draft_id, "to": to, "subject": subject}
+
+    def add_label(self, message_id: str, label_name: str) -> dict:
+        """Add a label to a message. Creates the label if it does not exist."""
+        service = self._get_service()
+        label_id = self._get_or_create_label(label_name)
+        try:
+            service.users().messages().modify(
+                userId="me",
+                id=message_id,
+                body={"addLabelIds": [label_id]},
+            ).execute()
+        except HttpError as exc:
+            raise GmailClientError(
+                f"add_label({message_id}, {label_name!r}) failed: {exc}"
+            ) from exc
+        logger.info("add_label: message_id=%s label=%s", message_id, label_name)
+        return {"message_id": message_id, "label_added": label_name}
+
+    def remove_label(self, message_id: str, label_name: str) -> dict:
+        """Remove a label from a message."""
+        service = self._get_service()
+        label_id = self._get_label_id(label_name)
+        if not label_id:
+            return {"message_id": message_id, "label_removed": label_name, "note": "label not found"}
+        try:
+            service.users().messages().modify(
+                userId="me",
+                id=message_id,
+                body={"removeLabelIds": [label_id]},
+            ).execute()
+        except HttpError as exc:
+            raise GmailClientError(
+                f"remove_label({message_id}, {label_name!r}) failed: {exc}"
+            ) from exc
+        logger.info("remove_label: message_id=%s label=%s", message_id, label_name)
+        return {"message_id": message_id, "label_removed": label_name}
+
+    def _get_or_create_label(self, label_name: str) -> str:
+        """Return an existing label id, or create the label and return its new id."""
+        existing = self._get_label_id(label_name)
+        if existing:
+            return existing
+        service = self._get_service()
+        try:
+            result = service.users().labels().create(
+                userId="me", body={"name": label_name}
+            ).execute()
+        except HttpError as exc:
+            raise GmailClientError(f"create_label({label_name!r}) failed: {exc}") from exc
+        return result.get("id", "")
+
+    def _get_label_id(self, label_name: str) -> str:
+        """Return the id for a label name, or '' if not found."""
+        service = self._get_service()
+        try:
+            response = service.users().labels().list(userId="me").execute()
+        except HttpError as exc:
+            raise GmailClientError(f"labels.list failed: {exc}") from exc
+        for label in response.get("labels", []):
+            if label.get("name", "").lower() == label_name.lower():
+                return label.get("id", "")
+        return ""
 
     def get_thread(self, thread_id: str) -> GmailThread:
         """Fetch a full thread and normalize each message."""

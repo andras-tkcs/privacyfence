@@ -51,7 +51,7 @@ slack:
   # Bot User OAuth Token (xoxb-...) from your Slack app's "OAuth & Permissions"
   # page. No interactive OAuth flow is needed - this token is used directly.
   # Required scopes: channels:read, groups:read, channels:history,
-  # groups:history, users:read, users:read.email, search:read.
+  # groups:history, users:read, users:read.email, search:read, chat:write.
   bot_token: xoxb-your-token-here
 
 slack_privacy:
@@ -68,6 +68,109 @@ slack_privacy:
     user_identity: allow     # user names, emails, real names
     channel_list: allow      # channel names and metadata
     thread_content: allow    # thread reply content
+
+calendar:
+  credentials_file: credentials/client_secret.json
+  token_file: credentials/calendar_token.json
+
+tasks:
+  credentials_file: credentials/client_secret.json
+  token_file: credentials/tasks_token.json
+
+salesforce:
+  # Salesforce connected app credentials
+  # instance_url: https://yourorg.my.salesforce.com
+  # username: your@email.com
+  # password: yourpassword
+  # security_token: yourtoken
+  # OR provide:
+  # access_token: your_access_token
+
+audit:
+  log_dir: logs/audit
+
+auto_accept_rules:
+  # Each operation key maps to a list of OR-conditions.
+  # The first matching rule triggers auto-accept.
+  # Available rule names: see src/loopline/auto_accept.py
+
+  gmail.read_message:
+    # Auto-accept reading emails where I am the sender (e.g. sent mail tasks)
+    - rule: i_am_sender
+    # Auto-accept from trusted internal domain
+    # - rule: trusted_sender_domain
+    #   value: ["mycompany.com"]
+    # Auto-accept if message has specific label
+    # - rule: label_match
+    #   value: ["AI-readable"]
+    # Auto-accept messages older than 30 days
+    # - rule: age_threshold_days
+    #   value: 30
+
+  gmail.read_thread:
+    - rule: i_am_sender
+
+  drive.read_file_contents:
+    # Auto-accept files I own
+    - rule: i_am_owner
+    # Auto-accept files in a specific folder (add folder IDs)
+    # - rule: approved_folder
+    #   value: []
+
+  drive.write_file:
+    # Auto-accept writes to files created this session
+    - rule: created_this_session
+    # Auto-accept writes inside a designated sandbox folder
+    # - rule: approved_sandbox_folder
+    #   value: []
+
+  drive.move_file:
+    # - rule: move_within_approved_folders
+    #   value: []
+
+  drive.comment_file:
+    # Comments are lower risk — uncomment to auto-accept all
+    # - rule: i_am_owner
+
+  slack.read_messages:
+    # Auto-accept reading my own DM (saved messages / Slackbot)
+    - rule: dm_with_myself
+    # Auto-accept approved channels
+    # - rule: approved_channel
+    #   value: []
+
+  slack.send_message:
+    # Auto-accept sending to myself only
+    - rule: dm_with_myself
+    # Auto-accept replies in threads I'm already in
+    - rule: reply_in_existing_thread
+    # - rule: approved_recipient
+    #   value: []
+
+  calendar.read_event_details:
+    # Auto-accept events I organized
+    - rule: i_am_organizer
+    # Auto-accept past events
+    - rule: past_event
+    # Auto-accept internal-only events
+    # - rule: no_external_attendees
+
+  calendar.create_modify_event:
+    # Auto-accept events with no external attendees
+    # - rule: no_external_attendees
+    # Auto-accept events on personal calendar (add calendar IDs)
+    # - rule: personal_calendar
+    #   value: []
+
+  salesforce.read_record:
+    # Auto-accept reads on low-sensitivity object types
+    # - rule: approved_object_types
+    #   value: ["Account", "Contact"]
+
+  salesforce.run_report:
+    # Auto-accept specific approved report IDs
+    # - rule: approved_report_ids
+    #   value: []
 
 mcp:
   server_name: loopline-gmail
