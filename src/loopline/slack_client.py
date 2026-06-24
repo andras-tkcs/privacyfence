@@ -268,6 +268,28 @@ class SlackClient:
         logger.info("search_messages query=%r returned %d match(es)", query, len(messages))
         return messages
 
+    def send_message(self, channel_id: str, text: str, thread_ts: str = "") -> dict:
+        """Send a message to a channel or DM via ``chat.postMessage``.
+
+        Requires the ``chat:write`` scope on the bot token.
+        """
+        if not channel_id:
+            raise SlackClientError("send_message requires a channel_id")
+        if not text:
+            raise SlackClientError("send_message requires non-empty text")
+        kwargs: dict[str, Any] = {"channel": channel_id, "text": text}
+        if thread_ts:
+            kwargs["thread_ts"] = thread_ts
+        try:
+            response = self._client.chat_postMessage(**kwargs)
+        except SlackApiError as exc:
+            raise SlackClientError(
+                f"send_message({channel_id}) failed: {self._describe_error(exc)}"
+            ) from exc
+        ts = response.get("ts", "")
+        logger.info("send_message: channel=%s ts=%s", channel_id, ts)
+        return {"channel_id": channel_id, "ts": ts, "text": text}
+
     def get_user_info(self, user_id: str) -> SlackUser:
         """Resolve a single user's identity via ``users.info`` (cached)."""
         if not user_id:

@@ -30,8 +30,8 @@ from googleapiclient.http import MediaIoBaseDownload
 
 logger = logging.getLogger(__name__)
 
-# Read-only scope. We never request write scopes - this tool only reads.
-SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+# Full Drive scope: read + write + create + move + comment.
+SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 # Google Workspace MIME types that must be exported (they cannot be downloaded
 # directly). We export everything as plain text for review.
@@ -65,6 +65,7 @@ class DriveFile:
     owners: list[str] = field(default_factory=list)  # owner email addresses
     shared: bool = False
     web_view_link: str = ""
+    parent_ids: list[str] = field(default_factory=list)
 
     def short_summary(self) -> str:
         """Human-readable one-liner for the review UI / logs."""
@@ -319,6 +320,93 @@ class DriveClient:
         return files
 
     # ------------------------------------------------------------------ #
+    # Write operations
+    # ------------------------------------------------------------------ #
+    def create_blank_file(
+        self, name: str, mime_type: str, parent_folder_id: str = ""
+    ) -> dict:
+        """Create a new blank file and return its metadata dict."""
+        body: dict = {"name": name, "mimeType": mime_type}
+        if parent_folder_id:
+            body["parents"] = [parent_folder_id]
+        service = self._get_service()
+        try:
+            result = (
+                service.files()
+                .create(body=body, fields=_FILE_FIELDS)
+                .execute()
+            )
+        except HttpError as exc:
+            raise DriveClientError(f"create_blank_file failed: {exc}") from exc
+        logger.info("create_blank_file: id=%s name=%s", result.get("id"), name)
+        return {"id": result.get("id", ""), "name": name, "mime_type": mime_type}
+
+    def write_file_content(self, file_id: str, content: str) -> dict:
+        """Write (overwrite) the content of a file."""
+        import io
+        from googleapiclient.http import MediaIoBaseUpload
+
+        if not file_id:
+            raise DriveClientError("write_file_content requires a non-empty file_id")
+        service = self._get_service()
+        media = MediaIoBaseUpload(
+            io.BytesIO(content.encode("utf-8")), mimetype="text/plain"
+        )
+        try:
+            result = (
+                service.files()
+                .update(fileId=file_id, media_body=media, fields="id,name,modifiedTime")
+                .execute()
+            )
+        except HttpError as exc:
+            raise DriveClientError(f"write_file_content({file_id}) failed: {exc}") from exc
+        logger.info("write_file_content: file_id=%s", file_id)
+        return {"file_id": result.get("id", file_id), "modified_time": result.get("modifiedTime", "")}
+
+    def move_file(self, file_id: str, destination_folder_id: str) -> dict:
+        """Move a file to a different folder."""
+        if not file_id or not destination_folder_id:
+            raise DriveClientError("move_file requires file_id and destination_folder_id")
+        service = self._get_service()
+        # Get current parents
+        try:
+            file_meta = service.files().get(fileId=file_id, fields="parents").execute()
+        except HttpError as exc:
+            raise DriveClientError(f"move_file get_parents({file_id}) failed: {exc}") from exc
+        current_parents = ",".join(file_meta.get("parents", []))
+        try:
+            result = (
+                service.files()
+                .update(
+                    fileId=file_id,
+                    addParents=destination_folder_id,
+                    removeParents=current_parents,
+                    fields="id,parents",
+                )
+                .execute()
+            )
+        except HttpError as exc:
+            raise DriveClientError(f"move_file({file_id}) failed: {exc}") from exc
+        logger.info("move_file: file_id=%s dest=%s", file_id, destination_folder_id)
+        return {"file_id": file_id, "new_parent": destination_folder_id}
+
+    def add_comment(self, file_id: str, comment: str) -> dict:
+        """Add a comment to a file."""
+        if not file_id:
+            raise DriveClientError("add_comment requires a non-empty file_id")
+        service = self._get_service()
+        try:
+            result = (
+                service.comments()
+                .create(fileId=file_id, body={"content": comment}, fields="id,content")
+                .execute()
+            )
+        except HttpError as exc:
+            raise DriveClientError(f"add_comment({file_id}) failed: {exc}") from exc
+        logger.info("add_comment: file_id=%s comment_id=%s", file_id, result.get("id"))
+        return {"file_id": file_id, "comment_id": result.get("id", ""), "content": comment}
+
+    # ------------------------------------------------------------------ #
     # Parsing helpers
     # ------------------------------------------------------------------ #
     @staticmethod
@@ -367,4 +455,5 @@ class DriveClient:
             owners=owners,
             shared=bool(raw.get("shared", False)),
             web_view_link=raw.get("webViewLink", ""),
+            parent_ids=list(raw.get("parents", []) or []),
         )

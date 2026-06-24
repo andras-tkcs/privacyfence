@@ -7,21 +7,18 @@ import logging
 from typing import Any
 
 from ..connector import Connector, ToolParam, ToolSpec
+from ..gate import gated_call
 from ..gmail_client import GmailClient, GmailClientError
 from ..privacy_filter import PrivacyFilter
-from ..review_queue import ReviewRejected, get_review_queue
 
 logger = logging.getLogger(__name__)
-
-_TOOL_CALL_ERROR = "Tool call failed: {}"
-_REJECTED_MSG = "Request denied by user: {}"
 
 
 class GmailConnector(Connector):
     def __init__(self, client: GmailClient, privacy_filter: PrivacyFilter) -> None:
         self._gmail = client
         self._filter = privacy_filter
-        self._queue = get_review_queue()
+        self.my_email: str = ""
 
     @property
     def name(self) -> str:
@@ -68,6 +65,41 @@ class GmailConnector(Connector):
                 ),
                 params=[ToolParam("thread_id", "str")],
             ),
+            ToolSpec(
+                name="gmail_list_message_attachments",
+                description=(
+                    "List attachment names and sizes for a Gmail message. "
+                    "No body content is returned. Auto-approved."
+                ),
+                params=[ToolParam("message_id", "str")],
+            ),
+            ToolSpec(
+                name="gmail_create_draft",
+                description="Create a Gmail draft. Always allowed.",
+                params=[
+                    ToolParam("to", "str"),
+                    ToolParam("subject", "str"),
+                    ToolParam("body", "str"),
+                    ToolParam("cc", "str", required=False, default=""),
+                    ToolParam("bcc", "str", required=False, default=""),
+                ],
+            ),
+            ToolSpec(
+                name="gmail_add_label",
+                description="Add a label to a Gmail message. Always allowed.",
+                params=[
+                    ToolParam("message_id", "str"),
+                    ToolParam("label_name", "str"),
+                ],
+            ),
+            ToolSpec(
+                name="gmail_remove_label",
+                description="Remove a label from a Gmail message. Always allowed.",
+                params=[
+                    ToolParam("message_id", "str"),
+                    ToolParam("label_name", "str"),
+                ],
+            ),
         ]
 
     async def call(self, tool: str, args: dict[str, Any]) -> Any:
@@ -79,6 +111,14 @@ class GmailConnector(Connector):
             return await self._get_message(**args)
         if tool == "gmail_get_thread":
             return await self._get_thread(**args)
+        if tool == "gmail_list_message_attachments":
+            return await self._list_message_attachments(**args)
+        if tool == "gmail_create_draft":
+            return await self._create_draft(**args)
+        if tool == "gmail_add_label":
+            return await self._add_label(**args)
+        if tool == "gmail_remove_label":
+            return await self._remove_label(**args)
         raise ValueError(f"Unknown Gmail tool: {tool!r}")
 
     # ------------------------------------------------------------------ #
@@ -108,13 +148,17 @@ class GmailConnector(Connector):
             "html_body": message.body_html or message.body_text,
             "attachment_count": len(message.attachments),
         }
-        return await self._review(
+        return await gated_call(
+            connector=self.name,
+            tool="gmail_get_message",
             tool_name="Read Email",
             summary=f"Read email: {message.short_summary()}",
             sender=message.sender,
             raw_data=message,
             filtered_data=filtered.to_dict(),
             display_hint=display_hint,
+            my_email=self.my_email,
+            args={"message_id": message_id},
         )
 
     async def _get_thread(self, thread_id: str) -> Any:
@@ -137,14 +181,48 @@ class GmailConnector(Connector):
             "message_count": len(thread.messages),
             "messages": message_previews,
         }
-        return await self._review(
+        return await gated_call(
+            connector=self.name,
+            tool="gmail_get_thread",
             tool_name="Read Email Thread",
             summary=f"Read thread: {thread.short_summary()}",
             sender=thread.subject,
             raw_data=thread,
             filtered_data=filtered.to_dict(),
             display_hint=display_hint,
+            my_email=self.my_email,
+            args={"thread_id": thread_id},
         )
+
+    async def _list_message_attachments(self, message_id: str) -> Any:
+        message = await self._fetch(self._gmail.get_message, message_id)
+        attachments = [
+            {"name": att.name, "mime_type": att.mime_type, "size": att.size}
+            for att in message.attachments
+        ]
+        logger.info(
+            "gmail_list_message_attachments auto-approved: message_id=%s count=%d",
+            message_id,
+            len(attachments),
+        )
+        return {"message_id": message_id, "attachments": attachments}
+
+    async def _create_draft(
+        self, to: str, subject: str, body: str, cc: str = "", bcc: str = ""
+    ) -> Any:
+        result = await self._fetch(self._gmail.create_draft, to, subject, body, cc, bcc)
+        logger.info("gmail_create_draft: to=%s subject=%r", to, subject)
+        return result
+
+    async def _add_label(self, message_id: str, label_name: str) -> Any:
+        result = await self._fetch(self._gmail.add_label, message_id, label_name)
+        logger.info("gmail_add_label: message_id=%s label=%s", message_id, label_name)
+        return result
+
+    async def _remove_label(self, message_id: str, label_name: str) -> Any:
+        result = await self._fetch(self._gmail.remove_label, message_id, label_name)
+        logger.info("gmail_remove_label: message_id=%s label=%s", message_id, label_name)
+        return result
 
     # ------------------------------------------------------------------ #
     # Helpers
@@ -156,23 +234,6 @@ class GmailConnector(Connector):
         except GmailClientError as exc:
             logger.error("Gmail fetch failed: %s", exc)
             raise RuntimeError(str(exc)) from exc
-
-    async def _review(self, *, tool_name, summary, sender, raw_data, filtered_data, display_hint=None) -> Any:
-        future = self._queue.submit(
-            tool_name=tool_name,
-            summary=summary,
-            sender=sender,
-            raw_data=raw_data,
-            filtered_data=filtered_data,
-            display_hint=display_hint,
-        )
-        try:
-            result = await future
-        except ReviewRejected as exc:
-            logger.info("Tool %s rejected: %s", tool_name, exc)
-            raise RuntimeError(_REJECTED_MSG.format(exc)) from exc
-        logger.info("Tool %s approved", tool_name)
-        return result
 
     def _filter_summary(self, summary: dict[str, str]) -> dict[str, str]:
         policy = self._filter.policy_for("metadata")

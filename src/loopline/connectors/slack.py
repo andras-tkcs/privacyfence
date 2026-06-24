@@ -1,14 +1,17 @@
-"""Slack connector: wraps SlackClient + SlackPrivacyFilter + ReviewQueue."""
+"""Slack connector: wraps SlackClient + SlackPrivacyFilter + gated_call."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from datetime import datetime, timezone
 from typing import Any
 
+from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
+from ..gate import gated_call
 from ..privacy_filter import SlackPrivacyFilter
-from ..review_queue import ReviewRejected, get_review_queue
 from ..slack_client import SlackClient, SlackClientError
 
 logger = logging.getLogger(__name__)
@@ -18,7 +21,7 @@ class SlackConnector(Connector):
     def __init__(self, client: SlackClient, privacy_filter: SlackPrivacyFilter) -> None:
         self._slack = client
         self._filter = privacy_filter
-        self._queue = get_review_queue()
+        self.my_email: str = ""
 
     @property
     def name(self) -> str:
@@ -30,7 +33,7 @@ class SlackConnector(Connector):
                 name="slack_list_channels",
                 description=(
                     "List Slack channels visible to the bot "
-                    "(id, name, privacy, topic, purpose, member count). Requires user approval."
+                    "(id, name, privacy, topic, purpose, member count). Auto-approved."
                 ),
                 params=[
                     ToolParam("exclude_archived", "bool", required=False, default=True),
@@ -69,6 +72,17 @@ class SlackConnector(Connector):
                     ToolParam("count", "int", required=False, default=20),
                 ],
             ),
+            ToolSpec(
+                name="slack_send_message",
+                description=(
+                    "Send a message to a Slack channel or DM. Requires user approval."
+                ),
+                params=[
+                    ToolParam("channel_id", "str"),
+                    ToolParam("text", "str"),
+                    ToolParam("thread_ts", "str", required=False, default=""),
+                ],
+            ),
         ]
 
     async def call(self, tool: str, args: dict[str, Any]) -> Any:
@@ -80,54 +94,88 @@ class SlackConnector(Connector):
             return await self._get_thread_replies(**args)
         if tool == "slack_search_messages":
             return await self._search_messages(**args)
+        if tool == "slack_send_message":
+            return await self._send_message(**args)
         raise ValueError(f"Unknown Slack tool: {tool!r}")
 
     # ------------------------------------------------------------------ #
+    # Always-allowed
+    # ------------------------------------------------------------------ #
 
     async def _list_channels(self, exclude_archived: bool = True, max_results: int = 100) -> Any:
+        t0 = time.time()
         channels = await self._fetch(self._slack.list_channels, exclude_archived, max_results)
         filtered = self._filter.filter_channels(channels)
-        return await self._review(
-            tool_name="List Slack Channels",
-            summary=f"List channels (max {max_results})",
-            sender=f"{len(channels)} channel(s)",
-            raw_data=channels,
-            filtered_data=filtered,
+        self._auto_audit(
+            "slack_list_channels", "List Slack Channels",
+            f"List channels (max {max_results})", f"{len(channels)} channel(s)", t0,
         )
+        return filtered
+
+    # ------------------------------------------------------------------ #
+    # Gated
+    # ------------------------------------------------------------------ #
 
     async def _get_channel_history(self, channel_id: str, limit: int = 50) -> Any:
         messages = await self._fetch(self._slack.get_channel_history, channel_id, limit)
         filtered = self._filter.filter_messages(messages)
-        return await self._review(
+        return await gated_call(
+            connector=self.name,
+            tool="slack_get_channel_history",
             tool_name="Read Slack Channel",
             summary=f"Channel history: {channel_id} (limit {limit})",
             sender=f"{len(messages)} message(s)",
             raw_data=messages,
             filtered_data=filtered,
+            my_email=self.my_email,
+            args={"channel_id": channel_id},
         )
 
     async def _get_thread_replies(self, channel_id: str, thread_ts: str) -> Any:
         messages = await self._fetch(self._slack.get_thread_replies, channel_id, thread_ts)
         filtered = self._filter.filter_thread(messages)
-        return await self._review(
+        return await gated_call(
+            connector=self.name,
+            tool="slack_get_thread_replies",
             tool_name="Read Slack Thread",
             summary=f"Thread replies: {channel_id}/{thread_ts}",
             sender=f"{len(messages)} message(s)",
             raw_data=messages,
             filtered_data=filtered,
+            my_email=self.my_email,
+            args={"channel_id": channel_id, "thread_ts": thread_ts},
         )
 
     async def _search_messages(self, query: str, count: int = 20) -> Any:
         messages = await self._fetch(self._slack.search_messages, query, count)
         filtered = self._filter.filter_messages(messages)
-        return await self._review(
+        return await gated_call(
+            connector=self.name,
+            tool="slack_search_messages",
             tool_name="Search Slack Messages",
             summary=f"Search messages: query={query!r} (count {count})",
             sender=f"{len(messages)} match(es)",
             raw_data=messages,
             filtered_data=filtered,
+            my_email=self.my_email,
+            args={"query": query},
         )
 
+    async def _send_message(self, channel_id: str, text: str, thread_ts: str = "") -> Any:
+        return await gated_call(
+            connector=self.name,
+            tool="slack_send_message",
+            tool_name="Send Slack Message",
+            summary=f"Send to {channel_id}: {text[:80]}",
+            sender=f"channel={channel_id}",
+            raw_data={"channel_id": channel_id, "text": text, "thread_ts": thread_ts},
+            filtered_data={"channel_id": channel_id, "text": text, "thread_ts": thread_ts},
+            my_email=self.my_email,
+            args={"channel_id": channel_id, "thread_ts": thread_ts},
+        )
+
+    # ------------------------------------------------------------------ #
+    # Helpers
     # ------------------------------------------------------------------ #
 
     async def _fetch(self, func, *args) -> Any:
@@ -137,18 +185,22 @@ class SlackConnector(Connector):
             logger.error("Slack fetch failed: %s", exc)
             raise RuntimeError(str(exc)) from exc
 
-    async def _review(self, *, tool_name, summary, sender, raw_data, filtered_data) -> Any:
-        future = self._queue.submit(
-            tool_name=tool_name,
-            summary=summary,
-            sender=sender,
-            raw_data=raw_data,
-            filtered_data=filtered_data,
-        )
+    def _auto_audit(
+        self, tool: str, tool_name: str, summary: str, sender: str, created_at: float
+    ) -> None:
         try:
-            result = await future
-        except ReviewRejected as exc:
-            logger.info("Tool %s rejected: %s", tool_name, exc)
-            raise RuntimeError(f"Request denied by user: {exc}") from exc
-        logger.info("Tool %s approved", tool_name)
-        return result
+            get_audit_logger().record(AuditEntry(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                week=current_week(),
+                request_id="",
+                connector=self.name,
+                tool=tool,
+                tool_name=tool_name,
+                summary=summary,
+                sender=sender,
+                decision="auto_accepted",
+                auto_accept_rule="always_allowed",
+                latency_seconds=time.time() - created_at,
+            ))
+        except Exception as exc:
+            logger.warning("Audit log write failed: %s", exc)

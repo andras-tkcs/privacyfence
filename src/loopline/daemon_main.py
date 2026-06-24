@@ -23,15 +23,23 @@ from typing import Any
 
 import yaml
 
+from .audit_log import init_audit_logger
+from .auto_accept import init_auto_accept_evaluator
+from .calendar_client import CalendarClient, CalendarClientError
+from .connectors.calendar import CalendarConnector
 from .connectors.drive import DriveConnector
 from .connectors.gmail import GmailConnector
+from .connectors.salesforce import SalesforceConnector
 from .connectors.slack import SlackConnector
+from .connectors.tasks import TasksConnector
 from .drive_client import DriveClient, DriveClientError
 from .floating_window import GuardFloatingWindow
 from .gmail_client import GmailClient, GmailClientError
 from .ipc_server import IPCServer
 from .privacy_filter import DrivePrivacyFilter, PrivacyFilter, SlackPrivacyFilter
+from .salesforce_client import SalesforceClient, SalesforceClientError
 from .slack_client import SlackClient, SlackClientError
+from .tasks_client import TasksClient, TasksClientError
 
 logger = logging.getLogger("loopline.daemon")
 
@@ -136,7 +144,9 @@ def _build_connectors(config: dict[str, Any]) -> list:
         )
         email = client.check_connection()
         logger.info("Gmail connector ready for %s", email)
-        connectors.append(GmailConnector(client, PrivacyFilter(config.get("privacy", {}) or {})))
+        connector = GmailConnector(client, PrivacyFilter(config.get("privacy", {}) or {}))
+        connector.my_email = email
+        connectors.append(connector)
     except (GmailClientError, FileNotFoundError) as exc:
         logger.warning("Gmail connector disabled: %s", exc)
 
@@ -149,7 +159,9 @@ def _build_connectors(config: dict[str, Any]) -> list:
         )
         email = client.check_connection()
         logger.info("Drive connector ready for %s", email)
-        connectors.append(DriveConnector(client, DrivePrivacyFilter(config.get("drive_privacy", {}) or {})))
+        connector = DriveConnector(client, DrivePrivacyFilter(config.get("drive_privacy", {}) or {}))
+        connector.my_email = email
+        connectors.append(connector)
     except (DriveClientError, FileNotFoundError) as exc:
         logger.warning("Drive connector disabled: %s", exc)
 
@@ -162,9 +174,51 @@ def _build_connectors(config: dict[str, Any]) -> list:
         client = SlackClient(bot_token=bot_token)
         workspace = client.check_connection()
         logger.info("Slack connector ready for workspace %r", workspace)
-        connectors.append(SlackConnector(client, SlackPrivacyFilter(config.get("slack_privacy", {}) or {})))
+        connector = SlackConnector(client, SlackPrivacyFilter(config.get("slack_privacy", {}) or {}))
+        connectors.append(connector)
     except (SlackClientError, FileNotFoundError) as exc:
         logger.warning("Slack connector disabled: %s", exc)
+
+    # Calendar
+    try:
+        cal_cfg = config.get("calendar", {}) or {}
+        client = CalendarClient(
+            credentials_file=_resolve_path(cal_cfg.get("credentials_file", "credentials/client_secret.json")),
+            token_file=_resolve_path(cal_cfg.get("token_file", "credentials/calendar_token.json")),
+        )
+        email = client.check_connection()
+        logger.info("Calendar connector ready for %s", email)
+        connector = CalendarConnector(client)
+        connector.my_email = email
+        connectors.append(connector)
+    except (CalendarClientError, FileNotFoundError) as exc:
+        logger.warning("Calendar connector disabled: %s", exc)
+
+    # Tasks
+    try:
+        tasks_cfg = config.get("tasks", {}) or {}
+        client = TasksClient(
+            credentials_file=_resolve_path(tasks_cfg.get("credentials_file", "credentials/client_secret.json")),
+            token_file=_resolve_path(tasks_cfg.get("token_file", "credentials/tasks_token.json")),
+        )
+        client.check_connection()
+        logger.info("Tasks connector ready")
+        connectors.append(TasksConnector(client))
+    except (TasksClientError, FileNotFoundError) as exc:
+        logger.warning("Tasks connector disabled: %s", exc)
+
+    # Salesforce
+    try:
+        sf_cfg = config.get("salesforce", {}) or {}
+        if not sf_cfg.get("instance_url") and not sf_cfg.get("access_token"):
+            raise SalesforceClientError("Salesforce not configured (no instance_url)")
+        client = SalesforceClient(sf_cfg)
+        org_name = client.check_connection()
+        logger.info("Salesforce connector ready for org %r", org_name)
+        connector = SalesforceConnector(client)
+        connectors.append(connector)
+    except (SalesforceClientError, FileNotFoundError) as exc:
+        logger.warning("Salesforce connector disabled: %s", exc)
 
     return connectors
 
@@ -233,6 +287,38 @@ def run_drive_oauth(config: dict[str, Any]) -> int:
     return 0
 
 
+def run_calendar_oauth(config: dict[str, Any]) -> int:
+    cal_cfg = config.get("calendar", {}) or {}
+    client = CalendarClient(
+        credentials_file=_resolve_path(cal_cfg.get("credentials_file", "credentials/client_secret.json")),
+        token_file=_resolve_path(cal_cfg.get("token_file", "credentials/calendar_token.json")),
+    )
+    try:
+        client.authorize_interactive()
+        email = client.check_connection()
+    except CalendarClientError as exc:
+        print(f"Calendar OAuth setup failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"Calendar OAuth complete. Primary calendar: {email}")
+    return 0
+
+
+def run_tasks_oauth(config: dict[str, Any]) -> int:
+    tasks_cfg = config.get("tasks", {}) or {}
+    client = TasksClient(
+        credentials_file=_resolve_path(tasks_cfg.get("credentials_file", "credentials/client_secret.json")),
+        token_file=_resolve_path(tasks_cfg.get("token_file", "credentials/tasks_token.json")),
+    )
+    try:
+        client.authorize_interactive()
+        summary = client.check_connection()
+    except TasksClientError as exc:
+        print(f"Tasks OAuth setup failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"Tasks OAuth complete. {summary}")
+    return 0
+
+
 # ---------------------------------------------------------------------------- #
 # Main app
 # ---------------------------------------------------------------------------- #
@@ -242,6 +328,15 @@ def run_app(config: dict[str, Any]) -> int:
         logger.error("Another instance is already running; exiting.")
         print("Loopline daemon is already running.", file=sys.stderr)
         return 1
+
+    # Initialize auto-accept evaluator from config
+    init_auto_accept_evaluator(config.get("auto_accept_rules", {}))
+
+    # Initialize audit logger
+    audit_cfg = config.get("audit", {}) or {}
+    log_dir = _resolve_path(audit_cfg.get("log_dir", "logs/audit"))
+    audit_logger = init_audit_logger(log_dir)
+    audit_logger.export_all_pending()
 
     connectors = _build_connectors(config)
     if not connectors:
@@ -286,6 +381,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--config", default="config/settings.yaml")
     parser.add_argument("--gmail-oauth", action="store_true", help="Run Gmail OAuth setup and exit.")
     parser.add_argument("--drive-oauth", action="store_true", help="Run Drive OAuth setup and exit.")
+    parser.add_argument("--calendar-oauth", action="store_true", help="Run Calendar OAuth setup and exit.")
+    parser.add_argument("--tasks-oauth", action="store_true", help="Run Tasks OAuth setup and exit.")
     return parser.parse_args(argv)
 
 
@@ -304,6 +401,10 @@ def main(argv: list[str] | None = None) -> int:
             return run_gmail_oauth(config)
         if args.drive_oauth:
             return run_drive_oauth(config)
+        if args.calendar_oauth:
+            return run_calendar_oauth(config)
+        if args.tasks_oauth:
+            return run_tasks_oauth(config)
         return run_app(config)
     except Exception as exc:  # noqa: BLE001
         logger.error("Fatal error: %s", exc, exc_info=True)
