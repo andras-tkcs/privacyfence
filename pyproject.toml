@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "loopline"
+version = "0.1.0"
+description = "macOS menu bar privacy proxy between Claude (MCP) and Gmail"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "Andras Takacs", email = "at+github@felhasznalo.name" }]
+dependencies = [
+    "fastmcp>=2.0.0",
+    "google-auth>=2.23.0",
+    "google-auth-oauthlib>=1.1.0",
+    "google-api-python-client>=2.100.0",
+    "pyyaml>=6.0",
+    "cryptography>=41.0.0",
+    "slack-sdk>=3.27.0",
+]
+
+[project.scripts]
+loopline-gmail = "loopline.main:main"
+loopline-drive = "loopline.drive_main:main"
+loopline-slack = "loopline.slack_main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.package-data]
+loopline = ["resources/*.png"]

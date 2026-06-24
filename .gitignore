@@ -1,0 +1,30 @@
+# Credentials and secrets
+credentials/*.json
+credentials/token.json
+.env
+
+# User configuration (keep only the .example)
+config/settings.yaml
+
+# Python
+*.pyc
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Logs
+*.log
+logs/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/

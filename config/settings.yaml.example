@@ -1,0 +1,84 @@
+# Loopline configuration example.
+# Copy this file to config/settings.yaml and adjust as needed.
+# Never commit config/settings.yaml or any file under credentials/.
+
+gmail:
+  # OAuth2 client secret downloaded from Google Cloud Console (Desktop app).
+  credentials_file: credentials/client_secret.json
+  # Where the OAuth token is cached after the first authorization.
+  token_file: credentials/token.json
+
+privacy:
+  # Policy applied when a category is not explicitly configured below.
+  # One of: allow, redact, block
+  default_policy: block
+
+  # Per-category filtering applied BEFORE the user sees the data in the review UI.
+  # The privacy filter is a floor (a minimum protection), not a ceiling -
+  # the user still has to approve every request.
+  #   allow  -> data passes through unchanged
+  #   redact -> data is partially masked
+  #   block  -> data is replaced with "[BLOCKED BY PRIVACY FILTER]"
+  categories:
+    body: allow
+    metadata: allow        # sender / recipients / date / subject
+    attachments: block     # attachment metadata (never the content)
+    thread_history: allow
+
+drive:
+  # OAuth2 client secret downloaded from Google Cloud Console (Desktop app).
+  # Shared with Gmail - the same client secret authorizes both services.
+  credentials_file: credentials/client_secret.json
+  # Where the Drive OAuth token is cached (separate from the Gmail token).
+  token_file: credentials/drive_token.json
+
+drive_privacy:
+  # Policy applied when a category is not explicitly configured below.
+  # One of: allow, redact, block
+  default_policy: block
+
+  # Per-category filtering applied BEFORE the user sees the data in the review UI.
+  #   allow  -> data passes through unchanged
+  #   redact -> data is partially masked
+  #   block  -> data is replaced with "[BLOCKED BY PRIVACY FILTER]"
+  categories:
+    file_content: allow      # the actual document text / bytes (highest risk)
+    file_metadata: allow     # name / owners / created/modified times / sharing
+    file_list: allow         # results from list operations (names + ids)
+    folder_structure: allow  # folder listing results
+
+slack:
+  # Bot User OAuth Token (xoxb-...) from your Slack app's "OAuth & Permissions"
+  # page. No interactive OAuth flow is needed - this token is used directly.
+  # Required scopes: channels:read, groups:read, channels:history,
+  # groups:history, users:read, users:read.email, search:read.
+  bot_token: xoxb-your-token-here
+
+slack_privacy:
+  # Policy applied when a category is not explicitly configured below.
+  # One of: allow, redact, block
+  default_policy: block
+
+  # Per-category filtering applied BEFORE the user sees the data in the review UI.
+  #   allow  -> data passes through unchanged
+  #   redact -> data is partially masked
+  #   block  -> data is replaced with "[BLOCKED BY PRIVACY FILTER]"
+  categories:
+    message_content: allow   # the text of messages
+    user_identity: allow     # user names, emails, real names
+    channel_list: allow      # channel names and metadata
+    thread_content: allow    # thread reply content
+
+mcp:
+  server_name: loopline-gmail
+  server_version: 0.1.0
+
+drive_mcp:
+  server_name: loopline-drive
+  server_version: 0.1.0
+
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: INFO
+  # Log file path. Relative paths are resolved against the project root.
+  file: logs/loopline.log
