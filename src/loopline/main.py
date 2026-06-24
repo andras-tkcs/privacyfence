@@ -1,0 +1,272 @@
+"""Entry point: wires together the Gmail client, privacy filter, MCP server and
+menu bar, and handles the OAuth setup command.
+
+Threading model:
+  - The MCP server runs the stdio transport inside its own asyncio event loop on
+    a daemon background thread.
+  - The rumps menu bar app runs on the main thread (a hard requirement for any
+    AppKit/Cocoa UI on macOS).
+  - The ReviewQueue bridges the two via loop.call_soon_threadsafe.
+
+IMPORTANT: when the MCP server uses the stdio transport, stdin/stdout are the
+protocol channel and must not be polluted. We therefore send all logs to a file
+(and stderr), never to stdout.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import fcntl
+import logging
+import os
+import signal
+import sys
+import threading
+from typing import Any
+
+import yaml
+
+from .floating_window import GuardFloatingWindow
+from .gmail_client import GmailClient, GmailClientError
+from .mcp_server import GmailGuardServer
+from .privacy_filter import PrivacyFilter
+
+logger = logging.getLogger("loopline")
+
+PROJECT_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), os.pardir, os.pardir)
+)
+
+LOCK_FILE = os.path.join(PROJECT_ROOT, "loopline.lock")
+
+# Held open for the lifetime of the process to prevent a second instance.
+_lock_fd: int | None = None
+
+
+def _acquire_instance_lock() -> bool:
+    """Try to acquire an exclusive lock on the lock file.
+
+    Returns True if this process is now the sole owner, False if another
+    instance is already running (caller should exit immediately).
+    """
+    global _lock_fd
+    fd = os.open(LOCK_FILE, os.O_CREAT | os.O_WRONLY, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return False
+    # Write our PID for diagnostics, then keep fd open.
+    os.ftruncate(fd, 0)
+    os.write(fd, str(os.getpid()).encode())
+    _lock_fd = fd
+    return True
+
+
+def _release_instance_lock() -> None:
+    global _lock_fd
+    if _lock_fd is not None:
+        try:
+            fcntl.flock(_lock_fd, fcntl.LOCK_UN)
+            os.close(_lock_fd)
+        except OSError:
+            pass
+        _lock_fd = None
+
+
+# ---------------------------------------------------------------------------- #
+# Configuration & logging
+# ---------------------------------------------------------------------------- #
+def _resolve_path(path: str) -> str:
+    """Resolve a possibly-relative config path against the project root."""
+    if os.path.isabs(path):
+        return path
+    return os.path.join(PROJECT_ROOT, path)
+
+
+def load_config(config_path: str) -> dict[str, Any]:
+    resolved = _resolve_path(config_path)
+    if not os.path.exists(resolved):
+        raise FileNotFoundError(
+            f"Configuration file not found: {resolved}. "
+            "Copy config/settings.yaml.example to config/settings.yaml."
+        )
+    with open(resolved, "r", encoding="utf-8") as handle:
+        config = yaml.safe_load(handle) or {}
+    if not isinstance(config, dict):
+        raise ValueError(f"Configuration file {resolved} did not parse to a mapping")
+    return config
+
+
+def setup_logging(config: dict[str, Any]) -> None:
+    """Configure file + stderr logging. Never logs to stdout (stdio transport)."""
+    log_cfg = config.get("logging", {}) or {}
+    level_name = str(log_cfg.get("level", "INFO")).upper()
+    level = getattr(logging, level_name, logging.INFO)
+    log_file = _resolve_path(log_cfg.get("file", "logs/loopline.log"))
+
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+
+    formatter = logging.Formatter(
+        "%(asctime)s %(levelname)-8s [%(name)s] %(message)s"
+    )
+
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    file_handler.setFormatter(formatter)
+
+    # stderr is safe; stdout is reserved for the MCP protocol.
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler.setFormatter(formatter)
+
+    root = logging.getLogger()
+    root.setLevel(level)
+    root.handlers.clear()
+    root.addHandler(file_handler)
+    root.addHandler(stderr_handler)
+
+    logger.info("Logging initialized at level %s -> %s", level_name, log_file)
+
+
+# ---------------------------------------------------------------------------- #
+# Component construction
+# ---------------------------------------------------------------------------- #
+def build_gmail_client(config: dict[str, Any]) -> GmailClient:
+    gmail_cfg = config.get("gmail", {}) or {}
+    credentials_file = _resolve_path(
+        gmail_cfg.get("credentials_file", "credentials/client_secret.json")
+    )
+    token_file = _resolve_path(gmail_cfg.get("token_file", "credentials/token.json"))
+    return GmailClient(credentials_file=credentials_file, token_file=token_file)
+
+
+def build_privacy_filter(config: dict[str, Any]) -> PrivacyFilter:
+    return PrivacyFilter(config.get("privacy", {}) or {})
+
+
+# ---------------------------------------------------------------------------- #
+# MCP server thread
+# ---------------------------------------------------------------------------- #
+class MCPServerThread(threading.Thread):
+    """Runs the FastMCP stdio server inside its own asyncio event loop."""
+
+    def __init__(self, server: GmailGuardServer) -> None:
+        super().__init__(name="mcp-server", daemon=True)
+        self._server = server
+
+    def run(self) -> None:
+        try:
+            # FastMCP.run manages its own loop; running it on this thread keeps
+            # the event loop off the main (UI) thread.
+            self._server.run_stdio()
+        except Exception as exc:  # noqa: BLE001
+            logger.error("MCP server thread crashed: %s", exc, exc_info=True)
+
+
+# ---------------------------------------------------------------------------- #
+# Commands
+# ---------------------------------------------------------------------------- #
+def run_oauth_setup(config: dict[str, Any]) -> int:
+    """Interactive OAuth authorization. Saves token then exits."""
+    client = build_gmail_client(config)
+    try:
+        client.authorize_interactive()
+        email = client.check_connection()
+    except GmailClientError as exc:
+        logger.error("OAuth setup failed: %s", exc)
+        print(f"OAuth setup failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"OAuth setup complete. Authorized as: {email}")
+    return 0
+
+
+def run_app(config: dict[str, Any]) -> int:
+    """Start the MCP server thread and the menu bar app (blocks until quit)."""
+    if not _acquire_instance_lock():
+        logger.error("Another instance is already running; exiting.")
+        print("Loopline is already running.", file=sys.stderr)
+        return 1
+
+    gmail_client = build_gmail_client(config)
+    privacy_filter = build_privacy_filter(config)
+
+    # Verify credentials up front so a misconfigured token fails loudly here
+    # rather than on the first Claude request.
+    try:
+        email = gmail_client.check_connection()
+        logger.info("Gmail credentials verified for %s", email)
+    except GmailClientError as exc:
+        logger.error("Cannot start: %s", exc)
+        print(f"Cannot start: {exc}", file=sys.stderr)
+        return 1
+
+    mcp_cfg = config.get("mcp", {}) or {}
+    server = GmailGuardServer(
+        gmail_client=gmail_client,
+        privacy_filter=privacy_filter,
+        server_name=mcp_cfg.get("server_name", "loopline-gmail"),
+        server_version=mcp_cfg.get("server_version", "0.1.0"),
+    )
+
+    server_thread = MCPServerThread(server)
+    server_thread.start()
+    logger.info("MCP server thread started")
+
+    def _on_quit() -> None:
+        logger.info("Menu bar quit handler invoked; process will exit")
+
+    app = GuardFloatingWindow(privacy_filter=privacy_filter, on_quit=_on_quit)
+    logger.info("Starting floating window on main thread")
+    try:
+        app.run()
+    except KeyboardInterrupt:
+        logger.info("Interrupted; shutting down")
+    finally:
+        _release_instance_lock()
+    return 0
+
+
+# ---------------------------------------------------------------------------- #
+# Argument parsing / dispatch
+# ---------------------------------------------------------------------------- #
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="loopline-gmail",
+        description="macOS menu bar privacy proxy between Claude (MCP) and Gmail.",
+    )
+    parser.add_argument(
+        "--config",
+        default="config/settings.yaml",
+        help="Path to the YAML config file (default: config/settings.yaml)",
+    )
+    parser.add_argument(
+        "--oauth-setup",
+        action="store_true",
+        help="Run the interactive Gmail OAuth flow, save the token, then exit.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+
+    try:
+        config = load_config(args.config)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"Configuration error: {exc}", file=sys.stderr)
+        return 1
+
+    setup_logging(config)
+
+    try:
+        if args.oauth_setup:
+            return run_oauth_setup(config)
+        return run_app(config)
+    except Exception as exc:  # noqa: BLE001 - top-level safety net
+        logger.error("Fatal error: %s", exc, exc_info=True)
+        print(f"Fatal error: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
