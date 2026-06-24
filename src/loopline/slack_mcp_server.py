@@ -66,7 +66,7 @@ class SlackGuardServer:
             )
             filtered = self._filter.filter_channels(channels)
             return await self._review(
-                tool_name="slack_list_channels",
+                tool_name="List Slack Channels",
                 summary=f"List channels (max {max_results})",
                 sender=f"{len(channels)} channel(s)",
                 raw_data=channels,
@@ -88,7 +88,7 @@ class SlackGuardServer:
             )
             filtered = self._filter.filter_messages(messages)
             return await self._review(
-                tool_name="slack_get_channel_history",
+                tool_name="Read Slack Channel",
                 summary=f"Channel history: {channel_id} (limit {limit})",
                 sender=f"{len(messages)} message(s)",
                 raw_data=messages,
@@ -110,7 +110,7 @@ class SlackGuardServer:
             )
             filtered = self._filter.filter_thread(messages)
             return await self._review(
-                tool_name="slack_get_thread_replies",
+                tool_name="Read Slack Thread",
                 summary=f"Thread replies: {channel_id}/{thread_ts}",
                 sender=f"{len(messages)} message(s)",
                 raw_data=messages,
@@ -130,7 +130,7 @@ class SlackGuardServer:
             )
             filtered = self._filter.filter_messages(messages)
             return await self._review(
-                tool_name="slack_search_messages",
+                tool_name="Search Slack Messages",
                 summary=f"Search messages: query={query!r} (count {count})",
                 sender=f"{len(messages)} match(es)",
                 raw_data=messages,

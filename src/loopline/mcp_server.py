@@ -102,11 +102,11 @@ class GmailGuardServer:
                 "recipients": filtered.recipients,
                 "subject": filtered.subject,
                 "date": filtered.date,
-                "html_body": filtered.body_html or filtered.body_text,
+                "html_body": message.body_html or message.body_text,
                 "attachment_count": len(message.attachments),
             }
             return await self._review(
-                tool_name="gmail_get_message",
+                tool_name="Read Email",
                 summary=f"Read email: {message.short_summary()}",
                 sender=message.sender,
                 raw_data=message,
@@ -132,7 +132,7 @@ class GmailGuardServer:
                     "recipients": m.recipients,
                     "subject": m.subject,
                     "date": m.date,
-                    "html_body": m.body_html or m.body_text,
+                    "html_body": raw.body_html or raw.body_text,
                     "attachment_count": len(raw.attachments),
                 }
                 for m, raw in zip(filtered.messages, thread.messages)
@@ -144,7 +144,7 @@ class GmailGuardServer:
                 "messages": message_previews,
             }
             return await self._review(
-                tool_name="gmail_get_thread",
+                tool_name="Read Email Thread",
                 summary=f"Read thread: {thread.short_summary()}",
                 sender=thread.subject,
                 raw_data=thread,

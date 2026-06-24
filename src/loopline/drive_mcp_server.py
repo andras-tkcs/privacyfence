@@ -63,7 +63,7 @@ class DriveGuardServer:
             files = await self._fetch(self._drive.list_files, query, max_results)
             filtered = self._filter.filter_file_list(files)
             return await self._review(
-                tool_name="drive_list_files",
+                tool_name="Search Drive Files",
                 summary=f"List files: query={query!r} (max {max_results})",
                 sender=f"{len(files)} result(s)",
                 raw_data=files,
@@ -83,7 +83,7 @@ class DriveGuardServer:
             )
             filtered = self._filter.filter_file_metadata(drive_file)
             return await self._review(
-                tool_name="drive_get_file_metadata",
+                tool_name="Get Drive File Info",
                 summary=f"Get metadata: {drive_file.short_summary()}",
                 sender=", ".join(drive_file.owners) or "(unknown owner)",
                 raw_data=drive_file,
@@ -104,7 +104,7 @@ class DriveGuardServer:
             )
             filtered = self._filter.filter_file_content(content)
             return await self._review(
-                tool_name="drive_get_file_content",
+                tool_name="Read Drive File",
                 summary=f"Get content: {content.file.short_summary()}",
                 sender=", ".join(content.file.owners) or "(unknown owner)",
                 raw_data=content,
@@ -124,7 +124,7 @@ class DriveGuardServer:
             )
             filtered = self._filter.filter_folder_listing(files)
             return await self._review(
-                tool_name="drive_list_folder",
+                tool_name="List Drive Folder",
                 summary=f"List folder: {folder_id} (max {max_results})",
                 sender=f"{len(files)} child item(s)",
                 raw_data=files,
