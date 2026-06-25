@@ -22,7 +22,7 @@ import html.parser
 import logging
 import os
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 from typing import Any, Callable, Optional
 
 from .auto_accept import TOOL_TO_OPERATION
@@ -466,6 +466,146 @@ def _make_card(
     return GenericCard(parent, review, on_approve, on_reject)
 
 
+# ── Auto-accept rules editor ──────────────────────────────────────────────────
+
+class _RulesEditorWindow:
+    """Toplevel window for editing auto_accept_rules in settings.yaml."""
+
+    def __init__(self, parent: tk.Widget) -> None:
+        self._win = tk.Toplevel(parent)
+        self._win.title("Auto-Accept Rules")
+        self._win.configure(bg=BG)
+        self._win.resizable(True, True)
+        self._win.geometry("660x520")
+        self._win.grab_set()
+
+        self._settings_path = self._resolve_settings_path()
+        self._build()
+        self._load()
+
+    @staticmethod
+    def _resolve_settings_path() -> str:
+        from .paths import data_dir
+        return str(data_dir() / "config" / "settings.yaml")
+
+    def _build(self) -> None:
+        hdr = tk.Label(
+            self._win,
+            text="Auto-Accept Rules",
+            font=("SF Pro Text", 14, "bold"),
+            bg=BG, fg=TEXT, anchor="w",
+            padx=16, pady=12,
+        )
+        hdr.pack(fill="x")
+
+        tk.Label(
+            self._win,
+            text=(
+                "Edit the auto_accept_rules section of settings.yaml below.\n"
+                "Changes take effect the next time the daemon starts."
+            ),
+            font=("SF Pro Text", 11),
+            bg=BG, fg=MUTED, anchor="w",
+            padx=16, justify="left",
+        ).pack(fill="x")
+
+        _hairline(self._win, bg=BG).pack(fill="x", pady=(8, 0))
+
+        editor_frame = tk.Frame(self._win, bg=BG)
+        editor_frame.pack(fill="both", expand=True, padx=14, pady=10)
+
+        self._txt = tk.Text(
+            editor_frame,
+            bg=CARD_BG, fg=TEXT,
+            font=("SF Pro Mono", 11),
+            relief="flat",
+            highlightbackground=BORDER, highlightthickness=1,
+            wrap="none",
+            undo=True,
+        )
+        vsb = ttk.Scrollbar(editor_frame, orient="vertical", command=self._txt.yview)
+        hsb = ttk.Scrollbar(editor_frame, orient="horizontal", command=self._txt.xview)
+        self._txt.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        hsb.pack(side="bottom", fill="x")
+        vsb.pack(side="right", fill="y")
+        self._txt.pack(side="left", fill="both", expand=True)
+
+        _hairline(self._win, bg=BG).pack(fill="x")
+
+        btn_row = tk.Frame(self._win, bg=BG)
+        btn_row.pack(fill="x", padx=14, pady=10)
+
+        tk.Button(
+            btn_row, text="Cancel",
+            font=("SF Pro Text", 12),
+            bg=BG, fg=MUTED,
+            activebackground=BG, activeforeground=TEXT,
+            relief="flat", bd=0, padx=14, pady=6,
+            cursor="hand2",
+            command=self._win.destroy,
+        ).pack(side="right", padx=(6, 0))
+
+        tk.Button(
+            btn_row, text="Save",
+            font=("SF Pro Text", 12, "bold"),
+            bg=ACCENT, fg="white",
+            activebackground="#0066DD", activeforeground="white",
+            relief="flat", bd=0, padx=18, pady=6,
+            cursor="hand2",
+            command=self._save,
+        ).pack(side="right")
+
+        self._status = tk.Label(
+            btn_row, text="",
+            font=("SF Pro Text", 11),
+            bg=BG, fg=MUTED, anchor="w",
+        )
+        self._status.pack(side="left")
+
+    def _load(self) -> None:
+        try:
+            import yaml
+            path = self._settings_path
+            if not os.path.exists(path):
+                self._txt.insert("1.0", "auto_accept_rules: {}\n")
+                return
+            with open(path, encoding="utf-8") as fh:
+                cfg = yaml.safe_load(fh) or {}
+            rules = cfg.get("auto_accept_rules") or {}
+            snippet = yaml.dump({"auto_accept_rules": rules},
+                                allow_unicode=True, default_flow_style=False)
+            self._txt.insert("1.0", snippet)
+        except Exception as exc:  # noqa: BLE001
+            self._txt.insert("1.0", f"# Error loading settings: {exc}\n")
+
+    def _save(self) -> None:
+        try:
+            import yaml
+            text = self._txt.get("1.0", "end-1c")
+            parsed = yaml.safe_load(text) or {}
+            if not isinstance(parsed, dict) or "auto_accept_rules" not in parsed:
+                messagebox.showerror(
+                    "Invalid YAML",
+                    "The text must be valid YAML with an 'auto_accept_rules' key.",
+                    parent=self._win,
+                )
+                return
+            new_rules = parsed["auto_accept_rules"]
+            path = self._settings_path
+            if os.path.exists(path):
+                with open(path, encoding="utf-8") as fh:
+                    cfg = yaml.safe_load(fh) or {}
+            else:
+                cfg = {}
+            cfg["auto_accept_rules"] = new_rules
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                yaml.dump(cfg, fh, allow_unicode=True, default_flow_style=False)
+            self._status.config(text="✓ Saved (restart daemon to apply)", fg=GREEN)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Save failed", str(exc), parent=self._win)
+
+
 # ── Main floating window ──────────────────────────────────────────────────────
 
 class GuardFloatingWindow:
@@ -572,6 +712,26 @@ class GuardFloatingWindow:
             command=self._approve_all,
         )
         self._allow_all_btn.pack(side="right", pady=8)
+
+        tk.Button(
+            toolbar, text="⚙ Rules",
+            font=("SF Pro Text", 11),
+            bg=TOOLBAR_BG, fg=MUTED,
+            activebackground=BG, activeforeground=TEXT,
+            relief="flat", bd=0, padx=10, pady=4,
+            cursor="hand2",
+            command=self._open_rules_editor,
+        ).pack(side="right", pady=8)
+
+        tk.Button(
+            toolbar, text="＋ Add accounts",
+            font=("SF Pro Text", 11),
+            bg=TOOLBAR_BG, fg=MUTED,
+            activebackground=BG, activeforeground=TEXT,
+            relief="flat", bd=0, padx=10, pady=4,
+            cursor="hand2",
+            command=self._open_setup_wizard,
+        ).pack(side="right", pady=8)
 
         _hairline(toolbar, bg=TOOLBAR_BG).pack(side="bottom", fill="x")
 
@@ -691,6 +851,14 @@ class GuardFloatingWindow:
     def _reject_all(self) -> None:
         self._queue.reject_all("Rejected by user (Deny All)")
         logger.info("Rejected all pending requests via UI")
+
+    def _open_rules_editor(self) -> None:
+        _RulesEditorWindow(self._root)
+
+    def _open_setup_wizard(self) -> None:
+        from .setup_wizard import SetupWizard
+        wizard = SetupWizard(parent=self._root)
+        wizard.run()
 
     def _quit(self) -> None:
         logger.info("Quit requested from floating window")

@@ -260,11 +260,18 @@ def _run_oauth(service: str, on_done: Callable[[bool, str], None]) -> None:
 class SetupWizard:
     PAGES = ["welcome", "google_creds", "google_oauth", "slack", "telegram", "salesforce", "launch_agent", "done"]
 
-    def __init__(self) -> None:
-        self.root = tk.Tk()
+    def __init__(self, parent: tk.Misc | None = None) -> None:
+        if parent is None:
+            self.root = tk.Tk()
+            self._is_toplevel = False
+        else:
+            self.root = tk.Toplevel(parent)
+            self._is_toplevel = True
         self.root.title("Loopline Setup")
         self.root.configure(bg=BG)
         self.root.resizable(False, False)
+        if self._is_toplevel:
+            self.root.grab_set()
 
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
@@ -805,12 +812,15 @@ class SetupWizard:
         self.root.destroy()
 
     def run(self) -> None:
-        self.root.mainloop()
+        if self._is_toplevel:
+            self.root.wait_window()
+        else:
+            self.root.mainloop()
 
 
 # ── public entry point ────────────────────────────────────────────────────────
 
-def run_setup_wizard() -> None:
+def run_setup_wizard(parent: tk.Misc | None = None) -> None:
     """Run the setup wizard and block until the window is closed."""
-    wizard = SetupWizard()
+    wizard = SetupWizard(parent=parent)
     wizard.run()
