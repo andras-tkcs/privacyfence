@@ -288,6 +288,7 @@ class SetupWizard:
         self._tg_api_hash = tk.StringVar()
         self._tg_phone = tk.StringVar()
         self._tg_code = tk.StringVar()
+        self._tg_2fa_password = tk.StringVar()
         self._tg_phone_code_hash: str | None = None
         self._tg_session_file: str | None = None
         self._tg_api_id_int: int | None = None
@@ -640,6 +641,23 @@ class SetupWizard:
         ).pack(anchor="w")
         self._tg_code_frame.pack_forget()  # hide until needed
 
+        # 2FA password frame — hidden until two-step verification is required
+        self._tg_2fa_frame = tk.Frame(self._body, bg=BG)
+        self._tg_2fa_frame.pack(anchor="w", pady=(8, 0))
+        tk.Label(self._tg_2fa_frame, text="Two-step verification password:", bg=BG, fg=TEXT,
+                 font=("Helvetica Neue", 12), anchor="w").pack(anchor="w")
+        tk.Entry(self._tg_2fa_frame, textvariable=self._tg_2fa_password, bg=SURFACE, fg=TEXT,
+                 insertbackground=TEXT, relief="flat", font=("Courier", 12), width=30,
+                 show="•").pack(anchor="w", ipady=5, pady=(2, 6))
+        tk.Button(
+            self._tg_2fa_frame, text="Submit Password",
+            command=self._tg_submit_2fa,
+            bg=ACCENT, fg=BG, relief="flat", padx=12, pady=4,
+            cursor="hand2", font=("Helvetica Neue", 12, "bold"),
+            activebackground="#74c7ec", activeforeground=BG,
+        ).pack(anchor="w")
+        self._tg_2fa_frame.pack_forget()  # hide until needed
+
     def _tg_send_code(self) -> None:
         api_id_str = self._tg_api_id.get().strip()
         api_hash = self._tg_api_hash.get().strip()
@@ -664,8 +682,9 @@ class SetupWizard:
                 client = TelegramClient(session_file, api_id, api_hash)
                 asyncio.run(_send(client, phone, session_file, api_id, api_hash))
             except Exception as exc:
+                err = str(exc) or repr(exc)
                 self.root.after(0, lambda: (
-                    self._tg_status.config(text=f"Error: {exc}", fg=RED),
+                    self._tg_status.config(text=f"Error: {err}", fg=RED),
                     self._tg_send_btn.config(state="normal"),
                 ))
 
@@ -702,19 +721,81 @@ class SetupWizard:
             try:
                 asyncio.run(_sign_in())
             except Exception as exc:
-                self.root.after(0, lambda: self._tg_status.config(text=f"Error: {exc}", fg=RED))
+                err = str(exc) or repr(exc)
+                self.root.after(0, lambda: self._tg_status.config(text=f"Error: {err}", fg=RED))
 
         async def _sign_in() -> None:
             from telethon import TelegramClient
+            from telethon.errors import SessionPasswordNeededError
             client = TelegramClient(session_file, api_id_val, api_hash_val)
             await client.connect()
-            await client.sign_in(phone, code, phone_code_hash=self._tg_phone_code_hash)
+            try:
+                await client.sign_in(phone, code, phone_code_hash=self._tg_phone_code_hash)
+            except SessionPasswordNeededError:
+                await client.disconnect()
+                self.root.after(0, lambda: (
+                    self._tg_status.config(
+                        text="Two-step verification required. Enter your password below.", fg=YELLOW),
+                    self._tg_2fa_frame.pack(anchor="w", pady=(8, 0)),
+                ))
+                return
             me = await client.get_me()
             name = f"{me.first_name or ''} {me.last_name or ''}".strip()
             await client.disconnect()
+            # Persist api_id/api_hash immediately so credentials survive wizard exit.
+            try:
+                _write_settings(
+                    tg_api_id=str(api_id_val),
+                    tg_api_hash=api_hash_val,
+                )
+            except Exception:
+                pass
             self.root.after(0, lambda: (
                 self._tg_status.config(text=f"✓  Authorized as {name}", fg=GREEN),
                 self._tg_code_frame.pack_forget(),
+            ))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _tg_submit_2fa(self) -> None:
+        password = self._tg_2fa_password.get().strip()
+        if not password:
+            self._tg_status.config(text="Enter your two-step verification password.", fg=RED)
+            return
+
+        self._tg_status.config(text="Verifying password…", fg=YELLOW)
+
+        session_file = self._tg_session_file
+        api_id_val = self._tg_api_id_int
+        api_hash_val = self._tg_api_hash_str
+
+        def _run() -> None:
+            import asyncio
+            try:
+                asyncio.run(_sign_in_2fa())
+            except Exception as exc:
+                err = str(exc) or repr(exc)
+                self.root.after(0, lambda: self._tg_status.config(text=f"Error: {err}", fg=RED))
+
+        async def _sign_in_2fa() -> None:
+            from telethon import TelegramClient
+            client = TelegramClient(session_file, api_id_val, api_hash_val)
+            await client.connect()
+            await client.sign_in(password=password)
+            me = await client.get_me()
+            name = f"{me.first_name or ''} {me.last_name or ''}".strip()
+            await client.disconnect()
+            try:
+                _write_settings(
+                    tg_api_id=str(api_id_val),
+                    tg_api_hash=api_hash_val,
+                )
+            except Exception:
+                pass
+            self.root.after(0, lambda: (
+                self._tg_status.config(text=f"✓  Authorized as {name}", fg=GREEN),
+                self._tg_code_frame.pack_forget(),
+                self._tg_2fa_frame.pack_forget(),
             ))
 
         threading.Thread(target=_run, daemon=True).start()
@@ -774,8 +855,9 @@ class SetupWizard:
                 self.root.after(0, lambda: self._sf_status.config(
                     text=f"✓  Connected to {org}", fg=GREEN))
             except Exception as exc:
+                err = str(exc) or repr(exc)
                 self.root.after(0, lambda: self._sf_status.config(
-                    text=f"Error: {exc}", fg=RED))
+                    text=f"Error: {err}", fg=RED))
 
         threading.Thread(target=_run, daemon=True).start()
 
