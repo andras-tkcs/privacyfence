@@ -37,6 +37,7 @@ class GmailConnector(Connector):
                     ToolParam("query", "str"),
                     ToolParam("max_results", "int", required=False, default=10),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="gmail_list_threads",
@@ -48,6 +49,7 @@ class GmailConnector(Connector):
                     ToolParam("query", "str"),
                     ToolParam("max_results", "int", required=False, default=10),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="gmail_get_message",
@@ -56,6 +58,7 @@ class GmailConnector(Connector):
                     "and attachment list. Requires user approval."
                 ),
                 params=[ToolParam("message_id", "str")],
+            read_only=True,
             ),
             ToolSpec(
                 name="gmail_get_thread",
@@ -64,6 +67,7 @@ class GmailConnector(Connector):
                     "Requires user approval."
                 ),
                 params=[ToolParam("thread_id", "str")],
+            read_only=True,
             ),
             ToolSpec(
                 name="gmail_list_message_attachments",
@@ -72,6 +76,7 @@ class GmailConnector(Connector):
                     "No body content is returned. Auto-approved."
                 ),
                 params=[ToolParam("message_id", "str")],
+            read_only=True,
             ),
             ToolSpec(
                 name="gmail_create_draft",

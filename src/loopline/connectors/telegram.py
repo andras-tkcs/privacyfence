@@ -47,6 +47,7 @@ class TelegramConnector(Connector):
                 params=[
                     ToolParam("limit", "int", required=False, default=50),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="telegram_get_messages",
@@ -58,6 +59,7 @@ class TelegramConnector(Connector):
                     ToolParam("chat_id", "int"),
                     ToolParam("limit", "int", required=False, default=50),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="telegram_search_messages",
@@ -69,6 +71,7 @@ class TelegramConnector(Connector):
                     ToolParam("query", "str"),
                     ToolParam("limit", "int", required=False, default=30),
                 ],
+            read_only=True,
             ),
         ]
 

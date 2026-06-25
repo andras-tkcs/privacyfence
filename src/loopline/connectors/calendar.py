@@ -33,6 +33,7 @@ class CalendarConnector(Connector):
                     "List all Google Calendars for the authenticated user. Auto-approved."
                 ),
                 params=[],
+            read_only=True,
             ),
             ToolSpec(
                 name="calendar_list_events",
@@ -47,6 +48,7 @@ class CalendarConnector(Connector):
                     ToolParam("time_max", "str", required=False, default=""),
                     ToolParam("query", "str", required=False, default=""),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="calendar_get_free_busy",
@@ -58,6 +60,7 @@ class CalendarConnector(Connector):
                     ToolParam("time_min", "str"),
                     ToolParam("time_max", "str"),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="calendar_get_event_details",
@@ -69,6 +72,7 @@ class CalendarConnector(Connector):
                     ToolParam("calendar_id", "str"),
                     ToolParam("event_id", "str"),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="calendar_create_event",

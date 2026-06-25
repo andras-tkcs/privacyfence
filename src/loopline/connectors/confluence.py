@@ -39,6 +39,7 @@ class ConfluenceConnector(Connector):
                     ToolParam("space_type", "str", required=False, default="global",
                               description="'global' or 'personal'"),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="confluence_search",
@@ -50,6 +51,7 @@ class ConfluenceConnector(Connector):
                     ToolParam("query", "str", description="Plain-text search terms"),
                     ToolParam("max_results", "int", required=False, default=20),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="confluence_cql_search",
@@ -61,6 +63,7 @@ class ConfluenceConnector(Connector):
                     ToolParam("cql", "str", description="e.g. 'space = MYSPACE AND type = page'"),
                     ToolParam("max_results", "int", required=False, default=20),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="confluence_list_pages",
@@ -72,6 +75,7 @@ class ConfluenceConnector(Connector):
                     ToolParam("space_key", "str"),
                     ToolParam("max_results", "int", required=False, default=20),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="confluence_get_page",
@@ -82,6 +86,7 @@ class ConfluenceConnector(Connector):
                 params=[
                     ToolParam("page_id", "str"),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="confluence_get_page_by_title",
@@ -93,6 +98,7 @@ class ConfluenceConnector(Connector):
                     ToolParam("space_key", "str"),
                     ToolParam("title", "str"),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="confluence_create_page",

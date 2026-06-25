@@ -31,6 +31,7 @@ class ToolSpec:
     name: str
     description: str
     params: list[ToolParam] = field(default_factory=list)
+    read_only: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -46,6 +47,7 @@ class ToolSpec:
                 }
                 for p in self.params
             ],
+            "read_only": self.read_only,
         }
 
     @classmethod
@@ -63,6 +65,7 @@ class ToolSpec:
                 )
                 for p in d.get("params", [])
             ],
+            read_only=d.get("read_only", False),
         )
 
 

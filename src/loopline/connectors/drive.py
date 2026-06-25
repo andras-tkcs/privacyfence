@@ -40,6 +40,7 @@ class DriveConnector(Connector):
                     ToolParam("query", "str"),
                     ToolParam("max_results", "int", required=False, default=20),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="drive_get_file_metadata",
@@ -48,6 +49,7 @@ class DriveConnector(Connector):
                     "(name, owners, times, sharing status). Auto-approved."
                 ),
                 params=[ToolParam("file_id", "str")],
+            read_only=True,
             ),
             ToolSpec(
                 name="drive_get_file_content",
@@ -56,6 +58,7 @@ class DriveConnector(Connector):
                     "Google Docs/Sheets/Slides are exported as text. Requires user approval."
                 ),
                 params=[ToolParam("file_id", "str")],
+            read_only=True,
             ),
             ToolSpec(
                 name="drive_list_folder",
@@ -66,6 +69,7 @@ class DriveConnector(Connector):
                     ToolParam("folder_id", "str"),
                     ToolParam("max_results", "int", required=False, default=50),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="drive_create_blank_file",
