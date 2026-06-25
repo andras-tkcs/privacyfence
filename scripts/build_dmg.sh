@@ -15,7 +15,21 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-VERSION=$(python3 -c "import tomllib; d=tomllib.load(open('pyproject.toml','rb')); print(d['project']['version'])")
+# Find Python / PyInstaller — prefer the project venv, then PATH.
+if [ -x ".venv/bin/pyinstaller" ]; then
+  PYTHON=".venv/bin/python"
+  PYINSTALLER=".venv/bin/pyinstaller"
+elif command -v pyinstaller &>/dev/null; then
+  PYTHON="$(command -v python3)"
+  PYINSTALLER="$(command -v pyinstaller)"
+else
+  echo "PyInstaller not found — installing into .venv…"
+  .venv/bin/pip install --quiet pyinstaller
+  PYTHON=".venv/bin/python"
+  PYINSTALLER=".venv/bin/pyinstaller"
+fi
+
+VERSION=$("$PYTHON" -c "import tomllib; d=tomllib.load(open('pyproject.toml','rb')); print(d['project']['version'])")
 APP_NAME="Loopline"
 BUNDLE="dist/${APP_NAME}.app"
 DMG_NAME="${APP_NAME}-${VERSION}.dmg"
@@ -30,19 +44,7 @@ done
 
 echo "=== Building ${APP_NAME} ${VERSION} ==="
 
-# ── 1. Build .app bundle ──────────────────────────────────────────────────────
-echo "→ Running PyInstaller…"
-pyinstaller --noconfirm Loopline.spec
-
-# ── 2. Create loopline-app symlink inside the bundle ─────────────────────────
-# The LaunchAgent plist and bridge use this name; the main exe is "Loopline".
-MACOS_DIR="${BUNDLE}/Contents/MacOS"
-if [ ! -e "${MACOS_DIR}/loopline-app" ]; then
-  echo "→ Creating loopline-app symlink…"
-  ln -s "Loopline" "${MACOS_DIR}/loopline-app"
-fi
-
-# ── 3. Convert PNG icon to ICNS ───────────────────────────────────────────────
+# ── 1. Convert PNG icon to ICNS (must happen before PyInstaller) ─────────────
 ICON_SRC="src/loopline/resources/icon_512.png"
 ICON_DIR="build/loopline_icons.iconset"
 ICNS_PATH="build/loopline.icns"
@@ -60,6 +62,18 @@ if [ ! -f "$ICNS_PATH" ]; then
   sips -z 512 512   "$ICON_SRC" --out "${ICON_DIR}/icon_256x256@2x.png" >/dev/null
   cp "$ICON_SRC"                      "${ICON_DIR}/icon_512x512.png"
   iconutil -c icns "$ICON_DIR" -o "$ICNS_PATH"
+fi
+
+# ── 2. Build .app bundle ──────────────────────────────────────────────────────
+echo "→ Running PyInstaller…"
+LOOPLINE_ICNS="$ICNS_PATH" $PYINSTALLER --noconfirm Loopline.spec
+
+# ── 3. Create loopline-app symlink inside the bundle ─────────────────────────
+# The LaunchAgent plist and bridge use this name; the main exe is "Loopline".
+MACOS_DIR="${BUNDLE}/Contents/MacOS"
+if [ ! -e "${MACOS_DIR}/loopline-app" ]; then
+  echo "→ Creating loopline-app symlink…"
+  ln -s "Loopline" "${MACOS_DIR}/loopline-app"
 fi
 
 # Apply the .icns to the .app bundle

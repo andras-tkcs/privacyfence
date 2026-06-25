@@ -16,12 +16,17 @@
 #   - Run on the target architecture. For Apple Silicon: arch -arm64 pyinstaller ...
 #   - Code-signing and notarization are handled by build_dmg.sh.
 
+import os
 import sys
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 SRC = str(Path("src").resolve())
 sys.path.insert(0, SRC)
+
+# Use .icns built by build_dmg.sh; fall back to PNG (will error on macOS, but
+# lets you run pyinstaller directly for quick dev iteration on Linux/CI).
+ICON = os.environ.get("LOOPLINE_ICNS", "src/loopline/resources/icon_512.png")
 
 # ── data files ────────────────────────────────────────────────────────────────
 
@@ -105,7 +110,7 @@ daemon_exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon="src/loopline/resources/icon_512.png",
+    icon=ICON,
 )
 
 # ── bridge (helper binary, run by Claude as an MCP server) ───────────────────
@@ -160,7 +165,7 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name="Loopline.app",
-    icon="src/loopline/resources/icon_512.png",
+    icon=ICON,
     bundle_identifier="com.loopline.app",
     version="0.1.0",
     info_plist={

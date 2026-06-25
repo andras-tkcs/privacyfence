@@ -1,10 +1,20 @@
 # Credentials and secrets
-credentials/*.json
-credentials/token.json
+credentials/*
+!credentials/.gitkeep
 .env
+*.pem
+*.key
+*.p12
 
 # User configuration (keep only the .example)
 config/settings.yaml
+config/settings.local.yaml
+
+# Claude Code
+.claude/
+
+# Lock files
+*.lock
 
 # Python
 *.pyc
@@ -24,6 +34,7 @@ logs/
 
 # macOS
 .DS_Store
+*.dmg
 
 # IDE
 .idea/
