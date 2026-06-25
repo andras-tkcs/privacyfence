@@ -94,6 +94,15 @@ telegram:
   # api_hash: your_api_hash_here
   session_file: credentials/telegram.session
 
+salesforce:
+  # Your Salesforce instance URL, e.g. https://yourorg.my.salesforce.com
+  # instance_url: https://yourorg.my.salesforce.com
+  # Authenticate with username/password/security_token OR access_token:
+  # username: you@example.com
+  # password: your_password
+  # security_token: your_security_token
+  # access_token: your_access_token
+
 auto_accept_rules:
   contacts.edit:
     # Auto-accept edits to contacts I created (no rule for this yet — left empty)

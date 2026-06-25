@@ -28,6 +28,7 @@ from .connectors.calendar import CalendarConnector
 from .connectors.contacts import ContactsConnector
 from .connectors.drive import DriveConnector
 from .connectors.gmail import GmailConnector
+from .connectors.salesforce import SalesforceConnector
 from .connectors.slack import SlackConnector
 from .connectors.tasks import TasksConnector
 from .connectors.telegram import TelegramConnector
@@ -38,6 +39,7 @@ from .floating_window import GuardFloatingWindow
 from .gmail_client import GmailClient, GmailClientError
 from .ipc_server import IPCServer
 from .privacy_filter import DrivePrivacyFilter, PrivacyFilter, SlackPrivacyFilter
+from .salesforce_client import SalesforceClient, SalesforceClientError
 from .slack_client import SlackClient, SlackClientError
 from .tasks_client import TasksClient, TasksClientError
 from .telegram_client import TelegramClientError, TelegramLooplineClient
@@ -220,6 +222,19 @@ def _build_connectors(config: dict[str, Any]) -> list:
         connectors.append(TasksConnector(client))
     except (TasksClientError, FileNotFoundError) as exc:
         logger.warning("Tasks connector disabled: %s", exc)
+
+    # Salesforce
+    try:
+        sf_cfg = config.get("salesforce", {}) or {}
+        if not sf_cfg.get("instance_url"):
+            raise SalesforceClientError("salesforce.instance_url not configured")
+        client = SalesforceClient(config=sf_cfg)
+        client.check_connection()
+        logger.info("Salesforce connector ready for %s", sf_cfg.get("instance_url"))
+        connector = SalesforceConnector(client)
+        connectors.append(connector)
+    except (SalesforceClientError, FileNotFoundError) as exc:
+        logger.warning("Salesforce connector disabled: %s", exc)
 
     # Telegram
     try:

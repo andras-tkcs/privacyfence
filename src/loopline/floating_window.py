@@ -21,6 +21,7 @@ import html
 import html.parser
 import logging
 import os
+import sys
 import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Any, Callable, Optional
@@ -122,6 +123,13 @@ def _html_to_text(body: str) -> str:
 
 
 # ── Small reusable widgets ────────────────────────────────────────────────────
+
+def _scroll_units(event: tk.Event) -> int:
+    """Return scroll units from a MouseWheel event (cross-platform)."""
+    if sys.platform == "darwin":
+        return -1 * event.delta
+    return int(-1 * (event.delta / 120))
+
 
 def _hairline(parent: tk.Widget, bg: str = CARD_BG, **kw: Any) -> tk.Frame:
     return tk.Frame(parent, bg=BORDER, height=1, **kw)
@@ -419,8 +427,34 @@ class GenericCard(_BaseCard):
             )
             params_bg.pack(fill="x")
 
-            inner = tk.Frame(params_bg, bg=BG)
-            inner.pack(fill="x", padx=10, pady=8)
+            scroll_area = tk.Frame(params_bg, bg=BG)
+            scroll_area.pack(fill="x")
+
+            body_canvas = tk.Canvas(scroll_area, bg=BG, highlightthickness=0)
+            vsb = ttk.Scrollbar(scroll_area, orient="vertical", command=body_canvas.yview)
+            body_canvas.configure(yscrollcommand=vsb.set)
+
+            inner = tk.Frame(body_canvas, bg=BG)
+            win_id = body_canvas.create_window((0, 0), window=inner, anchor="nw")
+
+            def _on_inner_configure(e: tk.Event, c: tk.Canvas = body_canvas) -> None:
+                c.configure(scrollregion=c.bbox("all"))
+                needed = inner.winfo_reqheight()
+                cap = min(needed, 300)
+                c.configure(height=cap)
+                if needed > 300:
+                    vsb.pack(side="right", fill="y")
+                else:
+                    vsb.pack_forget()
+
+            def _on_canvas_configure(e: tk.Event, c: tk.Canvas = body_canvas) -> None:
+                c.itemconfig(win_id, width=e.width)
+
+            inner.bind("<Configure>", _on_inner_configure)
+            body_canvas.bind("<Configure>", _on_canvas_configure)
+            body_canvas.bind("<MouseWheel>",
+                             lambda e, c=body_canvas: c.yview_scroll(_scroll_units(e), "units"))
+            body_canvas.pack(side="left", fill="x", expand=True, padx=10, pady=8)
 
             for key, val in rows:
                 row = tk.Frame(inner, bg=BG)
@@ -700,7 +734,7 @@ class _RulesEditorWindow:
         canvas.bind("<Configure>",
                     lambda e: canvas.itemconfig(win_id, width=e.width))
         canvas.bind_all("<MouseWheel>",
-                        lambda e: canvas.yview_scroll(int(-1 * e.delta / 120), "units"))
+                        lambda e: canvas.yview_scroll(_scroll_units(e), "units"))
 
         for op_key, op_label, rules in operations:
             self._build_operation_section(inner, op_key, op_label, rules)
@@ -1062,7 +1096,7 @@ class GuardFloatingWindow:
         )
         canvas.bind_all(
             "<MouseWheel>",
-            lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"),
+            lambda e: canvas.yview_scroll(_scroll_units(e), "units"),
         )
         self._canvas = canvas
 
