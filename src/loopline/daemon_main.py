@@ -24,11 +24,14 @@ from typing import Any
 import yaml
 
 from .paths import data_dir, is_bundled
+from .connectors.calendar import CalendarConnector
 from .connectors.contacts import ContactsConnector
 from .connectors.drive import DriveConnector
 from .connectors.gmail import GmailConnector
 from .connectors.slack import SlackConnector
+from .connectors.tasks import TasksConnector
 from .connectors.telegram import TelegramConnector
+from .calendar_client import CalendarClient, CalendarClientError
 from .contacts_client import ContactsClient, ContactsClientError
 from .drive_client import DriveClient, DriveClientError
 from .floating_window import GuardFloatingWindow
@@ -36,6 +39,7 @@ from .gmail_client import GmailClient, GmailClientError
 from .ipc_server import IPCServer
 from .privacy_filter import DrivePrivacyFilter, PrivacyFilter, SlackPrivacyFilter
 from .slack_client import SlackClient, SlackClientError
+from .tasks_client import TasksClient, TasksClientError
 from .telegram_client import TelegramClientError, TelegramLooplineClient
 
 logger = logging.getLogger("loopline.daemon")
@@ -189,6 +193,34 @@ def _build_connectors(config: dict[str, Any]) -> list:
     except (ContactsClientError, FileNotFoundError) as exc:
         logger.warning("Contacts connector disabled: %s", exc)
 
+    # Calendar
+    try:
+        calendar_cfg = config.get("calendar", {}) or {}
+        client = CalendarClient(
+            credentials_file=_resolve_path(calendar_cfg.get("credentials_file", "credentials/client_secret.json")),
+            token_file=_resolve_path(calendar_cfg.get("token_file", "credentials/calendar_token.json")),
+        )
+        email = client.check_connection()
+        logger.info("Calendar connector ready for %s", email)
+        connector = CalendarConnector(client)
+        connector.my_email = email
+        connectors.append(connector)
+    except (CalendarClientError, FileNotFoundError) as exc:
+        logger.warning("Calendar connector disabled: %s", exc)
+
+    # Tasks
+    try:
+        tasks_cfg = config.get("tasks", {}) or {}
+        client = TasksClient(
+            credentials_file=_resolve_path(tasks_cfg.get("credentials_file", "credentials/client_secret.json")),
+            token_file=_resolve_path(tasks_cfg.get("token_file", "credentials/tasks_token.json")),
+        )
+        email = client.check_connection()
+        logger.info("Tasks connector ready for %s", email)
+        connectors.append(TasksConnector(client))
+    except (TasksClientError, FileNotFoundError) as exc:
+        logger.warning("Tasks connector disabled: %s", exc)
+
     # Telegram
     try:
         tg_cfg = config.get("telegram", {}) or {}
@@ -292,6 +324,38 @@ def run_contacts_oauth(config: dict[str, Any]) -> int:
     return 0
 
 
+def run_calendar_oauth(config: dict[str, Any]) -> int:
+    calendar_cfg = config.get("calendar", {}) or {}
+    client = CalendarClient(
+        credentials_file=_resolve_path(calendar_cfg.get("credentials_file", "credentials/client_secret.json")),
+        token_file=_resolve_path(calendar_cfg.get("token_file", "credentials/calendar_token.json")),
+    )
+    try:
+        client.authorize_interactive()
+        email = client.check_connection()
+    except CalendarClientError as exc:
+        print(f"Calendar OAuth setup failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"Calendar OAuth complete. Authorized as: {email}")
+    return 0
+
+
+def run_tasks_oauth(config: dict[str, Any]) -> int:
+    tasks_cfg = config.get("tasks", {}) or {}
+    client = TasksClient(
+        credentials_file=_resolve_path(tasks_cfg.get("credentials_file", "credentials/client_secret.json")),
+        token_file=_resolve_path(tasks_cfg.get("token_file", "credentials/tasks_token.json")),
+    )
+    try:
+        client.authorize_interactive()
+        email = client.check_connection()
+    except TasksClientError as exc:
+        print(f"Tasks OAuth setup failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"Tasks OAuth complete. Authorized as: {email}")
+    return 0
+
+
 def run_telegram_setup(config: dict[str, Any]) -> int:
     """Interactive Telegram phone+code authorization."""
     tg_cfg = config.get("telegram", {}) or {}
@@ -363,6 +427,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--gmail-oauth", action="store_true", help="Run Gmail OAuth setup and exit.")
     parser.add_argument("--drive-oauth", action="store_true", help="Run Drive OAuth setup and exit.")
     parser.add_argument("--contacts-oauth", action="store_true", help="Run Contacts OAuth setup and exit.")
+    parser.add_argument("--calendar-oauth", action="store_true", help="Run Calendar OAuth setup and exit.")
+    parser.add_argument("--tasks-oauth", action="store_true", help="Run Tasks OAuth setup and exit.")
     parser.add_argument("--telegram-setup", action="store_true", help="Run Telegram interactive auth and exit.")
     return parser.parse_args(argv)
 
@@ -371,7 +437,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
     # First-run: launch setup wizard instead of the normal app.
-    oauth_flag = args.gmail_oauth or args.drive_oauth or args.contacts_oauth or args.telegram_setup
+    oauth_flag = args.gmail_oauth or args.drive_oauth or args.contacts_oauth or args.calendar_oauth or args.tasks_oauth or args.telegram_setup
     if is_bundled() and not oauth_flag and not os.path.exists(SETUP_SENTINEL):
         from .setup_wizard import run_setup_wizard
         run_setup_wizard()
@@ -392,6 +458,10 @@ def main(argv: list[str] | None = None) -> int:
             return run_drive_oauth(config)
         if args.contacts_oauth:
             return run_contacts_oauth(config)
+        if args.calendar_oauth:
+            return run_calendar_oauth(config)
+        if args.tasks_oauth:
+            return run_tasks_oauth(config)
         if args.telegram_setup:
             return run_telegram_setup(config)
         return run_app(config)
