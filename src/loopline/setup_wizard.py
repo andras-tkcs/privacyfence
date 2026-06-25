@@ -1037,6 +1037,41 @@ class SetupWizard:
             fg=SUBTEXT, size=11,
         ).pack(anchor="w")
 
+        self._label(
+            "Auto-approve permissions (Claude Code)",
+            fg=TEXT, size=13, bold=True,
+        ).pack(anchor="w", pady=(20, 4))
+        self._label(
+            "To skip permission prompts for all Loopline tools, add this to "
+            "~/.claude/settings.json:",
+            fg=TEXT, size=13,
+        ).pack(anchor="w", pady=(0, 8))
+
+        perm_snippet = json.dumps(
+            {"permissions": {"allow": ["mcp__loopline__*"]}}, indent=2
+        )
+        perm_box = tk.Text(self._body, bg=SURFACE, fg=TEXT,
+                           font=("Courier", 11), relief="flat",
+                           height=5, wrap="none")
+        perm_box.insert("1.0", perm_snippet)
+        perm_box.config(state="disabled")
+        perm_box.pack(fill="x", pady=(0, 10))
+
+        perm_copy_btn = tk.Button(
+            self._body, text="Copy to Clipboard",
+            command=lambda: (self.root.clipboard_clear(),
+                             self.root.clipboard_append(perm_snippet),
+                             perm_copy_btn.config(text="Copied ✓", fg=GREEN)),
+            bg=SURFACE, fg=TEXT, relief="flat", padx=14, pady=5,
+            cursor="hand2", activebackground="#45475a", activeforeground=TEXT,
+        )
+        perm_copy_btn.pack(anchor="w", pady=(0, 4))
+
+        self._label(
+            "Settings file location:\n~/.claude/settings.json",
+            fg=SUBTEXT, size=11,
+        ).pack(anchor="w")
+
     # ── finish ────────────────────────────────────────────────────────────────
 
     def _on_close(self) -> None:
