@@ -42,7 +42,7 @@ Claude ──MCP stdio──▶ loopline-bridge ──Unix socket──▶ loopl
 |-----------|-------|-------|
 | **Gmail** | `gmail_list_messages`, `gmail_list_threads`, `gmail_get_message`, `gmail_get_thread`, `gmail_list_message_attachments`, `gmail_create_draft`, `gmail_add_label`, `gmail_remove_label` | OAuth2. List/search and label operations are auto-approved; reading bodies and threads requires approval. |
 | **Google Drive** | `drive_list_files`, `drive_get_file_metadata`, `drive_get_file_content`, `drive_write_file_content`, `drive_create_file`, `drive_move_file`, `drive_add_comment`, `drive_list_folder` | OAuth2. Listing and metadata are auto-approved; content reads and writes are gated. |
-| **Slack** | `slack_list_channels`, `slack_get_channel_history`, `slack_get_thread_replies`, `slack_search_messages`, `slack_send_message` | Bot token. Channel listing is auto-approved; reading messages and sending require approval. |
+| **Slack** | `slack_list_channels`, `slack_get_channel_history`, `slack_get_thread_replies`, `slack_search_messages`, `slack_send_message` | Bot token + user token. Channel listing is auto-approved; reading messages and sending require approval. `search_messages` and `send_message` require a user token (`xoxp-`). |
 | **Google Contacts** | `contacts_list`, `contacts_search`, `contacts_get`, `contacts_update` | OAuth2. Read tools are auto-approved; writes are gated. |
 | **Google Calendar** | `calendar_list_calendars`, `calendar_list_events`, `calendar_get_free_busy`, `calendar_get_event_details`, `calendar_create_event`, `calendar_update_event` | OAuth2. List and free/busy are auto-approved; event details and mutations are gated. |
 | **Telegram** | `telegram_list_chats`, `telegram_get_messages`, `telegram_search_messages` | Telethon (MTProto). Read-only; all tools are auto-approved. |
@@ -163,6 +163,9 @@ Every decision — approved, rejected, or auto-accepted — is appended to a JSO
 > **Google Cloud setup required for Google connectors (Gmail, Drive, Calendar, Contacts).**  
 > See [docs/google-cloud-setup.md](docs/google-cloud-setup.md) for step-by-step instructions on creating a project, enabling APIs, and generating the `client_secret.json` file needed below.
 
+> **Slack requires two tokens** (a bot token and a user token) because `search:read` and `chat:write` are user-only scopes.  
+> See [docs/slack-setup.md](docs/slack-setup.md) for step-by-step instructions on creating a Slack app and obtaining both tokens.
+
 ### From the DMG (recommended)
 
 1. Download the latest `Loopline.dmg` from the [Releases](../../releases) page.
@@ -170,7 +173,7 @@ Every decision — approved, rejected, or auto-accepted — is appended to a JSO
 3. Launch **Loopline.app** — the setup wizard opens automatically on first run and walks you through:
    - Importing your Google OAuth `client_secret.json`
    - Authorizing Gmail, Drive, Calendar, and Contacts
-   - Entering your Slack bot token (optional)
+   - Entering your Slack bot and user tokens (optional; see [docs/slack-setup.md](docs/slack-setup.md))
    - Installing the LaunchAgent so Loopline starts at login
    - Copying the MCP config snippet for Claude
 

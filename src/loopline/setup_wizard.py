@@ -137,6 +137,7 @@ def _write_plist() -> None:
 
 def _write_settings(
     slack_token: str,
+    slack_user_token: str = "",
     tg_api_id: str = "",
     tg_api_hash: str = "",
     sf_instance_url: str = "",
@@ -163,6 +164,8 @@ def _write_settings(
 
     if slack_token.strip():
         cfg.setdefault("slack", {})["bot_token"] = slack_token.strip()
+    if slack_user_token.strip():
+        cfg.setdefault("slack", {})["user_token"] = slack_user_token.strip()
 
     if tg_api_id.strip() and tg_api_hash.strip():
         tg = cfg.setdefault("telegram", {})
@@ -281,6 +284,7 @@ class SetupWizard:
 
         self._page_idx = 0
         self._slack_token = tk.StringVar()
+        self._slack_user_token = tk.StringVar()
         self._oauth_states: dict[str, str] = {}  # service → "idle"|"running"|"ok"|"error: ..."
         self._google_services = ["gmail", "drive", "calendar", "contacts", "tasks"]
         # Telegram state
@@ -518,20 +522,31 @@ class SetupWizard:
     def _page_slack(self) -> None:
         self._header.config(text="Slack (Optional)")
         self._label(
-            "If you want Claude to read and send Slack messages, paste your "
-            "Slack Bot User OAuth Token below. Leave blank to skip.",
+            "Slack requires two separate tokens because some scopes are only "
+            "available to user tokens. Leave both blank to skip.",
             fg=SUBTEXT,
-        ).pack(anchor="w", pady=(0, 16))
+        ).pack(anchor="w", pady=(0, 12))
 
-        self._label("Required scopes: channels:read, groups:read, channels:history,\n"
-                    "groups:history, users:read, users:read.email, search:read, chat:write",
-                    fg=SUBTEXT, size=11).pack(anchor="w", pady=(0, 12))
+        tk.Label(self._body, text="Bot token (xoxb-…)", bg=BG, fg=TEXT,
+                 font=("Helvetica Neue", 12), anchor="w").pack(anchor="w", pady=(4, 0))
+        self._label("Scopes: channels:read, groups:read, channels:history,\n"
+                    "groups:history, users:read, users:read.email",
+                    fg=SUBTEXT, size=11).pack(anchor="w")
+        bot_entry = tk.Entry(self._body, textvariable=self._slack_token,
+                             bg=SURFACE, fg=TEXT, insertbackground=TEXT,
+                             relief="flat", font=("Courier", 12), width=52)
+        bot_entry.pack(anchor="w", ipady=6)
+        bot_entry.insert(0, self._slack_token.get() or "xoxb-")
 
-        entry = tk.Entry(self._body, textvariable=self._slack_token,
-                         bg=SURFACE, fg=TEXT, insertbackground=TEXT,
-                         relief="flat", font=("Courier", 12), width=48)
-        entry.pack(anchor="w", ipady=6)
-        entry.insert(0, self._slack_token.get() or "xoxb-")
+        tk.Label(self._body, text="User token (xoxp-…)", bg=BG, fg=TEXT,
+                 font=("Helvetica Neue", 12), anchor="w").pack(anchor="w", pady=(12, 0))
+        self._label("Scopes: search:read, chat:write  (user-only scopes)",
+                    fg=SUBTEXT, size=11).pack(anchor="w")
+        user_entry = tk.Entry(self._body, textvariable=self._slack_user_token,
+                              bg=SURFACE, fg=TEXT, insertbackground=TEXT,
+                              relief="flat", font=("Courier", 12), width=52)
+        user_entry.pack(anchor="w", ipady=6)
+        user_entry.insert(0, self._slack_user_token.get() or "xoxp-")
 
     def _page_telegram(self) -> None:
         self._header.config(text="Telegram (Optional)")
@@ -799,6 +814,7 @@ class SetupWizard:
         try:
             _write_settings(
                 self._slack_token.get(),
+                slack_user_token=self._slack_user_token.get(),
                 tg_api_id=self._tg_api_id.get(),
                 tg_api_hash=self._tg_api_hash.get(),
                 sf_instance_url=self._sf_instance_url.get(),
