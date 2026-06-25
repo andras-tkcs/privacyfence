@@ -287,9 +287,10 @@ class EmailCard(_BaseCard):
         vsb.pack(side="right", fill="y")
         txt.pack(side="left", fill="both", expand=True)
 
-        plain = _html_to_text(hint.get("html_body", ""))
+        raw_body = hint.get("html_body", "")
+        plain = _html_to_text(raw_body)
         txt.configure(state="normal")
-        txt.insert("1.0", plain or "(no body)")
+        txt.insert("1.0", plain or raw_body or "(no body)")
         txt.configure(state="disabled")
 
     @staticmethod
@@ -357,7 +358,8 @@ class ThreadCard(_BaseCard):
             if n_att:
                 EmailCard._meta_row(inner, "Attachments", f"{n_att} file(s)")
 
-            plain = _html_to_text(msg.get("html_body", ""))
+            raw_body = msg.get("html_body", "")
+            plain = _html_to_text(raw_body) or raw_body
             if plain:
                 preview = plain[:200].replace("\n", " ")
                 if len(plain) > 200:

@@ -84,6 +84,7 @@ class GmailClient:
         self._credentials_file = credentials_file
         self._token_file = token_file
         self._service = None  # lazily built googleapiclient resource
+        self._current_message_id: str = ""
 
     # ------------------------------------------------------------------ #
     # Authentication
@@ -416,6 +417,7 @@ class GmailClient:
         recipients = self._split_addresses(headers.get("to", ""))
         attachments: list[Attachment] = []
         body = _Body()
+        self._current_message_id = raw.get("id", "")
         self._walk_parts(raw.get("payload", {}), body, attachments)
 
         return GmailMessage(
@@ -449,6 +451,21 @@ class GmailClient:
             )
 
         data = part_body.get("data")
+        attachment_id = part_body.get("attachmentId")
+        if not data and attachment_id and not filename:
+            # Large body parts are stored as attachments; fetch inline.
+            try:
+                att = (
+                    self._get_service()
+                    .users()
+                    .messages()
+                    .attachments()
+                    .get(userId="me", messageId=self._current_message_id, id=attachment_id)
+                    .execute()
+                )
+                data = att.get("data")
+            except Exception:  # noqa: BLE001
+                pass
         if data and not filename:
             decoded = self._decode_body(data)
             if mime_type == "text/plain":
