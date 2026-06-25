@@ -59,9 +59,12 @@ ORANGE_TINT = "#FFF4E5"
 
 # Tool icon tints keyed by hint type
 _ICON_COLORS: dict[str, tuple[str, str]] = {
-    "email":   ("#EAF2FF", ACCENT),
-    "thread":  ("#EDFAF2", GREEN),
-    "generic": (ORANGE_TINT, ORANGE),
+    "email":        ("#EAF2FF", ACCENT),
+    "thread":       ("#EDFAF2", GREEN),
+    "slack_read":   ("#F3EDFF", "#5E35B1"),
+    "slack_send":   ("#F3EDFF", "#5E35B1"),
+    "slack_search": ("#F3EDFF", "#5E35B1"),
+    "generic":      (ORANGE_TINT, ORANGE),
 }
 
 
@@ -380,6 +383,73 @@ class ThreadCard(_BaseCard):
                 ).pack(anchor="w", pady=(6, 0))
 
 
+# ── Slack card ────────────────────────────────────────────────────────────────
+
+class SlackCard(_BaseCard):
+    _hint_type = "slack_read"  # overridden per instance below
+
+    def __init__(self, parent, review, on_approve, on_reject, **kw):
+        self._hint_type = review.display_hint.get("type", "slack_read")
+        super().__init__(parent, review, on_approve, on_reject, **kw)
+
+    def _icon_char(self) -> str:
+        return "💬"
+
+    def _subtitle(self) -> str:
+        return self._review.summary
+
+    def _build_body(self) -> None:
+        hint = self._review.display_hint
+        hint_type = hint.get("type", "")
+        outer = tk.Frame(self, bg=CARD_BG)
+        outer.pack(fill="both", expand=True, padx=14, pady=10)
+
+        channel_id = hint.get("channel_id", "")
+
+        if hint_type == "slack_send":
+            EmailCard._meta_row(outer, "To", channel_id)
+            in_thread = hint.get("in_thread", False)
+            if in_thread:
+                EmailCard._meta_row(outer, "Reply in", "existing thread")
+            _hairline(outer).pack(fill="x", pady=8)
+            text = hint.get("text", "")
+            txt = tk.Text(
+                outer,
+                bg=CARD_BG, fg=TEXT,
+                font=("SF Pro Text", 11),
+                relief="flat", bd=0,
+                wrap="word",
+                state="disabled",
+                height=5,
+                cursor="arrow",
+            )
+            txt.pack(fill="both", expand=True)
+            txt.configure(state="normal")
+            txt.insert("1.0", text)
+            txt.configure(state="disabled")
+
+        elif hint_type == "slack_search":
+            EmailCard._meta_row(outer, "Query", f"\"{hint.get('query', '')}\"")
+            EmailCard._meta_row(outer, "Results", str(hint.get("result_count", 0)))
+
+        else:  # slack_read (channel history or thread)
+            EmailCard._meta_row(outer, "Channel", channel_id)
+            thread_ts = hint.get("thread_ts")
+            if thread_ts:
+                EmailCard._meta_row(outer, "Thread", thread_ts)
+            n = hint.get("message_count", 0)
+            EmailCard._meta_row(outer, "Messages", str(n))
+            preview = hint.get("preview", "")
+            if preview:
+                _hairline(outer).pack(fill="x", pady=8)
+                tk.Label(
+                    outer, text=preview,
+                    font=("SF Pro Text", 11),
+                    bg=CARD_BG, fg=MUTED,
+                    anchor="w", wraplength=560, justify="left",
+                ).pack(anchor="w")
+
+
 # ── Generic card (fallback) ───────────────────────────────────────────────────
 
 def _flatten_params(data: Any, prefix: str = "") -> list[tuple[str, str]]:
@@ -499,6 +569,8 @@ def _make_card(
         return EmailCard(parent, review, on_approve, on_reject)
     if hint_type == "thread":
         return ThreadCard(parent, review, on_approve, on_reject)
+    if hint_type in ("slack_read", "slack_send", "slack_search"):
+        return SlackCard(parent, review, on_approve, on_reject)
     return GenericCard(parent, review, on_approve, on_reject)
 
 

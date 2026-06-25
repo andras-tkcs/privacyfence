@@ -119,14 +119,25 @@ class SlackConnector(Connector):
     async def _get_channel_history(self, channel_id: str, limit: int = 50) -> Any:
         messages = await self._fetch(self._slack.get_channel_history, channel_id, limit)
         filtered = self._filter.filter_messages(messages)
+        n = len(messages)
+        preview = ""
+        if messages:
+            first = messages[0]
+            preview = (first.get("text") or "")[:160]
         return await gated_call(
             connector=self.name,
             tool="slack_get_channel_history",
             tool_name="Read Slack Channel",
-            summary=f"Channel history: {channel_id} (limit {limit})",
-            sender=f"{len(messages)} message(s)",
+            summary=f"{n} message{'s' if n != 1 else ''} from {channel_id}",
+            sender=channel_id,
             raw_data=messages,
             filtered_data=filtered,
+            display_hint={
+                "type": "slack_read",
+                "channel_id": channel_id,
+                "message_count": n,
+                "preview": preview,
+            },
             my_email=self.my_email,
             args={"channel_id": channel_id},
         )
@@ -134,14 +145,26 @@ class SlackConnector(Connector):
     async def _get_thread_replies(self, channel_id: str, thread_ts: str) -> Any:
         messages = await self._fetch(self._slack.get_thread_replies, channel_id, thread_ts)
         filtered = self._filter.filter_thread(messages)
+        n = len(messages)
+        preview = ""
+        if messages:
+            first = messages[0]
+            preview = (first.get("text") or "")[:160]
         return await gated_call(
             connector=self.name,
             tool="slack_get_thread_replies",
             tool_name="Read Slack Thread",
-            summary=f"Thread replies: {channel_id}/{thread_ts}",
-            sender=f"{len(messages)} message(s)",
+            summary=f"{n} repl{'ies' if n != 1 else 'y'} in {channel_id}",
+            sender=channel_id,
             raw_data=messages,
             filtered_data=filtered,
+            display_hint={
+                "type": "slack_read",
+                "channel_id": channel_id,
+                "thread_ts": thread_ts,
+                "message_count": n,
+                "preview": preview,
+            },
             my_email=self.my_email,
             args={"channel_id": channel_id, "thread_ts": thread_ts},
         )
@@ -149,27 +172,40 @@ class SlackConnector(Connector):
     async def _search_messages(self, query: str, count: int = 20) -> Any:
         messages = await self._fetch(self._slack.search_messages, query, count)
         filtered = self._filter.filter_messages(messages)
+        n = len(messages)
         return await gated_call(
             connector=self.name,
             tool="slack_search_messages",
-            tool_name="Search Slack Messages",
-            summary=f"Search messages: query={query!r} (count {count})",
-            sender=f"{len(messages)} match(es)",
+            tool_name="Search Slack",
+            summary=f"{n} result{'s' if n != 1 else ''} for \"{query}\"",
+            sender=query,
             raw_data=messages,
             filtered_data=filtered,
+            display_hint={
+                "type": "slack_search",
+                "query": query,
+                "result_count": n,
+            },
             my_email=self.my_email,
             args={"query": query},
         )
 
     async def _send_message(self, channel_id: str, text: str, thread_ts: str = "") -> Any:
+        in_thread = bool(thread_ts)
         return await gated_call(
             connector=self.name,
             tool="slack_send_message",
             tool_name="Send Slack Message",
-            summary=f"Send to {channel_id}: {text[:80]}",
-            sender=f"channel={channel_id}",
+            summary=f"To {channel_id}: {text[:80]}{'…' if len(text) > 80 else ''}",
+            sender=channel_id,
             raw_data={"channel_id": channel_id, "text": text, "thread_ts": thread_ts},
             filtered_data={"channel_id": channel_id, "text": text, "thread_ts": thread_ts},
+            display_hint={
+                "type": "slack_send",
+                "channel_id": channel_id,
+                "text": text,
+                "in_thread": in_thread,
+            },
             my_email=self.my_email,
             args={"channel_id": channel_id, "thread_ts": thread_ts},
         )
