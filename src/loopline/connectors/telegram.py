@@ -10,9 +10,11 @@ methods directly on the IPC event loop (no asyncio.to_thread needed).
 from __future__ import annotations
 
 import logging
+import time
+from datetime import datetime, timezone
 from typing import Any
 
-from .. import audit_log
+from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
 from ..telegram_client import TelegramClientError, TelegramLooplineClient
 
@@ -124,10 +126,19 @@ class TelegramConnector(Connector):
     # ------------------------------------------------------------------ #
 
     def _log_always_allowed(self, tool: str, args: dict[str, Any]) -> None:
-        audit_log.log_call(
-            connector=self.name,
-            tool=tool,
-            args=args,
-            decision="auto_accepted",
-            auto_accept_rule="always_allowed",
-        )
+        try:
+            get_audit_logger().record(AuditEntry(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                week=current_week(),
+                request_id="",
+                connector=self.name,
+                tool=tool,
+                tool_name=tool,
+                summary=str(args),
+                sender="",
+                decision="auto_accepted",
+                auto_accept_rule="always_allowed",
+                latency_seconds=0.0,
+            ))
+        except Exception as exc:
+            logger.warning("Audit log write failed: %s", exc)
