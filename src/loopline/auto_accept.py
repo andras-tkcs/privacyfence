@@ -24,6 +24,7 @@ TOOL_TO_OPERATION: dict[str, str] = {
     "calendar_update_event":      "calendar.create_modify_event",
     "salesforce_get_record":      "salesforce.read_record",
     "salesforce_run_report":      "salesforce.run_report",
+    "contacts_update":            "contacts.edit",
 }
 
 @dataclass
