@@ -160,6 +160,9 @@ Every decision — approved, rejected, or auto-accepted — is appended to a JSO
 
 ## Installation
 
+> **Google Cloud setup required for Google connectors (Gmail, Drive, Calendar, Contacts).**  
+> See [docs/google-cloud-setup.md](docs/google-cloud-setup.md) for step-by-step instructions on creating a project, enabling APIs, and generating the `client_secret.json` file needed below.
+
 ### From the DMG (recommended)
 
 1. Download the latest `Loopline.dmg` from the [Releases](../../releases) page.

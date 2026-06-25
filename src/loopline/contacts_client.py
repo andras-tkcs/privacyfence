@@ -151,20 +151,24 @@ class ContactsClient:
     # ------------------------------------------------------------------ #
 
     def check_connection(self) -> str:
-        """Verify credentials work. Returns the authorized email address."""
+        """Verify credentials work. Returns a confirmation string."""
         try:
             result = (
                 self._get_service()
                 .people()
-                .get(resourceName="people/me", personFields="emailAddresses")
+                .connections()
+                .list(
+                    resourceName="people/me",
+                    pageSize=1,
+                    personFields="names",
+                )
                 .execute()
             )
         except HttpError as exc:
             raise ContactsClientError(f"Contacts connection check failed: {exc}") from exc
-        emails = result.get("emailAddresses", [])
-        email = emails[0].get("value", "unknown") if emails else "unknown"
-        logger.info("Connected to Contacts as %s", email)
-        return email
+        total = result.get("totalPeople", result.get("totalItems", "?"))
+        logger.info("Connected to Contacts (total contacts: %s)", total)
+        return f"contacts-api (found {total} contact(s))"
 
     # ------------------------------------------------------------------ #
     # Read operations
