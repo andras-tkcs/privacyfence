@@ -467,19 +467,139 @@ def _make_card(
 
 
 # ── Auto-accept rules editor ──────────────────────────────────────────────────
+#
+# Rule metadata: maps rule_name → (display_label, value_kind)
+#   value_kind: None = boolean toggle, "list" = comma-sep string, "int" = integer
+#
+_RULE_META: dict[str, tuple[str, Any]] = {
+    # Gmail
+    "i_am_sender":            ("I am the sender",                    None),
+    "i_am_sole_recipient":    ("I am the sole recipient",            None),
+    "trusted_sender_domain":  ("Trusted domains",                    "list"),
+    "label_match":            ("Gmail labels match",                 "list"),
+    "age_threshold_days":     ("Email is older than N days",         "int"),
+    "no_attachments":         ("Email has no attachments",           None),
+    # Drive
+    "i_am_owner":             ("I am the file owner",                None),
+    "created_by_me":          ("File was created by me",             None),
+    "approved_folder":        ("File is in approved folder IDs",     "list"),
+    "approved_sandbox_folder":("File is in sandbox folder IDs",      "list"),
+    "move_within_approved_folders": ("Move within approved folder IDs", "list"),
+    "file_type_allowlist":    ("Allowed MIME types",                 "list"),
+    "created_this_session":   ("File was created this session",      None),
+    "shared_drive_exclusion": ("Skip shared drive files",            None),
+    # Slack
+    "dm_with_myself":         ("Channel is my DM with myself",       None),
+    "send_to_myself":         ("Sending to my own DM",               None),
+    "approved_channel":       ("Approved channel IDs",               "list"),
+    "approved_recipient":     ("Approved recipient channel/user IDs","list"),
+    "public_channels_only":   ("Public channels only",               None),
+    "no_file_attachments":    ("Messages have no file attachments",  None),
+    "reply_in_existing_thread":("Replying in an existing thread",    None),
+    # Calendar
+    "i_am_organizer":         ("I am the event organizer",           None),
+    "no_external_attendees":  ("No external attendees",              None),
+    "personal_calendar":      ("Approved calendar IDs",              "list"),
+    "past_event":             ("Event is in the past",               None),
+    "time_window_days":       ("Event starts within N days",         "int"),
+    "no_conferencing_link":   ("Event has no conferencing link",     None),
+    # Salesforce
+    "approved_object_types":  ("Approved object types",              "list"),
+    "approved_report_ids":    ("Approved report IDs",                "list"),
+}
+
+# Connector → list of (operation_key, display_name, [rule_names])
+_CONNECTOR_OPERATIONS: list[tuple[str, str, list[tuple[str, str, list[str]]]]] = [
+    ("Gmail", "✉", [
+        ("gmail.read_message", "Read Message", [
+            "i_am_sender", "i_am_sole_recipient", "trusted_sender_domain",
+            "label_match", "age_threshold_days", "no_attachments",
+        ]),
+        ("gmail.read_thread", "Read Thread", [
+            "i_am_sender", "i_am_sole_recipient", "trusted_sender_domain",
+            "label_match", "age_threshold_days", "no_attachments",
+        ]),
+    ]),
+    ("Drive", "🗂", [
+        ("drive.read_file_contents", "Read File", [
+            "i_am_owner", "file_type_allowlist", "created_this_session", "shared_drive_exclusion",
+        ]),
+        ("drive.write_file", "Write File", [
+            "i_am_owner", "approved_folder", "approved_sandbox_folder",
+            "file_type_allowlist", "created_this_session",
+        ]),
+        ("drive.move_file", "Move File", [
+            "move_within_approved_folders",
+        ]),
+        ("drive.comment_file", "Comment on File", [
+            "created_by_me", "created_this_session",
+        ]),
+    ]),
+    ("Slack", "💬", [
+        ("slack.read_messages", "Read Messages", [
+            "dm_with_myself", "approved_channel", "public_channels_only", "no_file_attachments",
+        ]),
+        ("slack.send_message", "Send Message", [
+            "send_to_myself", "approved_recipient", "reply_in_existing_thread",
+        ]),
+    ]),
+    ("Calendar", "📅", [
+        ("calendar.read_event_details", "Read Event", [
+            "i_am_organizer", "no_external_attendees", "personal_calendar", "past_event",
+        ]),
+        ("calendar.create_modify_event", "Create / Modify Event", [
+            "i_am_organizer", "no_external_attendees", "personal_calendar",
+            "time_window_days", "no_conferencing_link",
+        ]),
+    ]),
+    ("Salesforce", "☁", [
+        ("salesforce.read_record", "Read Record", [
+            "approved_object_types",
+        ]),
+        ("salesforce.run_report", "Run Report", [
+            "approved_report_ids",
+        ]),
+    ]),
+]
+
+# Hint text for value fields
+_VALUE_HINTS: dict[str, str] = {
+    "trusted_sender_domain":        "e.g. example.com, partner.org",
+    "label_match":                  "e.g. INBOX, IMPORTANT",
+    "age_threshold_days":           "e.g. 30",
+    "approved_folder":              "Google Drive folder IDs",
+    "approved_sandbox_folder":      "Google Drive folder IDs",
+    "move_within_approved_folders": "Google Drive folder IDs",
+    "file_type_allowlist":          "e.g. application/pdf, image/png",
+    "approved_channel":             "Slack channel IDs, e.g. C012AB3CD",
+    "approved_recipient":           "Slack channel or user IDs",
+    "personal_calendar":            "e.g. primary, or calendar ID",
+    "time_window_days":             "e.g. 14",
+    "approved_object_types":        "e.g. Account, Contact, Lead",
+    "approved_report_ids":          "Salesforce report IDs",
+}
+
 
 class _RulesEditorWindow:
-    """Toplevel window for editing auto_accept_rules in settings.yaml."""
+    """Structured GUI for editing auto_accept_rules — no YAML knowledge required.
+
+    Saves to settings.yaml and hot-reloads the live evaluator so changes take
+    effect immediately without a daemon restart.
+    """
 
     def __init__(self, parent: tk.Widget) -> None:
         self._win = tk.Toplevel(parent)
         self._win.title("Auto-Accept Rules")
         self._win.configure(bg=BG)
         self._win.resizable(True, True)
-        self._win.geometry("660x520")
+        self._win.geometry("740x620")
         self._win.grab_set()
 
         self._settings_path = self._resolve_settings_path()
+
+        # State: (operation_key, rule_name) → (BooleanVar, StringVar|None)
+        self._rule_vars: dict[tuple[str, str], tuple[tk.BooleanVar, Optional[tk.StringVar]]] = {}
+
         self._build()
         self._load()
 
@@ -488,65 +608,68 @@ class _RulesEditorWindow:
         from .paths import data_dir
         return str(data_dir() / "config" / "settings.yaml")
 
-    def _build(self) -> None:
-        hdr = tk.Label(
-            self._win,
-            text="Auto-Accept Rules",
-            font=("SF Pro Text", 14, "bold"),
-            bg=BG, fg=TEXT, anchor="w",
-            padx=16, pady=12,
-        )
-        hdr.pack(fill="x")
+    # ── Layout ────────────────────────────────────────────────────────────────
 
+    def _build(self) -> None:
+        win = self._win
+
+        # Header
+        hdr_frame = tk.Frame(win, bg=TITLEBAR_BG)
+        hdr_frame.pack(fill="x")
         tk.Label(
-            self._win,
-            text=(
-                "Edit the auto_accept_rules section of settings.yaml below.\n"
-                "Changes take effect the next time the daemon starts."
-            ),
+            hdr_frame, text="Auto-Accept Rules",
+            font=("SF Pro Text", 14, "bold"),
+            bg=TITLEBAR_BG, fg=TEXT, anchor="w",
+            padx=16, pady=12,
+        ).pack(side="left")
+        tk.Label(
+            hdr_frame,
+            text="Changes apply immediately — no restart needed",
+            font=("SF Pro Text", 11),
+            bg=TITLEBAR_BG, fg=MUTED, anchor="e",
+            padx=16,
+        ).pack(side="right")
+        _hairline(win, bg=TITLEBAR_BG).pack(fill="x")
+
+        # Notebook (one tab per connector)
+        style = ttk.Style()
+        style.configure("Rules.TNotebook", background=BG, borderwidth=0)
+        style.configure("Rules.TNotebook.Tab",
+                        font=("SF Pro Text", 11),
+                        padding=(14, 6))
+
+        nb = ttk.Notebook(win, style="Rules.TNotebook")
+        nb.pack(fill="both", expand=True, padx=0, pady=0)
+
+        for connector_name, icon, operations in _CONNECTOR_OPERATIONS:
+            tab = tk.Frame(nb, bg=BG)
+            nb.add(tab, text=f"{icon}  {connector_name}")
+            self._build_connector_tab(tab, operations)
+
+        # Footer
+        _hairline(win, bg=BG).pack(fill="x")
+        footer = tk.Frame(win, bg=BG)
+        footer.pack(fill="x", padx=16, pady=10)
+
+        self._status_lbl = tk.Label(
+            footer, text="",
             font=("SF Pro Text", 11),
             bg=BG, fg=MUTED, anchor="w",
-            padx=16, justify="left",
-        ).pack(fill="x")
-
-        _hairline(self._win, bg=BG).pack(fill="x", pady=(8, 0))
-
-        editor_frame = tk.Frame(self._win, bg=BG)
-        editor_frame.pack(fill="both", expand=True, padx=14, pady=10)
-
-        self._txt = tk.Text(
-            editor_frame,
-            bg=CARD_BG, fg=TEXT,
-            font=("SF Pro Mono", 11),
-            relief="flat",
-            highlightbackground=BORDER, highlightthickness=1,
-            wrap="none",
-            undo=True,
         )
-        vsb = ttk.Scrollbar(editor_frame, orient="vertical", command=self._txt.yview)
-        hsb = ttk.Scrollbar(editor_frame, orient="horizontal", command=self._txt.xview)
-        self._txt.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-        hsb.pack(side="bottom", fill="x")
-        vsb.pack(side="right", fill="y")
-        self._txt.pack(side="left", fill="both", expand=True)
-
-        _hairline(self._win, bg=BG).pack(fill="x")
-
-        btn_row = tk.Frame(self._win, bg=BG)
-        btn_row.pack(fill="x", padx=14, pady=10)
+        self._status_lbl.pack(side="left")
 
         tk.Button(
-            btn_row, text="Cancel",
+            footer, text="Cancel",
             font=("SF Pro Text", 12),
             bg=BG, fg=MUTED,
             activebackground=BG, activeforeground=TEXT,
             relief="flat", bd=0, padx=14, pady=6,
             cursor="hand2",
-            command=self._win.destroy,
+            command=win.destroy,
         ).pack(side="right", padx=(6, 0))
 
         tk.Button(
-            btn_row, text="Save",
+            footer, text="Save & Apply",
             font=("SF Pro Text", 12, "bold"),
             bg=ACCENT, fg="white",
             activebackground="#0066DD", activeforeground="white",
@@ -555,55 +678,232 @@ class _RulesEditorWindow:
             command=self._save,
         ).pack(side="right")
 
-        self._status = tk.Label(
-            btn_row, text="",
-            font=("SF Pro Text", 11),
-            bg=BG, fg=MUTED, anchor="w",
+    def _build_connector_tab(
+        self,
+        tab: tk.Frame,
+        operations: list[tuple[str, str, list[str]]],
+    ) -> None:
+        # Scrollable inner area
+        canvas = tk.Canvas(tab, bg=BG, highlightthickness=0)
+        vsb = ttk.Scrollbar(tab, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        inner = tk.Frame(canvas, bg=BG)
+        win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        inner.bind("<Configure>",
+                   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>",
+                    lambda e: canvas.itemconfig(win_id, width=e.width))
+        canvas.bind_all("<MouseWheel>",
+                        lambda e: canvas.yview_scroll(int(-1 * e.delta / 120), "units"))
+
+        for op_key, op_label, rules in operations:
+            self._build_operation_section(inner, op_key, op_label, rules)
+
+        # Bottom padding
+        tk.Frame(inner, bg=BG, height=16).pack(fill="x")
+
+    def _build_operation_section(
+        self,
+        parent: tk.Frame,
+        op_key: str,
+        op_label: str,
+        rule_names: list[str],
+    ) -> None:
+        # Section card
+        section = tk.Frame(
+            parent, bg=CARD_BG,
+            highlightbackground=BORDER, highlightthickness=1,
         )
-        self._status.pack(side="left")
+        section.pack(fill="x", padx=14, pady=(12, 0))
+
+        # Operation header
+        hdr = tk.Frame(section, bg=HEADER_BG)
+        hdr.pack(fill="x")
+        tk.Label(
+            hdr, text=op_label,
+            font=("SF Pro Text", 12, "bold"),
+            bg=HEADER_BG, fg=TEXT, anchor="w",
+            padx=14, pady=8,
+        ).pack(side="left")
+        tk.Label(
+            hdr, text=op_key,
+            font=("SF Pro Mono", 10),
+            bg=HEADER_BG, fg=HINT, anchor="e",
+            padx=14,
+        ).pack(side="right")
+        _hairline(section).pack(fill="x")
+
+        # Rule rows
+        body = tk.Frame(section, bg=CARD_BG)
+        body.pack(fill="x", padx=14, pady=8)
+
+        for i, rule_name in enumerate(rule_names):
+            label, value_kind = _RULE_META.get(rule_name, (rule_name, None))
+            self._build_rule_row(body, op_key, rule_name, label, value_kind, i)
+
+    def _build_rule_row(
+        self,
+        parent: tk.Frame,
+        op_key: str,
+        rule_name: str,
+        label: str,
+        value_kind: Any,
+        index: int,
+    ) -> None:
+        row_bg = CARD_BG if index % 2 == 0 else "#FAFAFA"
+        row = tk.Frame(parent, bg=row_bg)
+        row.pack(fill="x", pady=1)
+
+        enabled_var = tk.BooleanVar(value=False)
+        val_var: Optional[tk.StringVar] = tk.StringVar() if value_kind else None
+
+        cb = tk.Checkbutton(
+            row,
+            text=label,
+            variable=enabled_var,
+            font=("SF Pro Text", 11),
+            bg=row_bg, fg=TEXT,
+            activebackground=row_bg,
+            selectcolor=row_bg,
+            relief="flat", bd=0,
+            anchor="w",
+        )
+        cb.pack(side="left", padx=(4, 0), pady=4)
+
+        if value_kind and val_var is not None:
+            hint = _VALUE_HINTS.get(rule_name, "")
+            entry = tk.Entry(
+                row,
+                textvariable=val_var,
+                font=("SF Pro Text", 11),
+                bg=BG, fg=TEXT,
+                relief="flat",
+                highlightbackground=BORDER, highlightthickness=1,
+                width=32,
+            )
+            # Placeholder hint via focus bindings
+            if hint:
+                entry.insert(0, hint)
+                entry.config(fg=HINT)
+
+                def _on_focus_in(e, w=entry, h=hint, v=val_var):
+                    if w.get() == h:
+                        w.delete(0, "end")
+                        w.config(fg=TEXT)
+
+                def _on_focus_out(e, w=entry, h=hint, v=val_var):
+                    if not w.get():
+                        w.insert(0, h)
+                        w.config(fg=HINT)
+
+                entry.bind("<FocusIn>", _on_focus_in)
+                entry.bind("<FocusOut>", _on_focus_out)
+
+            entry.pack(side="left", padx=(10, 4), pady=4)
+
+        self._rule_vars[(op_key, rule_name)] = (enabled_var, val_var)
+
+    # ── Load ─────────────────────────────────────────────────────────────────
 
     def _load(self) -> None:
         try:
             import yaml
             path = self._settings_path
             if not os.path.exists(path):
-                self._txt.insert("1.0", "auto_accept_rules: {}\n")
                 return
             with open(path, encoding="utf-8") as fh:
                 cfg = yaml.safe_load(fh) or {}
-            rules = cfg.get("auto_accept_rules") or {}
-            snippet = yaml.dump({"auto_accept_rules": rules},
-                                allow_unicode=True, default_flow_style=False)
-            self._txt.insert("1.0", snippet)
+            rules: dict = cfg.get("auto_accept_rules") or {}
+            self._populate_vars(rules)
         except Exception as exc:  # noqa: BLE001
-            self._txt.insert("1.0", f"# Error loading settings: {exc}\n")
+            logger.warning("Rules editor load error: %s", exc)
+
+    def _populate_vars(self, rules: dict) -> None:
+        hint_set = set(_VALUE_HINTS.values())
+        for op_key, rule_list in rules.items():
+            if not isinstance(rule_list, list):
+                continue
+            for rule_cfg in rule_list:
+                rule_name = rule_cfg.get("rule", "")
+                value = rule_cfg.get("value")
+                key = (op_key, rule_name)
+                if key not in self._rule_vars:
+                    continue
+                enabled_var, val_var = self._rule_vars[key]
+                enabled_var.set(True)
+                if val_var is not None and value is not None:
+                    text = (
+                        ", ".join(str(v) for v in value)
+                        if isinstance(value, list) else str(value)
+                    )
+                    # Clear placeholder and set real value
+                    current = val_var.get()
+                    if current in hint_set:
+                        val_var.set("")
+                    val_var.set(text)
+
+    # ── Save & hot-reload ─────────────────────────────────────────────────────
 
     def _save(self) -> None:
         try:
             import yaml
-            text = self._txt.get("1.0", "end-1c")
-            parsed = yaml.safe_load(text) or {}
-            if not isinstance(parsed, dict) or "auto_accept_rules" not in parsed:
-                messagebox.showerror(
-                    "Invalid YAML",
-                    "The text must be valid YAML with an 'auto_accept_rules' key.",
-                    parent=self._win,
-                )
-                return
-            new_rules = parsed["auto_accept_rules"]
+            from .auto_accept import reload_rules
+
+            new_rules = self._collect_rules()
+
             path = self._settings_path
             if os.path.exists(path):
                 with open(path, encoding="utf-8") as fh:
                     cfg = yaml.safe_load(fh) or {}
             else:
                 cfg = {}
+
             cfg["auto_accept_rules"] = new_rules
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as fh:
                 yaml.dump(cfg, fh, allow_unicode=True, default_flow_style=False)
-            self._status.config(text="✓ Saved (restart daemon to apply)", fg=GREEN)
+
+            reload_rules(new_rules)
+
+            n = sum(len(v) for v in new_rules.values())
+            self._status_lbl.config(
+                text=f"✓ Applied {n} rule{'s' if n != 1 else ''} — no restart needed",
+                fg=GREEN,
+            )
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Save failed", str(exc), parent=self._win)
+
+    def _collect_rules(self) -> dict:
+        hint_set = set(_VALUE_HINTS.values())
+        rules: dict[str, list[dict]] = {}
+
+        for (op_key, rule_name), (enabled_var, val_var) in self._rule_vars.items():
+            if not enabled_var.get():
+                continue
+
+            entry: dict[str, Any] = {"rule": rule_name}
+            if val_var is not None:
+                raw = val_var.get().strip()
+                if raw in hint_set or not raw:
+                    raw = ""
+                _, value_kind = _RULE_META.get(rule_name, (None, None))
+                if value_kind == "list" and raw:
+                    entry["value"] = [v.strip() for v in raw.split(",") if v.strip()]
+                elif value_kind == "int" and raw:
+                    try:
+                        entry["value"] = int(raw)
+                    except ValueError:
+                        entry["value"] = raw
+                elif raw:
+                    entry["value"] = raw
+
+            rules.setdefault(op_key, []).append(entry)
+
+        return rules
 
 
 # ── Main floating window ──────────────────────────────────────────────────────
