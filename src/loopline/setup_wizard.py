@@ -8,8 +8,9 @@ does not exist. Walks the user through:
   4. Slack bot token (optional)
   5. Telegram (optional)
   6. Salesforce (optional)
-  7. Install LaunchAgent
-  8. Done — show MCP config snippet
+  7. Atlassian Jira + Confluence (optional)
+  8. Install LaunchAgent
+  9. Done — show MCP config snippet
 """
 from __future__ import annotations
 
@@ -143,6 +144,9 @@ def _write_settings(
     sf_username: str = "",
     sf_password: str = "",
     sf_security_token: str = "",
+    atlassian_cloud_url: str = "",
+    atlassian_email: str = "",
+    atlassian_api_token: str = "",
 ) -> None:
     example_src = Path(__file__).parent / "resources" / "settings.yaml.example"
     dest = _settings_path()
@@ -177,6 +181,15 @@ def _write_settings(
         sf["password"] = sf_password.strip()
         if sf_security_token.strip():
             sf["security_token"] = sf_security_token.strip()
+
+    if atlassian_cloud_url.strip() and atlassian_email.strip() and atlassian_api_token.strip():
+        atlassian = {
+            "cloud_url": atlassian_cloud_url.strip(),
+            "email": atlassian_email.strip(),
+            "api_token": atlassian_api_token.strip(),
+        }
+        cfg.setdefault("jira", {}).update(atlassian)
+        cfg.setdefault("confluence", {}).update(atlassian)
 
     with open(dest, "w", encoding="utf-8") as fh:
         yaml.dump(cfg, fh, allow_unicode=True, default_flow_style=False)
@@ -258,7 +271,7 @@ def _run_oauth(service: str, on_done: Callable[[bool, str], None]) -> None:
 # ── Wizard window ─────────────────────────────────────────────────────────────
 
 class SetupWizard:
-    PAGES = ["welcome", "google_creds", "google_oauth", "slack", "telegram", "salesforce", "launch_agent", "done"]
+    PAGES = ["welcome", "google_creds", "google_oauth", "slack", "telegram", "salesforce", "atlassian", "launch_agent", "done"]
 
     def __init__(self, parent: tk.Misc | None = None) -> None:
         if parent is None:
@@ -299,6 +312,10 @@ class SetupWizard:
         self._sf_username = tk.StringVar()
         self._sf_password = tk.StringVar()
         self._sf_security_token = tk.StringVar()
+        # Atlassian state (shared by Jira and Confluence)
+        self._atlassian_cloud_url = tk.StringVar()
+        self._atlassian_email = tk.StringVar()
+        self._atlassian_api_token = tk.StringVar()
 
         self._load_existing_state()
         self._build_layout()
@@ -344,6 +361,14 @@ class SetupWizard:
                         self._sf_password.set(sf["password"])
                     if sf.get("security_token"):
                         self._sf_security_token.set(sf["security_token"])
+                    # Atlassian — Jira and Confluence share the same credentials
+                    atlassian_cfg = cfg.get("jira", {}) or cfg.get("confluence", {})
+                    if atlassian_cfg.get("cloud_url"):
+                        self._atlassian_cloud_url.set(atlassian_cfg["cloud_url"])
+                    if atlassian_cfg.get("email"):
+                        self._atlassian_email.set(atlassian_cfg["email"])
+                    if atlassian_cfg.get("api_token"):
+                        self._atlassian_api_token.set(atlassian_cfg["api_token"])
             except Exception:  # noqa: BLE001
                 pass
 
@@ -435,8 +460,8 @@ class SetupWizard:
         self._label(
             "Loopline is a privacy proxy that sits between Claude AI and your "
             "accounts (Gmail, Drive, Calendar, Contacts, Tasks, Slack, Telegram, "
-            "Salesforce). Every request Claude makes goes through you — nothing "
-            "passes without approval.",
+            "Salesforce, Jira, Confluence). Every request Claude makes goes through "
+            "you — nothing passes without approval.",
             fg=TEXT, size=14,
         ).pack(anchor="w", pady=(0, 12))
         self._label(
@@ -862,6 +887,80 @@ class SetupWizard:
 
         threading.Thread(target=_run, daemon=True).start()
 
+    def _page_atlassian(self) -> None:
+        self._header.config(text="Atlassian Jira + Confluence (Optional)")
+        self._label(
+            "Enter your Atlassian Cloud credentials to give Claude access to Jira "
+            "and Confluence. One API token covers both products. Leave blank to skip.",
+            fg=SUBTEXT,
+        ).pack(anchor="w", pady=(0, 12))
+        self._label(
+            "Create a personal API token at: id.atlassian.com/manage/api-tokens",
+            fg=SUBTEXT, size=11,
+        ).pack(anchor="w", pady=(0, 10))
+
+        def _field(label: str, var: tk.StringVar, show: str = "") -> None:
+            tk.Label(self._body, text=label, bg=BG, fg=TEXT,
+                     font=("Helvetica Neue", 12), anchor="w").pack(anchor="w", pady=(4, 0))
+            tk.Entry(self._body, textvariable=var, bg=SURFACE, fg=TEXT,
+                     insertbackground=TEXT, relief="flat",
+                     font=("Courier", 12), width=44, show=show).pack(anchor="w", ipady=5)
+
+        _field("Cloud URL (e.g. https://yourcompany.atlassian.net)", self._atlassian_cloud_url)
+        _field("Email", self._atlassian_email)
+        _field("API Token", self._atlassian_api_token, show="•")
+
+        self._atlassian_status = tk.Label(self._body, text="", bg=BG, fg=SUBTEXT,
+                                          font=("Helvetica Neue", 12), anchor="w", wraplength=560)
+        self._atlassian_status.pack(anchor="w", pady=(8, 0))
+
+        tk.Button(
+            self._body, text="Test Connection",
+            command=self._atlassian_test,
+            bg=SURFACE, fg=TEXT, relief="flat", padx=12, pady=4,
+            cursor="hand2", activebackground="#45475a", activeforeground=TEXT,
+        ).pack(anchor="w", pady=(8, 0))
+
+    def _atlassian_test(self) -> None:
+        cloud_url = self._atlassian_cloud_url.get().strip()
+        email = self._atlassian_email.get().strip()
+        api_token = self._atlassian_api_token.get().strip()
+        if not cloud_url or not email or not api_token:
+            self._atlassian_status.config(text="Cloud URL, email, and API token are required.", fg=RED)
+            return
+
+        self._atlassian_status.config(text="Connecting…", fg=YELLOW)
+
+        def _run() -> None:
+            results: list[str] = []
+            errors: list[str] = []
+            cfg = {"cloud_url": cloud_url, "email": email, "api_token": api_token}
+            try:
+                from .jira_client import JiraClient
+                info = JiraClient(cfg).check_connection()
+                results.append(f"Jira: {info}")
+            except Exception as exc:
+                errors.append(f"Jira: {exc}")
+            try:
+                from .confluence_client import ConfluenceClient
+                ConfluenceClient(cfg).check_connection()
+                results.append("Confluence: connected")
+            except Exception as exc:
+                errors.append(f"Confluence: {exc}")
+
+            if results and not errors:
+                msg = "✓  " + " | ".join(results)
+                color = GREEN
+            elif results:
+                msg = "⚠  " + " | ".join(results) + "\n" + " | ".join(errors)
+                color = YELLOW
+            else:
+                msg = "✗  " + " | ".join(errors)
+                color = RED
+            self.root.after(0, lambda: self._atlassian_status.config(text=msg, fg=color))
+
+        threading.Thread(target=_run, daemon=True).start()
+
     def _page_launch_agent(self) -> None:
         self._header.config(text="Start at Login")
         self._label(
@@ -966,6 +1065,9 @@ class SetupWizard:
                 sf_username=self._sf_username.get(),
                 sf_password=self._sf_password.get(),
                 sf_security_token=self._sf_security_token.get(),
+                atlassian_cloud_url=self._atlassian_cloud_url.get(),
+                atlassian_email=self._atlassian_email.get(),
+                atlassian_api_token=self._atlassian_api_token.get(),
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to write settings: %s", exc)
