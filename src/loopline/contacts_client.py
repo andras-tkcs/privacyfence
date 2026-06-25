@@ -371,7 +371,7 @@ def _build_uncompressed_http(creds: Credentials) -> google_auth_httplib2.Authori
             headers["Accept-Encoding"] = "identity"
             return super().request(uri, method=method, body=body, headers=headers, **kw)
 
-    return google.auth.httplib2.AuthorizedHttp(creds, http=_IdentityHttp())
+    return google_auth_httplib2.AuthorizedHttp(creds, http=_IdentityHttp())
 
 
 # ------------------------------------------------------------------ #
