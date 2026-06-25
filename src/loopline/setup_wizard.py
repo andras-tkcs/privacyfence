@@ -270,6 +270,7 @@ class SetupWizard:
         self.root.title("Loopline Setup")
         self.root.configure(bg=BG)
         self.root.resizable(False, False)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         if self._is_toplevel:
             self.root.grab_set()
 
@@ -748,8 +749,8 @@ class SetupWizard:
                     tg_api_id=str(api_id_val),
                     tg_api_hash=api_hash_val,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Telegram intermediate save failed: %s", exc)
             self.root.after(0, lambda: (
                 self._tg_status.config(text=f"✓  Authorized as {name}", fg=GREEN),
                 self._tg_code_frame.pack_forget(),
@@ -790,8 +791,8 @@ class SetupWizard:
                     tg_api_id=str(api_id_val),
                     tg_api_hash=api_hash_val,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Telegram intermediate save failed (2FA): %s", exc)
             self.root.after(0, lambda: (
                 self._tg_status.config(text=f"✓  Authorized as {name}", fg=GREEN),
                 self._tg_code_frame.pack_forget(),
@@ -939,21 +940,35 @@ class SetupWizard:
 
     # ── finish ────────────────────────────────────────────────────────────────
 
+    def _on_close(self) -> None:
+        self._save_settings()
+        self.root.destroy()
+
     def _finish(self) -> None:
+        self._save_settings()
+        _sentinel_path().touch()
+        self.root.destroy()
+
+    def _save_settings(self) -> None:
+        # Prefer the validated int/str captured during the auth flow over raw StringVar text.
+        tg_api_id = self._tg_api_id.get()
+        tg_api_hash = self._tg_api_hash.get()
+        if self._tg_api_id_int is not None:
+            tg_api_id = str(self._tg_api_id_int)
+        if self._tg_api_hash_str is not None:
+            tg_api_hash = self._tg_api_hash_str
         try:
             _write_settings(
                 slack_user_token=self._slack_user_token.get(),
-                tg_api_id=self._tg_api_id.get(),
-                tg_api_hash=self._tg_api_hash.get(),
+                tg_api_id=tg_api_id,
+                tg_api_hash=tg_api_hash,
                 sf_instance_url=self._sf_instance_url.get(),
                 sf_username=self._sf_username.get(),
                 sf_password=self._sf_password.get(),
                 sf_security_token=self._sf_security_token.get(),
             )
-            _sentinel_path().touch()
         except Exception as exc:  # noqa: BLE001
-            logger.error("Failed to write settings on finish: %s", exc)
-        self.root.destroy()
+            logger.error("Failed to write settings: %s", exc)
 
     def run(self) -> None:
         if self._is_toplevel:
