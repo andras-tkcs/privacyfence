@@ -165,11 +165,10 @@ def _build_connectors(config: dict[str, Any]) -> list:
     # Slack
     try:
         slack_cfg = config.get("slack", {}) or {}
-        bot_token = slack_cfg.get("bot_token", "")
-        if not bot_token or bot_token.startswith("xoxb-your-"):
-            raise SlackClientError("bot_token not configured")
         user_token = slack_cfg.get("user_token", "")
-        client = SlackClient(bot_token=bot_token, user_token=user_token)
+        if not user_token or user_token.startswith("xoxp-your-"):
+            raise SlackClientError("user_token not configured")
+        client = SlackClient(user_token=user_token)
         workspace = client.check_connection()
         logger.info("Slack connector ready for workspace %r", workspace)
         connectors.append(SlackConnector(client, SlackPrivacyFilter(config.get("slack_privacy", {}) or {})))

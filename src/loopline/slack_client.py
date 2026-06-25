@@ -1,20 +1,18 @@
 """Slack API client.
 
-Requires two separate tokens because Slack splits bot and user permissions:
+Uses a single Slack user token (``xoxp-...``) so the connector sees exactly
+what the authenticated user sees — all channels, DMs, and private groups they
+are a member of — without requiring a bot to be invited anywhere.
 
-  Bot token (``xoxb-...``) — used for reading channels/messages and resolving
-  users. Required bot token scopes:
-    - ``channels:read`` / ``groups:read`` : list channels
-    - ``channels:history`` / ``groups:history`` : read channel history & replies
-    - ``users:read`` / ``users:read.email`` : resolve user identity
-
-  User token (``xoxp-...``) — required for ``search:read`` (search.messages)
-  and ``chat:write`` (post messages as the user). These scopes cannot be
-  granted to a bot token. If no user token is provided, search and send
-  operations are unavailable.
-
-Unlike the Gmail client there is no interactive OAuth flow: both tokens are
+Unlike the Gmail client there is no interactive OAuth flow: the token is
 provisioned once in the Slack app settings and stored in config.
+
+Required user token scopes:
+  - ``channels:read`` / ``groups:read`` / ``im:read`` / ``mpim:read``
+  - ``channels:history`` / ``groups:history`` / ``im:history`` / ``mpim:history``
+  - ``users:read`` / ``users:read.email``
+  - ``search:read``
+  - ``chat:write``
 """
 
 from __future__ import annotations
@@ -104,22 +102,19 @@ class SlackUser:
 
 
 class SlackClient:
-    """Slack client backed by a bot token and an optional user token.
+    """Slack client backed by a single user token (xoxp-).
 
-    The bot token handles channel/message reads and user resolution.
-    The user token (xoxp-) is required for search.messages (search:read)
-    and chat.postMessage as the authenticated user (chat:write).
+    Using a user token means the connector sees exactly what the authenticated
+    user sees, with no bot to invite and no visibility beyond their own access.
     """
 
-    def __init__(self, bot_token: str, user_token: str = "") -> None:
-        if not bot_token:
+    def __init__(self, user_token: str) -> None:
+        if not user_token:
             raise SlackClientError(
-                "No Slack bot token configured. Set 'slack.bot_token' "
-                "(a 'xoxb-...' Bot User OAuth Token) in the config."
+                "No Slack user token configured. Set 'slack.user_token' "
+                "(a 'xoxp-...' User OAuth Token) in the config."
             )
-        self._bot_client = WebClient(token=bot_token)
-        self._user_client = WebClient(token=user_token) if user_token else None
-        self._has_user_token = bool(user_token)
+        self._client = WebClient(token=user_token)
         # Small cache so repeated messages from the same author don't trigger a
         # users.info call each time within a single fetch.
         self._user_cache: dict[str, SlackUser] = {}
@@ -131,7 +126,7 @@ class SlackClient:
     def check_connection(self) -> str:
         """Verify the token works. Returns the workspace (team) name."""
         try:
-            response = self._bot_client.auth_test()
+            response = self._client.auth_test()
         except SlackApiError as exc:
             raise SlackClientError(
                 f"Slack connection check failed: {self._describe_error(exc)}"
@@ -157,7 +152,7 @@ class SlackClient:
         try:
             while len(channels) < max_results:
                 page_size = min(200, max_results - len(channels))
-                response = self._bot_client.conversations_list(
+                response = self._client.conversations_list(
                     exclude_archived=exclude_archived,
                     types="public_channel,private_channel",
                     limit=page_size,
@@ -198,7 +193,7 @@ class SlackClient:
             kwargs["latest"] = latest
 
         try:
-            response = self._bot_client.conversations_history(**kwargs)
+            response = self._client.conversations_history(**kwargs)
         except SlackApiError as exc:
             raise SlackClientError(
                 f"get_channel_history({channel_id}) failed: "
@@ -224,7 +219,7 @@ class SlackClient:
             )
         channel_name = self._resolve_channel_name(channel_id)
         try:
-            response = self._bot_client.conversations_replies(
+            response = self._client.conversations_replies(
                 channel=channel_id, ts=thread_ts
             )
         except SlackApiError as exc:
@@ -246,21 +241,12 @@ class SlackClient:
         return messages
 
     def search_messages(self, query: str, count: int = 20) -> list[SlackMessage]:
-        """Search messages via ``search.messages`` (requires user token with ``search:read``).
-
-        search.messages requires a user token (xoxp-); bot tokens cannot use this
-        scope. If no user token was configured a clear error is raised.
-        """
+        """Search messages via ``search.messages`` (requires ``search:read``)."""
         if not query:
             raise SlackClientError("search_messages requires a non-empty query")
-        if not self._has_user_token:
-            raise SlackClientError(
-                "search_messages requires a Slack user token (xoxp-) with the "
-                "'search:read' scope. Set 'slack.user_token' in the config."
-            )
         count = self._clamp(count, default=20, hi=100)
         try:
-            response = self._user_client.search_messages(query=query, count=count)  # type: ignore[union-attr]
+            response = self._client.search_messages(query=query, count=count)
         except SlackApiError as exc:
             raise SlackClientError(
                 f"search_messages failed: {self._describe_error(exc)}"
@@ -281,24 +267,17 @@ class SlackClient:
     def send_message(self, channel_id: str, text: str, thread_ts: str = "") -> dict:
         """Send a message to a channel or DM via ``chat.postMessage``.
 
-        Requires a user token (xoxp-) with the ``chat:write`` scope so the
-        message is posted as the authenticated user. If no user token was
-        configured a clear error is raised.
+        Requires the ``chat:write`` scope on the user token.
         """
         if not channel_id:
             raise SlackClientError("send_message requires a channel_id")
         if not text:
             raise SlackClientError("send_message requires non-empty text")
-        if not self._has_user_token:
-            raise SlackClientError(
-                "send_message requires a Slack user token (xoxp-) with the "
-                "'chat:write' scope. Set 'slack.user_token' in the config."
-            )
         kwargs: dict[str, Any] = {"channel": channel_id, "text": text}
         if thread_ts:
             kwargs["thread_ts"] = thread_ts
         try:
-            response = self._user_client.chat_postMessage(**kwargs)  # type: ignore[union-attr]
+            response = self._client.chat_postMessage(**kwargs)
         except SlackApiError as exc:
             raise SlackClientError(
                 f"send_message({channel_id}) failed: {self._describe_error(exc)}"
@@ -314,7 +293,7 @@ class SlackClient:
         if user_id in self._user_cache:
             return self._user_cache[user_id]
         try:
-            response = self._bot_client.users_info(user=user_id)
+            response = self._client.users_info(user=user_id)
         except SlackApiError as exc:
             raise SlackClientError(
                 f"get_user_info({user_id}) failed: {self._describe_error(exc)}"
@@ -341,7 +320,7 @@ class SlackClient:
         if channel_id in self._channel_name_cache:
             return self._channel_name_cache[channel_id]
         try:
-            response = self._bot_client.conversations_info(channel=channel_id)
+            response = self._client.conversations_info(channel=channel_id)
             name = (response.get("channel") or {}).get("name", "")
         except SlackApiError as exc:
             logger.debug("Could not resolve channel name for %s: %s", channel_id, exc)
