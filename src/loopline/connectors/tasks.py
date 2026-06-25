@@ -30,6 +30,7 @@ class TasksConnector(Connector):
                 name="tasks_list_task_lists",
                 description="List all Google Task lists. Always allowed.",
                 params=[],
+            read_only=True,
             ),
             ToolSpec(
                 name="tasks_list_tasks",
@@ -38,6 +39,7 @@ class TasksConnector(Connector):
                     ToolParam("task_list_id", "str"),
                     ToolParam("show_completed", "bool", required=False, default=False),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="tasks_get_task",
@@ -46,6 +48,7 @@ class TasksConnector(Connector):
                     ToolParam("task_list_id", "str"),
                     ToolParam("task_id", "str"),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="tasks_create_task",

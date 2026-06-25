@@ -19,4 +19,4 @@ from __future__ import annotations
 import os
 
 SOCKET_PATH = os.path.expanduser("~/.loopline/loopline.sock")
-VERSION = "0.2.0"
+VERSION = "0.2.1"

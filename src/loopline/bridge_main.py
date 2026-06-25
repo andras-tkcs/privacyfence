@@ -209,7 +209,12 @@ def _register_tools(mcp: FastMCP, manifest: dict) -> None:
         for tool_dict in connector_info.get("tools", []):
             spec = ToolSpec.from_dict(tool_dict)
             fn = _build_tool_fn(cname, spec)
-            mcp.tool(name=spec.name, description=spec.description)(fn)
+            from mcp.types import ToolAnnotations
+            annotations = ToolAnnotations(
+                readOnlyHint=spec.read_only,
+                destructiveHint=not spec.read_only,
+            )
+            mcp.tool(name=spec.name, description=spec.description, annotations=annotations)(fn)
             logger.info("Registered tool: %s (connector=%s)", spec.name, cname)
             total += 1
     logger.info("Bridge registered %d tool(s) from %d connector(s)", total, len(manifest.get("connectors", [])))

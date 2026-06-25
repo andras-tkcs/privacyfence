@@ -37,6 +37,7 @@ class JiraConnector(Connector):
                 params=[
                     ToolParam("max_results", "int", required=False, default=50),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="jira_search_issues",
@@ -48,6 +49,7 @@ class JiraConnector(Connector):
                     ToolParam("jql", "str", description="e.g. 'project = MYPROJ AND status = Open'"),
                     ToolParam("max_results", "int", required=False, default=20),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="jira_get_issue",
@@ -58,6 +60,7 @@ class JiraConnector(Connector):
                 params=[
                     ToolParam("issue_key", "str", description="e.g. PROJ-123"),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="jira_create_issue",

@@ -32,6 +32,7 @@ class SalesforceConnector(Connector):
                 name="salesforce_list_reports",
                 description="List Salesforce reports accessible to the user. Always allowed.",
                 params=[],
+            read_only=True,
             ),
             ToolSpec(
                 name="salesforce_get_record",
@@ -40,11 +41,13 @@ class SalesforceConnector(Connector):
                     ToolParam("object_type", "str", description="e.g. Account, Contact, Opportunity"),
                     ToolParam("record_id", "str"),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="salesforce_run_report",
                 description="Run a Salesforce report by id and return the results. Requires user approval.",
                 params=[ToolParam("report_id", "str")],
+            read_only=True,
             ),
         ]
 

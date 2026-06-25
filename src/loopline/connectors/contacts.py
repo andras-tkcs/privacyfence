@@ -49,6 +49,7 @@ class ContactsConnector(Connector):
                 params=[
                     ToolParam("max_results", "int", required=False, default=50),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="contacts_search",
@@ -60,6 +61,7 @@ class ContactsConnector(Connector):
                     ToolParam("query", "str"),
                     ToolParam("max_results", "int", required=False, default=20),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="contacts_get",
@@ -70,6 +72,7 @@ class ContactsConnector(Connector):
                 params=[
                     ToolParam("resource_name", "str"),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="contacts_update",

@@ -39,6 +39,7 @@ class SlackConnector(Connector):
                     ToolParam("exclude_archived", "bool", required=False, default=True),
                     ToolParam("max_results", "int", required=False, default=100),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="slack_get_channel_history",
@@ -49,6 +50,7 @@ class SlackConnector(Connector):
                     ToolParam("channel_id", "str"),
                     ToolParam("limit", "int", required=False, default=50),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="slack_get_thread_replies",
@@ -60,6 +62,7 @@ class SlackConnector(Connector):
                     ToolParam("channel_id", "str"),
                     ToolParam("thread_ts", "str"),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="slack_search_messages",
@@ -71,6 +74,7 @@ class SlackConnector(Connector):
                     ToolParam("query", "str"),
                     ToolParam("count", "int", required=False, default=20),
                 ],
+            read_only=True,
             ),
             ToolSpec(
                 name="slack_send_message",
