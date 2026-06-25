@@ -4,10 +4,12 @@ Shown automatically when running from the .app bundle and ~/.loopline/setup_comp
 does not exist. Walks the user through:
   1. Welcome
   2. Import Google OAuth client_secret.json
-  3. Authorize Google services (Gmail, Drive, Calendar, Contacts)
+  3. Authorize Google services (Gmail, Drive, Calendar, Contacts, Tasks)
   4. Slack bot token (optional)
-  5. Install LaunchAgent
-  6. Done — show MCP config snippet
+  5. Telegram (optional)
+  6. Salesforce (optional)
+  7. Install LaunchAgent
+  8. Done — show MCP config snippet
 """
 from __future__ import annotations
 
@@ -133,28 +135,51 @@ def _write_plist() -> None:
     _plist_path().write_text(plist, encoding="utf-8")
 
 
-def _write_settings(slack_token: str) -> None:
+def _write_settings(
+    slack_token: str,
+    tg_api_id: str = "",
+    tg_api_hash: str = "",
+    sf_instance_url: str = "",
+    sf_username: str = "",
+    sf_password: str = "",
+    sf_security_token: str = "",
+) -> None:
     example_src = Path(__file__).parent / "resources" / "settings.yaml.example"
     dest = _settings_path()
     if not dest.exists():
         if example_src.exists():
             shutil.copy(example_src, dest)
         else:
-            # Minimal fallback settings
             dest.write_text(
                 "logging:\n  level: INFO\n  file: logs/loopline.log\n",
                 encoding="utf-8",
             )
 
+    import yaml
+    with open(dest, encoding="utf-8") as fh:
+        cfg = yaml.safe_load(fh) or {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+
     if slack_token.strip():
-        import yaml
-        with open(dest, encoding="utf-8") as fh:
-            cfg = yaml.safe_load(fh) or {}
-        if not isinstance(cfg, dict):
-            cfg = {}
         cfg.setdefault("slack", {})["bot_token"] = slack_token.strip()
-        with open(dest, "w", encoding="utf-8") as fh:
-            yaml.dump(cfg, fh, allow_unicode=True, default_flow_style=False)
+
+    if tg_api_id.strip() and tg_api_hash.strip():
+        tg = cfg.setdefault("telegram", {})
+        tg["api_id"] = int(tg_api_id.strip())
+        tg["api_hash"] = tg_api_hash.strip()
+        tg.setdefault("session_file", "credentials/telegram.session")
+
+    if sf_instance_url.strip() and sf_username.strip() and sf_password.strip():
+        sf = cfg.setdefault("salesforce", {})
+        sf["instance_url"] = sf_instance_url.strip()
+        sf["username"] = sf_username.strip()
+        sf["password"] = sf_password.strip()
+        if sf_security_token.strip():
+            sf["security_token"] = sf_security_token.strip()
+
+    with open(dest, "w", encoding="utf-8") as fh:
+        yaml.dump(cfg, fh, allow_unicode=True, default_flow_style=False)
 
 
 def _mcp_snippet() -> str:
@@ -216,6 +241,16 @@ def _run_oauth(service: str, on_done: Callable[[bool, str], None]) -> None:
             email = client.check_connection()
             on_done(True, f"Contacts authorized as {email}")
 
+        elif service == "tasks":
+            from .tasks_client import TasksClient, TasksClientError
+            client = TasksClient(
+                credentials_file=creds,
+                token_file=str(_credentials_dir() / "tasks_token.json"),
+            )
+            client.authorize_interactive()
+            result = client.check_connection()
+            on_done(True, f"Tasks authorized ({result})")
+
     except Exception as exc:  # noqa: BLE001
         on_done(False, str(exc))
 
@@ -223,7 +258,7 @@ def _run_oauth(service: str, on_done: Callable[[bool, str], None]) -> None:
 # ── Wizard window ─────────────────────────────────────────────────────────────
 
 class SetupWizard:
-    PAGES = ["welcome", "google_creds", "google_oauth", "slack", "launch_agent", "done"]
+    PAGES = ["welcome", "google_creds", "google_oauth", "slack", "telegram", "salesforce", "launch_agent", "done"]
 
     def __init__(self) -> None:
         self.root = tk.Tk()
@@ -240,7 +275,19 @@ class SetupWizard:
         self._page_idx = 0
         self._slack_token = tk.StringVar()
         self._oauth_states: dict[str, str] = {}  # service → "idle"|"running"|"ok"|"error: ..."
-        self._google_services = ["gmail", "drive", "calendar", "contacts"]
+        self._google_services = ["gmail", "drive", "calendar", "contacts", "tasks"]
+        # Telegram state
+        self._tg_api_id = tk.StringVar()
+        self._tg_api_hash = tk.StringVar()
+        self._tg_phone = tk.StringVar()
+        self._tg_code = tk.StringVar()
+        self._tg_phone_code_hash: str | None = None
+        self._tg_client = None  # telethon client kept alive between steps
+        # Salesforce state
+        self._sf_instance_url = tk.StringVar()
+        self._sf_username = tk.StringVar()
+        self._sf_password = tk.StringVar()
+        self._sf_security_token = tk.StringVar()
 
         self._build_layout()
         self._show_page()
@@ -332,8 +379,9 @@ class SetupWizard:
         logo.pack(pady=(10, 4))
         self._label(
             "Loopline is a privacy proxy that sits between Claude AI and your "
-            "accounts (Gmail, Drive, Calendar, Contacts, Slack). Every request "
-            "Claude makes goes through you — nothing passes without approval.",
+            "accounts (Gmail, Drive, Calendar, Contacts, Tasks, Slack, Telegram, "
+            "Salesforce). Every request Claude makes goes through you — nothing "
+            "passes without approval.",
             fg=TEXT, size=14,
         ).pack(anchor="w", pady=(0, 12))
         self._label(
@@ -403,6 +451,7 @@ class SetupWizard:
             "drive": "Google Drive (read & write files)",
             "calendar": "Google Calendar (read & create events)",
             "contacts": "Google Contacts (read contacts)",
+            "tasks": "Google Tasks (read & manage tasks)",
         }
 
         for svc, display in service_names.items():
@@ -476,6 +525,190 @@ class SetupWizard:
                          relief="flat", font=("Courier", 12), width=48)
         entry.pack(anchor="w", ipady=6)
         entry.insert(0, self._slack_token.get() or "xoxb-")
+
+    def _page_telegram(self) -> None:
+        self._header.config(text="Telegram (Optional)")
+        self._label(
+            "To give Claude access to your Telegram messages, enter your API credentials "
+            "from my.telegram.org/apps and authorize your account. Leave blank to skip.",
+            fg=SUBTEXT,
+        ).pack(anchor="w", pady=(0, 12))
+
+        def _field(label: str, var: tk.StringVar, show: str = "") -> tk.Entry:
+            tk.Label(self._body, text=label, bg=BG, fg=TEXT,
+                     font=("Helvetica Neue", 12), anchor="w").pack(anchor="w", pady=(6, 0))
+            e = tk.Entry(self._body, textvariable=var, bg=SURFACE, fg=TEXT,
+                         insertbackground=TEXT, relief="flat",
+                         font=("Courier", 12), width=44, show=show)
+            e.pack(anchor="w", ipady=5)
+            return e
+
+        self._tg_api_id_entry = _field("API ID (from my.telegram.org/apps)", self._tg_api_id)
+        self._tg_api_hash_entry = _field("API Hash", self._tg_api_hash, show="•")
+        self._tg_phone_entry = _field("Phone number (with country code, e.g. +1234567890)", self._tg_phone)
+
+        self._tg_status = tk.Label(self._body, text="", bg=BG, fg=SUBTEXT,
+                                   font=("Helvetica Neue", 12), anchor="w", wraplength=560)
+        self._tg_status.pack(anchor="w", pady=(8, 0))
+
+        btn_row = tk.Frame(self._body, bg=BG)
+        btn_row.pack(anchor="w", pady=(8, 0))
+
+        self._tg_send_btn = tk.Button(
+            btn_row, text="Send Code",
+            command=self._tg_send_code,
+            bg=SURFACE, fg=TEXT, relief="flat", padx=12, pady=4,
+            cursor="hand2", activebackground="#45475a", activeforeground=TEXT,
+        )
+        self._tg_send_btn.pack(side="left", padx=(0, 8))
+
+        # Code entry + authorize — hidden until code is sent
+        self._tg_code_frame = tk.Frame(self._body, bg=BG)
+        self._tg_code_frame.pack(anchor="w", pady=(8, 0))
+        tk.Label(self._tg_code_frame, text="Verification code:", bg=BG, fg=TEXT,
+                 font=("Helvetica Neue", 12), anchor="w").pack(anchor="w")
+        tk.Entry(self._tg_code_frame, textvariable=self._tg_code, bg=SURFACE, fg=TEXT,
+                 insertbackground=TEXT, relief="flat", font=("Courier", 12), width=20,
+                 ).pack(anchor="w", ipady=5, pady=(2, 6))
+        tk.Button(
+            self._tg_code_frame, text="Authorize",
+            command=self._tg_authorize,
+            bg=ACCENT, fg=BG, relief="flat", padx=12, pady=4,
+            cursor="hand2", font=("Helvetica Neue", 12, "bold"),
+            activebackground="#74c7ec", activeforeground=BG,
+        ).pack(anchor="w")
+        self._tg_code_frame.pack_forget()  # hide until needed
+
+    def _tg_send_code(self) -> None:
+        api_id_str = self._tg_api_id.get().strip()
+        api_hash = self._tg_api_hash.get().strip()
+        phone = self._tg_phone.get().strip()
+        if not api_id_str or not api_hash or not phone:
+            self._tg_status.config(text="Please fill in all three fields.", fg=RED)
+            return
+        try:
+            api_id = int(api_id_str)
+        except ValueError:
+            self._tg_status.config(text="API ID must be a number.", fg=RED)
+            return
+
+        self._tg_status.config(text="Sending code…", fg=YELLOW)
+        self._tg_send_btn.config(state="disabled")
+
+        def _run() -> None:
+            import asyncio
+            try:
+                from telethon import TelegramClient
+                session_file = str(_credentials_dir() / "telegram.session")
+                client = TelegramClient(session_file, api_id, api_hash)
+                asyncio.run(_send(client, phone))
+            except Exception as exc:
+                self.root.after(0, lambda: (
+                    self._tg_status.config(text=f"Error: {exc}", fg=RED),
+                    self._tg_send_btn.config(state="normal"),
+                ))
+
+        async def _send(client, phone: str) -> None:
+            await client.connect()
+            result = await client.send_code_request(phone)
+            self._tg_phone_code_hash = result.phone_code_hash
+            self._tg_client = client
+            self.root.after(0, lambda: (
+                self._tg_status.config(text="Code sent! Check your Telegram app.", fg=GREEN),
+                self._tg_code_frame.pack(anchor="w", pady=(8, 0)),
+            ))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _tg_authorize(self) -> None:
+        code = self._tg_code.get().strip()
+        phone = self._tg_phone.get().strip()
+        if not code:
+            self._tg_status.config(text="Enter the verification code.", fg=RED)
+            return
+
+        self._tg_status.config(text="Authorizing…", fg=YELLOW)
+
+        def _run() -> None:
+            import asyncio
+            try:
+                asyncio.run(_sign_in())
+            except Exception as exc:
+                self.root.after(0, lambda: self._tg_status.config(text=f"Error: {exc}", fg=RED))
+
+        async def _sign_in() -> None:
+            client = self._tg_client
+            await client.sign_in(phone, code, phone_code_hash=self._tg_phone_code_hash)
+            me = await client.get_me()
+            name = f"{me.first_name or ''} {me.last_name or ''}".strip()
+            await client.disconnect()
+            self._tg_client = None
+            self.root.after(0, lambda: (
+                self._tg_status.config(text=f"✓  Authorized as {name}", fg=GREEN),
+                self._tg_code_frame.pack_forget(),
+            ))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _page_salesforce(self) -> None:
+        self._header.config(text="Salesforce (Optional)")
+        self._label(
+            "Enter your Salesforce credentials to give Claude access to your org. "
+            "Leave blank to skip.",
+            fg=SUBTEXT,
+        ).pack(anchor="w", pady=(0, 12))
+
+        def _field(label: str, var: tk.StringVar, show: str = "") -> None:
+            tk.Label(self._body, text=label, bg=BG, fg=TEXT,
+                     font=("Helvetica Neue", 12), anchor="w").pack(anchor="w", pady=(4, 0))
+            tk.Entry(self._body, textvariable=var, bg=SURFACE, fg=TEXT,
+                     insertbackground=TEXT, relief="flat",
+                     font=("Courier", 12), width=44, show=show).pack(anchor="w", ipady=5)
+
+        _field("Instance URL (e.g. https://yourorg.my.salesforce.com)", self._sf_instance_url)
+        _field("Username", self._sf_username)
+        _field("Password", self._sf_password, show="•")
+        _field("Security Token", self._sf_security_token, show="•")
+
+        self._sf_status = tk.Label(self._body, text="", bg=BG, fg=SUBTEXT,
+                                   font=("Helvetica Neue", 12), anchor="w", wraplength=560)
+        self._sf_status.pack(anchor="w", pady=(8, 0))
+
+        tk.Button(
+            self._body, text="Test Connection",
+            command=self._sf_test,
+            bg=SURFACE, fg=TEXT, relief="flat", padx=12, pady=4,
+            cursor="hand2", activebackground="#45475a", activeforeground=TEXT,
+        ).pack(anchor="w", pady=(8, 0))
+
+    def _sf_test(self) -> None:
+        instance_url = self._sf_instance_url.get().strip()
+        username = self._sf_username.get().strip()
+        password = self._sf_password.get().strip()
+        security_token = self._sf_security_token.get().strip()
+        if not instance_url or not username or not password:
+            self._sf_status.config(text="Instance URL, username, and password are required.", fg=RED)
+            return
+
+        self._sf_status.config(text="Connecting…", fg=YELLOW)
+
+        def _run() -> None:
+            try:
+                from .salesforce_client import SalesforceClient
+                cfg = {
+                    "instance_url": instance_url,
+                    "username": username,
+                    "password": password,
+                    "security_token": security_token,
+                }
+                org = SalesforceClient(cfg).check_connection()
+                self.root.after(0, lambda: self._sf_status.config(
+                    text=f"✓  Connected to {org}", fg=GREEN))
+            except Exception as exc:
+                self.root.after(0, lambda: self._sf_status.config(
+                    text=f"Error: {exc}", fg=RED))
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def _page_launch_agent(self) -> None:
         self._header.config(text="Start at Login")
@@ -557,7 +790,15 @@ class SetupWizard:
 
     def _finish(self) -> None:
         try:
-            _write_settings(self._slack_token.get())
+            _write_settings(
+                self._slack_token.get(),
+                tg_api_id=self._tg_api_id.get(),
+                tg_api_hash=self._tg_api_hash.get(),
+                sf_instance_url=self._sf_instance_url.get(),
+                sf_username=self._sf_username.get(),
+                sf_password=self._sf_password.get(),
+                sf_security_token=self._sf_security_token.get(),
+            )
             _sentinel_path().touch()
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to write settings on finish: %s", exc)
