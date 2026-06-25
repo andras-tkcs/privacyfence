@@ -7,7 +7,7 @@ ReviewQueue on a timer and shows each pending request. Two card layouts:
                 shows sender / recipients / subject / date header rows and
                 the HTML body rendered as plain text in a scrollable widget.
 
-  GenericCard — for any other tool: collapsible JSON tree (legacy).
+  GenericCard — for any other tool: key/value parameter display.
 
 Attachment list is returned as part of the approved message data without a
 separate approval step. Attachment *content* reading (not yet implemented)
@@ -16,6 +16,7 @@ would get its own card type when added.
 
 from __future__ import annotations
 
+import copy
 import html
 import html.parser
 import logging
@@ -24,6 +25,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Any, Callable, Optional
 
+from .auto_accept import TOOL_TO_OPERATION
 from .review_queue import PendingReview, ReviewQueue, get_review_queue
 
 _RESOURCES = os.path.join(os.path.dirname(__file__), "resources")
@@ -31,29 +33,40 @@ _RESOURCES = os.path.join(os.path.dirname(__file__), "resources")
 logger = logging.getLogger(__name__)
 
 POLL_MS = 500
-WIN_W = 720
+WIN_W = 680
 WIN_H = 820
 
-# ── colour palette (dark / catppuccin-inspired) ───────────────────────────────
-BG        = "#1e1e2e"
-PANEL_BG  = "#2a2a3e"
-HEADER_BG = "#313244"
-ACCENT    = "#89b4fa"
-TEXT      = "#cdd6f4"
-MUTED     = "#a6adc8"
-GREEN_BG  = "#2d4a3e"
-GREEN_FG  = "#a6e3a1"
-RED_BG    = "#4a2d2d"
-RED_FG    = "#f38ba8"
-BORDER    = "#45475a"
-META_KEY  = "#94e2d5"   # teal for metadata labels
+# ── macOS-native colour palette ───────────────────────────────────────────────
+BG          = "#F2F2F7"   # system gray 6 (page background)
+CARD_BG     = "#FFFFFF"
+TITLEBAR_BG = "#ECECEC"   # approximates NSVisualEffectView light
+TOOLBAR_BG  = "#F7F7F7"
+HEADER_BG   = "#FAFAFA"   # card header tint
+TEXT        = "#1C1C1E"   # label primary
+MUTED       = "#8E8E93"   # label secondary
+HINT        = "#AEAEB2"   # label tertiary
+BORDER      = "#E0E0E5"   # hairline border
+ACCENT      = "#007AFF"   # system blue
+
+# Semantic action colours
+GREEN       = "#34C759"
+GREEN_TINT  = "#EBF9EF"
+RED         = "#FF3B30"
+RED_TINT    = "#FFF0EF"
+ORANGE      = "#FF9500"
+ORANGE_TINT = "#FFF4E5"
+
+# Tool icon tints keyed by hint type
+_ICON_COLORS: dict[str, tuple[str, str]] = {
+    "email":   ("#EAF2FF", ACCENT),
+    "thread":  ("#EDFAF2", GREEN),
+    "generic": (ORANGE_TINT, ORANGE),
+}
 
 
 # ── HTML → plain-text renderer ────────────────────────────────────────────────
 
 class _HtmlStripper(html.parser.HTMLParser):
-    """Convert basic HTML to readable plain text for the body preview."""
-
     _BLOCK = {"p", "div", "br", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6",
                "blockquote", "pre", "hr", "table", "ul", "ol"}
     _SKIP  = {"style", "script", "head", "meta", "link"}
@@ -91,17 +104,15 @@ class _HtmlStripper(html.parser.HTMLParser):
 
     def get_text(self) -> str:
         raw = "".join(self._parts)
-        # Collapse runs of 3+ blank lines to 2.
         import re
         return re.sub(r"\n{3,}", "\n\n", raw).strip()
 
 
 def _html_to_text(body: str) -> str:
-    """Strip HTML tags and return readable plain text."""
     if not body:
         return ""
     if not body.strip().startswith("<"):
-        return body  # already plain text
+        return body
     stripper = _HtmlStripper()
     try:
         stripper.feed(body)
@@ -110,10 +121,30 @@ def _html_to_text(body: str) -> str:
         return html.unescape(body)
 
 
+# ── Small reusable widgets ────────────────────────────────────────────────────
+
+def _hairline(parent: tk.Widget, bg: str = CARD_BG, **kw: Any) -> tk.Frame:
+    return tk.Frame(parent, bg=BORDER, height=1, **kw)
+
+
+def _pill_tag(parent: tk.Widget, text: str,
+              bg: str = "#EAF2FF", fg: str = ACCENT,
+              card_bg: str = CARD_BG) -> tk.Label:
+    return tk.Label(
+        parent, text=text,
+        font=("SF Pro Text", 10, "bold"),
+        bg=bg, fg=fg,
+        padx=7, pady=2,
+        relief="flat",
+    )
+
+
 # ── Shared card base ──────────────────────────────────────────────────────────
 
 class _BaseCard(tk.Frame):
-    """Header + action buttons shared by all card types."""
+    """White card with a header, body, and action row."""
+
+    _hint_type: str = "generic"
 
     def __init__(
         self,
@@ -124,87 +155,132 @@ class _BaseCard(tk.Frame):
         **kw: Any,
     ) -> None:
         super().__init__(
-            parent, bg=PANEL_BG,
-            highlightbackground=BORDER, highlightthickness=1,
+            parent,
+            bg=CARD_BG,
+            highlightbackground=BORDER,
+            highlightthickness=1,
             **kw,
         )
         self._review = review
         self._on_approve = on_approve
         self._on_reject = on_reject
         self._build_header()
+        _hairline(self).pack(fill="x")
         self._build_body()
+        _hairline(self).pack(fill="x")
         self._build_actions()
-        tk.Frame(self, bg=PANEL_BG, height=8).pack()
 
     def _build_header(self) -> None:
         r = self._review
-        hdr = tk.Frame(self, bg=HEADER_BG, pady=6)
+        icon_bg, icon_fg = _ICON_COLORS.get(self._hint_type, _ICON_COLORS["generic"])
+
+        hdr = tk.Frame(self, bg=HEADER_BG)
         hdr.pack(fill="x")
-        tk.Label(
+
+        icon_box = tk.Label(
             hdr,
-            text=f"  🔧 {r.tool_name}",
+            text=self._icon_char(),
+            font=("SF Pro Text", 15),
+            bg=icon_bg, fg=icon_fg,
+            width=2, pady=6,
+        )
+        icon_box.pack(side="left", padx=(12, 8), pady=10)
+
+        name_col = tk.Frame(hdr, bg=HEADER_BG)
+        name_col.pack(side="left", fill="y", pady=9)
+        tk.Label(
+            name_col,
+            text=r.tool_name,
             font=("SF Pro Text", 13, "bold"),
-            bg=HEADER_BG, fg=ACCENT,
-            anchor="w",
-        ).pack(side="left", padx=(4, 0))
+            bg=HEADER_BG, fg=TEXT, anchor="w",
+        ).pack(anchor="w")
+        tk.Label(
+            name_col,
+            text=self._subtitle(),
+            font=("SF Pro Text", 11),
+            bg=HEADER_BG, fg=MUTED, anchor="w",
+        ).pack(anchor="w")
+
+        tag_bg, tag_fg = _ICON_COLORS.get(self._hint_type, _ICON_COLORS["generic"])
+        _pill_tag(hdr, self._hint_type, bg=tag_bg, fg=tag_fg, card_bg=HEADER_BG).pack(
+            side="right", padx=12, pady=12,
+        )
+
+    def _icon_char(self) -> str:
+        return "⚙"  # ⚙
+
+    def _subtitle(self) -> str:
+        s = self._review.summary
+        return s[:72] + ("…" if len(s) > 72 else "")
 
     def _build_body(self) -> None:
-        """Subclasses override this to render their content."""
+        pass
 
     def _build_actions(self) -> None:
-        btn_row = tk.Frame(self, bg=PANEL_BG, pady=6)
-        btn_row.pack(fill="x", padx=10)
-        tk.Button(
-            btn_row, text="✅  Approve",
+        row = tk.Frame(self, bg=CARD_BG)
+        row.pack(fill="x", padx=12, pady=10)
+
+        approve = tk.Button(
+            row, text="  Allow  ",
             font=("SF Pro Text", 12, "bold"),
-            bg=GREEN_BG, fg=GREEN_FG,
-            activebackground="#3d6b52", activeforeground=GREEN_FG,
-            bd=0, padx=18, pady=6, cursor="hand2",
+            bg=GREEN, fg="white",
+            activebackground="#2DB84D", activeforeground="white",
+            relief="flat", bd=0, pady=8, cursor="hand2",
             command=lambda: self._on_approve(self._review.request_id),
-        ).pack(side="left", padx=(0, 8))
-        tk.Button(
-            btn_row, text="❌  Reject",
+        )
+        approve.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        reject = tk.Button(
+            row, text="  Deny  ",
             font=("SF Pro Text", 12, "bold"),
-            bg=RED_BG, fg=RED_FG,
-            activebackground="#6b3d3d", activeforeground=RED_FG,
-            bd=0, padx=18, pady=6, cursor="hand2",
+            bg=RED_TINT, fg=RED,
+            activebackground="#FFD9D7", activeforeground=RED,
+            relief="flat", bd=0, pady=8, cursor="hand2",
             command=lambda: self._on_reject(self._review.request_id),
-        ).pack(side="left")
+        )
+        reject.pack(side="left", fill="x", expand=True)
 
 
 # ── Email preview card ────────────────────────────────────────────────────────
 
 class EmailCard(_BaseCard):
-    """Card for gmail_get_message — shows metadata + HTML body as plain text."""
+    _hint_type = "email"
+
+    def _icon_char(self) -> str:
+        return "✉"  # ✉
+
+    def _subtitle(self) -> str:
+        return "Reading email content"
 
     def _build_body(self) -> None:
         hint = self._review.display_hint
-        outer = tk.Frame(self, bg=PANEL_BG)
-        outer.pack(fill="both", expand=True, padx=10, pady=(6, 0))
+        outer = tk.Frame(self, bg=CARD_BG)
+        outer.pack(fill="both", expand=True, padx=14, pady=10)
 
-        self._add_meta_row(outer, "From",    hint.get("sender", ""))
+        self._meta_row(outer, "From",    hint.get("sender", ""))
         recipients = hint.get("recipients", [])
-        self._add_meta_row(outer, "To",      ", ".join(recipients) if recipients else "")
-        self._add_meta_row(outer, "Subject", hint.get("subject", ""))
-        self._add_meta_row(outer, "Date",    hint.get("date", ""))
+        self._meta_row(outer, "To",      ", ".join(recipients) if recipients else "")
+        self._meta_row(outer, "Subject", hint.get("subject", ""), bold=True)
+        self._meta_row(outer, "Date",    hint.get("date", ""), muted=True)
 
         n_att = hint.get("attachment_count", 0)
         if n_att:
-            self._add_meta_row(outer, "Attachments", f"{n_att} file(s) included")
+            self._meta_row(outer, "Attachments", f"{n_att} file(s)")
 
-        tk.Frame(outer, bg=BORDER, height=1).pack(fill="x", pady=(6, 4))
+        _hairline(outer).pack(fill="x", pady=8)
 
-        body_frame = tk.Frame(outer, bg=PANEL_BG)
+        body_frame = tk.Frame(outer, bg=CARD_BG)
         body_frame.pack(fill="both", expand=True)
 
         txt = tk.Text(
             body_frame,
-            bg=PANEL_BG, fg=TEXT,
-            font=("SF Pro Mono", 11),
+            bg=CARD_BG, fg=MUTED,
+            font=("SF Pro Text", 11),
             relief="flat", bd=0,
             wrap="word",
             state="disabled",
-            height=14,
+            height=6,
+            cursor="arrow",
         )
         vsb = ttk.Scrollbar(body_frame, orient="vertical", command=txt.yview)
         txt.configure(yscrollcommand=vsb.set)
@@ -217,225 +293,161 @@ class EmailCard(_BaseCard):
         txt.configure(state="disabled")
 
     @staticmethod
-    def _add_meta_row(parent: tk.Widget, label: str, value: str) -> None:
-        row = tk.Frame(parent, bg=PANEL_BG)
-        row.pack(fill="x", pady=1)
+    def _meta_row(parent: tk.Widget, label: str, value: str,
+                  bold: bool = False, muted: bool = False) -> None:
+        row = tk.Frame(parent, bg=CARD_BG)
+        row.pack(fill="x", pady=2)
         tk.Label(
-            row, text=f"{label}:",
-            font=("SF Pro Text", 11, "bold"),
-            bg=PANEL_BG, fg=META_KEY,
-            width=12, anchor="e",
+            row, text=label,
+            font=("SF Pro Text", 11),
+            bg=CARD_BG, fg=HINT,
+            width=10, anchor="e",
         ).pack(side="left")
         tk.Label(
             row, text=value,
-            font=("SF Pro Text", 11),
-            bg=PANEL_BG, fg=TEXT,
-            anchor="w", wraplength=540, justify="left",
-        ).pack(side="left", padx=(6, 0), fill="x", expand=True)
+            font=("SF Pro Text", 11, "bold" if bold else "normal"),
+            bg=CARD_BG,
+            fg=MUTED if muted else TEXT,
+            anchor="w", wraplength=490, justify="left",
+        ).pack(side="left", padx=(8, 0), fill="x", expand=True)
 
+
+# ── Thread card ───────────────────────────────────────────────────────────────
 
 class ThreadCard(_BaseCard):
-    """Card for gmail_get_thread — shows per-message previews in a notebook."""
+    _hint_type = "thread"
+
+    def _icon_char(self) -> str:
+        return "✉"  # ✉
+
+    def _subtitle(self) -> str:
+        hint = self._review.display_hint
+        n = hint.get("message_count", 0)
+        return f"Reading thread — {n} message{'s' if n != 1 else ''}"
 
     def _build_body(self) -> None:
         hint = self._review.display_hint
-        outer = tk.Frame(self, bg=PANEL_BG)
-        outer.pack(fill="both", expand=True, padx=10, pady=(6, 0))
+        outer = tk.Frame(self, bg=CARD_BG)
+        outer.pack(fill="both", expand=True, padx=14, pady=10)
 
-        subject = hint.get("subject", "")
-        count = hint.get("message_count", 0)
-        tk.Label(
-            outer,
-            text=f"Thread: {subject}  ({count} message(s))",
-            font=("SF Pro Text", 12, "bold"),
-            bg=PANEL_BG, fg=ACCENT,
-            anchor="w", wraplength=640, justify="left",
-        ).pack(fill="x", pady=(0, 6))
-
-        nb = ttk.Notebook(outer)
-        nb.pack(fill="both", expand=True)
-
-        style = ttk.Style()
-        style.configure("TNotebook", background=PANEL_BG, borderwidth=0)
-        style.configure("TNotebook.Tab", background=HEADER_BG, foreground=TEXT,
-                        padding=[8, 4])
-        style.map("TNotebook.Tab", background=[("selected", ACCENT)],
-                  foreground=[("selected", BG)])
+        EmailCard._meta_row(outer, "Subject", hint.get("subject", ""), bold=True)
 
         for i, msg in enumerate(hint.get("messages", []), 1):
-            tab = tk.Frame(nb, bg=PANEL_BG)
-            nb.add(tab, text=f"#{i}")
+            msg_frame = tk.Frame(
+                outer, bg=BG,
+                highlightbackground=BORDER, highlightthickness=1,
+            )
+            msg_frame.pack(fill="x", pady=(8, 0))
 
-            EmailCard._add_meta_row(tab, "From", msg.get("sender", ""))
+            inner = tk.Frame(msg_frame, bg=BG)
+            inner.pack(fill="both", padx=10, pady=8)
+
+            tk.Label(
+                inner, text=f"#{i}",
+                font=("SF Pro Text", 10, "bold"),
+                bg=BG, fg=MUTED, anchor="w",
+            ).pack(anchor="w", pady=(0, 4))
+
             recipients = msg.get("recipients", [])
-            EmailCard._add_meta_row(tab, "To", ", ".join(recipients) if recipients else "")
-            EmailCard._add_meta_row(tab, "Date", msg.get("date", ""))
+            EmailCard._meta_row(inner, "From", msg.get("sender", ""))
+            EmailCard._meta_row(inner, "To",   ", ".join(recipients) if recipients else "")
+            EmailCard._meta_row(inner, "Date", msg.get("date", ""), muted=True)
+
             n_att = msg.get("attachment_count", 0)
             if n_att:
-                EmailCard._add_meta_row(tab, "Attachments", f"{n_att} file(s) included")
-
-            tk.Frame(tab, bg=BORDER, height=1).pack(fill="x", pady=(6, 4))
-
-            body_frame = tk.Frame(tab, bg=PANEL_BG)
-            body_frame.pack(fill="both", expand=True)
-
-            txt = tk.Text(
-                body_frame,
-                bg=PANEL_BG, fg=TEXT,
-                font=("SF Pro Mono", 11),
-                relief="flat", bd=0,
-                wrap="word",
-                state="disabled",
-                height=10,
-            )
-            vsb = ttk.Scrollbar(body_frame, orient="vertical", command=txt.yview)
-            txt.configure(yscrollcommand=vsb.set)
-            vsb.pack(side="right", fill="y")
-            txt.pack(side="left", fill="both", expand=True)
+                EmailCard._meta_row(inner, "Attachments", f"{n_att} file(s)")
 
             plain = _html_to_text(msg.get("html_body", ""))
-            txt.configure(state="normal")
-            txt.insert("1.0", plain or "(no body)")
-            txt.configure(state="disabled")
+            if plain:
+                preview = plain[:200].replace("\n", " ")
+                if len(plain) > 200:
+                    preview += "…"
+                tk.Label(
+                    inner, text=preview,
+                    font=("SF Pro Text", 11),
+                    bg=BG, fg=MUTED,
+                    anchor="w", wraplength=560, justify="left",
+                ).pack(anchor="w", pady=(6, 0))
 
 
-# ── Generic JSON-tree card (fallback) ────────────────────────────────────────
+# ── Generic card (fallback) ───────────────────────────────────────────────────
 
-def _to_display(value: Any) -> str:
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    s = str(value).replace("\n", "↵ ").replace("\r", "")
-    return s[:300] + "…" if len(s) > 300 else s
-
-
-class JsonTreeFrame(tk.Frame):
-    """Treeview that renders a JSON-like Python value."""
-
-    def __init__(self, parent: tk.Widget, **kw: Any) -> None:
-        super().__init__(parent, bg=PANEL_BG, **kw)
-        self._build()
-
-    def _build(self) -> None:
-        style = ttk.Style(self)
-        style.configure("Json.Treeview", background=PANEL_BG, fieldbackground=PANEL_BG,
-                        foreground=TEXT, rowheight=22, borderwidth=0)
-        style.configure("Json.Treeview.Heading", background=HEADER_BG, foreground=ACCENT)
-        style.map("Json.Treeview", background=[("selected", ACCENT)])
-
-        self._tv = ttk.Treeview(self, columns=("value",), show="tree headings",
-                                 style="Json.Treeview", selectmode="browse")
-        self._tv.heading("#0", text="Key", anchor="w")
-        self._tv.heading("value", text="Value", anchor="w")
-        self._tv.column("#0", width=200, minwidth=120, stretch=True)
-        self._tv.column("value", width=360, minwidth=160, stretch=True)
-
-        vsb = ttk.Scrollbar(self, orient="vertical", command=self._tv.yview)
-        hsb = ttk.Scrollbar(self, orient="horizontal", command=self._tv.xview)
-        self._tv.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-
-        self._tv.grid(row=0, column=0, sticky="nsew")
-        vsb.grid(row=0, column=1, sticky="ns")
-        hsb.grid(row=1, column=0, sticky="ew")
-        self.rowconfigure(0, weight=1)
-        self.columnconfigure(0, weight=1)
-
-    def load(self, data: Any, root_label: str = "data") -> None:
-        self._tv.delete(*self._tv.get_children())
-        self._insert("", "end", data, root_label, depth=0)
-
-    def _insert(self, parent: str, index: str | int, value: Any, key: str, depth: int) -> None:
-        if isinstance(value, dict):
-            node = self._tv.insert(parent, index, text=f"  {key}", values=("{…}",), open=depth < 2)
-            for k, v in value.items():
-                self._insert(node, "end", v, str(k), depth + 1)
-        elif isinstance(value, list):
-            node = self._tv.insert(parent, index, text=f"  {key}",
-                                    values=(f"[{len(value)} items]",),
-                                    open=depth < 1 and len(value) <= 10)
-            for i, v in enumerate(value):
-                self._insert(node, "end", v, f"[{i}]", depth + 1)
-        else:
-            self._tv.insert(parent, index, text=f"  {key}", values=(_to_display(value),))
+def _flatten_params(data: Any, prefix: str = "") -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    if isinstance(data, dict):
+        for k, v in data.items():
+            key = f"{prefix}.{k}" if prefix else k
+            if isinstance(v, (dict, list)):
+                rows.extend(_flatten_params(v, key))
+            else:
+                val = str(v) if v is not None else "null"
+                rows.append((key, val[:120] + ("…" if len(val) > 120 else "")))
+    elif isinstance(data, list):
+        for i, v in enumerate(data[:8]):
+            key = f"{prefix}[{i}]"
+            if isinstance(v, (dict, list)):
+                rows.extend(_flatten_params(v, key))
+            else:
+                rows.append((key, str(v)[:120]))
+        if len(data) > 8:
+            rows.append((f"{prefix}[…]", f"{len(data) - 8} more items"))
+    return rows
 
 
 class GenericCard(_BaseCard):
-    """Fallback card: collapsible JSON tree."""
-
-    def __init__(self, *args: Any, **kw: Any) -> None:
-        self._expanded = True
-        super().__init__(*args, **kw)
-
-    def _build_header(self) -> None:
-        r = self._review
-        hdr = tk.Frame(self, bg=HEADER_BG, pady=6)
-        hdr.pack(fill="x")
-        tk.Label(
-            hdr, text=f"  🔧 {r.tool_name}",
-            font=("SF Pro Text", 13, "bold"),
-            bg=HEADER_BG, fg=ACCENT, anchor="w",
-        ).pack(side="left", padx=(4, 0))
-        self._toggle_btn = tk.Button(
-            hdr, text="▲",
-            font=("SF Pro Text", 10),
-            bg=HEADER_BG, fg=MUTED, bd=0,
-            activebackground=HEADER_BG, cursor="hand2",
-            command=self._toggle,
-        )
-        self._toggle_btn.pack(side="right", padx=8)
+    _hint_type = "generic"
 
     def _build_body(self) -> None:
         r = self._review
-        meta = tk.Frame(self, bg=PANEL_BG, pady=2)
-        meta.pack(fill="x", padx=10)
+        outer = tk.Frame(self, bg=CARD_BG)
+        outer.pack(fill="both", expand=True, padx=14, pady=10)
 
-        summary_text = r.summary[:120] + ("…" if len(r.summary) > 120 else "")
-        tk.Label(meta, text=summary_text, bg=PANEL_BG, fg=TEXT,
-                 font=("SF Pro Text", 11), anchor="w", wraplength=560,
-                 justify="left").pack(fill="x")
-        if r.sender:
-            tk.Label(meta, text=f"↳ {r.sender[:100]}", bg=PANEL_BG, fg=MUTED,
-                     font=("SF Pro Text", 10), anchor="w").pack(fill="x")
+        rows = _flatten_params(r.filtered_data)
 
-        self._body = tk.Frame(self, bg=PANEL_BG)
-        self._body.pack(fill="both", expand=True, padx=10, pady=(4, 0))
+        if rows:
+            tk.Label(
+                outer, text="Parameters",
+                font=("SF Pro Text", 10, "bold"),
+                bg=CARD_BG, fg=HINT, anchor="w",
+            ).pack(anchor="w", pady=(0, 6))
 
-        tk.Label(self._body, text="Response data:", bg=PANEL_BG, fg=MUTED,
-                 font=("SF Pro Text", 10), anchor="w").pack(fill="x")
-        self._tree = JsonTreeFrame(self._body)
-        self._tree.pack(fill="both", expand=True)
-        self._tree.load(r.filtered_data, root_label="filtered_data")
+            params_bg = tk.Frame(
+                outer, bg=BG,
+                highlightbackground=BORDER, highlightthickness=1,
+            )
+            params_bg.pack(fill="x")
 
-    def _build_actions(self) -> None:
-        btn_row = tk.Frame(self._body, bg=PANEL_BG, pady=6)
-        btn_row.pack(fill="x")
-        tk.Button(
-            btn_row, text="✅  Approve",
-            font=("SF Pro Text", 12, "bold"),
-            bg=GREEN_BG, fg=GREEN_FG,
-            activebackground="#3d6b52", activeforeground=GREEN_FG,
-            bd=0, padx=18, pady=6, cursor="hand2",
-            command=lambda: self._on_approve(self._review.request_id),
-        ).pack(side="left", padx=(0, 8))
-        tk.Button(
-            btn_row, text="❌  Reject",
-            font=("SF Pro Text", 12, "bold"),
-            bg=RED_BG, fg=RED_FG,
-            activebackground="#6b3d3d", activeforeground=RED_FG,
-            bd=0, padx=18, pady=6, cursor="hand2",
-            command=lambda: self._on_reject(self._review.request_id),
-        ).pack(side="left")
-        tk.Frame(self, bg=PANEL_BG, height=8).pack()
+            inner = tk.Frame(params_bg, bg=BG)
+            inner.pack(fill="x", padx=10, pady=8)
 
-    def _toggle(self) -> None:
-        if self._expanded:
-            self._body.pack_forget()
-            self._toggle_btn.config(text="▼")
+            for key, val in rows:
+                row = tk.Frame(inner, bg=BG)
+                row.pack(fill="x", pady=2)
+                tk.Label(
+                    row, text=key,
+                    font=("SF Pro Mono", 10),
+                    bg=BG, fg=MUTED, anchor="w",
+                    width=22,
+                ).pack(side="left")
+                tk.Label(
+                    row, text=val,
+                    font=("SF Pro Mono", 10),
+                    bg=BG, fg=TEXT,
+                    anchor="w", wraplength=360, justify="left",
+                ).pack(side="left", padx=(8, 0), fill="x", expand=True)
         else:
-            self._body.pack(fill="both", expand=True, padx=10, pady=(4, 0))
-            self._toggle_btn.config(text="▲")
-        self._expanded = not self._expanded
+            tk.Label(
+                outer, text="(no parameters)",
+                font=("SF Pro Text", 11),
+                bg=CARD_BG, fg=HINT, anchor="w",
+            ).pack(anchor="w")
+
+        if r.sender:
+            tk.Label(
+                outer, text=f"Sender: {r.sender[:120]}",
+                font=("SF Pro Text", 10),
+                bg=CARD_BG, fg=HINT, anchor="w",
+            ).pack(anchor="w", pady=(8, 0))
 
 
 # ── Card factory ──────────────────────────────────────────────────────────────
@@ -482,7 +494,6 @@ class GuardFloatingWindow:
         self._root.configure(bg=BG)
         self._root.protocol("WM_DELETE_WINDOW", self._quit)
 
-        # Set window icon (used by macOS Mission Control / Dock when detached).
         _icon_path = os.path.join(_RESOURCES, "icon_64.png")
         if os.path.exists(_icon_path):
             try:
@@ -500,62 +511,71 @@ class GuardFloatingWindow:
     def _build(self) -> None:
         root = self._root
 
-        title_bar = tk.Frame(root, bg=HEADER_BG, pady=10)
+        # title bar
+        title_bar = tk.Frame(root, bg=TITLEBAR_BG)
         title_bar.pack(fill="x")
 
-        _title_icon_path = os.path.join(_RESOURCES, "icon_32.png")
-        if os.path.exists(_title_icon_path):
-            try:
-                self._title_icon_img = tk.PhotoImage(file=_title_icon_path)
-                tk.Label(
-                    title_bar, image=self._title_icon_img,
-                    bg=HEADER_BG,
-                ).pack(side="left", padx=(8, 4))
-            except Exception:
-                pass
+        dots = tk.Frame(title_bar, bg=TITLEBAR_BG)
+        dots.pack(side="left", padx=(14, 0), pady=14)
+        for dot_color in ("#FF5F57", "#FEBC2E", "#28C840"):
+            c = tk.Canvas(dots, width=12, height=12, bg=TITLEBAR_BG,
+                          highlightthickness=0)
+            c.create_oval(1, 1, 11, 11, fill=dot_color, outline="")
+            c.pack(side="left", padx=3)
 
         tk.Label(
             title_bar,
             text=self._app_name,
-            font=("SF Pro Text", 15, "bold"),
-            bg=HEADER_BG, fg=ACCENT,
-        ).pack(side="left", padx=(0, 4))
-        tk.Button(
-            title_bar, text="Quit",
-            font=("SF Pro Text", 11),
-            bg=HEADER_BG, fg=MUTED,
-            activebackground=RED_BG, activeforeground=RED_FG,
-            bd=0, padx=10, pady=2, cursor="hand2",
-            command=self._quit,
-        ).pack(side="right", padx=8)
+            font=("SF Pro Text", 13, "bold"),
+            bg=TITLEBAR_BG, fg=TEXT,
+        ).pack(side="left", padx=(10, 0))
 
-        toolbar = tk.Frame(root, bg=BG, pady=6)
-        toolbar.pack(fill="x", padx=12)
+        self._badge_lbl = tk.Label(
+            title_bar,
+            text="",
+            font=("SF Pro Text", 10, "bold"),
+            bg=ACCENT, fg="white",
+            padx=7, pady=1,
+        )
+
+        _hairline(title_bar, bg=TITLEBAR_BG).pack(side="bottom", fill="x")
+
+        # toolbar
+        toolbar = tk.Frame(root, bg=TOOLBAR_BG)
+        toolbar.pack(fill="x")
+
         self._status_lbl = tk.Label(
             toolbar, text="No pending requests",
             font=("SF Pro Text", 11),
-            bg=BG, fg=MUTED,
+            bg=TOOLBAR_BG, fg=MUTED,
         )
-        self._status_lbl.pack(side="left")
-        tk.Button(
-            toolbar, text="Deny All",
+        self._status_lbl.pack(side="left", padx=14, pady=8)
+
+        self._deny_all_btn = tk.Button(
+            toolbar, text="Deny all",
             font=("SF Pro Text", 11, "bold"),
-            bg=RED_BG, fg=RED_FG,
-            activebackground="#6b3d3d", activeforeground=RED_FG,
-            bd=0, padx=12, pady=4, cursor="hand2",
+            bg=RED_TINT, fg=RED,
+            activebackground="#FFD9D7", activeforeground=RED,
+            relief="flat", bd=0, padx=12, pady=4,
+            cursor="hand2",
             command=self._reject_all,
-        ).pack(side="right", padx=(6, 0))
-        tk.Button(
-            toolbar, text="Accept All",
+        )
+        self._deny_all_btn.pack(side="right", padx=(6, 14), pady=8)
+
+        self._allow_all_btn = tk.Button(
+            toolbar, text="Allow all",
             font=("SF Pro Text", 11, "bold"),
-            bg=GREEN_BG, fg=GREEN_FG,
-            activebackground="#3d6b52", activeforeground=GREEN_FG,
-            bd=0, padx=12, pady=4, cursor="hand2",
+            bg=GREEN_TINT, fg=GREEN,
+            activebackground="#D4F5DF", activeforeground=GREEN,
+            relief="flat", bd=0, padx=12, pady=4,
+            cursor="hand2",
             command=self._approve_all,
-        ).pack(side="right")
+        )
+        self._allow_all_btn.pack(side="right", pady=8)
 
-        tk.Frame(root, bg=BORDER, height=1).pack(fill="x")
+        _hairline(toolbar, bg=TOOLBAR_BG).pack(side="bottom", fill="x")
 
+        # scrollable card area
         container = tk.Frame(root, bg=BG)
         container.pack(fill="both", expand=True)
 
@@ -566,7 +586,9 @@ class GuardFloatingWindow:
         canvas.pack(side="left", fill="both", expand=True)
 
         self._card_frame = tk.Frame(canvas, bg=BG)
-        self._canvas_window = canvas.create_window((0, 0), window=self._card_frame, anchor="nw")
+        self._canvas_window = canvas.create_window(
+            (0, 0), window=self._card_frame, anchor="nw",
+        )
 
         self._card_frame.bind(
             "<Configure>",
@@ -584,10 +606,10 @@ class GuardFloatingWindow:
 
         self._empty_lbl = tk.Label(
             self._card_frame,
-            text="No pending requests.\nWaiting for Claude to make a call…",
+            text="All clear\nWaiting for Claude to make a request…",
             font=("SF Pro Text", 13),
             bg=BG, fg=MUTED,
-            justify="center", pady=60,
+            justify="center", pady=80,
         )
         self._empty_lbl.pack()
 
@@ -611,9 +633,21 @@ class GuardFloatingWindow:
 
     def _render(self, pending: list[PendingReview]) -> None:
         count = len(pending)
-        self._status_lbl.config(
-            text=f"{count} pending request(s)" if count else "No pending requests"
-        )
+
+        if count:
+            self._status_lbl.config(
+                text=f"{count} request{'s' if count != 1 else ''} waiting for review",
+                fg=TEXT,
+            )
+            self._badge_lbl.config(text=f" {count} ")
+            self._badge_lbl.pack(side="left", padx=(6, 0))
+            self._allow_all_btn.config(state="normal", cursor="hand2")
+            self._deny_all_btn.config(state="normal", cursor="hand2")
+        else:
+            self._status_lbl.config(text="No pending requests", fg=MUTED)
+            self._badge_lbl.pack_forget()
+            self._allow_all_btn.config(state="disabled", cursor="")
+            self._deny_all_btn.config(state="disabled", cursor="")
 
         current_ids = {r.request_id for r in pending}
         for rid in list(self._cards):
@@ -634,7 +668,7 @@ class GuardFloatingWindow:
                     on_approve=self._approve,
                     on_reject=self._reject,
                 )
-                card.pack(fill="x", padx=10, pady=(10, 0))
+                card.pack(fill="x", padx=12, pady=(10, 0))
                 self._cards[review.request_id] = card
 
         self._canvas.yview_moveto(0)
