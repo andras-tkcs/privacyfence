@@ -264,3 +264,12 @@ def init_auto_accept_evaluator(rules_config: dict) -> AutoAcceptEvaluator:
     global _INSTANCE
     _INSTANCE = AutoAcceptEvaluator(rules_config)
     return _INSTANCE
+
+def reload_rules(rules_config: dict) -> None:
+    """Hot-reload rules into the live evaluator without restarting the daemon."""
+    global _INSTANCE
+    if _INSTANCE is None:
+        _INSTANCE = AutoAcceptEvaluator(rules_config)
+    else:
+        _INSTANCE._rules = rules_config or {}
+    logger.info("Auto-accept rules reloaded live (%d operations)", len(_INSTANCE._rules))
