@@ -32,4 +32,9 @@ where = ["src"]
 "" = "src"
 
 [tool.setuptools.package-data]
-loopline = ["resources/*.png"]
+loopline = ["resources/*.png", "resources/settings.yaml.example"]
+
+[project.optional-dependencies]
+dev = [
+    "pyinstaller>=6.0",
+]
