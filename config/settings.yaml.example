@@ -76,6 +76,18 @@ contacts:
   # Where the Contacts OAuth token is cached (separate from Gmail/Drive tokens).
   token_file: credentials/contacts_token.json
 
+calendar:
+  # OAuth2 client secret (same file as Gmail/Drive/Contacts).
+  credentials_file: credentials/client_secret.json
+  # Where the Calendar OAuth token is cached.
+  token_file: credentials/calendar_token.json
+
+tasks:
+  # OAuth2 client secret (same file as Gmail/Drive/Contacts).
+  credentials_file: credentials/client_secret.json
+  # Where the Tasks OAuth token is cached.
+  token_file: credentials/tasks_token.json
+
 telegram:
   # Get api_id and api_hash from https://my.telegram.org/apps
   # api_id: 12345678
