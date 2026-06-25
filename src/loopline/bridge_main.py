@@ -67,6 +67,16 @@ def _setup_logging() -> None:
 
 def _find_daemon_cmd() -> list[str]:
     """Return the command to launch loopline-app."""
+    # When running as a PyInstaller bundle, the daemon is a sibling binary.
+    # The main exe is named "Loopline" (the .app name); "loopline-app" is a
+    # symlink to it created by build_dmg.sh for convenience.
+    if getattr(sys, "frozen", False):
+        bundle_macos = Path(sys.executable).parent
+        for name in ("loopline-app", "Loopline"):
+            candidate = bundle_macos / name
+            if candidate.exists():
+                return [str(candidate)]
+
     here = Path(sys.argv[0]).resolve().parent
     candidate = here / "loopline-app"
     if candidate.exists():
