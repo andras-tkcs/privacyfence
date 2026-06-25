@@ -166,6 +166,15 @@ Every decision — approved, rejected, or auto-accepted — is appended to a JSO
 > **Slack uses a user token** (`xoxp-`) so Claude sees exactly what you see, with no bot to invite.  
 > See [docs/slack-setup.md](docs/slack-setup.md) for step-by-step instructions on creating a Slack app and obtaining the token.
 
+> **Telegram uses a personal API application** (Telethon / MTProto) — Claude reads your chats as you, not as a bot.  
+> See [docs/telegram-setup.md](docs/telegram-setup.md) for step-by-step instructions on creating a Telegram app and authorizing your account.
+
+> **Salesforce** connects via username + password + security token, or an OAuth access token.  
+> See [docs/salesforce-setup.md](docs/salesforce-setup.md) for step-by-step instructions.
+
+> **Atlassian (Jira & Confluence)** use a single API token tied to your Atlassian account — one token covers both products.  
+> See [docs/atlassian-setup.md](docs/atlassian-setup.md) for step-by-step instructions.
+
 ### From the DMG (recommended)
 
 1. Download the latest `Loopline.dmg` from the [Releases](../../releases) page.
