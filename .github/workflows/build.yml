@@ -1,0 +1,67 @@
+name: Build & Release DMG
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:   # allow manual runs from the Actions tab
+
+jobs:
+  build:
+    runs-on: macos-latest   # arm64 Apple Silicon runner
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: brew install create-dmg
+
+      - name: Install Python dependencies
+        run: pip install -e ".[dev]"
+
+      # ── Optional: import Developer ID certificate for signing ─────────────
+      # To enable signing:
+      #   1. Export your "Developer ID Application" cert from Keychain as a .p12
+      #   2. Add these GitHub secrets:
+      #        MACOS_CERTIFICATE      — base64-encoded .p12  (cat cert.p12 | base64 | pbcopy)
+      #        MACOS_CERTIFICATE_PWD  — the .p12 export password
+      #        SIGN_IDENTITY          — e.g. "Developer ID Application: Your Name (TEAMID)"
+      #   3. Uncomment the block below
+      #
+      # - name: Import signing certificate
+      #   env:
+      #     MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+      #     MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+      #   run: |
+      #     echo "$MACOS_CERTIFICATE" | base64 --decode > certificate.p12
+      #     security create-keychain -p "" build.keychain
+      #     security default-keychain -s build.keychain
+      #     security unlock-keychain -p "" build.keychain
+      #     security import certificate.p12 -k build.keychain \
+      #       -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+      #     security set-key-partition-list -S apple-tool:,apple: -s \
+      #       -k "" build.keychain
+      #     rm certificate.p12
+
+      - name: Build .app and DMG
+        env:
+          SIGN_IDENTITY: ${{ secrets.SIGN_IDENTITY }}
+          # NOTARIZE_PROFILE: ${{ secrets.NOTARIZE_PROFILE }}   # uncomment with notarization
+        run: bash scripts/build_dmg.sh
+
+      - name: Upload DMG as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Loopline-dmg
+          path: dist/Loopline-*.dmg
+          retention-days: 30
+
+      # Attach to the GitHub Release when triggered by a version tag
+      - name: Attach DMG to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/Loopline-*.dmg
