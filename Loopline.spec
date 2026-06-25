@@ -81,7 +81,7 @@ hidden_imports = [
 # ── daemon (main .app entry point) ────────────────────────────────────────────
 
 daemon_a = Analysis(
-    ["src/loopline/daemon_main.py"],
+    ["src/_daemon_entry.py"],
     pathex=[SRC],
     binaries=[],
     datas=datas,
@@ -116,7 +116,7 @@ daemon_exe = EXE(
 # ── bridge (helper binary, run by Claude as an MCP server) ───────────────────
 
 bridge_a = Analysis(
-    ["src/loopline/bridge_main.py"],
+    ["src/_bridge_entry.py"],
     pathex=[SRC],
     binaries=[],
     datas=datas,
