@@ -238,8 +238,8 @@ def _run_oauth(service: str, on_done: Callable[[bool, str], None]) -> None:
                 token_file=str(_credentials_dir() / "contacts_token.json"),
             )
             client.authorize_interactive()
-            email = client.check_connection()
-            on_done(True, f"Contacts authorized as {email}")
+            result = client.check_connection()
+            on_done(True, f"Contacts authorized ({result})")
 
         elif service == "tasks":
             from .tasks_client import TasksClient, TasksClientError
