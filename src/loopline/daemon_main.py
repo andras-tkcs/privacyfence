@@ -244,14 +244,22 @@ def _build_connectors(config: dict[str, Any]) -> list:
         if not api_id or not api_hash:
             raise TelegramClientError("telegram.api_id and api_hash not configured")
         session_file = _resolve_path(tg_cfg.get("session_file", "credentials/telegram.session"))
+        import os as _os
+        if not _os.path.exists(session_file) and not _os.path.exists(session_file + ".session"):
+            raise TelegramClientError(
+                f"Session file not found: {session_file}. "
+                "Run 'loopline-app --telegram-setup' to authorize."
+            )
         tg_client = TelegramLooplineClient(
             api_id=int(api_id),
             api_hash=api_hash,
             session_file=session_file,
         )
-        import asyncio as _asyncio
-        tg_name = _asyncio.run(tg_client.check_connection())
-        logger.info("Telegram connector ready: %s", tg_name)
+        # Do NOT connect here — Telethon binds to the current event loop at
+        # connect() time.  Connecting via asyncio.run() would bind to a
+        # temporary loop that gets destroyed, causing "event loop must not
+        # change after connection" on the IPC loop.  Connect lazily instead.
+        logger.info("Telegram connector registered (will connect on first use)")
         connectors.append(TelegramConnector(tg_client))
     except (TelegramClientError, FileNotFoundError, Exception) as exc:
         logger.warning("Telegram connector disabled: %s", exc)
