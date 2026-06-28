@@ -269,20 +269,25 @@ def _register_approval_tools(mcp: FastMCP) -> None:
 def _build_approval_fn(tool_name: str, ipc_method: str) -> Any:
     """Return a properly-signed coroutine for an approval tool."""
     async def _handler(**kwargs: Any) -> Any:
-        global _ipc
-        if _ipc is None:
-            raise ToolError("IPC client not initialized")
         request_id = kwargs.get("request_id", "")
+        # Use a fresh connection per approval call so stale persistent connections
+        # between the initial read tool call and the user's accept/deny don't fail.
+        client = IPCClient(SOCKET_PATH)
         try:
-            return await getattr(_ipc, ipc_method)(request_id)
+            await client.connect()
+            return await getattr(client, ipc_method)(request_id)
         except IPCError as exc:
             msg = str(exc)
-            if "No pending read" in msg or "connection closed" in msg.lower():
+            if "No pending read" in msg:
                 raise ToolError(
-                    f"{msg}. The session may have been interrupted — "
+                    f"{msg}. The approval session expired — "
                     "please re-request the original read tool so a new approval can be issued."
                 ) from exc
             raise ToolError(msg) from exc
+        except Exception as exc:
+            raise ToolError(f"Could not reach Loopline daemon: {exc}") from exc
+        finally:
+            await client.close()
 
     _handler.__name__ = tool_name
     _handler.__doc__ = ""
