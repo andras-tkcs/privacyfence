@@ -221,60 +221,74 @@ def _register_tools(mcp: FastMCP, manifest: dict) -> None:
     _register_approval_tools(mcp)
 
 
+_APPROVAL_TOOLS = [
+    (
+        "loopline_confirm",
+        "confirm",
+        (
+            "Release a Loopline-gated read and return the actual data. "
+            "Call this immediately after the user replies 'accept' to a pending_approval preview. "
+            "Pass the request_id from that preview. Returns the actual content."
+        ),
+    ),
+    (
+        "loopline_deny",
+        "deny",
+        (
+            "Cancel a Loopline-gated read. "
+            "Call this immediately after the user replies 'deny' to a pending_approval preview. "
+            "Pass the request_id from that preview. The data is discarded."
+        ),
+    ),
+    (
+        "loopline_show_details",
+        "show_details",
+        (
+            "Open a full-content Loopline popup for a pending read. "
+            "Call this immediately after the user replies 'details' to a pending_approval preview. "
+            "Loopline opens a native macOS popup on the user's device showing the complete content. "
+            "The user then clicks Accept or Deny in that popup. "
+            "This call blocks until they decide. "
+            "Returns the data if accepted, raises an error if denied."
+        ),
+    ),
+]
+
+
 def _register_approval_tools(mcp: FastMCP) -> None:
-    """Register the three Loopline approval control tools."""
-
-    async def loopline_confirm(request_id: str) -> Any:
-        """Release a Loopline-gated read and return the actual data.
-
-        Call this immediately after the user replies "accept" to a pending_approval
-        preview. Pass the request_id from that preview. Returns the actual content.
-        """
-        global _ipc
-        if _ipc is None:
-            raise ToolError("IPC client not initialized")
-        try:
-            return await _ipc.confirm(request_id)
-        except IPCError as exc:
-            raise ToolError(str(exc)) from exc
-
-    async def loopline_deny(request_id: str) -> Any:
-        """Cancel a Loopline-gated read.
-
-        Call this immediately after the user replies "deny" to a pending_approval
-        preview. Pass the request_id from that preview. The data is discarded.
-        """
-        global _ipc
-        if _ipc is None:
-            raise ToolError("IPC client not initialized")
-        try:
-            return await _ipc.deny(request_id)
-        except IPCError as exc:
-            raise ToolError(str(exc)) from exc
-
-    async def loopline_show_details(request_id: str) -> Any:
-        """Open a full-content Loopline popup for a pending read.
-
-        Call this immediately after the user replies "details" to a
-        pending_approval preview. Loopline opens a native macOS popup on the
-        user's device showing the complete content (e.g. the full email body).
-        The user then clicks Accept or Deny inside that popup. This call blocks
-        until they decide. Returns the data if accepted, raises an error if denied.
-        """
-        global _ipc
-        if _ipc is None:
-            raise ToolError("IPC client not initialized")
-        try:
-            return await _ipc.show_details(request_id)
-        except IPCError as exc:
-            raise ToolError(str(exc)) from exc
-
+    """Register loopline_confirm / loopline_deny / loopline_show_details."""
     from mcp.types import ToolAnnotations
     ro = ToolAnnotations(readOnlyHint=True, destructiveHint=False)
-    mcp.tool(name="loopline_confirm",      description=loopline_confirm.__doc__,      annotations=ro)(loopline_confirm)
-    mcp.tool(name="loopline_deny",         description=loopline_deny.__doc__,         annotations=ro)(loopline_deny)
-    mcp.tool(name="loopline_show_details", description=loopline_show_details.__doc__, annotations=ro)(loopline_show_details)
-    logger.info("Registered loopline approval tools: confirm / deny / show_details")
+
+    for tool_name, ipc_method, description in _APPROVAL_TOOLS:
+        fn = _build_approval_fn(tool_name, ipc_method)
+        mcp.tool(name=tool_name, description=description, annotations=ro)(fn)
+        logger.info("Registered approval tool: %s", tool_name)
+
+
+def _build_approval_fn(tool_name: str, ipc_method: str) -> Any:
+    """Return a properly-signed coroutine for an approval tool."""
+    async def _handler(**kwargs: Any) -> Any:
+        global _ipc
+        if _ipc is None:
+            raise ToolError("IPC client not initialized")
+        request_id = kwargs.get("request_id", "")
+        try:
+            return await getattr(_ipc, ipc_method)(request_id)
+        except IPCError as exc:
+            raise ToolError(str(exc)) from exc
+
+    _handler.__name__ = tool_name
+    _handler.__doc__ = ""
+    _handler.__signature__ = inspect.Signature([
+        inspect.Parameter(
+            "request_id",
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            annotation=str,
+        )
+    ])
+    _handler.__annotations__ = {"request_id": str}
+    return _handler
 
 
 # ---------------------------------------------------------------------------- #
