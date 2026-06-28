@@ -5,11 +5,10 @@ by the bridge on first use. Only one instance is allowed (enforced via a lock
 file). The bridge connects to this process over a Unix socket.
 
 Threading model:
-  - Main thread:   tkinter floating window (hard macOS requirement).
+  - Main thread:   rumps menu bar app (macOS requirement for AppKit).
   - IPC thread:    asyncio event loop serving the bridge socket connection.
-  - ReviewQueue:   bridges the two via loop.call_soon_threadsafe.
+  - Popups:        approval_popup.py uses osascript subprocesses (any thread).
 """
-
 from __future__ import annotations
 
 import argparse
@@ -38,11 +37,9 @@ from .calendar_client import CalendarClient, CalendarClientError
 from .confluence_client import ConfluenceClient, ConfluenceClientError
 from .contacts_client import ContactsClient, ContactsClientError
 from .drive_client import DriveClient, DriveClientError
-from .floating_window import GuardFloatingWindow
 from .gmail_client import GmailClient, GmailClientError
 from .ipc_server import IPCServer
 from .jira_client import JiraClient, JiraClientError
-from .privacy_filter import DrivePrivacyFilter, PrivacyFilter, SlackPrivacyFilter
 from .salesforce_client import SalesforceClient, SalesforceClientError
 from .slack_client import SlackClient, SlackClientError
 from .tasks_client import TasksClient, TasksClientError
@@ -52,7 +49,6 @@ logger = logging.getLogger("loopline.daemon")
 
 PROJECT_ROOT = str(data_dir())
 LOCK_FILE = os.path.join(PROJECT_ROOT, "loopline.lock")
-# Written by the setup wizard on first-run completion.
 SETUP_SENTINEL = os.path.join(PROJECT_ROOT, "setup_complete")
 
 _lock_fd: int | None = None
@@ -119,7 +115,7 @@ def setup_logging(config: dict[str, Any]) -> None:
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
     fmt = logging.Formatter("%(asctime)s %(levelname)-8s [%(name)s] %(message)s")
-    handlers = [
+    handlers: list[logging.Handler] = [
         logging.FileHandler(log_file, encoding="utf-8"),
         logging.StreamHandler(sys.stderr),
     ]
@@ -151,7 +147,9 @@ def _build_connectors(config: dict[str, Any]) -> list:
         )
         email = client.check_connection()
         logger.info("Gmail connector ready for %s", email)
-        connectors.append(GmailConnector(client, PrivacyFilter(config.get("privacy", {}) or {})))
+        connector = GmailConnector(client)
+        connector.my_email = email
+        connectors.append(connector)
     except (GmailClientError, FileNotFoundError) as exc:
         logger.warning("Gmail connector disabled: %s", exc)
 
@@ -164,7 +162,9 @@ def _build_connectors(config: dict[str, Any]) -> list:
         )
         email = client.check_connection()
         logger.info("Drive connector ready for %s", email)
-        connectors.append(DriveConnector(client, DrivePrivacyFilter(config.get("drive_privacy", {}) or {})))
+        connector = DriveConnector(client)
+        connector.my_email = email
+        connectors.append(connector)
     except (DriveClientError, FileNotFoundError) as exc:
         logger.warning("Drive connector disabled: %s", exc)
 
@@ -177,7 +177,9 @@ def _build_connectors(config: dict[str, Any]) -> list:
         client = SlackClient(user_token=user_token)
         workspace = client.check_connection()
         logger.info("Slack connector ready for workspace %r", workspace)
-        connectors.append(SlackConnector(client, SlackPrivacyFilter(config.get("slack_privacy", {}) or {})))
+        connector = SlackConnector(client)
+        connector.my_email = slack_cfg.get("email", "")
+        connectors.append(connector)
     except (SlackClientError, FileNotFoundError) as exc:
         logger.warning("Slack connector disabled: %s", exc)
 
@@ -190,10 +192,7 @@ def _build_connectors(config: dict[str, Any]) -> list:
         )
         email = client.check_connection()
         logger.info("Contacts connector ready for %s", email)
-        connector = ContactsConnector(
-            client,
-            rules_config=(config.get("auto_accept_rules", {}) or {}),
-        )
+        connector = ContactsConnector(client)
         connector.my_email = email
         connectors.append(connector)
     except (ContactsClientError, FileNotFoundError) as exc:
@@ -235,8 +234,7 @@ def _build_connectors(config: dict[str, Any]) -> list:
         client = SalesforceClient(config=sf_cfg)
         client.check_connection()
         logger.info("Salesforce connector ready for %s", sf_cfg.get("instance_url"))
-        connector = SalesforceConnector(client)
-        connectors.append(connector)
+        connectors.append(SalesforceConnector(client))
     except (SalesforceClientError, FileNotFoundError) as exc:
         logger.warning("Salesforce connector disabled: %s", exc)
 
@@ -276,8 +274,7 @@ def _build_connectors(config: dict[str, Any]) -> list:
         if not api_id or not api_hash:
             raise TelegramClientError("telegram.api_id and api_hash not configured")
         session_file = _resolve_path(tg_cfg.get("session_file", "credentials/telegram.session"))
-        import os as _os
-        if not _os.path.exists(session_file) and not _os.path.exists(session_file + ".session"):
+        if not os.path.exists(session_file) and not os.path.exists(session_file + ".session"):
             raise TelegramClientError(
                 f"Session file not found: {session_file}. "
                 "Run 'loopline-app --telegram-setup' to authorize."
@@ -287,10 +284,6 @@ def _build_connectors(config: dict[str, Any]) -> list:
             api_hash=api_hash,
             session_file=session_file,
         )
-        # Do NOT connect here — Telethon binds to the current event loop at
-        # connect() time.  Connecting via asyncio.run() would bind to a
-        # temporary loop that gets destroyed, causing "event loop must not
-        # change after connection" on the IPC loop.  Connect lazily instead.
         logger.info("Telegram connector registered (will connect on first use)")
         connectors.append(TelegramConnector(tg_client))
     except (TelegramClientError, FileNotFoundError, Exception) as exc:
@@ -317,13 +310,12 @@ class IPCServerThread(threading.Thread):
         asyncio.set_event_loop(self._loop)
         try:
             self._loop.run_until_complete(self._main())
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.error("IPC server thread crashed: %s", exc, exc_info=True)
 
     async def _main(self) -> None:
         await self._server.start()
         self._ready.set()
-        # Run forever until the loop is stopped.
         await asyncio.get_running_loop().create_future()
 
 
@@ -412,7 +404,6 @@ def run_tasks_oauth(config: dict[str, Any]) -> int:
 
 
 def run_telegram_setup(config: dict[str, Any]) -> int:
-    """Interactive Telegram phone+code authorization."""
     tg_cfg = config.get("telegram", {}) or {}
     api_id = tg_cfg.get("api_id")
     api_hash = tg_cfg.get("api_hash", "")
@@ -421,7 +412,6 @@ def run_telegram_setup(config: dict[str, Any]) -> int:
         return 1
     session_file = _resolve_path(tg_cfg.get("session_file", "credentials/telegram.session"))
     client = TelegramLooplineClient(api_id=int(api_id), api_hash=api_hash, session_file=session_file)
-    import asyncio
     asyncio.run(client.authorize_interactive())
     print(f"Telegram session saved to {session_file}")
     return 0
@@ -431,7 +421,7 @@ def run_telegram_setup(config: dict[str, Any]) -> int:
 # Main app
 # ---------------------------------------------------------------------------- #
 
-def run_app(config: dict[str, Any]) -> int:
+def run_app(config: dict[str, Any], config_path: str) -> int:
     if not _acquire_instance_lock():
         logger.error("Another instance is already running; exiting.")
         print("Loopline daemon is already running.", file=sys.stderr)
@@ -444,23 +434,13 @@ def run_app(config: dict[str, Any]) -> int:
     ipc_server = IPCServer(connectors)
     ipc_thread = IPCServerThread(ipc_server)
     ipc_thread.start()
-    # Wait for socket to be ready before the UI starts so the bridge can connect
-    # the moment the daemon process is visible.
     ipc_thread._ready.wait(timeout=5)
-    logger.info("IPC server ready, starting UI")
+    logger.info("IPC server ready, starting menu bar")
 
-    # Pick any available filter for the UI (first connector's filter, or a blank one).
-    if connectors:
-        ui_filter = connectors[0]._filter  # type: ignore[attr-defined]
-    else:
-        ui_filter = PrivacyFilter({})
-
-    def _on_quit() -> None:
-        logger.info("Quit requested")
-
-    app = GuardFloatingWindow(privacy_filter=ui_filter, on_quit=_on_quit)
+    from .menu_bar import run_menu_bar
+    connector_names = [c.name for c in connectors]
     try:
-        app.run()
+        run_menu_bar(config_path=config_path, connectors=connector_names)
     except KeyboardInterrupt:
         logger.info("Interrupted; shutting down")
     finally:
@@ -479,20 +459,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     default_config = os.path.join(PROJECT_ROOT, "config", "settings.yaml")
     parser.add_argument("--config", default=default_config)
-    parser.add_argument("--gmail-oauth", action="store_true", help="Run Gmail OAuth setup and exit.")
-    parser.add_argument("--drive-oauth", action="store_true", help="Run Drive OAuth setup and exit.")
-    parser.add_argument("--contacts-oauth", action="store_true", help="Run Contacts OAuth setup and exit.")
-    parser.add_argument("--calendar-oauth", action="store_true", help="Run Calendar OAuth setup and exit.")
-    parser.add_argument("--tasks-oauth", action="store_true", help="Run Tasks OAuth setup and exit.")
-    parser.add_argument("--telegram-setup", action="store_true", help="Run Telegram interactive auth and exit.")
+    parser.add_argument("--gmail-oauth", action="store_true")
+    parser.add_argument("--drive-oauth", action="store_true")
+    parser.add_argument("--contacts-oauth", action="store_true")
+    parser.add_argument("--calendar-oauth", action="store_true")
+    parser.add_argument("--tasks-oauth", action="store_true")
+    parser.add_argument("--telegram-setup", action="store_true")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
-    # First-run: launch setup wizard instead of the normal app.
-    oauth_flag = args.gmail_oauth or args.drive_oauth or args.contacts_oauth or args.calendar_oauth or args.tasks_oauth or args.telegram_setup
+    oauth_flag = (
+        args.gmail_oauth or args.drive_oauth or args.contacts_oauth
+        or args.calendar_oauth or args.tasks_oauth or args.telegram_setup
+    )
     if is_bundled() and not oauth_flag and not os.path.exists(SETUP_SENTINEL):
         from .setup_wizard import run_setup_wizard
         run_setup_wizard()
@@ -519,8 +501,8 @@ def main(argv: list[str] | None = None) -> int:
             return run_tasks_oauth(config)
         if args.telegram_setup:
             return run_telegram_setup(config)
-        return run_app(config)
-    except Exception as exc:  # noqa: BLE001
+        return run_app(config, args.config)
+    except Exception as exc:
         logger.error("Fatal error: %s", exc, exc_info=True)
         print(f"Fatal error: {exc}", file=sys.stderr)
         return 1

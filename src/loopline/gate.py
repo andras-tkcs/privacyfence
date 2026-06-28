@@ -1,6 +1,8 @@
-"""Shared gating helper: auto-accept check → review queue → audit log."""
+"""Shared gating helper: auto-accept check → approval popup → audit log."""
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -8,7 +10,6 @@ from typing import Any
 
 from .audit_log import AuditEntry, current_week, get_audit_logger
 from .auto_accept import TOOL_TO_OPERATION, AutoAcceptEvaluator, ReviewContext, get_auto_accept_evaluator
-from .review_queue import ReviewRejected, get_review_queue
 
 logger = logging.getLogger(__name__)
 
@@ -22,15 +23,23 @@ async def gated_call(
     sender: str,
     raw_data: Any,
     filtered_data: Any,
-    display_hint: dict | None = None,
+    gate: str = "review",         # "review" | "popup"
+    preview: dict | None = None,  # fields shown in the short preview (review gate)
+    details_text: str = "",       # full text for the details popup
     my_email: str = "",
     session_created_ids: set | None = None,
     args: dict | None = None,
+    display_hint: dict | None = None,  # kept for compatibility, ignored
 ) -> Any:
-    """Check auto-accept rules; if not matched, submit to the review queue.
+    """Auto-accept check → approval popup → audit log.
 
-    Returns filtered_data (either immediately via auto-accept, or after the
-    user approves in the UI). Raises RuntimeError if rejected.
+    gate="review" — preview popup with Accept / Deny / Show Details.
+                    'preview' dict sets the fields shown in the short view.
+                    'details_text' is the full content shown on Show Details.
+    gate="popup"  — full-details popup with Accept / Deny immediately.
+                    'details_text' is shown in the popup body.
+
+    Returns filtered_data on approval.  Raises RuntimeError if denied.
     """
     created_at = time.time()
     operation_key = TOOL_TO_OPERATION.get(tool, f"{connector}.{tool}")
@@ -48,42 +57,52 @@ async def gated_call(
 
     if auto_ok:
         _audit(
-            created_at=created_at,
-            connector=connector, tool=tool, tool_name=tool_name,
-            summary=summary, sender=sender,
+            created_at=created_at, connector=connector, tool=tool,
+            tool_name=tool_name, summary=summary, sender=sender,
             decision="auto_accepted", auto_accept_rule=matched_rule,
         )
         logger.info("Auto-accepted: %s/%s rule=%r", connector, tool, matched_rule)
         return filtered_data
 
-    # Human gate
-    queue = get_review_queue()
-    future = queue.submit(
-        tool_name=tool_name,
-        summary=summary,
-        sender=sender,
-        raw_data=raw_data,
-        filtered_data=filtered_data,
-        display_hint=display_hint,
-        connector=connector,
-        tool=tool,
-    )
-    try:
-        result = await future
-    except ReviewRejected as exc:
+    from .approval_popup import show_popup, show_review_popup
+
+    popup_title = f"Loopline — {tool_name}"
+    details = details_text or _default_details(raw_data)
+
+    if gate == "review":
+        pf = preview or {}
+        decision = await asyncio.to_thread(show_review_popup, popup_title, pf, details)
+    else:
+        decision = await asyncio.to_thread(show_popup, popup_title, details)
+
+    if decision == "accept":
         _audit(
-            created_at=created_at,
-            connector=connector, tool=tool, tool_name=tool_name,
-            summary=summary, sender=sender,
-            decision="rejected", auto_accept_rule="",
+            created_at=created_at, connector=connector, tool=tool,
+            tool_name=tool_name, summary=summary, sender=sender,
+            decision="approved", auto_accept_rule="",
         )
-        raise RuntimeError(f"Request denied by user: {exc}") from exc
+        return filtered_data
 
-    # approved — audit is already recorded by review_queue.approve()
-    return result
+    _audit(
+        created_at=created_at, connector=connector, tool=tool,
+        tool_name=tool_name, summary=summary, sender=sender,
+        decision="rejected", auto_accept_rule="",
+    )
+    raise RuntimeError("Request denied by user")
 
 
-def _audit(*, created_at, connector, tool, tool_name, summary, sender, decision, auto_accept_rule):
+def _default_details(raw_data: Any) -> str:
+    try:
+        if hasattr(raw_data, "__dict__"):
+            return json.dumps(raw_data.__dict__, default=str, indent=2, ensure_ascii=False)
+        return json.dumps(raw_data, default=str, indent=2, ensure_ascii=False)
+    except Exception:
+        return str(raw_data)
+
+
+def _audit(
+    *, created_at, connector, tool, tool_name, summary, sender, decision, auto_accept_rule
+) -> None:
     try:
         get_audit_logger().record(AuditEntry(
             timestamp=datetime.now(timezone.utc).isoformat(),

@@ -1,4 +1,4 @@
-"""Confluence connector: wraps ConfluenceClient with MCP tool definitions and gating."""
+"""Confluence connector."""
 
 from __future__ import annotations
 
@@ -200,6 +200,14 @@ class ConfluenceConnector(Connector):
     async def _get_page(self, page_id: str) -> Any:
         page = await self._fetch(self._confluence.get_page, page_id)
         data = asdict(page)
+        preview_fields = {
+            "Title": page.title or page_id,
+            "Space": page.space_key or "(unknown)",
+            "Author": page.author or "(unknown)",
+            "Last modified": str(getattr(page, "last_modified", "") or ""),
+        }
+        body_text = getattr(page, "body", "") or getattr(page, "body_text", "") or ""
+        details = f"Title: {page.title}\nSpace: {page.space_key}\nAuthor: {page.author}\n\n{body_text}"
         return await gated_call(
             connector=self.name,
             tool="confluence_get_page",
@@ -208,6 +216,9 @@ class ConfluenceConnector(Connector):
             sender=page.author or page_id,
             raw_data=data,
             filtered_data=data,
+            gate="review",
+            preview=preview_fields,
+            details_text=details,
             my_email=self.my_email,
             args={"page_id": page_id},
         )
@@ -215,6 +226,14 @@ class ConfluenceConnector(Connector):
     async def _get_page_by_title(self, space_key: str, title: str) -> Any:
         page = await self._fetch(self._confluence.get_page_by_title, space_key, title)
         data = asdict(page)
+        preview_fields = {
+            "Title": page.title or title,
+            "Space": page.space_key or space_key,
+            "Author": page.author or "(unknown)",
+            "Last modified": str(getattr(page, "last_modified", "") or ""),
+        }
+        body_text = getattr(page, "body", "") or getattr(page, "body_text", "") or ""
+        details = f"Title: {page.title}\nSpace: {page.space_key}\nAuthor: {page.author}\n\n{body_text}"
         return await gated_call(
             connector=self.name,
             tool="confluence_get_page_by_title",
@@ -223,6 +242,9 @@ class ConfluenceConnector(Connector):
             sender=page.author or space_key,
             raw_data=data,
             filtered_data=data,
+            gate="review",
+            preview=preview_fields,
+            details_text=details,
             my_email=self.my_email,
             args={"space_key": space_key, "title": title},
         )
@@ -234,33 +256,41 @@ class ConfluenceConnector(Connector):
         body: str,
         parent_id: str = "",
     ) -> Any:
-        preview = {"space_key": space_key, "title": title, "parent_id": parent_id}
+        details_lines = [f"Space: {space_key}", f"Title: {title}"]
+        if parent_id:
+            details_lines.append(f"Parent page ID: {parent_id}")
+        details_lines += ["", "Body:", body[:1000] + ("…" if len(body) > 1000 else "")]
+        raw = {"space_key": space_key, "title": title, "parent_id": parent_id, "body": body}
         await gated_call(
             connector=self.name,
             tool="confluence_create_page",
             tool_name="Create Confluence Page",
             summary=f"Create \"{title}\" in {space_key}",
             sender=f"space={space_key}",
-            raw_data={**preview, "body": body},
-            filtered_data=preview,
+            raw_data=raw,
+            filtered_data=None,
+            gate="popup",
+            details_text="\n".join(details_lines),
             my_email=self.my_email,
-            args=preview,
+            args={"space_key": space_key, "title": title, "parent_id": parent_id},
         )
         page = await self._fetch(self._confluence.create_page, space_key, title, body, parent_id)
         return asdict(page)
 
     async def _update_page(self, page_id: str, title: str, body: str) -> Any:
-        preview = {"page_id": page_id, "title": title}
+        details = f"Page ID: {page_id}\nTitle: {title}\n\nNew body:\n{body[:1000]}{'…' if len(body) > 1000 else ''}"
         await gated_call(
             connector=self.name,
             tool="confluence_update_page",
             tool_name="Update Confluence Page",
             summary=f"Update \"{title}\"",
             sender=f"page={page_id}",
-            raw_data={**preview, "body": body},
-            filtered_data=preview,
+            raw_data={"page_id": page_id, "title": title, "body": body},
+            filtered_data=None,
+            gate="popup",
+            details_text=details,
             my_email=self.my_email,
-            args=preview,
+            args={"page_id": page_id, "title": title},
         )
         page = await self._fetch(self._confluence.update_page, page_id, title, body)
         return asdict(page)
@@ -290,7 +320,7 @@ class ConfluenceConnector(Connector):
                 summary=summary,
                 sender=sender,
                 decision="auto_accepted",
-                auto_accept_rule="always_allowed",
+                auto_accept_rule="auto",
                 latency_seconds=time.time() - created_at,
             ))
         except Exception as exc:

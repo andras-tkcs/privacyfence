@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "loopline"
-version = "0.2.1"
+version = "0.3.0"
 description = "macOS menu bar privacy proxy between Claude (MCP) and Gmail"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -20,6 +20,7 @@ dependencies = [
     "slack-sdk>=3.27.0",
     "telethon>=1.36.0",
     "atlassian-python-api>=3.41.0",
+    "rumps>=0.4.0",
 ]
 
 [project.scripts]

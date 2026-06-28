@@ -1,6 +1,6 @@
 # Loopline
 
-**Loopline** is a macOS privacy proxy that sits between Claude (via MCP) and your personal data sources. Every time Claude tries to read an email, open a file, or fetch a Slack message, Loopline intercepts the request, applies configurable privacy filters, and shows you a floating approval window before any data reaches the AI.
+**Loopline** is a macOS privacy proxy that sits between Claude (via MCP) and your personal data sources. Every time Claude tries to read an email, open a file, or fetch a Slack message, Loopline intercepts the request and requires your approval before any data reaches the AI.
 
 ---
 
@@ -10,18 +10,13 @@
 Claude ──MCP stdio──▶ loopline-bridge ──Unix socket──▶ loopline-app (daemon)
                                                               │
                                                    ┌──────────▼──────────┐
-                                                   │  Privacy Filter      │
-                                                   │  (per-category)      │
-                                                   └──────────┬──────────┘
-                                                              │
-                                                   ┌──────────▼──────────┐
                                                    │  Auto-accept rules   │
                                                    │  (skip review gate)  │
                                                    └──────────┬──────────┘
                                                               │
                                                    ┌──────────▼──────────┐
-                                                   │  Floating window     │
-                                                   │  Approve / Reject    │
+                                                   │  Review gate         │
+                                                   │  Cowork / popup      │
                                                    └──────────┬──────────┘
                                                               │
                                                    ┌──────────▼──────────┐
@@ -32,130 +27,171 @@ Claude ──MCP stdio──▶ loopline-bridge ──Unix socket──▶ loopl
 
 **`loopline-bridge`** — an ephemeral MCP server spawned by Claude on each session. It auto-starts the daemon if it is not already running, fetches the connector manifest, and forwards every tool call over a Unix socket. Claude only ever talks to the bridge; the bridge carries no credentials.
 
-**`loopline-app`** — the persistent daemon that owns all credentials, connectors, privacy filters, the review UI, and the audit log. Only one instance runs at a time (enforced via a lock file). It starts automatically at login via a LaunchAgent.
+**`loopline-app`** — the persistent daemon that owns all credentials, connectors, the review gate, and the audit log. Only one instance runs at a time (enforced via a lock file). It starts automatically at login via a LaunchAgent.
 
 ---
 
-## Connectors
+## Review model
 
-| Connector | Tools | Notes |
-|-----------|-------|-------|
-| **Gmail** | `gmail_list_messages`, `gmail_list_threads`, `gmail_get_message`, `gmail_get_thread`, `gmail_list_message_attachments`, `gmail_create_draft`, `gmail_add_label`, `gmail_remove_label` | OAuth2. List/search and label operations are auto-approved; reading bodies and threads requires approval. |
-| **Google Drive** | `drive_list_files`, `drive_get_file_metadata`, `drive_get_file_content`, `drive_write_file_content`, `drive_create_file`, `drive_move_file`, `drive_add_comment`, `drive_list_folder` | OAuth2. Listing and metadata are auto-approved; content reads and writes are gated. |
-| **Slack** | `slack_list_channels`, `slack_get_channel_history`, `slack_get_thread_replies`, `slack_search_messages`, `slack_send_message` | User token (`xoxp-`). Sees exactly what you see — no bot to invite. Channel listing is auto-approved; reading messages and sending require approval. |
-| **Google Contacts** | `contacts_list`, `contacts_search`, `contacts_get`, `contacts_update` | OAuth2. Read tools are auto-approved; writes are gated. |
-| **Google Calendar** | `calendar_list_calendars`, `calendar_list_events`, `calendar_get_free_busy`, `calendar_get_event_details`, `calendar_create_event`, `calendar_update_event` | OAuth2. List and free/busy are auto-approved; event details and mutations are gated. |
-| **Telegram** | `telegram_list_chats`, `telegram_get_messages`, `telegram_search_messages` | Telethon (MTProto). Read-only; all tools are auto-approved. |
-| **Salesforce** | `salesforce_list_reports`, `salesforce_get_record`, `salesforce_run_report` | Username+password auth. Listing is auto-approved; record reads and reports are gated. |
-| **Jira** | `jira_list_projects`, `jira_search_issues`, `jira_get_issue`, `jira_create_issue`, `jira_add_comment`, `jira_update_issue` | Atlassian API token. Listing and search are auto-approved; issue reads and mutations are gated. |
-| **Confluence** | `confluence_list_spaces`, `confluence_search`, `confluence_cql_search`, `confluence_get_page`, `confluence_create_page`, `confluence_update_page` | Atlassian API token (shared with Jira). Listing and search are auto-approved; page reads and mutations are gated. |
-| **Google Tasks** | `tasks_list_task_lists`, `tasks_list_tasks`, `tasks_get_task`, `tasks_create_task`, `tasks_update_task`, `tasks_complete_task`, `tasks_uncomplete_task`, `tasks_move_task` | OAuth2. All tools are auto-approved. |
+Every tool call passes through one of three gate values:
+
+| Gate | Behaviour |
+|------|-----------|
+| `auto` | Passed through immediately, logged as `auto_accepted` |
+| `review` | Approval requested in Claude Cowork (see below) |
+| `popup` | Approval requested via Loopline native popup |
+
+### Two flows by direction
+
+**Tool → Claude (reads)** — annotated `readOnlyHint = true` in MCP.
+
+When the gate is `review`, a prompt appears in Claude Cowork showing a minimal preview of the request:
+
+- **Accept** — data is returned to Claude
+- **Deny** — request is blocked; Claude receives an error
+- **Show Details** — Loopline opens a scrollable native popup with the full content (e.g. the email body), which then offers **Accept** or **Deny**
+
+**Claude → Tool (writes / actions)** — annotated `destructiveHint = true` where relevant.
+
+Claude already describes the action it is about to take in the chat. When the gate is `popup`, Loopline opens a native popup showing the full action details with **Accept** or **Deny**. There is no intermediate Cowork step.
 
 ---
 
-## Privacy filter matrix
+## Connectors & privacy matrix
 
-Every connector has its own set of data categories. Each category is assigned one of three policies:
+### Gmail
 
-| Policy | Effect |
-|--------|--------|
-| `allow` | Data passes through unchanged |
-| `redact` | Data is partially masked (e.g. `***@domain.com`, first line only) |
-| `block` | Data is replaced with `[BLOCKED BY PRIVACY FILTER]` |
+**Auth:** OAuth2
 
-The privacy filter is a **floor**, not a ceiling — data that passes the filter still goes through the human review gate (unless an auto-accept rule matches).
+| Tool | Dir | Gate | Cowork preview | Details popup |
+|------|-----|------|----------------|---------------|
+| `gmail_list_messages` | read | auto | — | — |
+| `gmail_list_threads` | read | auto | — | — |
+| `gmail_get_message` | read | review | from, recipients, date, subject | Full body text |
+| `gmail_get_thread` | read | review | subject, all participants, message count, date range | All messages in thread |
+| `gmail_list_message_attachments` | read | review | from, recipients, date, subject | Attachment names & sizes |
+| `gmail_create_draft` | write | popup | — | To, cc, subject, full body |
+| `gmail_add_label` | write | popup | — | From, subject, label name |
+| `gmail_remove_label` | write | popup | — | From, subject, label name |
 
-### Gmail categories
+### Google Drive
 
-| Category | Controls |
-|----------|---------|
-| `body` | Message body text and HTML |
-| `metadata` | Sender, recipients, date, subject |
-| `attachments` | Attachment names and sizes (never content) |
-| `thread_history` | Messages earlier in a thread |
+**Auth:** OAuth2
 
-### Google Drive categories
+| Tool | Dir | Gate | Cowork preview | Details popup |
+|------|-----|------|----------------|---------------|
+| `drive_list_files` | read | auto | — | — |
+| `drive_get_file_metadata` | read | auto | — | — |
+| `drive_list_folder` | read | auto | — | — |
+| `drive_create_blank_file` | write | auto | — | — |
+| `drive_get_file_content` | read | review | file name, owner, size, modified date | First ~500 chars of content |
+| `drive_write_file_content` | write | popup | — | File name, owner, new content |
+| `drive_move_file` | write | popup | — | File name, from folder → to folder |
+| `drive_add_comment` | write | popup | — | File name, full comment text |
 
-| Category | Controls |
-|----------|---------|
-| `file_content` | Document text / bytes |
-| `file_metadata` | Name, owners, timestamps, sharing status |
-| `file_list` | Results from list / search operations |
-| `folder_structure` | Results from folder listing operations |
+### Slack
 
-### Slack categories
+**Auth:** User token (`xoxp-`). Sees exactly what you see — no bot to invite.
 
-| Category | Controls |
-|----------|---------|
-| `message_content` | Text of messages |
-| `user_identity` | User names, emails, real names |
-| `channel_list` | Channel names and metadata |
-| `thread_content` | Thread reply content |
+| Tool | Dir | Gate | Cowork preview | Details popup |
+|------|-----|------|----------------|---------------|
+| `slack_list_channels` | read | auto | — | — |
+| `slack_get_channel_history` | read | review | channel name, message count, first message (80 chars) | All messages |
+| `slack_get_thread_replies` | read | review | channel name, thread starter (80 chars), reply count | All replies |
+| `slack_search_messages` | read | review | query, result count | All results |
+| `slack_send_message` | write | popup | — | Channel name, full message text |
 
-### Jira categories
+### Google Calendar
 
-| Category | Controls |
-|----------|---------|
-| `issue_content` | Issue description, comments, and custom fields |
-| `issue_metadata` | Summary, status, assignee, reporter, priority, labels |
-| `project_list` | Project keys, names, and lead info |
+**Auth:** OAuth2
 
-### Confluence categories
+| Tool | Dir | Gate | Cowork preview | Details popup |
+|------|-----|------|----------------|---------------|
+| `calendar_list_calendars` | read | auto | — | — |
+| `calendar_list_events` | read | auto | — | — |
+| `calendar_get_free_busy` | read | auto | — | — |
+| `calendar_get_event_details` | read | review | title, time, organizer, attendee count | Description, full attendee list, conferencing link |
+| `calendar_create_event` | write | popup | — | Title, time, all attendees, description, location |
+| `calendar_update_event` | write | popup | — | Title, time, fields changing (old → new) |
 
-| Category | Controls |
-|----------|---------|
-| `page_content` | Page body text and inline comments |
-| `page_metadata` | Title, author, space, last-modified date |
-| `space_list` | Space keys, names, and descriptions |
+### Google Contacts
 
-### Google Calendar categories
+**Auth:** OAuth2
 
-| Category | Controls |
-|----------|---------|
-| `event_details` | Full event description, attendee list, conferencing links |
-| `event_metadata` | Title, time, location, organizer, calendar name |
-| `attendees` | Attendee names and email addresses |
-| `calendar_list` | Calendar names and IDs |
+| Tool | Dir | Gate | Cowork preview | Details popup |
+|------|-----|------|----------------|---------------|
+| `contacts_list` | read | auto | — | — |
+| `contacts_search` | read | auto | — | — |
+| `contacts_get` | read | auto | — | — |
+| `contacts_update` | write | popup | — | Contact name, fields changing (old → new) |
 
-### Google Contacts categories
+### Telegram
 
-| Category | Controls |
-|----------|---------|
-| `contact_details` | Phone numbers, addresses, notes, custom fields |
-| `contact_identity` | Name, email addresses, organization |
+**Auth:** Telethon (MTProto). Reads your chats as you, not as a bot.
 
-### Telegram categories
+| Tool | Dir | Gate | Cowork preview | Details popup |
+|------|-----|------|----------------|---------------|
+| `telegram_list_chats` | read | auto | — | — |
+| `telegram_get_messages` | read | review | chat name, message count | All messages |
+| `telegram_search_messages` | read | review | query, result count | All results |
 
-| Category | Controls |
-|----------|---------|
-| `message_content` | Text of messages |
-| `sender_identity` | Sender name, username, phone number |
-| `chat_list` | Chat names and IDs |
+### Salesforce
 
-### Salesforce categories
+**Auth:** Username + password + security token, or an OAuth access token.
 
-| Category | Controls |
-|----------|---------|
-| `record_content` | Field values of Salesforce records |
-| `record_metadata` | Object type, record ID, owner |
-| `report_data` | Report rows and column values |
+| Tool | Dir | Gate | Cowork preview | Details popup |
+|------|-----|------|----------------|---------------|
+| `salesforce_list_reports` | read | auto | — | — |
+| `salesforce_get_record` | read | review | object type, record name, record ID | All field values |
+| `salesforce_run_report` | read | review | report name, report ID | All report rows |
 
-### Google Tasks categories
+### Jira
 
-| Category | Controls |
-|----------|---------|
-| `task_content` | Task notes and details |
-| `task_metadata` | Title, due date, status, list membership |
+**Auth:** Atlassian API token.
 
-> **Note:** Telegram, Salesforce, Jira, Confluence, Google Tasks, and Google Contacts connectors do not yet apply automatic field-level redaction — all approved data is passed through as-is. Privacy control for these connectors is the human review gate.
+| Tool | Dir | Gate | Cowork preview | Details popup |
+|------|-----|------|----------------|---------------|
+| `jira_list_projects` | read | auto | — | — |
+| `jira_search_issues` | read | auto | — | — |
+| `jira_get_issue` | read | review | project name, key, summary, status, assignee | Description, comments, all fields |
+| `jira_create_issue` | write | popup | — | Project, type, summary, full description |
+| `jira_add_comment` | write | popup | — | Issue key + summary, full comment |
+| `jira_update_issue` | write | popup | — | Issue key + summary, fields (old → new) |
 
-Policies are set in `config/settings.yaml` and can be toggled at runtime from the menu bar **Privacy Settings** submenu.
+### Confluence
+
+**Auth:** Atlassian API token (shared with Jira).
+
+| Tool | Dir | Gate | Cowork preview | Details popup |
+|------|-----|------|----------------|---------------|
+| `confluence_list_spaces` | read | auto | — | — |
+| `confluence_search` | read | auto | — | — |
+| `confluence_cql_search` | read | auto | — | — |
+| `confluence_get_page` | read | review | title, space, author, last modified | Full page body |
+| `confluence_get_page_by_title` | read | review | title, space, author, last modified | Full page body |
+| `confluence_create_page` | write | popup | — | Space, title, parent page, full body |
+| `confluence_update_page` | write | popup | — | Title, space, full new body |
+
+### Google Tasks
+
+**Auth:** OAuth2
+
+| Tool | Dir | Gate | Cowork preview | Details popup |
+|------|-----|------|----------------|---------------|
+| `tasks_list_task_lists` | read | auto | — | — |
+| `tasks_list_tasks` | read | auto | — | — |
+| `tasks_get_task` | read | auto | — | — |
+| `tasks_create_task` | write | auto | — | — |
+| `tasks_update_task` | write | auto | — | — |
+| `tasks_complete_task` | write | auto | — | — |
+| `tasks_uncomplete_task` | write | auto | — | — |
+| `tasks_move_task` | write | auto | — | — |
 
 ---
 
 ## Auto-accept rules
 
-Routine, low-risk requests can be approved automatically without a UI prompt. Rules are configured per operation in `config/settings.yaml` under `auto_accept_rules`. When a rule matches, the request is logged as `auto_accepted` and returned to Claude immediately.
+Routine, low-risk requests can be approved automatically without a prompt. Rules are configured per operation in `config/settings.yaml` under `auto_accept_rules`. When a rule matches, the gate is bypassed and the request is logged as `auto_accepted`.
 
 ### Available rules
 
@@ -175,7 +211,7 @@ Routine, low-risk requests can be approved automatically without a UI prompt. Ru
 | Rule | Matches when… |
 |------|--------------|
 | `i_am_owner` / `created_by_me` | Authenticated account owns the file |
-| `approved_folder` | File is in an approved folder (by Drive folder id) |
+| `approved_folder` | File is in an approved folder (by Drive folder ID) |
 | `approved_sandbox_folder` | File is in an approved sandbox folder |
 | `move_within_approved_folders` | Move operation stays within approved folders |
 | `file_type_allowlist` | File MIME type is in the allowlist |
@@ -222,13 +258,13 @@ Routine, low-risk requests can be approved automatically without a UI prompt. Ru
 |------|--------------|
 | `approved_spaces` | Page's space key is in the allowlist |
 
-> **Telegram, Google Contacts, and Google Tasks** have no configurable auto-accept rules — all their tools are unconditionally auto-approved and logged as `always_allowed`.
+> **Telegram, Google Contacts, and Google Tasks** have no configurable auto-accept rules — all their tools are unconditionally auto-accepted and logged as `auto_accepted`.
 
 ---
 
 ## Audit log
 
-Every decision — approved, rejected, or auto-accepted — is appended to a JSON-lines file in `logs/audit/YYYY-WNN.jsonl`. At startup, any week that has a `.jsonl` file but no `.xlsx` is automatically exported to a formatted Excel workbook with a colour-coded **Decisions** sheet and a **Summary** tab.
+Every decision — accepted, denied, or auto-accepted — is appended to a JSON-lines file in `logs/audit/YYYY-WNN.jsonl`. At startup, any week that has a `.jsonl` file but no `.xlsx` is automatically exported to a formatted Excel workbook with a colour-coded **Decisions** sheet and a **Summary** tab.
 
 ---
 
@@ -256,7 +292,7 @@ Every decision — approved, rejected, or auto-accepted — is appended to a JSO
 3. Launch **Loopline.app** — the setup wizard opens automatically on first run and walks you through:
    - Importing your Google OAuth `client_secret.json`
    - Authorizing Gmail, Drive, Calendar, and Contacts
-   - Entering your Slack bot and user tokens (optional; see [docs/slack-setup.md](docs/slack-setup.md))
+   - Entering your Slack user token (optional; see [docs/slack-setup.md](docs/slack-setup.md))
    - Installing the LaunchAgent so Loopline starts at login
    - Copying the MCP config snippet for Claude
 
@@ -326,7 +362,7 @@ The script produces `dist/Loopline.dmg`.
 
 ## Configuration reference
 
-See [`config/settings.yaml.example`](src/loopline/resources/settings.yaml.example) for a fully annotated configuration file covering all connectors, privacy categories, auto-accept rules, and logging options.
+See [`config/settings.yaml.example`](src/loopline/resources/settings.yaml.example) for a fully annotated configuration file covering all connectors, auto-accept rules, and logging options.
 
 ---
 
@@ -334,8 +370,8 @@ See [`config/settings.yaml.example`](src/loopline/resources/settings.yaml.exampl
 
 - The bridge is stateless and disposable — Claude can kill and restart it at any time without losing any state. All state (credentials, tokens, filters, queue) lives in the daemon.
 - IPC between the bridge and the daemon uses a newline-delimited JSON protocol over a Unix domain socket (`~/.loopline/loopline.sock`).
-- The daemon uses two threads: the main thread runs the tkinter floating window (a hard macOS requirement) and an IPC thread runs the asyncio event loop serving the bridge socket.
-- Privacy filtering is applied *before* data reaches the review UI, so blocked content is never visible to the user in the approval window.
+- The daemon uses two threads: the main thread runs the review UI (a hard macOS requirement for native windows) and an IPC thread runs the asyncio event loop serving the bridge socket.
+- Read tools carry `readOnlyHint = true` in their MCP annotations; write tools that modify external state carry `destructiveHint = true`.
 
 ---
 
