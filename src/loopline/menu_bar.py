@@ -432,7 +432,7 @@ def _osascript_pick(title: str, prompt: str, options: list[str]) -> str | None:
 
 def _find_icon() -> str | None:
     here = Path(__file__).parent / "resources"
-    for name in ("icon_32.png", "icon_64.png", "icon_512.png"):
+    for name in ("icon_menubar.png", "icon_32.png", "icon_64.png", "icon_512.png"):
         p = here / name
         if p.exists():
             return str(p)
