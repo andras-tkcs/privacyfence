@@ -36,6 +36,7 @@ def _run(script: str) -> str | None:
             out = result.stdout.strip()
             if out.startswith("button returned:"):
                 return out[len("button returned:"):]
+            return out or None
         return None
     finally:
         try:
