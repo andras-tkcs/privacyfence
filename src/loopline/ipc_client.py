@@ -58,6 +58,15 @@ class IPCClient:
             "call", {"connector": connector, "tool": tool, "args": args}
         )
 
+    async def confirm(self, request_id: str) -> Any:
+        return await self._request("confirm", {"request_id": request_id})
+
+    async def deny(self, request_id: str) -> Any:
+        return await self._request("deny", {"request_id": request_id})
+
+    async def show_details(self, request_id: str) -> Any:
+        return await self._request("show_details", {"request_id": request_id})
+
     # ------------------------------------------------------------------ #
     # Internals
     # ------------------------------------------------------------------ #
