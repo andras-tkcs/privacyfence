@@ -218,6 +218,62 @@ def _register_tools(mcp: FastMCP, manifest: dict) -> None:
             logger.info("Registered tool: %s (connector=%s)", spec.name, cname)
             total += 1
     logger.info("Bridge registered %d tool(s) from %d connector(s)", total, len(manifest.get("connectors", [])))
+    _register_approval_tools(mcp)
+
+
+def _register_approval_tools(mcp: FastMCP) -> None:
+    """Register the three Loopline approval control tools."""
+
+    async def loopline_confirm(request_id: str) -> Any:
+        """Confirm a pending read request and retrieve the data.
+
+        Call this when the user chooses Accept after seeing a pending_approval
+        preview returned by a Loopline read tool. Returns the actual data.
+        """
+        global _ipc
+        if _ipc is None:
+            raise ToolError("IPC client not initialized")
+        try:
+            return await _ipc.confirm(request_id)
+        except IPCError as exc:
+            raise ToolError(str(exc)) from exc
+
+    async def loopline_deny(request_id: str) -> Any:
+        """Deny a pending read request.
+
+        Call this when the user chooses Deny after seeing a pending_approval
+        preview returned by a Loopline read tool. The request is cancelled.
+        """
+        global _ipc
+        if _ipc is None:
+            raise ToolError("IPC client not initialized")
+        try:
+            return await _ipc.deny(request_id)
+        except IPCError as exc:
+            raise ToolError(str(exc)) from exc
+
+    async def loopline_show_details(request_id: str) -> Any:
+        """Open a full-content popup for a pending read request.
+
+        Call this when the user chooses Show Details after seeing a
+        pending_approval preview returned by a Loopline read tool.
+        Loopline opens a native popup with the full content; the user can
+        Accept or Deny there. Returns the data if accepted.
+        """
+        global _ipc
+        if _ipc is None:
+            raise ToolError("IPC client not initialized")
+        try:
+            return await _ipc.show_details(request_id)
+        except IPCError as exc:
+            raise ToolError(str(exc)) from exc
+
+    from mcp.types import ToolAnnotations
+    ro = ToolAnnotations(readOnlyHint=True, destructiveHint=False)
+    mcp.tool(name="loopline_confirm",      description=loopline_confirm.__doc__,      annotations=ro)(loopline_confirm)
+    mcp.tool(name="loopline_deny",         description=loopline_deny.__doc__,         annotations=ro)(loopline_deny)
+    mcp.tool(name="loopline_show_details", description=loopline_show_details.__doc__, annotations=ro)(loopline_show_details)
+    logger.info("Registered loopline approval tools: confirm / deny / show_details")
 
 
 # ---------------------------------------------------------------------------- #
