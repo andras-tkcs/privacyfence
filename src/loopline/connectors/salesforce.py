@@ -1,5 +1,4 @@
-"""Salesforce connector: wraps SalesforceClient + gated_call."""
-
+"""Salesforce connector."""
 from __future__ import annotations
 
 import asyncio
@@ -30,9 +29,9 @@ class SalesforceConnector(Connector):
         return [
             ToolSpec(
                 name="salesforce_list_reports",
-                description="List Salesforce reports accessible to the user. Always allowed.",
+                description="List Salesforce reports accessible to the user. Auto-approved.",
                 params=[],
-            read_only=True,
+                read_only=True,
             ),
             ToolSpec(
                 name="salesforce_get_record",
@@ -41,13 +40,13 @@ class SalesforceConnector(Connector):
                     ToolParam("object_type", "str", description="e.g. Account, Contact, Opportunity"),
                     ToolParam("record_id", "str"),
                 ],
-            read_only=True,
+                read_only=True,
             ),
             ToolSpec(
                 name="salesforce_run_report",
                 description="Run a Salesforce report by id and return the results. Requires user approval.",
                 params=[ToolParam("report_id", "str")],
-            read_only=True,
+                read_only=True,
             ),
         ]
 
@@ -61,7 +60,7 @@ class SalesforceConnector(Connector):
         raise ValueError(f"Unknown Salesforce tool: {tool!r}")
 
     # ------------------------------------------------------------------ #
-    # Always-allowed
+    # Auto
     # ------------------------------------------------------------------ #
 
     async def _list_reports(self) -> Any:
@@ -71,14 +70,12 @@ class SalesforceConnector(Connector):
         except SalesforceClientError as exc:
             raise RuntimeError(str(exc)) from exc
         result = [asdict(r) for r in reports]
-        self._auto_audit(
-            "salesforce_list_reports", "List Salesforce Reports",
-            "List all reports", f"{len(reports)} report(s)", t0,
-        )
+        self._auto_audit("salesforce_list_reports", "List Salesforce Reports",
+                         "List all reports", f"{len(reports)} report(s)", t0)
         return result
 
     # ------------------------------------------------------------------ #
-    # Gated
+    # Review gate (reads)
     # ------------------------------------------------------------------ #
 
     async def _get_record(self, object_type: str, record_id: str) -> Any:
@@ -86,15 +83,26 @@ class SalesforceConnector(Connector):
             record = await asyncio.to_thread(self._sf.get_record, object_type, record_id)
         except SalesforceClientError as exc:
             raise RuntimeError(str(exc)) from exc
-        filtered_data = asdict(record)
+        record_dict = asdict(record)
+        name = record_dict.get("Name") or record_dict.get("name") or record_id
+        preview = {
+            "Object type": object_type,
+            "Name": str(name),
+            "Record ID": record_id,
+        }
+        import json as _json
+        details = f"Object: {object_type}\nRecord ID: {record_id}\n\nFields:\n{_json.dumps(record_dict, indent=2, default=str)}"
         return await gated_call(
             connector=self.name,
             tool="salesforce_get_record",
             tool_name="Read Salesforce Record",
-            summary=f"Read {object_type} record",
+            summary=f"Read {object_type}: {name}",
             sender=object_type,
             raw_data=record,
-            filtered_data=filtered_data,
+            filtered_data=record_dict,
+            gate="review",
+            preview=preview,
+            details_text=details,
             my_email=self.my_email,
             args={"object_type": object_type, "record_id": record_id},
         )
@@ -104,14 +112,26 @@ class SalesforceConnector(Connector):
             result = await asyncio.to_thread(self._sf.run_report, report_id)
         except SalesforceClientError as exc:
             raise RuntimeError(str(exc)) from exc
+        result_dict = asdict(result) if hasattr(result, "__dataclass_fields__") else result
+        report_name = (result_dict.get("name") or result_dict.get("reportName") or report_id
+                       if isinstance(result_dict, dict) else report_id)
+        preview = {
+            "Report": str(report_name),
+            "Report ID": report_id,
+        }
+        import json as _json
+        details = f"Report: {report_name}\nID: {report_id}\n\n{_json.dumps(result_dict, indent=2, default=str)}"
         return await gated_call(
             connector=self.name,
             tool="salesforce_run_report",
             tool_name="Run Salesforce Report",
-            summary=f"Run report {report_id[:20]}{'…' if len(report_id) > 20 else ''}",
+            summary=f"Run report: {report_name}",
             sender="Salesforce",
             raw_data=result,
-            filtered_data=result,
+            filtered_data=result_dict,
+            gate="review",
+            preview=preview,
+            details_text=details,
             my_email=self.my_email,
             args={"report_id": report_id},
         )
@@ -134,7 +154,7 @@ class SalesforceConnector(Connector):
                 summary=summary,
                 sender=sender,
                 decision="auto_accepted",
-                auto_accept_rule="always_allowed",
+                auto_accept_rule="auto",
                 latency_seconds=time.time() - created_at,
             ))
         except Exception as exc:

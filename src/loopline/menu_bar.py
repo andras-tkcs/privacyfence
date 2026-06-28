@@ -1,243 +1,168 @@
 """macOS menu bar app (rumps).
 
-Runs on the main thread. Polls the ReviewQueue on a timer (rumps callbacks must
-run on the main thread, so we cannot let the async server touch the UI directly)
-and rebuilds the menu to reflect pending reviews. The user approves/rejects from
-per-request submenus; a "Privacy Settings" submenu lets them flip each category
-between allow and block at runtime.
+Runs on the main thread. Shows Loopline status, recent activity count,
+and config submenus for auto-accept rules and connector toggles.
 """
-
 from __future__ import annotations
 
 import logging
 import os
-from typing import Callable, Optional
+import subprocess
+from pathlib import Path
+from typing import Any
 
 import rumps
+import yaml
 
-_RESOURCES = os.path.join(os.path.dirname(__file__), "resources")
-_MENU_BAR_ICON = os.path.join(_RESOURCES, "icon_32.png")
-
-from .privacy_filter import PrivacyFilter
-from .review_queue import PendingReview, ReviewQueue, get_review_queue
+from .auto_accept import get_auto_accept_evaluator
+from .paths import data_dir
 
 logger = logging.getLogger(__name__)
 
-APP_NAME = "Loopline"
-IDLE_TITLE = "🛡️"
-
-# Human-friendly labels for the privacy categories submenu (Gmail defaults).
-CATEGORY_LABELS = {
-    "body": "Body",
-    "metadata": "Metadata",
-    "attachments": "Attachments",
-    "thread_history": "Thread History",
-    # Drive
-    "file_content": "File Content",
-    "file_metadata": "File Metadata",
-    "file_list": "File List",
-    "folder_structure": "Folder Structure",
-    # Slack
-    "message_content": "Message Content",
-    "user_identity": "User Identity",
-    "channel_list": "Channel List",
-    "thread_content": "Thread Content",
-}
+_CONFIG_PATH: str = ""  # set by LooplineMenuBar on init
 
 
-class GmailGuardMenuBar(rumps.App):
-    """The menu bar application.
+class LooplineMenuBar(rumps.App):
+    def __init__(self, config_path: str, connectors: list[str]) -> None:
+        global _CONFIG_PATH
+        _CONFIG_PATH = config_path
+        self._connectors = connectors
+        self._config_path = config_path
 
-    Can be driven by any privacy filter (Gmail, Drive, Slack). The filter's
-    ``policies()`` method is used to discover categories at runtime, so the
-    Privacy Settings submenu always matches the active service.
-    """
-
-    def __init__(
-        self,
-        privacy_filter: PrivacyFilter,
-        review_queue: Optional[ReviewQueue] = None,
-        on_quit: Optional[Callable[[], None]] = None,
-        poll_interval: float = 1.0,
-        app_name: str = APP_NAME,
-    ) -> None:
-        icon_path = _MENU_BAR_ICON if os.path.exists(_MENU_BAR_ICON) else None
-        super().__init__(app_name, title=IDLE_TITLE, icon=icon_path, quit_button=None)
-        self._filter = privacy_filter
-        self._queue = review_queue or get_review_queue()
-        self._on_quit = on_quit
-        self._app_name = app_name
-        # Track which request_ids we have already notified about, so we only
-        # raise one notification per request.
-        self._notified: set[str] = set()
-        self._last_rendered_ids: tuple[str, ...] = ()
-
-        self._build_static_menu()
-        self._timer = rumps.Timer(self._poll, poll_interval)
-        self._timer.start()
-        # Render once immediately so the menu is populated at launch.
-        self._render()
+        icon_path = _find_icon()
+        super().__init__(
+            name="Loopline",
+            icon=icon_path,
+            quit_button=None,
+            template=True,
+        )
+        self._build_menu()
 
     # ------------------------------------------------------------------ #
-    # Static menu scaffolding
+    # Menu construction
     # ------------------------------------------------------------------ #
-    def _build_static_menu(self) -> None:
-        """Build the parts of the menu that do not change per-poll."""
-        self._status_item = rumps.MenuItem("No pending requests")
-        self._privacy_menu = rumps.MenuItem("Privacy Settings")
+
+    def _build_menu(self) -> None:
+        cfg = self._load_config()
+
+        rules_items = self._build_rules_menu(cfg)
+        connector_items = self._build_connectors_menu(cfg)
 
         self.menu = [
-            self._status_item,
-            None,  # separator; pending items are inserted above this at render
-            self._privacy_menu,
-            None,
-            rumps.MenuItem(f"Quit {self._app_name}", callback=self._quit),
+            rumps.MenuItem("Loopline is running", callback=None),
+            rumps.separator,
+            rumps.MenuItem("Auto-accept Rules", callback=None),
+            *[rumps.MenuItem("  " + item.title, callback=item.callback)
+              for item in rules_items],
+            rumps.separator,
+            rumps.MenuItem("Connectors", callback=None),
+            *[rumps.MenuItem("  " + item.title, callback=item.callback)
+              for item in connector_items],
+            rumps.separator,
+            rumps.MenuItem("Open Audit Log", callback=self.open_audit_log),
+            rumps.separator,
+            rumps.MenuItem("Quit Loopline", callback=self.quit_app),
         ]
-        self._refresh_privacy_menu()
 
-    def _refresh_privacy_menu(self) -> None:
-        """Rebuild the Privacy Settings submenu to reflect current policies."""
-        if self._privacy_menu._menu is not None:
-            self._privacy_menu.clear()
-        policies = self._filter.policies()
-        # Derive categories from the filter's own policy dict so this works
-        # for Gmail, Drive, and Slack filters without any hardcoding.
-        for category in policies:
-            label = CATEGORY_LABELS.get(category, category)
-            policy = policies.get(category, "block")
-            item = rumps.MenuItem(
-                f"{label}: {policy}",
-                callback=self._make_toggle_callback(category),
-            )
-            # A check mark indicates the category is currently allowed.
-            item.state = 1 if policy == "allow" else 0
-            self._privacy_menu.add(item)
+    def _build_rules_menu(self, cfg: dict) -> list[rumps.MenuItem]:
+        rules_cfg: dict = cfg.get("auto_accept_rules", {})
+        items = []
+        for rule_key, rule_val in rules_cfg.items():
+            enabled = bool(rule_val) if not isinstance(rule_val, dict) else True
+            title = f"{'✓' if enabled else '○'} {rule_key}"
+            item = rumps.MenuItem(title)
+            item._rule_key = rule_key  # type: ignore[attr-defined]
+            item.set_callback(self._toggle_rule)
+            items.append(item)
+        return items
 
-    def _make_toggle_callback(self, category: str) -> Callable[[rumps.MenuItem], None]:
-        def _callback(_item: rumps.MenuItem) -> None:
-            current = self._filter.policy_for(category)
-            new_policy = "block" if current == "allow" else "allow"
-            self._filter.set_policy(category, new_policy)
-            logger.info("User toggled %s -> %s", category, new_policy)
-            self._refresh_privacy_menu()
-
-        return _callback
+    def _build_connectors_menu(self, cfg: dict) -> list[rumps.MenuItem]:
+        connectors_cfg: dict = cfg.get("connectors", {})
+        items = []
+        for cname in self._connectors:
+            conn_cfg = connectors_cfg.get(cname, {})
+            enabled = conn_cfg.get("enabled", True)
+            title = f"{'✓' if enabled else '○'} {cname}"
+            item = rumps.MenuItem(title)
+            item._connector = cname  # type: ignore[attr-defined]
+            item.set_callback(self._toggle_connector)
+            items.append(item)
+        return items
 
     # ------------------------------------------------------------------ #
-    # Polling / rendering
+    # Callbacks
     # ------------------------------------------------------------------ #
-    def _poll(self, _timer: rumps.Timer) -> None:
-        """Timer callback: notify on new requests and re-render if changed."""
-        pending = self._queue.list_pending()
-        current_ids = tuple(r.request_id for r in pending)
 
-        # Notify on any newly-arrived request.
-        for review in pending:
-            if review.request_id not in self._notified:
-                self._notified.add(review.request_id)
-                self._notify(review)
-
-        # Drop ids that are no longer pending so memory does not grow forever.
-        active = set(current_ids)
-        self._notified = {rid for rid in self._notified if rid in active}
-
-        if current_ids != self._last_rendered_ids:
-            self._render(pending)
-            self._last_rendered_ids = current_ids
-
-    def _render(self, pending: Optional[list[PendingReview]] = None) -> None:
-        """Rebuild the dynamic part of the menu and the title badge."""
-        if pending is None:
-            pending = self._queue.list_pending()
-        count = len(pending)
-
-        # Update the menu bar title badge.
-        self.title = IDLE_TITLE if count == 0 else f"{IDLE_TITLE} ({count})"
-
-        # Remove any previously-rendered request items (titles start with the
-        # request marker) before re-adding the current set.
-        for key in list(self.menu.keys()):
-            if isinstance(key, str) and key.startswith("req::"):
-                del self.menu[key]
-
-        if count == 0:
-            self._status_item.title = "No pending requests"
+    def _toggle_rule(self, sender: rumps.MenuItem) -> None:
+        rule_key = getattr(sender, "_rule_key", None)
+        if not rule_key:
             return
-
-        self._status_item.title = f"{count} pending request(s)"
-
-        # Insert each pending request as a submenu just before the first
-        # separator (which sits above Privacy Settings).
-        for review in pending:
-            item = self._build_request_item(review)
-            self.menu.insert_before("Privacy Settings", item)
-
-    def _build_request_item(self, review: PendingReview) -> rumps.MenuItem:
-        """Create the submenu for one pending request."""
-        title = f"req::{review.request_id}"
-        parent = rumps.MenuItem(title)
-        # Override the visible label (the dict key stays the stable req:: id).
-        parent.title = self._truncate(f"{review.tool_name}: {review.summary}")
-
-        context = rumps.MenuItem(self._truncate(f"From/Context: {review.sender}"))
-        approve = rumps.MenuItem(
-            "✅ Approve", callback=self._make_approve_callback(review.request_id)
-        )
-        reject = rumps.MenuItem(
-            "❌ Reject", callback=self._make_reject_callback(review.request_id)
-        )
-        parent.add(context)
-        parent.add(rumps.separator)
-        parent.add(approve)
-        parent.add(reject)
-        return parent
-
-    # ------------------------------------------------------------------ #
-    # Decision callbacks
-    # ------------------------------------------------------------------ #
-    def _make_approve_callback(self, request_id: str) -> Callable[[rumps.MenuItem], None]:
-        def _callback(_item: rumps.MenuItem) -> None:
-            if self._queue.approve(request_id):
-                logger.info("Approved request %s via menu", request_id)
-            self._render()
-
-        return _callback
-
-    def _make_reject_callback(self, request_id: str) -> Callable[[rumps.MenuItem], None]:
-        def _callback(_item: rumps.MenuItem) -> None:
-            if self._queue.reject(request_id):
-                logger.info("Rejected request %s via menu", request_id)
-            self._render()
-
-        return _callback
-
-    # ------------------------------------------------------------------ #
-    # Helpers
-    # ------------------------------------------------------------------ #
-    def _notify(self, review: PendingReview) -> None:
+        cfg = self._load_config()
+        rules = cfg.setdefault("auto_accept_rules", {})
+        current = rules.get(rule_key, {})
+        if isinstance(current, dict):
+            current["enabled"] = not current.get("enabled", True)
+            rules[rule_key] = current
+        else:
+            rules[rule_key] = not bool(current)
+        self._save_config(cfg)
         try:
-            rumps.notification(
-                title=self._app_name,
-                subtitle=f"Claude requests: {review.tool_name}",
-                message=self._truncate(review.summary, 120),
-            )
-        except Exception as exc:  # noqa: BLE001 - notifications are best-effort
-            logger.warning("Could not post notification: %s", exc)
+            get_auto_accept_evaluator().reload_rules()
+        except Exception as exc:
+            logger.warning("Rule reload failed: %s", exc)
+        self._build_menu()
 
-    @staticmethod
-    def _truncate(text: str, limit: int = 70) -> str:
-        text = (text or "").replace("\n", " ").strip()
-        if len(text) <= limit:
-            return text
-        return text[: limit - 1] + "…"
+    def _toggle_connector(self, sender: rumps.MenuItem) -> None:
+        cname = getattr(sender, "_connector", None)
+        if not cname:
+            return
+        cfg = self._load_config()
+        conn = cfg.setdefault("connectors", {}).setdefault(cname, {})
+        conn["enabled"] = not conn.get("enabled", True)
+        self._save_config(cfg)
+        self._build_menu()
 
-    def _quit(self, _item: rumps.MenuItem) -> None:
-        logger.info("Quit requested from menu bar")
-        # Reject anything still outstanding so awaiting MCP calls do not hang.
-        self._queue.reject_all("Application shutting down")
-        if self._on_quit is not None:
-            try:
-                self._on_quit()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("on_quit handler raised: %s", exc)
+    @rumps.clicked("Open Audit Log")
+    def open_audit_log(self, _: Any = None) -> None:
+        log_dir = Path(data_dir()) / "logs" / "audit"
+        if log_dir.exists():
+            subprocess.run(["open", str(log_dir)], check=False)
+        else:
+            rumps.alert("Loopline", "No audit log found yet.")
+
+    def quit_app(self, _: Any = None) -> None:
         rumps.quit_application()
+
+    # ------------------------------------------------------------------ #
+    # Config helpers
+    # ------------------------------------------------------------------ #
+
+    def _load_config(self) -> dict:
+        try:
+            with open(self._config_path, encoding="utf-8") as f:
+                return yaml.safe_load(f) or {}
+        except Exception as exc:
+            logger.warning("Could not load config: %s", exc)
+            return {}
+
+    def _save_config(self, cfg: dict) -> None:
+        try:
+            with open(self._config_path, "w", encoding="utf-8") as f:
+                yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
+        except Exception as exc:
+            logger.warning("Could not save config: %s", exc)
+
+
+def _find_icon() -> str | None:
+    here = Path(__file__).parent / "resources"
+    for name in ("icon_32.png", "icon_64.png", "icon_512.png"):
+        p = here / name
+        if p.exists():
+            return str(p)
+    return None
+
+
+def run_menu_bar(config_path: str, connectors: list[str]) -> None:
+    """Entry point called from the main thread."""
+    app = LooplineMenuBar(config_path=config_path, connectors=connectors)
+    app.run()

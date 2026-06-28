@@ -1,4 +1,4 @@
-"""Google Tasks connector: all tools are always-allowed (no review gate)."""
+"""Google Tasks connector: all tools are auto-approved."""
 
 from __future__ import annotations
 
@@ -148,7 +148,7 @@ class TasksConnector(Connector):
                 summary=summary,
                 sender="",
                 decision="auto_accepted",
-                auto_accept_rule="always_allowed",
+                auto_accept_rule="auto",
                 latency_seconds=time.time() - t0,
             ))
         except Exception as exc:

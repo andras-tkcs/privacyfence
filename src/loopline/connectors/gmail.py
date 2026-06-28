@@ -1,23 +1,23 @@
-"""Gmail connector: wraps GmailClient + PrivacyFilter + ReviewQueue."""
-
+"""Gmail connector."""
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from datetime import datetime, timezone
 from typing import Any
 
+from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
 from ..gate import gated_call
 from ..gmail_client import GmailClient, GmailClientError
-from ..privacy_filter import PrivacyFilter
 
 logger = logging.getLogger(__name__)
 
 
 class GmailConnector(Connector):
-    def __init__(self, client: GmailClient, privacy_filter: PrivacyFilter) -> None:
+    def __init__(self, client: GmailClient) -> None:
         self._gmail = client
-        self._filter = privacy_filter
         self.my_email: str = ""
 
     @property
@@ -37,7 +37,7 @@ class GmailConnector(Connector):
                     ToolParam("query", "str"),
                     ToolParam("max_results", "int", required=False, default=10),
                 ],
-            read_only=True,
+                read_only=True,
             ),
             ToolSpec(
                 name="gmail_list_threads",
@@ -49,7 +49,7 @@ class GmailConnector(Connector):
                     ToolParam("query", "str"),
                     ToolParam("max_results", "int", required=False, default=10),
                 ],
-            read_only=True,
+                read_only=True,
             ),
             ToolSpec(
                 name="gmail_get_message",
@@ -58,29 +58,29 @@ class GmailConnector(Connector):
                     "and attachment list. Requires user approval."
                 ),
                 params=[ToolParam("message_id", "str")],
-            read_only=True,
+                read_only=True,
             ),
             ToolSpec(
                 name="gmail_get_thread",
                 description=(
-                    "Fetch a full Gmail thread by id, including its messages. "
+                    "Fetch a full Gmail thread by id, including all messages. "
                     "Requires user approval."
                 ),
                 params=[ToolParam("thread_id", "str")],
-            read_only=True,
+                read_only=True,
             ),
             ToolSpec(
                 name="gmail_list_message_attachments",
                 description=(
                     "List attachment names and sizes for a Gmail message. "
-                    "No body content is returned. Auto-approved."
+                    "Requires user approval."
                 ),
                 params=[ToolParam("message_id", "str")],
-            read_only=True,
+                read_only=True,
             ),
             ToolSpec(
                 name="gmail_create_draft",
-                description="Create a Gmail draft. Always allowed.",
+                description="Create a Gmail draft. Requires user approval.",
                 params=[
                     ToolParam("to", "str"),
                     ToolParam("subject", "str"),
@@ -91,7 +91,7 @@ class GmailConnector(Connector):
             ),
             ToolSpec(
                 name="gmail_add_label",
-                description="Add a label to a Gmail message. Always allowed.",
+                description="Add a label to a Gmail message. Requires user approval.",
                 params=[
                     ToolParam("message_id", "str"),
                     ToolParam("label_name", "str"),
@@ -99,7 +99,7 @@ class GmailConnector(Connector):
             ),
             ToolSpec(
                 name="gmail_remove_label",
-                description="Remove a label from a Gmail message. Always allowed.",
+                description="Remove a label from a Gmail message. Requires user approval.",
                 params=[
                     ToolParam("message_id", "str"),
                     ToolParam("label_name", "str"),
@@ -127,107 +127,189 @@ class GmailConnector(Connector):
         raise ValueError(f"Unknown Gmail tool: {tool!r}")
 
     # ------------------------------------------------------------------ #
-    # Tool implementations
+    # Auto (no gate)
     # ------------------------------------------------------------------ #
 
     async def _list_messages(self, query: str, max_results: int = 10) -> Any:
+        t0 = time.time()
         summaries = await self._fetch(self._gmail.list_messages, query, max_results)
-        filtered = [self._filter_summary(s) for s in summaries]
-        logger.info("gmail_list_messages auto-approved: query=%r results=%d", query, len(filtered))
-        return filtered
+        self._auto_audit("gmail_list_messages", "List Gmail Messages",
+                         f"List messages: {query!r}", f"{len(summaries)} result(s)", t0)
+        return summaries
 
     async def _list_threads(self, query: str, max_results: int = 10) -> Any:
+        t0 = time.time()
         summaries = await self._fetch(self._gmail.list_threads, query, max_results)
-        logger.info("gmail_list_threads auto-approved: query=%r results=%d", query, len(summaries))
+        self._auto_audit("gmail_list_threads", "List Gmail Threads",
+                         f"List threads: {query!r}", f"{len(summaries)} result(s)", t0)
         return summaries
+
+    # ------------------------------------------------------------------ #
+    # Review gate (reads)
+    # ------------------------------------------------------------------ #
 
     async def _get_message(self, message_id: str) -> Any:
         message = await self._fetch(self._gmail.get_message, message_id)
-        filtered = self._filter.filter_message(message)
-        display_hint = {
-            "type": "email",
-            "sender": filtered.sender,
-            "recipients": filtered.recipients,
-            "subject": filtered.subject,
-            "date": filtered.date,
-            "html_body": message.body_html or message.body_text,
-            "attachment_count": len(message.attachments),
+        recipients = message.recipients if isinstance(message.recipients, str) else ", ".join(message.recipients or [])
+        preview = {
+            "From": message.sender or "(unknown)",
+            "To": recipients or "(unknown)",
+            "Date": message.date or "(unknown)",
+            "Subject": message.subject or "(no subject)",
         }
+        body = message.body_text or message.body_html or "(no body)"
+        details = f"From: {message.sender}\nTo: {recipients}\nDate: {message.date}\nSubject: {message.subject}\n\n{body}"
         return await gated_call(
             connector=self.name,
             tool="gmail_get_message",
             tool_name="Read Email",
-            summary=f"Read email: {message.short_summary()}",
-            sender=message.sender,
+            summary=f"Read email: {message.subject or '(no subject)'}",
+            sender=message.sender or "",
             raw_data=message,
-            filtered_data=filtered.to_dict(),
-            display_hint=display_hint,
+            filtered_data=message.to_dict() if hasattr(message, "to_dict") else vars(message),
+            gate="review",
+            preview=preview,
+            details_text=details,
             my_email=self.my_email,
             args={"message_id": message_id},
         )
 
     async def _get_thread(self, thread_id: str) -> Any:
         thread = await self._fetch(self._gmail.get_thread, thread_id)
-        filtered = self._filter.filter_thread(thread)
-        message_previews = [
-            {
-                "sender": m.sender,
-                "recipients": m.recipients,
-                "subject": m.subject,
-                "date": m.date,
-                "html_body": raw.body_html or raw.body_text,
-                "attachment_count": len(raw.attachments),
-            }
-            for m, raw in zip(filtered.messages, thread.messages)
-        ]
-        display_hint = {
-            "type": "thread",
-            "subject": filtered.subject,
-            "message_count": len(thread.messages),
-            "messages": message_previews,
+        messages = thread.messages if hasattr(thread, "messages") else []
+        all_participants: set[str] = set()
+        for m in messages:
+            if hasattr(m, "sender") and m.sender:
+                all_participants.add(m.sender)
+            if hasattr(m, "recipients"):
+                recips = m.recipients if isinstance(m.recipients, list) else [m.recipients]
+                all_participants.update(r for r in recips if r)
+        subject = (messages[0].subject if messages and hasattr(messages[0], "subject") else "") or thread_id
+        dates = [m.date for m in messages if hasattr(m, "date") and m.date]
+        date_range = f"{dates[0]} – {dates[-1]}" if len(dates) > 1 else (dates[0] if dates else "")
+        preview = {
+            "Subject": subject,
+            "Participants": ", ".join(sorted(all_participants)) or "(unknown)",
+            "Messages": str(len(messages)),
+            "Dates": date_range,
         }
+        lines = []
+        for i, m in enumerate(messages, 1):
+            lines.append(f"--- Message {i} ---")
+            lines.append(f"From: {getattr(m, 'sender', '')}")
+            lines.append(f"Date: {getattr(m, 'date', '')}")
+            body = getattr(m, "body_text", "") or getattr(m, "body_html", "") or ""
+            lines.append(body)
+        details = "\n".join(lines)
+        filtered = thread.to_dict() if hasattr(thread, "to_dict") else vars(thread)
         return await gated_call(
             connector=self.name,
             tool="gmail_get_thread",
             tool_name="Read Email Thread",
-            summary=f"Read thread: {thread.short_summary()}",
-            sender=thread.subject,
+            summary=f"Read thread: {subject}",
+            sender=subject,
             raw_data=thread,
-            filtered_data=filtered.to_dict(),
-            display_hint=display_hint,
+            filtered_data=filtered,
+            gate="review",
+            preview=preview,
+            details_text=details,
             my_email=self.my_email,
             args={"thread_id": thread_id},
         )
 
     async def _list_message_attachments(self, message_id: str) -> Any:
         message = await self._fetch(self._gmail.get_message, message_id)
+        recipients = message.recipients if isinstance(message.recipients, str) else ", ".join(message.recipients or [])
+        preview = {
+            "From": message.sender or "(unknown)",
+            "To": recipients or "(unknown)",
+            "Date": message.date or "(unknown)",
+            "Subject": message.subject or "(no subject)",
+        }
         attachments = [
             {"name": att.name, "mime_type": att.mime_type, "size": att.size}
-            for att in message.attachments
+            for att in (message.attachments or [])
         ]
-        logger.info(
-            "gmail_list_message_attachments auto-approved: message_id=%s count=%d",
-            message_id,
-            len(attachments),
+        lines = [f"{a['name']}  ({a['mime_type']}, {a['size']} bytes)" for a in attachments] or ["(no attachments)"]
+        details = f"From: {message.sender}\nSubject: {message.subject}\n\nAttachments:\n" + "\n".join(lines)
+        return await gated_call(
+            connector=self.name,
+            tool="gmail_list_message_attachments",
+            tool_name="List Email Attachments",
+            summary=f"List attachments: {message.subject or '(no subject)'}",
+            sender=message.sender or "",
+            raw_data=message,
+            filtered_data={"message_id": message_id, "attachments": attachments},
+            gate="review",
+            preview=preview,
+            details_text=details,
+            my_email=self.my_email,
+            args={"message_id": message_id},
         )
-        return {"message_id": message_id, "attachments": attachments}
+
+    # ------------------------------------------------------------------ #
+    # Popup gate (writes)
+    # ------------------------------------------------------------------ #
 
     async def _create_draft(
         self, to: str, subject: str, body: str, cc: str = "", bcc: str = ""
     ) -> Any:
-        result = await self._fetch(self._gmail.create_draft, to, subject, body, cc, bcc)
-        logger.info("gmail_create_draft: to=%s subject=%r", to, subject)
-        return result
+        details_lines = [f"To: {to}"]
+        if cc:
+            details_lines.append(f"Cc: {cc}")
+        if bcc:
+            details_lines.append(f"Bcc: {bcc}")
+        details_lines += [f"Subject: {subject}", "", body]
+        await gated_call(
+            connector=self.name,
+            tool="gmail_create_draft",
+            tool_name="Create Gmail Draft",
+            summary=f"Create draft: {subject}",
+            sender=to,
+            raw_data={"to": to, "subject": subject, "body": body, "cc": cc, "bcc": bcc},
+            filtered_data=None,
+            gate="popup",
+            details_text="\n".join(details_lines),
+            my_email=self.my_email,
+            args={"to": to, "subject": subject},
+        )
+        return await self._fetch(self._gmail.create_draft, to, subject, body, cc, bcc)
 
     async def _add_label(self, message_id: str, label_name: str) -> Any:
-        result = await self._fetch(self._gmail.add_label, message_id, label_name)
-        logger.info("gmail_add_label: message_id=%s label=%s", message_id, label_name)
-        return result
+        message = await self._fetch(self._gmail.get_message, message_id)
+        details = f"From: {message.sender}\nSubject: {message.subject}\n\nAdd label: {label_name}"
+        await gated_call(
+            connector=self.name,
+            tool="gmail_add_label",
+            tool_name="Add Gmail Label",
+            summary=f"Add label '{label_name}' to: {message.subject or message_id}",
+            sender=message.sender or "",
+            raw_data={"message_id": message_id, "label_name": label_name},
+            filtered_data=None,
+            gate="popup",
+            details_text=details,
+            my_email=self.my_email,
+            args={"message_id": message_id, "label_name": label_name},
+        )
+        return await self._fetch(self._gmail.add_label, message_id, label_name)
 
     async def _remove_label(self, message_id: str, label_name: str) -> Any:
-        result = await self._fetch(self._gmail.remove_label, message_id, label_name)
-        logger.info("gmail_remove_label: message_id=%s label=%s", message_id, label_name)
-        return result
+        message = await self._fetch(self._gmail.get_message, message_id)
+        details = f"From: {message.sender}\nSubject: {message.subject}\n\nRemove label: {label_name}"
+        await gated_call(
+            connector=self.name,
+            tool="gmail_remove_label",
+            tool_name="Remove Gmail Label",
+            summary=f"Remove label '{label_name}' from: {message.subject or message_id}",
+            sender=message.sender or "",
+            raw_data={"message_id": message_id, "label_name": label_name},
+            filtered_data=None,
+            gate="popup",
+            details_text=details,
+            my_email=self.my_email,
+            args={"message_id": message_id, "label_name": label_name},
+        )
+        return await self._fetch(self._gmail.remove_label, message_id, label_name)
 
     # ------------------------------------------------------------------ #
     # Helpers
@@ -240,12 +322,22 @@ class GmailConnector(Connector):
             logger.error("Gmail fetch failed: %s", exc)
             raise RuntimeError(str(exc)) from exc
 
-    def _filter_summary(self, summary: dict[str, str]) -> dict[str, str]:
-        policy = self._filter.policy_for("metadata")
-        result = dict(summary)
-        for field_name in ("subject", "date"):
-            if field_name in result:
-                result[field_name] = PrivacyFilter._apply_text(result[field_name], policy)  # noqa: SLF001
-        if "sender" in result:
-            result["sender"] = PrivacyFilter._apply_address(result["sender"], policy)  # noqa: SLF001
-        return result
+    def _auto_audit(
+        self, tool: str, tool_name: str, summary: str, sender: str, created_at: float
+    ) -> None:
+        try:
+            get_audit_logger().record(AuditEntry(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                week=current_week(),
+                request_id="",
+                connector=self.name,
+                tool=tool,
+                tool_name=tool_name,
+                summary=summary,
+                sender=sender,
+                decision="auto_accepted",
+                auto_accept_rule="auto",
+                latency_seconds=time.time() - created_at,
+            ))
+        except Exception as exc:
+            logger.warning("Audit log write failed: %s", exc)

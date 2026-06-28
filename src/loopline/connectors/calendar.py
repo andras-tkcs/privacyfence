@@ -1,5 +1,4 @@
-"""Google Calendar connector: wraps CalendarClient + gated_call."""
-
+"""Google Calendar connector."""
 from __future__ import annotations
 
 import asyncio
@@ -29,11 +28,9 @@ class CalendarConnector(Connector):
         return [
             ToolSpec(
                 name="calendar_list_calendars",
-                description=(
-                    "List all Google Calendars for the authenticated user. Auto-approved."
-                ),
+                description="List all Google Calendars for the authenticated user. Auto-approved.",
                 params=[],
-            read_only=True,
+                read_only=True,
             ),
             ToolSpec(
                 name="calendar_list_events",
@@ -48,19 +45,17 @@ class CalendarConnector(Connector):
                     ToolParam("time_max", "str", required=False, default=""),
                     ToolParam("query", "str", required=False, default=""),
                 ],
-            read_only=True,
+                read_only=True,
             ),
             ToolSpec(
                 name="calendar_get_free_busy",
-                description=(
-                    "Query free/busy status for a list of email addresses. Auto-approved."
-                ),
+                description="Query free/busy status for a list of email addresses. Auto-approved.",
                 params=[
                     ToolParam("emails", "str", description="Comma-separated list of email addresses"),
                     ToolParam("time_min", "str"),
                     ToolParam("time_max", "str"),
                 ],
-            read_only=True,
+                read_only=True,
             ),
             ToolSpec(
                 name="calendar_get_event_details",
@@ -72,13 +67,11 @@ class CalendarConnector(Connector):
                     ToolParam("calendar_id", "str"),
                     ToolParam("event_id", "str"),
                 ],
-            read_only=True,
+                read_only=True,
             ),
             ToolSpec(
                 name="calendar_create_event",
-                description=(
-                    "Create a new calendar event. Requires user approval."
-                ),
+                description="Create a new calendar event. Requires user approval.",
                 params=[
                     ToolParam("calendar_id", "str"),
                     ToolParam("title", "str"),
@@ -92,9 +85,7 @@ class CalendarConnector(Connector):
             ),
             ToolSpec(
                 name="calendar_update_event",
-                description=(
-                    "Update an existing calendar event. Requires user approval."
-                ),
+                description="Update an existing calendar event. Requires user approval.",
                 params=[
                     ToolParam("calendar_id", "str"),
                     ToolParam("event_id", "str"),
@@ -123,7 +114,7 @@ class CalendarConnector(Connector):
         raise ValueError(f"Unknown Calendar tool: {tool!r}")
 
     # ------------------------------------------------------------------ #
-    # Always-allowed
+    # Auto
     # ------------------------------------------------------------------ #
 
     async def _list_calendars(self) -> Any:
@@ -133,7 +124,8 @@ class CalendarConnector(Connector):
             {"id": e.id, "summary": e.summary, "primary": e.primary, "access_role": e.access_role}
             for e in entries
         ]
-        self._auto_audit("calendar_list_calendars", "List Calendars", "List all calendars", f"{len(entries)} calendar(s)", t0)
+        self._auto_audit("calendar_list_calendars", "List Calendars",
+                         "List all calendars", f"{len(entries)} calendar(s)", t0)
         return result
 
     async def _list_events(
@@ -148,7 +140,6 @@ class CalendarConnector(Connector):
         events = await self._fetch(
             self._calendar.list_events, calendar_id, max_results, time_min, time_max, query
         )
-        # Only return safe summary fields (no attendees/description/links)
         result = [
             {
                 "id": e.id,
@@ -160,10 +151,8 @@ class CalendarConnector(Connector):
             }
             for e in events
         ]
-        self._auto_audit(
-            "calendar_list_events", "List Calendar Events",
-            f"List events: calendar={calendar_id}", f"{len(events)} event(s)", t0,
-        )
+        self._auto_audit("calendar_list_events", "List Calendar Events",
+                         f"List events: {calendar_id}", f"{len(events)} event(s)", t0)
         return result
 
     async def _get_free_busy(self, emails: str, time_min: str, time_max: str) -> Any:
@@ -171,24 +160,41 @@ class CalendarConnector(Connector):
         email_list = [e.strip() for e in emails.split(",") if e.strip()]
         results = await self._fetch(self._calendar.get_free_busy, email_list, time_min, time_max)
         data = [
-            {
-                "email": r.email,
-                "busy": [{"start": s.start, "end": s.end} for s in r.busy],
-            }
+            {"email": r.email, "busy": [{"start": s.start, "end": s.end} for s in r.busy]}
             for r in results
         ]
-        self._auto_audit(
-            "calendar_get_free_busy", "Get Free/Busy",
-            f"Free/busy: {emails}", f"{len(results)} result(s)", t0,
-        )
+        self._auto_audit("calendar_get_free_busy", "Get Free/Busy",
+                         f"Free/busy: {emails}", f"{len(results)} result(s)", t0)
         return data
 
     # ------------------------------------------------------------------ #
-    # Gated
+    # Review gate (reads)
     # ------------------------------------------------------------------ #
 
     async def _get_event_details(self, calendar_id: str, event_id: str) -> Any:
         event = await self._fetch(self._calendar.get_event, calendar_id, event_id)
+        attendee_count = len(event.attendees) if hasattr(event, "attendees") else 0
+        preview = {
+            "Title": event.title or "(untitled)",
+            "Time": f"{event.start_time} – {event.end_time}",
+            "Organizer": event.organizer_email or "(unknown)",
+            "Attendees": str(attendee_count),
+        }
+        attendee_lines = [
+            f"  {a.display_name or a.email} <{a.email}> [{a.response_status}]"
+            for a in (event.attendees or [])
+        ]
+        details_lines = [
+            f"Title: {event.title}",
+            f"Time: {event.start_time} – {event.end_time}",
+            f"Organizer: {event.organizer_email}",
+            f"Location: {event.location or '(none)'}",
+            f"Conferencing: {event.conference_link or event.hangout_link or '(none)'}",
+            "",
+            f"Description:\n{event.description or '(none)'}",
+            "",
+            "Attendees:",
+        ] + (attendee_lines or ["  (none)"])
         filtered_data = {
             "id": event.id,
             "calendar_id": event.calendar_id,
@@ -199,13 +205,9 @@ class CalendarConnector(Connector):
             "all_day": event.all_day,
             "organizer_email": event.organizer_email,
             "attendees": [
-                {
-                    "email": a.email,
-                    "display_name": a.display_name,
-                    "response_status": a.response_status,
-                    "organizer": a.organizer,
-                }
-                for a in event.attendees
+                {"email": a.email, "display_name": a.display_name,
+                 "response_status": a.response_status, "organizer": a.organizer}
+                for a in (event.attendees or [])
             ],
             "location": event.location,
             "hangout_link": event.hangout_link,
@@ -221,9 +223,16 @@ class CalendarConnector(Connector):
             sender=event.organizer_email or calendar_id,
             raw_data=event,
             filtered_data=filtered_data,
+            gate="review",
+            preview=preview,
+            details_text="\n".join(details_lines),
             my_email=self.my_email,
             args={"calendar_id": calendar_id, "event_id": event_id},
         )
+
+    # ------------------------------------------------------------------ #
+    # Popup gate (writes)
+    # ------------------------------------------------------------------ #
 
     async def _create_event(
         self,
@@ -235,42 +244,43 @@ class CalendarConnector(Connector):
         attendees: str = "",
         location: str = "",
     ) -> Any:
-        attendee_list = [e.strip() for e in attendees.split(",") if e.strip()] if attendees else None
-        # We gate before creating — pass the intent as raw_data
+        attendee_list = [e.strip() for e in attendees.split(",") if e.strip()] if attendees else []
+        details_lines = [
+            f"Title: {title}",
+            f"Time: {start_time} – {end_time}",
+            f"Calendar: {calendar_id}",
+        ]
+        if location:
+            details_lines.append(f"Location: {location}")
+        if attendee_list:
+            details_lines.append(f"Attendees: {', '.join(attendee_list)}")
+        if description:
+            details_lines += ["", f"Description:\n{description}"]
         raw_data = {
-            "calendar_id": calendar_id,
-            "title": title,
-            "start_time": start_time,
-            "end_time": end_time,
-            "description": description,
-            "attendees": attendee_list or [],
-            "location": location,
+            "calendar_id": calendar_id, "title": title,
+            "start_time": start_time, "end_time": end_time,
+            "description": description, "attendees": attendee_list, "location": location,
         }
-
-        async def _execute():
-            event = await self._fetch(
-                self._calendar.create_event,
-                calendar_id, title, start_time, end_time, description, attendee_list, location,
-            )
-            return {
-                "id": event.id,
-                "title": event.title,
-                "start_time": event.start_time,
-                "end_time": event.end_time,
-                "html_link": event.html_link,
-            }
-
-        return await gated_call(
+        await gated_call(
             connector=self.name,
             tool="calendar_create_event",
             tool_name="Create Calendar Event",
             summary=f"Create \"{title}\" on {start_time}",
             sender=calendar_id,
             raw_data=raw_data,
-            filtered_data=raw_data,
+            filtered_data=None,
+            gate="popup",
+            details_text="\n".join(details_lines),
             my_email=self.my_email,
             args={"calendar_id": calendar_id, "attendees": attendees},
         )
+        event = await self._fetch(
+            self._calendar.create_event,
+            calendar_id, title, start_time, end_time, description,
+            attendee_list or None, location,
+        )
+        return {"id": event.id, "title": event.title, "start_time": event.start_time,
+                "end_time": event.end_time, "html_link": event.html_link}
 
     async def _update_event(
         self,
@@ -283,27 +293,45 @@ class CalendarConnector(Connector):
         location: str = "",
     ) -> Any:
         event = await self._fetch(self._calendar.get_event, calendar_id, event_id)
+        changes = {}
+        if title and title != event.title:
+            changes["Title"] = f"{event.title} → {title}"
+        if start_time and start_time != event.start_time:
+            changes["Start"] = f"{event.start_time} → {start_time}"
+        if end_time and end_time != event.end_time:
+            changes["End"] = f"{event.end_time} → {end_time}"
+        if description and description != event.description:
+            changes["Description"] = "(changed)"
+        if location and location != event.location:
+            changes["Location"] = f"{event.location or '(none)'} → {location}"
+        changes_text = "\n".join(f"  {k}: {v}" for k, v in changes.items()) or "  (no changes)"
+        details = f"Event: {event.title}\nCalendar: {calendar_id}\n\nChanges:\n{changes_text}"
         raw_data = {
-            "calendar_id": calendar_id,
-            "event_id": event_id,
-            "current_title": event.title,
-            "new_title": title,
-            "start_time": start_time,
-            "end_time": end_time,
-            "description": description,
-            "location": location,
+            "calendar_id": calendar_id, "event_id": event_id,
+            "current_title": event.title, "new_title": title,
+            "start_time": start_time, "end_time": end_time,
+            "description": description, "location": location,
         }
-        return await gated_call(
+        await gated_call(
             connector=self.name,
             tool="calendar_update_event",
             tool_name="Update Calendar Event",
             summary=f"Update \"{event.title}\"",
             sender=event.organizer_email or calendar_id,
             raw_data=raw_data,
-            filtered_data=raw_data,
+            filtered_data=None,
+            gate="popup",
+            details_text=details,
             my_email=self.my_email,
             args={"calendar_id": calendar_id, "event_id": event_id},
         )
+        updated = await self._fetch(
+            self._calendar.update_event,
+            calendar_id, event_id, title or None, start_time or None,
+            end_time or None, description or None, location or None,
+        )
+        return {"id": updated.id, "title": updated.title, "start_time": updated.start_time,
+                "end_time": updated.end_time, "html_link": updated.html_link}
 
     # ------------------------------------------------------------------ #
     # Helpers
@@ -330,7 +358,7 @@ class CalendarConnector(Connector):
                 summary=summary,
                 sender=sender,
                 decision="auto_accepted",
-                auto_accept_rule="always_allowed",
+                auto_accept_rule="auto",
                 latency_seconds=time.time() - created_at,
             ))
         except Exception as exc:

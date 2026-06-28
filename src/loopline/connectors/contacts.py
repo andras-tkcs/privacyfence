@@ -1,5 +1,4 @@
-"""Contacts connector: wraps ContactsClient with always-allowed reads and gated writes."""
-
+"""Google Contacts connector."""
 from __future__ import annotations
 
 import asyncio
@@ -11,26 +10,15 @@ from typing import Any
 
 from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
-from ..contacts_client import Contact, ContactsClient, ContactsClientError
+from ..contacts_client import ContactsClient, ContactsClientError
 from ..gate import gated_call
 
 logger = logging.getLogger(__name__)
 
 
 class ContactsConnector(Connector):
-    """Connector for Google Contacts (People API).
-
-    Read tools (list, search, get) are always-allowed and never enter the review
-    queue.  The write tool (update) is gated and may require user approval.
-    """
-
-    def __init__(
-        self,
-        client: ContactsClient,
-        rules_config: dict[str, Any] | None = None,
-    ) -> None:
+    def __init__(self, client: ContactsClient) -> None:
         self._contacts = client
-        self._rules_config = rules_config or {}
         self.my_email: str = ""
 
     @property
@@ -43,42 +31,31 @@ class ContactsConnector(Connector):
                 name="contacts_list",
                 description=(
                     "List contacts from the user's Google address book. "
-                    "Returns display name, emails, phones, organization, and job title. "
-                    "Auto-approved — no sensitive data gate."
+                    "Returns display name, emails, phones, organization, and job title. Auto-approved."
                 ),
-                params=[
-                    ToolParam("max_results", "int", required=False, default=50),
-                ],
-            read_only=True,
+                params=[ToolParam("max_results", "int", required=False, default=50)],
+                read_only=True,
             ),
             ToolSpec(
                 name="contacts_search",
-                description=(
-                    "Search contacts by name or email address. "
-                    "Auto-approved — no sensitive data gate."
-                ),
+                description="Search contacts by name or email address. Auto-approved.",
                 params=[
                     ToolParam("query", "str"),
                     ToolParam("max_results", "int", required=False, default=20),
                 ],
-            read_only=True,
+                read_only=True,
             ),
             ToolSpec(
                 name="contacts_get",
-                description=(
-                    "Fetch a single contact by resource name (e.g. 'people/c12345'). "
-                    "Auto-approved."
-                ),
-                params=[
-                    ToolParam("resource_name", "str"),
-                ],
-            read_only=True,
+                description="Fetch a single contact by resource name (e.g. 'people/c12345'). Auto-approved.",
+                params=[ToolParam("resource_name", "str")],
+                read_only=True,
             ),
             ToolSpec(
                 name="contacts_update",
                 description=(
                     "Update a contact's fields. Provide only the fields you want to change. "
-                    "Requires user approval unless an auto-accept rule matches. "
+                    "Requires user approval. "
                     "emails and phones are JSON strings, e.g. "
                     "'[{\"value\": \"a@b.com\", \"type\": \"work\"}]'."
                 ),
@@ -108,32 +85,35 @@ class ContactsConnector(Connector):
         raise ValueError(f"Unknown Contacts tool: {tool!r}")
 
     # ------------------------------------------------------------------ #
-    # Always-allowed read tools
+    # Auto
     # ------------------------------------------------------------------ #
 
     async def _contacts_list(self, max_results: int = 50) -> Any:
+        t0 = time.time()
         contacts = await self._fetch(self._contacts.list_contacts, max_results)
         result = [c.to_dict() for c in contacts]
-        self._log_always_allowed("contacts_list", {"max_results": max_results})
-        logger.info("contacts_list auto-accepted: %d contacts", len(result))
+        self._auto_audit("contacts_list", "List Contacts",
+                         f"List contacts (max {max_results})", f"{len(result)} contact(s)", t0)
         return result
 
     async def _contacts_search(self, query: str, max_results: int = 20) -> Any:
+        t0 = time.time()
         contacts = await self._fetch(self._contacts.search_contacts, query, max_results)
         result = [c.to_dict() for c in contacts]
-        self._log_always_allowed("contacts_search", {"query": query, "max_results": max_results})
-        logger.info("contacts_search query=%r returned %d", query, len(result))
+        self._auto_audit("contacts_search", "Search Contacts",
+                         f"Search: {query!r}", f"{len(result)} result(s)", t0)
         return result
 
     async def _contacts_get(self, resource_name: str) -> Any:
+        t0 = time.time()
         contact = await self._fetch(self._contacts.get_contact, resource_name)
         result = contact.to_dict()
-        self._log_always_allowed("contacts_get", {"resource_name": resource_name})
-        logger.info("contacts_get %s: %s", resource_name, contact.short_summary())
+        self._auto_audit("contacts_get", "Get Contact",
+                         f"Get: {resource_name}", contact.display_name or resource_name, t0)
         return result
 
     # ------------------------------------------------------------------ #
-    # Gated write tool
+    # Popup gate (writes)
     # ------------------------------------------------------------------ #
 
     async def _contacts_update(
@@ -149,7 +129,46 @@ class ContactsConnector(Connector):
         emails_list: list[dict] | None = _parse_json_list(emails)
         phones_list: list[dict] | None = _parse_json_list(phones)
 
-        updated_contact = await self._fetch(
+        try:
+            current = await self._fetch(self._contacts.get_contact, resource_name)
+            contact_name = current.display_name or resource_name
+        except Exception:
+            contact_name = resource_name
+
+        changes: list[str] = []
+        if display_name:
+            changes.append(f"Name: {display_name}")
+        if emails_list:
+            changes.append(f"Emails: {', '.join(e.get('value', '') for e in emails_list)}")
+        if phones_list:
+            changes.append(f"Phones: {', '.join(p.get('value', '') for p in phones_list)}")
+        if organization:
+            changes.append(f"Organization: {organization}")
+        if job_title:
+            changes.append(f"Job title: {job_title}")
+        if notes:
+            changes.append(f"Notes: {notes[:100]}")
+        details = f"Contact: {contact_name}\n\nChanges:\n" + "\n".join(f"  {c}" for c in changes)
+
+        args = {
+            "resource_name": resource_name, "display_name": display_name,
+            "emails": emails, "phones": phones, "organization": organization,
+            "job_title": job_title, "notes": notes,
+        }
+        await gated_call(
+            connector=self.name,
+            tool="contacts_update",
+            tool_name="Update Contact",
+            summary=f"Update contact: {contact_name}",
+            sender=contact_name,
+            raw_data=args,
+            filtered_data=None,
+            gate="popup",
+            details_text=details,
+            my_email=self.my_email,
+            args=args,
+        )
+        updated = await self._fetch(
             self._contacts.update_contact,
             resource_name,
             display_name or None,
@@ -159,29 +178,7 @@ class ContactsConnector(Connector):
             job_title or None,
             notes or None,
         )
-        filtered_data = updated_contact.to_dict()
-        args = {
-            "resource_name": resource_name,
-            "display_name": display_name,
-            "emails": emails,
-            "phones": phones,
-            "organization": organization,
-            "job_title": job_title,
-            "notes": notes,
-        }
-        summary = f"Update contact: {updated_contact.display_name} ({resource_name})"
-
-        return await gated_call(
-            connector_name=self.name,
-            tool="contacts_update",
-            args=args,
-            operation_key="contacts.edit",
-            summary=summary,
-            sender=updated_contact.display_name,
-            filtered_data=filtered_data,
-            rules_config=self._rules_config,
-            context={"my_email": self.my_email},
-        )
+        return updated.to_dict()
 
     # ------------------------------------------------------------------ #
     # Helpers
@@ -194,7 +191,9 @@ class ContactsConnector(Connector):
             logger.error("Contacts fetch failed: %s", exc)
             raise RuntimeError(str(exc)) from exc
 
-    def _log_always_allowed(self, tool: str, args: dict[str, Any]) -> None:
+    def _auto_audit(
+        self, tool: str, tool_name: str, summary: str, sender: str, created_at: float
+    ) -> None:
         try:
             get_audit_logger().record(AuditEntry(
                 timestamp=datetime.now(timezone.utc).isoformat(),
@@ -202,27 +201,22 @@ class ContactsConnector(Connector):
                 request_id="",
                 connector=self.name,
                 tool=tool,
-                tool_name=tool,
-                summary=str(args),
-                sender="",
+                tool_name=tool_name,
+                summary=summary,
+                sender=sender,
                 decision="auto_accepted",
-                auto_accept_rule="always_allowed",
-                latency_seconds=0.0,
+                auto_accept_rule="auto",
+                latency_seconds=time.time() - created_at,
             ))
         except Exception as exc:
             logger.warning("Audit log write failed: %s", exc)
 
 
 def _parse_json_list(value: str) -> list[dict] | None:
-    """Parse a JSON string into a list of dicts. Returns None if empty or invalid."""
     if not value or not value.strip():
         return None
     try:
         parsed = json.loads(value)
-        if isinstance(parsed, list):
-            return parsed
-        logger.warning("contacts: expected JSON array, got %s", type(parsed).__name__)
-        return None
-    except (json.JSONDecodeError, ValueError) as exc:
-        logger.warning("contacts: failed to parse JSON list %r: %s", value[:80], exc)
+        return parsed if isinstance(parsed, list) else None
+    except (json.JSONDecodeError, ValueError):
         return None
