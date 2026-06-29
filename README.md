@@ -73,6 +73,7 @@ Claude already describes the action it is about to take in the chat. When the ga
 | `gmail_create_draft` | write | popup | — | To, cc, subject, full body |
 | `gmail_add_label` | write | popup | — | From, subject, label name |
 | `gmail_remove_label` | write | popup | — | From, subject, label name |
+| `gmail_archive_message` | write | popup | — | From, subject, confirmation that message stays in All Mail |
 
 ### Google Drive
 
@@ -109,7 +110,7 @@ Claude already describes the action it is about to take in the chat. When the ga
 |------|-----|------|----------------|---------------|
 | `calendar_list_calendars` | read | auto | — | — |
 | `calendar_list_events` | read | auto | — | — |
-| `calendar_get_free_busy` | read | auto | — | — |
+| `calendar_get_free_busy` | read | auto | — | — (returns full events when calendar access is available; falls back to busy-slot list otherwise) |
 | `calendar_get_event_details` | read | review | title, time, organizer, attendee count | Description, full attendee list, conferencing link |
 | `calendar_create_event` | write | popup | — | Title, time, all attendees, description, location |
 | `calendar_update_event` | write | popup | — | Title, time, fields changing (old → new) |
@@ -167,6 +168,7 @@ Claude already describes the action it is about to take in the chat. When the ga
 | `confluence_list_spaces` | read | auto | — | — |
 | `confluence_search` | read | auto | — | — |
 | `confluence_cql_search` | read | auto | — | — |
+| `confluence_list_pages` | read | auto | — | — |
 | `confluence_get_page` | read | review | title, space, author, last modified | Full page body |
 | `confluence_get_page_by_title` | read | review | title, space, author, last modified | Full page body |
 | `confluence_create_page` | write | popup | — | Space, title, parent page, full body |

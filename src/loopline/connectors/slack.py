@@ -15,6 +15,19 @@ from ..slack_client import SlackClient, SlackClientError
 logger = logging.getLogger(__name__)
 
 
+def _message_to_dict(m: Any) -> dict[str, Any]:
+    return {
+        "ts": m.id,
+        "channel_id": m.channel_id,
+        "channel_name": m.channel_name,
+        "user_id": m.user_id,
+        "user_name": m.user_name,
+        "text": m.text,
+        "thread_ts": m.thread_ts,
+        "reply_count": m.reply_count,
+    }
+
+
 class SlackConnector(Connector):
     def __init__(self, client: SlackClient) -> None:
         self._slack = client
@@ -98,7 +111,17 @@ class SlackConnector(Connector):
         channels = await self._fetch(self._slack.list_channels, exclude_archived, max_results)
         self._auto_audit("slack_list_channels", "List Slack Channels",
                          f"List channels (max {max_results})", f"{len(channels)} channel(s)", t0)
-        return channels
+        return [
+            {
+                "id": c.id,
+                "name": c.name,
+                "is_private": c.is_private,
+                "topic": c.topic,
+                "purpose": c.purpose,
+                "member_count": c.member_count,
+            }
+            for c in channels
+        ]
 
     # ------------------------------------------------------------------ #
     # Review gate (reads)
@@ -107,14 +130,18 @@ class SlackConnector(Connector):
     async def _get_channel_history(self, channel_id: str, limit: int = 50) -> Any:
         messages = await self._fetch(self._slack.get_channel_history, channel_id, limit)
         n = len(messages)
-        first_preview = (messages[0].get("text") or "")[:80] if messages else ""
+        first_preview = (messages[0].text or "")[:80] if messages else ""
         preview = {
             "Channel": channel_id,
             "Messages": str(n),
             "First message": first_preview or "(empty)",
         }
-        lines = [f"[{m.get('ts', '')}] {m.get('user', 'unknown')}: {m.get('text', '')}" for m in messages]
+        lines = [
+            f"[{m.id}] {m.user_name or m.user_id or 'unknown'}: {m.text}"
+            for m in messages
+        ]
         details = f"Channel: {channel_id}\n\n" + "\n".join(lines)
+        filtered = [_message_to_dict(m) for m in messages]
         return await gated_call(
             connector=self.name,
             tool="slack_get_channel_history",
@@ -122,7 +149,7 @@ class SlackConnector(Connector):
             summary=f"{n} message{'s' if n != 1 else ''} from {channel_id}",
             sender=channel_id,
             raw_data=messages,
-            filtered_data=messages,
+            filtered_data=filtered,
             gate="review",
             preview=preview,
             details_text=details,
@@ -133,14 +160,18 @@ class SlackConnector(Connector):
     async def _get_thread_replies(self, channel_id: str, thread_ts: str) -> Any:
         messages = await self._fetch(self._slack.get_thread_replies, channel_id, thread_ts)
         n = len(messages)
-        starter = (messages[0].get("text") or "")[:80] if messages else ""
+        starter = (messages[0].text or "")[:80] if messages else ""
         preview = {
             "Channel": channel_id,
             "Thread starter": starter or "(empty)",
             "Replies": str(max(0, n - 1)),
         }
-        lines = [f"[{m.get('ts', '')}] {m.get('user', 'unknown')}: {m.get('text', '')}" for m in messages]
+        lines = [
+            f"[{m.id}] {m.user_name or m.user_id or 'unknown'}: {m.text}"
+            for m in messages
+        ]
         details = f"Channel: {channel_id}\nThread: {thread_ts}\n\n" + "\n".join(lines)
+        filtered = [_message_to_dict(m) for m in messages]
         return await gated_call(
             connector=self.name,
             tool="slack_get_thread_replies",
@@ -148,7 +179,7 @@ class SlackConnector(Connector):
             summary=f"{n} repl{'ies' if n != 1 else 'y'} in {channel_id}",
             sender=channel_id,
             raw_data=messages,
-            filtered_data=messages,
+            filtered_data=filtered,
             gate="review",
             preview=preview,
             details_text=details,
@@ -163,8 +194,12 @@ class SlackConnector(Connector):
             "Query": query,
             "Results": str(n),
         }
-        lines = [f"[{m.get('channel', {}).get('name', '')}] {m.get('username', 'unknown')}: {m.get('text', '')}" for m in messages]
+        lines = [
+            f"[{m.channel_name}] {m.user_name or m.user_id or 'unknown'}: {m.text}"
+            for m in messages
+        ]
         details = f"Search: {query}\n\n" + "\n".join(lines)
+        filtered = [_message_to_dict(m) for m in messages]
         return await gated_call(
             connector=self.name,
             tool="slack_search_messages",
@@ -172,7 +207,7 @@ class SlackConnector(Connector):
             summary=f"{n} result{'s' if n != 1 else ''} for \"{query}\"",
             sender=query,
             raw_data=messages,
-            filtered_data=messages,
+            filtered_data=filtered,
             gate="review",
             preview=preview,
             details_text=details,
