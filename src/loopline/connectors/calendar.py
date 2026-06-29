@@ -15,6 +15,14 @@ from ..gate import gated_call
 logger = logging.getLogger(__name__)
 
 
+def _day_of_week(iso_str: str) -> str:
+    """Return the full weekday name for an ISO 8601 datetime string."""
+    try:
+        return datetime.fromisoformat(iso_str).strftime("%A")
+    except (ValueError, TypeError):
+        return ""
+
+
 class CalendarConnector(Connector):
     def __init__(self, client: CalendarClient) -> None:
         self._calendar = client
@@ -152,6 +160,7 @@ class CalendarConnector(Connector):
                 "title": e.title,
                 "start_time": e.start_time,
                 "end_time": e.end_time,
+                "day_of_week": _day_of_week(e.start_time),
                 "all_day": e.all_day,
                 "status": e.status,
             }
@@ -213,6 +222,7 @@ class CalendarConnector(Connector):
             "description": event.description,
             "start_time": event.start_time,
             "end_time": event.end_time,
+            "day_of_week": _day_of_week(event.start_time),
             "all_day": event.all_day,
             "organizer_email": event.organizer_email,
             "attendees": [

@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Optional
 
 from google.auth.transport.requests import Request
@@ -79,6 +80,14 @@ class FreeBusySlot:
 class FreeBusyResult:
     email: str
     busy: list[FreeBusySlot]
+
+
+def _has_timezone(iso_str: str) -> bool:
+    """Return True if the ISO 8601 string already carries timezone information."""
+    try:
+        return datetime.fromisoformat(iso_str).tzinfo is not None
+    except (ValueError, TypeError):
+        return False
 
 
 class CalendarClient:
@@ -317,10 +326,18 @@ class CalendarClient:
         location: str = "",
     ) -> CalendarEvent:
         """Create a new event and return the created CalendarEvent."""
+        start_entry: dict[str, str] = {"dateTime": start_time}
+        end_entry: dict[str, str] = {"dateTime": end_time}
+        # Only inject a UTC fallback when the ISO string has no embedded offset.
+        # If the caller already includes one (e.g. "+02:00"), preserve it.
+        if not _has_timezone(start_time):
+            start_entry["timeZone"] = "UTC"
+        if not _has_timezone(end_time):
+            end_entry["timeZone"] = "UTC"
         body: dict[str, Any] = {
             "summary": title,
-            "start": {"dateTime": start_time, "timeZone": "UTC"},
-            "end": {"dateTime": end_time, "timeZone": "UTC"},
+            "start": start_entry,
+            "end": end_entry,
         }
         if description:
             body["description"] = description
