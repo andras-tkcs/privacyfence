@@ -13,7 +13,7 @@ Required user token scopes:
   - ``users:read`` / ``users:read.email``
   - ``search:read``
   - ``chat:write``
-  - ``mark`` (required for mark_unread / conversations.mark)
+  - ``im:write`` (required for mark_unread on DMs / conversations.mark)
 """
 
 from __future__ import annotations

@@ -95,7 +95,7 @@ Claude already describes the action it is about to take in the chat. When the ga
 
 ### Slack
 
-**Auth:** User token (`xoxp-`). Sees exactly what you see — no bot to invite. Required scopes: `channels:read`, `groups:read`, `im:read`, `mpim:read`, `channels:history`, `groups:history`, `im:history`, `mpim:history`, `users:read`, `users:read.email`, `search:read`, `chat:write`, `mark` (the last one is needed for `mark_unread`).
+**Auth:** User token (`xoxp-`). Sees exactly what you see — no bot to invite. See [docs/slack-setup.md](docs/slack-setup.md) for required scopes.
 
 | Tool | Dir | Gate | Cowork preview | Details popup |
 |------|-----|------|----------------|---------------|

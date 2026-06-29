@@ -33,6 +33,7 @@ Loopline uses a **user token** (`xoxp-…`) to access Slack. This means Claude s
 | `users:read.email` | Resolve user email addresses |
 | `search:read` | Search messages across the workspace |
 | `chat:write` | Send messages as you |
+| `im:write` | Mark a DM as unread (`mark_unread` option on `slack_send_message`) |
 
 > **Do not add Bot Token Scopes.** Only the User Token Scopes section is needed.
 
