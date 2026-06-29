@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional
@@ -25,7 +26,10 @@ from googleapiclient.errors import HttpError
 
 logger = logging.getLogger(__name__)
 
-SCOPES = ["https://www.googleapis.com/auth/calendar"]
+SCOPES = [
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/admin.directory.resource.calendar.readonly",
+]
 
 
 class CalendarClientError(Exception):
@@ -68,6 +72,17 @@ class CalendarEvent:
 
     def short_summary(self) -> str:
         return f"{self.title} ({self.start_time})"
+
+
+@dataclass
+class CalendarRoom:
+    resource_id: str
+    resource_name: str
+    resource_email: str
+    building_id: str
+    floor_name: str
+    capacity: int
+    description: str
 
 
 @dataclass
@@ -155,6 +170,10 @@ class CalendarClient:
             self._service = build("calendar", "v3", credentials=creds, cache_discovery=False)
             logger.debug("Calendar API service initialized")
         return self._service
+
+    def _get_directory_service(self):
+        creds = self._load_credentials()
+        return build("admin", "directory_v1", credentials=creds, cache_discovery=False)
 
     # ------------------------------------------------------------------ #
     # Connection check
@@ -311,6 +330,40 @@ class CalendarClient:
 
         return results
 
+    def list_rooms(self, query: str = "") -> list[CalendarRoom]:
+        """List meeting rooms/resources from the Google Workspace directory.
+
+        Requires the authenticated user to have admin directory read access
+        (https://www.googleapis.com/auth/admin.directory.resource.calendar.readonly).
+        Raises CalendarClientError with a clear message if access is denied.
+        """
+        try:
+            kwargs: dict[str, Any] = {"customer": "my_customer", "maxResults": 500}
+            if query:
+                kwargs["query"] = query
+            result = self._get_directory_service().resources().calendars().list(**kwargs).execute()
+        except HttpError as exc:
+            if exc.resp.status == 403:
+                raise CalendarClientError(
+                    "Room listing requires Google Workspace admin access. "
+                    "Ask your Workspace admin to grant you the 'Directory Reader' role, "
+                    "or provide room email addresses directly."
+                ) from exc
+            raise CalendarClientError(f"list_rooms failed: {exc}") from exc
+        rooms = []
+        for raw in result.get("items", []):
+            rooms.append(CalendarRoom(
+                resource_id=raw.get("resourceId", ""),
+                resource_name=raw.get("resourceName", ""),
+                resource_email=raw.get("resourceEmail", ""),
+                building_id=raw.get("buildingId", ""),
+                floor_name=raw.get("floorName", ""),
+                capacity=int(raw.get("capacity", 0)),
+                description=raw.get("generatedResourceName", raw.get("resourceDescription", "")),
+            ))
+        logger.info("list_rooms returned %d room(s)", len(rooms))
+        return rooms
+
     # ------------------------------------------------------------------ #
     # Write operations
     # ------------------------------------------------------------------ #
@@ -324,6 +377,8 @@ class CalendarClient:
         description: str = "",
         attendees: list[str] | None = None,
         location: str = "",
+        add_google_meet: bool = False,
+        room_emails: list[str] | None = None,
     ) -> CalendarEvent:
         """Create a new event and return the created CalendarEvent."""
         start_entry: dict[str, str] = {"dateTime": start_time}
@@ -343,15 +398,25 @@ class CalendarClient:
             body["description"] = description
         if location:
             body["location"] = location
-        if attendees:
-            body["attendees"] = [{"email": e} for e in attendees]
-        try:
-            raw = (
-                self._get_service()
-                .events()
-                .insert(calendarId=calendar_id, body=body)
-                .execute()
+        all_attendees = list(attendees or [])
+        if room_emails:
+            body["attendees"] = (
+                [{"email": e} for e in all_attendees]
+                + [{"email": r, "resource": True} for r in room_emails]
             )
+        elif all_attendees:
+            body["attendees"] = [{"email": e} for e in all_attendees]
+        kwargs: dict[str, Any] = {"calendarId": calendar_id, "body": body}
+        if add_google_meet:
+            body["conferenceData"] = {
+                "createRequest": {
+                    "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                    "requestId": str(uuid.uuid4()),
+                }
+            }
+            kwargs["conferenceDataVersion"] = 1
+        try:
+            raw = self._get_service().events().insert(**kwargs).execute()
         except HttpError as exc:
             raise CalendarClientError(f"create_event({calendar_id}) failed: {exc}") from exc
         event = self._parse_event(raw, calendar_id)
@@ -367,6 +432,8 @@ class CalendarClient:
         end_time: str | None = None,
         description: str | None = None,
         location: str | None = None,
+        add_google_meet: bool = False,
+        room_emails: list[str] | None = None,
     ) -> CalendarEvent:
         """Update fields on an existing event and return the updated CalendarEvent."""
         try:
@@ -391,14 +458,24 @@ class CalendarClient:
         if end_time is not None:
             raw.setdefault("end", {})["dateTime"] = end_time
             raw["end"].setdefault("timeZone", "UTC")
+        if room_emails:
+            existing = [a for a in raw.get("attendees", []) if not a.get("resource")]
+            raw["attendees"] = existing + [{"email": r, "resource": True} for r in room_emails]
+
+        kwargs: dict[str, Any] = {"calendarId": calendar_id, "eventId": event_id, "body": raw}
+        if add_google_meet and not raw.get("conferenceData"):
+            raw["conferenceData"] = {
+                "createRequest": {
+                    "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                    "requestId": str(uuid.uuid4()),
+                }
+            }
+            kwargs["conferenceDataVersion"] = 1
+        elif raw.get("conferenceData"):
+            kwargs["conferenceDataVersion"] = 1
 
         try:
-            updated = (
-                self._get_service()
-                .events()
-                .update(calendarId=calendar_id, eventId=event_id, body=raw)
-                .execute()
-            )
+            updated = self._get_service().events().update(**kwargs).execute()
         except HttpError as exc:
             raise CalendarClientError(f"update_event({event_id}) failed: {exc}") from exc
         event = self._parse_event(updated, calendar_id)

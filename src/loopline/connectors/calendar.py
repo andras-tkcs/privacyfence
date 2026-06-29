@@ -84,6 +84,20 @@ class CalendarConnector(Connector):
                 read_only=True,
             ),
             ToolSpec(
+                name="calendar_list_rooms",
+                description=(
+                    "List meeting rooms and resource calendars from the Google Workspace directory. "
+                    "Returns room name, email, building, floor, and capacity. "
+                    "Use the room email with calendar_create_event or calendar_update_event to book. "
+                    "Requires Google Workspace admin directory access. Auto-approved."
+                ),
+                params=[
+                    ToolParam("query", "str", required=False, default="",
+                              description="Optional search query to filter rooms by name or building"),
+                ],
+                read_only=True,
+            ),
+            ToolSpec(
                 name="calendar_create_event",
                 description="Create a new calendar event. Requires user approval.",
                 params=[
@@ -95,6 +109,10 @@ class CalendarConnector(Connector):
                     ToolParam("attendees", "str", required=False, default="",
                               description="Comma-separated email addresses"),
                     ToolParam("location", "str", required=False, default=""),
+                    ToolParam("add_google_meet", "bool", required=False, default=False,
+                              description="Set to true to add a Google Meet video conference link"),
+                    ToolParam("rooms", "str", required=False, default="",
+                              description="Comma-separated room resource email addresses to book"),
                 ],
             ),
             ToolSpec(
@@ -108,6 +126,10 @@ class CalendarConnector(Connector):
                     ToolParam("end_time", "str", required=False, default=""),
                     ToolParam("description", "str", required=False, default=""),
                     ToolParam("location", "str", required=False, default=""),
+                    ToolParam("add_google_meet", "bool", required=False, default=False,
+                              description="Set to true to add a Google Meet link (skipped if one already exists)"),
+                    ToolParam("rooms", "str", required=False, default="",
+                              description="Comma-separated room resource email addresses to book"),
                 ],
             ),
         ]
@@ -121,6 +143,8 @@ class CalendarConnector(Connector):
             return await self._get_free_busy(**args)
         if tool == "calendar_get_event_details":
             return await self._get_event_details(**args)
+        if tool == "calendar_list_rooms":
+            return await self._list_rooms(**args)
         if tool == "calendar_create_event":
             return await self._create_event(**args)
         if tool == "calendar_update_event":
@@ -186,6 +210,24 @@ class CalendarConnector(Connector):
         self._auto_audit("calendar_get_free_busy", "Get Schedule",
                          f"Schedule: {emails}", summary_note, t0)
         return data
+
+    async def _list_rooms(self, query: str = "") -> Any:
+        t0 = time.time()
+        rooms = await self._fetch(self._calendar.list_rooms, query)
+        result = [
+            {
+                "resource_email": r.resource_email,
+                "resource_name": r.resource_name,
+                "building_id": r.building_id,
+                "floor_name": r.floor_name,
+                "capacity": r.capacity,
+                "description": r.description,
+            }
+            for r in rooms
+        ]
+        self._auto_audit("calendar_list_rooms", "List Meeting Rooms",
+                         f"List rooms{': ' + query if query else ''}", f"{len(rooms)} room(s)", t0)
+        return result
 
     # ------------------------------------------------------------------ #
     # Review gate (reads)
@@ -264,8 +306,11 @@ class CalendarConnector(Connector):
         description: str = "",
         attendees: str = "",
         location: str = "",
+        add_google_meet: bool = False,
+        rooms: str = "",
     ) -> Any:
         attendee_list = [e.strip() for e in attendees.split(",") if e.strip()] if attendees else []
+        room_list = [r.strip() for r in rooms.split(",") if r.strip()] if rooms else []
         details_lines = [
             f"Title: {title}",
             f"Time: {start_time} – {end_time}",
@@ -273,6 +318,10 @@ class CalendarConnector(Connector):
         ]
         if location:
             details_lines.append(f"Location: {location}")
+        if add_google_meet:
+            details_lines.append("Conferencing: Google Meet (will be created)")
+        if room_list:
+            details_lines.append(f"Rooms: {', '.join(room_list)}")
         if attendee_list:
             details_lines.append(f"Attendees: {', '.join(attendee_list)}")
         if description:
@@ -280,7 +329,8 @@ class CalendarConnector(Connector):
         raw_data = {
             "calendar_id": calendar_id, "title": title,
             "start_time": start_time, "end_time": end_time,
-            "description": description, "attendees": attendee_list, "location": location,
+            "description": description, "attendees": attendee_list,
+            "location": location, "add_google_meet": add_google_meet, "rooms": room_list,
         }
         await gated_call(
             connector=self.name,
@@ -298,10 +348,13 @@ class CalendarConnector(Connector):
         event = await self._fetch(
             self._calendar.create_event,
             calendar_id, title, start_time, end_time, description,
-            attendee_list or None, location,
+            attendee_list or None, location, add_google_meet, room_list or None,
         )
-        return {"id": event.id, "title": event.title, "start_time": event.start_time,
-                "end_time": event.end_time, "html_link": event.html_link}
+        result = {"id": event.id, "title": event.title, "start_time": event.start_time,
+                  "end_time": event.end_time, "html_link": event.html_link}
+        if event.conference_link or event.hangout_link:
+            result["conference_link"] = event.conference_link or event.hangout_link
+        return result
 
     async def _update_event(
         self,
@@ -312,8 +365,11 @@ class CalendarConnector(Connector):
         end_time: str = "",
         description: str = "",
         location: str = "",
+        add_google_meet: bool = False,
+        rooms: str = "",
     ) -> Any:
         event = await self._fetch(self._calendar.get_event, calendar_id, event_id)
+        room_list = [r.strip() for r in rooms.split(",") if r.strip()] if rooms else []
         changes = {}
         if title and title != event.title:
             changes["Title"] = f"{event.title} → {title}"
@@ -325,6 +381,10 @@ class CalendarConnector(Connector):
             changes["Description"] = "(changed)"
         if location and location != event.location:
             changes["Location"] = f"{event.location or '(none)'} → {location}"
+        if add_google_meet and not (event.conference_link or event.hangout_link):
+            changes["Conferencing"] = "Add Google Meet"
+        if room_list:
+            changes["Rooms"] = f"Book: {', '.join(room_list)}"
         changes_text = "\n".join(f"  {k}: {v}" for k, v in changes.items()) or "  (no changes)"
         details = f"Event: {event.title}\nCalendar: {calendar_id}\n\nChanges:\n{changes_text}"
         raw_data = {
@@ -332,6 +392,7 @@ class CalendarConnector(Connector):
             "current_title": event.title, "new_title": title,
             "start_time": start_time, "end_time": end_time,
             "description": description, "location": location,
+            "add_google_meet": add_google_meet, "rooms": room_list,
         }
         await gated_call(
             connector=self.name,
@@ -350,9 +411,13 @@ class CalendarConnector(Connector):
             self._calendar.update_event,
             calendar_id, event_id, title or None, start_time or None,
             end_time or None, description or None, location or None,
+            add_google_meet, room_list or None,
         )
-        return {"id": updated.id, "title": updated.title, "start_time": updated.start_time,
-                "end_time": updated.end_time, "html_link": updated.html_link}
+        result = {"id": updated.id, "title": updated.title, "start_time": updated.start_time,
+                  "end_time": updated.end_time, "html_link": updated.html_link}
+        if updated.conference_link or updated.hangout_link:
+            result["conference_link"] = updated.conference_link or updated.hangout_link
+        return result
 
     # ------------------------------------------------------------------ #
     # Helpers
