@@ -87,6 +87,7 @@ Claude already describes the action it is about to take in the chat. When the ga
 | `drive_list_shared_drives` | read | auto | — | — |
 | `drive_create_blank_file` | write | auto | — | — |
 | `drive_get_file_content` | read | review | file name, owner, size, modified date | First ~500 chars of content |
+| `drive_download_file` | read | popup | — | File name, owner, size, save path |
 | `drive_write_file_content` | write | popup | — | File name, owner, new content |
 | `drive_move_file` | write | popup | — | File name, from folder → to folder |
 | `drive_add_comment` | write | popup | — | File name, full comment text |

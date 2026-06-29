@@ -109,6 +109,26 @@ class DriveConnector(Connector):
                 ],
                 read_only=True,
             ),
+            ToolSpec(
+                name="drive_download_file",
+                description=(
+                    "Download a Drive file to a local directory and return the saved "
+                    "file path. Use this for large files (e.g. >100 KB) that cannot "
+                    "be returned inline. Google Workspace documents are exported as "
+                    "text/CSV. destination_dir defaults to ~/Downloads. "
+                    "Requires user approval."
+                ),
+                params=[
+                    ToolParam("file_id", "str"),
+                    ToolParam(
+                        "destination_dir",
+                        "str",
+                        required=False,
+                        default="",
+                    ),
+                ],
+                read_only=True,
+            ),
         ]
 
     async def call(self, tool: str, args: dict[str, Any]) -> Any:
@@ -130,6 +150,8 @@ class DriveConnector(Connector):
             return await self._add_comment(**args)
         if tool == "drive_list_shared_drives":
             return await self._list_shared_drives(**args)
+        if tool == "drive_download_file":
+            return await self._download_file(**args)
         raise ValueError(f"Unknown Drive tool: {tool!r}")
 
     # ------------------------------------------------------------------ #
@@ -212,6 +234,39 @@ class DriveConnector(Connector):
             session_created_ids=self.session_created_ids,
             args={"file_id": file_id},
         )
+
+    async def _download_file(
+        self, file_id: str, destination_dir: str = ""
+    ) -> Any:
+        import os
+        drive_file = await self._fetch(self._drive.get_file_metadata, file_id)
+        name = getattr(drive_file, "name", file_id)
+        owners = getattr(drive_file, "owners", [])
+        size = getattr(drive_file, "size", 0)
+        modified = getattr(drive_file, "modified_time", "")
+        dest = os.path.expanduser(destination_dir.strip() or "~/Downloads")
+        details = (
+            f"File: {name}\nOwner: {', '.join(owners)}\n"
+            f"Size: {size:,} bytes\nModified: {modified}\n"
+            f"Save to: {dest}"
+        )
+        # Approve first (popup blocks), then download — avoids writing a 40MB
+        # file to disk before the user has had a chance to deny the request.
+        await gated_call(
+            connector=self.name,
+            tool="drive_download_file",
+            tool_name="Download Drive File",
+            summary=f"Download \"{name}\" to {dest}",
+            sender=", ".join(owners) or "(unknown)",
+            raw_data={"file": drive_file, "destination_dir": dest},
+            filtered_data=None,
+            gate="popup",
+            details_text=details,
+            my_email=self.my_email,
+            session_created_ids=self.session_created_ids,
+            args={"file_id": file_id, "destination_dir": destination_dir},
+        )
+        return await self._fetch(self._drive.download_file, file_id, destination_dir)
 
     # ------------------------------------------------------------------ #
     # Popup gate (writes)

@@ -301,6 +301,66 @@ class DriveClient:
         )
         return content
 
+    def download_file(
+        self, file_id: str, destination_dir: str = ""
+    ) -> dict[str, Any]:
+        """Download a file to a local directory and return the saved path.
+
+        If ``destination_dir`` is empty, defaults to ``~/Downloads``.
+        Google Workspace documents are exported as text (Docs/Slides → .txt,
+        Sheets → .csv). Binary files are saved with their original extension.
+        Returns a dict with ``path``, ``name``, ``size_bytes``, and
+        ``truncated`` (always False for full downloads).
+        """
+        if not file_id:
+            raise DriveClientError("download_file requires a non-empty file_id")
+
+        dest = os.path.expanduser(destination_dir.strip() or "~/Downloads")
+        os.makedirs(dest, exist_ok=True)
+
+        metadata = self.get_file_metadata(file_id)
+        service = self._get_service()
+
+        export_mime = _GOOGLE_DOC_EXPORTS.get(metadata.mime_type)
+
+        # Choose filename and extension
+        name = metadata.name or file_id
+        if export_mime == "text/plain" and not name.endswith(".txt"):
+            name = name + ".txt"
+        elif export_mime == "text/csv" and not name.endswith(".csv"):
+            name = name + ".csv"
+
+        dest_path = os.path.join(dest, name)
+
+        try:
+            if export_mime is not None:
+                request = service.files().export_media(
+                    fileId=file_id, mimeType=export_mime
+                )
+            else:
+                request = service.files().get_media(
+                    fileId=file_id, supportsAllDrives=True
+                )
+
+            with open(dest_path, "wb") as fh:
+                downloader = MediaIoBaseDownload(fh, request, chunksize=1048576)
+                done = False
+                while not done:
+                    _status, done = downloader.next_chunk()
+        except HttpError as exc:
+            raise DriveClientError(
+                f"download_file({file_id}) failed: {exc}"
+            ) from exc
+
+        size = os.path.getsize(dest_path)
+        logger.info("download_file %s → %s (%d bytes)", file_id, dest_path, size)
+        return {
+            "path": dest_path,
+            "name": name,
+            "size_bytes": size,
+            "truncated": False,
+        }
+
     def list_folder(self, folder_id: str, max_results: int = 50) -> list[DriveFile]:
         """List the direct children of a folder."""
         if not folder_id:
