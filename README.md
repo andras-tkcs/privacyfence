@@ -84,6 +84,7 @@ Claude already describes the action it is about to take in the chat. When the ga
 | `drive_list_files` | read | auto | — | — |
 | `drive_get_file_metadata` | read | auto | — | — |
 | `drive_list_folder` | read | auto | — | — |
+| `drive_list_shared_drives` | read | auto | — | — |
 | `drive_create_blank_file` | write | auto | — | — |
 | `drive_get_file_content` | read | review | file name, owner, size, modified date | First ~500 chars of content |
 | `drive_write_file_content` | write | popup | — | File name, owner, new content |
@@ -111,9 +112,10 @@ Claude already describes the action it is about to take in the chat. When the ga
 | `calendar_list_calendars` | read | auto | — | — |
 | `calendar_list_events` | read | auto | — | — |
 | `calendar_get_free_busy` | read | auto | — | — (returns full events when calendar access is available; falls back to busy-slot list otherwise) |
+| `calendar_list_rooms` | read | auto | — | — (lists Google Workspace meeting rooms with name, email, building, floor, capacity; requires Workspace admin directory access) |
 | `calendar_get_event_details` | read | review | title, time, organizer, attendee count | Description, full attendee list, conferencing link |
-| `calendar_create_event` | write | popup | — | Title, time, all attendees, description, location |
-| `calendar_update_event` | write | popup | — | Title, time, fields changing (old → new) |
+| `calendar_create_event` | write | popup | — | Title, time, attendees, description, location, Google Meet flag, room bookings |
+| `calendar_update_event` | write | popup | — | Title, time, fields changing (old → new), Google Meet flag, room bookings |
 
 ### Google Contacts
 
@@ -135,6 +137,7 @@ Claude already describes the action it is about to take in the chat. When the ga
 | `telegram_list_chats` | read | auto | — | — |
 | `telegram_get_messages` | read | review | chat name, message count | All messages |
 | `telegram_search_messages` | read | review | query, result count | All results |
+| `telegram_send_message` | write | popup | — | Chat name, full message text |
 
 ### Salesforce
 
@@ -260,7 +263,7 @@ Routine, low-risk requests can be approved automatically without a prompt. Rules
 |------|--------------|
 | `approved_spaces` | Page's space key is in the allowlist |
 
-> **Telegram, Google Contacts, and Google Tasks** have no configurable auto-accept rules — all their tools are unconditionally auto-accepted and logged as `auto_accepted`.
+> **Google Contacts and Google Tasks** have no configurable auto-accept rules — all their tools are unconditionally auto-accepted and logged as `auto_accepted`. **Telegram** read tools (`telegram_list_chats`, `telegram_get_messages`, `telegram_search_messages`) are also unconditionally auto-accepted; `telegram_send_message` requires popup approval.
 
 ---
 
