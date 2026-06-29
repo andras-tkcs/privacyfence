@@ -49,11 +49,17 @@ class CalendarConnector(Connector):
             ),
             ToolSpec(
                 name="calendar_get_free_busy",
-                description="Query free/busy status for a list of email addresses. Auto-approved.",
+                description=(
+                    "Query colleagues' schedules for a time range. "
+                    "For each email, tries to fetch full event details (title, time, status) "
+                    "when the authenticated user has calendar access; "
+                    "falls back to free/busy slots only when access is unavailable. "
+                    "Use this for meeting scheduling. Auto-approved."
+                ),
                 params=[
                     ToolParam("emails", "str", description="Comma-separated list of email addresses"),
-                    ToolParam("time_min", "str"),
-                    ToolParam("time_max", "str"),
+                    ToolParam("time_min", "str", description="ISO 8601 datetime"),
+                    ToolParam("time_max", "str", description="ISO 8601 datetime"),
                 ],
                 read_only=True,
             ),
@@ -158,13 +164,18 @@ class CalendarConnector(Connector):
     async def _get_free_busy(self, emails: str, time_min: str, time_max: str) -> Any:
         t0 = time.time()
         email_list = [e.strip() for e in emails.split(",") if e.strip()]
-        results = await self._fetch(self._calendar.get_free_busy, email_list, time_min, time_max)
-        data = [
-            {"email": r.email, "busy": [{"start": s.start, "end": s.end} for s in r.busy]}
-            for r in results
-        ]
-        self._auto_audit("calendar_get_free_busy", "Get Free/Busy",
-                         f"Free/busy: {emails}", f"{len(results)} result(s)", t0)
+        data = await self._fetch(
+            self._calendar.get_colleagues_schedule, email_list, time_min, time_max
+        )
+        events_count = sum(1 for r in data if r.get("source") == "events")
+        fb_count = sum(1 for r in data if r.get("source") == "free_busy")
+        summary_note = (
+            f"{events_count} with full events, {fb_count} free/busy only"
+            if (events_count or fb_count)
+            else f"{len(data)} result(s)"
+        )
+        self._auto_audit("calendar_get_free_busy", "Get Schedule",
+                         f"Schedule: {emails}", summary_note, t0)
         return data
 
     # ------------------------------------------------------------------ #

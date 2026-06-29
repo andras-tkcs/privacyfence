@@ -329,6 +329,22 @@ class GmailClient:
         logger.info("add_label: message_id=%s label=%s", message_id, label_name)
         return {"message_id": message_id, "label_added": label_name}
 
+    def archive_message(self, message_id: str) -> dict:
+        """Archive a message by removing the INBOX system label."""
+        service = self._get_service()
+        try:
+            service.users().messages().modify(
+                userId="me",
+                id=message_id,
+                body={"removeLabelIds": ["INBOX"]},
+            ).execute()
+        except HttpError as exc:
+            raise GmailClientError(
+                f"archive_message({message_id}) failed: {exc}"
+            ) from exc
+        logger.info("archive_message: message_id=%s", message_id)
+        return {"message_id": message_id, "archived": True}
+
     def remove_label(self, message_id: str, label_name: str) -> dict:
         """Remove a label from a message."""
         service = self._get_service()

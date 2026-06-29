@@ -105,6 +105,14 @@ class GmailConnector(Connector):
                     ToolParam("label_name", "str"),
                 ],
             ),
+            ToolSpec(
+                name="gmail_archive_message",
+                description=(
+                    "Archive a Gmail message by removing it from the Inbox. "
+                    "The message is not deleted and remains searchable. Requires user approval."
+                ),
+                params=[ToolParam("message_id", "str")],
+            ),
         ]
 
     async def call(self, tool: str, args: dict[str, Any]) -> Any:
@@ -124,6 +132,8 @@ class GmailConnector(Connector):
             return await self._add_label(**args)
         if tool == "gmail_remove_label":
             return await self._remove_label(**args)
+        if tool == "gmail_archive_message":
+            return await self._archive_message(**args)
         raise ValueError(f"Unknown Gmail tool: {tool!r}")
 
     # ------------------------------------------------------------------ #
@@ -310,6 +320,29 @@ class GmailConnector(Connector):
             args={"message_id": message_id, "label_name": label_name},
         )
         return await self._fetch(self._gmail.remove_label, message_id, label_name)
+
+    async def _archive_message(self, message_id: str) -> Any:
+        message = await self._fetch(self._gmail.get_message, message_id)
+        details = (
+            f"From: {message.sender}\n"
+            f"Subject: {message.subject}\n\n"
+            "Action: Archive (remove from Inbox)\n"
+            "The message will remain in All Mail and is not deleted."
+        )
+        await gated_call(
+            connector=self.name,
+            tool="gmail_archive_message",
+            tool_name="Archive Email",
+            summary=f"Archive: {message.subject or '(no subject)'} from {message.sender or message_id}",
+            sender=message.sender or "",
+            raw_data={"message_id": message_id},
+            filtered_data=None,
+            gate="popup",
+            details_text=details,
+            my_email=self.my_email,
+            args={"message_id": message_id},
+        )
+        return await self._fetch(self._gmail.archive_message, message_id)
 
     # ------------------------------------------------------------------ #
     # Helpers

@@ -252,6 +252,56 @@ class CalendarClient:
         logger.info("get_free_busy: %d email(s) queried", len(emails))
         return results
 
+    def get_colleagues_schedule(
+        self, emails: list[str], time_min: str, time_max: str
+    ) -> list[dict]:
+        """Try events.list per calendar; fall back to free/busy for inaccessible calendars.
+
+        Returns a list of per-email dicts with source="events" (full event titles) or
+        source="free_busy" (only busy slots) depending on what the authenticated user
+        can see.
+        """
+        results = []
+        fallback_emails: list[str] = []
+
+        for email in emails:
+            try:
+                events = self.list_events(
+                    email, max_results=50, time_min=time_min, time_max=time_max
+                )
+                results.append({
+                    "email": email,
+                    "source": "events",
+                    "events": [
+                        {
+                            "id": e.id,
+                            "title": e.title,
+                            "start_time": e.start_time,
+                            "end_time": e.end_time,
+                            "status": e.status,
+                            "all_day": e.all_day,
+                        }
+                        for e in events
+                    ],
+                })
+            except CalendarClientError:
+                fallback_emails.append(email)
+
+        if fallback_emails:
+            try:
+                fb = self.get_free_busy(fallback_emails, time_min, time_max)
+                for r in fb:
+                    results.append({
+                        "email": r.email,
+                        "source": "free_busy",
+                        "busy": [{"start": s.start, "end": s.end} for s in r.busy],
+                    })
+            except CalendarClientError as exc:
+                for email in fallback_emails:
+                    results.append({"email": email, "source": "error", "error": str(exc)})
+
+        return results
+
     # ------------------------------------------------------------------ #
     # Write operations
     # ------------------------------------------------------------------ #
