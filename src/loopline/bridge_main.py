@@ -266,16 +266,46 @@ def _register_approval_tools(mcp: FastMCP) -> None:
         logger.info("Registered approval tool: %s", tool_name)
 
 
+def _sync_approval_call(method: str, request_id: str, timeout: float) -> Any:
+    """Synchronous single-shot IPC call — same pattern as _fetch_manifest_sync.
+
+    Uses a raw blocking socket so there is no asyncio task scheduling involved.
+    Each approval call opens its own connection, sends one request, reads one
+    response, and closes.  show_details blocks for a long time (until the user
+    clicks Accept/Deny in the native popup) so its timeout is generous.
+    """
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        s.connect(SOCKET_PATH)
+        req = json.dumps({"id": "ap0", "method": method, "params": {"request_id": request_id}}) + "\n"
+        s.sendall(req.encode())
+        buf = b""
+        while b"\n" not in buf:
+            chunk = s.recv(65536)
+            if not chunk:
+                raise IPCError("Connection closed before response was received")
+            buf += chunk
+        response = json.loads(buf.split(b"\n")[0])
+        if "error" in response:
+            raise IPCError(response["error"])
+        return response.get("result")
+    finally:
+        try:
+            s.close()
+        except OSError:
+            pass
+
+
 def _build_approval_fn(tool_name: str, ipc_method: str) -> Any:
     """Return a properly-signed coroutine for an approval tool."""
+    # show_details blocks until the user interacts with the native popup.
+    _timeout = 300.0 if ipc_method == "show_details" else 30.0
+
     async def _handler(**kwargs: Any) -> Any:
         request_id = kwargs.get("request_id", "")
-        # Use a fresh connection per approval call so stale persistent connections
-        # between the initial read tool call and the user's accept/deny don't fail.
-        client = IPCClient(SOCKET_PATH)
         try:
-            await client.connect()
-            return await getattr(client, ipc_method)(request_id)
+            return await asyncio.to_thread(_sync_approval_call, ipc_method, request_id, _timeout)
         except IPCError as exc:
             msg = str(exc)
             if "No pending read" in msg:
@@ -286,8 +316,6 @@ def _build_approval_fn(tool_name: str, ipc_method: str) -> Any:
             raise ToolError(msg) from exc
         except Exception as exc:
             raise ToolError(f"Could not reach Loopline daemon: {exc}") from exc
-        finally:
-            await client.close()
 
     _handler.__name__ = tool_name
     _handler.__doc__ = ""
