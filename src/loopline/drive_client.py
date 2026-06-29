@@ -18,10 +18,11 @@ from __future__ import annotations
 import io
 import logging
 import os
+import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any
 
-from google.auth.transport.requests import Request
+from google.auth.transport.requests import AuthorizedSession, Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
@@ -319,8 +320,6 @@ class DriveClient:
         os.makedirs(dest, exist_ok=True)
 
         metadata = self.get_file_metadata(file_id)
-        service = self._get_service()
-
         export_mime = _GOOGLE_DOC_EXPORTS.get(metadata.mime_type)
 
         # Choose filename and extension
@@ -333,21 +332,25 @@ class DriveClient:
         dest_path = os.path.join(dest, name)
 
         try:
+            creds = self._load_credentials()
+            session = AuthorizedSession(creds)
             if export_mime is not None:
-                request = service.files().export_media(
-                    fileId=file_id, mimeType=export_mime
+                url = (
+                    "https://www.googleapis.com/drive/v3/files/"
+                    f"{file_id}/export?mimeType={urllib.parse.quote(export_mime)}"
                 )
             else:
-                request = service.files().get_media(
-                    fileId=file_id, supportsAllDrives=True
+                url = (
+                    f"https://www.googleapis.com/drive/v3/files/{file_id}"
+                    "?alt=media&supportsAllDrives=true"
                 )
-
-            with open(dest_path, "wb") as fh:
-                downloader = MediaIoBaseDownload(fh, request, chunksize=1048576)
-                done = False
-                while not done:
-                    _status, done = downloader.next_chunk()
-        except HttpError as exc:
+            with session.get(url, stream=True) as resp:
+                resp.raise_for_status()
+                with open(dest_path, "wb") as fh:
+                    for chunk in resp.iter_content(chunk_size=8 * 1024 * 1024):
+                        if chunk:
+                            fh.write(chunk)
+        except Exception as exc:
             raise DriveClientError(
                 f"download_file({file_id}) failed: {exc}"
             ) from exc
