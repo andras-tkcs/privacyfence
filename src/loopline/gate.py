@@ -1,17 +1,21 @@
-"""Shared gating helper: auto-accept check → approval flow → audit log.
+"""Shared gating helper: auto-accept check → native popup → audit log.
 
-Two gate modes:
+Every gated call resolves synchronously inside gated_call(): the data is
+fetched, an auto-accept rule may skip the popup entirely, otherwise a native
+macOS dialog (approval_popup.py) blocks until the user decides. There is no
+pending-approval handshake — gated_call() either returns the data or raises
+in the same call that fetched it, so Claude never holds a tool that can
+release gated data on its own.
 
   gate="review"  (read tools)
-    Data is fetched, stored in pending_reads, and a preview dict is returned
-    to Claude immediately.  Claude presents the preview to the user in Cowork
-    (Accept / Deny / Show Details) and then calls loopline_confirm,
-    loopline_deny, or loopline_show_details with the request_id.
+    Popup offers Deny / Accept / and — when a plausible auto-accept rule can
+    be derived from the item's attributes — Accept All, which proposes (with
+    a second confirmation dialog) a standing rule for similar future reads.
 
   gate="popup"   (write tools)
-    Blocks the tool call and shows a native macOS popup (osascript) with the
-    full action details.  Claude already described the action in chat so no
-    Cowork step is needed.
+    Popup offers Deny / Accept only. Auto-accepting writes silently is a
+    materially bigger blast radius than auto-accepting reads, so Accept All
+    is not offered here.
 """
 from __future__ import annotations
 
@@ -22,22 +26,20 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+from .approval_popup import show_popup, show_read_popup, show_rule_confirmation_popup
 from .audit_log import AuditEntry, current_week, get_audit_logger
-from .auto_accept import TOOL_TO_OPERATION, ReviewContext, get_auto_accept_evaluator
+from .auto_accept import (
+    TOOL_TO_OPERATION,
+    ReviewContext,
+    add_auto_accept_rule,
+    describe_rule,
+    get_auto_accept_evaluator,
+    suggest_rule,
+)
 
 logger = logging.getLogger(__name__)
 
-_ACTION_REQUIRED = (
-    "A Loopline privacy gate is pending. "
-    "Present the preview fields to the user and ask them to reply with one of:\n"
-    "  accept (or a) — you will then call loopline_confirm(request_id)\n"
-    "  deny   (or d) — you will then call loopline_deny(request_id)\n"
-    "  details (or s) — you will then call loopline_show_details(request_id), "
-    "which opens a native popup with the full content on the user's device.\n"
-    "Accept single-character shortcuts: 'a' = accept, 'd' = deny, 's' = details. "
-    "Wait for the user's reply, then call the corresponding tool immediately. "
-    "Do not proceed with the original task until one of these tools has been called."
-)
+_popup_lock = asyncio.Lock()  # only one native dialog on screen at a time
 
 
 async def gated_call(
@@ -50,12 +52,11 @@ async def gated_call(
     raw_data: Any,
     filtered_data: Any,
     gate: str = "review",         # "review" | "popup"
-    preview: dict | None = None,  # fields shown as Cowork preview (review gate)
-    details_text: str = "",       # full text for the details popup
+    preview: dict | None = None,  # fields shown in the review-gate dialog
+    details_text: str = "",       # full text shown inline or via TextEdit
     my_email: str = "",
     session_created_ids: set | None = None,
     args: dict | None = None,
-    display_hint: dict | None = None,  # ignored, kept for compatibility
 ) -> Any:
     created_at = time.time()
     operation_key = TOOL_TO_OPERATION.get(tool, f"{connector}.{tool}")
@@ -80,32 +81,51 @@ async def gated_call(
         logger.info("Auto-accepted: %s/%s rule=%r", connector, tool, matched_rule)
         return filtered_data
 
+    details = details_text or _default_details(raw_data)
+    popup_title = f"Loopline — {tool_name}"
+
     if gate == "review":
-        # ── Phase 1: store data, return preview to Claude immediately ──────
-        from . import pending_reads
-        details = details_text or _default_details(raw_data)
-        request_id = pending_reads.store(filtered_data, details)
-        logger.info("Pending review: %s/%s request_id=%s", connector, tool, request_id)
-        # Audit as "pending" so we know it was intercepted
+        suggestion = suggest_rule(operation_key, ctx)
+        async with _popup_lock:
+            decision = await asyncio.to_thread(
+                show_read_popup, popup_title, preview or {}, details, suggestion is not None
+            )
+
+        if decision == "deny":
+            _audit(
+                created_at=created_at, connector=connector, tool=tool,
+                tool_name=tool_name, summary=summary, sender=sender,
+                decision="rejected", auto_accept_rule="",
+            )
+            raise RuntimeError("Request denied by user")
+
+        if decision == "accept_all" and suggestion is not None:
+            rule_name, value = suggestion
+            description = describe_rule(rule_name, value)
+            async with _popup_lock:
+                confirmed = await asyncio.to_thread(show_rule_confirmation_popup, description)
+            if confirmed:
+                add_auto_accept_rule(operation_key, rule_name, value)
+                _audit(
+                    created_at=created_at, connector=connector, tool=tool,
+                    tool_name=tool_name, summary=summary, sender=sender,
+                    decision="accepted_via_accept_all", auto_accept_rule=rule_name,
+                )
+                logger.info("Accept All: created rule %r for %s", rule_name, operation_key)
+                return filtered_data
+            # Cancelled rule creation — this item is still accepted, just once.
+
         _audit(
             created_at=created_at, connector=connector, tool=tool,
             tool_name=tool_name, summary=summary, sender=sender,
-            decision="pending", auto_accept_rule="",
+            decision="approved", auto_accept_rule="",
         )
-        return {
-            "status": "pending_approval",
-            "request_id": request_id,
-            "tool": tool_name,
-            "preview": preview or {},
-            "action_required": _ACTION_REQUIRED,
-        }
+        return filtered_data
 
     else:
-        # ── Popup gate: block and show native approval dialog ──────────────
-        from .approval_popup import show_popup
-        details = details_text or _default_details(raw_data)
-        popup_title = f"Loopline — {tool_name}"
-        decision = await asyncio.to_thread(show_popup, popup_title, details)
+        # ── Popup gate: block and show native approval dialog for a write ───
+        async with _popup_lock:
+            decision = await asyncio.to_thread(show_popup, popup_title, details)
 
         if decision == "accept":
             _audit(

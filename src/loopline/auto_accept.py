@@ -1,9 +1,12 @@
 """Auto-accept rule engine for the human review gate."""
 from __future__ import annotations
 import logging
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
+
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -250,6 +253,114 @@ class AutoAcceptEvaluator:
             return False
         allowed = set(value if isinstance(value, list) else [value])
         return ctx.args.get("report_id", "") in allowed
+
+
+# ── Rule suggestion for the popup's "Accept All" button ─────────────────────
+
+def _domain_of(sender: str) -> str:
+    email_part = sender
+    if "<" in sender and ">" in sender:
+        email_part = sender[sender.index("<") + 1 : sender.index(">")]
+    return email_part.split("@", 1)[-1].lower().strip()
+
+
+def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | None:
+    """Propose one auto-accept rule from the current item's attributes.
+
+    Returns (rule_name, value) — value is None for rules that take none —
+    or None if nothing sensible can be suggested for this operation. The
+    popup only offers "Accept All" when this returns a suggestion, so the
+    button never proposes a rule broader than what the item itself supports.
+    """
+    if operation_key in ("gmail.read_message", "gmail.read_thread"):
+        sender = getattr(ctx.raw_data, "sender", "") or ""
+        if ctx.my_email and ctx.my_email.lower() in sender.lower():
+            return ("i_am_sender", None)
+        domain = _domain_of(sender)
+        return ("trusted_sender_domain", [domain]) if domain else None
+
+    if operation_key == "drive.read_file_contents":
+        f = ctx.raw_data.file if hasattr(ctx.raw_data, "file") else ctx.raw_data
+        owners = getattr(f, "owners", []) or []
+        if ctx.my_email and any(ctx.my_email.lower() in o.lower() for o in owners):
+            return ("i_am_owner", None)
+        parents = list(getattr(f, "parent_ids", []) or [])
+        return ("approved_folder", parents) if parents else None
+
+    if operation_key == "slack.read_messages":
+        cid = ctx.args.get("channel_id", "") or ctx.args.get("channel", "") or ""
+        if cid.startswith("D"):
+            return ("dm_with_myself", None)
+        return ("approved_channel", [cid]) if cid else None
+
+    if operation_key == "calendar.read_event_details":
+        organizer = getattr(ctx.raw_data, "organizer_email", "") or ""
+        if ctx.my_email and ctx.my_email.lower() == organizer.lower():
+            return ("i_am_organizer", None)
+        if ctx.my_domain:
+            attendees = getattr(ctx.raw_data, "attendees", []) or []
+            all_internal = all(
+                ctx.my_domain in (a.get("email", "") if isinstance(a, dict) else getattr(a, "email", ""))
+                for a in attendees
+            )
+            if all_internal:
+                return ("no_external_attendees", None)
+        return None
+
+    if operation_key == "salesforce.read_record":
+        object_type = ctx.args.get("object_type", "")
+        return ("approved_object_types", [object_type]) if object_type else None
+
+    return None
+
+
+_RULE_DESCRIPTIONS: dict[str, str] = {
+    "i_am_sender":           "Gmail message/thread reads where you are the sender",
+    "trusted_sender_domain": "Gmail message/thread reads from senders at: {value}",
+    "i_am_owner":            "Drive file reads for files you own",
+    "approved_folder":       "Drive file reads for files in folder(s): {value}",
+    "dm_with_myself":        "Slack reads in your own DM channel",
+    "approved_channel":      "Slack reads in channel(s): {value}",
+    "i_am_organizer":        "Calendar event reads for events you organize",
+    "no_external_attendees": "Calendar event reads with no external attendees",
+    "approved_object_types": "Salesforce record reads for object type(s): {value}",
+}
+
+
+def describe_rule(rule_name: str, value: Any) -> str:
+    """Human-readable description of a proposed auto-accept rule."""
+    template = _RULE_DESCRIPTIONS.get(rule_name, rule_name)
+    value_str = ", ".join(value) if isinstance(value, list) else str(value)
+    return "Auto-accept future " + template.format(value=value_str)
+
+
+# ── Rule persistence (used by the "Accept All" popup button) ────────────────
+
+_config_path: str | None = None
+_write_lock = threading.Lock()
+
+
+def init_config_path(path: str) -> None:
+    """Register the on-disk config path so add_auto_accept_rule() can persist."""
+    global _config_path
+    _config_path = path
+
+
+def add_auto_accept_rule(operation_key: str, rule_name: str, value: Any) -> None:
+    """Append a rule to the config file on disk and hot-reload the evaluator."""
+    if _config_path is None:
+        raise RuntimeError("auto_accept config path not initialized")
+    with _write_lock:
+        with open(_config_path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        rules = cfg.setdefault("auto_accept_rules", {}).setdefault(operation_key, [])
+        new_rule: dict[str, Any] = {"rule": rule_name}
+        if value is not None:
+            new_rule["value"] = value
+        rules.append(new_rule)
+        with open(_config_path, "w", encoding="utf-8") as f:
+            yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
+        reload_rules(cfg.get("auto_accept_rules", {}))
 
 
 _INSTANCE: AutoAcceptEvaluator | None = None

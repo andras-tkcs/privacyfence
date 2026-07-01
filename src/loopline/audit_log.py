@@ -29,7 +29,7 @@ class AuditEntry:
     tool_name: str
     summary: str
     sender: str
-    decision: str           # "approved" | "rejected" | "auto_accepted"
+    decision: str           # "approved" | "rejected" | "auto_accepted" | "accepted_via_accept_all"
     auto_accept_rule: str   # rule name if auto_accepted, else ""
     latency_seconds: float
 
@@ -92,9 +92,10 @@ class AuditLogger:
         hdr_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
         decision_fills = {
-            "approved":     PatternFill("solid", fgColor="E8F5E9"),
-            "auto_accepted": PatternFill("solid", fgColor="E3F2FD"),
-            "rejected":     PatternFill("solid", fgColor="FFEBEE"),
+            "approved":              PatternFill("solid", fgColor="E8F5E9"),
+            "auto_accepted":         PatternFill("solid", fgColor="E3F2FD"),
+            "accepted_via_accept_all": PatternFill("solid", fgColor="FFF3CD"),
+            "rejected":              PatternFill("solid", fgColor="FFEBEE"),
         }
 
         ws.append(HEADERS)
@@ -128,6 +129,7 @@ class AuditLogger:
         counts = Counter(e.decision for e in entries)
         ws2.append(["Approved (manual)", counts.get("approved", 0)])
         ws2.append(["Auto-accepted", counts.get("auto_accepted", 0)])
+        ws2.append(["Accepted via Accept All (new rule)", counts.get("accepted_via_accept_all", 0)])
         ws2.append(["Rejected", counts.get("rejected", 0)])
         ws2.append([])
         ws2.append(["By connector", ""])

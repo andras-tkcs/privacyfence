@@ -23,6 +23,7 @@ from typing import Any
 import yaml
 
 from .paths import data_dir, is_bundled
+from .auto_accept import init_config_path, reload_rules
 from .connectors.calendar import CalendarConnector
 from .connectors.confluence import ConfluenceConnector
 from .connectors.contacts import ContactsConnector
@@ -426,6 +427,9 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
         logger.error("Another instance is already running; exiting.")
         print("Loopline daemon is already running.", file=sys.stderr)
         return 1
+
+    init_config_path(_resolve_path(config_path))
+    reload_rules(config.get("auto_accept_rules", {}) or {})
 
     connectors = _build_connectors(config)
     if not connectors:

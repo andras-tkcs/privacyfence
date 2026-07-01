@@ -1,9 +1,18 @@
-"""Native macOS approval popups via osascript — no tkinter dependency."""
+"""Native macOS approval popups via osascript — no tkinter dependency.
+
+Every gated tool call resolves through exactly one blocking dialog here.
+There is no separate "show details" step and no pending-approval handshake:
+full content is either shown inline or opened in TextEdit before the same
+dialog that asks for a decision, so the human always sees what they're
+approving before they can click Accept.
+"""
 from __future__ import annotations
 
 import os
 import subprocess
 import tempfile
+
+_INLINE_LIMIT = 800  # display dialog has no scrollbar; beyond this, use TextEdit
 
 
 def _as_str(s: str) -> str:
@@ -45,73 +54,94 @@ def _run(script: str) -> str | None:
             pass
 
 
-def show_review_popup(title: str, preview: dict[str, str], details_text: str) -> str:
-    """Preview popup for read tools (review gate).
-
-    Returns 'accept', 'deny', or calls show_details_popup if user clicks
-    'Show Details', then returns accept/deny from that second dialog.
-    """
-    lines = [f"{k}: {v}" for k, v in preview.items()]
+def _display_dialog(title: str, lines: list[str], buttons: list[str], default: str) -> str | None:
+    """Show a native dialog with the given buttons; returns the clicked label or None."""
     msg = _build_message(lines)
+    btns = "{" + ", ".join(f'"{b}"' for b in buttons) + "}"
     script = (
         f"set btn to button returned of "
         f"(display dialog {msg} "
         f"with title {_as_str(title)} "
-        f'buttons {{"Deny", "Show Details", "Accept"}} '
-        f'default button "Accept")\n'
+        f"buttons {btns} "
+        f'default button "{default}")\n'
         f"return btn"
     )
-    clicked = _run(script)
-    if clicked == "Accept":
-        return "accept"
-    if clicked == "Show Details":
-        return _show_details_then_decide(title, details_text)
-    return "deny"
+    return _run(script)
 
 
-def show_popup(title: str, details_text: str) -> str:
-    """Approval popup for write tools (popup gate).
-
-    Returns 'accept' or 'deny'.
-    """
-    # Truncate very long content for the dialog body; full content visible
-    # via Show Details only available on review-gate reads.
-    body = details_text[:1500] + ("…" if len(details_text) > 1500 else "")
-    msg = _build_message(body.splitlines() or ["(no details)"])
-    script = (
-        f"set btn to button returned of "
-        f"(display dialog {msg} "
-        f"with title {_as_str(title)} "
-        f'buttons {{"Deny", "Accept"}} '
-        f'default button "Accept")\n'
-        f"return btn"
-    )
-    clicked = _run(script)
-    return "accept" if clicked == "Accept" else "deny"
-
-
-def _show_details_then_decide(title: str, details_text: str) -> str:
-    """Write full content to a temp file, open it, then show Accept/Deny."""
+def _write_temp_file(text: str) -> str:
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".txt", prefix="loopline_details_",
         delete=False, encoding="utf-8",
     ) as f:
-        f.write(details_text)
-        fname = f.name
-    try:
-        subprocess.run(["open", "-t", fname], check=False)
-        script = (
-            f"set btn to button returned of "
-            f"(display dialog {_as_str('Review the full content in TextEdit, then choose:')} "
-            f"with title {_as_str(title)} "
-            f'buttons {{"Deny", "Accept"}} '
-            f'default button "Accept")\n'
-            f"return btn"
-        )
-        clicked = _run(script)
-        return "accept" if clicked == "Accept" else "deny"
-    finally:
+        f.write(text)
+        return f.name
+
+
+# ---------------------------------------------------------------------------- #
+# Write gate (actions: send, create, edit, move, comment)
+# ---------------------------------------------------------------------------- #
+
+def show_popup(title: str, details_text: str) -> str:
+    """Approval popup for write tools. Returns 'accept' or 'deny'."""
+    body = details_text[:1500] + ("…" if len(details_text) > 1500 else "")
+    lines = body.splitlines() or ["(no details)"]
+    clicked = _display_dialog(title, lines, ["Deny", "Accept"], default="Accept")
+    return "accept" if clicked == "Accept" else "deny"
+
+
+# ---------------------------------------------------------------------------- #
+# Review gate (reads)
+# ---------------------------------------------------------------------------- #
+
+def show_read_popup(
+    title: str, preview: dict[str, str], details_text: str, allow_accept_all: bool
+) -> str:
+    """Approval popup for read tools. Full content is always shown before the
+    decision — inline if short, otherwise opened in TextEdit first.
+
+    Returns 'accept', 'deny', or 'accept_all' (only offered when
+    allow_accept_all is True).
+    """
+    buttons = ["Deny", "Accept All", "Accept"] if allow_accept_all else ["Deny", "Accept"]
+    preview_lines = [f"{k}: {v}" for k, v in preview.items()]
+
+    if len(details_text) <= _INLINE_LIMIT:
+        lines = preview_lines + ["", details_text]
+        clicked = _display_dialog(title, lines, buttons, default="Accept")
+    else:
+        fname = _write_temp_file(details_text)
         try:
-            os.unlink(fname)
-        except OSError:
-            pass
+            subprocess.run(["open", "-t", fname], check=False)
+            lines = preview_lines + ["", "Full content opened in TextEdit."]
+            clicked = _display_dialog(title, lines, buttons, default="Accept")
+        finally:
+            try:
+                os.unlink(fname)
+            except OSError:
+                pass
+
+    if clicked == "Accept":
+        return "accept"
+    if clicked == "Accept All":
+        return "accept_all"
+    return "deny"
+
+
+def show_rule_confirmation_popup(description: str) -> bool:
+    """Second-step confirmation shown after "Accept All" is clicked.
+
+    Defaults to Cancel — unlike the main gate, hitting Enter here shouldn't
+    silently create a standing rule that skips future approvals.
+    """
+    lines = [
+        "Loopline will create an auto-accept rule:",
+        "",
+        description,
+        "",
+        "Future matching requests will be approved automatically, without a popup.",
+    ]
+    clicked = _display_dialog(
+        "Loopline — Confirm Auto-Accept Rule", lines, ["Cancel", "Confirm"], default="Cancel"
+    )
+    return clicked == "Confirm"

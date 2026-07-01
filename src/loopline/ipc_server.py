@@ -1,9 +1,11 @@
 """IPC server: asyncio Unix socket server that runs inside the daemon.
 
-Handles three JSON-RPC-style methods (see ipc.py for protocol docs).
-Connector.call() may block for an arbitrary duration (user approval), so each
-request is dispatched as a separate asyncio Task — multiple in-flight requests
-from the same bridge connection are fully concurrent.
+Handles the JSON-RPC-style methods described in ipc.py. Connector.call() may
+block for an arbitrary duration (a gated call waiting on a native approval
+popup), so each request is dispatched as a separate asyncio Task — multiple
+in-flight requests from the same bridge connection are fully concurrent.
+Popup display itself is serialized by gate.py's own lock so only one dialog
+is ever on screen at a time.
 """
 
 from __future__ import annotations
@@ -87,12 +89,6 @@ class IPCServer:
                 result = self._build_manifest()
             elif method == "call":
                 result = await self._call_connector(params)
-            elif method == "confirm":
-                result = await self._confirm(params)
-            elif method == "deny":
-                result = await self._deny(params)
-            elif method == "show_details":
-                result = await self._show_details(params)
             else:
                 raise ValueError(f"Unknown method: {method!r}")
 
@@ -109,75 +105,6 @@ class IPCServer:
         if connector is None:
             raise ValueError(f"Unknown connector: {connector_name!r}")
         return await connector.call(tool, args)
-
-    async def _confirm(self, params: dict) -> Any:
-        from . import pending_reads
-        from .audit_log import AuditEntry, current_week, get_audit_logger
-        import time
-        from datetime import datetime, timezone
-        request_id = params.get("request_id", "")
-        try:
-            data = pending_reads.confirm(request_id)
-        except KeyError:
-            raise ValueError(f"No pending read with id {request_id!r}")
-        try:
-            get_audit_logger().record(AuditEntry(
-                timestamp=datetime.now(timezone.utc).isoformat(),
-                week=current_week(), request_id=request_id,
-                connector="", tool="", tool_name="",
-                summary="", sender="", decision="approved",
-                auto_accept_rule="", latency_seconds=0,
-            ))
-        except Exception:
-            pass
-        return {"status": "approved", "data": data}
-
-    async def _deny(self, params: dict) -> Any:
-        from . import pending_reads
-        from .audit_log import AuditEntry, current_week, get_audit_logger
-        from datetime import datetime, timezone
-        request_id = params.get("request_id", "")
-        pending_reads.deny(request_id)
-        try:
-            get_audit_logger().record(AuditEntry(
-                timestamp=datetime.now(timezone.utc).isoformat(),
-                week=current_week(), request_id=request_id,
-                connector="", tool="", tool_name="",
-                summary="", sender="", decision="rejected",
-                auto_accept_rule="", latency_seconds=0,
-            ))
-        except Exception:
-            pass
-        return {"status": "denied"}
-
-    async def _show_details(self, params: dict) -> Any:
-        from . import pending_reads
-        from .approval_popup import show_popup
-        from .audit_log import AuditEntry, current_week, get_audit_logger
-        from datetime import datetime, timezone
-        request_id = params.get("request_id", "")
-        try:
-            entry = pending_reads.get(request_id)
-        except KeyError:
-            raise ValueError(f"No pending read with id {request_id!r}")
-        details_text = entry["details_text"]
-        filtered_data = entry["filtered_data"]
-        decision = await asyncio.to_thread(show_popup, "Loopline — Full Details", details_text)
-        pending_reads.remove(request_id)
-        audit_decision = "approved" if decision == "accept" else "rejected"
-        try:
-            get_audit_logger().record(AuditEntry(
-                timestamp=datetime.now(timezone.utc).isoformat(),
-                week=current_week(), request_id=request_id,
-                connector="", tool="", tool_name="",
-                summary="", sender="", decision=audit_decision,
-                auto_accept_rule="", latency_seconds=0,
-            ))
-        except Exception:
-            pass
-        if decision == "accept":
-            return {"status": "approved", "data": filtered_data}
-        raise ValueError("Request denied by user after reviewing details")
 
     def _build_manifest(self) -> dict:
         return {
