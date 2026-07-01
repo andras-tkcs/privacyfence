@@ -1,7 +1,7 @@
 """Connector abstraction: the unit of extension for new data sources.
 
 Adding a new service (Salesforce, Calendar, …) means:
-  1. Create src/loopline/connectors/<name>.py implementing Connector.
+  1. Create src/privacyfence/connectors/<name>.py implementing Connector.
   2. Register it in daemon_main.py.
   3. No changes needed to the bridge or the IPC layer.
 """
@@ -72,7 +72,7 @@ class ToolSpec:
 class Connector(ABC):
     """Base class for every data-source connector.
 
-    Subclasses live in loopline/connectors/ and are registered in daemon_main.
+    Subclasses live in privacyfence/connectors/ and are registered in daemon_main.
     The bridge discovers them at startup via the IPC manifest call.
     """
 

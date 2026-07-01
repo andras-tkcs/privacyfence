@@ -57,8 +57,8 @@ jobs:
       - name: Upload DMG as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Loopline-dmg
-          path: dist/Loopline-*.dmg
+          name: PrivacyFence-dmg
+          path: dist/PrivacyFence-*.dmg
           retention-days: 30
 
       # Attach to the GitHub Release when triggered by a version tag
@@ -66,4 +66,4 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/Loopline-*.dmg
+          files: dist/PrivacyFence-*.dmg

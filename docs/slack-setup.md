@@ -1,6 +1,6 @@
 # Slack Setup
 
-Loopline uses a **user token** (`xoxp-…`) to access Slack. This means Claude sees exactly what you see — every channel, DM, and private group you are a member of — with no bot to invite and no footprint visible to others.
+PrivacyFence uses a **user token** (`xoxp-…`) to access Slack. This means Claude sees exactly what you see — every channel, DM, and private group you are a member of — with no bot to invite and no footprint visible to others.
 
 ---
 
@@ -8,7 +8,7 @@ Loopline uses a **user token** (`xoxp-…`) to access Slack. This means Claude s
 
 1. Go to [https://api.slack.com/apps](https://api.slack.com/apps) and click **Create New App**.
 2. Choose **From scratch**.
-3. Give it a name (e.g. `Loopline`) and select your workspace.
+3. Give it a name (e.g. `PrivacyFence`) and select your workspace.
 4. Click **Create App**.
 
 ---
@@ -49,9 +49,9 @@ After installation, copy the **User OAuth Token** (starts with `xoxp-`) shown at
 
 ---
 
-## 4. Enter the token in Loopline
+## 4. Enter the token in PrivacyFence
 
-Launch **Loopline.app**. If the setup wizard is not open, click **Setup Wizard** in the floating window.
+Launch **PrivacyFence.app**. If the setup wizard is not open, click **Setup Wizard** in the floating window.
 
 1. Navigate to the **Slack** step.
 2. Paste the `xoxp-` token into the field.
@@ -69,10 +69,10 @@ slack:
 ## Troubleshooting
 
 **`missing_scope` errors**
-The scope was not added before installing. Add the missing scope under **OAuth & Permissions → User Token Scopes**, click **Reinstall to Workspace**, and paste the new token into Loopline.
+The scope was not added before installing. Add the missing scope under **OAuth & Permissions → User Token Scopes**, click **Reinstall to Workspace**, and paste the new token into PrivacyFence.
 
 **`not_in_channel` on history reads**
 The token only sees channels you are a member of. Join the channel in Slack first.
 
 **`invalid_auth` errors**
-The token has been revoked. Reinstall the app and update the token in Loopline.
+The token has been revoked. Reinstall the app and update the token in PrivacyFence.

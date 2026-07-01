@@ -1,8 +1,8 @@
-# Contributing to Loopline
+# Contributing to PrivacyFence
 
 ## Forking
 
-You're welcome to fork Loopline and build on it. If you publish a fork or
+You're welcome to fork PrivacyFence and build on it. If you publish a fork or
 derivative project, a brief note to the author (at+github@felhasznalo.name or
 open a GitHub issue) is appreciated — not required, just courteous. See `NOTICE`
 for details.

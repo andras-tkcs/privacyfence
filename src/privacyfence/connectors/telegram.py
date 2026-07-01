@@ -9,13 +9,13 @@ from typing import Any
 from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
 from ..gate import gated_call
-from ..telegram_client import TelegramClientError, TelegramLooplineClient
+from ..telegram_client import TelegramClientError, TelegramPrivacyFenceClient
 
 logger = logging.getLogger(__name__)
 
 
 class TelegramConnector(Connector):
-    def __init__(self, client: TelegramLooplineClient) -> None:
+    def __init__(self, client: TelegramPrivacyFenceClient) -> None:
         self._telegram = client
 
     @property

@@ -1,9 +1,9 @@
-"""Loopline bridge: ephemeral stdio MCP server spawned by Claude.
+"""PrivacyFence bridge: ephemeral stdio MCP server spawned by Claude.
 
 Startup sequence
 ----------------
 1. Try to connect to the daemon socket.
-2. If the daemon is not running, launch it (loopline-app) and wait up to 10 s.
+2. If the daemon is not running, launch it (privacyfence-app) and wait up to 10 s.
 3. Fetch the connector manifest from the daemon.
 4. Register all connector tools with FastMCP dynamically.
 5. Run FastMCP on the stdio transport — Claude can now call tools.
@@ -38,7 +38,7 @@ from .connector import ToolSpec
 from .ipc import SOCKET_PATH, VERSION
 from .ipc_client import IPCClient, IPCError
 
-logger = logging.getLogger("loopline.bridge")
+logger = logging.getLogger("privacyfence.bridge")
 
 _CONNECT_TIMEOUT = 10  # seconds to wait for daemon startup
 _CONNECT_INTERVAL = 0.4
@@ -66,26 +66,26 @@ def _setup_logging() -> None:
 # ---------------------------------------------------------------------------- #
 
 def _find_daemon_cmd() -> list[str]:
-    """Return the command to launch loopline-app."""
+    """Return the command to launch privacyfence-app."""
     # When running as a PyInstaller bundle, the daemon is a sibling binary.
-    # The main exe is named "Loopline" (the .app name); "loopline-app" is a
+    # The main exe is named "PrivacyFence" (the .app name); "privacyfence-app" is a
     # symlink to it created by build_dmg.sh for convenience.
     if getattr(sys, "frozen", False):
         bundle_macos = Path(sys.executable).parent
-        for name in ("loopline-app", "Loopline"):
+        for name in ("privacyfence-app", "PrivacyFence"):
             candidate = bundle_macos / name
             if candidate.exists():
                 return [str(candidate)]
 
     here = Path(sys.argv[0]).resolve().parent
-    candidate = here / "loopline-app"
+    candidate = here / "privacyfence-app"
     if candidate.exists():
         return [str(candidate)]
-    found = shutil.which("loopline-app")
+    found = shutil.which("privacyfence-app")
     if found:
         return [found]
     # Development fallback: run as a module.
-    return [sys.executable, "-m", "loopline.daemon_main"]
+    return [sys.executable, "-m", "privacyfence.daemon_main"]
 
 
 def _socket_connectable() -> bool:
@@ -123,9 +123,9 @@ def _ensure_daemon_running() -> None:
         time.sleep(_CONNECT_INTERVAL)
 
     print(
-        "ERROR: Loopline daemon did not start within "
+        "ERROR: PrivacyFence daemon did not start within "
         f"{_CONNECT_TIMEOUT} seconds.\n"
-        "Try running 'loopline-app' manually and check the logs.",
+        "Try running 'privacyfence-app' manually and check the logs.",
         file=sys.stderr,
     )
     sys.exit(1)
@@ -241,8 +241,8 @@ async def _run_bridge(mcp: FastMCP) -> None:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="loopline-bridge",
-        description="Loopline MCP bridge — connects Claude to the Loopline daemon.",
+        prog="privacyfence-bridge",
+        description="PrivacyFence MCP bridge — connects Claude to the PrivacyFence daemon.",
     )
     parser.add_argument("--config", default="config/settings.yaml", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
@@ -260,7 +260,7 @@ def main(argv: list[str] | None = None) -> int:
         [c["name"] for c in manifest.get("connectors", [])],
     )
 
-    mcp = FastMCP(name="loopline", version=VERSION)
+    mcp = FastMCP(name="privacyfence", version=VERSION)
     _register_tools(mcp, manifest)
 
     try:

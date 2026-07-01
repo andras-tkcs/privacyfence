@@ -1,6 +1,6 @@
 # Salesforce Setup
 
-Loopline connects to Salesforce using either **username + password + security token** (standard login) or a **connected app access token** (OAuth). The username/password flow is simpler for personal use.
+PrivacyFence connects to Salesforce using either **username + password + security token** (standard login) or a **connected app access token** (OAuth). The username/password flow is simpler for personal use.
 
 ---
 
@@ -20,9 +20,9 @@ Salesforce requires a security token in addition to your password when logging i
 
 > **Note:** Resetting the token invalidates the old one. Any other integration using the old token will need to be updated.
 
-### 3. Enter credentials in Loopline
+### 3. Enter credentials in PrivacyFence
 
-Launch **Loopline.app**. If the setup wizard is not open, click **Setup Wizard** in the floating window.
+Launch **PrivacyFence.app**. If the setup wizard is not open, click **Setup Wizard** in the floating window.
 
 1. Navigate to the **Salesforce** step.
 2. Enter your **Instance URL**, **Email / Username**, **Password**, and **Security Token**.

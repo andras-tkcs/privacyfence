@@ -1,8 +1,8 @@
 # Atlassian Setup (Jira & Confluence)
 
-Loopline connects to **Jira Cloud** and **Confluence Cloud** using a single Atlassian API token. One token covers both products — you only need to set this up once.
+PrivacyFence connects to **Jira Cloud** and **Confluence Cloud** using a single Atlassian API token. One token covers both products — you only need to set this up once.
 
-> **Cloud only.** Loopline supports Atlassian Cloud (`.atlassian.net` domains) only, not Jira/Confluence Data Center or Server.
+> **Cloud only.** PrivacyFence supports Atlassian Cloud (`.atlassian.net` domains) only, not Jira/Confluence Data Center or Server.
 
 ---
 
@@ -16,16 +16,16 @@ Your cloud URL is the base domain for your Atlassian organisation, e.g. `https:/
 
 1. Go to [https://id.atlassian.com/manage/api-tokens](https://id.atlassian.com/manage/api-tokens) and sign in with your Atlassian account.
 2. Click **Create API token**.
-3. Give it a label (e.g. `Loopline`) and click **Create**.
+3. Give it a label (e.g. `PrivacyFence`) and click **Create**.
 4. Click **Copy** to copy the token. **Save it now** — it is only shown once.
 
 > **This token has the same permissions as your Atlassian account.** Keep it secret and treat it like a password. You can revoke it at any time from the same page.
 
 ---
 
-## 3. Enter credentials in Loopline
+## 3. Enter credentials in PrivacyFence
 
-Launch **Loopline.app**. If the setup wizard is not open, click **Setup Wizard** in the floating window.
+Launch **PrivacyFence.app**. If the setup wizard is not open, click **Setup Wizard** in the floating window.
 
 1. Navigate to the **Atlassian** step.
 2. Enter your **Cloud URL** (e.g. `https://yourcompany.atlassian.net`), **Email address**, and **API Token**.

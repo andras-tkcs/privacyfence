@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build Loopline.dmg — a drag-to-install macOS disk image.
+# Build PrivacyFence.dmg — a drag-to-install macOS disk image.
 #
 # Prerequisites (needed only on your build machine, not end-user machines):
 #   pip install pyinstaller
@@ -9,7 +9,7 @@
 # Usage:
 #   ./scripts/build_dmg.sh [--sign "Developer ID Application: Your Name (TEAMID)"]
 #
-# Output: dist/Loopline-<version>.dmg
+# Output: dist/PrivacyFence-<version>.dmg
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -30,7 +30,7 @@ else
 fi
 
 VERSION=$("$PYTHON" -c "import tomllib; d=tomllib.load(open('pyproject.toml','rb')); print(d['project']['version'])")
-APP_NAME="Loopline"
+APP_NAME="PrivacyFence"
 BUNDLE="dist/${APP_NAME}.app"
 DMG_NAME="${APP_NAME}-${VERSION}.dmg"
 DMG_PATH="dist/${DMG_NAME}"
@@ -45,9 +45,9 @@ done
 echo "=== Building ${APP_NAME} ${VERSION} ==="
 
 # ── 1. Convert PNG icon to ICNS (must happen before PyInstaller) ─────────────
-ICON_SRC="src/loopline/resources/icon_512.png"
-ICON_DIR="build/loopline_icons.iconset"
-ICNS_PATH="build/loopline.icns"
+ICON_SRC="src/privacyfence/resources/icon_512.png"
+ICON_DIR="build/privacyfence_icons.iconset"
+ICNS_PATH="build/privacyfence.icns"
 
 if [ ! -f "$ICNS_PATH" ]; then
   echo "→ Converting icon to .icns…"
@@ -66,14 +66,14 @@ fi
 
 # ── 2. Build .app bundle ──────────────────────────────────────────────────────
 echo "→ Running PyInstaller…"
-LOOPLINE_ICNS="$ICNS_PATH" $PYINSTALLER --noconfirm Loopline.spec
+PRIVACYFENCE_ICNS="$ICNS_PATH" $PYINSTALLER --noconfirm PrivacyFence.spec
 
-# ── 3. Create loopline-app symlink inside the bundle ─────────────────────────
-# The LaunchAgent plist and bridge use this name; the main exe is "Loopline".
+# ── 3. Create privacyfence-app symlink inside the bundle ─────────────────────────
+# The LaunchAgent plist and bridge use this name; the main exe is "PrivacyFence".
 MACOS_DIR="${BUNDLE}/Contents/MacOS"
-if [ ! -e "${MACOS_DIR}/loopline-app" ]; then
-  echo "→ Creating loopline-app symlink…"
-  ln -s "Loopline" "${MACOS_DIR}/loopline-app"
+if [ ! -e "${MACOS_DIR}/privacyfence-app" ]; then
+  echo "→ Creating privacyfence-app symlink…"
+  ln -s "PrivacyFence" "${MACOS_DIR}/privacyfence-app"
 fi
 
 # Apply the .icns to the .app bundle

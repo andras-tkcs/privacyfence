@@ -71,7 +71,7 @@ def _display_dialog(title: str, lines: list[str], buttons: list[str], default: s
 
 def _write_temp_file(text: str) -> str:
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".txt", prefix="loopline_details_",
+        mode="w", suffix=".txt", prefix="privacyfence_details_",
         delete=False, encoding="utf-8",
     ) as f:
         f.write(text)
@@ -135,13 +135,13 @@ def show_rule_confirmation_popup(description: str) -> bool:
     silently create a standing rule that skips future approvals.
     """
     lines = [
-        "Loopline will create an auto-accept rule:",
+        "PrivacyFence will create an auto-accept rule:",
         "",
         description,
         "",
         "Future matching requests will be approved automatically, without a popup.",
     ]
     clicked = _display_dialog(
-        "Loopline — Confirm Auto-Accept Rule", lines, ["Cancel", "Confirm"], default="Cancel"
+        "PrivacyFence — Confirm Auto-Accept Rule", lines, ["Cancel", "Confirm"], default="Cancel"
     )
     return clicked == "Confirm"

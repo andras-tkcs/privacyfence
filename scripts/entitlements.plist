@@ -6,7 +6,7 @@
   <!-- Outbound network for OAuth + API calls -->
   <key>com.apple.security.network.client</key>
   <true/>
-  <!-- Read/write ~/Library and ~/.loopline for config, tokens, logs -->
+  <!-- Read/write ~/Library and ~/.privacyfence for config, tokens, logs -->
   <key>com.apple.security.files.user-selected.read-write</key>
   <true/>
   <!-- Spawn child processes (bridge spawns daemon) -->

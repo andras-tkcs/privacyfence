@@ -165,7 +165,7 @@ def get_audit_logger() -> AuditLogger:
     if _INSTANCE is None:
         with _LOCK:
             if _INSTANCE is None:
-                fallback = os.path.join(os.path.expanduser("~"), ".loopline", "audit")
+                fallback = os.path.join(os.path.expanduser("~"), ".privacyfence", "audit")
                 _INSTANCE = AuditLogger(fallback)
     return _INSTANCE
 

@@ -1,6 +1,6 @@
-"""Loopline daemon: persistent macOS app that owns the UI, credentials, and connectors.
+"""PrivacyFence daemon: persistent macOS app that owns the UI, credentials, and connectors.
 
-Started at login via LaunchAgent (com.loopline.app.plist), or automatically
+Started at login via LaunchAgent (com.privacyfence.app.plist), or automatically
 by the bridge on first use. Only one instance is allowed (enforced via a lock
 file). The bridge connects to this process over a Unix socket.
 
@@ -44,12 +44,12 @@ from .jira_client import JiraClient, JiraClientError
 from .salesforce_client import SalesforceClient, SalesforceClientError
 from .slack_client import SlackClient, SlackClientError
 from .tasks_client import TasksClient, TasksClientError
-from .telegram_client import TelegramClientError, TelegramLooplineClient
+from .telegram_client import TelegramClientError, TelegramPrivacyFenceClient
 
-logger = logging.getLogger("loopline.daemon")
+logger = logging.getLogger("privacyfence.daemon")
 
 PROJECT_ROOT = str(data_dir())
-LOCK_FILE = os.path.join(PROJECT_ROOT, "loopline.lock")
+LOCK_FILE = os.path.join(PROJECT_ROOT, "privacyfence.lock")
 SETUP_SENTINEL = os.path.join(PROJECT_ROOT, "setup_complete")
 
 _lock_fd: int | None = None
@@ -112,7 +112,7 @@ def setup_logging(config: dict[str, Any]) -> None:
     log_cfg = config.get("logging", {}) or {}
     level_name = str(log_cfg.get("level", "INFO")).upper()
     level = getattr(logging, level_name, logging.INFO)
-    log_file = _resolve_path(log_cfg.get("file", "logs/loopline.log"))
+    log_file = _resolve_path(log_cfg.get("file", "logs/privacyfence.log"))
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
     fmt = logging.Formatter("%(asctime)s %(levelname)-8s [%(name)s] %(message)s")
@@ -278,9 +278,9 @@ def _build_connectors(config: dict[str, Any]) -> list:
         if not os.path.exists(session_file) and not os.path.exists(session_file + ".session"):
             raise TelegramClientError(
                 f"Session file not found: {session_file}. "
-                "Run 'loopline-app --telegram-setup' to authorize."
+                "Run 'privacyfence-app --telegram-setup' to authorize."
             )
-        tg_client = TelegramLooplineClient(
+        tg_client = TelegramPrivacyFenceClient(
             api_id=int(api_id),
             api_hash=api_hash,
             session_file=session_file,
@@ -412,7 +412,7 @@ def run_telegram_setup(config: dict[str, Any]) -> int:
         print("Set telegram.api_id and telegram.api_hash in config/settings.yaml first.", file=sys.stderr)
         return 1
     session_file = _resolve_path(tg_cfg.get("session_file", "credentials/telegram.session"))
-    client = TelegramLooplineClient(api_id=int(api_id), api_hash=api_hash, session_file=session_file)
+    client = TelegramPrivacyFenceClient(api_id=int(api_id), api_hash=api_hash, session_file=session_file)
     asyncio.run(client.authorize_interactive())
     print(f"Telegram session saved to {session_file}")
     return 0
@@ -425,7 +425,7 @@ def run_telegram_setup(config: dict[str, Any]) -> int:
 def run_app(config: dict[str, Any], config_path: str) -> int:
     if not _acquire_instance_lock():
         logger.error("Another instance is already running; exiting.")
-        print("Loopline daemon is already running.", file=sys.stderr)
+        print("PrivacyFence daemon is already running.", file=sys.stderr)
         return 1
 
     init_config_path(_resolve_path(config_path))
@@ -458,8 +458,8 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="loopline-app",
-        description="Loopline daemon — privacy proxy UI and connector host.",
+        prog="privacyfence-app",
+        description="PrivacyFence daemon — privacy proxy UI and connector host.",
     )
     default_config = os.path.join(PROJECT_ROOT, "config", "settings.yaml")
     parser.add_argument("--config", default=default_config)

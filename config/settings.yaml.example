@@ -1,4 +1,4 @@
-# Loopline configuration example.
+# PrivacyFence configuration example.
 # Copy this file to config/settings.yaml and adjust as needed.
 # Never commit config/settings.yaml or any file under credentials/.
 
@@ -123,15 +123,15 @@ auto_accept_rules:
     # - rule: i_am_owner  # not applicable to contacts
 
 mcp:
-  server_name: loopline-gmail
+  server_name: privacyfence-gmail
   server_version: 0.1.0
 
 drive_mcp:
-  server_name: loopline-drive
+  server_name: privacyfence-drive
   server_version: 0.1.0
 
 logging:
   # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
   level: INFO
   # Log file path. Relative paths are resolved against the project root.
-  file: logs/loopline.log
+  file: logs/privacyfence.log

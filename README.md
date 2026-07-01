@@ -1,13 +1,13 @@
-# Loopline
+# PrivacyFence
 
-**Loopline** is a macOS privacy proxy that sits between Claude (via MCP) and your personal data sources. Every time Claude tries to read an email, open a file, or fetch a Slack message, Loopline intercepts the request and requires your approval before any data reaches the AI.
+**PrivacyFence** is a macOS privacy proxy that sits between Claude (via MCP) and your personal data sources. Every time Claude tries to read an email, open a file, or fetch a Slack message, PrivacyFence intercepts the request and requires your approval before any data reaches the AI.
 
 ---
 
 ## How it works
 
 ```
-Claude ──MCP stdio──▶ loopline-bridge ──Unix socket──▶ loopline-app (daemon)
+Claude ──MCP stdio──▶ privacyfence-bridge ──Unix socket──▶ privacyfence-app (daemon)
                                                               │
                                                    ┌──────────▼──────────┐
                                                    │  Auto-accept rules   │
@@ -25,9 +25,9 @@ Claude ──MCP stdio──▶ loopline-bridge ──Unix socket──▶ loopl
                                                    └─────────────────────┘
 ```
 
-**`loopline-bridge`** — an ephemeral MCP server spawned by Claude on each session. It auto-starts the daemon if it is not already running, fetches the connector manifest, and forwards every tool call over a Unix socket. Claude only ever talks to the bridge; the bridge carries no credentials.
+**`privacyfence-bridge`** — an ephemeral MCP server spawned by Claude on each session. It auto-starts the daemon if it is not already running, fetches the connector manifest, and forwards every tool call over a Unix socket. Claude only ever talks to the bridge; the bridge carries no credentials.
 
-**`loopline-app`** — the persistent daemon that owns all credentials, connectors, the review gate, and the audit log. Only one instance runs at a time (enforced via a lock file). It starts automatically at login via a LaunchAgent.
+**`privacyfence-app`** — the persistent daemon that owns all credentials, connectors, the review gate, and the audit log. Only one instance runs at a time (enforced via a lock file). It starts automatically at login via a LaunchAgent.
 
 ---
 
@@ -39,7 +39,7 @@ Every tool call passes through one of three gate values:
 |------|-----------|
 | `auto` | Passed through immediately, logged as `auto_accepted` |
 | `review` | Approval requested in Claude Cowork (see below) |
-| `popup` | Approval requested via Loopline native popup |
+| `popup` | Approval requested via PrivacyFence native popup |
 
 ### Two flows by direction
 
@@ -49,11 +49,11 @@ When the gate is `review`, a prompt appears in Claude Cowork showing a minimal p
 
 - **Accept** — data is returned to Claude
 - **Deny** — request is blocked; Claude receives an error
-- **Show Details** — Loopline opens a scrollable native popup with the full content (e.g. the email body), which then offers **Accept** or **Deny**
+- **Show Details** — PrivacyFence opens a scrollable native popup with the full content (e.g. the email body), which then offers **Accept** or **Deny**
 
 **Claude → Tool (writes / actions)** — annotated `destructiveHint = true` where relevant.
 
-Claude already describes the action it is about to take in the chat. When the gate is `popup`, Loopline opens a native popup showing the full action details with **Accept** or **Deny**. There is no intermediate Cowork step.
+Claude already describes the action it is about to take in the chat. When the gate is `popup`, PrivacyFence opens a native popup showing the full action details with **Accept** or **Deny**. There is no intermediate Cowork step.
 
 ---
 
@@ -294,13 +294,13 @@ Every decision — accepted, denied, or auto-accepted — is appended to a JSON-
 
 ### From the DMG (recommended)
 
-1. Download the latest `Loopline.dmg` from the [Releases](../../releases) page.
-2. Open the DMG, drag **Loopline.app** to `/Applications`.
-3. Launch **Loopline.app** — the setup wizard opens automatically on first run and walks you through:
+1. Download the latest `PrivacyFence.dmg` from the [Releases](../../releases) page.
+2. Open the DMG, drag **PrivacyFence.app** to `/Applications`.
+3. Launch **PrivacyFence.app** — the setup wizard opens automatically on first run and walks you through:
    - Importing your Google OAuth `client_secret.json`
    - Authorizing Gmail, Drive, Calendar, and Contacts
    - Entering your Slack user token (optional; see [docs/slack-setup.md](docs/slack-setup.md))
-   - Installing the LaunchAgent so Loopline starts at login
+   - Installing the LaunchAgent so PrivacyFence starts at login
    - Copying the MCP config snippet for Claude
 
 ### From source
@@ -308,8 +308,8 @@ Every decision — accepted, denied, or auto-accepted — is appended to a JSON-
 **Requirements:** Python 3.11+, macOS
 
 ```bash
-git clone https://github.com/andras-tkcs/loopline
-cd loopline
+git clone https://github.com/andras-tkcs/privacyfence
+cd privacyfence
 python -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
@@ -317,25 +317,25 @@ pip install -e .
 Copy and edit the config:
 
 ```bash
-cp src/loopline/resources/settings.yaml.example config/settings.yaml
+cp src/privacyfence/resources/settings.yaml.example config/settings.yaml
 # Edit config/settings.yaml with your credentials
 ```
 
 Authorize each Google service (first-time setup):
 
 ```bash
-loopline-app --gmail-oauth
-loopline-app --drive-oauth
-loopline-app --calendar-oauth
-loopline-app --contacts-oauth
-loopline-app --tasks-oauth
-loopline-app --telegram-setup   # optional
+privacyfence-app --gmail-oauth
+privacyfence-app --drive-oauth
+privacyfence-app --calendar-oauth
+privacyfence-app --contacts-oauth
+privacyfence-app --tasks-oauth
+privacyfence-app --telegram-setup   # optional
 ```
 
 Start the daemon:
 
 ```bash
-loopline-app
+privacyfence-app
 ```
 
 ---
@@ -347,14 +347,14 @@ Add the bridge to Claude's MCP config (`~/.claude/claude_desktop_config.json` or
 ```json
 {
   "mcpServers": {
-    "loopline": {
-      "command": "loopline-bridge"
+    "privacyfence": {
+      "command": "privacyfence-bridge"
     }
   }
 }
 ```
 
-If running from source, replace `loopline-bridge` with the full path to `.venv/bin/loopline-bridge`.
+If running from source, replace `privacyfence-bridge` with the full path to `.venv/bin/privacyfence-bridge`.
 
 ---
 
@@ -365,20 +365,20 @@ pip install pyinstaller
 bash scripts/build_dmg.sh
 ```
 
-The script produces `dist/Loopline.dmg`.
+The script produces `dist/PrivacyFence.dmg`.
 
 ---
 
 ## Configuration reference
 
-See [`config/settings.yaml.example`](src/loopline/resources/settings.yaml.example) for a fully annotated configuration file covering all connectors, auto-accept rules, and logging options.
+See [`config/settings.yaml.example`](src/privacyfence/resources/settings.yaml.example) for a fully annotated configuration file covering all connectors, auto-accept rules, and logging options.
 
 ---
 
 ## Architecture notes
 
 - The bridge is stateless and disposable — Claude can kill and restart it at any time without losing any state. All state (credentials, tokens, filters, queue) lives in the daemon.
-- IPC between the bridge and the daemon uses a newline-delimited JSON protocol over a Unix domain socket (`~/.loopline/loopline.sock`).
+- IPC between the bridge and the daemon uses a newline-delimited JSON protocol over a Unix domain socket (`~/.privacyfence/privacyfence.sock`).
 - The daemon uses two threads: the main thread runs the rumps menu bar app (a hard macOS requirement for AppKit) and an IPC thread runs the asyncio event loop serving the bridge socket. Approval popups are shown via `osascript` subprocesses and can be called from any thread.
 - Read tools carry `readOnlyHint = true` in their MCP annotations; write tools that modify external state carry `destructiveHint = true`.
 

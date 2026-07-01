@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "loopline"
+name = "privacyfence"
 version = "0.4.0"
 description = "macOS menu bar privacy proxy between Claude (MCP) and your personal data"
 readme = "README.md"
@@ -24,8 +24,8 @@ dependencies = [
 ]
 
 [project.scripts]
-loopline-bridge = "loopline.bridge_main:main"
-loopline-app    = "loopline.daemon_main:main"
+privacyfence-bridge = "privacyfence.bridge_main:main"
+privacyfence-app    = "privacyfence.daemon_main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -34,7 +34,7 @@ where = ["src"]
 "" = "src"
 
 [tool.setuptools.package-data]
-loopline = ["resources/*.png", "resources/settings.yaml.example"]
+privacyfence = ["resources/*.png", "resources/settings.yaml.example"]
 
 [project.optional-dependencies]
 dev = [

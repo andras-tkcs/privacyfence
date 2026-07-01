@@ -18,5 +18,5 @@ from __future__ import annotations
 
 import os
 
-SOCKET_PATH = os.path.expanduser("~/.loopline/loopline.sock")
+SOCKET_PATH = os.path.expanduser("~/.privacyfence/privacyfence.sock")
 VERSION = "0.3.1"

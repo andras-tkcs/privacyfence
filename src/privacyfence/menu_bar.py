@@ -2,28 +2,30 @@
 
 Main thread only. Provides:
   - Auto-accept rule management: add / toggle / edit values per operation
-  - Connector management: enable/disable + OAuth setup shortcuts
-  - Edit Config File shortcut
+  - Connector management: enable/disable, configure, authenticate, help
+  - About panel
   - Open Audit Log
 """
 from __future__ import annotations
 
 import logging
-import os
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import rumps
 import yaml
 
-from .auto_accept import get_auto_accept_evaluator, reload_rules
+from . import __version__
+from .auto_accept import reload_rules
 from .paths import data_dir
 
 logger = logging.getLogger(__name__)
+
+REPO_URL = "https://github.com/andras-tkcs/privacyfence"
+LICENSE_NAME = "Apache-2.0"
 
 # ---------------------------------------------------------------------------- #
 # Rule metadata
@@ -71,28 +73,76 @@ RULES_LIST_VALUE: set[str] = {
 # Rules that take a single integer value
 RULES_INT_VALUE: set[str] = {"age_threshold_days", "time_window_days"}
 
-# Connectors that have an OAuth setup command
-OAUTH_FLAGS: dict[str, str] = {
+# Connectors that have an interactive authentication command (OAuth or
+# session login). Run in a Terminal window via the CLI flag.
+AUTH_FLAGS: dict[str, str] = {
     "gmail":    "--gmail-oauth",
     "drive":    "--drive-oauth",
     "contacts": "--contacts-oauth",
     "calendar": "--calendar-oauth",
     "tasks":    "--tasks-oauth",
+    "telegram": "--telegram-setup",
 }
 
-# All connectors Loopline supports, in display order
+# All connectors PrivacyFence supports, in display order
 ALL_CONNECTORS: list[str] = [
     "gmail", "drive", "contacts", "calendar", "tasks",
     "slack", "jira", "confluence", "salesforce", "telegram",
 ]
 
-# Setup hint shown for connectors that require manual config (no OAuth flow)
-CONNECTOR_SETUP_HINTS: dict[str, str] = {
-    "slack":      "Add a 'slack' section to your config with user_token.",
-    "jira":       "Add a 'jira' section to your config with cloud_url, email, and api_token.",
-    "confluence": "Add a 'confluence' section to your config with cloud_url, email, and api_token.",
-    "salesforce": "Add a 'salesforce' section to your config with instance_url, username, password, and security_token.",
-    "telegram":   "Add a 'telegram' section with api_id and api_hash, then run 'loopline-app --telegram-setup'.",
+# Connectors authenticated via a shared Google OAuth client secret file,
+# configured by uploading the JSON downloaded from Google Cloud Console.
+GOOGLE_CONNECTORS: set[str] = {"gmail", "drive", "contacts", "calendar", "tasks"}
+
+
+class ConfigField(NamedTuple):
+    key: str
+    label: str
+    secret: bool = False
+    kind: str = "text"  # "text" or "int"
+
+
+# Text fields collected via native prompts for "Configure…", per connector.
+# Google connectors are configured via client-secret upload instead (see
+# GOOGLE_CONNECTORS / _upload_client_secret).
+CONNECTOR_CONFIG_FIELDS: dict[str, list[ConfigField]] = {
+    "slack": [
+        ConfigField("bot_token", "Bot User OAuth Token (xoxb-...)", secret=True),
+    ],
+    "jira": [
+        ConfigField("cloud_url", "Atlassian Cloud URL (e.g. https://yourcompany.atlassian.net)"),
+        ConfigField("email", "Atlassian account email"),
+        ConfigField("api_token", "API token", secret=True),
+    ],
+    "confluence": [
+        ConfigField("cloud_url", "Atlassian Cloud URL (e.g. https://yourcompany.atlassian.net)"),
+        ConfigField("email", "Atlassian account email"),
+        ConfigField("api_token", "API token", secret=True),
+    ],
+    "salesforce": [
+        ConfigField("instance_url", "Instance URL (e.g. https://yourorg.my.salesforce.com)"),
+        ConfigField("username", "Username"),
+        ConfigField("password", "Password", secret=True),
+        ConfigField("security_token", "Security token", secret=True),
+    ],
+    "telegram": [
+        ConfigField("api_id", "API ID (from https://my.telegram.org/apps)", kind="int"),
+        ConfigField("api_hash", "API hash", secret=True),
+    ],
+}
+
+# docs/ file (on GitHub) explaining how to set up each connector
+CONNECTOR_HELP_DOCS: dict[str, str] = {
+    "gmail":      "google-cloud-setup.md",
+    "drive":      "google-cloud-setup.md",
+    "contacts":   "google-cloud-setup.md",
+    "calendar":   "google-cloud-setup.md",
+    "tasks":      "google-cloud-setup.md",
+    "slack":      "slack-setup.md",
+    "jira":       "atlassian-setup.md",
+    "confluence": "atlassian-setup.md",
+    "salesforce": "salesforce-setup.md",
+    "telegram":   "telegram-setup.md",
 }
 
 RULE_HINTS: dict[str, str] = {
@@ -116,13 +166,13 @@ RULE_HINTS: dict[str, str] = {
 # App
 # ---------------------------------------------------------------------------- #
 
-class LooplineMenuBar(rumps.App):
+class PrivacyFenceMenuBar(rumps.App):
     def __init__(self, config_path: str, connectors: list[str]) -> None:
         self._config_path = config_path
         self._connectors = connectors
         icon_path = _find_icon()
         super().__init__(
-            name="Loopline",
+            name="PrivacyFence",
             icon=icon_path,
             quit_button=None,
             template=True,
@@ -181,43 +231,47 @@ class LooplineMenuBar(rumps.App):
             conn_cfg = connectors_cfg.get(cname, {})
             enabled = conn_cfg.get("enabled", True)
 
-            if connected:
-                check = "✓" if enabled else "○"
-                conn_item = rumps.MenuItem(f"{check} {cname}")
+            status = "●" if connected else ("○" if enabled else "✕")
+            conn_item = rumps.MenuItem(f"{status} {cname.capitalize()}")
 
-                toggle = rumps.MenuItem("  Toggle enabled")
-                toggle.set_callback(_bind(self._toggle_connector, cname))
-                conn_item.add(toggle)
+            toggle_label = "  Disable" if enabled else "  Enable"
+            toggle = rumps.MenuItem(toggle_label)
+            toggle.set_callback(_bind(self._toggle_connector, cname))
+            conn_item.add(toggle)
 
-                if cname in OAUTH_FLAGS:
-                    oauth = rumps.MenuItem("  Run OAuth setup…")
-                    oauth.set_callback(_bind(self._run_oauth, cname))
-                    conn_item.add(oauth)
-            else:
-                conn_item = rumps.MenuItem(f"  {cname}  (not connected)")
+            conn_item.add(rumps.separator)
 
-                if cname in OAUTH_FLAGS:
-                    setup = rumps.MenuItem("  Run OAuth setup…")
-                    setup.set_callback(_bind(self._run_oauth, cname))
-                    conn_item.add(setup)
-                else:
-                    setup = rumps.MenuItem("  How to set up…")
-                    setup.set_callback(_bind(self._show_setup_hint, cname))
-                    conn_item.add(setup)
+            if cname in GOOGLE_CONNECTORS:
+                configure = rumps.MenuItem("  Configure… (upload Google client secret)")
+                configure.set_callback(_bind(self._upload_client_secret, cname))
+                conn_item.add(configure)
+            elif cname in CONNECTOR_CONFIG_FIELDS:
+                configure = rumps.MenuItem("  Configure…")
+                configure.set_callback(_bind(self._configure_connector, cname))
+                conn_item.add(configure)
+
+            if cname in AUTH_FLAGS:
+                authenticate = rumps.MenuItem("  Authenticate…")
+                authenticate.set_callback(_bind(self._run_auth, cname))
+                conn_item.add(authenticate)
+
+            help_item = rumps.MenuItem("  Help…")
+            help_item.set_callback(_bind(self._open_help, cname))
+            conn_item.add(help_item)
 
             connectors_parent.add(conn_item)
 
         self.menu.clear()
         self.menu = [
-            rumps.MenuItem("Loopline is running"),
+            rumps.MenuItem("PrivacyFence is running"),
             rumps.separator,
             rules_parent,
             connectors_parent,
             rumps.separator,
-            rumps.MenuItem("Edit Config File…", callback=self.edit_config),
             rumps.MenuItem("Open Audit Log", callback=self.open_audit_log),
+            rumps.MenuItem("About PrivacyFence", callback=self.show_about),
             rumps.separator,
-            rumps.MenuItem("Quit Loopline", callback=self.quit_app),
+            rumps.MenuItem("Quit PrivacyFence", callback=self.quit_app),
         ]
 
     # ------------------------------------------------------------------ #
@@ -364,35 +418,130 @@ class LooplineMenuBar(rumps.App):
         self._save_config(cfg)
         self._rebuild()
 
-    def _show_setup_hint(self, cname: str, _sender: Any = None) -> None:
-        hint = CONNECTOR_SETUP_HINTS.get(cname, f"Add a '{cname}' section to your config file.")
-        rumps.alert(f"Set up {cname}", hint + "\n\nClick 'Edit Config File…' to open your config.")
+    def _configure_connector(self, cname: str, _sender: Any = None) -> None:
+        fields = CONNECTOR_CONFIG_FIELDS.get(cname)
+        if not fields:
+            return
+        cfg = self._load_config()
+        section = cfg.setdefault(cname, {})
 
-    def _run_oauth(self, cname: str, _sender: Any = None) -> None:
-        flag = OAUTH_FLAGS.get(cname)
+        collected: dict[str, Any] = {}
+        for field in fields:
+            current = section.get(field.key)
+            if field.secret:
+                default_text = "" if current in (None, "") else "••••••••"
+            else:
+                default_text = "" if current is None else str(current)
+
+            w = rumps.Window(
+                title=f"Configure {cname.capitalize()}",
+                message=f"{field.label}:" + (
+                    "\n(leave unchanged to keep the current value)" if field.secret and current else ""
+                ),
+                default_text=default_text,
+                ok="Next" if field is not fields[-1] else "Save",
+                cancel="Cancel",
+                dimensions=(320, 40),
+            )
+            resp = w.run()
+            if not resp.clicked:
+                return
+            text = resp.text.strip()
+
+            if field.secret and current and text == "••••••••":
+                continue  # unchanged
+            if not text:
+                continue
+
+            if field.kind == "int":
+                try:
+                    collected[field.key] = int(text)
+                except ValueError:
+                    rumps.alert("Invalid value", f"Expected an integer for {field.label}, got: {text!r}")
+                    return
+            else:
+                collected[field.key] = text
+
+        section.update(collected)
+        cfg.setdefault("connectors", {}).setdefault(cname, {}).setdefault("enabled", True)
+        self._save_config(cfg)
+        self._rebuild()
+        rumps.alert("PrivacyFence", f"{cname.capitalize()} configured. Quit and reopen PrivacyFence to apply.")
+
+    def _upload_client_secret(self, cname: str, _sender: Any = None) -> None:
+        script = (
+            'set chosenFile to choose file with prompt '
+            '"Select the Google OAuth client secret JSON file" '
+            'of type {"json", "public.json"}\n'
+            'return POSIX path of chosenFile'
+        )
+        result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+        src = result.stdout.strip()
+        if not src:
+            return
+
+        cfg = self._load_config()
+        section = cfg.setdefault(cname, {})
+        dest_rel = section.get("credentials_file", "credentials/client_secret.json")
+        dest = Path(dest_rel)
+        if not dest.is_absolute():
+            dest = Path(data_dir()) / dest_rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            shutil.copyfile(src, dest)
+        except OSError as exc:
+            rumps.alert("PrivacyFence", f"Could not copy client secret: {exc}")
+            return
+
+        section.setdefault("credentials_file", dest_rel)
+        cfg.setdefault("connectors", {}).setdefault(cname, {}).setdefault("enabled", True)
+        self._save_config(cfg)
+        self._rebuild()
+        rumps.alert(
+            "PrivacyFence",
+            f"Client secret installed for {cname.capitalize()}.\n\nUse 'Authenticate…' to complete OAuth.",
+        )
+
+    def _run_auth(self, cname: str, _sender: Any = None) -> None:
+        flag = AUTH_FLAGS.get(cname)
         if not flag:
             return
-        cmd = shutil.which("loopline-app")
+        cmd = shutil.which("privacyfence-app")
         if not cmd:
             # Try the same executable that started this process
-            cmd = sys.argv[0] if sys.argv[0].endswith("loopline-app") else sys.executable
+            cmd = sys.argv[0] if sys.argv[0].endswith("privacyfence-app") else sys.executable
         full_cmd = f"{cmd} {flag}"
         script = f'tell application "Terminal" to do script "{full_cmd}"'
         subprocess.run(["osascript", "-e", script], check=False)
 
+    def _open_help(self, cname: str, _sender: Any = None) -> None:
+        doc = CONNECTOR_HELP_DOCS.get(cname)
+        if not doc:
+            return
+        url = f"{REPO_URL}/blob/main/docs/{doc}"
+        subprocess.run(["open", url], check=False)
+
     # ------------------------------------------------------------------ #
     # Misc actions
     # ------------------------------------------------------------------ #
-
-    def edit_config(self, _: Any = None) -> None:
-        subprocess.run(["open", "-t", self._config_path], check=False)
 
     def open_audit_log(self, _: Any = None) -> None:
         log_dir = Path(data_dir()) / "logs" / "audit"
         if log_dir.exists():
             subprocess.run(["open", str(log_dir)], check=False)
         else:
-            rumps.alert("Loopline", "No audit log found yet.")
+            rumps.alert("PrivacyFence", "No audit log found yet.")
+
+    def show_about(self, _: Any = None) -> None:
+        resp = rumps.alert(
+            title="About PrivacyFence",
+            message=f"PrivacyFence {__version__}\nLicense: {LICENSE_NAME}\n\n{REPO_URL}",
+            ok="Open GitHub",
+            cancel="Close",
+        )
+        if resp == 1:
+            subprocess.run(["open", REPO_URL], check=False)
 
     def quit_app(self, _: Any = None) -> None:
         rumps.quit_application()
@@ -473,5 +622,5 @@ def _find_icon() -> str | None:
 
 
 def run_menu_bar(config_path: str, connectors: list[str]) -> None:
-    app = LooplineMenuBar(config_path=config_path, connectors=connectors)
+    app = PrivacyFenceMenuBar(config_path=config_path, connectors=connectors)
     app.run()

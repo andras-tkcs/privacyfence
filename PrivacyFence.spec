@@ -1,16 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
 #
-# PyInstaller spec for Loopline.app
+# PyInstaller spec for PrivacyFence.app
 #
 # Produces:
-#   dist/Loopline.app/
-#     Contents/MacOS/Loopline          ← daemon (main app, opens menu bar)
-#     Contents/MacOS/loopline-bridge   ← bridge (Claude's MCP entry point)
-#     Contents/MacOS/loopline-app      ← symlink → Loopline (for daemon auto-start)
+#   dist/PrivacyFence.app/
+#     Contents/MacOS/PrivacyFence          ← daemon (main app, opens menu bar)
+#     Contents/MacOS/privacyfence-bridge   ← bridge (Claude's MCP entry point)
+#     Contents/MacOS/privacyfence-app      ← symlink → PrivacyFence (for daemon auto-start)
 #
 # Build:
 #   pip install pyinstaller
-#   pyinstaller Loopline.spec
+#   pyinstaller PrivacyFence.spec
 #
 # Notes:
 #   - Run on the target architecture. For Apple Silicon: arch -arm64 pyinstaller ...
@@ -26,13 +26,13 @@ sys.path.insert(0, SRC)
 
 # Use .icns built by build_dmg.sh; fall back to PNG (will error on macOS, but
 # lets you run pyinstaller directly for quick dev iteration on Linux/CI).
-ICON = os.environ.get("LOOPLINE_ICNS", "src/loopline/resources/icon_512.png")
+ICON = os.environ.get("PRIVACYFENCE_ICNS", "src/privacyfence/resources/icon_512.png")
 
 # ── data files ────────────────────────────────────────────────────────────────
 
 datas = [
     # App icons and bundled resources
-    ("src/loopline/resources", "loopline/resources"),
+    ("src/privacyfence/resources", "privacyfence/resources"),
     # google-auth needs its transport files
     *collect_data_files("google"),
     *collect_data_files("googleapiclient"),
@@ -70,15 +70,15 @@ hidden_imports = [
     "tkinter.ttk",
     "tkinter.filedialog",
     "tkinter.messagebox",
-    # loopline connectors (all loaded at runtime from _build_connectors)
-    "loopline.connectors.gmail",
-    "loopline.connectors.drive",
-    "loopline.connectors.calendar",
-    "loopline.connectors.contacts",
-    "loopline.connectors.slack",
-    "loopline.connectors.tasks",
-    "loopline.connectors.telegram",
-    "loopline.connectors.salesforce",
+    # privacyfence connectors (all loaded at runtime from _build_connectors)
+    "privacyfence.connectors.gmail",
+    "privacyfence.connectors.drive",
+    "privacyfence.connectors.calendar",
+    "privacyfence.connectors.contacts",
+    "privacyfence.connectors.slack",
+    "privacyfence.connectors.tasks",
+    "privacyfence.connectors.telegram",
+    "privacyfence.connectors.salesforce",
 ]
 
 # ── daemon (main .app entry point) ────────────────────────────────────────────
@@ -103,7 +103,7 @@ daemon_exe = EXE(
     daemon_a.scripts,
     [],
     exclude_binaries=True,
-    name="Loopline",
+    name="PrivacyFence",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -138,7 +138,7 @@ bridge_exe = EXE(
     bridge_a.scripts,
     [],
     exclude_binaries=True,
-    name="loopline-bridge",
+    name="privacyfence-bridge",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -162,17 +162,17 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name="Loopline",
+    name="PrivacyFence",
 )
 
 app = BUNDLE(
     coll,
-    name="Loopline.app",
+    name="PrivacyFence.app",
     icon=ICON,
-    bundle_identifier="com.loopline.app",
+    bundle_identifier="com.privacyfence.app",
     version="0.1.0",
     info_plist={
-        "CFBundleDisplayName": "Loopline",
+        "CFBundleDisplayName": "PrivacyFence",
         "CFBundleShortVersionString": "0.1.0",
         "CFBundleVersion": "1",
         "LSUIElement": True,          # menu bar app — no Dock icon

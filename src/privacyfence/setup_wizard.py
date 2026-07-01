@@ -1,6 +1,6 @@
-"""First-run setup wizard for Loopline.
+"""First-run setup wizard for PrivacyFence.
 
-Shown automatically when running from the .app bundle and ~/.loopline/setup_complete
+Shown automatically when running from the .app bundle and ~/.privacyfence/setup_complete
 does not exist. Walks the user through:
   1. Welcome
   2. Import Google OAuth client_secret.json
@@ -28,7 +28,7 @@ from typing import Callable
 
 from .paths import app_bundle_path, data_dir
 
-logger = logging.getLogger("loopline.setup_wizard")
+logger = logging.getLogger("privacyfence.setup_wizard")
 
 # ── colour palette (matches floating_window.py) ──────────────────────────────
 BG       = "#1e1e2e"
@@ -83,13 +83,13 @@ def _sentinel_path() -> Path:
 def _bridge_path() -> str:
     bundle = app_bundle_path()
     if bundle:
-        return str(bundle / "Contents" / "MacOS" / "loopline-bridge")
+        return str(bundle / "Contents" / "MacOS" / "privacyfence-bridge")
     # Dev fallback
-    return shutil.which("loopline-bridge") or "loopline-bridge"
+    return shutil.which("privacyfence-bridge") or "privacyfence-bridge"
 
 
 def _plist_label() -> str:
-    return "com.loopline.app"
+    return "com.privacyfence.app"
 
 
 def _plist_path() -> Path:
@@ -99,13 +99,13 @@ def _plist_path() -> Path:
 def _daemon_path() -> str:
     bundle = app_bundle_path()
     if bundle:
-        return str(bundle / "Contents" / "MacOS" / "loopline-app")
-    return shutil.which("loopline-app") or "loopline-app"
+        return str(bundle / "Contents" / "MacOS" / "privacyfence-app")
+    return shutil.which("privacyfence-app") or "privacyfence-app"
 
 
 def _write_plist() -> None:
     daemon = _daemon_path()
-    log = str(_logs_dir() / "loopline-daemon.log")
+    log = str(_logs_dir() / "privacyfence-daemon.log")
     plist = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -155,7 +155,7 @@ def _write_settings(
             shutil.copy(example_src, dest)
         else:
             dest.write_text(
-                "logging:\n  level: INFO\n  file: logs/loopline.log\n",
+                "logging:\n  level: INFO\n  file: logs/privacyfence.log\n",
                 encoding="utf-8",
             )
 
@@ -200,7 +200,7 @@ def _mcp_snippet() -> str:
     return json.dumps(
         {
             "mcpServers": {
-                "loopline": {
+                "privacyfence": {
                     "command": bridge,
                 }
             }
@@ -280,7 +280,7 @@ class SetupWizard:
         else:
             self.root = tk.Toplevel(parent)
             self._is_toplevel = True
-        self.root.title("Loopline Setup")
+        self.root.title("PrivacyFence Setup")
         self.root.configure(bg=BG)
         self.root.resizable(False, False)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -454,18 +454,18 @@ class SetupWizard:
     # ── pages ─────────────────────────────────────────────────────────────────
 
     def _page_welcome(self) -> None:
-        self._header.config(text="Welcome to Loopline")
+        self._header.config(text="Welcome to PrivacyFence")
         logo = tk.Label(self._body, text="🔒", bg=BG, font=("Helvetica Neue", 48))
         logo.pack(pady=(10, 4))
         self._label(
-            "Loopline is a privacy proxy that sits between Claude AI and your "
+            "PrivacyFence is a privacy proxy that sits between Claude AI and your "
             "accounts (Gmail, Drive, Calendar, Contacts, Tasks, Slack, Telegram, "
             "Salesforce, Jira, Confluence). Every request Claude makes goes through "
             "you — nothing passes without approval.",
             fg=TEXT, size=14,
         ).pack(anchor="w", pady=(0, 12))
         self._label(
-            "This wizard will connect your accounts and install Loopline to start "
+            "This wizard will connect your accounts and install PrivacyFence to start "
             "automatically at login. It takes about 2 minutes.",
             fg=SUBTEXT,
         ).pack(anchor="w")
@@ -478,7 +478,7 @@ class SetupWizard:
         status_text = f"✓  Found at {_client_secret_path().name}" if exists else "No file imported yet"
 
         self._label(
-            "Loopline uses an OAuth client secret to connect to Google services. "
+            "PrivacyFence uses an OAuth client secret to connect to Google services. "
             "You need to download this once from Google Cloud Console.",
             fg=SUBTEXT,
         ).pack(anchor="w", pady=(0, 16))
@@ -964,7 +964,7 @@ class SetupWizard:
     def _page_launch_agent(self) -> None:
         self._header.config(text="Start at Login")
         self._label(
-            "Install Loopline as a Login Item so it starts automatically when "
+            "Install PrivacyFence as a Login Item so it starts automatically when "
             "you log in. This writes a LaunchAgent plist to ~/Library/LaunchAgents/.",
             fg=SUBTEXT,
         ).pack(anchor="w", pady=(0, 16))
@@ -1006,7 +1006,7 @@ class SetupWizard:
         self._next_btn.config(text="Finish")
 
         self._label(
-            "Loopline is ready. Add it to Claude's MCP configuration by copying "
+            "PrivacyFence is ready. Add it to Claude's MCP configuration by copying "
             "the snippet below into your claude_desktop_config.json.",
             fg=TEXT, size=13,
         ).pack(anchor="w", pady=(0, 12))
@@ -1042,13 +1042,13 @@ class SetupWizard:
             fg=TEXT, size=13, bold=True,
         ).pack(anchor="w", pady=(20, 4))
         self._label(
-            "To skip permission prompts for all Loopline tools, add this to "
+            "To skip permission prompts for all PrivacyFence tools, add this to "
             "~/.claude/settings.json:",
             fg=TEXT, size=13,
         ).pack(anchor="w", pady=(0, 8))
 
         perm_snippet = json.dumps(
-            {"permissions": {"allow": ["mcp__loopline__*"]}}, indent=2
+            {"permissions": {"allow": ["mcp__privacyfence__*"]}}, indent=2
         )
         perm_box = tk.Text(self._body, bg=SURFACE, fg=TEXT,
                            font=("Courier", 11), relief="flat",

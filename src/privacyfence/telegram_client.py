@@ -75,7 +75,7 @@ class TelegramMessage:
         }
 
 
-class TelegramLooplineClient:
+class TelegramPrivacyFenceClient:
     """Thin async wrapper around the Telethon TelegramClient.
 
     A single instance is kept alive in the connector.  Call
@@ -125,7 +125,7 @@ class TelegramLooplineClient:
             await client.disconnect()
             raise TelegramClientError(
                 "Telegram session is not authorized. "
-                f"Run 'loopline-app --telegram-setup' to authorize interactively. "
+                f"Run 'privacyfence-app --telegram-setup' to authorize interactively. "
                 f"Session file: {self._session_file}"
             )
 

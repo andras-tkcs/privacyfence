@@ -1,7 +1,7 @@
-"""Centralized path resolution for Loopline.
+"""Centralized path resolution for PrivacyFence.
 
 In development (no PyInstaller bundle): data lives in the project root.
-In a bundled .app: data lives in ~/.loopline/ so it survives app updates.
+In a bundled .app: data lives in ~/.privacyfence/ so it survives app updates.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ def is_bundled() -> bool:
 def data_dir() -> Path:
     """Root directory for user data (config, credentials, logs)."""
     if is_bundled():
-        d = Path.home() / ".loopline"
+        d = Path.home() / ".privacyfence"
     else:
         d = Path(__file__).parent.parent.parent
     d.mkdir(parents=True, exist_ok=True)
@@ -31,7 +31,7 @@ def bundle_macos_dir() -> Path | None:
 
 
 def app_bundle_path() -> Path | None:
-    """Path to Loopline.app itself, or None in dev."""
+    """Path to PrivacyFence.app itself, or None in dev."""
     if is_bundled():
         return Path(sys.executable).parent.parent.parent
     return None

@@ -1,6 +1,6 @@
 # Telegram Setup
 
-Loopline uses **Telethon** (the MTProto user client) to access Telegram. This means Claude sees exactly what you see — every chat, group, and channel you are a member of — as your personal account, not a bot.
+PrivacyFence uses **Telethon** (the MTProto user client) to access Telegram. This means Claude sees exactly what you see — every chat, group, and channel you are a member of — as your personal account, not a bot.
 
 ---
 
@@ -9,8 +9,8 @@ Loopline uses **Telethon** (the MTProto user client) to access Telegram. This me
 1. Go to [https://my.telegram.org/apps](https://my.telegram.org/apps) and sign in with your Telegram phone number.
 2. Click **Create new application**.
 3. Fill in the required fields:
-   - **App title:** `Loopline` (or any name you prefer)
-   - **Short name:** `loopline` (lowercase, no spaces)
+   - **App title:** `PrivacyFence` (or any name you prefer)
+   - **Short name:** `privacyfence` (lowercase, no spaces)
    - **Platform:** Desktop
    - **Description:** optional
 4. Click **Create application**.
@@ -20,9 +20,9 @@ Loopline uses **Telethon** (the MTProto user client) to access Telegram. This me
 
 ---
 
-## 2. Enter the credentials in Loopline
+## 2. Enter the credentials in PrivacyFence
 
-Launch **Loopline.app**. If the setup wizard is not open, click **Setup Wizard** in the floating window.
+Launch **PrivacyFence.app**. If the setup wizard is not open, click **Setup Wizard** in the floating window.
 
 1. Navigate to the **Telegram** step.
 2. Enter your **API ID** and **API Hash**.
@@ -30,7 +30,7 @@ Launch **Loopline.app**. If the setup wizard is not open, click **Setup Wizard**
 4. Enter your phone number (with country code, e.g. `+1 555 000 0000`).
 5. Telegram sends a confirmation code to your Telegram app (or by SMS). Enter it when prompted.
 6. If your account has two-step verification enabled, enter your password as well.
-7. Once authorized, Loopline saves a session file to `credentials/telegram.session` and does not need the code again.
+7. Once authorized, PrivacyFence saves a session file to `credentials/telegram.session` and does not need the code again.
 
 To configure manually, add the following to `config/settings.yaml`:
 
@@ -44,7 +44,7 @@ telegram:
 Then run the interactive authorization flow from source:
 
 ```bash
-loopline-app --telegram-setup
+privacyfence-app --telegram-setup
 ```
 
 ---
@@ -52,7 +52,7 @@ loopline-app --telegram-setup
 ## Troubleshooting
 
 **"Session is not authorized" on startup**  
-The session file is missing or expired. Re-run the authorization step in the setup wizard (or `loopline-app --telegram-setup` from source).
+The session file is missing or expired. Re-run the authorization step in the setup wizard (or `privacyfence-app --telegram-setup` from source).
 
 **"Two-step verification required"**  
 Enter your Telegram cloud password when prompted during the authorization flow.

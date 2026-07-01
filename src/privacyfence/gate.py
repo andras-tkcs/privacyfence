@@ -82,7 +82,7 @@ async def gated_call(
         return filtered_data
 
     details = details_text or _default_details(raw_data)
-    popup_title = f"Loopline — {tool_name}"
+    popup_title = f"PrivacyFence — {tool_name}"
 
     if gate == "review":
         suggestion = suggest_rule(operation_key, ctx)
