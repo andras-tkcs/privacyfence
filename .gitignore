@@ -35,6 +35,7 @@ logs/
 # macOS
 .DS_Store
 *.dmg
+*.mcpb
 
 # IDE
 .idea/

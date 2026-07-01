@@ -5,8 +5,11 @@
 # Produces:
 #   dist/PrivacyFence.app/
 #     Contents/MacOS/PrivacyFence          ← daemon (main app, opens menu bar)
-#     Contents/MacOS/privacyfence-bridge   ← bridge (Claude's MCP entry point)
 #     Contents/MacOS/privacyfence-app      ← symlink → PrivacyFence (for daemon auto-start)
+#
+# The bridge (Claude's MCP entry point) is built separately — see
+# PrivacyFenceBridge.spec and scripts/build_mcpb.sh — and distributed as a
+# one-click Claude Desktop extension (.mcpb) instead of living inside this app.
 #
 # Build:
 #   pip install pyinstaller
@@ -116,49 +119,12 @@ daemon_exe = EXE(
     icon=ICON,
 )
 
-# ── bridge (helper binary, run by Claude as an MCP server) ───────────────────
-
-bridge_a = Analysis(
-    ["src/_bridge_entry.py"],
-    pathex=[SRC],
-    binaries=[],
-    datas=datas,
-    hiddenimports=hidden_imports,
-    hookspath=[],
-    hooksconfig={},
-    runtime_hooks=[],
-    excludes=[],
-    noarchive=False,
-)
-
-bridge_pyz = PYZ(bridge_a.pure)
-
-bridge_exe = EXE(
-    bridge_pyz,
-    bridge_a.scripts,
-    [],
-    exclude_binaries=True,
-    name="privacyfence-bridge",
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=True,
-    console=True,       # bridge speaks MCP over stdio — must be a console app
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-)
-
-# ── bundle both into one .app ─────────────────────────────────────────────────
+# ── bundle into .app ──────────────────────────────────────────────────────────
 
 coll = COLLECT(
     daemon_exe,
     daemon_a.binaries,
     daemon_a.datas,
-    bridge_exe,
-    bridge_a.binaries,
-    bridge_a.datas,
     strip=False,
     upx=True,
     upx_exclude=[],

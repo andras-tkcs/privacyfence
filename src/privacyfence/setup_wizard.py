@@ -81,10 +81,9 @@ def _sentinel_path() -> Path:
 
 
 def _bridge_path() -> str:
-    bundle = app_bundle_path()
-    if bundle:
-        return str(bundle / "Contents" / "MacOS" / "privacyfence-bridge")
-    # Dev fallback
+    # The bridge ships separately from the app bundle (PrivacyFence.mcpb) — it
+    # is installed by Claude Desktop's extension system, not by this app. This
+    # only resolves a path for the manual/dev config snippet on the Done page.
     return shutil.which("privacyfence-bridge") or "privacyfence-bridge"
 
 
@@ -1006,10 +1005,17 @@ class SetupWizard:
         self._next_btn.config(text="Finish")
 
         self._label(
-            "PrivacyFence is ready. Add it to Claude's MCP configuration by copying "
-            "the snippet below into your claude_desktop_config.json.",
+            "PrivacyFence is ready. Recommended: install PrivacyFence.mcpb from the "
+            "releases page in Claude Desktop (Settings → Extensions → Install "
+            "Extension…) — one click, no config editing.",
             fg=TEXT, size=13,
         ).pack(anchor="w", pady=(0, 12))
+
+        self._label(
+            "Advanced / manual setup: paste this into claude_desktop_config.json "
+            "instead (requires privacyfence-bridge on your PATH):",
+            fg=SUBTEXT, size=12,
+        ).pack(anchor="w", pady=(0, 8))
 
         snippet = _mcp_snippet()
         box = tk.Text(self._body, bg=SURFACE, fg=TEXT,

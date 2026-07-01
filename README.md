@@ -342,6 +342,35 @@ privacyfence-app
 
 ## Connecting Claude
 
+The daemon and the bridge are built and shipped separately:
+
+- **PrivacyFence.app** (built by `scripts/build_dmg.sh`) — the daemon: owns credentials,
+  connectors, the review gate, the audit log, and the LaunchAgent. Install this first via the DMG.
+- **PrivacyFence.mcpb** (built by `scripts/build_mcpb.sh`) — just the bridge: a small MCP server
+  that talks to the daemon over a Unix socket. Install this into Claude.
+
+### Option A: one-click extension (Claude Desktop)
+
+Download `PrivacyFence-<version>.mcpb` from the release, then in Claude Desktop go to
+**Settings → Extensions → Install Extension…** and pick the file (or just double-click it).
+This registers the MCP server for you — no `claude_desktop_config.json` editing.
+
+The daemon (PrivacyFence.app) must already be installed and configured first (see below) —
+the extension only contains `privacyfence-bridge`, built from its own minimal dependency set
+(no google-auth, slack_sdk, telethon, atlassian-python-api, rumps, or tkinter — that's why it's
+~30MB instead of the daemon's ~185MB).
+
+To build it yourself:
+
+```bash
+pip install pyinstaller
+bash scripts/build_mcpb.sh
+```
+
+The script produces `dist/PrivacyFence-<version>.mcpb`.
+
+### Option B: manual MCP config (Claude Desktop, Claude Code, or other MCP clients)
+
 Add the bridge to Claude's MCP config (`~/.claude/claude_desktop_config.json` or equivalent):
 
 ```json
@@ -355,6 +384,12 @@ Add the bridge to Claude's MCP config (`~/.claude/claude_desktop_config.json` or
 ```
 
 If running from source, replace `privacyfence-bridge` with the full path to `.venv/bin/privacyfence-bridge`.
+
+For Claude Code, you can skip editing JSON by running:
+
+```bash
+claude mcp add privacyfence privacyfence-bridge
+```
 
 ---
 

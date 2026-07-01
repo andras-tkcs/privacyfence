@@ -66,17 +66,13 @@ def _setup_logging() -> None:
 # ---------------------------------------------------------------------------- #
 
 def _find_daemon_cmd() -> list[str]:
-    """Return the command to launch privacyfence-app."""
-    # When running as a PyInstaller bundle, the daemon is a sibling binary.
-    # The main exe is named "PrivacyFence" (the .app name); "privacyfence-app" is a
-    # symlink to it created by build_dmg.sh for convenience.
-    if getattr(sys, "frozen", False):
-        bundle_macos = Path(sys.executable).parent
-        for name in ("privacyfence-app", "PrivacyFence"):
-            candidate = bundle_macos / name
-            if candidate.exists():
-                return [str(candidate)]
+    """Return the command to launch privacyfence-app.
 
+    The bridge is built and distributed separately from the daemon (see
+    PrivacyFenceBridge.spec) — it is never a sibling of privacyfence-app on
+    disk — so this normally only matters as a fallback: the daemon should
+    already be running via its LaunchAgent by the time Claude spawns us.
+    """
     here = Path(sys.argv[0]).resolve().parent
     candidate = here / "privacyfence-app"
     if candidate.exists():
@@ -84,6 +80,9 @@ def _find_daemon_cmd() -> list[str]:
     found = shutil.which("privacyfence-app")
     if found:
         return [found]
+    default_app = Path("/Applications/PrivacyFence.app/Contents/MacOS/privacyfence-app")
+    if default_app.exists():
+        return [str(default_app)]
     # Development fallback: run as a module.
     return [sys.executable, "-m", "privacyfence.daemon_main"]
 

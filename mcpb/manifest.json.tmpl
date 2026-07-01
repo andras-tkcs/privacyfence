@@ -1,0 +1,20 @@
+{
+  "manifest_version": "0.3",
+  "name": "privacyfence",
+  "version": "__VERSION__",
+  "description": "Privacy proxy between Claude and your personal data (Gmail, Drive, Slack, Calendar, Tasks, Contacts). Every read/write passes through an approval gate and an audit log before Claude sees or changes anything.",
+  "long_description": "PrivacyFence connects Claude to your Gmail, Google Drive, Slack, Calendar, Tasks, and Contacts through a local daemon that owns all credentials and enforces per-tool auto-accept/review/popup gates, with every request written to an audit log.\n\nRequires the PrivacyFence.app daemon to already be installed and configured (download the DMG and run the OAuth setup for each connector you want) — this extension only registers the bridge that lets Claude talk to it. See https://github.com/andrastakacs/privacyfence for setup instructions.",
+  "author": {
+    "name": "Andras Takacs",
+    "email": "at+github@felhasznalo.name"
+  },
+  "icon": "icon.png",
+  "server": {
+    "type": "binary",
+    "entry_point": "server/privacyfence-bridge",
+    "mcp_config": {
+      "command": "${__dirname}/server/privacyfence-bridge",
+      "args": []
+    }
+  }
+}
