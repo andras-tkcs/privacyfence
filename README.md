@@ -285,18 +285,28 @@ The DMG carries both halves of PrivacyFence — the daemon and the Claude extens
 the only download you need:
 
 1. Download the latest `PrivacyFence-<version>.dmg` from the [Releases](../../releases) page.
-2. Open the DMG, drag **PrivacyFenceApp.app** to `/Applications`, and launch it. The menu bar icon
-   appears immediately — there's no setup wizard to walk through.
-3. To start PrivacyFence automatically at login, install the LaunchAgent once:
+2. Open the DMG, drag **PrivacyFenceApp.app** to `/Applications`.
+3. **Releases aren't notarized yet**, so Gatekeeper will refuse the first launch with *"PrivacyFenceApp
+   is damaged and can't be opened. You should move it to the Trash."* — this is not actual corruption,
+   just macOS blocking an unsigned app downloaded from the internet. To launch it anyway, either:
+   - Right-click (or Control-click) **PrivacyFenceApp.app** in `/Applications` → **Open** → **Open**
+     again in the dialog (only needed the first time), or
+   - Run in Terminal:
+     ```bash
+     xattr -cr /Applications/PrivacyFenceApp.app
+     ```
+   Then launch it normally — the menu bar icon appears immediately, there's no setup wizard to walk
+   through.
+4. To start PrivacyFence automatically at login, install the LaunchAgent once:
    ```bash
    cp com.privacyfence.app.plist ~/Library/LaunchAgents/
    launchctl load ~/Library/LaunchAgents/com.privacyfence.app.plist
    ```
-4. From the menu bar: **Organization Config → Install/Update Organization Config…**, and select
+5. From the menu bar: **Organization Config → Install/Update Organization Config…**, and select
    the bundle your IT team sent you.
-5. **Connectors → \<service\> → Authenticate…** for each connector you want, then quit and reopen
+6. **Connectors → \<service\> → Authenticate…** for each connector you want, then quit and reopen
    PrivacyFence to activate them.
-6. Still in the mounted DMG, double-click **PrivacyFence.mcpb** — Claude Desktop installs the
+7. Still in the mounted DMG, double-click **PrivacyFence.mcpb** — Claude Desktop installs the
    MCP server for you (Settings → Extensions → Install Extension… happens automatically).
 
 ### From source
