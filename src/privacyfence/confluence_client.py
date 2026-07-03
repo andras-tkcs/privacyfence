@@ -8,7 +8,7 @@ Atlassian OAuth grant covers both products).
 Required config keys:
   access_token – OAuth bearer token from atlassian_oauth.authorize_interactive
   cloud_id     – the Atlassian site's cloud id, used to build the
-                 api.atlassian.com/ex/confluence/{cloud_id} proxy URL
+                 api.atlassian.com/ex/confluence/{cloud_id}/wiki proxy URL
   site_url     – the human-facing site URL (for page links), optional
 """
 
@@ -86,7 +86,10 @@ class ConfluenceClient:
                 "Confluence is not authenticated. Use Authenticate… in the PrivacyFence menu bar."
             )
 
-        api_url = f"https://api.atlassian.com/ex/confluence/{cloud_id}"
+        # Confluence Cloud's REST API lives under /wiki (unlike Jira's), and the
+        # atlassian-python-api library only auto-appends it for atlassian.net /
+        # jira.com URLs — not for this api.atlassian.com OAuth proxy URL.
+        api_url = f"https://api.atlassian.com/ex/confluence/{cloud_id}/wiki"
         self._base_url = site_url or api_url
         session = requests.Session()
         session.headers["Authorization"] = f"Bearer {access_token}"

@@ -22,8 +22,9 @@ The OAuth app is organization-level config: **one IT admin creates it once**, pa
 2. Next to **OAuth 2.0 (3LO)**, click **Add**/**Configure**.
 3. Set the **Callback URL** to:
    ```
-   http://localhost:53684/callback
+   http://127.0.0.1:53684/callback
    ```
+   Atlassian requires an exact string match — `localhost` will not match PrivacyFence's actual redirect URI even though it resolves to the same address.
 
 ### 3. Add permissions (scopes)
 
@@ -61,8 +62,11 @@ Distribute the resulting `org_config.json` to your users.
 
 ## Troubleshooting
 
+**"The app's callback URL is invalid" during sign-in** (IT admin)
+The Callback URL in the Atlassian app must be exactly `http://127.0.0.1:53684/callback` — not `http://localhost:53684/callback`. Atlassian matches the redirect URI as a literal string, and PrivacyFence's loopback server always sends `127.0.0.1`.
+
 **"401 Unauthorized" right after authenticating** (IT admin)
-Double-check the **Callback URL** is exactly `http://localhost:53684/callback`, and that both the Jira API and Confluence API scopes were added under **Permissions**.
+Double-check the **Callback URL** is exactly `http://127.0.0.1:53684/callback`, and that both the Jira API and Confluence API scopes were added under **Permissions**.
 
 **"403 Forbidden" on specific projects or spaces**
 Your Atlassian account does not have access to that project or space. Check your Jira/Confluence permissions in the Atlassian admin console.
