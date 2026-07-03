@@ -288,10 +288,12 @@ the only download you need:
 2. Open the DMG, drag **PrivacyFenceApp.app** to `/Applications`.
 3. **Releases aren't notarized yet**, so Gatekeeper will refuse the first launch with *"PrivacyFenceApp
    is damaged and can't be opened. You should move it to the Trash."* — this is not actual corruption,
-   just macOS blocking an unsigned app downloaded from the internet. To launch it anyway, either:
-   - Right-click (or Control-click) **PrivacyFenceApp.app** in `/Applications` → **Open** → **Open**
-     again in the dialog (only needed the first time), or
-   - Run in Terminal:
+   just macOS blocking an unsigned app downloaded from the internet. On current macOS (especially
+   Apple Silicon), right-click → Open does **not** bypass this for unsigned apps, so clear the
+   quarantine flag instead:
+   - Double-click **Fix Launch Issue.command**, still in the mounted DMG (Terminal will pop up
+     briefly and close itself), or
+   - Run in Terminal yourself:
      ```bash
      xattr -cr /Applications/PrivacyFenceApp.app
      ```
