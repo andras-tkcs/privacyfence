@@ -127,20 +127,6 @@ _GOOGLE_CLIENTS: dict[str, type] = {
     "tasks": TasksClient,
 }
 
-# docs/ file (on GitHub) explaining how to set up each connector
-CONNECTOR_HELP_DOCS: dict[str, str] = {
-    "gmail":      "google-cloud-setup.md",
-    "drive":      "google-cloud-setup.md",
-    "contacts":   "google-cloud-setup.md",
-    "calendar":   "google-cloud-setup.md",
-    "tasks":      "google-cloud-setup.md",
-    "slack":      "slack-setup.md",
-    "jira":       "atlassian-setup.md",
-    "confluence": "atlassian-setup.md",
-    "salesforce": "salesforce-setup.md",
-    "telegram":   "telegram-setup.md",
-}
-
 RULE_HINTS: dict[str, str] = {
     "trusted_sender_domain": "domain1.com\ndomain2.com",
     "label_match":           "INBOX\nUNREAD",
@@ -312,10 +298,6 @@ class PrivacyFenceMenuBar(rumps.App):
                 authenticate = rumps.MenuItem(auth_label)
                 authenticate.set_callback(_bind(self._authenticate, cname))
                 conn_item.add(authenticate)
-
-            help_item = rumps.MenuItem("  Help…")
-            help_item.set_callback(_bind(self._open_help, cname))
-            conn_item.add(help_item)
 
             connectors_parent.add(conn_item)
         return connectors_parent
@@ -779,13 +761,6 @@ class PrivacyFenceMenuBar(rumps.App):
                 self._rebuild()
 
         self._run_async(flow, done)
-
-    def _open_help(self, cname: str, _sender: Any = None) -> None:
-        doc = CONNECTOR_HELP_DOCS.get(cname)
-        if not doc:
-            return
-        url = f"{REPO_URL}/blob/main/docs/{doc}"
-        subprocess.run(["open", url], check=False)
 
     # ------------------------------------------------------------------ #
     # Misc actions
