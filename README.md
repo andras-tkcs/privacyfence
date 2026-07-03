@@ -95,7 +95,7 @@ Claude already describes the action it is about to take in the chat. When the ga
 
 ### Slack
 
-**Auth:** User token (`xoxp-`). Sees exactly what you see — no bot to invite. See [docs/slack-setup.md](docs/slack-setup.md) for required scopes.
+**Auth:** OAuth2 (browser sign-in), user token scope. Sees exactly what you see — no bot to invite. See [docs/slack-setup.md](docs/slack-setup.md).
 
 | Tool | Dir | Gate | Cowork preview | Details popup |
 |------|-----|------|----------------|---------------|
@@ -143,7 +143,7 @@ Claude already describes the action it is about to take in the chat. When the ga
 
 ### Salesforce
 
-**Auth:** Username + password + security token, or an OAuth access token.
+**Auth:** OAuth2 (browser sign-in via a Connected App). See [docs/salesforce-setup.md](docs/salesforce-setup.md).
 
 | Tool | Dir | Gate | Cowork preview | Details popup |
 |------|-----|------|----------------|---------------|
@@ -153,7 +153,7 @@ Claude already describes the action it is about to take in the chat. When the ga
 
 ### Jira
 
-**Auth:** Atlassian API token.
+**Auth:** OAuth2 (browser sign-in, Atlassian 3LO). Shared with Confluence — one sign-in covers both. See [docs/atlassian-setup.md](docs/atlassian-setup.md).
 
 | Tool | Dir | Gate | Cowork preview | Details popup |
 |------|-----|------|----------------|---------------|
@@ -166,7 +166,7 @@ Claude already describes the action it is about to take in the chat. When the ga
 
 ### Confluence
 
-**Auth:** Atlassian API token (shared with Jira).
+**Auth:** OAuth2 (browser sign-in, Atlassian 3LO), shared with Jira — one sign-in covers both.
 
 | Tool | Dir | Gate | Cowork preview | Details popup |
 |------|-----|------|----------------|---------------|
@@ -277,31 +277,37 @@ Every decision — accepted, denied, or auto-accepted — is appended to a JSON-
 
 ## Installation
 
-> **Google Cloud setup required for Google connectors (Gmail, Drive, Calendar, Contacts).**  
-> See [docs/google-cloud-setup.md](docs/google-cloud-setup.md) for step-by-step instructions on creating a project, enabling APIs, and generating the `client_secret.json` file needed below.
+PrivacyFence splits configuration into two steps done by two different people:
 
-> **Slack uses a user token** (`xoxp-`) so Claude sees exactly what you see, with no bot to invite.  
-> See [docs/slack-setup.md](docs/slack-setup.md) for step-by-step instructions on creating a Slack app and obtaining the token.
+1. **IT admin, once per organization:** register a cloud app for each service you want (Google,
+   Slack, Salesforce, Atlassian, Telegram) and package the result into one organization config
+   bundle with `scripts/build_org_bundle.py`. See the "For IT admins" section of each doc below.
+2. **Every user, from the PrivacyFence menu bar:** install the bundle IT sent you, then click
+   **Authenticate…** on each connector you want. Almost everywhere this opens your browser to sign
+   in — Telegram is the only connector that instead asks for your phone number and a verification
+   code, since MTProto has no browser-OAuth equivalent.
 
-> **Telegram uses a personal API application** (Telethon / MTProto) — Claude reads your chats as you, not as a bot.  
-> See [docs/telegram-setup.md](docs/telegram-setup.md) for step-by-step instructions on creating a Telegram app and authorizing your account.
-
-> **Salesforce** connects via username + password + security token, or an OAuth access token.  
-> See [docs/salesforce-setup.md](docs/salesforce-setup.md) for step-by-step instructions.
-
-> **Atlassian (Jira & Confluence)** use a single API token tied to your Atlassian account — one token covers both products.  
-> See [docs/atlassian-setup.md](docs/atlassian-setup.md) for step-by-step instructions.
+> See [docs/google-cloud-setup.md](docs/google-cloud-setup.md), [docs/slack-setup.md](docs/slack-setup.md), [docs/salesforce-setup.md](docs/salesforce-setup.md), [docs/atlassian-setup.md](docs/atlassian-setup.md), and [docs/telegram-setup.md](docs/telegram-setup.md) for the full walkthroughs.
 
 ### From the DMG (recommended)
 
-1. Download the latest `PrivacyFence.dmg` from the [Releases](../../releases) page.
-2. Open the DMG, drag **PrivacyFence.app** to `/Applications`.
-3. Launch **PrivacyFence.app** — the setup wizard opens automatically on first run and walks you through:
-   - Importing your Google OAuth `client_secret.json`
-   - Authorizing Gmail, Drive, Calendar, and Contacts
-   - Entering your Slack user token (optional; see [docs/slack-setup.md](docs/slack-setup.md))
-   - Installing the LaunchAgent so PrivacyFence starts at login
-   - Copying the MCP config snippet for Claude
+The DMG carries both halves of PrivacyFence — the daemon and the Claude extension — so this is
+the only download you need:
+
+1. Download the latest `PrivacyFence-<version>.dmg` from the [Releases](../../releases) page.
+2. Open the DMG, drag **PrivacyFenceApp.app** to `/Applications`, and launch it. The menu bar icon
+   appears immediately — there's no setup wizard to walk through.
+3. To start PrivacyFence automatically at login, install the LaunchAgent once:
+   ```bash
+   cp com.privacyfence.app.plist ~/Library/LaunchAgents/
+   launchctl load ~/Library/LaunchAgents/com.privacyfence.app.plist
+   ```
+4. From the menu bar: **Organization Config → Install/Update Organization Config…**, and select
+   the bundle your IT team sent you.
+5. **Connectors → \<service\> → Authenticate…** for each connector you want, then quit and reopen
+   PrivacyFence to activate them.
+6. Still in the mounted DMG, double-click **PrivacyFence.mcpb** — Claude Desktop installs the
+   MCP server for you (Settings → Extensions → Install Extension… happens automatically).
 
 ### From source
 
@@ -314,22 +320,28 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
-Copy and edit the config:
+Copy the config (privacy policy / auto-accept rules — no secrets live here):
 
 ```bash
 cp src/privacyfence/resources/settings.yaml.example config/settings.yaml
-# Edit config/settings.yaml with your credentials
 ```
 
-Authorize each Google service (first-time setup):
+Build (or obtain from IT) an organization config bundle, then authorize each connector you want —
+either from the menu bar once `privacyfence-app` is running, or headlessly from the CLI:
 
 ```bash
+python3 scripts/build_org_bundle.py --google-client-secret /path/to/client_secret.json -o org_config.json
+mkdir -p ~/.privacyfence/org && cp org_config.json ~/.privacyfence/org/
+
 privacyfence-app --gmail-oauth
 privacyfence-app --drive-oauth
 privacyfence-app --calendar-oauth
 privacyfence-app --contacts-oauth
 privacyfence-app --tasks-oauth
-privacyfence-app --telegram-setup   # optional
+privacyfence-app --slack-oauth        # if the bundle has a Slack app
+privacyfence-app --salesforce-oauth   # if the bundle has a Salesforce Connected App
+privacyfence-app --atlassian-oauth    # if the bundle has an Atlassian OAuth app
+privacyfence-app --telegram-setup     # if the bundle has a Telegram app
 ```
 
 Start the daemon:
@@ -344,30 +356,33 @@ privacyfence-app
 
 The daemon and the bridge are built and shipped separately:
 
-- **PrivacyFence.app** (built by `scripts/build_dmg.sh`) — the daemon: owns credentials,
+- **PrivacyFenceApp.app** (built by `scripts/build_dmg.sh`) — the daemon: owns credentials,
   connectors, the review gate, the audit log, and the LaunchAgent. Install this first via the DMG.
-- **PrivacyFence.mcpb** (built by `scripts/build_mcpb.sh`) — just the bridge: a small MCP server
-  that talks to the daemon over a Unix socket. Install this into Claude.
+- **PrivacyFence.mcpb** (built by `scripts/build_mcpb.sh`, from `PrivacyFenceBridge.spec`) — just
+  the bridge: a small MCP server that talks to the daemon over a Unix socket. Install this into Claude.
 
 ### Option A: one-click extension (Claude Desktop)
 
-Download `PrivacyFence-<version>.mcpb` from the release, then in Claude Desktop go to
-**Settings → Extensions → Install Extension…** and pick the file (or just double-click it).
-This registers the MCP server for you — no `claude_desktop_config.json` editing.
+`PrivacyFence.mcpb` ships inside the DMG alongside `PrivacyFenceApp.app` (see above) — just
+double-click it and Claude Desktop installs the MCP server for you, no
+`claude_desktop_config.json` editing.
 
-The daemon (PrivacyFence.app) must already be installed and configured first (see below) —
-the extension only contains `privacyfence-bridge`, built from its own minimal dependency set
-(no google-auth, slack_sdk, telethon, atlassian-python-api, rumps, or tkinter — that's why it's
-~30MB instead of the daemon's ~185MB).
+The daemon (PrivacyFenceApp.app) must already be installed and configured first — the extension
+only contains `privacyfence-bridge`, built from its own minimal dependency set (no google-auth,
+slack_sdk, telethon, atlassian-python-api, rumps, or tkinter — that's why it's ~30MB instead of
+the daemon's ~185MB).
 
-To build it yourself:
+To build both artifacts yourself:
 
 ```bash
 pip install pyinstaller
-bash scripts/build_mcpb.sh
+brew install create-dmg
+bash scripts/build_dmg.sh
 ```
 
-The script produces `dist/PrivacyFence-<version>.mcpb`.
+This runs `scripts/build_mcpb.sh` as part of assembling the DMG. To build just the extension
+on its own (e.g. for a quick local test without a full DMG), run `bash scripts/build_mcpb.sh`
+directly — it produces `dist/PrivacyFence-<version>.mcpb`.
 
 ### Option B: manual MCP config (Claude Desktop, Claude Code, or other MCP clients)
 
@@ -400,7 +415,7 @@ pip install pyinstaller
 bash scripts/build_dmg.sh
 ```
 
-The script produces `dist/PrivacyFence.dmg`.
+The script produces `dist/PrivacyFence-<version>.dmg` (containing `PrivacyFenceApp.app`).
 
 ---
 

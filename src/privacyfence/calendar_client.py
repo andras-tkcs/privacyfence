@@ -108,8 +108,8 @@ def _has_timezone(iso_str: str) -> bool:
 class CalendarClient:
     """Google Calendar client with OAuth2 token caching."""
 
-    def __init__(self, credentials_file: str, token_file: str) -> None:
-        self._credentials_file = credentials_file
+    def __init__(self, client_config: dict, token_file: str) -> None:
+        self._client_config = client_config
         self._token_file = token_file
         self._service = None  # lazily built
 
@@ -118,15 +118,18 @@ class CalendarClient:
     # ------------------------------------------------------------------ #
 
     def authorize_interactive(self) -> None:
-        """Run the interactive OAuth flow and persist the token."""
-        if not os.path.exists(self._credentials_file):
+        """Run the interactive OAuth flow and persist the token.
+
+        ``client_config`` comes from the organization config bundle (installed
+        via the menu bar), not a file on disk.
+        """
+        if not self._client_config:
             raise CalendarClientError(
-                f"OAuth client secret not found at '{self._credentials_file}'. "
-                "Download it from the Google Cloud Console (OAuth client of type "
-                "'Desktop app') and place it there."
+                "No Google organization config installed. Install/Update "
+                "Organization Config from the PrivacyFence menu bar first."
             )
         logger.info("Starting Calendar interactive OAuth flow")
-        flow = InstalledAppFlow.from_client_secrets_file(self._credentials_file, SCOPES)
+        flow = InstalledAppFlow.from_client_config(self._client_config, SCOPES)
         creds = flow.run_local_server(port=0)
         self._save_token(creds)
         logger.info("Calendar OAuth token saved to '%s'", self._token_file)

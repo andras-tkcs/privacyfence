@@ -1,19 +1,21 @@
 # Google Cloud Console Setup
 
-This guide walks through creating a Google Cloud project, configuring OAuth, and enabling the APIs that PrivacyFence requires.
+This guide walks through creating a Google Cloud project, configuring OAuth, and enabling the APIs that PrivacyFence's Gmail, Drive, Calendar, Contacts, and Tasks connectors require.
+
+Google is organization-level config: **one IT admin does this once**, packages the result into PrivacyFence's organization config bundle, and distributes it. Individual users never touch the Google Cloud Console — they just click **Authenticate…** in the menu bar and sign in with their browser.
 
 ---
 
-## 1. Create a new project
+## For IT admins (once per organization)
 
-1. Go to [https://console.cloud.google.com/](https://console.cloud.google.com/) and sign in with the Google account you want PrivacyFence to access.
+### 1. Create a new project
+
+1. Go to [https://console.cloud.google.com/](https://console.cloud.google.com/) and sign in.
 2. Click the project selector at the top of the page → **New Project**.
 3. Give it a name (e.g. `privacyfence`) and click **Create**.
 4. Make sure the new project is selected in the project selector before continuing.
 
----
-
-## 2. Enable required APIs
+### 2. Enable required APIs
 
 Open **APIs & Services → Library** and enable each of the following APIs one by one. Use the search box to find them.
 
@@ -26,76 +28,65 @@ Open **APIs & Services → Library** and enable each of the following APIs one b
 | Google Calendar API | `Google Calendar API` | Calendar connector |
 | Google Tasks API | `Tasks API` | Google Tasks connector |
 
-For each:
-1. Click the API in the search results.
-2. Click **Enable**.
+For each: click the API in the search results, then click **Enable**.
 
 > **Note:** The People API covers Google Contacts. Do not confuse it with the older Contacts API, which is deprecated.
 
----
-
-## 3. Configure the OAuth consent screen
-
-Before you can create credentials, you need to set up the OAuth consent screen. This is what users see when PrivacyFence asks for permission to access their Google account.
+### 3. Configure the OAuth consent screen
 
 1. Go to **APIs & Services → OAuth consent screen**.
-2. Choose **External** as the user type (even if you will only use it yourself) and click **Create**.
+2. Choose **Internal** if you're on Google Workspace (so only your organization's accounts can authorize), or **External** for a personal Google account. Click **Create**.
 3. Fill in the required fields:
    - **App name:** `PrivacyFence` (or any name you prefer)
    - **User support email:** your email address
    - **Developer contact information:** your email address
 4. Click **Save and Continue**.
 5. On the **Scopes** step, click **Save and Continue** — you do not need to add scopes here; they are requested at runtime.
-6. On the **Test users** step, add the Google account(s) you will authorise PrivacyFence with. Click **Add users**, enter the email address, and click **Save and Continue**.
+6. If you chose **External**, add every user who will use PrivacyFence as a **Test user** on that step (or submit the app for verification if you have many users — see Google's docs on OAuth verification).
 7. Review the summary and click **Back to Dashboard**.
 
-> **Why test users?** While the app is in *Testing* mode (the default for new projects), only explicitly listed test users can complete the OAuth flow. You do not need to submit the app for verification to use it yourself.
-
----
-
-## 4. Create OAuth 2.0 credentials
+### 4. Create OAuth 2.0 credentials
 
 1. Go to **APIs & Services → Credentials**.
 2. Click **+ Create Credentials → OAuth client ID**.
 3. Set **Application type** to **Desktop app**.
 4. Give it a name (e.g. `PrivacyFence Desktop`) and click **Create**.
-5. In the confirmation dialog, click **Download JSON**.
-6. Save the downloaded file as `client_secret.json`.
+5. In the confirmation dialog, click **Download JSON**. This is your `client_secret.json` — keep it private, treat it like a password.
 
-This file is what PrivacyFence's setup wizard asks for. Keep it private — treat it like a password.
+### 5. Add it to the organization config bundle
+
+From the PrivacyFence repo (or anywhere with Python 3 installed — the script has no dependencies):
+
+```bash
+python3 scripts/build_org_bundle.py \
+  --org-name "Your Company" \
+  --google-client-secret /path/to/client_secret.json \
+  -o org_config.json
+```
+
+Run it again with `--merge` if you're adding Google to a bundle that already has other services configured. Distribute the resulting `org_config.json` to your users (email, a shared drive, MDM — whatever your organization already uses to distribute internal tools).
 
 ---
 
-## 5. Import into PrivacyFence
+## For users
 
-Launch **PrivacyFence.app**. If the setup wizard is not open, click **Setup Wizard** in the floating window.
-
-1. On the **Google OAuth** step, click **Import client_secret.json** and select the file you downloaded.
-2. Follow the prompts to authorise Gmail, Drive, Calendar, and Contacts. Each service opens a browser window; sign in and click **Allow**.
-3. PrivacyFence stores the resulting tokens in `credentials/` and does not need the `client_secret.json` file again after initial setup.
+1. Get `org_config.json` from your IT team.
+2. In the PrivacyFence menu bar: **Organization Config → Install/Update Organization Config…**, and select the file.
+3. For each Google connector you want (Gmail, Drive, Calendar, Contacts, Tasks): **Connectors → \<service\> → Authenticate…**. Your browser opens to Google's sign-in page — sign in and click **Allow**.
+4. Quit and reopen PrivacyFence to activate the connector.
 
 ---
 
 ## Troubleshooting
 
-**"Access blocked: PrivacyFence has not completed the Google verification process"**  
-The app is in Testing mode. Make sure the Google account you are signing in with is listed as a test user (step 3.6 above).
+**"Access blocked: PrivacyFence has not completed the Google verification process"** (IT admin)
+The app is in Testing mode. Make sure the Google account signing in is listed as a test user (step 3.6 above), or submit the app for Google's verification if you have many users.
 
-**"This app isn't verified"**  
-Click **Advanced → Go to PrivacyFence (unsafe)** to proceed. This warning appears for any unverified OAuth app and is expected for personal use.
+**"This app isn't verified"**
+Click **Advanced → Go to PrivacyFence (unsafe)** to proceed. This warning appears for any unverified OAuth app and is expected until the org's app is verified by Google.
 
-**"redirect_uri_mismatch"**  
-Make sure you created credentials of type **Desktop app**, not Web application. Web app credentials require a registered redirect URI that PrivacyFence does not use.
+**"redirect_uri_mismatch"** (IT admin)
+Make sure you created credentials of type **Desktop app**, not Web application — Desktop app clients accept any loopback redirect port, which is what PrivacyFence's OAuth flow uses.
 
-**Scopes not granted / 403 errors**  
-If you see permission errors when PrivacyFence tries to access a service, re-run the OAuth flow for that connector:
-
-```bash
-# From source install
-privacyfence-app --gmail-oauth
-privacyfence-app --drive-oauth
-privacyfence-app --contacts-oauth
-privacyfence-app --calendar-oauth
-```
-
-Or click **Re-authorize** next to the connector in the PrivacyFence setup wizard.
+**Scopes not granted / 403 errors** (user)
+Click **Reconnect…** next to the connector in the PrivacyFence menu bar to re-run the OAuth flow. From source, you can also run `privacyfence-app --gmail-oauth` (or `--drive-oauth` / `--contacts-oauth` / `--calendar-oauth` / `--tasks-oauth`).

@@ -1,64 +1,74 @@
 # Atlassian Setup (Jira & Confluence)
 
-PrivacyFence connects to **Jira Cloud** and **Confluence Cloud** using a single Atlassian API token. One token covers both products — you only need to set this up once.
+PrivacyFence connects to **Jira Cloud** and **Confluence Cloud** via Atlassian's OAuth 2.0 (3LO). One OAuth grant covers both products — a user authenticates once and both connectors work.
 
 > **Cloud only.** PrivacyFence supports Atlassian Cloud (`.atlassian.net` domains) only, not Jira/Confluence Data Center or Server.
 
----
-
-## 1. Find your Atlassian Cloud URL
-
-Your cloud URL is the base domain for your Atlassian organisation, e.g. `https://yourcompany.atlassian.net`. You can find it in the address bar when you open Jira or Confluence in a browser.
+The OAuth app is organization-level config: **one IT admin creates it once**, packages the client id/secret into PrivacyFence's organization config bundle, and distributes it. Individual users just click **Authenticate…** in the menu bar — no API tokens to generate or paste.
 
 ---
 
-## 2. Create an API token
+## For IT admins (once per organization)
 
-1. Go to [https://id.atlassian.com/manage/api-tokens](https://id.atlassian.com/manage/api-tokens) and sign in with your Atlassian account.
-2. Click **Create API token**.
-3. Give it a label (e.g. `PrivacyFence`) and click **Create**.
-4. Click **Copy** to copy the token. **Save it now** — it is only shown once.
+### 1. Create an OAuth 2.0 app
 
-> **This token has the same permissions as your Atlassian account.** Keep it secret and treat it like a password. You can revoke it at any time from the same page.
+1. Go to [https://developer.atlassian.com/console/myapps/](https://developer.atlassian.com/console/myapps/) and sign in.
+2. Click **Create → OAuth 2.0 integration**.
+3. Give it a name (e.g. `PrivacyFence`) and click **Create**.
 
----
+### 2. Configure authorization
 
-## 3. Enter credentials in PrivacyFence
+1. In the left sidebar, go to **Authorization**.
+2. Next to **OAuth 2.0 (3LO)**, click **Add**/**Configure**.
+3. Set the **Callback URL** to:
+   ```
+   http://localhost:53684/callback
+   ```
 
-Launch **PrivacyFence.app**. If the setup wizard is not open, click **Setup Wizard** in the floating window.
+### 3. Add permissions (scopes)
 
-1. Navigate to the **Atlassian** step.
-2. Enter your **Cloud URL** (e.g. `https://yourcompany.atlassian.net`), **Email address**, and **API Token**.
-3. Click **Next** to continue.
+In the left sidebar, go to **Permissions** and add both:
+- **Jira API** — with scopes `read:jira-work`, `write:jira-work`, `read:jira-user`
+- **Confluence API** — with scopes `read:confluence-content.all`, `write:confluence-content`, `read:confluence-space.summary`
 
-To configure manually, add the following to `config/settings.yaml`:
+Also make sure `offline_access` is granted (needed so PrivacyFence can refresh the token without asking users to sign in again) — Atlassian includes it automatically once you request the scopes above through the classic scopes picker; if you're using granular scopes, add `offline_access` explicitly under **Permissions → User identity API** or the equivalent section shown in the console.
 
-```yaml
-jira:
-  cloud_url: "https://yourcompany.atlassian.net"
-  email: "you@yourcompany.com"
-  api_token: "your-api-token"
+### 4. Get the client id and secret
 
-confluence:
-  cloud_url: "https://yourcompany.atlassian.net"
-  email: "you@yourcompany.com"
-  api_token: "your-api-token"
+In the left sidebar, go to **Settings**. Copy the **Client ID** and **Secret**.
+
+### 5. Add it to the organization config bundle
+
+```bash
+python3 scripts/build_org_bundle.py \
+  --atlassian-client-id abcdef01234567890 \
+  --atlassian-client-secret abcdef0123456789abcdef0123456789 \
+  -o org_config.json --merge
 ```
 
-Both sections use the same values. If you only want one of the two connectors, you can omit the other block.
+Distribute the resulting `org_config.json` to your users.
+
+---
+
+## For users
+
+1. Get `org_config.json` from your IT team and install it via **Organization Config → Install/Update Organization Config…** in the PrivacyFence menu bar (if you haven't already for another service).
+2. **Connectors → Jira → Authenticate…** (or **Confluence** — either one triggers the same sign-in and activates both). Your browser opens to Atlassian's consent screen — sign in and click **Accept**.
+3. If your account has access to more than one Atlassian site, PrivacyFence asks you to pick one.
+4. Quit and reopen PrivacyFence to activate the connectors.
 
 ---
 
 ## Troubleshooting
 
-**"401 Unauthorized" or "Basic auth with passwords is deprecated"**  
-Make sure you are using an **API token**, not your Atlassian account password. Passwords are no longer accepted for API access.
+**"401 Unauthorized" right after authenticating** (IT admin)
+Double-check the **Callback URL** is exactly `http://localhost:53684/callback`, and that both the Jira API and Confluence API scopes were added under **Permissions**.
 
-**"403 Forbidden" on specific projects or spaces**  
+**"403 Forbidden" on specific projects or spaces**
 Your Atlassian account does not have access to that project or space. Check your Jira/Confluence permissions in the Atlassian admin console.
 
-**"Cloud URL not found" or connection errors**  
-Verify the URL is exactly `https://yourcompany.atlassian.net` with no trailing slash. Personal accounts use `https://yourcompany.atlassian.net`; check the address bar in your browser.
+**Wrong Atlassian site connected**
+Click **Reconnect…** on Jira or Confluence in the PrivacyFence menu bar to sign in again and pick a different site.
 
-**Token revoked or expired**  
-API tokens do not expire on their own, but they can be revoked. Generate a new token at [https://id.atlassian.com/manage/api-tokens](https://id.atlassian.com/manage/api-tokens) and update `config/settings.yaml`.
+**Token expired mid-session**
+PrivacyFence refreshes the token automatically in the background. If it still fails, click **Reconnect…** in the menu bar.

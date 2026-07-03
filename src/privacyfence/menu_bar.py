@@ -1,26 +1,45 @@
 """macOS menu bar app (rumps).
 
-Main thread only. Provides:
+Main thread only, except where noted. Provides:
   - Auto-accept rule management: add / toggle / edit values per operation
-  - Connector management: enable/disable, configure, authenticate, help
-  - About panel
-  - Open Audit Log
+  - Organization config bundle install/update (the IT-admin-facing side of
+    connector setup — see the module docstring in daemon_main.py)
+  - Per-connector Authenticate…: runs each service's browser OAuth flow (or,
+    for Telegram, the phone+code(+2FA) flow) directly, no Terminal window
+  - Open Audit Log / About panel
+
+Long-running auth flows (anything that waits on a browser) run on a
+background thread; results are marshaled back to the main thread via
+``PyObjCTools.AppHelper.callAfter`` before touching any rumps/AppKit object
+(NSAlert, NSWindow, the menu itself), since AppKit is not thread-safe.
 """
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
-import shutil
+import os
 import subprocess
-import sys
+import threading
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any
 
 import rumps
 import yaml
+from PyObjCTools import AppHelper
 
 from . import __version__
 from .auto_accept import reload_rules
-from .paths import data_dir
+from .paths import data_dir, org_dir
+from .daemon_main import TOKEN_FILES, load_org_config
+from .atlassian_oauth import authorize_interactive as atlassian_authorize_interactive
+from .calendar_client import CalendarClient
+from .contacts_client import ContactsClient
+from .drive_client import DriveClient
+from .gmail_client import GmailClient
+from .salesforce_client import authorize_interactive as salesforce_authorize_interactive
+from .slack_client import authorize_interactive as slack_authorize_interactive
+from .tasks_client import TasksClient
 
 logger = logging.getLogger(__name__)
 
@@ -73,62 +92,34 @@ RULES_LIST_VALUE: set[str] = {
 # Rules that take a single integer value
 RULES_INT_VALUE: set[str] = {"age_threshold_days", "time_window_days"}
 
-# Connectors that have an interactive authentication command (OAuth or
-# session login). Run in a Terminal window via the CLI flag.
-AUTH_FLAGS: dict[str, str] = {
-    "gmail":    "--gmail-oauth",
-    "drive":    "--drive-oauth",
-    "contacts": "--contacts-oauth",
-    "calendar": "--calendar-oauth",
-    "tasks":    "--tasks-oauth",
-    "telegram": "--telegram-setup",
-}
-
 # All connectors PrivacyFence supports, in display order
 ALL_CONNECTORS: list[str] = [
     "gmail", "drive", "contacts", "calendar", "tasks",
     "slack", "jira", "confluence", "salesforce", "telegram",
 ]
 
-# Connectors authenticated via a shared Google OAuth client secret file,
-# configured by uploading the JSON downloaded from Google Cloud Console.
+# Connectors authenticated via a shared Google OAuth client (org bundle's
+# "google" section).
 GOOGLE_CONNECTORS: set[str] = {"gmail", "drive", "contacts", "calendar", "tasks"}
 
+# Which section of the organization config bundle each connector depends on.
+# Jira and Confluence share one Atlassian OAuth grant.
+ORG_CONFIG_SERVICE: dict[str, str] = {
+    "gmail": "google", "drive": "google", "contacts": "google",
+    "calendar": "google", "tasks": "google",
+    "slack": "slack",
+    "jira": "atlassian", "confluence": "atlassian",
+    "salesforce": "salesforce",
+    "telegram": "telegram",
+}
+ORG_BUNDLE_SERVICES: list[str] = ["google", "slack", "telegram", "salesforce", "atlassian"]
 
-class ConfigField(NamedTuple):
-    key: str
-    label: str
-    secret: bool = False
-    kind: str = "text"  # "text" or "int"
-
-
-# Text fields collected via native prompts for "Configure…", per connector.
-# Google connectors are configured via client-secret upload instead (see
-# GOOGLE_CONNECTORS / _upload_client_secret).
-CONNECTOR_CONFIG_FIELDS: dict[str, list[ConfigField]] = {
-    "slack": [
-        ConfigField("bot_token", "Bot User OAuth Token (xoxb-...)", secret=True),
-    ],
-    "jira": [
-        ConfigField("cloud_url", "Atlassian Cloud URL (e.g. https://yourcompany.atlassian.net)"),
-        ConfigField("email", "Atlassian account email"),
-        ConfigField("api_token", "API token", secret=True),
-    ],
-    "confluence": [
-        ConfigField("cloud_url", "Atlassian Cloud URL (e.g. https://yourcompany.atlassian.net)"),
-        ConfigField("email", "Atlassian account email"),
-        ConfigField("api_token", "API token", secret=True),
-    ],
-    "salesforce": [
-        ConfigField("instance_url", "Instance URL (e.g. https://yourorg.my.salesforce.com)"),
-        ConfigField("username", "Username"),
-        ConfigField("password", "Password", secret=True),
-        ConfigField("security_token", "Security token", secret=True),
-    ],
-    "telegram": [
-        ConfigField("api_id", "API ID (from https://my.telegram.org/apps)", kind="int"),
-        ConfigField("api_hash", "API hash", secret=True),
-    ],
+_GOOGLE_CLIENTS: dict[str, type] = {
+    "gmail": GmailClient,
+    "drive": DriveClient,
+    "calendar": CalendarClient,
+    "contacts": ContactsClient,
+    "tasks": TasksClient,
 }
 
 # docs/ file (on GitHub) explaining how to set up each connector
@@ -162,6 +153,17 @@ RULE_HINTS: dict[str, str] = {
 }
 
 
+class _AuthFlowCancelled(Exception):
+    """Raised internally when the user cancels a native prompt mid-flow."""
+
+
+def _google_client_config(org_config: dict[str, Any]) -> dict[str, Any]:
+    google = org_config.get("google") or {}
+    if not google.get("client_id") or not google.get("client_secret"):
+        return {}
+    return {"installed": google}
+
+
 # ---------------------------------------------------------------------------- #
 # App
 # ---------------------------------------------------------------------------- #
@@ -185,6 +187,7 @@ class PrivacyFenceMenuBar(rumps.App):
 
     def _rebuild(self) -> None:
         cfg = self._load_config()
+        org_config = load_org_config()
         rules_cfg: dict[str, list[dict]] = cfg.get("auto_accept_rules", {}) or {}
         connectors_cfg: dict[str, dict] = cfg.get("connectors", {}) or {}
 
@@ -225,13 +228,60 @@ class PrivacyFenceMenuBar(rumps.App):
 
             rules_parent.add(op_item)
 
+        org_parent = self._build_org_menu(org_config)
+        connectors_parent = self._build_connectors_menu(org_config, connectors_cfg)
+
+        self.menu.clear()
+        self.menu = [
+            rumps.MenuItem("PrivacyFence is running"),
+            rumps.separator,
+            org_parent,
+            rules_parent,
+            connectors_parent,
+            rumps.separator,
+            rumps.MenuItem("Open Audit Log", callback=self.open_audit_log),
+            rumps.MenuItem("About PrivacyFence", callback=self.show_about),
+            rumps.separator,
+            rumps.MenuItem("Quit PrivacyFence", callback=self.quit_app),
+        ]
+
+    def _build_org_menu(self, org_config: dict[str, Any]) -> rumps.MenuItem:
+        org_parent = rumps.MenuItem("Organization Config")
+        if org_config:
+            org_name = org_config.get("org_name", "")
+            installed = [s for s in ORG_BUNDLE_SERVICES if org_config.get(s)]
+            header = f"Installed: {org_name}" if org_name else "Installed"
+            org_parent.add(rumps.MenuItem(header))
+            org_parent.add(rumps.MenuItem("  Services: " + (", ".join(installed) or "none")))
+        else:
+            org_parent.add(rumps.MenuItem("No organization config installed"))
+        org_parent.add(rumps.separator)
+        install_item = rumps.MenuItem(
+            "Install/Update Organization Config…" if org_config else "Install Organization Config…"
+        )
+        install_item.set_callback(self._install_org_config)
+        org_parent.add(install_item)
+        return org_parent
+
+    def _build_connectors_menu(
+        self, org_config: dict[str, Any], connectors_cfg: dict[str, dict]
+    ) -> rumps.MenuItem:
         connectors_parent = rumps.MenuItem("Connectors")
         for cname in ALL_CONNECTORS:
             connected = cname in self._connectors
             conn_cfg = connectors_cfg.get(cname, {})
             enabled = conn_cfg.get("enabled", True)
+            has_org = bool(org_config.get(ORG_CONFIG_SERVICE[cname]))
 
-            status = "●" if connected else ("○" if enabled else "✕")
+            if connected:
+                status = "●"  # connected
+            elif not enabled:
+                status = "✕"  # disabled
+            elif not has_org:
+                status = "○"  # org config missing
+            else:
+                status = "◐"  # org config present, needs authentication
+
             conn_item = rumps.MenuItem(f"{status} {cname.capitalize()}")
 
             toggle_label = "  Disable" if enabled else "  Enable"
@@ -241,18 +291,12 @@ class PrivacyFenceMenuBar(rumps.App):
 
             conn_item.add(rumps.separator)
 
-            if cname in GOOGLE_CONNECTORS:
-                configure = rumps.MenuItem("  Configure… (upload Google client secret)")
-                configure.set_callback(_bind(self._upload_client_secret, cname))
-                conn_item.add(configure)
-            elif cname in CONNECTOR_CONFIG_FIELDS:
-                configure = rumps.MenuItem("  Configure…")
-                configure.set_callback(_bind(self._configure_connector, cname))
-                conn_item.add(configure)
-
-            if cname in AUTH_FLAGS:
-                authenticate = rumps.MenuItem("  Authenticate…")
-                authenticate.set_callback(_bind(self._run_auth, cname))
+            if not has_org:
+                conn_item.add(rumps.MenuItem("  Organization config missing — install it above"))
+            else:
+                auth_label = "  Reconnect…" if connected else "  Authenticate…"
+                authenticate = rumps.MenuItem(auth_label)
+                authenticate.set_callback(_bind(self._authenticate, cname))
                 conn_item.add(authenticate)
 
             help_item = rumps.MenuItem("  Help…")
@@ -260,19 +304,7 @@ class PrivacyFenceMenuBar(rumps.App):
             conn_item.add(help_item)
 
             connectors_parent.add(conn_item)
-
-        self.menu.clear()
-        self.menu = [
-            rumps.MenuItem("PrivacyFence is running"),
-            rumps.separator,
-            rules_parent,
-            connectors_parent,
-            rumps.separator,
-            rumps.MenuItem("Open Audit Log", callback=self.open_audit_log),
-            rumps.MenuItem("About PrivacyFence", callback=self.show_about),
-            rumps.separator,
-            rumps.MenuItem("Quit PrivacyFence", callback=self.quit_app),
-        ]
+        return connectors_parent
 
     # ------------------------------------------------------------------ #
     # Rule actions
@@ -408,6 +440,55 @@ class PrivacyFenceMenuBar(rumps.App):
         self._save_and_reload(cfg)
 
     # ------------------------------------------------------------------ #
+    # Organization config bundle
+    # ------------------------------------------------------------------ #
+
+    def _install_org_config(self, _sender: Any = None) -> None:
+        script = (
+            'set chosenFile to choose file with prompt '
+            '"Select the organization config bundle your IT team sent you" '
+            'of type {"json", "public.json"}\n'
+            'return POSIX path of chosenFile'
+        )
+        result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+        src = result.stdout.strip()
+        if not src:
+            return
+
+        try:
+            with open(src, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, json.JSONDecodeError) as exc:
+            rumps.alert("PrivacyFence", f"Could not read that file as JSON:\n{exc}")
+            return
+        if not isinstance(data, dict) or "version" not in data:
+            rumps.alert(
+                "PrivacyFence",
+                "That file doesn't look like a PrivacyFence organization config bundle "
+                "(expected a JSON object with a \"version\" field).",
+            )
+            return
+
+        dest = org_dir() / "org_config.json"
+        try:
+            with open(dest, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2)
+            os.chmod(dest, 0o600)
+        except OSError as exc:
+            rumps.alert("PrivacyFence", f"Could not install organization config:\n{exc}")
+            return
+
+        self._rebuild()
+        org_name = data.get("org_name", "")
+        installed = ", ".join(s for s in ORG_BUNDLE_SERVICES if data.get(s)) or "none"
+        rumps.alert(
+            "PrivacyFence",
+            f"Organization config installed{f' for {org_name}' if org_name else ''}.\n\n"
+            f"Services available: {installed}\n\n"
+            "Use Authenticate… on each connector you want to use.",
+        )
+
+    # ------------------------------------------------------------------ #
     # Connector actions
     # ------------------------------------------------------------------ #
 
@@ -418,102 +499,265 @@ class PrivacyFenceMenuBar(rumps.App):
         self._save_config(cfg)
         self._rebuild()
 
-    def _configure_connector(self, cname: str, _sender: Any = None) -> None:
-        fields = CONNECTOR_CONFIG_FIELDS.get(cname)
-        if not fields:
+    def _authenticate(self, cname: str, _sender: Any = None) -> None:
+        org_config = load_org_config()
+        if cname in GOOGLE_CONNECTORS:
+            self._authenticate_google(cname, org_config)
+        elif cname == "slack":
+            self._authenticate_slack(org_config)
+        elif cname == "salesforce":
+            self._authenticate_salesforce(org_config)
+        elif cname in ("jira", "confluence"):
+            self._authenticate_atlassian(org_config)
+        elif cname == "telegram":
+            self._authenticate_telegram(org_config)
+
+    def _run_async(self, work, on_done) -> None:
+        """Run ``work()`` on a background thread.
+
+        ``on_done(ok: bool, result)`` is called on the main thread via
+        AppHelper.callAfter — ``result`` is the return value on success, or
+        the raised exception on failure. Never call rumps/AppKit APIs
+        (alert, Window, menu mutation) from ``work``; do it in ``on_done``.
+        """
+        def _runner() -> None:
+            try:
+                result = work()
+                AppHelper.callAfter(on_done, True, result)
+            except Exception as exc:  # noqa: BLE001 - surfaced to the user via on_done
+                AppHelper.callAfter(on_done, False, exc)
+
+        threading.Thread(target=_runner, daemon=True).start()
+
+    def _prompt(self, **window_kwargs: Any) -> tuple[bool, str]:
+        """Show a rumps.Window from any thread; blocks the caller until answered."""
+        result: dict[str, Any] = {}
+        done = threading.Event()
+
+        def _show() -> None:
+            resp = rumps.Window(**window_kwargs).run()
+            result["clicked"] = resp.clicked
+            result["text"] = resp.text
+            done.set()
+
+        AppHelper.callAfter(_show)
+        done.wait()
+        return bool(result.get("clicked")), (result.get("text") or "")
+
+    def _authenticate_google(self, cname: str, org_config: dict[str, Any]) -> None:
+        client_config = _google_client_config(org_config)
+        if not client_config:
+            rumps.alert("PrivacyFence", "Google organization config isn't installed yet.")
             return
-        cfg = self._load_config()
-        section = cfg.setdefault(cname, {})
+        client_cls = _GOOGLE_CLIENTS[cname]
+        token_file = str(data_dir() / TOKEN_FILES[cname])
 
-        collected: dict[str, Any] = {}
-        for field in fields:
-            current = section.get(field.key)
-            if field.secret:
-                default_text = "" if current in (None, "") else "••••••••"
+        def work() -> str:
+            client = client_cls(client_config=client_config, token_file=token_file)
+            client.authorize_interactive()
+            return client.check_connection()
+
+        def done(ok: bool, result: Any) -> None:
+            if ok:
+                rumps.alert(
+                    "PrivacyFence",
+                    f"{cname.capitalize()} connected as {result}.\n\n"
+                    "Quit and reopen PrivacyFence to activate it.",
+                )
             else:
-                default_text = "" if current is None else str(current)
+                rumps.alert("PrivacyFence", f"{cname.capitalize()} authentication failed:\n{result}")
+            self._rebuild()
 
-            w = rumps.Window(
-                title=f"Configure {cname.capitalize()}",
-                message=f"{field.label}:" + (
-                    "\n(leave unchanged to keep the current value)" if field.secret and current else ""
-                ),
-                default_text=default_text,
-                ok="Next" if field is not fields[-1] else "Save",
-                cancel="Cancel",
-                dimensions=(320, 40),
+        self._run_async(work, done)
+
+    def _authenticate_slack(self, org_config: dict[str, Any]) -> None:
+        slack_org = org_config.get("slack") or {}
+        if not slack_org.get("client_id"):
+            rumps.alert("PrivacyFence", "Slack organization config isn't installed yet.")
+            return
+        token_file = str(data_dir() / TOKEN_FILES["slack"])
+
+        def work() -> dict[str, Any]:
+            return slack_authorize_interactive(
+                client_id=slack_org["client_id"],
+                client_secret=slack_org.get("client_secret", ""),
+                token_file=token_file,
+                user_scopes=slack_org.get("user_scopes"),
             )
-            resp = w.run()
-            if not resp.clicked:
-                return
-            text = resp.text.strip()
 
-            if field.secret and current and text == "••••••••":
-                continue  # unchanged
-            if not text:
-                continue
-
-            if field.kind == "int":
-                try:
-                    collected[field.key] = int(text)
-                except ValueError:
-                    rumps.alert("Invalid value", f"Expected an integer for {field.label}, got: {text!r}")
-                    return
+        def done(ok: bool, result: Any) -> None:
+            if ok:
+                rumps.alert(
+                    "PrivacyFence",
+                    f"Slack connected: {result.get('team_name', '')}.\n\n"
+                    "Quit and reopen PrivacyFence to activate it.",
+                )
             else:
-                collected[field.key] = text
+                rumps.alert("PrivacyFence", f"Slack authentication failed:\n{result}")
+            self._rebuild()
 
-        section.update(collected)
-        cfg.setdefault("connectors", {}).setdefault(cname, {}).setdefault("enabled", True)
-        self._save_config(cfg)
-        self._rebuild()
-        rumps.alert("PrivacyFence", f"{cname.capitalize()} configured. Quit and reopen PrivacyFence to apply.")
+        self._run_async(work, done)
 
-    def _upload_client_secret(self, cname: str, _sender: Any = None) -> None:
-        script = (
-            'set chosenFile to choose file with prompt '
-            '"Select the Google OAuth client secret JSON file" '
-            'of type {"json", "public.json"}\n'
-            'return POSIX path of chosenFile'
-        )
-        result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
-        src = result.stdout.strip()
-        if not src:
+    def _authenticate_salesforce(self, org_config: dict[str, Any]) -> None:
+        sf_org = org_config.get("salesforce") or {}
+        if not sf_org.get("consumer_key"):
+            rumps.alert("PrivacyFence", "Salesforce organization config isn't installed yet.")
             return
+        token_file = str(data_dir() / TOKEN_FILES["salesforce"])
 
-        cfg = self._load_config()
-        section = cfg.setdefault(cname, {})
-        dest_rel = section.get("credentials_file", "credentials/client_secret.json")
-        dest = Path(dest_rel)
-        if not dest.is_absolute():
-            dest = Path(data_dir()) / dest_rel
-        dest.parent.mkdir(parents=True, exist_ok=True)
+        def work() -> dict[str, Any]:
+            return salesforce_authorize_interactive(
+                consumer_key=sf_org["consumer_key"],
+                consumer_secret=sf_org.get("consumer_secret", ""),
+                token_file=token_file,
+                login_url=sf_org.get("login_url", "https://login.salesforce.com"),
+            )
 
-        try:
-            shutil.copyfile(src, dest)
-        except OSError as exc:
-            rumps.alert("PrivacyFence", f"Could not copy client secret: {exc}")
+        def done(ok: bool, result: Any) -> None:
+            if ok:
+                rumps.alert(
+                    "PrivacyFence",
+                    f"Salesforce connected: {result.get('instance_url', '')}.\n\n"
+                    "Quit and reopen PrivacyFence to activate it.",
+                )
+            else:
+                rumps.alert("PrivacyFence", f"Salesforce authentication failed:\n{result}")
+            self._rebuild()
+
+        self._run_async(work, done)
+
+    def _authenticate_atlassian(self, org_config: dict[str, Any]) -> None:
+        atlassian_org = org_config.get("atlassian") or {}
+        if not atlassian_org.get("client_id"):
+            rumps.alert("PrivacyFence", "Atlassian organization config isn't installed yet.")
             return
+        token_file = str(data_dir() / TOKEN_FILES["atlassian"])
 
-        section.setdefault("credentials_file", dest_rel)
-        cfg.setdefault("connectors", {}).setdefault(cname, {}).setdefault("enabled", True)
-        self._save_config(cfg)
-        self._rebuild()
-        rumps.alert(
-            "PrivacyFence",
-            f"Client secret installed for {cname.capitalize()}.\n\nUse 'Authenticate…' to complete OAuth.",
-        )
+        def pick_resource(resources: list[dict[str, Any]]) -> dict[str, Any]:
+            options = [r.get("url", r.get("id", "")) for r in resources]
+            choice = _osascript_pick(
+                title="PrivacyFence",
+                prompt="Choose the Atlassian site to connect:",
+                options=options,
+            )
+            return next((r for r in resources if r.get("url") == choice), resources[0])
 
-    def _run_auth(self, cname: str, _sender: Any = None) -> None:
-        flag = AUTH_FLAGS.get(cname)
-        if not flag:
+        def work() -> dict[str, Any]:
+            return atlassian_authorize_interactive(
+                client_id=atlassian_org["client_id"],
+                client_secret=atlassian_org.get("client_secret", ""),
+                token_file=token_file,
+                pick_resource=pick_resource,
+            )
+
+        def done(ok: bool, result: Any) -> None:
+            if ok:
+                rumps.alert(
+                    "PrivacyFence",
+                    f"Atlassian connected: {result.get('site_url', '')}.\n\n"
+                    "This covers both Jira and Confluence. Quit and reopen "
+                    "PrivacyFence to activate them.",
+                )
+            else:
+                rumps.alert("PrivacyFence", f"Atlassian authentication failed:\n{result}")
+            self._rebuild()
+
+        self._run_async(work, done)
+
+    def _authenticate_telegram(self, org_config: dict[str, Any]) -> None:
+        tg_org = org_config.get("telegram") or {}
+        api_id = tg_org.get("api_id")
+        api_hash = tg_org.get("api_hash", "")
+        if not api_id or not api_hash:
+            rumps.alert("PrivacyFence", "Telegram organization config isn't installed yet.")
             return
-        cmd = shutil.which("privacyfence-app")
-        if not cmd:
-            # Try the same executable that started this process
-            cmd = sys.argv[0] if sys.argv[0].endswith("privacyfence-app") else sys.executable
-        full_cmd = f"{cmd} {flag}"
-        script = f'tell application "Terminal" to do script "{full_cmd}"'
-        subprocess.run(["osascript", "-e", script], check=False)
+        session_file = str(data_dir() / TOKEN_FILES["telegram"])
+
+        def flow() -> str:
+            from telethon import TelegramClient
+            from telethon.errors import SessionPasswordNeededError
+
+            clicked, phone = self._prompt(
+                title="Telegram Sign-in",
+                message="Phone number (with country code, e.g. +1234567890):",
+                ok="Send Code", cancel="Cancel",
+            )
+            if not clicked or not phone.strip():
+                raise _AuthFlowCancelled()
+            phone = phone.strip()
+
+            async def _send_code() -> str:
+                client = TelegramClient(session_file, int(api_id), api_hash)
+                await client.connect()
+                try:
+                    result = await client.send_code_request(phone)
+                    return result.phone_code_hash
+                finally:
+                    await client.disconnect()
+
+            phone_code_hash = asyncio.run(_send_code())
+
+            clicked, code = self._prompt(
+                title="Telegram Sign-in",
+                message="Enter the verification code Telegram sent you:",
+                ok="Authorize", cancel="Cancel",
+            )
+            if not clicked or not code.strip():
+                raise _AuthFlowCancelled()
+            code = code.strip()
+
+            async def _sign_in() -> str:
+                client = TelegramClient(session_file, int(api_id), api_hash)
+                await client.connect()
+                try:
+                    try:
+                        await client.sign_in(phone, code, phone_code_hash=phone_code_hash)
+                    except SessionPasswordNeededError:
+                        return "__needs_2fa__"
+                    me = await client.get_me()
+                    return f"{me.first_name or ''} {me.last_name or ''}".strip()
+                finally:
+                    await client.disconnect()
+
+            name = asyncio.run(_sign_in())
+            if name != "__needs_2fa__":
+                return name
+
+            clicked, password = self._prompt(
+                title="Telegram Sign-in",
+                message="Two-step verification password:",
+                ok="Submit", cancel="Cancel", secure=True,
+            )
+            if not clicked or not password.strip():
+                raise _AuthFlowCancelled()
+            password = password.strip()
+
+            async def _sign_in_2fa() -> str:
+                client = TelegramClient(session_file, int(api_id), api_hash)
+                await client.connect()
+                try:
+                    await client.sign_in(password=password)
+                    me = await client.get_me()
+                    return f"{me.first_name or ''} {me.last_name or ''}".strip()
+                finally:
+                    await client.disconnect()
+
+            return asyncio.run(_sign_in_2fa())
+
+        def done(ok: bool, result: Any) -> None:
+            if not ok and isinstance(result, _AuthFlowCancelled):
+                return
+            if ok:
+                rumps.alert(
+                    "PrivacyFence",
+                    f"Telegram connected as {result}.\n\n"
+                    "Quit and reopen PrivacyFence to activate it.",
+                )
+            else:
+                rumps.alert("PrivacyFence", f"Telegram sign-in failed:\n{result}")
+            self._rebuild()
+
+        self._run_async(flow, done)
 
     def _open_help(self, cname: str, _sender: Any = None) -> None:
         doc = CONNECTOR_HELP_DOCS.get(cname)

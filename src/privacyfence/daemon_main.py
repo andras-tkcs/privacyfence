@@ -8,12 +8,24 @@ Threading model:
   - Main thread:   rumps menu bar app (macOS requirement for AppKit).
   - IPC thread:    asyncio event loop serving the bridge socket connection.
   - Popups:        approval_popup.py uses osascript subprocesses (any thread).
+
+Configuration is split into two files (see paths.py):
+  - ``org/org_config.json``    — organization-level app registrations (Google
+    OAuth client, Slack app, Telegram app, Salesforce Connected App, Atlassian
+    OAuth app), installed via "Install/Update Organization Config…" in the
+    menu bar. Optional per service; a connector is offered only if its
+    section is present.
+  - ``config/settings.yaml``   — per-user settings: privacy policy,
+    connectors{enabled}, auto_accept_rules. No secrets live here.
+Per-user credentials (OAuth tokens, Telegram session) live under
+``credentials/``, one file per connector.
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
 import fcntl
+import json
 import logging
 import os
 import sys
@@ -22,7 +34,7 @@ from typing import Any
 
 import yaml
 
-from .paths import data_dir, is_bundled
+from .paths import data_dir, org_dir
 from .auto_accept import init_config_path, reload_rules
 from .connectors.calendar import CalendarConnector
 from .connectors.confluence import ConfluenceConnector
@@ -34,6 +46,9 @@ from .connectors.salesforce import SalesforceConnector
 from .connectors.slack import SlackConnector
 from .connectors.tasks import TasksConnector
 from .connectors.telegram import TelegramConnector
+from .atlassian_oauth import AtlassianOAuthError
+from .atlassian_oauth import authorize_interactive as atlassian_authorize_interactive
+from .atlassian_oauth import load_token_file as load_atlassian_token
 from .calendar_client import CalendarClient, CalendarClientError
 from .confluence_client import ConfluenceClient, ConfluenceClientError
 from .contacts_client import ContactsClient, ContactsClientError
@@ -42,7 +57,11 @@ from .gmail_client import GmailClient, GmailClientError
 from .ipc_server import IPCServer
 from .jira_client import JiraClient, JiraClientError
 from .salesforce_client import SalesforceClient, SalesforceClientError
+from .salesforce_client import authorize_interactive as salesforce_authorize_interactive
+from .salesforce_client import load_token_file as load_salesforce_token
 from .slack_client import SlackClient, SlackClientError
+from .slack_client import authorize_interactive as slack_authorize_interactive
+from .slack_client import load_token_file as load_slack_token
 from .tasks_client import TasksClient, TasksClientError
 from .telegram_client import TelegramClientError, TelegramPrivacyFenceClient
 
@@ -50,7 +69,21 @@ logger = logging.getLogger("privacyfence.daemon")
 
 PROJECT_ROOT = str(data_dir())
 LOCK_FILE = os.path.join(PROJECT_ROOT, "privacyfence.lock")
-SETUP_SENTINEL = os.path.join(PROJECT_ROOT, "setup_complete")
+
+# Where each connector's per-user credential is cached. Purely internal — no
+# longer user-configurable, since org app registration and per-user auth are
+# now handled separately (see module docstring).
+TOKEN_FILES: dict[str, str] = {
+    "gmail": "credentials/token.json",
+    "drive": "credentials/drive_token.json",
+    "calendar": "credentials/calendar_token.json",
+    "contacts": "credentials/contacts_token.json",
+    "tasks": "credentials/tasks_token.json",
+    "slack": "credentials/slack_token.json",
+    "salesforce": "credentials/salesforce_token.json",
+    "atlassian": "credentials/atlassian_token.json",
+    "telegram": "credentials/telegram.session",
+}
 
 _lock_fd: int | None = None
 
@@ -108,6 +141,28 @@ def load_config(config_path: str) -> dict[str, Any]:
     return config
 
 
+def load_org_config() -> dict[str, Any]:
+    """Load the installed organization config bundle, or {} if none is installed.
+
+    Never fatal — same "missing config → connector skipped" philosophy used
+    for every connector below. Installed via "Install/Update Organization
+    Config…" in the menu bar (see menu_bar.py).
+    """
+    path = org_dir() / "org_config.json"
+    if not path.exists():
+        return {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Could not read organization config at %s: %s", path, exc)
+        return {}
+    if not isinstance(data, dict):
+        logger.warning("Organization config at %s is not a JSON object; ignoring", path)
+        return {}
+    return data
+
+
 def setup_logging(config: dict[str, Any]) -> None:
     log_cfg = config.get("logging", {}) or {}
     level_name = str(log_cfg.get("level", "INFO")).upper()
@@ -132,163 +187,205 @@ def setup_logging(config: dict[str, Any]) -> None:
     logger.info("Logging initialized → %s", log_file)
 
 
+def _google_client_config(org_config: dict[str, Any]) -> dict[str, Any]:
+    """Wrap the bundle's flat Google app fields back into the "installed" shape
+    that ``InstalledAppFlow.from_client_config`` expects."""
+    google = org_config.get("google") or {}
+    if not google.get("client_id") or not google.get("client_secret"):
+        return {}
+    return {"installed": google}
+
+
 # ---------------------------------------------------------------------------- #
-# Connector construction (graceful: missing config → connector skipped)
+# Connector construction (graceful: missing org config or auth → connector skipped)
 # ---------------------------------------------------------------------------- #
 
-def _build_connectors(config: dict[str, Any]) -> list:
-    connectors = []
+def _build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list:
+    connectors: list[Any] = []
+    connectors_cfg: dict[str, dict] = config.get("connectors", {}) or {}
+
+    def enabled(name: str) -> bool:
+        return (connectors_cfg.get(name) or {}).get("enabled", True)
+
+    google_client_config = _google_client_config(org_config)
 
     # Gmail
-    try:
-        gmail_cfg = config.get("gmail", {}) or {}
-        client = GmailClient(
-            credentials_file=_resolve_path(gmail_cfg.get("credentials_file", "credentials/client_secret.json")),
-            token_file=_resolve_path(gmail_cfg.get("token_file", "credentials/token.json")),
-        )
-        email = client.check_connection()
-        logger.info("Gmail connector ready for %s", email)
-        connector = GmailConnector(client)
-        connector.my_email = email
-        connectors.append(connector)
-    except (GmailClientError, FileNotFoundError) as exc:
-        logger.warning("Gmail connector disabled: %s", exc)
+    if enabled("gmail"):
+        try:
+            if not google_client_config:
+                raise GmailClientError("Google organization config not installed")
+            client = GmailClient(
+                client_config=google_client_config,
+                token_file=_resolve_path(TOKEN_FILES["gmail"]),
+            )
+            email = client.check_connection()
+            logger.info("Gmail connector ready for %s", email)
+            connector = GmailConnector(client)
+            connector.my_email = email
+            connectors.append(connector)
+        except (GmailClientError, FileNotFoundError) as exc:
+            logger.warning("Gmail connector disabled: %s", exc)
 
     # Drive
-    try:
-        drive_cfg = config.get("drive", {}) or {}
-        client = DriveClient(
-            credentials_file=_resolve_path(drive_cfg.get("credentials_file", "credentials/client_secret.json")),
-            token_file=_resolve_path(drive_cfg.get("token_file", "credentials/drive_token.json")),
-        )
-        email = client.check_connection()
-        logger.info("Drive connector ready for %s", email)
-        connector = DriveConnector(client)
-        connector.my_email = email
-        connectors.append(connector)
-    except (DriveClientError, FileNotFoundError) as exc:
-        logger.warning("Drive connector disabled: %s", exc)
-
-    # Slack
-    try:
-        slack_cfg = config.get("slack", {}) or {}
-        user_token = slack_cfg.get("user_token", "")
-        if not user_token or user_token.startswith("xoxp-your-"):
-            raise SlackClientError("user_token not configured")
-        client = SlackClient(user_token=user_token)
-        workspace = client.check_connection()
-        logger.info("Slack connector ready for workspace %r", workspace)
-        connector = SlackConnector(client)
-        connector.my_email = slack_cfg.get("email", "")
-        connectors.append(connector)
-    except (SlackClientError, FileNotFoundError) as exc:
-        logger.warning("Slack connector disabled: %s", exc)
-
-    # Contacts
-    try:
-        contacts_cfg = config.get("contacts", {}) or {}
-        client = ContactsClient(
-            credentials_file=_resolve_path(contacts_cfg.get("credentials_file", "credentials/client_secret.json")),
-            token_file=_resolve_path(contacts_cfg.get("token_file", "credentials/contacts_token.json")),
-        )
-        email = client.check_connection()
-        logger.info("Contacts connector ready for %s", email)
-        connector = ContactsConnector(client)
-        connector.my_email = email
-        connectors.append(connector)
-    except (ContactsClientError, FileNotFoundError) as exc:
-        logger.warning("Contacts connector disabled: %s", exc)
+    if enabled("drive"):
+        try:
+            if not google_client_config:
+                raise DriveClientError("Google organization config not installed")
+            client = DriveClient(
+                client_config=google_client_config,
+                token_file=_resolve_path(TOKEN_FILES["drive"]),
+            )
+            email = client.check_connection()
+            logger.info("Drive connector ready for %s", email)
+            connector = DriveConnector(client)
+            connector.my_email = email
+            connectors.append(connector)
+        except (DriveClientError, FileNotFoundError) as exc:
+            logger.warning("Drive connector disabled: %s", exc)
 
     # Calendar
-    try:
-        calendar_cfg = config.get("calendar", {}) or {}
-        client = CalendarClient(
-            credentials_file=_resolve_path(calendar_cfg.get("credentials_file", "credentials/client_secret.json")),
-            token_file=_resolve_path(calendar_cfg.get("token_file", "credentials/calendar_token.json")),
-        )
-        email = client.check_connection()
-        logger.info("Calendar connector ready for %s", email)
-        connector = CalendarConnector(client)
-        connector.my_email = email
-        connectors.append(connector)
-    except (CalendarClientError, FileNotFoundError) as exc:
-        logger.warning("Calendar connector disabled: %s", exc)
+    if enabled("calendar"):
+        try:
+            if not google_client_config:
+                raise CalendarClientError("Google organization config not installed")
+            client = CalendarClient(
+                client_config=google_client_config,
+                token_file=_resolve_path(TOKEN_FILES["calendar"]),
+            )
+            email = client.check_connection()
+            logger.info("Calendar connector ready for %s", email)
+            connector = CalendarConnector(client)
+            connector.my_email = email
+            connectors.append(connector)
+        except (CalendarClientError, FileNotFoundError) as exc:
+            logger.warning("Calendar connector disabled: %s", exc)
+
+    # Contacts
+    if enabled("contacts"):
+        try:
+            if not google_client_config:
+                raise ContactsClientError("Google organization config not installed")
+            client = ContactsClient(
+                client_config=google_client_config,
+                token_file=_resolve_path(TOKEN_FILES["contacts"]),
+            )
+            email = client.check_connection()
+            logger.info("Contacts connector ready for %s", email)
+            connector = ContactsConnector(client)
+            connector.my_email = email
+            connectors.append(connector)
+        except (ContactsClientError, FileNotFoundError) as exc:
+            logger.warning("Contacts connector disabled: %s", exc)
 
     # Tasks
-    try:
-        tasks_cfg = config.get("tasks", {}) or {}
-        client = TasksClient(
-            credentials_file=_resolve_path(tasks_cfg.get("credentials_file", "credentials/client_secret.json")),
-            token_file=_resolve_path(tasks_cfg.get("token_file", "credentials/tasks_token.json")),
-        )
-        email = client.check_connection()
-        logger.info("Tasks connector ready for %s", email)
-        connectors.append(TasksConnector(client))
-    except (TasksClientError, FileNotFoundError) as exc:
-        logger.warning("Tasks connector disabled: %s", exc)
+    if enabled("tasks"):
+        try:
+            if not google_client_config:
+                raise TasksClientError("Google organization config not installed")
+            client = TasksClient(
+                client_config=google_client_config,
+                token_file=_resolve_path(TOKEN_FILES["tasks"]),
+            )
+            email = client.check_connection()
+            logger.info("Tasks connector ready for %s", email)
+            connectors.append(TasksConnector(client))
+        except (TasksClientError, FileNotFoundError) as exc:
+            logger.warning("Tasks connector disabled: %s", exc)
+
+    # Slack
+    if enabled("slack"):
+        try:
+            slack_org = org_config.get("slack") or {}
+            if not slack_org.get("client_id"):
+                raise SlackClientError("Slack organization config not installed")
+            token = load_slack_token(_resolve_path(TOKEN_FILES["slack"]))
+            client = SlackClient(user_token=token.get("access_token", ""))
+            workspace = client.check_connection()
+            logger.info("Slack connector ready for workspace %r", workspace)
+            connector = SlackConnector(client)
+            connector.my_email = token.get("email", "")
+            connectors.append(connector)
+        except (SlackClientError, FileNotFoundError) as exc:
+            logger.warning("Slack connector disabled: %s", exc)
 
     # Salesforce
-    try:
-        sf_cfg = config.get("salesforce", {}) or {}
-        if not sf_cfg.get("instance_url"):
-            raise SalesforceClientError("salesforce.instance_url not configured")
-        client = SalesforceClient(config=sf_cfg)
-        client.check_connection()
-        logger.info("Salesforce connector ready for %s", sf_cfg.get("instance_url"))
-        connectors.append(SalesforceConnector(client))
-    except (SalesforceClientError, FileNotFoundError) as exc:
-        logger.warning("Salesforce connector disabled: %s", exc)
+    if enabled("salesforce"):
+        try:
+            sf_org = org_config.get("salesforce") or {}
+            if not sf_org.get("consumer_key"):
+                raise SalesforceClientError("Salesforce organization config not installed")
+            token = load_salesforce_token(_resolve_path(TOKEN_FILES["salesforce"]))
+            merged = {**sf_org, **token}
+            client = SalesforceClient(config=merged, token_file=_resolve_path(TOKEN_FILES["salesforce"]))
+            client.check_connection()
+            logger.info("Salesforce connector ready for %s", merged.get("instance_url"))
+            connectors.append(SalesforceConnector(client))
+        except (SalesforceClientError, FileNotFoundError) as exc:
+            logger.warning("Salesforce connector disabled: %s", exc)
 
-    # Jira
-    try:
-        jira_cfg = config.get("jira", {}) or {}
-        if not jira_cfg.get("cloud_url"):
-            raise JiraClientError("jira.cloud_url not configured")
-        client = JiraClient(config=jira_cfg)
-        info = client.check_connection()
-        logger.info("Jira connector ready: %s", info)
-        connector = JiraConnector(client)
-        connector.my_email = jira_cfg.get("email", "")
-        connectors.append(connector)
-    except (JiraClientError, FileNotFoundError) as exc:
-        logger.warning("Jira connector disabled: %s", exc)
+    # Jira / Confluence — share one Atlassian OAuth grant.
+    atlassian_org = org_config.get("atlassian") or {}
+    atlassian_token: dict[str, Any] | None = None
+    if atlassian_org.get("client_id"):
+        try:
+            atlassian_token = load_atlassian_token(_resolve_path(TOKEN_FILES["atlassian"]))
+        except AtlassianOAuthError:
+            atlassian_token = None
 
-    # Confluence
-    try:
-        confluence_cfg = config.get("confluence", {}) or {}
-        if not confluence_cfg.get("cloud_url"):
-            raise ConfluenceClientError("confluence.cloud_url not configured")
-        client = ConfluenceClient(config=confluence_cfg)
-        url = client.check_connection()
-        logger.info("Confluence connector ready: %s", url)
-        connector = ConfluenceConnector(client)
-        connector.my_email = confluence_cfg.get("email", "")
-        connectors.append(connector)
-    except (ConfluenceClientError, FileNotFoundError) as exc:
-        logger.warning("Confluence connector disabled: %s", exc)
+    if enabled("jira"):
+        try:
+            if not atlassian_org.get("client_id"):
+                raise JiraClientError("Atlassian organization config not installed")
+            if not atlassian_token:
+                raise JiraClientError("Jira is not authenticated. Use Authenticate… in the menu bar.")
+            client = JiraClient(config=atlassian_token)
+            info = client.check_connection()
+            logger.info("Jira connector ready: %s", info)
+            connector = JiraConnector(client)
+            connector.my_email = atlassian_token.get("account_email", "")
+            connectors.append(connector)
+        except (JiraClientError, FileNotFoundError) as exc:
+            logger.warning("Jira connector disabled: %s", exc)
 
-    # Telegram
-    try:
-        tg_cfg = config.get("telegram", {}) or {}
-        api_id = tg_cfg.get("api_id")
-        api_hash = tg_cfg.get("api_hash", "")
-        if not api_id or not api_hash:
-            raise TelegramClientError("telegram.api_id and api_hash not configured")
-        session_file = _resolve_path(tg_cfg.get("session_file", "credentials/telegram.session"))
-        if not os.path.exists(session_file) and not os.path.exists(session_file + ".session"):
-            raise TelegramClientError(
-                f"Session file not found: {session_file}. "
-                "Run 'privacyfence-app --telegram-setup' to authorize."
+    if enabled("confluence"):
+        try:
+            if not atlassian_org.get("client_id"):
+                raise ConfluenceClientError("Atlassian organization config not installed")
+            if not atlassian_token:
+                raise ConfluenceClientError("Confluence is not authenticated. Use Authenticate… in the menu bar.")
+            client = ConfluenceClient(config=atlassian_token)
+            url = client.check_connection()
+            logger.info("Confluence connector ready: %s", url)
+            connector = ConfluenceConnector(client)
+            connector.my_email = atlassian_token.get("account_email", "")
+            connectors.append(connector)
+        except (ConfluenceClientError, FileNotFoundError) as exc:
+            logger.warning("Confluence connector disabled: %s", exc)
+
+    # Telegram — the sole exception to browser OAuth (MTProto has no
+    # equivalent for full user-session access); api_id/api_hash are still
+    # organization-level, phone+code(+2FA) auth is still per-user.
+    if enabled("telegram"):
+        try:
+            tg_org = org_config.get("telegram") or {}
+            api_id = tg_org.get("api_id")
+            api_hash = tg_org.get("api_hash", "")
+            if not api_id or not api_hash:
+                raise TelegramClientError("Telegram organization config not installed")
+            session_file = _resolve_path(TOKEN_FILES["telegram"])
+            if not os.path.exists(session_file) and not os.path.exists(session_file + ".session"):
+                raise TelegramClientError(
+                    "Telegram is not authenticated. Use Authenticate… in the PrivacyFence menu bar."
+                )
+            tg_client = TelegramPrivacyFenceClient(
+                api_id=int(api_id),
+                api_hash=api_hash,
+                session_file=session_file,
             )
-        tg_client = TelegramPrivacyFenceClient(
-            api_id=int(api_id),
-            api_hash=api_hash,
-            session_file=session_file,
-        )
-        logger.info("Telegram connector registered (will connect on first use)")
-        connectors.append(TelegramConnector(tg_client))
-    except (TelegramClientError, FileNotFoundError, Exception) as exc:
-        logger.warning("Telegram connector disabled: %s", exc)
+            logger.info("Telegram connector registered (will connect on first use)")
+            connectors.append(TelegramConnector(tg_client))
+        except (TelegramClientError, FileNotFoundError, Exception) as exc:
+            logger.warning("Telegram connector disabled: %s", exc)
 
     return connectors
 
@@ -321,15 +418,13 @@ class IPCServerThread(threading.Thread):
 
 
 # ---------------------------------------------------------------------------- #
-# OAuth setup commands
+# OAuth / interactive-auth setup commands (headless/dev use — the primary UX
+# path is now "Authenticate…" in the menu bar, see menu_bar.py)
 # ---------------------------------------------------------------------------- #
 
-def run_gmail_oauth(config: dict[str, Any]) -> int:
-    gmail_cfg = config.get("gmail", {}) or {}
-    client = GmailClient(
-        credentials_file=_resolve_path(gmail_cfg.get("credentials_file", "credentials/client_secret.json")),
-        token_file=_resolve_path(gmail_cfg.get("token_file", "credentials/token.json")),
-    )
+def run_gmail_oauth(org_config: dict[str, Any]) -> int:
+    client_config = _google_client_config(org_config)
+    client = GmailClient(client_config=client_config, token_file=_resolve_path(TOKEN_FILES["gmail"]))
     try:
         client.authorize_interactive()
         email = client.check_connection()
@@ -340,12 +435,9 @@ def run_gmail_oauth(config: dict[str, Any]) -> int:
     return 0
 
 
-def run_drive_oauth(config: dict[str, Any]) -> int:
-    drive_cfg = config.get("drive", {}) or {}
-    client = DriveClient(
-        credentials_file=_resolve_path(drive_cfg.get("credentials_file", "credentials/client_secret.json")),
-        token_file=_resolve_path(drive_cfg.get("token_file", "credentials/drive_token.json")),
-    )
+def run_drive_oauth(org_config: dict[str, Any]) -> int:
+    client_config = _google_client_config(org_config)
+    client = DriveClient(client_config=client_config, token_file=_resolve_path(TOKEN_FILES["drive"]))
     try:
         client.authorize_interactive()
         email = client.check_connection()
@@ -356,28 +448,22 @@ def run_drive_oauth(config: dict[str, Any]) -> int:
     return 0
 
 
-def run_contacts_oauth(config: dict[str, Any]) -> int:
-    contacts_cfg = config.get("contacts", {}) or {}
-    client = ContactsClient(
-        credentials_file=_resolve_path(contacts_cfg.get("credentials_file", "credentials/client_secret.json")),
-        token_file=_resolve_path(contacts_cfg.get("token_file", "credentials/contacts_token.json")),
-    )
+def run_contacts_oauth(org_config: dict[str, Any]) -> int:
+    client_config = _google_client_config(org_config)
+    client = ContactsClient(client_config=client_config, token_file=_resolve_path(TOKEN_FILES["contacts"]))
     try:
         client.authorize_interactive()
-        email = client.check_connection()
+        result = client.check_connection()
     except ContactsClientError as exc:
         print(f"Contacts OAuth setup failed: {exc}", file=sys.stderr)
         return 1
-    print(f"Contacts OAuth complete. Authorized as: {email}")
+    print(f"Contacts OAuth complete. Authorized as: {result}")
     return 0
 
 
-def run_calendar_oauth(config: dict[str, Any]) -> int:
-    calendar_cfg = config.get("calendar", {}) or {}
-    client = CalendarClient(
-        credentials_file=_resolve_path(calendar_cfg.get("credentials_file", "credentials/client_secret.json")),
-        token_file=_resolve_path(calendar_cfg.get("token_file", "credentials/calendar_token.json")),
-    )
+def run_calendar_oauth(org_config: dict[str, Any]) -> int:
+    client_config = _google_client_config(org_config)
+    client = CalendarClient(client_config=client_config, token_file=_resolve_path(TOKEN_FILES["calendar"]))
     try:
         client.authorize_interactive()
         email = client.check_connection()
@@ -388,12 +474,9 @@ def run_calendar_oauth(config: dict[str, Any]) -> int:
     return 0
 
 
-def run_tasks_oauth(config: dict[str, Any]) -> int:
-    tasks_cfg = config.get("tasks", {}) or {}
-    client = TasksClient(
-        credentials_file=_resolve_path(tasks_cfg.get("credentials_file", "credentials/client_secret.json")),
-        token_file=_resolve_path(tasks_cfg.get("token_file", "credentials/tasks_token.json")),
-    )
+def run_tasks_oauth(org_config: dict[str, Any]) -> int:
+    client_config = _google_client_config(org_config)
+    client = TasksClient(client_config=client_config, token_file=_resolve_path(TOKEN_FILES["tasks"]))
     try:
         client.authorize_interactive()
         email = client.check_connection()
@@ -404,14 +487,70 @@ def run_tasks_oauth(config: dict[str, Any]) -> int:
     return 0
 
 
-def run_telegram_setup(config: dict[str, Any]) -> int:
-    tg_cfg = config.get("telegram", {}) or {}
-    api_id = tg_cfg.get("api_id")
-    api_hash = tg_cfg.get("api_hash", "")
-    if not api_id or not api_hash:
-        print("Set telegram.api_id and telegram.api_hash in config/settings.yaml first.", file=sys.stderr)
+def run_slack_oauth(org_config: dict[str, Any]) -> int:
+    slack_org = org_config.get("slack") or {}
+    if not slack_org.get("client_id") or not slack_org.get("client_secret"):
+        print("No Slack organization config installed.", file=sys.stderr)
         return 1
-    session_file = _resolve_path(tg_cfg.get("session_file", "credentials/telegram.session"))
+    try:
+        token = slack_authorize_interactive(
+            client_id=slack_org["client_id"],
+            client_secret=slack_org["client_secret"],
+            token_file=_resolve_path(TOKEN_FILES["slack"]),
+            user_scopes=slack_org.get("user_scopes"),
+        )
+    except SlackClientError as exc:
+        print(f"Slack OAuth setup failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"Slack OAuth complete. Authorized for workspace: {token.get('team_name')}")
+    return 0
+
+
+def run_salesforce_oauth(org_config: dict[str, Any]) -> int:
+    sf_org = org_config.get("salesforce") or {}
+    if not sf_org.get("consumer_key") or not sf_org.get("consumer_secret"):
+        print("No Salesforce organization config installed.", file=sys.stderr)
+        return 1
+    try:
+        token = salesforce_authorize_interactive(
+            consumer_key=sf_org["consumer_key"],
+            consumer_secret=sf_org["consumer_secret"],
+            token_file=_resolve_path(TOKEN_FILES["salesforce"]),
+            login_url=sf_org.get("login_url", "https://login.salesforce.com"),
+        )
+    except SalesforceClientError as exc:
+        print(f"Salesforce OAuth setup failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"Salesforce OAuth complete. Authorized for instance: {token.get('instance_url')}")
+    return 0
+
+
+def run_atlassian_oauth(org_config: dict[str, Any]) -> int:
+    atlassian_org = org_config.get("atlassian") or {}
+    if not atlassian_org.get("client_id") or not atlassian_org.get("client_secret"):
+        print("No Atlassian organization config installed.", file=sys.stderr)
+        return 1
+    try:
+        token = atlassian_authorize_interactive(
+            client_id=atlassian_org["client_id"],
+            client_secret=atlassian_org["client_secret"],
+            token_file=_resolve_path(TOKEN_FILES["atlassian"]),
+        )
+    except AtlassianOAuthError as exc:
+        print(f"Atlassian OAuth setup failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"Atlassian OAuth complete. Authorized for site: {token.get('site_url')}")
+    return 0
+
+
+def run_telegram_setup(org_config: dict[str, Any]) -> int:
+    tg_org = org_config.get("telegram") or {}
+    api_id = tg_org.get("api_id")
+    api_hash = tg_org.get("api_hash", "")
+    if not api_id or not api_hash:
+        print("No Telegram organization config installed.", file=sys.stderr)
+        return 1
+    session_file = _resolve_path(TOKEN_FILES["telegram"])
     client = TelegramPrivacyFenceClient(api_id=int(api_id), api_hash=api_hash, session_file=session_file)
     asyncio.run(client.authorize_interactive())
     print(f"Telegram session saved to {session_file}")
@@ -431,7 +570,8 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
     init_config_path(_resolve_path(config_path))
     reload_rules(config.get("auto_accept_rules", {}) or {})
 
-    connectors = _build_connectors(config)
+    org_config = load_org_config()
+    connectors = _build_connectors(config, org_config)
     if not connectors:
         logger.warning("No connectors could be initialized; daemon still starting for IPC.")
 
@@ -468,6 +608,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--contacts-oauth", action="store_true")
     parser.add_argument("--calendar-oauth", action="store_true")
     parser.add_argument("--tasks-oauth", action="store_true")
+    parser.add_argument("--slack-oauth", action="store_true")
+    parser.add_argument("--salesforce-oauth", action="store_true")
+    parser.add_argument("--atlassian-oauth", action="store_true")
     parser.add_argument("--telegram-setup", action="store_true")
     return parser.parse_args(argv)
 
@@ -477,12 +620,9 @@ def main(argv: list[str] | None = None) -> int:
 
     oauth_flag = (
         args.gmail_oauth or args.drive_oauth or args.contacts_oauth
-        or args.calendar_oauth or args.tasks_oauth or args.telegram_setup
+        or args.calendar_oauth or args.tasks_oauth or args.slack_oauth
+        or args.salesforce_oauth or args.atlassian_oauth or args.telegram_setup
     )
-    if is_bundled() and not oauth_flag and not os.path.exists(SETUP_SENTINEL):
-        from .setup_wizard import run_setup_wizard
-        run_setup_wizard()
-        return 0
 
     try:
         config = load_config(args.config)
@@ -493,18 +633,26 @@ def main(argv: list[str] | None = None) -> int:
     setup_logging(config)
 
     try:
-        if args.gmail_oauth:
-            return run_gmail_oauth(config)
-        if args.drive_oauth:
-            return run_drive_oauth(config)
-        if args.contacts_oauth:
-            return run_contacts_oauth(config)
-        if args.calendar_oauth:
-            return run_calendar_oauth(config)
-        if args.tasks_oauth:
-            return run_tasks_oauth(config)
-        if args.telegram_setup:
-            return run_telegram_setup(config)
+        if oauth_flag:
+            org_config = load_org_config()
+            if args.gmail_oauth:
+                return run_gmail_oauth(org_config)
+            if args.drive_oauth:
+                return run_drive_oauth(org_config)
+            if args.contacts_oauth:
+                return run_contacts_oauth(org_config)
+            if args.calendar_oauth:
+                return run_calendar_oauth(org_config)
+            if args.tasks_oauth:
+                return run_tasks_oauth(org_config)
+            if args.slack_oauth:
+                return run_slack_oauth(org_config)
+            if args.salesforce_oauth:
+                return run_salesforce_oauth(org_config)
+            if args.atlassian_oauth:
+                return run_atlassian_oauth(org_config)
+            if args.telegram_setup:
+                return run_telegram_setup(org_config)
         return run_app(config, args.config)
     except Exception as exc:
         logger.error("Fatal error: %s", exc, exc_info=True)

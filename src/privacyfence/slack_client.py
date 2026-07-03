@@ -4,10 +4,13 @@ Uses a single Slack user token (``xoxp-...``) so the connector sees exactly
 what the authenticated user sees — all channels, DMs, and private groups they
 are a member of — without requiring a bot to be invited anywhere.
 
-Unlike the Gmail client there is no interactive OAuth flow: the token is
-provisioned once in the Slack app settings and stored in config.
+The token is obtained via Slack's OAuth v2 browser flow (see
+``authorize_interactive`` below), driven from the PrivacyFence menu bar. The
+Slack app itself (client id/secret) is organization-level config installed via
+the "Install/Update Organization Config…" menu bar action — a user only ever
+sees a browser consent screen, never a token to copy/paste.
 
-Required user token scopes:
+Required user token scopes (see ``DEFAULT_USER_SCOPES``):
   - ``channels:read`` / ``groups:read`` / ``im:read`` / ``mpim:read``
   - ``channels:history`` / ``groups:history`` / ``im:history`` / ``mpim:history``
   - ``users:read`` / ``users:read.email``
@@ -18,19 +21,128 @@ Required user token scopes:
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
+from urllib.parse import urlencode
 
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
+from .oauth_loopback import OAuthLoopbackError, run_browser_oauth
+
 logger = logging.getLogger(__name__)
+
+SLACK_OAUTH_PORT = 53682
+SLACK_REDIRECT_PATH = "/callback"
+
+DEFAULT_USER_SCOPES: list[str] = [
+    "channels:read", "groups:read", "im:read", "mpim:read",
+    "channels:history", "groups:history", "im:history", "mpim:history",
+    "users:read", "users:read.email", "search:read", "chat:write",
+    "im:write", "channels:write", "groups:write", "mpim:write",
+]
 
 
 class SlackClientError(Exception):
     """Raised for unrecoverable Slack client problems (auth, config, API)."""
+
+
+def authorize_interactive(
+    client_id: str,
+    client_secret: str,
+    token_file: str,
+    user_scopes: list[str] | None = None,
+    port: int = SLACK_OAUTH_PORT,
+) -> dict[str, Any]:
+    """Run Slack's OAuth v2 browser flow and persist the resulting user token.
+
+    ``client_id``/``client_secret`` come from the organization config bundle
+    (the Slack app IT registered). Returns the saved token record; raises
+    ``SlackClientError`` on failure.
+    """
+    scopes = ",".join(user_scopes or DEFAULT_USER_SCOPES)
+
+    def build_authorize_url(redirect_uri: str, state: str, code_challenge: str) -> str:
+        params = {
+            "client_id": client_id,
+            "user_scope": scopes,
+            "redirect_uri": redirect_uri,
+            "state": state,
+        }
+        return "https://slack.com/oauth/v2/authorize?" + urlencode(params)
+
+    def exchange(code: str, redirect_uri: str, code_verifier: str) -> dict[str, Any]:
+        client = WebClient()
+        try:
+            response = client.oauth_v2_access(
+                client_id=client_id,
+                client_secret=client_secret,
+                code=code,
+                redirect_uri=redirect_uri,
+            )
+        except SlackApiError as exc:
+            raise SlackClientError(
+                f"Slack OAuth exchange failed: {SlackClient._describe_error(exc)}"
+            ) from exc
+        if not response.get("ok", False):
+            raise SlackClientError(f"Slack OAuth exchange failed: {response.get('error')}")
+        return response.data
+
+    try:
+        response = run_browser_oauth(
+            build_authorize_url, exchange, port=port, path=SLACK_REDIRECT_PATH
+        )
+    except OAuthLoopbackError as exc:
+        raise SlackClientError(f"Slack sign-in failed: {exc}") from exc
+
+    authed_user = response.get("authed_user") or {}
+    access_token = authed_user.get("access_token", "")
+    if not access_token:
+        raise SlackClientError(f"Slack OAuth did not return a user access token: {response}")
+
+    token_record = {
+        "access_token": access_token,
+        "user_id": authed_user.get("id", ""),
+        "team_id": (response.get("team") or {}).get("id", ""),
+        "team_name": (response.get("team") or {}).get("name", ""),
+        "email": _fetch_account_email(access_token, authed_user.get("id", "")),
+    }
+    os.makedirs(os.path.dirname(os.path.abspath(token_file)), exist_ok=True)
+    with open(token_file, "w", encoding="utf-8") as fh:
+        json.dump(token_record, fh)
+    try:
+        os.chmod(token_file, 0o600)
+    except OSError:  # pragma: no cover - best effort on non-POSIX
+        logger.debug("Could not chmod Slack token file (non-fatal)")
+    logger.info("Slack OAuth complete for team %r", token_record["team_name"])
+    return token_record
+
+
+def _fetch_account_email(access_token: str, user_id: str) -> str:
+    """Best-effort lookup of the signed-in user's email (for auto-accept rules)."""
+    if not user_id:
+        return ""
+    try:
+        response = WebClient(token=access_token).users_info(user=user_id)
+        return (response.get("user") or {}).get("profile", {}).get("email", "")
+    except SlackApiError as exc:
+        logger.debug("Could not resolve Slack account email (non-fatal): %s", SlackClient._describe_error(exc))
+        return ""
+
+
+def load_token_file(token_file: str) -> dict[str, Any]:
+    """Load a previously saved Slack token record, or raise SlackClientError."""
+    if not os.path.exists(token_file):
+        raise SlackClientError(
+            f"No Slack token found at '{token_file}'. Use Authenticate… in the "
+            "PrivacyFence menu bar to sign in."
+        )
+    with open(token_file, encoding="utf-8") as fh:
+        return json.load(fh)
 
 
 @dataclass
@@ -112,8 +224,8 @@ class SlackClient:
     def __init__(self, user_token: str) -> None:
         if not user_token:
             raise SlackClientError(
-                "No Slack user token configured. Set 'slack.user_token' "
-                "(a 'xoxp-...' User OAuth Token) in the config."
+                "No Slack user token available. Use Authenticate… in the "
+                "PrivacyFence menu bar to sign in."
             )
         self._client = WebClient(token=user_token)
         # Small cache so repeated messages from the same author don't trigger a

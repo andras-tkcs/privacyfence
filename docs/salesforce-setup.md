@@ -1,72 +1,72 @@
 # Salesforce Setup
 
-PrivacyFence connects to Salesforce using either **username + password + security token** (standard login) or a **connected app access token** (OAuth). The username/password flow is simpler for personal use.
+PrivacyFence connects to Salesforce via OAuth 2.0 (the Web Server Flow), through a **Connected App**. No username, password, or security token is ever entered into PrivacyFence — users sign in through Salesforce's own login page in their browser.
+
+The Connected App is organization-level config: **one IT admin creates it once**, packages the consumer key/secret into PrivacyFence's organization config bundle, and distributes it. Individual users just click **Authenticate…** in the menu bar.
 
 ---
 
-## Option A — Username and password (recommended for personal use)
+## For IT admins (once per organization)
 
-### 1. Find your Salesforce instance URL
+### 1. Create a Connected App
 
-Your instance URL is the hostname you use to log in, e.g. `https://mycompany.my.salesforce.com`. You can also find it in **Setup → Company Settings → My Domain**.
+1. In Salesforce, go to **Setup → App Manager → New Connected App**.
+2. Fill in **Connected App Name** (e.g. `PrivacyFence`) and **Contact Email**.
+3. Check **Enable OAuth Settings**.
+4. Set **Callback URL** to:
+   ```
+   http://localhost:53683/callback
+   ```
+5. Under **Selected OAuth Scopes**, add:
+   - `Manage user data via APIs (api)`
+   - `Perform requests at any time (refresh_token, offline_access)`
+6. Save.
 
-### 2. Get your security token
+> **New Connected Apps can take 2–10 minutes to become active.** If sign-in fails immediately after creating the app, wait a few minutes and try again.
 
-Salesforce requires a security token in addition to your password when logging in from an untrusted IP address.
+### 2. Get the consumer key and secret
 
-1. In Salesforce, click your avatar in the top-right corner → **Settings**.
-2. In the left sidebar, go to **My Personal Information → Reset My Security Token**.
-3. Click **Reset Security Token**. Salesforce emails the new token to your registered email address.
+1. Open the Connected App you just created (**Setup → App Manager → \[your app\] → View**).
+2. Click **Manage Consumer Details** (you may need to verify your identity again).
+3. Copy the **Consumer Key** and **Consumer Secret**.
 
-> **Note:** Resetting the token invalidates the old one. Any other integration using the old token will need to be updated.
+### 3. Add it to the organization config bundle
 
-### 3. Enter credentials in PrivacyFence
-
-Launch **PrivacyFence.app**. If the setup wizard is not open, click **Setup Wizard** in the floating window.
-
-1. Navigate to the **Salesforce** step.
-2. Enter your **Instance URL**, **Email / Username**, **Password**, and **Security Token**.
-3. Click **Next** to continue.
-
-To configure manually, add the following to `config/settings.yaml`:
-
-```yaml
-salesforce:
-  instance_url: "https://yourcompany.my.salesforce.com"
-  username: "you@yourcompany.com"
-  password: "your-password"
-  security_token: "your-security-token"
+```bash
+python3 scripts/build_org_bundle.py \
+  --salesforce-consumer-key 3MVG9... \
+  --salesforce-consumer-secret abcdef0123456789 \
+  --salesforce-login-url https://login.salesforce.com \
+  -o org_config.json --merge
 ```
+
+Use `--salesforce-login-url https://test.salesforce.com` if your users authenticate against a sandbox instead of production. Distribute the resulting `org_config.json` to your users.
 
 ---
 
-## Option B — Access token (Connected App / OAuth)
+## For users
 
-If your org uses IP restrictions or you prefer OAuth, you can supply a session access token directly.
+1. Get `org_config.json` from your IT team and install it via **Organization Config → Install/Update Organization Config…** in the PrivacyFence menu bar (if you haven't already for another service).
+2. **Connectors → Salesforce → Authenticate…**. Your browser opens to Salesforce's login page — sign in and click **Allow**.
+3. Quit and reopen PrivacyFence to activate the connector.
 
-1. Obtain a token using your preferred OAuth flow (e.g. via the Salesforce CLI: `sf org display --target-org <alias> --json | jq .result.accessToken`).
-2. In `config/settings.yaml`, use:
-
-```yaml
-salesforce:
-  instance_url: "https://yourcompany.my.salesforce.com"
-  access_token: "00D..."
-```
-
-> **Note:** Access tokens expire. For long-running use, the username/password flow is more practical.
+Your access token is refreshed automatically in the background as needed — no re-entering credentials.
 
 ---
 
 ## Troubleshooting
 
-**"INVALID_LOGIN: Invalid username, password, security token; or user locked out"**  
-Double-check your username, password, and security token. If you recently reset your password, the security token is also reset — check your email for a new one.
+**"redirect_uri_mismatch" or "invalid client credentials"** (IT admin)
+The Connected App's **Callback URL** must be exactly `http://localhost:53683/callback`. Also double-check the Consumer Key/Secret went into the bundle correctly.
 
-**"LOGIN_MUST_USE_SECURITY_TOKEN"**  
-Your org requires a security token. See step 2 above to obtain one.
+**Sign-in fails right after creating the Connected App**
+New Connected Apps take a few minutes to propagate — wait and retry.
 
-**"REQUEST_LIMIT_EXCEEDED" or API limit errors**  
+**"REQUEST_LIMIT_EXCEEDED" or API limit errors**
 Salesforce enforces a daily API call limit per org. Reduce query frequency or switch to a Salesforce org with a higher limit.
 
-**Sandbox vs. production**  
-If you are connecting to a sandbox, use the sandbox login URL (e.g. `https://yourcompany--sandbox.sandbox.my.salesforce.com`). The setup is otherwise identical.
+**Sandbox vs. production**
+If your org authenticates against a sandbox, make sure the bundle was built with `--salesforce-login-url https://test.salesforce.com` (IT admin) — the sign-in flow is otherwise identical.
+
+**Token expired mid-session**
+PrivacyFence retries once with a refreshed token automatically. If it still fails, click **Reconnect…** in the menu bar to sign in again.

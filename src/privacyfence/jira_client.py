@@ -1,12 +1,14 @@
 """Jira Cloud API client.
 
-Uses Atlassian's API token authentication (email + token).
-Create a token at https://id.atlassian.com/manage/api-tokens.
+Authenticated via Atlassian OAuth 2.0 (3LO) — see ``atlassian_oauth.py``. The
+OAuth app (client id/secret) is organization-level config; the resulting
+access token + cloud id are per-user, shared with the Confluence client.
 
 Required config keys:
-  cloud_url   – e.g. https://yourcompany.atlassian.net
-  email       – your Atlassian account email
-  api_token   – personal API token
+  access_token – OAuth bearer token from atlassian_oauth.authorize_interactive
+  cloud_id     – the Atlassian site's cloud id, used to build the
+                 api.atlassian.com/ex/jira/{cloud_id} proxy URL
+  site_url     – the human-facing site URL (for issue links), optional
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+import requests
 from atlassian import Jira
 
 logger = logging.getLogger(__name__)
@@ -66,28 +69,24 @@ class JiraComment:
 
 
 class JiraClient:
-    """Jira Cloud client backed by email + API token (Basic auth)."""
+    """Jira Cloud client backed by an Atlassian OAuth 2.0 bearer token."""
 
     def __init__(self, config: dict[str, Any]) -> None:
-        cloud_url = config.get("cloud_url", "").rstrip("/")
-        email = config.get("email", "")
-        api_token = config.get("api_token", "")
+        access_token = config.get("access_token", "")
+        cloud_id = config.get("cloud_id", "")
+        site_url = (config.get("site_url") or "").rstrip("/")
 
-        if not cloud_url:
-            raise JiraClientError("jira.cloud_url not configured")
-        if not email:
-            raise JiraClientError("jira.email not configured")
-        if not api_token or api_token.startswith("your-"):
-            raise JiraClientError("jira.api_token not configured")
-
-        self._base_url = cloud_url
-        try:
-            self._client = Jira(
-                url=cloud_url,
-                username=email,
-                password=api_token,
-                cloud=True,
+        if not access_token or not cloud_id:
+            raise JiraClientError(
+                "Jira is not authenticated. Use Authenticate… in the PrivacyFence menu bar."
             )
+
+        api_url = f"https://api.atlassian.com/ex/jira/{cloud_id}"
+        self._base_url = site_url or api_url
+        session = requests.Session()
+        session.headers["Authorization"] = f"Bearer {access_token}"
+        try:
+            self._client = Jira(url=api_url, session=session, cloud=True)
         except Exception as exc:
             raise JiraClientError(f"Failed to initialise Jira client: {exc}") from exc
 

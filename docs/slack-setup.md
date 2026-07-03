@@ -1,19 +1,21 @@
 # Slack Setup
 
-PrivacyFence uses a **user token** (`xoxp-…`) to access Slack. This means Claude sees exactly what you see — every channel, DM, and private group you are a member of — with no bot to invite and no footprint visible to others.
+PrivacyFence uses a **Slack user token** (`xoxp-…`) obtained via Slack's OAuth v2 browser flow. This means Claude sees exactly what you see — every channel, DM, and private group you are a member of — with no bot to invite and no footprint visible to others.
+
+The Slack app itself is organization-level config: **one IT admin creates it once**, packages the client id/secret into PrivacyFence's organization config bundle, and distributes it. Individual users never see a token to copy/paste — they click **Authenticate…** in the menu bar and approve in their browser.
 
 ---
 
-## 1. Create a Slack app
+## For IT admins (once per organization)
+
+### 1. Create a Slack app
 
 1. Go to [https://api.slack.com/apps](https://api.slack.com/apps) and click **Create New App**.
 2. Choose **From scratch**.
 3. Give it a name (e.g. `PrivacyFence`) and select your workspace.
 4. Click **Create App**.
 
----
-
-## 2. Add user token scopes
+### 2. Add user token scopes
 
 1. In the left sidebar, go to **OAuth & Permissions**.
 2. Scroll down to **Scopes → User Token Scopes** (not Bot Token Scopes).
@@ -33,46 +35,57 @@ PrivacyFence uses a **user token** (`xoxp-…`) to access Slack. This means Clau
 | `users:read.email` | Resolve user email addresses |
 | `search:read` | Search messages across the workspace |
 | `chat:write` | Send messages as you |
-| `im:write` | Mark a DM as unread (`mark_unread` option on `slack_send_message`) |
+| `im:write` / `channels:write` / `groups:write` / `mpim:write` | Mark a conversation unread (`mark_unread` option on `slack_send_message`) |
 
 > **Do not add Bot Token Scopes.** Only the User Token Scopes section is needed.
 
----
+### 3. Set the redirect URL
 
-## 3. Install the app to your workspace
+Still on **OAuth & Permissions**, scroll to **Redirect URLs** and add:
 
-1. Scroll to the top of the **OAuth & Permissions** page.
-2. Click **Install to Workspace**.
-3. Review the permissions and click **Allow**.
-
-After installation, copy the **User OAuth Token** (starts with `xoxp-`) shown at the top of the page.
-
----
-
-## 4. Enter the token in PrivacyFence
-
-Launch **PrivacyFence.app**. If the setup wizard is not open, click **Setup Wizard** in the floating window.
-
-1. Navigate to the **Slack** step.
-2. Paste the `xoxp-` token into the field.
-3. Click **Next** to continue.
-
-To configure manually, add the token to `config/settings.yaml`:
-
-```yaml
-slack:
-  user_token: "xoxp-..."
 ```
+http://127.0.0.1:53682/callback
+```
+
+This is PrivacyFence's loopback OAuth callback — it only listens during an active sign-in, on every user's own machine.
+
+### 4. Get the client id and secret
+
+Go to **Basic Information** in the left sidebar → **App Credentials**. Copy the **Client ID** and **Client Secret**.
+
+> If your workspace requires admin approval for app installs, an admin will need to approve each user's first sign-in from Slack's side — this is a workspace policy setting, not something PrivacyFence controls.
+
+### 5. Add it to the organization config bundle
+
+```bash
+python3 scripts/build_org_bundle.py \
+  --slack-client-id 1234567890.1234567890 \
+  --slack-client-secret abcdef0123456789abcdef0123456789 \
+  -o org_config.json --merge
+```
+
+(Drop `--merge` if this is the first service you're adding to the bundle.) Distribute the resulting `org_config.json` to your users.
+
+---
+
+## For users
+
+1. Get `org_config.json` from your IT team and install it via **Organization Config → Install/Update Organization Config…** in the PrivacyFence menu bar (if you haven't already for another service).
+2. **Connectors → Slack → Authenticate…**. Your browser opens to Slack's consent screen — review the permissions and click **Allow**.
+3. Quit and reopen PrivacyFence to activate the connector.
 
 ---
 
 ## Troubleshooting
 
-**`missing_scope` errors**
-The scope was not added before installing. Add the missing scope under **OAuth & Permissions → User Token Scopes**, click **Reinstall to Workspace**, and paste the new token into PrivacyFence.
+**`missing_scope` errors** (IT admin)
+A scope wasn't added before users signed in. Add the missing scope under **OAuth & Permissions → User Token Scopes**, then have each user click **Reconnect…** in the PrivacyFence menu bar to re-consent.
 
 **`not_in_channel` on history reads**
 The token only sees channels you are a member of. Join the channel in Slack first.
 
 **`invalid_auth` errors**
-The token has been revoked. Reinstall the app and update the token in PrivacyFence.
+The token has been revoked (e.g. you removed the app from your Slack account, or an admin uninstalled it). Click **Reconnect…** in the PrivacyFence menu bar.
+
+**Browser doesn't return to PrivacyFence after clicking Allow**
+Make sure the redirect URL in the Slack app's **OAuth & Permissions** page is exactly `http://127.0.0.1:53682/callback` (IT admin) — Slack requires an exact match.

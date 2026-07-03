@@ -23,6 +23,13 @@ def data_dir() -> Path:
     return d
 
 
+def org_dir() -> Path:
+    """Directory holding the installed organization config bundle."""
+    d = data_dir() / "org"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def bundle_macos_dir() -> Path | None:
     """Path to Contents/MacOS inside the .app bundle, or None in dev."""
     if is_bundled():
@@ -31,7 +38,7 @@ def bundle_macos_dir() -> Path | None:
 
 
 def app_bundle_path() -> Path | None:
-    """Path to PrivacyFence.app itself, or None in dev."""
+    """Path to PrivacyFenceApp.app itself, or None in dev."""
     if is_bundled():
         return Path(sys.executable).parent.parent.parent
     return None
