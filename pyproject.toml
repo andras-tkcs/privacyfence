@@ -9,7 +9,7 @@ description = "macOS menu bar privacy proxy between Claude (MCP) and your person
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
-authors = [{ name = "Andras Takacs", email = "at+github@felhasznalo.name" }]
+authors = [{ name = "Andras Takacs", email = "privacyfence@tkcs.name" }]
 dependencies = [
     "fastmcp>=2.0.0",
     "google-auth>=2.23.0",

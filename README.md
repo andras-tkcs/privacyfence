@@ -253,19 +253,7 @@ Routine, low-risk requests can be approved automatically without a prompt. Rules
 | `approved_object_types` | Object type (Account, Contact, …) is in the allowlist |
 | `approved_report_ids` | Report ID is in the approved list |
 
-**Jira**
-
-| Rule | Matches when… |
-|------|--------------|
-| `approved_projects` | Issue's project key is in the allowlist |
-
-**Confluence**
-
-| Rule | Matches when… |
-|------|--------------|
-| `approved_spaces` | Page's space key is in the allowlist |
-
-> **Google Contacts and Google Tasks** have no configurable auto-accept rules — all their tools are unconditionally auto-accepted and logged as `auto_accepted`. **Telegram** read tools (`telegram_list_chats`, `telegram_get_messages`, `telegram_search_messages`) are also unconditionally auto-accepted; `telegram_send_message` requires popup approval.
+> **Google Contacts and Google Tasks** have no configurable auto-accept rules — all their tools are unconditionally auto-accepted and logged as `auto_accepted`. **Telegram** read tools (`telegram_list_chats`, `telegram_get_messages`, `telegram_search_messages`) are also unconditionally auto-accepted; `telegram_send_message` requires popup approval. **Jira and Confluence** likewise have no configurable auto-accept rules yet — `jira_get_issue`, `confluence_get_page`, and `confluence_get_page_by_title` always require review approval.
 
 ---
 
