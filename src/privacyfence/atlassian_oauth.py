@@ -39,7 +39,8 @@ ACCESSIBLE_RESOURCES_URL = "https://api.atlassian.com/oauth/token/accessible-res
 DEFAULT_SCOPES: list[str] = [
     "read:jira-work", "write:jira-work", "read:jira-user",
     "read:space:confluence", "read:page:confluence", "write:page:confluence",
-    "read:content:confluence", "search:confluence",
+    "read:content:confluence", "read:content-details:confluence",
+    "write:content:confluence",
     "offline_access",
 ]
 
