@@ -28,15 +28,14 @@ The OAuth app is organization-level config: **one IT admin creates it once**, pa
 
 ### 3. Add permissions (scopes)
 
-PrivacyFence requests **granular** scopes, not classic ones. This matters for Confluence in particular: Confluence Cloud's newer v2 API (which PrivacyFence uses to list spaces) only accepts granular-scoped tokens — a classic-scoped token gets a 401 on those endpoints even with `read:confluence-space.summary` granted.
+Jira and Confluence need **different scope types** here — this isn't a typo:
 
-In the left sidebar, go to **Permissions**, switch the scope picker to **granular** scopes, and add both:
-- **Jira API** — `read:user:jira`, `read:project:jira`, `read:issue:jira`, `read:comment:jira`, `write:issue:jira`, `write:comment:jira`
-- **Confluence API** — `read:space:confluence`, `read:page:confluence`, `write:page:confluence`, `read:content:confluence`
+- **Jira API** — add these as **classic** scopes: `read:jira-work`, `write:jira-work`, `read:jira-user`. Jira's endpoints work fine with classic scopes, and Atlassian's own guidance is to prefer classic for Jira where available.
+- **Confluence API** — add these as **granular** scopes: `read:space:confluence`, `read:page:confluence`, `write:page:confluence`, `read:content:confluence`. Confluence Cloud's newer v2 API (which PrivacyFence uses to list spaces) only accepts granular-scoped tokens — a classic-scoped token 401s on those endpoints ("scope does not match") even with `read:confluence-space.summary` granted.
+
+Classic and granular are independent scope namespaces per product, so mixing classic Jira scopes with granular Confluence scopes in the same app/token is fine — Atlassian tracks them separately (visible as separate entries in the token's `accessible-resources` response). Don't switch Jira's scopes to granular "for consistency" — that breaks Jira with the same "scope does not match" 401, since Jira's classic-to-granular scope names aren't a reliable 1:1 mapping.
 
 You won't find `offline_access` (needed so PrivacyFence can refresh the token without asking users to sign in again) anywhere in the Permissions picker — it isn't tied to a product API, so the console never lists it as a checkbox. PrivacyFence's code adds it directly to the `scope` parameter of the authorization request, so there's nothing to configure here for it.
-
-The exact set of scope names in Atlassian's console can drift over time; if a scope listed above doesn't appear, search the picker for the closest match to the operation it covers (view issues, view projects, view/create pages, etc.) rather than falling back to the classic API group.
 
 > **Changing scopes on an app your team already uses?** Everyone needs to click **Reconnect…** on Jira or Confluence in the PrivacyFence menu bar afterward — existing tokens keep whatever scopes they were issued with until re-authenticated.
 
@@ -74,8 +73,11 @@ The Callback URL in the Atlassian app must be exactly `http://127.0.0.1:53684/ca
 **"401 Unauthorized" right after authenticating** (IT admin)
 Double-check the **Callback URL** is exactly `http://127.0.0.1:53684/callback`, and that both the Jira API and Confluence API scopes were added under **Permissions**.
 
-**Confluence connects but space/page calls fail with 401** (IT admin)
+**Confluence connects but space/page calls fail with 401 ("scope does not match")** (IT admin)
 The Confluence scopes were added as **classic** scopes instead of **granular**. Confluence's v2 API (used for space listing) rejects classic-scoped tokens outright — re-add the scopes listed above using the granular picker, then have users **Reconnect…** to get a token with the new scopes.
+
+**Jira fails with 401 ("scope does not match") after re-authenticating** (IT admin)
+Jira's scopes were added as **granular** instead of **classic** — or the OAuth app's `scope` request was changed to send granular Jira scope names. Jira needs classic scopes (`read:jira-work`, `write:jira-work`, `read:jira-user`); granular Jira scope names don't map cleanly and reliably 401 even when scopes look "equivalent." Switch Jira back to classic in **Permissions**, then **Reconnect…**.
 
 **"403 Forbidden" on specific projects or spaces**
 Your Atlassian account does not have access to that project or space. Check your Jira/Confluence permissions in the Atlassian admin console.

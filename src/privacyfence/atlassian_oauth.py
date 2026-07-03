@@ -28,14 +28,16 @@ AUTHORIZE_URL = "https://auth.atlassian.com/authorize"
 TOKEN_URL = "https://auth.atlassian.com/oauth/token"
 ACCESSIBLE_RESOURCES_URL = "https://api.atlassian.com/oauth/token/accessible-resources"
 
-# Granular scopes, not classic. Confluence Cloud's v2 API (used for space
-# listing — see confluence_client.py) only accepts granular-scoped tokens;
-# classic scopes get a 401 on v2 endpoints. Jira's endpoints still work fine
-# under classic scopes, but granular scopes are used here too for consistency
-# between the two products sharing this one OAuth grant.
+# Jira stays on classic scopes — its endpoints work fine with them, and
+# Atlassian's own guidance is to prefer classic scopes for Jira where
+# available. Confluence must use granular scopes: its v2 API (used for space
+# listing — see confluence_client.py) only accepts granular-scoped tokens and
+# 401s ("scope does not match") on classic ones. These are independent scope
+# namespaces per product, so mixing classic Jira + granular Confluence scopes
+# in one authorize request is fine — Atlassian tracks them separately (see
+# the per-resource "scopes" list in the accessible-resources response).
 DEFAULT_SCOPES: list[str] = [
-    "read:user:jira", "read:project:jira", "read:issue:jira",
-    "read:comment:jira", "write:issue:jira", "write:comment:jira",
+    "read:jira-work", "write:jira-work", "read:jira-user",
     "read:space:confluence", "read:page:confluence", "write:page:confluence",
     "read:content:confluence",
     "offline_access",
