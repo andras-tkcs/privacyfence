@@ -61,6 +61,7 @@ def run_browser_oauth(
     path: str = "/callback",
     timeout: float = 180.0,
     open_browser: Callable[[str], bool] | None = None,
+    redirect_host: str = "127.0.0.1",
 ) -> dict[str, Any]:
     """Run a browser-based Authorization Code + PKCE flow via a loopback redirect.
 
@@ -70,12 +71,17 @@ def run_browser_oauth(
     ``exchange(code, redirect_uri, code_verifier)`` trades the authorization code
     for tokens and returns the provider's token response.
 
-    Binds ``127.0.0.1:port`` only for the duration of this call — the server is
-    torn down as soon as the callback is received (or the timeout expires).
+    ``redirect_host`` is the hostname used in the redirect_uri sent to the
+    provider (default ``127.0.0.1``). Some providers, e.g. Salesforce, require
+    HTTPS callback URLs unless the host is the literal string ``localhost``, so
+    callers for those providers should pass ``redirect_host="localhost"``. The
+    local server itself always binds ``127.0.0.1:port`` — ``localhost``
+    resolves there — only for the duration of this call, and is torn down as
+    soon as the callback is received (or the timeout expires).
     """
     state = secrets.token_urlsafe(24)
     code_verifier, code_challenge = _make_pkce_pair()
-    redirect_uri = f"http://127.0.0.1:{port}{path}"
+    redirect_uri = f"http://{redirect_host}:{port}{path}"
 
     result = _CallbackResult()
     done = threading.Event()

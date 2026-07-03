@@ -99,7 +99,11 @@ def authorize_interactive(
 
     try:
         response = run_browser_oauth(
-            build_authorize_url, exchange, port=port, path=SALESFORCE_REDIRECT_PATH
+            build_authorize_url,
+            exchange,
+            port=port,
+            path=SALESFORCE_REDIRECT_PATH,
+            redirect_host="localhost",
         )
     except OAuthLoopbackError as exc:
         raise SalesforceClientError(f"Salesforce sign-in failed: {exc}") from exc

@@ -61,6 +61,9 @@ hidden_imports = [
     "slack_sdk",
     "slack_sdk.web",
     "slack_sdk.errors",
+    # salesforce (imported lazily inside a try/except ImportError, so
+    # PyInstaller's static analysis needs an explicit nudge to bundle it)
+    "simple_salesforce",
     # cryptography (google-auth dependency)
     "cryptography",
     # telethon (optional – Telegram; bundled so the connector works)

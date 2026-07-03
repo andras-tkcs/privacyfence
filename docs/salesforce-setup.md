@@ -17,6 +17,12 @@ The Connected App is organization-level config: **one IT admin creates it once**
    ```
    http://localhost:53683/callback
    ```
+   Salesforce requires callback URLs to use HTTPS, with one exception: `http://`
+   is allowed for testing when the host is literally `localhost`. PrivacyFence's
+   redirect URI for Salesforce always uses `localhost` (not `127.0.0.1`, unlike
+   PrivacyFence's other OAuth connectors) specifically so it qualifies for this
+   exception — enter it exactly as `http://localhost:53683/callback` or
+   Salesforce's console will reject the value.
 5. Under **Selected OAuth Scopes**, add:
    - `Manage user data via APIs (api)`
    - `Perform requests at any time (refresh_token, offline_access)`
@@ -58,6 +64,9 @@ Your access token is refreshed automatically in the background as needed — no 
 
 **"redirect_uri_mismatch" or "invalid client credentials"** (IT admin)
 The Connected App's **Callback URL** must be exactly `http://localhost:53683/callback`. Also double-check the Consumer Key/Secret went into the bundle correctly.
+
+**Salesforce won't let me save an `http://` Callback URL** (IT admin)
+Salesforce requires callback URLs to use HTTPS except when the host is exactly `localhost` — `http://127.0.0.1:...` or any other host will be rejected. Use `http://localhost:53683/callback` exactly as shown above.
 
 **Sign-in fails right after creating the Connected App**
 New Connected Apps take a few minutes to propagate — wait and retry.
