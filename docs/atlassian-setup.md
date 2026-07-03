@@ -34,7 +34,7 @@ In the left sidebar, go to **Permissions**, switch the scope picker to **granula
 - **Jira API** — `read:user:jira`, `read:project:jira`, `read:issue:jira`, `read:comment:jira`, `write:issue:jira`, `write:comment:jira`
 - **Confluence API** — `read:space:confluence`, `read:page:confluence`, `write:page:confluence`, `read:content:confluence`
 
-Also add `offline_access` (needed so PrivacyFence can refresh the token without asking users to sign in again) — it's the same scope name under both classic and granular pickers.
+You won't find `offline_access` (needed so PrivacyFence can refresh the token without asking users to sign in again) anywhere in the Permissions picker — it isn't tied to a product API, so the console never lists it as a checkbox. PrivacyFence's code adds it directly to the `scope` parameter of the authorization request, so there's nothing to configure here for it.
 
 The exact set of scope names in Atlassian's console can drift over time; if a scope listed above doesn't appear, search the picker for the closest match to the operation it covers (view issues, view projects, view/create pages, etc.) rather than falling back to the classic API group.
 
