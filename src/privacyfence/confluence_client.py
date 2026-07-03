@@ -23,6 +23,11 @@ from atlassian import Confluence
 
 logger = logging.getLogger(__name__)
 
+# Confluence Cloud removed the v1 space list endpoint (`rest/api/space`, what
+# atlassian-python-api's get_all_spaces() calls) — it now 410s with a
+# GoneException. Space listing has to go through the v2 API instead.
+_V2_SPACES_PATH = "api/v2/spaces"
+
 
 class ConfluenceClientError(Exception):
     """Raised for unrecoverable Confluence client problems (auth, config, API)."""
@@ -105,8 +110,7 @@ class ConfluenceClient:
     def check_connection(self) -> str:
         """Verify credentials by listing spaces. Returns the site URL on success."""
         try:
-            result = self._client.get_all_spaces(start=0, limit=1)
-            _ = result  # just checking it doesn't raise
+            self._client.get(_V2_SPACES_PATH, params={"limit": 1})
             logger.info("Connected to Confluence at %s", self._base_url)
             return self._base_url
         except Exception as exc:
@@ -117,11 +121,12 @@ class ConfluenceClient:
     # ------------------------------------------------------------------ #
 
     def list_spaces(self, max_results: int = 50, space_type: str = "global") -> list[ConfluenceSpace]:
-        max_results = max(1, min(max_results, 500))
+        max_results = max(1, min(max_results, 250))  # v2 API page size cap
+        params: dict[str, Any] = {"limit": max_results, "description-format": "plain"}
+        if space_type:
+            params["type"] = space_type
         try:
-            raw = self._client.get_all_spaces(
-                start=0, limit=max_results, space_type=space_type
-            )
+            raw = self._client.get(_V2_SPACES_PATH, params=params)
             results = (raw or {}).get("results") or []
         except Exception as exc:
             raise ConfluenceClientError(f"list_spaces failed: {exc}") from exc

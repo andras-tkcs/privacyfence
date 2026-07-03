@@ -28,11 +28,17 @@ The OAuth app is organization-level config: **one IT admin creates it once**, pa
 
 ### 3. Add permissions (scopes)
 
-In the left sidebar, go to **Permissions** and add both:
-- **Jira API** — with scopes `read:jira-work`, `write:jira-work`, `read:jira-user`
-- **Confluence API** — with scopes `read:confluence-content.all`, `write:confluence-content`, `read:confluence-space.summary`
+PrivacyFence requests **granular** scopes, not classic ones. This matters for Confluence in particular: Confluence Cloud's newer v2 API (which PrivacyFence uses to list spaces) only accepts granular-scoped tokens — a classic-scoped token gets a 401 on those endpoints even with `read:confluence-space.summary` granted.
 
-Also make sure `offline_access` is granted (needed so PrivacyFence can refresh the token without asking users to sign in again) — Atlassian includes it automatically once you request the scopes above through the classic scopes picker; if you're using granular scopes, add `offline_access` explicitly under **Permissions → User identity API** or the equivalent section shown in the console.
+In the left sidebar, go to **Permissions**, switch the scope picker to **granular** scopes, and add both:
+- **Jira API** — `read:user:jira`, `read:project:jira`, `read:issue:jira`, `read:comment:jira`, `write:issue:jira`, `write:comment:jira`
+- **Confluence API** — `read:space:confluence`, `read:page:confluence`, `write:page:confluence`, `read:content:confluence`
+
+Also add `offline_access` (needed so PrivacyFence can refresh the token without asking users to sign in again) — it's the same scope name under both classic and granular pickers.
+
+The exact set of scope names in Atlassian's console can drift over time; if a scope listed above doesn't appear, search the picker for the closest match to the operation it covers (view issues, view projects, view/create pages, etc.) rather than falling back to the classic API group.
+
+> **Changing scopes on an app your team already uses?** Everyone needs to click **Reconnect…** on Jira or Confluence in the PrivacyFence menu bar afterward — existing tokens keep whatever scopes they were issued with until re-authenticated.
 
 ### 4. Get the client id and secret
 
@@ -67,6 +73,9 @@ The Callback URL in the Atlassian app must be exactly `http://127.0.0.1:53684/ca
 
 **"401 Unauthorized" right after authenticating** (IT admin)
 Double-check the **Callback URL** is exactly `http://127.0.0.1:53684/callback`, and that both the Jira API and Confluence API scopes were added under **Permissions**.
+
+**Confluence connects but space/page calls fail with 401** (IT admin)
+The Confluence scopes were added as **classic** scopes instead of **granular**. Confluence's v2 API (used for space listing) rejects classic-scoped tokens outright — re-add the scopes listed above using the granular picker, then have users **Reconnect…** to get a token with the new scopes.
 
 **"403 Forbidden" on specific projects or spaces**
 Your Atlassian account does not have access to that project or space. Check your Jira/Confluence permissions in the Atlassian admin console.
