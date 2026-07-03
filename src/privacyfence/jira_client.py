@@ -27,6 +27,21 @@ class JiraClientError(Exception):
     """Raised for unrecoverable Jira client problems (auth, config, API)."""
 
 
+def _text_to_adf(text: str) -> dict[str, Any]:
+    """Wrap plain text in a single-paragraph Atlassian Document Format node.
+
+    Jira Cloud REST API v3 (which this client targets, matching how
+    _parse_issue/_parse_comment already read descriptions and comments back
+    as ADF) requires description and comment bodies to be ADF objects, not
+    plain strings.
+    """
+    return {
+        "type": "doc",
+        "version": 1,
+        "content": [{"type": "paragraph", "content": [{"type": "text", "text": text}]}],
+    }
+
+
 @dataclass
 class JiraProject:
     key: str
@@ -86,7 +101,7 @@ class JiraClient:
         session = requests.Session()
         session.headers["Authorization"] = f"Bearer {access_token}"
         try:
-            self._client = Jira(url=api_url, session=session, cloud=True)
+            self._client = Jira(url=api_url, session=session, cloud=True, api_version="3")
         except Exception as exc:
             raise JiraClientError(f"Failed to initialise Jira client: {exc}") from exc
 
@@ -175,11 +190,7 @@ class JiraClient:
             "issuetype": {"name": issue_type},
         }
         if description:
-            fields["description"] = {
-                "type": "doc",
-                "version": 1,
-                "content": [{"type": "paragraph", "content": [{"type": "text", "text": description}]}],
-            }
+            fields["description"] = _text_to_adf(description)
         if priority:
             fields["priority"] = {"name": priority}
         if assignee_account_id:
@@ -198,7 +209,7 @@ class JiraClient:
         if not issue_key or not body:
             raise JiraClientError("add_comment requires issue_key and body")
         try:
-            raw = self._client.issue_add_comment(issue_key, body)
+            raw = self._client.issue_add_comment(issue_key, _text_to_adf(body))
         except Exception as exc:
             raise JiraClientError(f"add_comment({issue_key!r}) failed: {exc}") from exc
         comment = self._parse_comment(raw)

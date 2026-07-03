@@ -11,7 +11,7 @@ from typing import Any
 from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
 from ..gate import gated_call
-from ..jira_client import JiraClient, JiraClientError
+from ..jira_client import JiraClient, JiraClientError, _text_to_adf
 
 logger = logging.getLogger(__name__)
 
@@ -240,10 +240,7 @@ class JiraConnector(Connector):
             fields["summary"] = summary
             preview["Summary"] = f"{issue.summary} → {summary}"
         if description:
-            fields["description"] = {
-                "type": "doc", "version": 1,
-                "content": [{"type": "paragraph", "content": [{"type": "text", "text": description}]}],
-            }
+            fields["description"] = _text_to_adf(description)
             preview["Description"] = "(updated — see below)"
         if priority:
             fields["priority"] = {"name": priority}

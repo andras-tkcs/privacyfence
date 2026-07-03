@@ -290,7 +290,7 @@ class ContactsClient:
         update_fields: list[str] = []
 
         if display_name is not None:
-            names = person.get("names", [{}])
+            names = person.get("names") or [{}]
             if names:
                 names[0]["displayName"] = display_name
                 names[0]["givenName"] = display_name.split()[0] if display_name else ""
@@ -303,21 +303,19 @@ class ContactsClient:
         if emails is not None:
             person["emailAddresses"] = [
                 {"value": e.get("value", ""), "type": e.get("type", "")}
-                for e in emails
+                for e in (emails or [])
             ]
             update_fields.append("emailAddresses")
 
         if phones is not None:
             person["phoneNumbers"] = [
                 {"value": p.get("value", ""), "type": p.get("type", "")}
-                for p in phones
+                for p in (phones or [])
             ]
             update_fields.append("phoneNumbers")
 
         if organization is not None or job_title is not None:
-            orgs = person.get("organizations", [{}])
-            if not orgs:
-                orgs = [{}]
+            orgs = person.get("organizations") or [{}]
             if organization is not None:
                 orgs[0]["name"] = organization
             if job_title is not None:
@@ -340,6 +338,7 @@ class ContactsClient:
                 .updateContact(
                     resourceName=resource_name,
                     updatePersonFields=",".join(update_fields),
+                    personFields=_PERSON_FIELDS,
                     body=person,
                 )
                 .execute()
@@ -380,11 +379,16 @@ def _build_uncompressed_http(creds: Credentials) -> google_auth_httplib2.Authori
 # ------------------------------------------------------------------ #
 
 def _parse_person(person: dict[str, Any]) -> Contact:
-    """Normalize a raw People API person resource into a Contact."""
+    """Normalize a raw People API person resource into a Contact.
+
+    Fields the API considers "requested but empty" are sometimes returned
+    as an explicit ``null`` rather than being omitted, so every ``.get()``
+    below falls back with ``or`` (not just a default arg) to tolerate that.
+    """
     resource_name = person.get("resourceName", "")
 
     # Names
-    names = person.get("names", [])
+    names = person.get("names") or []
     primary_name = names[0] if names else {}
     display_name = primary_name.get("displayName", "")
     given_name = primary_name.get("givenName", "")
@@ -396,7 +400,7 @@ def _parse_person(person: dict[str, Any]) -> Contact:
             value=e.get("value", ""),
             type=e.get("type", ""),
         )
-        for e in person.get("emailAddresses", [])
+        for e in (person.get("emailAddresses") or [])
     ]
 
     # Phones
@@ -405,21 +409,21 @@ def _parse_person(person: dict[str, Any]) -> Contact:
             value=p.get("value", ""),
             type=p.get("type", ""),
         )
-        for p in person.get("phoneNumbers", [])
+        for p in (person.get("phoneNumbers") or [])
     ]
 
     # Organization
-    orgs = person.get("organizations", [])
+    orgs = person.get("organizations") or []
     primary_org = orgs[0] if orgs else {}
     organization = primary_org.get("name", "")
     job_title = primary_org.get("title", "")
 
     # Notes / biographies
-    bios = person.get("biographies", [])
+    bios = person.get("biographies") or []
     notes = bios[0].get("value", "") if bios else ""
 
     # Photo
-    photos = person.get("photos", [])
+    photos = person.get("photos") or []
     photo_url = photos[0].get("url", "") if photos else ""
 
     return Contact(

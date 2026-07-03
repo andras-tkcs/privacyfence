@@ -88,7 +88,13 @@ class TelegramConnector(Connector):
         except TelegramClientError as exc:
             raise RuntimeError(str(exc)) from exc
         result = [
-            {"id": c.id, "name": c.name, "type": c.type, "unread_count": c.unread_count}
+            {
+                "id": c.id,
+                "name": c.name,
+                "type": c.chat_type,
+                "unread_count": c.unread_count,
+                "is_self": c.is_self,
+            }
             for c in chats
         ]
         self._auto_audit("telegram_list_chats", "List Telegram Chats",
