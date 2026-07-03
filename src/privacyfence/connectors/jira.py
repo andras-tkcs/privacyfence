@@ -180,31 +180,26 @@ class JiraConnector(Connector):
         description: str = "",
         priority: str = "",
     ) -> Any:
-        details_lines = [
-            f"Project: {project_key}",
-            f"Type: {issue_type}",
-            f"Summary: {summary}",
-        ]
-        if priority:
-            details_lines.append(f"Priority: {priority}")
-        if description:
-            details_lines += ["", f"Description:\n{description}"]
-        preview = {
+        payload = {
             "project_key": project_key, "summary": summary,
             "issue_type": issue_type, "description": description, "priority": priority,
         }
+        preview = {"Project": project_key, "Type": issue_type, "Summary": summary}
+        if priority:
+            preview["Priority"] = priority
         await gated_call(
             connector=self.name,
             tool="jira_create_issue",
             tool_name="Create Jira Issue",
             summary=f"Create {issue_type} in {project_key}: {summary[:60]}",
             sender=f"project={project_key}",
-            raw_data=preview,
+            raw_data=payload,
             filtered_data=None,
             gate="popup",
-            details_text="\n".join(details_lines),
+            preview=preview,
+            details_text=description,
             my_email=self.my_email,
-            args=preview,
+            args=payload,
         )
         issue = await self._fetch(
             self._jira.create_issue, project_key, summary, issue_type, description, priority,
@@ -213,7 +208,7 @@ class JiraConnector(Connector):
 
     async def _add_comment(self, issue_key: str, body: str) -> Any:
         issue = await self._fetch(self._jira.get_issue, issue_key)
-        details = f"Issue: {issue.key} — {issue.summary}\n\nComment:\n{body}"
+        preview = {"Issue": f"{issue.key} — {issue.summary}"}
         await gated_call(
             connector=self.name,
             tool="jira_add_comment",
@@ -223,7 +218,8 @@ class JiraConnector(Connector):
             raw_data={"issue_key": issue_key, "body": body},
             filtered_data=None,
             gate="popup",
-            details_text=details,
+            preview=preview,
+            details_text=body,
             my_email=self.my_email,
             args={"issue_key": issue_key, "body": body},
         )
@@ -239,22 +235,21 @@ class JiraConnector(Connector):
     ) -> Any:
         issue = await self._fetch(self._jira.get_issue, issue_key)
         fields: dict[str, Any] = {}
-        changes: list[str] = []
+        preview = {"Issue": f"{issue.key} — {issue.summary}"}
         if summary:
             fields["summary"] = summary
-            changes.append(f"  Summary: {issue.summary} → {summary}")
+            preview["Summary"] = f"{issue.summary} → {summary}"
         if description:
             fields["description"] = {
                 "type": "doc", "version": 1,
                 "content": [{"type": "paragraph", "content": [{"type": "text", "text": description}]}],
             }
-            changes.append("  Description: (updated)")
+            preview["Description"] = "(updated — see below)"
         if priority:
             fields["priority"] = {"name": priority}
-            changes.append(f"  Priority: → {priority}")
+            preview["Priority"] = f"→ {priority}"
         if not fields:
             raise ValueError("update_issue: at least one field must be provided")
-        details = f"Issue: {issue.key} — {issue.summary}\n\nChanges:\n" + "\n".join(changes)
         await gated_call(
             connector=self.name,
             tool="jira_update_issue",
@@ -264,7 +259,8 @@ class JiraConnector(Connector):
             raw_data={"issue_key": issue_key, "fields": fields},
             filtered_data=None,
             gate="popup",
-            details_text=details,
+            preview=preview,
+            details_text=description,
             my_email=self.my_email,
             args={"issue_key": issue_key},
         )

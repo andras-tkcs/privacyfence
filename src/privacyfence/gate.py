@@ -125,7 +125,7 @@ async def gated_call(
     else:
         # ── Popup gate: block and show native approval dialog for a write ───
         async with _popup_lock:
-            decision = await asyncio.to_thread(show_popup, popup_title, details)
+            decision = await asyncio.to_thread(show_popup, popup_title, preview or {}, details)
 
         if decision == "accept":
             _audit(

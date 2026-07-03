@@ -311,21 +311,19 @@ class CalendarConnector(Connector):
     ) -> Any:
         attendee_list = [e.strip() for e in attendees.split(",") if e.strip()] if attendees else []
         room_list = [r.strip() for r in rooms.split(",") if r.strip()] if rooms else []
-        details_lines = [
-            f"Title: {title}",
-            f"Time: {start_time} – {end_time}",
-            f"Calendar: {calendar_id}",
-        ]
+        preview = {
+            "Title": title,
+            "Time": f"{start_time} – {end_time}",
+            "Calendar": calendar_id,
+        }
         if location:
-            details_lines.append(f"Location: {location}")
+            preview["Location"] = location
         if add_google_meet:
-            details_lines.append("Conferencing: Google Meet (will be created)")
+            preview["Conferencing"] = "Google Meet (will be created)"
         if room_list:
-            details_lines.append(f"Rooms: {', '.join(room_list)}")
+            preview["Rooms"] = ", ".join(room_list)
         if attendee_list:
-            details_lines.append(f"Attendees: {', '.join(attendee_list)}")
-        if description:
-            details_lines += ["", f"Description:\n{description}"]
+            preview["Attendees"] = ", ".join(attendee_list)
         raw_data = {
             "calendar_id": calendar_id, "title": title,
             "start_time": start_time, "end_time": end_time,
@@ -341,7 +339,8 @@ class CalendarConnector(Connector):
             raw_data=raw_data,
             filtered_data=None,
             gate="popup",
-            details_text="\n".join(details_lines),
+            preview=preview,
+            details_text=description,
             my_email=self.my_email,
             args={"calendar_id": calendar_id, "attendees": attendees},
         )
@@ -385,8 +384,7 @@ class CalendarConnector(Connector):
             changes["Conferencing"] = "Add Google Meet"
         if room_list:
             changes["Rooms"] = f"Book: {', '.join(room_list)}"
-        changes_text = "\n".join(f"  {k}: {v}" for k, v in changes.items()) or "  (no changes)"
-        details = f"Event: {event.title}\nCalendar: {calendar_id}\n\nChanges:\n{changes_text}"
+        preview = {"Event": event.title, "Calendar": calendar_id, **changes}
         raw_data = {
             "calendar_id": calendar_id, "event_id": event_id,
             "current_title": event.title, "new_title": title,
@@ -403,7 +401,8 @@ class CalendarConnector(Connector):
             raw_data=raw_data,
             filtered_data=None,
             gate="popup",
-            details_text=details,
+            preview=preview,
+            details_text=description if description and description != event.description else "",
             my_email=self.my_email,
             args={"calendar_id": calendar_id, "event_id": event_id},
         )

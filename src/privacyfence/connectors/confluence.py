@@ -256,10 +256,9 @@ class ConfluenceConnector(Connector):
         body: str,
         parent_id: str = "",
     ) -> Any:
-        details_lines = [f"Space: {space_key}", f"Title: {title}"]
+        preview = {"Space": space_key, "Title": title}
         if parent_id:
-            details_lines.append(f"Parent page ID: {parent_id}")
-        details_lines += ["", "Body:", body[:1000] + ("…" if len(body) > 1000 else "")]
+            preview["Parent page ID"] = parent_id
         raw = {"space_key": space_key, "title": title, "parent_id": parent_id, "body": body}
         await gated_call(
             connector=self.name,
@@ -270,7 +269,8 @@ class ConfluenceConnector(Connector):
             raw_data=raw,
             filtered_data=None,
             gate="popup",
-            details_text="\n".join(details_lines),
+            preview=preview,
+            details_text=body,
             my_email=self.my_email,
             args={"space_key": space_key, "title": title, "parent_id": parent_id},
         )
@@ -278,7 +278,7 @@ class ConfluenceConnector(Connector):
         return asdict(page)
 
     async def _update_page(self, page_id: str, title: str, body: str) -> Any:
-        details = f"Page ID: {page_id}\nTitle: {title}\n\nNew body:\n{body[:1000]}{'…' if len(body) > 1000 else ''}"
+        preview = {"Page ID": page_id, "Title": title}
         await gated_call(
             connector=self.name,
             tool="confluence_update_page",
@@ -288,7 +288,8 @@ class ConfluenceConnector(Connector):
             raw_data={"page_id": page_id, "title": title, "body": body},
             filtered_data=None,
             gate="popup",
-            details_text=details,
+            preview=preview,
+            details_text=body,
             my_email=self.my_email,
             args={"page_id": page_id, "title": title},
         )

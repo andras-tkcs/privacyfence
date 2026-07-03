@@ -135,20 +135,17 @@ class ContactsConnector(Connector):
         except Exception:
             contact_name = resource_name
 
-        changes: list[str] = []
+        preview = {"Contact": contact_name}
         if display_name:
-            changes.append(f"Name: {display_name}")
+            preview["Name"] = display_name
         if emails_list:
-            changes.append(f"Emails: {', '.join(e.get('value', '') for e in emails_list)}")
+            preview["Emails"] = ", ".join(e.get("value", "") for e in emails_list)
         if phones_list:
-            changes.append(f"Phones: {', '.join(p.get('value', '') for p in phones_list)}")
+            preview["Phones"] = ", ".join(p.get("value", "") for p in phones_list)
         if organization:
-            changes.append(f"Organization: {organization}")
+            preview["Organization"] = organization
         if job_title:
-            changes.append(f"Job title: {job_title}")
-        if notes:
-            changes.append(f"Notes: {notes[:100]}")
-        details = f"Contact: {contact_name}\n\nChanges:\n" + "\n".join(f"  {c}" for c in changes)
+            preview["Job title"] = job_title
 
         args = {
             "resource_name": resource_name, "display_name": display_name,
@@ -164,7 +161,8 @@ class ContactsConnector(Connector):
             raw_data=args,
             filtered_data=None,
             gate="popup",
-            details_text=details,
+            preview=preview,
+            details_text=notes,
             my_email=self.my_email,
             args=args,
         )

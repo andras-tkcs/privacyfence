@@ -300,8 +300,7 @@ class DriveConnector(Connector):
         drive_file = await self._fetch(self._drive.get_file_metadata, file_id)
         name = getattr(drive_file, "name", file_id)
         owners = getattr(drive_file, "owners", [])
-        preview_text = markdown[:500] + ("…" if len(markdown) > 500 else "")
-        details = f"File: {name}\nOwner: {', '.join(owners)}\n\nMarkdown content:\n{preview_text}"
+        preview = {"File": name, "Owner": ", ".join(owners) or "(unknown)"}
         await gated_call(
             connector=self.name,
             tool="drive_write_doc_content",
@@ -311,7 +310,8 @@ class DriveConnector(Connector):
             raw_data={"file": drive_file, "markdown_preview": markdown[:200]},
             filtered_data=None,
             gate="popup",
-            details_text=details,
+            preview=preview,
+            details_text=markdown,
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={"file_id": file_id},
@@ -322,8 +322,7 @@ class DriveConnector(Connector):
         drive_file = await self._fetch(self._drive.get_file_metadata, file_id)
         name = getattr(drive_file, "name", file_id)
         owners = getattr(drive_file, "owners", [])
-        preview_text = content[:500] + ("…" if len(content) > 500 else "")
-        details = f"File: {name}\nOwner: {', '.join(owners)}\n\nNew content:\n{preview_text}"
+        preview = {"File": name, "Owner": ", ".join(owners) or "(unknown)"}
         await gated_call(
             connector=self.name,
             tool="drive_write_file_content",
@@ -333,7 +332,8 @@ class DriveConnector(Connector):
             raw_data={"file": drive_file, "content_preview": content[:200]},
             filtered_data=None,
             gate="popup",
-            details_text=details,
+            preview=preview,
+            details_text=content,
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={"file_id": file_id},
@@ -344,7 +344,7 @@ class DriveConnector(Connector):
         drive_file = await self._fetch(self._drive.get_file_metadata, file_id)
         name = getattr(drive_file, "name", file_id)
         owners = getattr(drive_file, "owners", [])
-        details = f"File: {name}\nOwner: {', '.join(owners)}\nMove to folder: {destination_folder_id}"
+        preview = {"File": name, "Owner": ", ".join(owners) or "(unknown)", "Move to folder": destination_folder_id}
         await gated_call(
             connector=self.name,
             tool="drive_move_file",
@@ -354,7 +354,8 @@ class DriveConnector(Connector):
             raw_data={"file": drive_file, "destination_folder_id": destination_folder_id},
             filtered_data=None,
             gate="popup",
-            details_text=details,
+            preview=preview,
+            details_text="",
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={"file_id": file_id, "destination_folder_id": destination_folder_id},
@@ -365,7 +366,7 @@ class DriveConnector(Connector):
         drive_file = await self._fetch(self._drive.get_file_metadata, file_id)
         name = getattr(drive_file, "name", file_id)
         owners = getattr(drive_file, "owners", [])
-        details = f"File: {name}\nOwner: {', '.join(owners)}\n\nComment:\n{comment}"
+        preview = {"File": name, "Owner": ", ".join(owners) or "(unknown)"}
         await gated_call(
             connector=self.name,
             tool="drive_add_comment",
@@ -375,7 +376,8 @@ class DriveConnector(Connector):
             raw_data={"file": drive_file, "comment": comment},
             filtered_data=None,
             gate="popup",
-            details_text=details,
+            preview=preview,
+            details_text=comment,
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={"file_id": file_id},

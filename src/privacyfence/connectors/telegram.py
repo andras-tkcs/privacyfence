@@ -177,7 +177,7 @@ class TelegramConnector(Connector):
 
     async def _send_message(self, chat_id: int, text: str) -> Any:
         chat_name = str(chat_id)
-        details = f"Chat: {chat_name}\n\nMessage:\n{text}"
+        preview = {"Chat": chat_name}
         await gated_call(
             connector=self.name,
             tool="telegram_send_message",
@@ -187,7 +187,8 @@ class TelegramConnector(Connector):
             raw_data={"chat_id": chat_id, "text": text},
             filtered_data=None,
             gate="popup",
-            details_text=details,
+            preview=preview,
+            details_text=text,
             args={"chat_id": chat_id},
         )
         try:

@@ -264,12 +264,12 @@ class GmailConnector(Connector):
     async def _create_draft(
         self, to: str, subject: str, body: str, cc: str = "", bcc: str = ""
     ) -> Any:
-        details_lines = [f"To: {to}"]
+        preview = {"To": to}
         if cc:
-            details_lines.append(f"Cc: {cc}")
+            preview["Cc"] = cc
         if bcc:
-            details_lines.append(f"Bcc: {bcc}")
-        details_lines += [f"Subject: {subject}", "", body]
+            preview["Bcc"] = bcc
+        preview["Subject"] = subject
         await gated_call(
             connector=self.name,
             tool="gmail_create_draft",
@@ -279,7 +279,8 @@ class GmailConnector(Connector):
             raw_data={"to": to, "subject": subject, "body": body, "cc": cc, "bcc": bcc},
             filtered_data=None,
             gate="popup",
-            details_text="\n".join(details_lines),
+            preview=preview,
+            details_text=body,
             my_email=self.my_email,
             args={"to": to, "subject": subject},
         )
@@ -287,7 +288,7 @@ class GmailConnector(Connector):
 
     async def _add_label(self, message_id: str, label_name: str) -> Any:
         message = await self._fetch(self._gmail.get_message, message_id)
-        details = f"From: {message.sender}\nSubject: {message.subject}\n\nAdd label: {label_name}"
+        preview = {"From": message.sender or "(unknown)", "Subject": message.subject or "(no subject)", "Label": label_name}
         await gated_call(
             connector=self.name,
             tool="gmail_add_label",
@@ -297,7 +298,8 @@ class GmailConnector(Connector):
             raw_data={"message_id": message_id, "label_name": label_name},
             filtered_data=None,
             gate="popup",
-            details_text=details,
+            preview=preview,
+            details_text="",
             my_email=self.my_email,
             args={"message_id": message_id, "label_name": label_name},
         )
@@ -305,7 +307,7 @@ class GmailConnector(Connector):
 
     async def _remove_label(self, message_id: str, label_name: str) -> Any:
         message = await self._fetch(self._gmail.get_message, message_id)
-        details = f"From: {message.sender}\nSubject: {message.subject}\n\nRemove label: {label_name}"
+        preview = {"From": message.sender or "(unknown)", "Subject": message.subject or "(no subject)", "Label": label_name}
         await gated_call(
             connector=self.name,
             tool="gmail_remove_label",
@@ -315,7 +317,8 @@ class GmailConnector(Connector):
             raw_data={"message_id": message_id, "label_name": label_name},
             filtered_data=None,
             gate="popup",
-            details_text=details,
+            preview=preview,
+            details_text="",
             my_email=self.my_email,
             args={"message_id": message_id, "label_name": label_name},
         )
@@ -323,9 +326,8 @@ class GmailConnector(Connector):
 
     async def _archive_message(self, message_id: str) -> Any:
         message = await self._fetch(self._gmail.get_message, message_id)
+        preview = {"From": message.sender or "(unknown)", "Subject": message.subject or "(no subject)"}
         details = (
-            f"From: {message.sender}\n"
-            f"Subject: {message.subject}\n\n"
             "Action: Archive (remove from Inbox)\n"
             "The message will remain in All Mail and is not deleted."
         )
@@ -338,6 +340,7 @@ class GmailConnector(Connector):
             raw_data={"message_id": message_id},
             filtered_data=None,
             gate="popup",
+            preview=preview,
             details_text=details,
             my_email=self.my_email,
             args={"message_id": message_id},

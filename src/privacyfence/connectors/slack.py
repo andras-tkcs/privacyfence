@@ -232,9 +232,11 @@ class SlackConnector(Connector):
         thread_ts: str = "",
         mark_unread: bool = False,
     ) -> Any:
-        thread_note = f"\nIn thread: {thread_ts}" if thread_ts else ""
-        unread_note = "\n(Message will be marked unread after sending)" if mark_unread else ""
-        details = f"Channel: {channel_id}{thread_note}{unread_note}\n\nMessage:\n{text}"
+        preview = {"Channel": channel_id}
+        if thread_ts:
+            preview["In thread"] = thread_ts
+        if mark_unread:
+            preview["Mark unread"] = "after sending"
         await gated_call(
             connector=self.name,
             tool="slack_send_message",
@@ -244,7 +246,8 @@ class SlackConnector(Connector):
             raw_data={"channel_id": channel_id, "text": text, "thread_ts": thread_ts},
             filtered_data=None,
             gate="popup",
-            details_text=details,
+            preview=preview,
+            details_text=text,
             my_email=self.my_email,
             args={"channel_id": channel_id, "thread_ts": thread_ts},
         )
