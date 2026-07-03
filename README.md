@@ -288,15 +288,13 @@ the only download you need:
 2. Open the DMG, drag **PrivacyFenceApp.app** to `/Applications`.
 3. **Releases aren't notarized yet**, so Gatekeeper will refuse the first launch with *"PrivacyFenceApp
    is damaged and can't be opened. You should move it to the Trash."* — this is not actual corruption,
-   just macOS blocking an unsigned app downloaded from the internet. On current macOS (especially
-   Apple Silicon), right-click → Open does **not** bypass this for unsigned apps, so clear the
-   quarantine flag instead:
-   - Double-click **Fix Launch Issue.command**, still in the mounted DMG (Terminal will pop up
-     briefly and close itself), or
-   - Run in Terminal yourself:
-     ```bash
-     xattr -cr /Applications/PrivacyFenceApp.app
-     ```
+   just macOS blocking an unsigned app downloaded from the internet. Right-click → Open does **not**
+   bypass this on current macOS, and neither does any other helper script placed in the DMG (it
+   inherits the same quarantine flag). The only fix is to clear the quarantine attribute yourself in
+   Terminal:
+   ```bash
+   xattr -cr /Applications/PrivacyFenceApp.app
+   ```
    Then launch it normally — the menu bar icon appears immediately, there's no setup wizard to walk
    through.
 4. To start PrivacyFence automatically at login, install the LaunchAgent once:

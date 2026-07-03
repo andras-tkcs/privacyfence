@@ -130,8 +130,6 @@ MCPB_DMG_NAME="${PRODUCT_NAME}.mcpb"   # stable name inside the DMG (no version)
 echo "→ Building DMG…"
 rm -f "$DMG_PATH"
 
-chmod +x "scripts/Fix Launch Issue.command"
-
 create-dmg \
   --volname "${PRODUCT_NAME}" \
   --volicon "$ICNS_PATH" \
@@ -142,7 +140,6 @@ create-dmg \
   --hide-extension "${APP_NAME}.app" \
   --app-drop-link 450 140 \
   --add-file "${MCPB_DMG_NAME}" "$MCPB_PATH" 300 340 \
-  --add-file "Fix Launch Issue.command" "scripts/Fix Launch Issue.command" 300 420 \
   --no-internet-enable \
   "$DMG_PATH" \
   "dist/${APP_NAME}.app"
