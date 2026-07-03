@@ -5,7 +5,7 @@
 # The bridge only speaks MCP-over-stdio to Claude and JSON-over-Unix-socket to
 # the daemon (see bridge_main.py) — it never imports the connector clients,
 # google-auth, slack_sdk, telethon, atlassian-python-api, rumps, or tkinter.
-# Building it separately from PrivacyFence.spec keeps the .mcpb bundle small
+# Building it separately from PrivacyFenceApp.spec keeps the .mcpb bundle small
 # instead of dragging in the daemon's entire dependency tree.
 #
 # Produces:

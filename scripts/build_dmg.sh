@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 # Build PrivacyFence.dmg — a drag-to-install macOS disk image.
 #
+# The DMG is the single distributable: it carries both halves of PrivacyFence
+# so the user flow is "mount the DMG, drag PrivacyFenceApp.app to Applications,
+# double-click PrivacyFence.mcpb to install the Claude extension" — no separate
+# downloads.
+#
 # Prerequisites (needed only on your build machine, not end-user machines):
 #   pip install pyinstaller
 #   brew install create-dmg
 #   brew install librsvg   # optional, only if you add SVG assets
+#   node + npx on PATH (used by scripts/build_mcpb.sh)
 #
 # Usage:
 #   ./scripts/build_dmg.sh [--sign "Developer ID Application: Your Name (TEAMID)"]
@@ -30,9 +36,10 @@ else
 fi
 
 VERSION=$("$PYTHON" -c "import tomllib; d=tomllib.load(open('pyproject.toml','rb')); print(d['project']['version'])")
-APP_NAME="PrivacyFence"
+APP_NAME="PrivacyFenceApp"       # .app bundle / executable name (daemon)
+PRODUCT_NAME="PrivacyFence"      # public-facing DMG volume / installer name
 BUNDLE="dist/${APP_NAME}.app"
-DMG_NAME="${APP_NAME}-${VERSION}.dmg"
+DMG_NAME="${PRODUCT_NAME}-${VERSION}.dmg"
 DMG_PATH="dist/${DMG_NAME}"
 
 SIGN_IDENTITY="${SIGN_IDENTITY:-}"
@@ -42,7 +49,7 @@ for arg in "$@"; do
   esac
 done
 
-echo "=== Building ${APP_NAME} ${VERSION} ==="
+echo "=== Building ${PRODUCT_NAME} ${VERSION} ==="
 
 # ── 1. Convert PNG icon to ICNS (must happen before PyInstaller) ─────────────
 ICON_SRC="src/privacyfence/resources/icon_512.png"
@@ -64,16 +71,34 @@ if [ ! -f "$ICNS_PATH" ]; then
   iconutil -c icns "$ICON_DIR" -o "$ICNS_PATH"
 fi
 
-# ── 2. Build .app bundle ──────────────────────────────────────────────────────
-echo "→ Running PyInstaller…"
-PRIVACYFENCE_ICNS="$ICNS_PATH" $PYINSTALLER --noconfirm PrivacyFence.spec
+# ── 2. Bake in the Telegram app credentials ───────────────────────────────────
+# api_id/api_hash identify the PrivacyFence app to Telegram (not an
+# organization — see docs/telegram-setup.md), and this repo is public, so
+# they're never committed: CI supplies them as TELEGRAM_API_ID/TELEGRAM_API_HASH
+# secrets, written here into a git-ignored module PyInstaller then bundles.
+# Local builds without the env vars set just ship without Telegram support.
+CREDS_FILE="src/privacyfence/_telegram_credentials.py"
+if [ -n "${TELEGRAM_API_ID:-}" ] && [ -n "${TELEGRAM_API_HASH:-}" ]; then
+  echo "→ Writing Telegram app credentials…"
+  cat > "$CREDS_FILE" <<EOF
+API_ID = ${TELEGRAM_API_ID}
+API_HASH = "${TELEGRAM_API_HASH}"
+EOF
+else
+  echo "→ TELEGRAM_API_ID/TELEGRAM_API_HASH not set; building without Telegram app credentials."
+  rm -f "$CREDS_FILE"
+fi
 
-# ── 3. Create privacyfence-app symlink inside the bundle ─────────────────────────
-# The LaunchAgent plist and bridge use this name; the main exe is "PrivacyFence".
+# ── 3. Build .app bundle ──────────────────────────────────────────────────────
+echo "→ Running PyInstaller…"
+PRIVACYFENCE_ICNS="$ICNS_PATH" $PYINSTALLER --noconfirm PrivacyFenceApp.spec
+
+# ── 4. Create privacyfence-app symlink inside the bundle ─────────────────────────
+# The LaunchAgent plist and bridge use this name; the main exe is "PrivacyFenceApp".
 MACOS_DIR="${BUNDLE}/Contents/MacOS"
 if [ ! -e "${MACOS_DIR}/privacyfence-app" ]; then
   echo "→ Creating privacyfence-app symlink…"
-  ln -s "PrivacyFence" "${MACOS_DIR}/privacyfence-app"
+  ln -s "PrivacyFenceApp" "${MACOS_DIR}/privacyfence-app"
 fi
 
 # Apply the .icns to the .app bundle
@@ -81,7 +106,7 @@ if command -v fileicon &>/dev/null; then
   fileicon set "$BUNDLE" "$ICNS_PATH" 2>/dev/null || true
 fi
 
-# ── 4. Optional code signing ──────────────────────────────────────────────────
+# ── 5. Optional code signing ──────────────────────────────────────────────────
 if [ -n "$SIGN_IDENTITY" ]; then
   echo "→ Code-signing with: ${SIGN_IDENTITY}"
   codesign --deep --force --options runtime \
@@ -90,24 +115,31 @@ if [ -n "$SIGN_IDENTITY" ]; then
     "$BUNDLE"
 fi
 
-# ── 5. Package into DMG ───────────────────────────────────────────────────────
+# ── 6. Build the bridge .mcpb (Claude Desktop extension) ─────────────────────
+echo "→ Building PrivacyFence.mcpb…"
+bash scripts/build_mcpb.sh
+MCPB_PATH="dist/${PRODUCT_NAME}-${VERSION}.mcpb"
+MCPB_DMG_NAME="${PRODUCT_NAME}.mcpb"   # stable name inside the DMG (no version)
+
+# ── 7. Package into DMG ───────────────────────────────────────────────────────
 echo "→ Building DMG…"
 rm -f "$DMG_PATH"
 
 create-dmg \
-  --volname "${APP_NAME}" \
+  --volname "${PRODUCT_NAME}" \
   --volicon "$ICNS_PATH" \
   --window-pos 200 120 \
-  --window-size 600 400 \
+  --window-size 600 480 \
   --icon-size 128 \
-  --icon "${APP_NAME}.app" 150 185 \
+  --icon "${APP_NAME}.app" 150 140 \
   --hide-extension "${APP_NAME}.app" \
-  --app-drop-link 450 185 \
+  --app-drop-link 450 140 \
+  --add-file "${MCPB_DMG_NAME}" "$MCPB_PATH" 300 340 \
   --no-internet-enable \
   "$DMG_PATH" \
   "dist/${APP_NAME}.app"
 
-# ── 6. Optional notarization ──────────────────────────────────────────────────
+# ── 8. Optional notarization ──────────────────────────────────────────────────
 # Uncomment and set NOTARIZE_PROFILE (name from `xcrun notarytool store-credentials`)
 # if [ -n "$SIGN_IDENTITY" ] && [ -n "${NOTARIZE_PROFILE:-}" ]; then
 #   echo "→ Submitting for notarization…"

@@ -11,10 +11,12 @@ Threading model:
 
 Configuration is split into two files (see paths.py):
   - ``org/org_config.json``    — organization-level app registrations (Google
-    OAuth client, Slack app, Telegram app, Salesforce Connected App, Atlassian
-    OAuth app), installed via "Install/Update Organization Config…" in the
-    menu bar. Optional per service; a connector is offered only if its
-    section is present.
+    OAuth client, Slack app, Salesforce Connected App, Atlassian OAuth app),
+    installed via "Install/Update Organization Config…" in the menu bar.
+    Optional per service; a connector is offered only if its section is
+    present. Telegram's api_id/api_hash are the one exception: they identify
+    the PrivacyFence app itself (not an organization) and are baked into the
+    release build — see app_credentials.py.
   - ``config/settings.yaml``   — per-user settings: privacy policy,
     connectors{enabled}, auto_accept_rules. No secrets live here.
 Per-user credentials (OAuth tokens, Telegram session) live under
@@ -28,13 +30,16 @@ import fcntl
 import json
 import logging
 import os
+import shutil
 import sys
 import threading
+from pathlib import Path
 from typing import Any
 
 import yaml
 
 from .paths import data_dir, org_dir
+from .app_credentials import telegram_app_credentials
 from .auto_accept import init_config_path, reload_rules
 from .connectors.calendar import CalendarConnector
 from .connectors.confluence import ConfluenceConnector
@@ -127,13 +132,22 @@ def _resolve_path(path: str) -> str:
     return os.path.join(PROJECT_ROOT, path)
 
 
+def _bootstrap_config(resolved: str) -> None:
+    """Seed a default settings.yaml from the packaged example on first run.
+
+    The example carries no secrets (org credentials and per-user auth are
+    handled separately via the menu bar), so it's safe to install
+    automatically now that there's no setup wizard to do it.
+    """
+    example = Path(__file__).parent / "resources" / "settings.yaml.example"
+    os.makedirs(os.path.dirname(resolved), exist_ok=True)
+    shutil.copyfile(example, resolved)
+
+
 def load_config(config_path: str) -> dict[str, Any]:
     resolved = _resolve_path(config_path)
     if not os.path.exists(resolved):
-        raise FileNotFoundError(
-            f"Configuration file not found: {resolved}. "
-            "Copy config/settings.yaml.example to config/settings.yaml."
-        )
+        _bootstrap_config(resolved)
     with open(resolved, encoding="utf-8") as fh:
         config = yaml.safe_load(fh) or {}
     if not isinstance(config, dict):
@@ -200,7 +214,7 @@ def _google_client_config(org_config: dict[str, Any]) -> dict[str, Any]:
 # Connector construction (graceful: missing org config or auth → connector skipped)
 # ---------------------------------------------------------------------------- #
 
-def _build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list:
+def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list:
     connectors: list[Any] = []
     connectors_cfg: dict[str, dict] = config.get("connectors", {}) or {}
 
@@ -363,22 +377,23 @@ def _build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> lis
             logger.warning("Confluence connector disabled: %s", exc)
 
     # Telegram — the sole exception to browser OAuth (MTProto has no
-    # equivalent for full user-session access); api_id/api_hash are still
-    # organization-level, phone+code(+2FA) auth is still per-user.
+    # equivalent for full user-session access). api_id/api_hash identify the
+    # PrivacyFence app itself and are baked into the build (app_credentials.py),
+    # not part of the organization config bundle; phone+code(+2FA) auth is
+    # still per-user.
     if enabled("telegram"):
         try:
-            tg_org = org_config.get("telegram") or {}
-            api_id = tg_org.get("api_id")
-            api_hash = tg_org.get("api_hash", "")
-            if not api_id or not api_hash:
-                raise TelegramClientError("Telegram organization config not installed")
+            creds = telegram_app_credentials()
+            if not creds:
+                raise TelegramClientError("Telegram app credentials not available in this build")
+            api_id, api_hash = creds
             session_file = _resolve_path(TOKEN_FILES["telegram"])
             if not os.path.exists(session_file) and not os.path.exists(session_file + ".session"):
                 raise TelegramClientError(
                     "Telegram is not authenticated. Use Authenticate… in the PrivacyFence menu bar."
                 )
             tg_client = TelegramPrivacyFenceClient(
-                api_id=int(api_id),
+                api_id=api_id,
                 api_hash=api_hash,
                 session_file=session_file,
             )
@@ -543,15 +558,18 @@ def run_atlassian_oauth(org_config: dict[str, Any]) -> int:
     return 0
 
 
-def run_telegram_setup(org_config: dict[str, Any]) -> int:
-    tg_org = org_config.get("telegram") or {}
-    api_id = tg_org.get("api_id")
-    api_hash = tg_org.get("api_hash", "")
-    if not api_id or not api_hash:
-        print("No Telegram organization config installed.", file=sys.stderr)
+def run_telegram_setup() -> int:
+    creds = telegram_app_credentials()
+    if not creds:
+        print(
+            "No Telegram app credentials in this build. For local dev, set "
+            "PRIVACYFENCE_TELEGRAM_API_ID and PRIVACYFENCE_TELEGRAM_API_HASH.",
+            file=sys.stderr,
+        )
         return 1
+    api_id, api_hash = creds
     session_file = _resolve_path(TOKEN_FILES["telegram"])
-    client = TelegramPrivacyFenceClient(api_id=int(api_id), api_hash=api_hash, session_file=session_file)
+    client = TelegramPrivacyFenceClient(api_id=api_id, api_hash=api_hash, session_file=session_file)
     asyncio.run(client.authorize_interactive())
     print(f"Telegram session saved to {session_file}")
     return 0
@@ -571,7 +589,7 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
     reload_rules(config.get("auto_accept_rules", {}) or {})
 
     org_config = load_org_config()
-    connectors = _build_connectors(config, org_config)
+    connectors = build_connectors(config, org_config)
     if not connectors:
         logger.warning("No connectors could be initialized; daemon still starting for IPC.")
 
@@ -584,7 +602,7 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
     from .menu_bar import run_menu_bar
     connector_names = [c.name for c in connectors]
     try:
-        run_menu_bar(config_path=config_path, connectors=connector_names)
+        run_menu_bar(config_path=config_path, connectors=connector_names, ipc_server=ipc_server)
     except KeyboardInterrupt:
         logger.info("Interrupted; shutting down")
     finally:
@@ -652,7 +670,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.atlassian_oauth:
                 return run_atlassian_oauth(org_config)
             if args.telegram_setup:
-                return run_telegram_setup(org_config)
+                return run_telegram_setup()
         return run_app(config, args.config)
     except Exception as exc:
         logger.error("Fatal error: %s", exc, exc_info=True)

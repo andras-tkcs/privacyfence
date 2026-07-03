@@ -3,9 +3,13 @@
 
 Run this once per organization after registering each cloud app (see the
 "For IT admins" section of docs/google-cloud-setup.md, docs/slack-setup.md,
-docs/telegram-setup.md, docs/salesforce-setup.md, and docs/atlassian-setup.md).
-The output file is what you distribute to your users — they install it via
-"Install/Update Organization Config…" in the PrivacyFence menu bar.
+docs/salesforce-setup.md, and docs/atlassian-setup.md). The output file is
+what you distribute to your users — they install it via "Install/Update
+Organization Config…" in the PrivacyFence menu bar.
+
+Telegram is not part of this bundle: its api_id/api_hash identify the
+PrivacyFence app itself (not your organization) and are baked into the
+release build — see docs/telegram-setup.md and src/privacyfence/app_credentials.py.
 
 Only pass the flags for services you've set up; a connector is offered to
 users only if its section is present in the bundle. Stdlib only — no
@@ -16,7 +20,6 @@ Example:
         --org-name "Acme Corp" \\
         --google-client-secret ~/Downloads/client_secret_....json \\
         --slack-client-id 1234.5678 --slack-client-secret abcdef \\
-        --telegram-api-id 12345678 --telegram-api-hash abc123 \\
         --salesforce-consumer-key 3MVG9... --salesforce-consumer-secret abc \\
         --atlassian-client-id abc123 --atlassian-client-secret def456 \\
         -o org_config.json
@@ -80,10 +83,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override the default Slack user-token scopes (advanced; usually leave unset).",
     )
 
-    telegram = parser.add_argument_group("Telegram")
-    telegram.add_argument("--telegram-api-id", type=int)
-    telegram.add_argument("--telegram-api-hash")
-
     salesforce = parser.add_argument_group("Salesforce")
     salesforce.add_argument("--salesforce-consumer-key")
     salesforce.add_argument("--salesforce-consumer-secret")
@@ -124,11 +123,6 @@ def main(argv: list[str] | None = None) -> int:
             slack["user_scopes"] = args.slack_scopes
         bundle["slack"] = slack
 
-    if args.telegram_api_id or args.telegram_api_hash:
-        if not (args.telegram_api_id and args.telegram_api_hash):
-            raise SystemExit("--telegram-api-id and --telegram-api-hash must be given together.")
-        bundle["telegram"] = {"api_id": args.telegram_api_id, "api_hash": args.telegram_api_hash}
-
     if args.salesforce_consumer_key or args.salesforce_consumer_secret:
         if not (args.salesforce_consumer_key and args.salesforce_consumer_secret):
             raise SystemExit("--salesforce-consumer-key and --salesforce-consumer-secret must be given together.")
@@ -143,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit("--atlassian-client-id and --atlassian-client-secret must be given together.")
         bundle["atlassian"] = {"client_id": args.atlassian_client_id, "client_secret": args.atlassian_client_secret}
 
-    services = [k for k in ("google", "slack", "telegram", "salesforce", "atlassian") if k in bundle]
+    services = [k for k in ("google", "slack", "salesforce", "atlassian") if k in bundle]
     if not services:
         raise SystemExit("No service flags given — nothing to write. Pass at least one service's credentials.")
 

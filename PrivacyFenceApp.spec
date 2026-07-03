@@ -1,11 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
 #
-# PyInstaller spec for PrivacyFence.app
+# PyInstaller spec for PrivacyFenceApp.app (the daemon)
 #
 # Produces:
-#   dist/PrivacyFence.app/
-#     Contents/MacOS/PrivacyFence          ← daemon (main app, opens menu bar)
-#     Contents/MacOS/privacyfence-app      ← symlink → PrivacyFence (for daemon auto-start)
+#   dist/PrivacyFenceApp.app/
+#     Contents/MacOS/PrivacyFenceApp       ← daemon (main app, opens menu bar)
+#     Contents/MacOS/privacyfence-app      ← symlink → PrivacyFenceApp (for daemon auto-start)
 #
 # The bridge (Claude's MCP entry point) is built separately — see
 # PrivacyFenceBridge.spec and scripts/build_mcpb.sh — and distributed as a
@@ -13,7 +13,7 @@
 #
 # Build:
 #   pip install pyinstaller
-#   pyinstaller PrivacyFence.spec
+#   pyinstaller PrivacyFenceApp.spec
 #
 # Notes:
 #   - Run on the target architecture. For Apple Silicon: arch -arm64 pyinstaller ...
@@ -68,11 +68,6 @@ hidden_imports = [
     # fastmcp transports
     "fastmcp",
     "mcp",
-    # macOS tkinter
-    "tkinter",
-    "tkinter.ttk",
-    "tkinter.filedialog",
-    "tkinter.messagebox",
     # privacyfence connectors (all loaded at runtime from _build_connectors)
     "privacyfence.connectors.gmail",
     "privacyfence.connectors.drive",
@@ -106,7 +101,7 @@ daemon_exe = EXE(
     daemon_a.scripts,
     [],
     exclude_binaries=True,
-    name="PrivacyFence",
+    name="PrivacyFenceApp",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -128,12 +123,12 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name="PrivacyFence",
+    name="PrivacyFenceApp",
 )
 
 app = BUNDLE(
     coll,
-    name="PrivacyFence.app",
+    name="PrivacyFenceApp.app",
     icon=ICON,
     bundle_identifier="com.privacyfence.app",
     version="0.1.0",

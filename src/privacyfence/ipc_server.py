@@ -29,6 +29,14 @@ class IPCServer:
         self._connectors: dict[str, Connector] = {c.name: c for c in connectors}
         self._server: asyncio.AbstractServer | None = None
 
+    def set_connectors(self, connectors: list[Connector]) -> None:
+        """Swap in a freshly built connector set (e.g. after the menu bar
+        authenticates a service or toggles one on/off). Called from the
+        rumps main thread; the dict reassignment is a single atomic
+        reference swap so no lock is needed against the IPC asyncio thread.
+        """
+        self._connectors = {c.name: c for c in connectors}
+
     # ------------------------------------------------------------------ #
     # Lifecycle
     # ------------------------------------------------------------------ #
@@ -108,6 +116,7 @@ class IPCServer:
 
     def _build_manifest(self) -> dict:
         return {
+            "version": VERSION,
             "connectors": [
                 {
                     "name": c.name,

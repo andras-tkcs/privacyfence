@@ -280,8 +280,10 @@ Every decision — accepted, denied, or auto-accepted — is appended to a JSON-
 PrivacyFence splits configuration into two steps done by two different people:
 
 1. **IT admin, once per organization:** register a cloud app for each service you want (Google,
-   Slack, Salesforce, Atlassian, Telegram) and package the result into one organization config
-   bundle with `scripts/build_org_bundle.py`. See the "For IT admins" section of each doc below.
+   Slack, Salesforce, Atlassian) and package the result into one organization config bundle with
+   `scripts/build_org_bundle.py`. See the "For IT admins" section of each doc below. Telegram is
+   not part of this step — its `api_id`/`api_hash` identify the PrivacyFence app itself, not your
+   organization, and are already baked into the release build.
 2. **Every user, from the PrivacyFence menu bar:** install the bundle IT sent you, then click
    **Authenticate…** on each connector you want. Almost everywhere this opens your browser to sign
    in — Telegram is the only connector that instead asks for your phone number and a verification
@@ -341,7 +343,7 @@ privacyfence-app --tasks-oauth
 privacyfence-app --slack-oauth        # if the bundle has a Slack app
 privacyfence-app --salesforce-oauth   # if the bundle has a Salesforce Connected App
 privacyfence-app --atlassian-oauth    # if the bundle has an Atlassian OAuth app
-privacyfence-app --telegram-setup     # if the bundle has a Telegram app
+privacyfence-app --telegram-setup     # phone+code sign-in (needs PRIVACYFENCE_TELEGRAM_API_ID/API_HASH env vars for a dev build)
 ```
 
 Start the daemon:

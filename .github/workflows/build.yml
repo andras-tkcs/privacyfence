@@ -51,6 +51,8 @@ jobs:
       - name: Build .app and DMG
         env:
           SIGN_IDENTITY: ${{ secrets.SIGN_IDENTITY }}
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
           # NOTARIZE_PROFILE: ${{ secrets.NOTARIZE_PROFILE }}   # uncomment with notarization
         run: bash scripts/build_dmg.sh
 

@@ -22,7 +22,7 @@ import os
 import subprocess
 import threading
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import rumps
 import yaml
@@ -31,7 +31,8 @@ from PyObjCTools import AppHelper
 from . import __version__
 from .auto_accept import reload_rules
 from .paths import data_dir, org_dir
-from .daemon_main import TOKEN_FILES, load_org_config
+from .app_credentials import telegram_app_credentials
+from .daemon_main import TOKEN_FILES, build_connectors, load_org_config
 from .atlassian_oauth import authorize_interactive as atlassian_authorize_interactive
 from .calendar_client import CalendarClient
 from .contacts_client import ContactsClient
@@ -40,6 +41,9 @@ from .gmail_client import GmailClient
 from .salesforce_client import authorize_interactive as salesforce_authorize_interactive
 from .slack_client import authorize_interactive as slack_authorize_interactive
 from .tasks_client import TasksClient
+
+if TYPE_CHECKING:
+    from .ipc_server import IPCServer
 
 logger = logging.getLogger(__name__)
 
@@ -103,16 +107,17 @@ ALL_CONNECTORS: list[str] = [
 GOOGLE_CONNECTORS: set[str] = {"gmail", "drive", "contacts", "calendar", "tasks"}
 
 # Which section of the organization config bundle each connector depends on.
-# Jira and Confluence share one Atlassian OAuth grant.
+# Jira and Confluence share one Atlassian OAuth grant. Telegram is not part
+# of the org bundle — its app credentials are baked into the build (see
+# app_credentials.py) and checked separately in _build_connectors_menu.
 ORG_CONFIG_SERVICE: dict[str, str] = {
     "gmail": "google", "drive": "google", "contacts": "google",
     "calendar": "google", "tasks": "google",
     "slack": "slack",
     "jira": "atlassian", "confluence": "atlassian",
     "salesforce": "salesforce",
-    "telegram": "telegram",
 }
-ORG_BUNDLE_SERVICES: list[str] = ["google", "slack", "telegram", "salesforce", "atlassian"]
+ORG_BUNDLE_SERVICES: list[str] = ["google", "slack", "salesforce", "atlassian"]
 
 _GOOGLE_CLIENTS: dict[str, type] = {
     "gmail": GmailClient,
@@ -169,9 +174,10 @@ def _google_client_config(org_config: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------- #
 
 class PrivacyFenceMenuBar(rumps.App):
-    def __init__(self, config_path: str, connectors: list[str]) -> None:
+    def __init__(self, config_path: str, connectors: list[str], ipc_server: "IPCServer") -> None:
         self._config_path = config_path
         self._connectors = connectors
+        self._ipc_server = ipc_server
         icon_path = _find_icon()
         super().__init__(
             name="PrivacyFence",
@@ -271,14 +277,17 @@ class PrivacyFenceMenuBar(rumps.App):
             connected = cname in self._connectors
             conn_cfg = connectors_cfg.get(cname, {})
             enabled = conn_cfg.get("enabled", True)
-            has_org = bool(org_config.get(ORG_CONFIG_SERVICE[cname]))
+            if cname == "telegram":
+                has_org = telegram_app_credentials() is not None
+            else:
+                has_org = bool(org_config.get(ORG_CONFIG_SERVICE[cname]))
 
             if connected:
                 status = "●"  # connected
             elif not enabled:
                 status = "✕"  # disabled
             elif not has_org:
-                status = "○"  # org config missing
+                status = "○"  # org config / app credentials missing
             else:
                 status = "◐"  # org config present, needs authentication
 
@@ -292,7 +301,12 @@ class PrivacyFenceMenuBar(rumps.App):
             conn_item.add(rumps.separator)
 
             if not has_org:
-                conn_item.add(rumps.MenuItem("  Organization config missing — install it above"))
+                msg = (
+                    "  App credentials missing from this build"
+                    if cname == "telegram"
+                    else "  Organization config missing — install it above"
+                )
+                conn_item.add(rumps.MenuItem(msg))
             else:
                 auth_label = "  Reconnect…" if connected else "  Authenticate…"
                 authenticate = rumps.MenuItem(auth_label)
@@ -498,6 +512,26 @@ class PrivacyFenceMenuBar(rumps.App):
         conn["enabled"] = not conn.get("enabled", True)
         self._save_config(cfg)
         self._rebuild()
+        self._refresh_connectors()
+
+    def _refresh_connectors(self) -> None:
+        """Re-run connector construction (which re-checks auth/enabled state
+        for every service) and push the result live into the running IPC
+        server, so authenticating or toggling a connector takes effect
+        immediately instead of requiring a restart."""
+
+        def work() -> list:
+            cfg = self._load_config()
+            org_config = load_org_config()
+            return build_connectors(cfg, org_config)
+
+        def done(ok: bool, result: Any) -> None:
+            if ok:
+                self._connectors = [c.name for c in result]
+                self._ipc_server.set_connectors(result)
+            self._rebuild()
+
+        self._run_async(work, done)
 
     def _authenticate(self, cname: str, _sender: Any = None) -> None:
         org_config = load_org_config()
@@ -510,7 +544,7 @@ class PrivacyFenceMenuBar(rumps.App):
         elif cname in ("jira", "confluence"):
             self._authenticate_atlassian(org_config)
         elif cname == "telegram":
-            self._authenticate_telegram(org_config)
+            self._authenticate_telegram()
 
     def _run_async(self, work, on_done) -> None:
         """Run ``work()`` on a background thread.
@@ -559,14 +593,11 @@ class PrivacyFenceMenuBar(rumps.App):
 
         def done(ok: bool, result: Any) -> None:
             if ok:
-                rumps.alert(
-                    "PrivacyFence",
-                    f"{cname.capitalize()} connected as {result}.\n\n"
-                    "Quit and reopen PrivacyFence to activate it.",
-                )
+                rumps.alert("PrivacyFence", f"{cname.capitalize()} connected as {result}.")
+                self._refresh_connectors()
             else:
                 rumps.alert("PrivacyFence", f"{cname.capitalize()} authentication failed:\n{result}")
-            self._rebuild()
+                self._rebuild()
 
         self._run_async(work, done)
 
@@ -587,14 +618,11 @@ class PrivacyFenceMenuBar(rumps.App):
 
         def done(ok: bool, result: Any) -> None:
             if ok:
-                rumps.alert(
-                    "PrivacyFence",
-                    f"Slack connected: {result.get('team_name', '')}.\n\n"
-                    "Quit and reopen PrivacyFence to activate it.",
-                )
+                rumps.alert("PrivacyFence", f"Slack connected: {result.get('team_name', '')}.")
+                self._refresh_connectors()
             else:
                 rumps.alert("PrivacyFence", f"Slack authentication failed:\n{result}")
-            self._rebuild()
+                self._rebuild()
 
         self._run_async(work, done)
 
@@ -615,14 +643,11 @@ class PrivacyFenceMenuBar(rumps.App):
 
         def done(ok: bool, result: Any) -> None:
             if ok:
-                rumps.alert(
-                    "PrivacyFence",
-                    f"Salesforce connected: {result.get('instance_url', '')}.\n\n"
-                    "Quit and reopen PrivacyFence to activate it.",
-                )
+                rumps.alert("PrivacyFence", f"Salesforce connected: {result.get('instance_url', '')}.")
+                self._refresh_connectors()
             else:
                 rumps.alert("PrivacyFence", f"Salesforce authentication failed:\n{result}")
-            self._rebuild()
+                self._rebuild()
 
         self._run_async(work, done)
 
@@ -655,22 +680,21 @@ class PrivacyFenceMenuBar(rumps.App):
                 rumps.alert(
                     "PrivacyFence",
                     f"Atlassian connected: {result.get('site_url', '')}.\n\n"
-                    "This covers both Jira and Confluence. Quit and reopen "
-                    "PrivacyFence to activate them.",
+                    "This covers both Jira and Confluence.",
                 )
+                self._refresh_connectors()
             else:
                 rumps.alert("PrivacyFence", f"Atlassian authentication failed:\n{result}")
-            self._rebuild()
+                self._rebuild()
 
         self._run_async(work, done)
 
-    def _authenticate_telegram(self, org_config: dict[str, Any]) -> None:
-        tg_org = org_config.get("telegram") or {}
-        api_id = tg_org.get("api_id")
-        api_hash = tg_org.get("api_hash", "")
-        if not api_id or not api_hash:
-            rumps.alert("PrivacyFence", "Telegram organization config isn't installed yet.")
+    def _authenticate_telegram(self) -> None:
+        creds = telegram_app_credentials()
+        if not creds:
+            rumps.alert("PrivacyFence", "Telegram app credentials are missing from this build.")
             return
+        api_id, api_hash = creds
         session_file = str(data_dir() / TOKEN_FILES["telegram"])
 
         def flow() -> str:
@@ -687,7 +711,7 @@ class PrivacyFenceMenuBar(rumps.App):
             phone = phone.strip()
 
             async def _send_code() -> str:
-                client = TelegramClient(session_file, int(api_id), api_hash)
+                client = TelegramClient(session_file, api_id, api_hash)
                 await client.connect()
                 try:
                     result = await client.send_code_request(phone)
@@ -707,7 +731,7 @@ class PrivacyFenceMenuBar(rumps.App):
             code = code.strip()
 
             async def _sign_in() -> str:
-                client = TelegramClient(session_file, int(api_id), api_hash)
+                client = TelegramClient(session_file, api_id, api_hash)
                 await client.connect()
                 try:
                     try:
@@ -733,7 +757,7 @@ class PrivacyFenceMenuBar(rumps.App):
             password = password.strip()
 
             async def _sign_in_2fa() -> str:
-                client = TelegramClient(session_file, int(api_id), api_hash)
+                client = TelegramClient(session_file, api_id, api_hash)
                 await client.connect()
                 try:
                     await client.sign_in(password=password)
@@ -748,14 +772,11 @@ class PrivacyFenceMenuBar(rumps.App):
             if not ok and isinstance(result, _AuthFlowCancelled):
                 return
             if ok:
-                rumps.alert(
-                    "PrivacyFence",
-                    f"Telegram connected as {result}.\n\n"
-                    "Quit and reopen PrivacyFence to activate it.",
-                )
+                rumps.alert("PrivacyFence", f"Telegram connected as {result}.")
+                self._refresh_connectors()
             else:
                 rumps.alert("PrivacyFence", f"Telegram sign-in failed:\n{result}")
-            self._rebuild()
+                self._rebuild()
 
         self._run_async(flow, done)
 
@@ -865,6 +886,6 @@ def _find_icon() -> str | None:
     return None
 
 
-def run_menu_bar(config_path: str, connectors: list[str]) -> None:
-    app = PrivacyFenceMenuBar(config_path=config_path, connectors=connectors)
+def run_menu_bar(config_path: str, connectors: list[str], ipc_server: "IPCServer") -> None:
+    app = PrivacyFenceMenuBar(config_path=config_path, connectors=connectors, ipc_server=ipc_server)
     app.run()

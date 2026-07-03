@@ -80,7 +80,7 @@ def _find_daemon_cmd() -> list[str]:
     found = shutil.which("privacyfence-app")
     if found:
         return [found]
-    default_app = Path("/Applications/PrivacyFence.app/Contents/MacOS/privacyfence-app")
+    default_app = Path("/Applications/PrivacyFenceApp.app/Contents/MacOS/privacyfence-app")
     if default_app.exists():
         return [str(default_app)]
     # Development fallback: run as a module.
@@ -149,6 +149,39 @@ def _fetch_manifest_sync() -> dict:
         buf += chunk
     s.close()
     return json.loads(buf.split(b"\n")[0])["result"]
+
+
+def _check_version_match(manifest: dict) -> None:
+    """Refuse to proceed if the daemon is running a different PrivacyFence version.
+
+    The bridge (PrivacyFence.mcpb) and the daemon (PrivacyFenceApp.app) are
+    built and updated independently, so a stale daemon process (e.g. left
+    running across an app update) can silently drift from the bridge's wire
+    format expectations. Fail loudly instead of risking a confusing crash
+    deeper inside a tool call.
+    """
+    daemon_version = manifest.get("version")
+    if daemon_version is None or daemon_version == VERSION:
+        return
+    print(
+        "ERROR: PrivacyFence version mismatch — refusing to start.\n"
+        f"  Claude extension (privacyfence-bridge): {VERSION}\n"
+        f"  Running daemon (PrivacyFenceApp.app):    {daemon_version}\n"
+        "\n"
+        "This usually happens when PrivacyFenceApp.app was updated (or "
+        "reinstalled) but the previously running daemon process was never "
+        "restarted, or when the Claude extension was updated separately "
+        "from the app.\n"
+        "\n"
+        "To fix it:\n"
+        "  1. Quit PrivacyFence from its menu bar icon (or run: "
+        "pkill -f PrivacyFenceApp)\n"
+        "  2. Relaunch PrivacyFenceApp.app so it starts on the same version "
+        "as the extension\n"
+        "  3. Restart this conversation in Claude so it reconnects\n",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 # ---------------------------------------------------------------------------- #
@@ -254,6 +287,7 @@ def main(argv: list[str] | None = None) -> int:
     _ensure_daemon_running()
 
     manifest = _fetch_manifest_sync()
+    _check_version_match(manifest)
     logger.info(
         "Got manifest: connectors=%s",
         [c["name"] for c in manifest.get("connectors", [])],
