@@ -90,8 +90,13 @@ else
 fi
 
 # ── 3. Build .app bundle ──────────────────────────────────────────────────────
+# --clean forces a fresh module analysis every time: PyInstaller otherwise
+# caches "module not found" results in build/PrivacyFenceApp/, so a rebuild
+# after _telegram_credentials.py first appears (step 2, above) can silently
+# keep using a stale analysis from before the file existed and ship without
+# Telegram credentials baked in.
 echo "→ Running PyInstaller…"
-PRIVACYFENCE_ICNS="$ICNS_PATH" $PYINSTALLER --noconfirm PrivacyFenceApp.spec
+PRIVACYFENCE_ICNS="$ICNS_PATH" $PYINSTALLER --noconfirm --clean PrivacyFenceApp.spec
 
 # ── 4. Create privacyfence-app symlink inside the bundle ─────────────────────────
 # The LaunchAgent plist and bridge use this name; the main exe is "PrivacyFenceApp".

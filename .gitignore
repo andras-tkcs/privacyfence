@@ -6,6 +6,7 @@ credentials/*
 *.key
 *.p12
 src/privacyfence/_telegram_credentials.py
+scripts/dev_env.sh
 
 # User configuration (keep only the .example)
 config/settings.yaml
