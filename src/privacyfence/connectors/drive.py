@@ -83,6 +83,20 @@ class DriveConnector(Connector):
                 ],
             ),
             ToolSpec(
+                name="drive_upload_file",
+                description=(
+                    "Upload a local file (e.g. a PDF or image) to Drive as a new file, "
+                    "read directly from disk by path — use this instead of "
+                    "drive_write_file_content for any binary file, since that tool only "
+                    "writes UTF-8 text. Requires user approval."
+                ),
+                params=[
+                    ToolParam("local_path", "str"),
+                    ToolParam("name", "str", required=False, default=""),
+                    ToolParam("parent_folder_id", "str", required=False, default=""),
+                ],
+            ),
+            ToolSpec(
                 name="drive_move_file",
                 description="Move a Drive file to a different folder. Requires user approval.",
                 params=[
@@ -159,6 +173,8 @@ class DriveConnector(Connector):
             return await self._create_blank_file(**args)
         if tool == "drive_write_file_content":
             return await self._write_file_content(**args)
+        if tool == "drive_upload_file":
+            return await self._upload_file(**args)
         if tool == "drive_write_doc_content":
             return await self._write_doc_content(**args)
         if tool == "drive_move_file":
@@ -317,6 +333,44 @@ class DriveConnector(Connector):
             args={"file_id": file_id},
         )
         return await self._fetch(self._drive.write_doc_rich_content, file_id, markdown)
+
+    async def _upload_file(
+        self, local_path: str, name: str = "", parent_folder_id: str = ""
+    ) -> Any:
+        import os
+
+        display_name = name.strip() or os.path.basename(local_path)
+        size_bytes = os.path.getsize(os.path.expanduser(local_path)) if os.path.isfile(os.path.expanduser(local_path)) else 0
+        preview = {
+            "File": display_name,
+            "Size": f"{size_bytes:,} bytes",
+            "Destination": parent_folder_id or "My Drive (root)",
+        }
+        details = (
+            f"Upload \"{display_name}\" ({size_bytes:,} bytes)\n"
+            f"From: {local_path}\n"
+            f"To: {parent_folder_id or 'My Drive (root)'}"
+        )
+        await gated_call(
+            connector=self.name,
+            tool="drive_upload_file",
+            tool_name="Upload File to Drive",
+            summary=f"Upload \"{display_name}\" to Drive",
+            sender="(local file)",
+            raw_data={"local_path": local_path, "name": display_name, "size_bytes": size_bytes},
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text=details,
+            my_email=self.my_email,
+            session_created_ids=self.session_created_ids,
+            args={"local_path": local_path, "name": name, "parent_folder_id": parent_folder_id},
+        )
+        result = await self._fetch(self._drive.upload_file, local_path, name, parent_folder_id)
+        file_id = result.get("id", "")
+        if file_id:
+            self.session_created_ids.add(file_id)
+        return result
 
     async def _write_file_content(self, file_id: str, content: str) -> Any:
         drive_file = await self._fetch(self._drive.get_file_metadata, file_id)

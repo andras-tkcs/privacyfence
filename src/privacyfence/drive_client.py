@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import io
 import logging
+import mimetypes
 import os
 import re as _re
 import urllib.parse
@@ -561,6 +562,50 @@ class DriveClient:
             raise DriveClientError(f"create_blank_file failed: {exc}") from exc
         logger.info("create_blank_file: id=%s name=%s", result.get("id"), name)
         return {"id": result.get("id", ""), "name": name, "mime_type": mime_type}
+
+    def upload_file(
+        self, local_path: str, name: str = "", parent_folder_id: str = ""
+    ) -> dict:
+        """Upload a local file's bytes as a new Drive file.
+
+        Reads straight from disk via ``MediaFileUpload`` (resumable) instead
+        of taking file content as a parameter — arbitrary binary files (PDFs,
+        images, …) can't be round-tripped through a JSON string argument the
+        way ``write_file_content`` does, since that path always encodes as
+        UTF-8 text and uploads with a hardcoded ``text/plain`` media type.
+        """
+        from googleapiclient.http import MediaFileUpload
+
+        path = os.path.expanduser(local_path.strip())
+        if not path or not os.path.isfile(path):
+            raise DriveClientError(f"upload_file: no such file: {local_path!r}")
+
+        resolved_name = name.strip() or os.path.basename(path)
+        mime_type = mimetypes.guess_type(resolved_name)[0] or "application/octet-stream"
+
+        body: dict = {"name": resolved_name}
+        if parent_folder_id:
+            body["parents"] = [parent_folder_id]
+
+        service = self._get_service()
+        media = MediaFileUpload(path, mimetype=mime_type, resumable=True)
+        try:
+            result = (
+                service.files()
+                .create(body=body, media_body=media, fields=_FILE_FIELDS, supportsAllDrives=True)
+                .execute()
+            )
+        except HttpError as exc:
+            raise DriveClientError(f"upload_file({local_path}) failed: {exc}") from exc
+
+        parsed = self._parse_file(result)
+        logger.info("upload_file: id=%s name=%s mime=%s", parsed.id, parsed.name, mime_type)
+        return {
+            "id": parsed.id,
+            "name": parsed.name,
+            "mime_type": mime_type,
+            "size_bytes": os.path.getsize(path),
+        }
 
     def write_file_content(self, file_id: str, content: str) -> dict:
         """Write (overwrite) the content of a file."""
