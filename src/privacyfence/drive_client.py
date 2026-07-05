@@ -15,6 +15,7 @@ independently.
 
 from __future__ import annotations
 
+import base64
 import io
 import logging
 import mimetypes
@@ -564,31 +565,58 @@ class DriveClient:
         return {"id": result.get("id", ""), "name": name, "mime_type": mime_type}
 
     def upload_file(
-        self, local_path: str, name: str = "", parent_folder_id: str = ""
+        self,
+        local_path: str = "",
+        name: str = "",
+        parent_folder_id: str = "",
+        content_base64: str = "",
     ) -> dict:
-        """Upload a local file's bytes as a new Drive file.
+        """Upload a file as a new Drive file, either from disk or inline bytes.
 
-        Reads straight from disk via ``MediaFileUpload`` (resumable) instead
-        of taking file content as a parameter — arbitrary binary files (PDFs,
-        images, …) can't be round-tripped through a JSON string argument the
-        way ``write_file_content`` does, since that path always encodes as
-        UTF-8 text and uploads with a hardcoded ``text/plain`` media type.
+        Exactly one of ``local_path`` or ``content_base64`` must be given.
+        Both paths use a resumable Google API media upload instead of the
+        ``write_file_content`` path, which always encodes as UTF-8 text and
+        uploads with a hardcoded ``text/plain`` media type — arbitrary binary
+        files (PDFs, images, …) can't round-trip through that.
+
+        ``local_path`` reads straight from disk via ``MediaFileUpload`` and is
+        preferred when the file already lives on the same machine as
+        PrivacyFence. ``content_base64`` lets a caller that only has the bytes
+        in hand (no shared filesystem) hand them over directly — PrivacyFence
+        decodes the base64 itself via ``MediaIoBaseUpload``.
         """
-        from googleapiclient.http import MediaFileUpload
+        from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload
 
-        path = os.path.expanduser(local_path.strip())
-        if not path or not os.path.isfile(path):
-            raise DriveClientError(f"upload_file: no such file: {local_path!r}")
+        if bool(local_path.strip()) == bool(content_base64.strip()):
+            raise DriveClientError(
+                "upload_file: provide exactly one of local_path or content_base64"
+            )
 
-        resolved_name = name.strip() or os.path.basename(path)
-        mime_type = mimetypes.guess_type(resolved_name)[0] or "application/octet-stream"
+        if local_path.strip():
+            path = os.path.expanduser(local_path.strip())
+            if not os.path.isfile(path):
+                raise DriveClientError(f"upload_file: no such file: {local_path!r}")
+            resolved_name = name.strip() or os.path.basename(path)
+            mime_type = mimetypes.guess_type(resolved_name)[0] or "application/octet-stream"
+            media = MediaFileUpload(path, mimetype=mime_type, resumable=True)
+            size_bytes = os.path.getsize(path)
+        else:
+            resolved_name = name.strip()
+            if not resolved_name:
+                raise DriveClientError("upload_file: name is required with content_base64")
+            try:
+                data = base64.b64decode(content_base64, validate=True)
+            except (base64.binascii.Error, ValueError) as exc:
+                raise DriveClientError(f"upload_file: invalid content_base64: {exc}") from exc
+            mime_type = mimetypes.guess_type(resolved_name)[0] or "application/octet-stream"
+            media = MediaIoBaseUpload(io.BytesIO(data), mimetype=mime_type, resumable=True)
+            size_bytes = len(data)
 
         body: dict = {"name": resolved_name}
         if parent_folder_id:
             body["parents"] = [parent_folder_id]
 
         service = self._get_service()
-        media = MediaFileUpload(path, mimetype=mime_type, resumable=True)
         try:
             result = (
                 service.files()
@@ -596,7 +624,7 @@ class DriveClient:
                 .execute()
             )
         except HttpError as exc:
-            raise DriveClientError(f"upload_file({local_path}) failed: {exc}") from exc
+            raise DriveClientError(f"upload_file({resolved_name}) failed: {exc}") from exc
 
         parsed = self._parse_file(result)
         logger.info("upload_file: id=%s name=%s mime=%s", parsed.id, parsed.name, mime_type)
@@ -604,7 +632,7 @@ class DriveClient:
             "id": parsed.id,
             "name": parsed.name,
             "mime_type": mime_type,
-            "size_bytes": os.path.getsize(path),
+            "size_bytes": size_bytes,
         }
 
     def write_file_content(self, file_id: str, content: str) -> dict:

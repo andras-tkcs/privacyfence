@@ -85,13 +85,19 @@ class DriveConnector(Connector):
             ToolSpec(
                 name="drive_upload_file",
                 description=(
-                    "Upload a local file (e.g. a PDF or image) to Drive as a new file, "
-                    "read directly from disk by path — use this instead of "
-                    "drive_write_file_content for any binary file, since that tool only "
-                    "writes UTF-8 text. Requires user approval."
+                    "Upload any file (e.g. a PDF or image) to Drive as a new file — "
+                    "use this instead of drive_write_file_content for any binary "
+                    "file, since that tool only writes UTF-8 text. Provide exactly "
+                    "one of local_path (read directly from disk by path — prefer "
+                    "this when the file is on the same machine as PrivacyFence) or "
+                    "content_base64 (base64-encoded file bytes, decoded by "
+                    "PrivacyFence itself — use this when you only have the file's "
+                    "bytes and not a local path; 'name' is then required). "
+                    "Requires user approval."
                 ),
                 params=[
-                    ToolParam("local_path", "str"),
+                    ToolParam("local_path", "str", required=False, default=""),
+                    ToolParam("content_base64", "str", required=False, default=""),
                     ToolParam("name", "str", required=False, default=""),
                     ToolParam("parent_folder_id", "str", required=False, default=""),
                 ],
@@ -335,12 +341,33 @@ class DriveConnector(Connector):
         return await self._fetch(self._drive.write_doc_rich_content, file_id, markdown)
 
     async def _upload_file(
-        self, local_path: str, name: str = "", parent_folder_id: str = ""
+        self,
+        local_path: str = "",
+        name: str = "",
+        parent_folder_id: str = "",
+        content_base64: str = "",
     ) -> Any:
+        import base64
         import os
 
-        display_name = name.strip() or os.path.basename(local_path)
-        size_bytes = os.path.getsize(os.path.expanduser(local_path)) if os.path.isfile(os.path.expanduser(local_path)) else 0
+        if bool(local_path.strip()) == bool(content_base64.strip()):
+            raise ValueError("drive_upload_file: provide exactly one of local_path or content_base64")
+
+        if local_path.strip():
+            display_name = name.strip() or os.path.basename(local_path)
+            expanded = os.path.expanduser(local_path)
+            size_bytes = os.path.getsize(expanded) if os.path.isfile(expanded) else 0
+            source = f"From: {local_path}"
+            sender = "(local file)"
+        else:
+            display_name = name.strip() or "(unnamed file)"
+            try:
+                size_bytes = len(base64.b64decode(content_base64, validate=True))
+            except (base64.binascii.Error, ValueError):
+                size_bytes = 0
+            source = "From: inline content"
+            sender = "(inline content)"
+
         preview = {
             "File": display_name,
             "Size": f"{size_bytes:,} bytes",
@@ -348,7 +375,7 @@ class DriveConnector(Connector):
         }
         details = (
             f"Upload \"{display_name}\" ({size_bytes:,} bytes)\n"
-            f"From: {local_path}\n"
+            f"{source}\n"
             f"To: {parent_folder_id or 'My Drive (root)'}"
         )
         await gated_call(
@@ -356,7 +383,7 @@ class DriveConnector(Connector):
             tool="drive_upload_file",
             tool_name="Upload File to Drive",
             summary=f"Upload \"{display_name}\" to Drive",
-            sender="(local file)",
+            sender=sender,
             raw_data={"local_path": local_path, "name": display_name, "size_bytes": size_bytes},
             filtered_data=None,
             gate="popup",
@@ -364,9 +391,16 @@ class DriveConnector(Connector):
             details_text=details,
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
-            args={"local_path": local_path, "name": name, "parent_folder_id": parent_folder_id},
+            args={
+                "local_path": local_path,
+                "name": name,
+                "parent_folder_id": parent_folder_id,
+                "content_base64": content_base64,
+            },
         )
-        result = await self._fetch(self._drive.upload_file, local_path, name, parent_folder_id)
+        result = await self._fetch(
+            self._drive.upload_file, local_path, name, parent_folder_id, content_base64
+        )
         file_id = result.get("id", "")
         if file_id:
             self.session_created_ids.add(file_id)
