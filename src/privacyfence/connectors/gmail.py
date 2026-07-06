@@ -72,10 +72,28 @@ class GmailConnector(Connector):
             ToolSpec(
                 name="gmail_list_message_attachments",
                 description=(
-                    "List attachment names and sizes for a Gmail message. "
-                    "Requires user approval."
+                    "List attachment names, MIME types, and sizes for a Gmail "
+                    "message. Auto-approved — metadata only, no attachment "
+                    "content is returned. Use gmail_download_attachment to "
+                    "fetch the actual file."
                 ),
                 params=[ToolParam("message_id", "str")],
+                read_only=True,
+            ),
+            ToolSpec(
+                name="gmail_download_attachment",
+                description=(
+                    "Download a Gmail attachment's content to a local directory "
+                    "and return the saved file path. Identify the attachment by "
+                    "the name returned from gmail_list_message_attachments. "
+                    "destination_dir defaults to ~/Downloads. Requires user "
+                    "approval."
+                ),
+                params=[
+                    ToolParam("message_id", "str"),
+                    ToolParam("attachment_name", "str"),
+                    ToolParam("destination_dir", "str", required=False, default=""),
+                ],
                 read_only=True,
             ),
             ToolSpec(
@@ -155,6 +173,8 @@ class GmailConnector(Connector):
             return await self._get_thread(**args)
         if tool == "gmail_list_message_attachments":
             return await self._list_message_attachments(**args)
+        if tool == "gmail_download_attachment":
+            return await self._download_attachment(**args)
         if tool == "gmail_create_draft":
             return await self._create_draft(**args)
         if tool == "gmail_reply_draft":
@@ -186,6 +206,20 @@ class GmailConnector(Connector):
         self._auto_audit("gmail_list_threads", "List Gmail Threads",
                          f"List threads: {query!r}", f"{len(summaries)} result(s)", t0)
         return summaries
+
+    async def _list_message_attachments(self, message_id: str) -> Any:
+        t0 = time.time()
+        message = await self._fetch(self._gmail.get_message, message_id)
+        attachments = [
+            {"name": att.name, "mime_type": att.mime_type, "size": att.size}
+            for att in (message.attachments or [])
+        ]
+        self._auto_audit(
+            "gmail_list_message_attachments", "List Gmail Attachments",
+            f"List attachments: {message.subject or '(no subject)'}",
+            message.sender or "", t0,
+        )
+        return {"message_id": message_id, "attachments": attachments}
 
     # ------------------------------------------------------------------ #
     # Review gate (reads)
@@ -260,34 +294,46 @@ class GmailConnector(Connector):
             args={"thread_id": thread_id},
         )
 
-    async def _list_message_attachments(self, message_id: str) -> Any:
+    async def _download_attachment(
+        self, message_id: str, attachment_name: str, destination_dir: str = ""
+    ) -> Any:
         message = await self._fetch(self._gmail.get_message, message_id)
-        recipients = message.recipients if isinstance(message.recipients, str) else ", ".join(message.recipients or [])
+        attachment = next(
+            (a for a in (message.attachments or []) if a.name == attachment_name), None
+        )
+        if attachment is None:
+            raise RuntimeError(
+                f"No attachment named {attachment_name!r} on message {message_id}"
+            )
+        result = await self._fetch(
+            self._gmail.download_attachment,
+            message_id, attachment.attachment_id, attachment.name, destination_dir,
+        )
         preview = {
             "From": message.sender or "(unknown)",
-            "To": recipients or "(unknown)",
-            "Date": message.date or "(unknown)",
             "Subject": message.subject or "(no subject)",
+            "Attachment": attachment.name,
+            "Size": f"{result['size_bytes']:,} bytes",
+            "Saved to": result["path"],
         }
-        attachments = [
-            {"name": att.name, "mime_type": att.mime_type, "size": att.size}
-            for att in (message.attachments or [])
-        ]
-        lines = [f"{a['name']}  ({a['mime_type']}, {a['size']} bytes)" for a in attachments] or ["(no attachments)"]
-        details = f"From: {message.sender}\nSubject: {message.subject}\n\nAttachments:\n" + "\n".join(lines)
+        details = (
+            f"From: {message.sender}\nSubject: {message.subject}\n\n"
+            f"Attachment: {attachment.name} ({attachment.mime_type}, "
+            f"{result['size_bytes']:,} bytes)\nSaved to: {result['path']}"
+        )
         return await gated_call(
             connector=self.name,
-            tool="gmail_list_message_attachments",
-            tool_name="List Email Attachments",
-            summary=f"List attachments: {message.subject or '(no subject)'}",
+            tool="gmail_download_attachment",
+            tool_name="Download Gmail Attachment",
+            summary=f"Download attachment '{attachment.name}' from: {message.subject or '(no subject)'}",
             sender=message.sender or "",
             raw_data=message,
-            filtered_data={"message_id": message_id, "attachments": attachments},
+            filtered_data=result,
             gate="review",
             preview=preview,
             details_text=details,
             my_email=self.my_email,
-            args={"message_id": message_id},
+            args={"message_id": message_id, "attachment_name": attachment_name},
         )
 
     # ------------------------------------------------------------------ #

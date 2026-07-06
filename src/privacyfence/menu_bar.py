@@ -57,7 +57,7 @@ LICENSE_NAME = "Apache-2.0"
 OPERATION_LABELS: dict[str, str] = {
     "gmail.read_message":          "Gmail – Read message",
     "gmail.read_thread":           "Gmail – Read thread",
-    "gmail.list_attachments":      "Gmail – List attachments",
+    "gmail.download_attachment":   "Gmail – Download attachment",
     "gmail.create_draft":          "Gmail – Create draft",
     "gmail.add_label":             "Gmail – Add label",
     "gmail.remove_label":          "Gmail – Remove label",
@@ -96,7 +96,7 @@ OPERATION_LABELS: dict[str, str] = {
 RULES_BY_OPERATION: dict[str, list[str]] = {
     "gmail.read_message":           ["i_am_sender", "i_am_sole_recipient", "trusted_sender_domain", "label_match", "age_threshold_days", "no_attachments"],
     "gmail.read_thread":            ["i_am_sender", "trusted_sender_domain", "age_threshold_days"],
-    "gmail.list_attachments":       ["i_am_sender", "trusted_sender_domain", "label_match"],
+    "gmail.download_attachment":    ["i_am_sender", "trusted_sender_domain", "label_match"],
     "gmail.create_draft":           ["to_is_myself", "approved_recipient_domain"],
     "gmail.add_label":              ["label_name_allowlist", "i_am_sender", "trusted_sender_domain"],
     "gmail.remove_label":           ["label_name_allowlist", "i_am_sender", "trusted_sender_domain"],

@@ -40,6 +40,7 @@ class Attachment:
     name: str
     mime_type: str
     size: int  # bytes, as reported by Gmail (0 if unknown)
+    attachment_id: str = ""  # Gmail API id, used to fetch content on demand
 
 
 @dataclass
@@ -275,6 +276,46 @@ class GmailClient:
             "list_threads query=%r returned %d summaries", query, len(summaries)
         )
         return summaries
+
+    def download_attachment(
+        self, message_id: str, attachment_id: str, filename: str, destination_dir: str = ""
+    ) -> dict:
+        """Fetch an attachment's bytes and save it to a local directory.
+
+        If ``destination_dir`` is empty, defaults to ``~/Downloads``. Returns a
+        dict with ``path``, ``name``, and ``size_bytes``.
+        """
+        if not message_id or not attachment_id:
+            raise GmailClientError(
+                "download_attachment requires a non-empty message_id and attachment_id"
+            )
+        service = self._get_service()
+        try:
+            raw = (
+                service.users()
+                .messages()
+                .attachments()
+                .get(userId="me", messageId=message_id, id=attachment_id)
+                .execute()
+            )
+        except HttpError as exc:
+            raise GmailClientError(
+                f"download_attachment({message_id}, {attachment_id}) failed: {exc}"
+            ) from exc
+
+        data = base64.urlsafe_b64decode(raw.get("data", "").encode("utf-8"))
+        dest = os.path.expanduser(destination_dir.strip() or "~/Downloads")
+        os.makedirs(dest, exist_ok=True)
+        name = filename or attachment_id
+        dest_path = os.path.join(dest, name)
+        with open(dest_path, "wb") as fh:
+            fh.write(data)
+
+        logger.info(
+            "download_attachment: message_id=%s name=%s size=%d",
+            message_id, name, len(data),
+        )
+        return {"path": dest_path, "name": name, "size_bytes": len(data)}
 
     # ------------------------------------------------------------------ #
     # Write operations
@@ -582,6 +623,7 @@ class GmailClient:
                     name=filename,
                     mime_type=mime_type,
                     size=int(part_body.get("size", 0) or 0),
+                    attachment_id=part_body.get("attachmentId", "") or "",
                 )
             )
 

@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 TOOL_TO_OPERATION: dict[str, str] = {
     "gmail_get_message":              "gmail.read_message",
     "gmail_get_thread":               "gmail.read_thread",
-    "gmail_list_message_attachments": "gmail.list_attachments",
+    "gmail_download_attachment":      "gmail.download_attachment",
     "gmail_create_draft":             "gmail.create_draft",
     "gmail_reply_draft":              "gmail.create_draft",
     "gmail_reply_all_draft":          "gmail.create_draft",
@@ -408,7 +408,7 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
     popup only offers "Accept All" when this returns a suggestion, so the
     button never proposes a rule broader than what the item itself supports.
     """
-    if operation_key in ("gmail.read_message", "gmail.read_thread", "gmail.list_attachments", "gmail.archive_message"):
+    if operation_key in ("gmail.read_message", "gmail.read_thread", "gmail.download_attachment", "gmail.archive_message"):
         sender = getattr(ctx.raw_data, "sender", "") or ""
         if ctx.my_email and ctx.my_email.lower() in sender.lower():
             return ("i_am_sender", None)
