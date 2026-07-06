@@ -76,6 +76,8 @@ Claude already describes the action it is about to take in the chat. When the ga
 | `gmail_get_thread` | read | review | subject, all participants, message count, date range | All messages in thread |
 | `gmail_list_message_attachments` | read | review | from, recipients, date, subject | Attachment names & sizes |
 | `gmail_create_draft` | write | popup | — | To, cc, subject, full body |
+| `gmail_reply_draft` | write | popup | — | In reply to, to, cc/bcc, full reply body |
+| `gmail_reply_all_draft` | write | popup | — | In reply to, to, also-to (expanded participants), cc/bcc, full reply body |
 | `gmail_add_label` | write | popup | — | From, subject, label name |
 | `gmail_remove_label` | write | popup | — | From, subject, label name |
 | `gmail_archive_message` | write | popup | — | From, subject, confirmation that message stays in All Mail |
@@ -94,6 +96,7 @@ Claude already describes the action it is about to take in the chat. When the ga
 | `drive_get_file_content` | read | review | file name, owner, size, modified date | First ~500 chars of content |
 | `drive_download_file` | read | popup | — | File name, owner, size, save path |
 | `drive_write_file_content` | write | popup | — | File name, owner, new content (plain text) |
+| `drive_upload_file` | write | popup | — | File name, size, destination folder |
 | `drive_write_doc_content` | write | popup | — | File name, owner, Markdown preview (headings, bold, italic, links, lists rendered as rich formatting in the Google Doc) |
 | `drive_move_file` | write | popup | — | File name, from folder → to folder |
 | `drive_add_comment` | write | popup | — | File name, full comment text |
