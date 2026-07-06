@@ -7,6 +7,7 @@ the implementation explicitly guards against.
 """
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -766,3 +767,94 @@ class TestRulesChangedListener:
         add_auto_accept_rule("gmail.read_message", "i_am_sender", None)
 
         assert calls == [1]
+
+
+# --------------------------------------------------------------------------- #
+# Concurrent rule persistence: real OS threads racing on add_auto_accept_rule.
+#
+# gate.py's popup handling serializes calls through one asyncio.Lock, but
+# add_auto_accept_rule() itself is also reachable directly from the menu
+# bar's own thread (adding a rule via "+ Add rule…") at the same time the
+# IPC server's thread is confirming an "Accept All". _write_lock is what's
+# supposed to keep the read-modify-write of the YAML file race-free; these
+# tests hammer it with real threads rather than asyncio tasks, since asyncio
+# concurrency alone never exercises actual OS-level lock contention or
+# genuine interleaving of file reads/writes.
+# --------------------------------------------------------------------------- #
+
+class TestConcurrentRulePersistence:
+    def test_many_threads_adding_the_identical_rule_produce_no_duplicates(self, tmp_path):
+        config_path = tmp_path / "settings.yaml"
+        config_path.write_text(yaml.dump({"auto_accept_rules": {}}), encoding="utf-8")
+        init_config_path(str(config_path))
+
+        barrier = threading.Barrier(20)
+
+        def worker():
+            barrier.wait()  # maximize actual overlap, not just interleaving
+            add_auto_accept_rule("gmail.read_message", "i_am_sender", None)
+
+        threads = [threading.Thread(target=worker) for _ in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+            assert not t.is_alive()
+
+        on_disk = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert on_disk["auto_accept_rules"]["gmail.read_message"] == [{"rule": "i_am_sender"}]
+
+    def test_many_threads_adding_distinct_rules_lose_no_writes(self, tmp_path):
+        config_path = tmp_path / "settings.yaml"
+        config_path.write_text(yaml.dump({"auto_accept_rules": {}}), encoding="utf-8")
+        init_config_path(str(config_path))
+
+        domains = [f"domain{i}.com" for i in range(20)]
+        barrier = threading.Barrier(len(domains))
+
+        def worker(domain):
+            barrier.wait()
+            add_auto_accept_rule("gmail.read_message", "trusted_sender_domain", [domain])
+
+        threads = [threading.Thread(target=worker, args=(d,)) for d in domains]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+            assert not t.is_alive()
+
+        on_disk = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        rules = on_disk["auto_accept_rules"]["gmail.read_message"]
+        # A lost update under a broken lock would show up as fewer than 20
+        # entries here; a corrupted concurrent write would fail to parse as
+        # YAML at all (read_text/safe_load above would already have raised).
+        assert len(rules) == len(domains)
+        persisted_domains = {r["value"][0] for r in rules}
+        assert persisted_domains == set(domains)
+
+    def test_concurrent_adds_keep_the_live_evaluator_and_disk_file_in_sync(self, tmp_path):
+        # Every successful add_auto_accept_rule() call also calls
+        # reload_rules() while still holding _write_lock, so the in-memory
+        # evaluator used by gate.py should never lag behind what's on disk,
+        # even under concurrent writers.
+        config_path = tmp_path / "settings.yaml"
+        config_path.write_text(yaml.dump({"auto_accept_rules": {}}), encoding="utf-8")
+        init_config_path(str(config_path))
+        init_auto_accept_evaluator({})
+
+        domains = [f"domain{i}.com" for i in range(10)]
+        barrier = threading.Barrier(len(domains))
+
+        def worker(domain):
+            barrier.wait()
+            add_auto_accept_rule("gmail.read_message", "trusted_sender_domain", [domain])
+
+        threads = [threading.Thread(target=worker, args=(d,)) for d in domains]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        on_disk = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        live_rules = get_auto_accept_evaluator()._rules
+        assert live_rules == on_disk["auto_accept_rules"]
