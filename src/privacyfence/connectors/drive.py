@@ -249,7 +249,11 @@ class DriveConnector(Connector):
         owners = getattr(drive_file, "owners", [])
         size = getattr(drive_file, "size", "")
         modified = getattr(drive_file, "modified_time", "")
-        text = getattr(content, "text", None) or str(content)
+        content_bytes = getattr(content, "content_bytes", b"") or b""
+        text = getattr(content, "content_text", "") or (
+            f"[binary content — {len(content_bytes)} bytes; use drive_download_file to save it]"
+            if content_bytes else "(no content)"
+        )
         preview = {
             "File": name,
             "Owner": ", ".join(owners) if owners else "(unknown)",
