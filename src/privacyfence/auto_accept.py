@@ -441,10 +441,10 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
 
     if operation_key == "jira.read_issue":
         raw = ctx.raw_data
-        reporter = (raw.get("reporter") if isinstance(raw, dict) else "") or ""
+        reporter = (raw.get("reporter") if isinstance(raw, dict) else getattr(raw, "reporter", "")) or ""
         if ctx.my_email and ctx.my_email.lower() in reporter.lower():
             return ("i_am_reporter", None)
-        assignee = (raw.get("assignee") if isinstance(raw, dict) else "") or ""
+        assignee = (raw.get("assignee") if isinstance(raw, dict) else getattr(raw, "assignee", "")) or ""
         if ctx.my_email and ctx.my_email.lower() in assignee.lower():
             return ("i_am_assignee", None)
         issue_key = ctx.args.get("issue_key", "") or ""
@@ -453,10 +453,13 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
 
     if operation_key == "confluence.read_page":
         raw = ctx.raw_data
-        author = (raw.get("author") if isinstance(raw, dict) else "") or ""
+        author = (raw.get("author") if isinstance(raw, dict) else getattr(raw, "author", "")) or ""
         if ctx.my_email and ctx.my_email.lower() in author.lower():
             return ("i_am_author", None)
-        space_key = (raw.get("space_key") if isinstance(raw, dict) else "") or ctx.args.get("space_key", "")
+        space_key = (
+            (raw.get("space_key") if isinstance(raw, dict) else getattr(raw, "space_key", ""))
+            or ctx.args.get("space_key", "")
+        )
         return ("approved_space_keys", [space_key]) if space_key else None
 
     if operation_key == "telegram.read_chat_messages":

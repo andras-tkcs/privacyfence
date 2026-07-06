@@ -44,3 +44,13 @@ privacyfence = ["resources/*.png", "resources/settings.yaml.example"]
 dev = [
     "pyinstaller>=6.0",
 ]
+test = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "freezegun>=1.5",
+    "openpyxl>=3.1",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
