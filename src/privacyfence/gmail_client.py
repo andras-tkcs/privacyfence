@@ -33,6 +33,21 @@ class GmailClientError(Exception):
     """Raised for unrecoverable Gmail client problems (auth, config, API)."""
 
 
+def resolve_attachment_destination(filename: str, destination_dir: str = "") -> str:
+    """Compute where an attachment will be saved, without touching disk.
+
+    ``filename`` comes from the sender's MIME headers and is untrusted, so
+    only its basename is kept - this is what stops a crafted name like
+    "../../.ssh/authorized_keys" from writing outside ``destination_dir``.
+    Used both to preview the save path before download approval and by
+    ``download_attachment`` to actually write the file, so the two never
+    disagree.
+    """
+    dest_dir = os.path.expanduser(destination_dir.strip() or "~/Downloads")
+    safe_name = os.path.basename(filename) or "attachment"
+    return os.path.join(dest_dir, safe_name)
+
+
 @dataclass
 class Attachment:
     """Attachment metadata. Content is intentionally never carried here."""
@@ -40,6 +55,7 @@ class Attachment:
     name: str
     mime_type: str
     size: int  # bytes, as reported by Gmail (0 if unknown)
+    attachment_id: str = ""  # Gmail API id, used to fetch content on demand
 
 
 @dataclass
@@ -275,6 +291,45 @@ class GmailClient:
             "list_threads query=%r returned %d summaries", query, len(summaries)
         )
         return summaries
+
+    def download_attachment(
+        self, message_id: str, attachment_id: str, filename: str, destination_dir: str = ""
+    ) -> dict:
+        """Fetch an attachment's bytes and save it to a local directory.
+
+        If ``destination_dir`` is empty, defaults to ``~/Downloads``. Returns a
+        dict with ``path``, ``name``, and ``size_bytes``.
+        """
+        if not message_id or not attachment_id:
+            raise GmailClientError(
+                "download_attachment requires a non-empty message_id and attachment_id"
+            )
+        service = self._get_service()
+        try:
+            raw = (
+                service.users()
+                .messages()
+                .attachments()
+                .get(userId="me", messageId=message_id, id=attachment_id)
+                .execute()
+            )
+        except HttpError as exc:
+            raise GmailClientError(
+                f"download_attachment({message_id}, {attachment_id}) failed: {exc}"
+            ) from exc
+
+        data = base64.urlsafe_b64decode(raw.get("data", "").encode("utf-8"))
+        dest_path = resolve_attachment_destination(filename or attachment_id, destination_dir)
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        with open(dest_path, "wb") as fh:
+            fh.write(data)
+
+        name = os.path.basename(dest_path)
+        logger.info(
+            "download_attachment: message_id=%s name=%s size=%d",
+            message_id, name, len(data),
+        )
+        return {"path": dest_path, "name": name, "size_bytes": len(data)}
 
     # ------------------------------------------------------------------ #
     # Write operations
@@ -582,6 +637,7 @@ class GmailClient:
                     name=filename,
                     mime_type=mime_type,
                     size=int(part_body.get("size", 0) or 0),
+                    attachment_id=part_body.get("attachmentId", "") or "",
                 )
             )
 

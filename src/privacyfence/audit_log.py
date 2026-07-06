@@ -49,7 +49,11 @@ class AuditLogger:
         logger.debug("Audit: %s %s/%s", entry.decision, entry.connector, entry.tool)
 
     def export_week_to_excel(self, week: str) -> Optional[str]:
-        """Export one week's .jsonl to .xlsx. Returns output path or None."""
+        """Export one week's .jsonl to .xlsx, overwriting any existing file.
+
+        Callers that only want to fill in weeks that have never been
+        exported should use export_all_pending() instead.
+        """
         try:
             import openpyxl
             from openpyxl.styles import Alignment, Font, PatternFill

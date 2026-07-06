@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 TOOL_TO_OPERATION: dict[str, str] = {
     "gmail_get_message":              "gmail.read_message",
     "gmail_get_thread":               "gmail.read_thread",
-    "gmail_list_message_attachments": "gmail.list_attachments",
+    "gmail_download_attachment":      "gmail.download_attachment",
     "gmail_create_draft":             "gmail.create_draft",
     "gmail_reply_draft":              "gmail.create_draft",
     "gmail_reply_all_draft":          "gmail.create_draft",
@@ -183,6 +183,33 @@ class AutoAcceptEvaluator:
         # Never auto-accept shared drive files
         f = self._file_from(ctx.raw_data)
         return not getattr(f, "shared", False)
+
+    # ── Drive: Sheets ────────────────────────────────────────────────────
+
+    def _rule_approved_spreadsheet(self, value, ctx):
+        """Match a specific spreadsheet, optionally narrowed to one tab.
+
+        Each entry is {"spreadsheet_id": "...", "tab": "..."} — "tab" is
+        optional (its absence approves every tab of that spreadsheet).
+        Entries without a matching spreadsheet_id never match; an entry with
+        a tab only matches calls whose current tab is known and equal.
+        """
+        if not value:
+            return False
+        entries = value if isinstance(value, list) else [value]
+        spreadsheet_id = ctx.args.get("spreadsheet_id", "") or ""
+        if not spreadsheet_id:
+            return False
+        current_tab = _sheet_tab_of(ctx)
+        for entry in entries:
+            if not isinstance(entry, dict) or entry.get("spreadsheet_id") != spreadsheet_id:
+                continue
+            tab = entry.get("tab")
+            if not tab:
+                return True
+            if current_tab and tab.lower() == current_tab.lower():
+                return True
+        return False
 
     # ── Slack ─────────────────────────────────────────────────────────────
 
@@ -385,6 +412,22 @@ def _domain_of(sender: str) -> str:
     return email_part.split("@", 1)[-1].lower().strip()
 
 
+def _sheet_tab_of(ctx: "ReviewContext") -> str:
+    """Identify the tab a sheets call touches, for the approved_spreadsheet rule.
+
+    rename_sheet/format_range pass a numeric sheet_id directly; read_values/
+    write_range only have it embedded as the sheet-name prefix of range_a1
+    (e.g. "Sheet1!A1:C10" or "'My Tab'!A1:C10"); add_sheet has no existing
+    tab to identify. sheet_id is checked first since format_range carries
+    both sheet_id and a range_a1 with no "!" prefix.
+    """
+    if "sheet_id" in ctx.args:
+        return str(ctx.args["sheet_id"])
+    range_a1 = ctx.args.get("range_a1") or ""
+    tab, sep, _ = range_a1.partition("!")
+    return tab.strip("'") if sep else ""
+
+
 def _attendee_email(attendee: Any) -> str:
     """Extract an email address from an attendee, whichever shape it's in.
 
@@ -408,7 +451,7 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
     popup only offers "Accept All" when this returns a suggestion, so the
     button never proposes a rule broader than what the item itself supports.
     """
-    if operation_key in ("gmail.read_message", "gmail.read_thread", "gmail.list_attachments", "gmail.archive_message"):
+    if operation_key in ("gmail.read_message", "gmail.read_thread", "gmail.download_attachment", "gmail.archive_message"):
         sender = getattr(ctx.raw_data, "sender", "") or ""
         if ctx.my_email and ctx.my_email.lower() in sender.lower():
             return ("i_am_sender", None)
@@ -422,6 +465,16 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
             return ("i_am_owner", None)
         parents = list(getattr(f, "parent_ids", []) or [])
         return ("approved_folder", parents) if parents else None
+
+    if operation_key == "sheets.read_values":
+        spreadsheet_id = ctx.args.get("spreadsheet_id", "") or ""
+        if not spreadsheet_id:
+            return None
+        entry: dict[str, Any] = {"spreadsheet_id": spreadsheet_id}
+        tab = _sheet_tab_of(ctx)
+        if tab:
+            entry["tab"] = tab
+        return ("approved_spreadsheet", [entry])
 
     if operation_key == "slack.read_messages":
         cid = ctx.args.get("channel_id", "") or ctx.args.get("channel", "") or ""
@@ -490,13 +543,26 @@ _RULE_DESCRIPTIONS: dict[str, str] = {
     "i_am_author":           "Confluence page reads where you are the author",
     "approved_space_keys":   "Confluence page reads in space(s): {value}",
     "approved_chats":        "Telegram chat reads in chat(s): {value}",
+    "approved_spreadsheet":  "Sheets calls scoped to: {value}",
 }
+
+
+def _format_spreadsheet_entry(entry: Any) -> str:
+    if not isinstance(entry, dict):
+        return str(entry)
+    tab = entry.get("tab")
+    return f"{entry.get('spreadsheet_id', '')}" + (f" (tab: {tab})" if tab else "")
 
 
 def describe_rule(rule_name: str, value: Any) -> str:
     """Human-readable description of a proposed auto-accept rule."""
     template = _RULE_DESCRIPTIONS.get(rule_name, rule_name)
-    value_str = ", ".join(value) if isinstance(value, list) else str(value)
+    if isinstance(value, list) and value and isinstance(value[0], dict):
+        value_str = ", ".join(_format_spreadsheet_entry(v) for v in value)
+    elif isinstance(value, list):
+        value_str = ", ".join(value)
+    else:
+        value_str = str(value)
     return "Auto-accept future " + template.format(value=value_str)
 
 

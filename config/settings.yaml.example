@@ -22,7 +22,7 @@ privacy:
   categories:
     body: allow
     metadata: allow        # sender / recipients / date / subject
-    attachments: block     # attachment metadata (never the content)
+    attachments: block     # attachment metadata; downloading content is a separate, approval-gated tool
     thread_history: allow
 
 drive:
