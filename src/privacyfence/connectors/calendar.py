@@ -391,6 +391,8 @@ class CalendarConnector(Connector):
             "start_time": start_time, "end_time": end_time,
             "description": description, "location": location,
             "add_google_meet": add_google_meet, "rooms": room_list,
+            "organizer_email": event.organizer_email,
+            "attendees": [a.email for a in (event.attendees or [])],
         }
         await gated_call(
             connector=self.name,

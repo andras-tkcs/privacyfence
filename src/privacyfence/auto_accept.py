@@ -12,22 +12,41 @@ logger = logging.getLogger(__name__)
 
 # Maps tool name → operation key used in settings.yaml
 TOOL_TO_OPERATION: dict[str, str] = {
-    "gmail_get_message":          "gmail.read_message",
-    "gmail_get_thread":           "gmail.read_thread",
-    "drive_get_file_content":     "drive.read_file_contents",
-    "drive_write_file_content":   "drive.write_file",
-    "drive_move_file":            "drive.move_file",
-    "drive_add_comment":          "drive.comment_file",
-    "slack_get_channel_history":  "slack.read_messages",
-    "slack_get_thread_replies":   "slack.read_messages",
-    "slack_search_messages":      "slack.read_messages",
-    "slack_send_message":         "slack.send_message",
-    "calendar_get_event_details": "calendar.read_event_details",
-    "calendar_create_event":      "calendar.create_modify_event",
-    "calendar_update_event":      "calendar.create_modify_event",
-    "salesforce_get_record":      "salesforce.read_record",
-    "salesforce_run_report":      "salesforce.run_report",
-    "contacts_update":            "contacts.edit",
+    "gmail_get_message":              "gmail.read_message",
+    "gmail_get_thread":               "gmail.read_thread",
+    "gmail_list_message_attachments": "gmail.list_attachments",
+    "gmail_create_draft":             "gmail.create_draft",
+    "gmail_add_label":                "gmail.add_label",
+    "gmail_remove_label":             "gmail.remove_label",
+    "gmail_archive_message":          "gmail.archive_message",
+    "drive_get_file_content":         "drive.read_file_contents",
+    "drive_download_file":           "drive.download_file",
+    "drive_write_file_content":       "drive.write_file",
+    "drive_write_doc_content":        "drive.write_doc",
+    "drive_upload_file":              "drive.upload_file",
+    "drive_move_file":                "drive.move_file",
+    "drive_add_comment":              "drive.comment_file",
+    "slack_get_channel_history":      "slack.read_messages",
+    "slack_get_thread_replies":       "slack.read_messages",
+    "slack_search_messages":          "slack.read_messages",
+    "slack_send_message":             "slack.send_message",
+    "calendar_get_event_details":     "calendar.read_event_details",
+    "calendar_create_event":          "calendar.create_modify_event",
+    "calendar_update_event":          "calendar.create_modify_event",
+    "salesforce_get_record":          "salesforce.read_record",
+    "salesforce_run_report":          "salesforce.run_report",
+    "contacts_update":                "contacts.edit",
+    "jira_get_issue":                 "jira.read_issue",
+    "jira_create_issue":              "jira.create_issue",
+    "jira_add_comment":               "jira.add_comment",
+    "jira_update_issue":              "jira.update_issue",
+    "confluence_get_page":            "confluence.read_page",
+    "confluence_get_page_by_title":   "confluence.read_page",
+    "confluence_create_page":         "confluence.create_page",
+    "confluence_update_page":         "confluence.update_page",
+    "telegram_get_messages":          "telegram.read_chat_messages",
+    "telegram_search_messages":       "telegram.search_messages",
+    "telegram_send_message":          "telegram.send_message",
 }
 
 @dataclass
@@ -116,6 +135,8 @@ class AutoAcceptEvaluator:
     # ── Drive ─────────────────────────────────────────────────────────────
 
     def _file_from(self, raw):
+        if isinstance(raw, dict):
+            return raw.get("file", raw)
         return raw.file if hasattr(raw, "file") else raw
 
     def _rule_i_am_owner(self, _v, ctx):
@@ -191,17 +212,16 @@ class AutoAcceptEvaluator:
     # ── Calendar ──────────────────────────────────────────────────────────
 
     def _rule_i_am_organizer(self, _v, ctx):
-        organizer = getattr(ctx.raw_data, "organizer_email", "") or ""
+        raw = ctx.raw_data
+        organizer = (raw.get("organizer_email") if isinstance(raw, dict) else getattr(raw, "organizer_email", "")) or ""
         return bool(ctx.my_email) and ctx.my_email.lower() == organizer.lower()
 
     def _rule_no_external_attendees(self, _v, ctx):
         if not ctx.my_domain:
             return False
-        attendees = getattr(ctx.raw_data, "attendees", []) or []
-        return all(
-            ctx.my_domain in (a.get("email", "") if isinstance(a, dict) else getattr(a, "email", ""))
-            for a in attendees
-        )
+        raw = ctx.raw_data
+        attendees = (raw.get("attendees") if isinstance(raw, dict) else getattr(raw, "attendees", None)) or []
+        return all(ctx.my_domain in _attendee_email(a) for a in attendees)
 
     def _rule_personal_calendar(self, value, ctx):
         if not value:
@@ -254,6 +274,90 @@ class AutoAcceptEvaluator:
         allowed = set(value if isinstance(value, list) else [value])
         return ctx.args.get("report_id", "") in allowed
 
+    # ── Gmail (writes) ───────────────────────────────────────────────────
+
+    def _rule_to_is_myself(self, _v, ctx):
+        to = ctx.args.get("to", "") or ""
+        return bool(ctx.my_email) and ctx.my_email.lower() in to.lower()
+
+    def _rule_approved_recipient_domain(self, value, ctx):
+        if not value:
+            return False
+        to = ctx.args.get("to", "") or ""
+        domain = _domain_of(to)
+        allowed = {d.lower().strip() for d in (value if isinstance(value, list) else [value])}
+        return domain in allowed
+
+    def _rule_label_name_allowlist(self, value, ctx):
+        if not value:
+            return False
+        allowed = {v.lower() for v in (value if isinstance(value, list) else [value])}
+        label = (ctx.args.get("label_name") or "").lower()
+        return label in allowed
+
+    # ── Drive (writes) ───────────────────────────────────────────────────
+
+    def _rule_parent_folder_allowlist(self, value, ctx):
+        if not value:
+            return False
+        allowed = set(value if isinstance(value, list) else [value])
+        return (ctx.args.get("parent_folder_id") or "") in allowed
+
+    # ── Contacts ──────────────────────────────────────────────────────────
+
+    def _rule_no_contact_info_change(self, _v, ctx):
+        return not (ctx.args.get("emails") or ctx.args.get("phones"))
+
+    # ── Jira ──────────────────────────────────────────────────────────────
+
+    def _rule_approved_project_keys(self, value, ctx):
+        if not value:
+            return False
+        allowed = {v.upper() for v in (value if isinstance(value, list) else [value])}
+        project_key = ctx.args.get("project_key", "") or ""
+        if not project_key:
+            issue_key = ctx.args.get("issue_key", "") or ""
+            project_key = issue_key.split("-")[0] if "-" in issue_key else ""
+        return bool(project_key) and project_key.upper() in allowed
+
+    def _rule_i_am_reporter(self, _v, ctx):
+        raw = ctx.raw_data
+        reporter = (raw.get("reporter") if isinstance(raw, dict) else getattr(raw, "reporter", "")) or ""
+        return bool(ctx.my_email) and ctx.my_email.lower() in reporter.lower()
+
+    def _rule_i_am_assignee(self, _v, ctx):
+        raw = ctx.raw_data
+        assignee = (raw.get("assignee") if isinstance(raw, dict) else getattr(raw, "assignee", "")) or ""
+        return bool(ctx.my_email) and ctx.my_email.lower() in assignee.lower()
+
+    # ── Confluence ────────────────────────────────────────────────────────
+
+    def _rule_approved_space_keys(self, value, ctx):
+        if not value:
+            return False
+        allowed = {v.upper() for v in (value if isinstance(value, list) else [value])}
+        raw = ctx.raw_data
+        space_key = ctx.args.get("space_key") or (raw.get("space_key") if isinstance(raw, dict) else "") or ""
+        return bool(space_key) and space_key.upper() in allowed
+
+    def _rule_i_am_author(self, _v, ctx):
+        raw = ctx.raw_data
+        author = (raw.get("author") if isinstance(raw, dict) else getattr(raw, "author", "")) or ""
+        return bool(ctx.my_email) and ctx.my_email.lower() in author.lower()
+
+    # ── Telegram ──────────────────────────────────────────────────────────
+
+    def _rule_approved_chats(self, value, ctx):
+        if not value:
+            return False
+        allowed = {str(v) for v in (value if isinstance(value, list) else [value])}
+        return str(ctx.args.get("chat_id", "")) in allowed
+
+    def _rule_no_media_attachments(self, _v, ctx):
+        raw = ctx.raw_data
+        items = raw if isinstance(raw, list) else [raw]
+        return all(not getattr(m, "media_type", "") for m in items)
+
 
 # ── Rule suggestion for the popup's "Accept All" button ─────────────────────
 
@@ -264,6 +368,21 @@ def _domain_of(sender: str) -> str:
     return email_part.split("@", 1)[-1].lower().strip()
 
 
+def _attendee_email(attendee: Any) -> str:
+    """Extract an email address from an attendee, whichever shape it's in.
+
+    calendar_get_event_details passes real Attendee dicts/objects with an
+    "email" field; calendar_create_event/update_event pass plain email
+    strings (parsed from a comma-separated arg) since the event doesn't
+    exist yet.
+    """
+    if isinstance(attendee, dict):
+        return attendee.get("email", "") or ""
+    if isinstance(attendee, str):
+        return attendee
+    return getattr(attendee, "email", "") or ""
+
+
 def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | None:
     """Propose one auto-accept rule from the current item's attributes.
 
@@ -272,14 +391,14 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
     popup only offers "Accept All" when this returns a suggestion, so the
     button never proposes a rule broader than what the item itself supports.
     """
-    if operation_key in ("gmail.read_message", "gmail.read_thread"):
+    if operation_key in ("gmail.read_message", "gmail.read_thread", "gmail.list_attachments", "gmail.archive_message"):
         sender = getattr(ctx.raw_data, "sender", "") or ""
         if ctx.my_email and ctx.my_email.lower() in sender.lower():
             return ("i_am_sender", None)
         domain = _domain_of(sender)
         return ("trusted_sender_domain", [domain]) if domain else None
 
-    if operation_key == "drive.read_file_contents":
+    if operation_key in ("drive.read_file_contents", "drive.download_file"):
         f = ctx.raw_data.file if hasattr(ctx.raw_data, "file") else ctx.raw_data
         owners = getattr(f, "owners", []) or []
         if ctx.my_email and any(ctx.my_email.lower() in o.lower() for o in owners):
@@ -299,10 +418,7 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
             return ("i_am_organizer", None)
         if ctx.my_domain:
             attendees = getattr(ctx.raw_data, "attendees", []) or []
-            all_internal = all(
-                ctx.my_domain in (a.get("email", "") if isinstance(a, dict) else getattr(a, "email", ""))
-                for a in attendees
-            )
+            all_internal = all(ctx.my_domain in _attendee_email(a) for a in attendees)
             if all_internal:
                 return ("no_external_attendees", None)
         return None
@@ -310,6 +426,30 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
     if operation_key == "salesforce.read_record":
         object_type = ctx.args.get("object_type", "")
         return ("approved_object_types", [object_type]) if object_type else None
+
+    if operation_key == "jira.read_issue":
+        raw = ctx.raw_data
+        reporter = (raw.get("reporter") if isinstance(raw, dict) else "") or ""
+        if ctx.my_email and ctx.my_email.lower() in reporter.lower():
+            return ("i_am_reporter", None)
+        assignee = (raw.get("assignee") if isinstance(raw, dict) else "") or ""
+        if ctx.my_email and ctx.my_email.lower() in assignee.lower():
+            return ("i_am_assignee", None)
+        issue_key = ctx.args.get("issue_key", "") or ""
+        project_key = issue_key.split("-")[0] if "-" in issue_key else ""
+        return ("approved_project_keys", [project_key]) if project_key else None
+
+    if operation_key == "confluence.read_page":
+        raw = ctx.raw_data
+        author = (raw.get("author") if isinstance(raw, dict) else "") or ""
+        if ctx.my_email and ctx.my_email.lower() in author.lower():
+            return ("i_am_author", None)
+        space_key = (raw.get("space_key") if isinstance(raw, dict) else "") or ctx.args.get("space_key", "")
+        return ("approved_space_keys", [space_key]) if space_key else None
+
+    if operation_key == "telegram.read_chat_messages":
+        chat_id = ctx.args.get("chat_id", "")
+        return ("approved_chats", [str(chat_id)]) if chat_id != "" else None
 
     return None
 
@@ -324,6 +464,12 @@ _RULE_DESCRIPTIONS: dict[str, str] = {
     "i_am_organizer":        "Calendar event reads for events you organize",
     "no_external_attendees": "Calendar event reads with no external attendees",
     "approved_object_types": "Salesforce record reads for object type(s): {value}",
+    "i_am_reporter":         "Jira issue reads where you are the reporter",
+    "i_am_assignee":         "Jira issue reads where you are the assignee",
+    "approved_project_keys": "Jira issue reads in project(s): {value}",
+    "i_am_author":           "Confluence page reads where you are the author",
+    "approved_space_keys":   "Confluence page reads in space(s): {value}",
+    "approved_chats":        "Telegram chat reads in chat(s): {value}",
 }
 
 

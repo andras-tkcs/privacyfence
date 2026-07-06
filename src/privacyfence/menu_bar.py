@@ -57,8 +57,16 @@ LICENSE_NAME = "Apache-2.0"
 OPERATION_LABELS: dict[str, str] = {
     "gmail.read_message":          "Gmail – Read message",
     "gmail.read_thread":           "Gmail – Read thread",
+    "gmail.list_attachments":      "Gmail – List attachments",
+    "gmail.create_draft":          "Gmail – Create draft",
+    "gmail.add_label":             "Gmail – Add label",
+    "gmail.remove_label":          "Gmail – Remove label",
+    "gmail.archive_message":       "Gmail – Archive message",
     "drive.read_file_contents":    "Drive – Read file",
+    "drive.download_file":         "Drive – Download file",
     "drive.write_file":            "Drive – Write file",
+    "drive.write_doc":             "Drive – Write Google Doc",
+    "drive.upload_file":           "Drive – Upload file",
     "drive.move_file":             "Drive – Move file",
     "drive.comment_file":          "Drive – Add comment",
     "slack.read_messages":         "Slack – Read messages",
@@ -68,13 +76,31 @@ OPERATION_LABELS: dict[str, str] = {
     "salesforce.read_record":      "Salesforce – Read record",
     "salesforce.run_report":       "Salesforce – Run report",
     "contacts.edit":               "Contacts – Update contact",
+    "jira.read_issue":             "Jira – Read issue",
+    "jira.create_issue":           "Jira – Create issue",
+    "jira.add_comment":            "Jira – Add comment",
+    "jira.update_issue":           "Jira – Update issue",
+    "confluence.read_page":        "Confluence – Read page",
+    "confluence.create_page":      "Confluence – Create page",
+    "confluence.update_page":      "Confluence – Update page",
+    "telegram.read_chat_messages": "Telegram – Read chat messages",
+    "telegram.search_messages":    "Telegram – Search messages",
+    "telegram.send_message":       "Telegram – Send message",
 }
 
 RULES_BY_OPERATION: dict[str, list[str]] = {
     "gmail.read_message":           ["i_am_sender", "i_am_sole_recipient", "trusted_sender_domain", "label_match", "age_threshold_days", "no_attachments"],
     "gmail.read_thread":            ["i_am_sender", "trusted_sender_domain", "age_threshold_days"],
+    "gmail.list_attachments":       ["i_am_sender", "trusted_sender_domain", "label_match"],
+    "gmail.create_draft":           ["to_is_myself", "approved_recipient_domain"],
+    "gmail.add_label":              ["label_name_allowlist", "i_am_sender", "trusted_sender_domain"],
+    "gmail.remove_label":           ["label_name_allowlist", "i_am_sender", "trusted_sender_domain"],
+    "gmail.archive_message":        ["i_am_sender", "trusted_sender_domain", "label_match"],
     "drive.read_file_contents":     ["i_am_owner", "created_by_me", "approved_folder", "file_type_allowlist", "created_this_session", "shared_drive_exclusion"],
+    "drive.download_file":          ["i_am_owner", "approved_folder", "file_type_allowlist", "created_this_session", "shared_drive_exclusion"],
     "drive.write_file":             ["i_am_owner", "approved_sandbox_folder", "file_type_allowlist", "created_this_session"],
+    "drive.write_doc":              ["i_am_owner", "approved_sandbox_folder", "created_this_session"],
+    "drive.upload_file":            ["parent_folder_allowlist"],
     "drive.move_file":              ["move_within_approved_folders"],
     "drive.comment_file":           ["i_am_owner", "created_this_session"],
     "slack.read_messages":          ["dm_with_myself", "approved_channel", "public_channels_only", "no_file_attachments"],
@@ -83,7 +109,17 @@ RULES_BY_OPERATION: dict[str, list[str]] = {
     "calendar.create_modify_event": ["i_am_organizer", "no_external_attendees", "personal_calendar"],
     "salesforce.read_record":       ["approved_object_types"],
     "salesforce.run_report":        ["approved_report_ids"],
-    "contacts.edit":                [],
+    "contacts.edit":                ["no_contact_info_change"],
+    "jira.read_issue":              ["i_am_reporter", "i_am_assignee", "approved_project_keys"],
+    "jira.create_issue":            ["approved_project_keys"],
+    "jira.add_comment":             ["approved_project_keys"],
+    "jira.update_issue":            ["approved_project_keys"],
+    "confluence.read_page":         ["i_am_author", "approved_space_keys"],
+    "confluence.create_page":       ["approved_space_keys"],
+    "confluence.update_page":       ["approved_space_keys"],
+    "telegram.read_chat_messages":  ["approved_chats", "no_media_attachments"],
+    "telegram.search_messages":     ["no_media_attachments"],
+    "telegram.send_message":        ["approved_chats"],
 }
 
 # Rules that take a list-of-strings value
@@ -92,6 +128,8 @@ RULES_LIST_VALUE: set[str] = {
     "approved_channel", "approved_recipient", "personal_calendar",
     "approved_object_types", "approved_report_ids", "file_type_allowlist",
     "approved_folder", "approved_sandbox_folder",
+    "approved_recipient_domain", "label_name_allowlist", "parent_folder_allowlist",
+    "approved_project_keys", "approved_space_keys", "approved_chats",
 }
 # Rules that take a single integer value
 RULES_INT_VALUE: set[str] = {"age_threshold_days", "time_window_days"}
@@ -141,6 +179,12 @@ RULE_HINTS: dict[str, str] = {
     "file_type_allowlist":   "application/vnd.google-apps.document\ntext/plain",
     "approved_folder":       "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms",
     "approved_sandbox_folder": "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms",
+    "approved_recipient_domain": "domain1.com\ndomain2.com",
+    "label_name_allowlist": "Newsletters\nReceipts",
+    "parent_folder_allowlist": "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms",
+    "approved_project_keys": "MYPROJ\nOTHERPROJ",
+    "approved_space_keys":   "TEAM\nDOCS",
+    "approved_chats":        "123456789\n-100987654321",
 }
 
 

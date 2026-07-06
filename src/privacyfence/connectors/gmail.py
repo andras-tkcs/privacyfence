@@ -90,6 +90,35 @@ class GmailConnector(Connector):
                 ],
             ),
             ToolSpec(
+                name="gmail_reply_draft",
+                description=(
+                    "Create a Gmail draft replying to a single message, staying in the "
+                    "same thread (sets threadId plus In-Reply-To/References so it "
+                    "actually threads, unlike gmail_create_draft). Addressed only to the "
+                    "original sender. Requires user approval."
+                ),
+                params=[
+                    ToolParam("message_id", "str"),
+                    ToolParam("body", "str"),
+                    ToolParam("cc", "str", required=False, default=""),
+                    ToolParam("bcc", "str", required=False, default=""),
+                ],
+            ),
+            ToolSpec(
+                name="gmail_reply_all_draft",
+                description=(
+                    "Create a Gmail draft replying to all participants of a message "
+                    "(original sender plus To/Cc recipients, excluding yourself), "
+                    "staying in the same thread. Requires user approval."
+                ),
+                params=[
+                    ToolParam("message_id", "str"),
+                    ToolParam("body", "str"),
+                    ToolParam("cc", "str", required=False, default=""),
+                    ToolParam("bcc", "str", required=False, default=""),
+                ],
+            ),
+            ToolSpec(
                 name="gmail_add_label",
                 description="Add a label to a Gmail message. Requires user approval.",
                 params=[
@@ -295,7 +324,7 @@ class GmailConnector(Connector):
             tool_name="Add Gmail Label",
             summary=f"Add label '{label_name}' to: {message.subject or message_id}",
             sender=message.sender or "",
-            raw_data={"message_id": message_id, "label_name": label_name},
+            raw_data=message,
             filtered_data=None,
             gate="popup",
             preview=preview,
@@ -314,7 +343,7 @@ class GmailConnector(Connector):
             tool_name="Remove Gmail Label",
             summary=f"Remove label '{label_name}' from: {message.subject or message_id}",
             sender=message.sender or "",
-            raw_data={"message_id": message_id, "label_name": label_name},
+            raw_data=message,
             filtered_data=None,
             gate="popup",
             preview=preview,
@@ -337,7 +366,7 @@ class GmailConnector(Connector):
             tool_name="Archive Email",
             summary=f"Archive: {message.subject or '(no subject)'} from {message.sender or message_id}",
             sender=message.sender or "",
-            raw_data={"message_id": message_id},
+            raw_data=message,
             filtered_data=None,
             gate="popup",
             preview=preview,

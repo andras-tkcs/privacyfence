@@ -304,7 +304,7 @@ class DriveConnector(Connector):
             tool_name="Download Drive File",
             summary=f"Download \"{name}\" to {os.path.dirname(path)}",
             sender=", ".join(owners) or "(unknown)",
-            raw_data={"path": path, "name": name, "size_bytes": size_bytes},
+            raw_data={"file": drive_file, "path": path, "name": name, "size_bytes": size_bytes},
             filtered_data=result,
             gate="review",
             preview=preview,

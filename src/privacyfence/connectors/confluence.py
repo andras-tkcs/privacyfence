@@ -278,20 +278,25 @@ class ConfluenceConnector(Connector):
         return asdict(page)
 
     async def _update_page(self, page_id: str, title: str, body: str) -> Any:
-        preview = {"Page ID": page_id, "Title": title}
+        current = await self._fetch(self._confluence.get_page, page_id)
+        preview = {
+            "Page ID": page_id,
+            "Space": current.space_key or "(unknown)",
+            "Title": f"{current.title} → {title}" if title != current.title else title,
+        }
         await gated_call(
             connector=self.name,
             tool="confluence_update_page",
             tool_name="Update Confluence Page",
             summary=f"Update \"{title}\"",
             sender=f"page={page_id}",
-            raw_data={"page_id": page_id, "title": title, "body": body},
+            raw_data={"page_id": page_id, "space_key": current.space_key, "title": title, "body": body},
             filtered_data=None,
             gate="popup",
             preview=preview,
             details_text=body,
             my_email=self.my_email,
-            args={"page_id": page_id, "title": title},
+            args={"page_id": page_id, "space_key": current.space_key, "title": title},
         )
         page = await self._fetch(self._confluence.update_page, page_id, title, body)
         return asdict(page)
