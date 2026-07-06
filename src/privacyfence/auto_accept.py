@@ -423,6 +423,15 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
         parents = list(getattr(f, "parent_ids", []) or [])
         return ("approved_folder", parents) if parents else None
 
+    if operation_key == "sheets.read_values":
+        raw = ctx.raw_data
+        f = raw.get("file") if isinstance(raw, dict) else getattr(raw, "file", raw)
+        owners = getattr(f, "owners", []) or []
+        if ctx.my_email and any(ctx.my_email.lower() in o.lower() for o in owners):
+            return ("i_am_owner", None)
+        parents = list(getattr(f, "parent_ids", []) or [])
+        return ("approved_folder", parents) if parents else None
+
     if operation_key == "slack.read_messages":
         cid = ctx.args.get("channel_id", "") or ctx.args.get("channel", "") or ""
         if cid.startswith("D"):
