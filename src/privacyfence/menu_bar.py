@@ -29,6 +29,7 @@ import yaml
 from PyObjCTools import AppHelper
 
 from . import __version__
+from .audit_log import AuditLogger, current_week
 from .auto_accept import reload_rules, set_rules_changed_listener
 from .paths import data_dir, org_dir
 from .app_credentials import telegram_app_credentials
@@ -852,10 +853,19 @@ class PrivacyFenceMenuBar(rumps.App):
 
     def open_audit_log(self, _: Any = None) -> None:
         log_dir = Path(data_dir()) / "logs" / "audit"
-        if log_dir.exists():
-            subprocess.run(["open", str(log_dir)], check=False)
-        else:
+        if not log_dir.exists():
             rumps.alert("PrivacyFence", "No audit log found yet.")
+            return
+
+        week = current_week()
+        xlsx_path = None
+        if (log_dir / f"{week}.jsonl").exists():
+            xlsx_path = AuditLogger(str(log_dir)).export_week_to_excel(week)
+
+        # Refreshed this week's Excel export so it includes everything logged
+        # since the last daemon restart; fall back to the folder (e.g. if
+        # openpyxl is missing or there's nothing logged yet this week).
+        subprocess.run(["open", xlsx_path or str(log_dir)], check=False)
 
     def show_about(self, _: Any = None) -> None:
         resp = rumps.alert(
