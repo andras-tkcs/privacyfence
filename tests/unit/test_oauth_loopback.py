@@ -20,6 +20,17 @@ import requests
 
 from privacyfence.oauth_loopback import OAuthLoopbackError, _make_pkce_pair, run_browser_oauth
 
+# A loopback redirect must never be routed through an HTTP(S)_PROXY that
+# happens to be set in the environment (common on hosted CI runners) --
+# requests/urllib3 honor those env vars by default, and a stalled proxy-
+# tunnel negotiation to an unreachable proxy isn't reliably bounded by the
+# per-call `timeout=` argument, which previously caused this file's tests to
+# hang until pytest-timeout killed them rather than failing fast. A real
+# browser wouldn't proxy a localhost redirect either, so this also matches
+# reality, not just test convenience.
+_NO_PROXY_SESSION = requests.Session()
+_NO_PROXY_SESSION.trust_env = False
+
 
 def free_port() -> int:
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -60,7 +71,7 @@ class _Flow:
             if not respond:
                 return False
             params = query if query is not None else {"code": "auth-code-123", "state": self.captured["state"]}
-            requests.get(self.captured["redirect_uri"], params=params, timeout=5)
+            _NO_PROXY_SESSION.get(self.captured["redirect_uri"], params=params, timeout=5)
             return True
         return opener
 
@@ -193,7 +204,7 @@ class TestCallbackErrorHandling:
     def test_missing_code_without_error_raises(self):
         flow = _Flow()
         def opener(url):
-            requests.get(flow.captured["redirect_uri"], params={"state": flow.captured["state"]}, timeout=5)
+            _NO_PROXY_SESSION.get(flow.captured["redirect_uri"], params={"state": flow.captured["state"]}, timeout=5)
             return True
         with pytest.raises(OAuthLoopbackError, match="no authorization code"):
             run_browser_oauth(flow.build_authorize_url, flow.exchange, port=free_port(), open_browser=opener)
@@ -202,7 +213,7 @@ class TestCallbackErrorHandling:
         flow = _Flow()
         def opener(url):
             base = flow.captured["redirect_uri"].rsplit("/", 1)[0]
-            resp = requests.get(f"{base}/not-the-callback-path", timeout=5)
+            resp = _NO_PROXY_SESSION.get(f"{base}/not-the-callback-path", timeout=5)
             assert resp.status_code == 404
             return True
         with pytest.raises(OAuthLoopbackError, match="Timed out"):
