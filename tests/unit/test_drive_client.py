@@ -19,7 +19,10 @@ from privacyfence.drive_client import (
     DriveClient,
     DriveClientError,
     DriveFile,
+    _col_letters_to_index,
+    _hex_to_rgb_dict,
     _markdown_to_docs_requests,
+    _parse_a1_range,
     _parse_inline_runs,
 )
 from googleapiclient.errors import HttpError
@@ -28,6 +31,12 @@ from googleapiclient.errors import HttpError
 def make_client(service: MagicMock) -> DriveClient:
     client = DriveClient(client_config={}, token_file="/tmp/unused-token.json")
     client._service = service
+    return client
+
+
+def make_client_with_sheets(sheets_service: MagicMock) -> DriveClient:
+    client = DriveClient(client_config={}, token_file="/tmp/unused-token.json")
+    client._sheets_service = sheets_service
     return client
 
 
@@ -725,3 +734,471 @@ class TestDownloadFile:
 
         with pytest.raises(DriveClientError, match="download_file"):
             client.download_file("f1", destination_dir=str(tmp_path))
+
+
+# ---------------------------------------------------------------------------- #
+# Sheets API helpers: _col_letters_to_index / _parse_a1_range / _hex_to_rgb_dict
+# ---------------------------------------------------------------------------- #
+
+class TestColLettersToIndex:
+    @pytest.mark.parametrize("letters,expected", [
+        ("A", 0), ("B", 1), ("Z", 25), ("AA", 26), ("AB", 27), ("AZ", 51), ("BA", 52),
+    ])
+    def test_converts_a1_column_letters_to_zero_based_index(self, letters, expected):
+        assert _col_letters_to_index(letters) == expected
+
+    def test_lowercase_letters_accepted(self):
+        assert _col_letters_to_index("a") == 0
+
+
+class TestParseA1Range:
+    def test_parses_fully_bounded_range(self):
+        assert _parse_a1_range("A1:C10") == {
+            "startRowIndex": 0, "endRowIndex": 10, "startColumnIndex": 0, "endColumnIndex": 3,
+        }
+
+    def test_out_of_order_corners_are_normalized(self):
+        assert _parse_a1_range("C10:A1") == {
+            "startRowIndex": 0, "endRowIndex": 10, "startColumnIndex": 0, "endColumnIndex": 3,
+        }
+
+    def test_single_cell_range(self):
+        assert _parse_a1_range("B2:B2") == {
+            "startRowIndex": 1, "endRowIndex": 2, "startColumnIndex": 1, "endColumnIndex": 2,
+        }
+
+    def test_whitespace_stripped(self):
+        assert _parse_a1_range("  A1:C10  ") == _parse_a1_range("A1:C10")
+
+    def test_sheet_name_prefix_rejected(self):
+        with pytest.raises(DriveClientError, match="Unsupported range syntax"):
+            _parse_a1_range("Sheet1!A1:C10")
+
+    def test_open_ended_range_rejected(self):
+        with pytest.raises(DriveClientError, match="Unsupported range syntax"):
+            _parse_a1_range("A:C")
+
+    def test_single_cell_no_colon_rejected(self):
+        with pytest.raises(DriveClientError, match="Unsupported range syntax"):
+            _parse_a1_range("A1")
+
+
+class TestHexToRgbDict:
+    def test_converts_with_hash_prefix(self):
+        assert _hex_to_rgb_dict("#ffcc00") == pytest.approx({"red": 1.0, "green": 0.8, "blue": 0.0}, abs=1e-6)
+
+    def test_converts_without_hash_prefix(self):
+        assert _hex_to_rgb_dict("000000") == {"red": 0.0, "green": 0.0, "blue": 0.0}
+
+    def test_white(self):
+        assert _hex_to_rgb_dict("#ffffff") == {"red": 1.0, "green": 1.0, "blue": 1.0}
+
+    def test_wrong_length_raises(self):
+        with pytest.raises(DriveClientError, match="Invalid hex color"):
+            _hex_to_rgb_dict("#fff")
+
+    def test_non_hex_characters_raise(self):
+        with pytest.raises(DriveClientError, match="Invalid hex color"):
+            _hex_to_rgb_dict("#zzzzzz")
+
+
+# ---------------------------------------------------------------------------- #
+# get_credentials
+# ---------------------------------------------------------------------------- #
+
+class TestGetCredentials:
+    def test_exposes_loaded_credentials(self):
+        client = make_client(MagicMock())
+        sentinel_creds = object()
+        client._load_credentials = lambda: sentinel_creds
+        assert client.get_credentials() is sentinel_creds
+
+
+# ---------------------------------------------------------------------------- #
+# create_spreadsheet
+# ---------------------------------------------------------------------------- #
+
+class TestCreateSpreadsheet:
+    def test_requires_non_empty_name(self):
+        client = make_client_with_sheets(MagicMock())
+        with pytest.raises(DriveClientError, match="non-empty name"):
+            client.create_spreadsheet("   ")
+
+    def test_creates_with_default_single_sheet(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.create.return_value.execute.return_value = {
+            "spreadsheetId": "sheet1", "properties": {"title": "Budget"}, "spreadsheetUrl": "https://x",
+        }
+        client = make_client_with_sheets(sheets_service)
+
+        result = client.create_spreadsheet("Budget")
+
+        body = sheets_service.spreadsheets.return_value.create.call_args.kwargs["body"]
+        assert body == {"properties": {"title": "Budget"}}
+        assert result == {"id": "sheet1", "name": "Budget", "web_view_link": "https://x"}
+
+    def test_creates_with_named_tabs(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.create.return_value.execute.return_value = {
+            "spreadsheetId": "sheet1", "properties": {"title": "Budget"},
+        }
+        client = make_client_with_sheets(sheets_service)
+
+        client.create_spreadsheet("Budget", sheet_titles=["Q1", "Q2"])
+
+        body = sheets_service.spreadsheets.return_value.create.call_args.kwargs["body"]
+        assert body["sheets"] == [{"properties": {"title": "Q1"}}, {"properties": {"title": "Q2"}}]
+
+    def test_moves_to_parent_folder_when_given(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.create.return_value.execute.return_value = {
+            "spreadsheetId": "sheet1", "properties": {"title": "Budget"},
+        }
+        drive_service = MagicMock()
+        drive_service.files.return_value.get.return_value.execute.return_value = {"parents": ["old"]}
+        drive_service.files.return_value.update.return_value.execute.return_value = {"id": "sheet1"}
+
+        client = make_client_with_sheets(sheets_service)
+        client._service = drive_service
+
+        client.create_spreadsheet("Budget", parent_folder_id="folder1")
+
+        update_kwargs = drive_service.files.return_value.update.call_args.kwargs
+        assert update_kwargs["addParents"] == "folder1"
+
+    def test_http_error_becomes_drive_client_error(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.create.return_value.execute.side_effect = http_error(400)
+        client = make_client_with_sheets(sheets_service)
+        with pytest.raises(DriveClientError, match="create_spreadsheet"):
+            client.create_spreadsheet("Budget")
+
+
+# ---------------------------------------------------------------------------- #
+# list_sheets
+# ---------------------------------------------------------------------------- #
+
+class TestListSheets:
+    def test_requires_spreadsheet_id(self):
+        client = make_client_with_sheets(MagicMock())
+        with pytest.raises(DriveClientError, match="non-empty spreadsheet_id"):
+            client.list_sheets("")
+
+    def test_maps_tab_metadata(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.get.return_value.execute.return_value = {
+            "sheets": [{
+                "properties": {
+                    "sheetId": 0, "title": "Sheet1", "index": 0, "hidden": False,
+                    "gridProperties": {"rowCount": 1000, "columnCount": 26},
+                }
+            }]
+        }
+        client = make_client_with_sheets(sheets_service)
+
+        sheets = client.list_sheets("sheet1")
+
+        assert sheets == [{
+            "sheet_id": 0, "title": "Sheet1", "index": 0,
+            "row_count": 1000, "column_count": 26, "hidden": False,
+        }]
+
+    def test_http_error_becomes_drive_client_error(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.get.return_value.execute.side_effect = http_error(404)
+        client = make_client_with_sheets(sheets_service)
+        with pytest.raises(DriveClientError, match="list_sheets"):
+            client.list_sheets("sheet1")
+
+
+# ---------------------------------------------------------------------------- #
+# get_sheet_values / write_sheet_values
+# ---------------------------------------------------------------------------- #
+
+class TestGetSheetValues:
+    def test_requires_spreadsheet_id_and_range(self):
+        client = make_client_with_sheets(MagicMock())
+        with pytest.raises(DriveClientError, match="requires spreadsheet_id and range"):
+            client.get_sheet_values("", "A1:B2")
+        with pytest.raises(DriveClientError, match="requires spreadsheet_id and range"):
+            client.get_sheet_values("sheet1", "")
+
+    def test_returns_values(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.values.return_value.get.return_value.execute.return_value = {
+            "values": [["a", "b"], ["1", "2"]]
+        }
+        client = make_client_with_sheets(sheets_service)
+
+        values = client.get_sheet_values("sheet1", "Sheet1!A1:B2")
+
+        assert values == [["a", "b"], ["1", "2"]]
+
+    def test_no_values_key_yields_empty_list(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.values.return_value.get.return_value.execute.return_value = {}
+        client = make_client_with_sheets(sheets_service)
+        assert client.get_sheet_values("sheet1", "A1:B2") == []
+
+    def test_http_error_becomes_drive_client_error(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.values.return_value.get.return_value.execute.side_effect = http_error(404)
+        client = make_client_with_sheets(sheets_service)
+        with pytest.raises(DriveClientError, match="get_sheet_values"):
+            client.get_sheet_values("sheet1", "A1:B2")
+
+
+class TestWriteSheetValues:
+    def test_requires_spreadsheet_id_and_range(self):
+        client = make_client_with_sheets(MagicMock())
+        with pytest.raises(DriveClientError, match="requires spreadsheet_id and range"):
+            client.write_sheet_values("", "A1:B2", [["a"]])
+
+    def test_writes_with_default_user_entered_option(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.values.return_value.update.return_value.execute.return_value = {
+            "updatedRange": "Sheet1!A1:B2", "updatedCells": 4,
+        }
+        client = make_client_with_sheets(sheets_service)
+
+        result = client.write_sheet_values("sheet1", "A1:B2", [["a", "b"], ["1", "2"]])
+
+        call_kwargs = sheets_service.spreadsheets.return_value.values.return_value.update.call_args.kwargs
+        assert call_kwargs["valueInputOption"] == "USER_ENTERED"
+        assert call_kwargs["body"] == {"values": [["a", "b"], ["1", "2"]]}
+        assert result == {"spreadsheet_id": "sheet1", "updated_range": "Sheet1!A1:B2", "updated_cells": 4}
+
+    def test_custom_value_input_option_passed_through(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.values.return_value.update.return_value.execute.return_value = {}
+        client = make_client_with_sheets(sheets_service)
+
+        client.write_sheet_values("sheet1", "A1:B2", [["a"]], value_input_option="RAW")
+
+        call_kwargs = sheets_service.spreadsheets.return_value.values.return_value.update.call_args.kwargs
+        assert call_kwargs["valueInputOption"] == "RAW"
+
+    def test_http_error_becomes_drive_client_error(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.values.return_value.update.return_value.execute.side_effect = http_error(400)
+        client = make_client_with_sheets(sheets_service)
+        with pytest.raises(DriveClientError, match="write_sheet_values"):
+            client.write_sheet_values("sheet1", "A1:B2", [["a"]])
+
+
+# ---------------------------------------------------------------------------- #
+# add_sheet / rename_sheet
+# ---------------------------------------------------------------------------- #
+
+class TestAddSheet:
+    def test_requires_spreadsheet_id_and_title(self):
+        client = make_client_with_sheets(MagicMock())
+        with pytest.raises(DriveClientError, match="requires spreadsheet_id and a non-empty title"):
+            client.add_sheet("", "Q3")
+        with pytest.raises(DriveClientError, match="requires spreadsheet_id and a non-empty title"):
+            client.add_sheet("sheet1", "   ")
+
+    def test_adds_tab_with_grid_properties(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.batchUpdate.return_value.execute.return_value = {
+            "replies": [{"addSheet": {"properties": {"sheetId": 5, "title": "Q3", "index": 1}}}]
+        }
+        client = make_client_with_sheets(sheets_service)
+
+        result = client.add_sheet("sheet1", "Q3", rows=100, cols=10)
+
+        batch_kwargs = sheets_service.spreadsheets.return_value.batchUpdate.call_args.kwargs
+        request = batch_kwargs["body"]["requests"][0]["addSheet"]
+        assert request["properties"]["gridProperties"] == {"rowCount": 100, "columnCount": 10}
+        assert result == {"sheet_id": 5, "title": "Q3", "index": 1}
+
+    def test_non_positive_rows_cols_clamped_to_one(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.batchUpdate.return_value.execute.return_value = {
+            "replies": [{"addSheet": {"properties": {"sheetId": 5, "title": "Q3"}}}]
+        }
+        client = make_client_with_sheets(sheets_service)
+
+        client.add_sheet("sheet1", "Q3", rows=0, cols=-5)
+
+        request = sheets_service.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]["requests"][0]
+        assert request["addSheet"]["properties"]["gridProperties"] == {"rowCount": 1, "columnCount": 1}
+
+    def test_http_error_becomes_drive_client_error(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.batchUpdate.return_value.execute.side_effect = http_error(400)
+        client = make_client_with_sheets(sheets_service)
+        with pytest.raises(DriveClientError, match="add_sheet"):
+            client.add_sheet("sheet1", "Q3")
+
+
+class TestRenameSheet:
+    def test_requires_spreadsheet_id_and_new_title(self):
+        client = make_client_with_sheets(MagicMock())
+        with pytest.raises(DriveClientError, match="requires spreadsheet_id and a non-empty new_title"):
+            client.rename_sheet("", 0, "New")
+        with pytest.raises(DriveClientError, match="requires spreadsheet_id and a non-empty new_title"):
+            client.rename_sheet("sheet1", 0, "  ")
+
+    def test_renames_via_batch_update(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_sheets(sheets_service)
+
+        result = client.rename_sheet("sheet1", 5, "Renamed")
+
+        request = sheets_service.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]["requests"][0]
+        assert request == {
+            "updateSheetProperties": {"properties": {"sheetId": 5, "title": "Renamed"}, "fields": "title"}
+        }
+        assert result == {"spreadsheet_id": "sheet1", "sheet_id": 5, "title": "Renamed"}
+
+    def test_http_error_becomes_drive_client_error(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.batchUpdate.return_value.execute.side_effect = http_error(400)
+        client = make_client_with_sheets(sheets_service)
+        with pytest.raises(DriveClientError, match="rename_sheet"):
+            client.rename_sheet("sheet1", 5, "Renamed")
+
+
+# ---------------------------------------------------------------------------- #
+# format_sheet_range: every parameter is opt-in
+# ---------------------------------------------------------------------------- #
+
+class TestFormatSheetRange:
+    def test_requires_spreadsheet_id(self):
+        client = make_client_with_sheets(MagicMock())
+        with pytest.raises(DriveClientError, match="non-empty spreadsheet_id"):
+            client.format_sheet_range("", 0, "A1:B2")
+
+    def test_no_options_given_sends_no_requests(self):
+        sheets_service = MagicMock()
+        client = make_client_with_sheets(sheets_service)
+
+        result = client.format_sheet_range("sheet1", 0, "A1:B2")
+
+        sheets_service.spreadsheets.return_value.batchUpdate.assert_not_called()
+        assert result == {"spreadsheet_id": "sheet1", "sheet_id": 0, "requests_applied": 0}
+
+    def test_bold_and_italic_only_touch_text_format_fields(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_sheets(sheets_service)
+
+        client.format_sheet_range("sheet1", 0, "A1:B2", bold="true", italic="false")
+
+        requests = sheets_service.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+        repeat_cell = requests[0]["repeatCell"]
+        assert repeat_cell["cell"]["userEnteredFormat"]["textFormat"] == {"bold": True, "italic": False}
+        assert "userEnteredFormat.textFormat(bold,italic)" in repeat_cell["fields"]
+
+    def test_background_and_text_color_converted_to_rgb(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_sheets(sheets_service)
+
+        client.format_sheet_range("sheet1", 0, "A1:B2", background_color="#ffcc00", text_color="#000000")
+
+        requests = sheets_service.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+        cell_format = requests[0]["repeatCell"]["cell"]["userEnteredFormat"]
+        assert cell_format["backgroundColor"] == _hex_to_rgb_dict("#ffcc00")
+        assert cell_format["textFormat"]["foregroundColor"] == _hex_to_rgb_dict("#000000")
+
+    def test_number_format_and_alignment(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_sheets(sheets_service)
+
+        client.format_sheet_range("sheet1", 0, "A1:B2", number_format="0.00%", horizontal_alignment="center")
+
+        requests = sheets_service.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+        cell_format = requests[0]["repeatCell"]["cell"]["userEnteredFormat"]
+        assert cell_format["numberFormat"] == {"type": "NUMBER", "pattern": "0.00%"}
+        assert cell_format["horizontalAlignment"] == "CENTER"
+
+    def test_column_width_produces_update_dimension_request(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_sheets(sheets_service)
+
+        client.format_sheet_range("sheet1", 0, "A1:C10", column_width=120)
+
+        requests = sheets_service.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+        dim_request = next(r["updateDimensionProperties"] for r in requests if "updateDimensionProperties" in r)
+        assert dim_request["range"] == {"sheetId": 0, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 3}
+        assert dim_request["properties"] == {"pixelSize": 120}
+
+    def test_freeze_rows_and_cols_produce_update_sheet_properties_request(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_sheets(sheets_service)
+
+        client.format_sheet_range("sheet1", 0, "A1:B2", freeze_rows=1, freeze_cols=2)
+
+        requests = sheets_service.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+        freeze_request = next(r["updateSheetProperties"] for r in requests if "updateSheetProperties" in r)
+        assert freeze_request["properties"]["gridProperties"] == {"frozenRowCount": 1, "frozenColumnCount": 2}
+        assert set(freeze_request["fields"].split(",")) == {"gridProperties.frozenRowCount", "gridProperties.frozenColumnCount"}
+
+    def test_freeze_zero_unfreezes(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_sheets(sheets_service)
+
+        client.format_sheet_range("sheet1", 0, "A1:B2", freeze_rows=0)
+
+        requests = sheets_service.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+        freeze_request = next(r["updateSheetProperties"] for r in requests if "updateSheetProperties" in r)
+        assert freeze_request["properties"]["gridProperties"] == {"frozenRowCount": 0}
+
+    def test_merge_none_unmerges(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_sheets(sheets_service)
+
+        client.format_sheet_range("sheet1", 0, "A1:B2", merge_type="none")
+
+        requests = sheets_service.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+        assert requests[0] == {"unmergeCells": {"range": {"sheetId": 0, **_parse_a1_range("A1:B2")}}}
+
+    @pytest.mark.parametrize("merge_type", ["MERGE_ALL", "MERGE_COLUMNS", "MERGE_ROWS"])
+    def test_merge_variants(self, merge_type):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_sheets(sheets_service)
+
+        client.format_sheet_range("sheet1", 0, "A1:B2", merge_type=merge_type)
+
+        requests = sheets_service.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+        assert requests[0]["mergeCells"]["mergeType"] == merge_type
+
+    def test_merge_keep_default_produces_no_merge_request(self):
+        sheets_service = MagicMock()
+        client = make_client_with_sheets(sheets_service)
+
+        result = client.format_sheet_range("sheet1", 0, "A1:B2")
+
+        assert result["requests_applied"] == 0
+
+    def test_invalid_merge_type_raises(self):
+        client = make_client_with_sheets(MagicMock())
+        with pytest.raises(DriveClientError, match="invalid merge_type"):
+            client.format_sheet_range("sheet1", 0, "A1:B2", merge_type="BOGUS")
+
+    def test_multiple_options_combine_into_multiple_requests(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_sheets(sheets_service)
+
+        result = client.format_sheet_range(
+            "sheet1", 0, "A1:B2", bold="true", column_width=100, freeze_rows=1, merge_type="MERGE_ALL",
+        )
+
+        assert result["requests_applied"] == 4
+
+    def test_http_error_becomes_drive_client_error(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.batchUpdate.return_value.execute.side_effect = http_error(400)
+        client = make_client_with_sheets(sheets_service)
+        with pytest.raises(DriveClientError, match="format_sheet_range"):
+            client.format_sheet_range("sheet1", 0, "A1:B2", bold="true")

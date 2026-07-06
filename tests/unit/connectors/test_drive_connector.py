@@ -290,3 +290,215 @@ class TestFetchErrorMapping:
 
         with pytest.raises(RuntimeError, match="quota exceeded"):
             await connector.call("drive_list_files", {"query": "q"})
+
+
+class TestParseJsonHelpers:
+    def test_parse_json_str_list_valid(self):
+        assert drive_module._parse_json_str_list('["a", "b"]') == ["a", "b"]
+
+    def test_parse_json_str_list_empty_string_yields_none(self):
+        assert drive_module._parse_json_str_list("") is None
+        assert drive_module._parse_json_str_list("   ") is None
+
+    def test_parse_json_str_list_invalid_json_yields_none(self):
+        assert drive_module._parse_json_str_list("not json") is None
+
+    def test_parse_json_str_list_non_list_yields_none(self):
+        assert drive_module._parse_json_str_list('{"a": 1}') is None
+
+    def test_parse_json_str_list_non_string_elements_yield_none(self):
+        assert drive_module._parse_json_str_list("[1, 2]") is None
+
+    def test_parse_json_2d_list_valid(self):
+        assert drive_module._parse_json_2d_list('[["a", "b"], ["c", "d"]]') == [["a", "b"], ["c", "d"]]
+
+    def test_parse_json_2d_list_invalid_json_yields_none(self):
+        assert drive_module._parse_json_2d_list("not json") is None
+
+    def test_parse_json_2d_list_non_list_yields_none(self):
+        assert drive_module._parse_json_2d_list('{"a": 1}') is None
+
+
+class TestSheetsAutoTools:
+    async def test_sheets_create_tracks_session_id_and_parses_titles(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        client.create_spreadsheet.return_value = {"id": "sheet1", "name": "Budget"}
+
+        result = await connector.call(
+            "drive_sheets_create", {"name": "Budget", "sheet_titles": '["Q1", "Q2"]'}
+        )
+
+        client.create_spreadsheet.assert_called_once_with("Budget", ["Q1", "Q2"], "")
+        assert result == {"id": "sheet1", "name": "Budget"}
+        assert "sheet1" in connector.session_created_ids
+        entries = (tmp_path / f"{current_week()}.jsonl").read_text(encoding="utf-8").splitlines()
+        assert '"decision": "auto_accepted"' in entries[0]
+
+    async def test_sheets_create_no_titles_passes_none(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        client.create_spreadsheet.return_value = {"id": "sheet1"}
+
+        await connector.call("drive_sheets_create", {"name": "Budget"})
+
+        client.create_spreadsheet.assert_called_once_with("Budget", None, "")
+
+    async def test_sheets_create_no_id_in_result_not_tracked(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        client.create_spreadsheet.return_value = {}
+
+        await connector.call("drive_sheets_create", {"name": "Budget"})
+
+        assert connector.session_created_ids == set()
+
+    async def test_sheets_get_metadata_auto_accepts(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        client.list_sheets.return_value = [{"sheet_id": 0, "title": "Sheet1"}]
+
+        result = await connector.call("drive_sheets_get_metadata", {"spreadsheet_id": "sheet1"})
+
+        assert result == [{"sheet_id": 0, "title": "Sheet1"}]
+        client.list_sheets.assert_called_once_with("sheet1")
+        entries = (tmp_path / f"{current_week()}.jsonl").read_text(encoding="utf-8").splitlines()
+        assert '"decision": "auto_accepted"' in entries[0]
+
+
+class TestSheetsGatedTools:
+    async def test_get_values_gate_is_review_with_metadata_preview(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file(name="Budget")
+        client.get_sheet_values.return_value = [["a", "b"], ["1", "2"]]
+
+        result = await connector.call(
+            "drive_sheets_get_values", {"spreadsheet_id": "sheet1", "range_a1": "Sheet1!A1:B2"}
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["gate"] == "review"
+        assert kwargs["preview"] == {"Spreadsheet": "Budget", "Owner": "alice@example.com", "Range": "Sheet1!A1:B2"}
+        assert kwargs["filtered_data"] == [["a", "b"], ["1", "2"]]
+        assert result == [["a", "b"], ["1", "2"]]
+
+    async def test_get_values_no_owner_shows_unknown(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file(owners=[])
+        client.get_sheet_values.return_value = []
+
+        await connector.call("drive_sheets_get_values", {"spreadsheet_id": "sheet1", "range_a1": "A1:B2"})
+
+        assert gated_call_spy[0]["preview"]["Owner"] == "(unknown)"
+
+    async def test_write_range_gate_popup_and_valid_json(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file(name="Budget")
+        client.write_sheet_values.return_value = {"updated_cells": 4}
+
+        result = await connector.call(
+            "drive_sheets_write_range",
+            {"spreadsheet_id": "sheet1", "range_a1": "A1:B2", "values": '[["a","b"],["1","2"]]'},
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["gate"] == "popup"
+        assert kwargs["preview"] == {"Spreadsheet": "Budget", "Owner": "alice@example.com", "Range": "A1:B2"}
+        client.write_sheet_values.assert_called_once_with("sheet1", "A1:B2", [["a", "b"], ["1", "2"]])
+        assert result == {"updated_cells": 4}
+
+    async def test_write_range_invalid_json_raises_before_gating(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file()
+
+        with pytest.raises(ValueError, match="JSON 2D array"):
+            await connector.call(
+                "drive_sheets_write_range",
+                {"spreadsheet_id": "sheet1", "range_a1": "A1:B2", "values": "not json"},
+            )
+
+    async def test_add_sheet_gate_popup(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file(name="Budget")
+        client.add_sheet.return_value = {"sheet_id": 5, "title": "Q3"}
+
+        result = await connector.call(
+            "drive_sheets_add_sheet", {"spreadsheet_id": "sheet1", "title": "Q3", "rows": 10, "cols": 5}
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["gate"] == "popup"
+        assert kwargs["preview"]["New tab"] == "Q3"
+        client.add_sheet.assert_called_once_with("sheet1", "Q3", 10, 5)
+        assert result == {"sheet_id": 5, "title": "Q3"}
+
+    async def test_rename_sheet_gate_popup(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file(name="Budget")
+        client.rename_sheet.return_value = {"sheet_id": 5, "title": "Renamed"}
+
+        result = await connector.call(
+            "drive_sheets_rename_sheet", {"spreadsheet_id": "sheet1", "sheet_id": 5, "new_title": "Renamed"}
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["gate"] == "popup"
+        assert kwargs["preview"]["Tab id"] == 5
+        assert kwargs["preview"]["New title"] == "Renamed"
+        client.rename_sheet.assert_called_once_with("sheet1", 5, "Renamed")
+        assert result == {"sheet_id": 5, "title": "Renamed"}
+
+    async def test_format_range_gate_popup_summarizes_applied_changes(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file(name="Budget")
+        client.format_sheet_range.return_value = {"requests_applied": 2}
+
+        result = await connector.call(
+            "drive_sheets_format_range",
+            {
+                "spreadsheet_id": "sheet1", "sheet_id": 0, "range_a1": "A1:B2",
+                "bold": "true", "background_color": "#ffcc00",
+            },
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["gate"] == "popup"
+        assert "bold=true" in kwargs["preview"]["Format"]
+        assert "background=#ffcc00" in kwargs["preview"]["Format"]
+        client.format_sheet_range.assert_called_once_with(
+            "sheet1", 0, "A1:B2", "true", "", "#ffcc00", "", "", "", -1, -1, -1, "KEEP"
+        )
+        assert result == {"requests_applied": 2}
+
+    async def test_format_range_no_changes_shows_placeholder(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file()
+        client.format_sheet_range.return_value = {"requests_applied": 0}
+
+        await connector.call(
+            "drive_sheets_format_range", {"spreadsheet_id": "sheet1", "sheet_id": 0, "range_a1": "A1:B2"}
+        )
+
+        assert gated_call_spy[0]["preview"]["Format"] == "(no changes)"
+
+    async def test_format_range_summary_covers_every_remaining_option(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file()
+        client.format_sheet_range.return_value = {"requests_applied": 8}
+
+        await connector.call(
+            "drive_sheets_format_range",
+            {
+                "spreadsheet_id": "sheet1", "sheet_id": 0, "range_a1": "A1:B2",
+                "italic": "true", "text_color": "#000000", "number_format": "0.00%",
+                "horizontal_alignment": "center", "freeze_rows": 1, "freeze_cols": 2,
+                "column_width": 100, "merge_type": "MERGE_ALL",
+            },
+        )
+
+        summary = gated_call_spy[0]["preview"]["Format"]
+        for expected in (
+            "italic=true", "text_color=#000000", "number_format=0.00%", "align=center",
+            "freeze_rows=1", "freeze_cols=2", "column_width=100px", "merge=MERGE_ALL",
+        ):
+            assert expected in summary
