@@ -29,7 +29,7 @@ import yaml
 from PyObjCTools import AppHelper
 
 from . import __version__
-from .auto_accept import reload_rules
+from .auto_accept import reload_rules, set_rules_changed_listener
 from .paths import data_dir, org_dir
 from .app_credentials import telegram_app_credentials
 from .daemon_main import TOKEN_FILES, build_connectors, load_org_config
@@ -172,6 +172,12 @@ class PrivacyFenceMenuBar(rumps.App):
             template=True,
         )
         self._rebuild()
+        set_rules_changed_listener(self._on_rules_changed)
+
+    def _on_rules_changed(self) -> None:
+        """Fired by auto_accept.reload_rules(), possibly from the IPC
+        server's thread — marshal the menu rebuild onto the main thread."""
+        AppHelper.callAfter(self._rebuild)
 
     # ------------------------------------------------------------------ #
     # Menu building
@@ -808,10 +814,12 @@ class PrivacyFenceMenuBar(rumps.App):
     def _save_and_reload(self, cfg: dict) -> None:
         self._save_config(cfg)
         try:
+            # Triggers _on_rules_changed() -> _rebuild(), so the menu picks
+            # up the change without a separate explicit rebuild here.
             reload_rules(cfg.get("auto_accept_rules", {}))
         except Exception as exc:
             logger.warning("Rule hot-reload failed: %s", exc)
-        self._rebuild()
+            self._rebuild()
 
 
 # ---------------------------------------------------------------------------- #

@@ -86,10 +86,45 @@ async def gated_call(
 
     if gate == "review":
         suggestion = suggest_rule(operation_key, ctx)
+        # Everything interactive for this item — including the "Accept All"
+        # confirmation and persisting the resulting rule — stays inside one
+        # continuous lock acquisition. Releasing and re-acquiring the lock
+        # between the two popups would open a window where a request queued
+        # behind this one slips through with the pre-rule rule set and pops
+        # up its own dialog for something the user just approved.
         async with _popup_lock:
+            # Re-check: while this call was queued behind another popup, that
+            # popup's "Accept All" may have just created a rule that now
+            # covers this item too.
+            auto_ok, matched_rule = evaluator.should_auto_accept(operation_key, ctx)
+            if auto_ok:
+                _audit(
+                    created_at=created_at, connector=connector, tool=tool,
+                    tool_name=tool_name, summary=summary, sender=sender,
+                    decision="auto_accepted", auto_accept_rule=matched_rule,
+                )
+                logger.info("Auto-accepted while queued: %s/%s rule=%r", connector, tool, matched_rule)
+                return filtered_data
+
             decision = await asyncio.to_thread(
                 show_read_popup, popup_title, preview or {}, details, suggestion is not None
             )
+
+            if decision == "accept_all" and suggestion is not None:
+                rule_name, value = suggestion
+                description = describe_rule(rule_name, value)
+                confirmed = await asyncio.to_thread(show_rule_confirmation_popup, description)
+                if confirmed:
+                    add_auto_accept_rule(operation_key, rule_name, value)
+                    _audit(
+                        created_at=created_at, connector=connector, tool=tool,
+                        tool_name=tool_name, summary=summary, sender=sender,
+                        decision="accepted_via_accept_all", auto_accept_rule=rule_name,
+                    )
+                    logger.info("Accept All: created rule %r for %s", rule_name, operation_key)
+                    return filtered_data
+                # Cancelled rule creation — this item is still accepted, just once.
+                decision = "accept"
 
         if decision == "deny":
             _audit(
@@ -98,22 +133,6 @@ async def gated_call(
                 decision="rejected", auto_accept_rule="",
             )
             raise RuntimeError("Request denied by user")
-
-        if decision == "accept_all" and suggestion is not None:
-            rule_name, value = suggestion
-            description = describe_rule(rule_name, value)
-            async with _popup_lock:
-                confirmed = await asyncio.to_thread(show_rule_confirmation_popup, description)
-            if confirmed:
-                add_auto_accept_rule(operation_key, rule_name, value)
-                _audit(
-                    created_at=created_at, connector=connector, tool=tool,
-                    tool_name=tool_name, summary=summary, sender=sender,
-                    decision="accepted_via_accept_all", auto_accept_rule=rule_name,
-                )
-                logger.info("Accept All: created rule %r for %s", rule_name, operation_key)
-                return filtered_data
-            # Cancelled rule creation — this item is still accepted, just once.
 
         _audit(
             created_at=created_at, connector=connector, tool=tool,
@@ -125,6 +144,17 @@ async def gated_call(
     else:
         # ── Popup gate: block and show native approval dialog for a write ───
         async with _popup_lock:
+            # Same race as above: a rule may have been created while queued.
+            auto_ok, matched_rule = evaluator.should_auto_accept(operation_key, ctx)
+            if auto_ok:
+                _audit(
+                    created_at=created_at, connector=connector, tool=tool,
+                    tool_name=tool_name, summary=summary, sender=sender,
+                    decision="auto_accepted", auto_accept_rule=matched_rule,
+                )
+                logger.info("Auto-accepted while queued: %s/%s rule=%r", connector, tool, matched_rule)
+                return filtered_data
+
             decision = await asyncio.to_thread(show_popup, popup_title, preview or {}, details)
 
         if decision == "accept":

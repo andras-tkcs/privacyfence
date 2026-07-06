@@ -4,7 +4,7 @@ import logging
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 
@@ -347,7 +347,12 @@ def init_config_path(path: str) -> None:
 
 
 def add_auto_accept_rule(operation_key: str, rule_name: str, value: Any) -> None:
-    """Append a rule to the config file on disk and hot-reload the evaluator."""
+    """Append a rule to the config file on disk and hot-reload the evaluator.
+
+    No-ops if an identical rule (same name and value) is already present for
+    this operation, so confirming the same "Accept All" suggestion more than
+    once doesn't pile up duplicate entries.
+    """
     if _config_path is None:
         raise RuntimeError("auto_accept config path not initialized")
     with _write_lock:
@@ -357,6 +362,8 @@ def add_auto_accept_rule(operation_key: str, rule_name: str, value: Any) -> None
         new_rule: dict[str, Any] = {"rule": rule_name}
         if value is not None:
             new_rule["value"] = value
+        if new_rule in rules:
+            return
         rules.append(new_rule)
         with open(_config_path, "w", encoding="utf-8") as f:
             yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
@@ -364,6 +371,8 @@ def add_auto_accept_rule(operation_key: str, rule_name: str, value: Any) -> None
 
 
 _INSTANCE: AutoAcceptEvaluator | None = None
+_rules_changed_listener: Callable[[], None] | None = None
+
 
 def get_auto_accept_evaluator() -> AutoAcceptEvaluator:
     global _INSTANCE
@@ -376,6 +385,18 @@ def init_auto_accept_evaluator(rules_config: dict) -> AutoAcceptEvaluator:
     _INSTANCE = AutoAcceptEvaluator(rules_config)
     return _INSTANCE
 
+
+def set_rules_changed_listener(callback: Callable[[], None] | None) -> None:
+    """Register a callback fired whenever the live rule set changes.
+
+    The menu bar uses this to refresh its "Auto-accept Rules" submenu when a
+    rule is created from the approval popup, which runs on the IPC server's
+    own thread rather than the menu bar's main thread.
+    """
+    global _rules_changed_listener
+    _rules_changed_listener = callback
+
+
 def reload_rules(rules_config: dict) -> None:
     """Hot-reload rules into the live evaluator without restarting the daemon."""
     global _INSTANCE
@@ -384,3 +405,5 @@ def reload_rules(rules_config: dict) -> None:
     else:
         _INSTANCE._rules = rules_config or {}
     logger.info("Auto-accept rules reloaded live (%d operations)", len(_INSTANCE._rules))
+    if _rules_changed_listener is not None:
+        _rules_changed_listener()
