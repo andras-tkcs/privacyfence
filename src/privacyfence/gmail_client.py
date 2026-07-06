@@ -33,6 +33,21 @@ class GmailClientError(Exception):
     """Raised for unrecoverable Gmail client problems (auth, config, API)."""
 
 
+def resolve_attachment_destination(filename: str, destination_dir: str = "") -> str:
+    """Compute where an attachment will be saved, without touching disk.
+
+    ``filename`` comes from the sender's MIME headers and is untrusted, so
+    only its basename is kept - this is what stops a crafted name like
+    "../../.ssh/authorized_keys" from writing outside ``destination_dir``.
+    Used both to preview the save path before download approval and by
+    ``download_attachment`` to actually write the file, so the two never
+    disagree.
+    """
+    dest_dir = os.path.expanduser(destination_dir.strip() or "~/Downloads")
+    safe_name = os.path.basename(filename) or "attachment"
+    return os.path.join(dest_dir, safe_name)
+
+
 @dataclass
 class Attachment:
     """Attachment metadata. Content is intentionally never carried here."""
@@ -304,13 +319,12 @@ class GmailClient:
             ) from exc
 
         data = base64.urlsafe_b64decode(raw.get("data", "").encode("utf-8"))
-        dest = os.path.expanduser(destination_dir.strip() or "~/Downloads")
-        os.makedirs(dest, exist_ok=True)
-        name = filename or attachment_id
-        dest_path = os.path.join(dest, name)
+        dest_path = resolve_attachment_destination(filename or attachment_id, destination_dir)
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         with open(dest_path, "wb") as fh:
             fh.write(data)
 
+        name = os.path.basename(dest_path)
         logger.info(
             "download_attachment: message_id=%s name=%s size=%d",
             message_id, name, len(data),

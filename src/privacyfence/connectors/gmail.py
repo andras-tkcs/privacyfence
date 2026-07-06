@@ -10,7 +10,7 @@ from typing import Any
 from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
 from ..gate import gated_call
-from ..gmail_client import GmailClient, GmailClientError
+from ..gmail_client import GmailClient, GmailClientError, resolve_attachment_destination
 
 logger = logging.getLogger(__name__)
 
@@ -305,35 +305,38 @@ class GmailConnector(Connector):
             raise RuntimeError(
                 f"No attachment named {attachment_name!r} on message {message_id}"
             )
-        result = await self._fetch(
-            self._gmail.download_attachment,
-            message_id, attachment.attachment_id, attachment.name, destination_dir,
-        )
+        dest_path = resolve_attachment_destination(attachment.name, destination_dir)
         preview = {
             "From": message.sender or "(unknown)",
             "Subject": message.subject or "(no subject)",
             "Attachment": attachment.name,
-            "Size": f"{result['size_bytes']:,} bytes",
-            "Saved to": result["path"],
+            "Size": f"{attachment.size:,} bytes",
+            "Will save to": dest_path,
         }
         details = (
             f"From: {message.sender}\nSubject: {message.subject}\n\n"
             f"Attachment: {attachment.name} ({attachment.mime_type}, "
-            f"{result['size_bytes']:,} bytes)\nSaved to: {result['path']}"
+            f"{attachment.size:,} bytes)\nWill save to: {dest_path}"
         )
-        return await gated_call(
+        # Gate before touching disk: gated_call raises on denial, and only a
+        # decision made here should ever cause the attachment to be written.
+        await gated_call(
             connector=self.name,
             tool="gmail_download_attachment",
             tool_name="Download Gmail Attachment",
             summary=f"Download attachment '{attachment.name}' from: {message.subject or '(no subject)'}",
             sender=message.sender or "",
             raw_data=message,
-            filtered_data=result,
+            filtered_data=None,
             gate="review",
             preview=preview,
             details_text=details,
             my_email=self.my_email,
             args={"message_id": message_id, "attachment_name": attachment_name},
+        )
+        return await self._fetch(
+            self._gmail.download_attachment,
+            message_id, attachment.attachment_id, attachment.name, destination_dir,
         )
 
     # ------------------------------------------------------------------ #
