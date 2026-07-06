@@ -40,6 +40,7 @@ import yaml
 
 from .paths import data_dir, org_dir
 from .app_credentials import telegram_app_credentials
+from .audit_log import init_audit_logger
 from .auto_accept import init_config_path, reload_rules
 from .connectors.calendar import CalendarConnector
 from .connectors.confluence import ConfluenceConnector
@@ -587,6 +588,9 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
 
     init_config_path(_resolve_path(config_path))
     reload_rules(config.get("auto_accept_rules", {}) or {})
+
+    audit_logger = init_audit_logger(str(Path(data_dir()) / "logs" / "audit"))
+    audit_logger.export_all_pending()
 
     org_config = load_org_config()
     connectors = build_connectors(config, org_config)
