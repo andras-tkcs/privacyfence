@@ -21,6 +21,8 @@ from privacyfence.connectors import drive as drive_module
 from privacyfence.connectors.drive import DriveConnector
 from privacyfence.drive_client import DriveClientError, DriveFile, DriveFileContent
 
+from ...helpers import assert_all_tools_leave_an_audit_trail
+
 
 def make_connector(my_email="me@example.com"):
     client = MagicMock()
@@ -502,3 +504,22 @@ class TestSheetsGatedTools:
             "freeze_rows=1", "freeze_cols=2", "column_width=100px", "merge=MERGE_ALL",
         ):
             assert expected in summary
+
+
+class TestEveryToolIsAudited:
+    async def test_every_declared_tool_leaves_an_audit_trail(self, monkeypatch, tmp_path):
+        connector, client = make_connector()
+        # download_file's size is read via result.get("size_bytes", 0) and then
+        # formatted with ":," -- a bare MagicMock has no meaningful __format__
+        # for that spec, so it needs a real dict back.
+        client.download_file.return_value = {"name": "f.txt", "path": "/tmp/f.txt", "size_bytes": 100}
+
+        await assert_all_tools_leave_an_audit_trail(
+            connector, drive_module, monkeypatch, tmp_path,
+            arg_overrides={
+                # Must supply exactly one of local_path/content_base64.
+                "drive_upload_file": {"content_base64": "aGVsbG8=", "name": "greeting.txt"},
+                # values must be a JSON 2D array for _parse_json_2d_list to accept.
+                "drive_sheets_write_range": {"values": '[["a", "b"]]'},
+            },
+        )

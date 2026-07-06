@@ -16,6 +16,8 @@ from privacyfence.connectors import contacts as contacts_module
 from privacyfence.connectors.contacts import ContactsConnector, _parse_json_list
 from privacyfence.contacts_client import Contact, ContactEmail, ContactPhone, ContactsClientError
 
+from ...helpers import assert_all_tools_leave_an_audit_trail
+
 
 def make_connector(my_email="me@example.com"):
     client = MagicMock()
@@ -186,3 +188,15 @@ class TestFetchErrorMapping:
 
         with pytest.raises(RuntimeError, match="token expired"):
             await connector.call("contacts_list", {})
+
+
+class TestEveryToolIsAudited:
+    async def test_every_declared_tool_leaves_an_audit_trail(self, monkeypatch, tmp_path):
+        connector, client = make_connector()
+        # contacts_get's audit entry embeds contact.display_name as the
+        # "sender" field -- a bare MagicMock there isn't JSON-serializable,
+        # which would silently swallow the audit write (caught by the
+        # connector's own try/except) rather than reflect a real product bug.
+        client.get_contact.return_value = make_contact()
+
+        await assert_all_tools_leave_an_audit_trail(connector, contacts_module, monkeypatch, tmp_path)

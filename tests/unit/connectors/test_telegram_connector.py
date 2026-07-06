@@ -17,6 +17,8 @@ from privacyfence.connectors import telegram as telegram_module
 from privacyfence.connectors.telegram import TelegramConnector
 from privacyfence.telegram_client import TelegramChat, TelegramClientError, TelegramMessage
 
+from ...helpers import assert_all_tools_leave_an_audit_trail
+
 
 def make_connector():
     client = AsyncMock()
@@ -169,3 +171,9 @@ class TestSendMessage:
 
         with pytest.raises(RuntimeError, match="chat write forbidden"):
             await connector.call("telegram_send_message", {"chat_id": 1, "text": "hi"})
+
+
+class TestEveryToolIsAudited:
+    async def test_every_declared_tool_leaves_an_audit_trail(self, monkeypatch, tmp_path):
+        connector, client = make_connector()
+        await assert_all_tools_leave_an_audit_trail(connector, telegram_module, monkeypatch, tmp_path)

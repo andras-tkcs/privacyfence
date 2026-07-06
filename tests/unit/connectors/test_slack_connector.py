@@ -14,6 +14,8 @@ from privacyfence.connectors import slack as slack_module
 from privacyfence.connectors.slack import SlackConnector, _message_to_dict
 from privacyfence.slack_client import SlackChannel, SlackClientError, SlackMessage
 
+from ...helpers import assert_all_tools_leave_an_audit_trail
+
 
 def make_connector(my_email="me@example.com"):
     client = MagicMock()
@@ -226,3 +228,9 @@ class TestFetchErrorMapping:
 
         with pytest.raises(RuntimeError, match="rate limited"):
             await connector.call("slack_list_channels", {})
+
+
+class TestEveryToolIsAudited:
+    async def test_every_declared_tool_leaves_an_audit_trail(self, monkeypatch, tmp_path):
+        connector, client = make_connector()
+        await assert_all_tools_leave_an_audit_trail(connector, slack_module, monkeypatch, tmp_path)

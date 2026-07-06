@@ -18,6 +18,8 @@ from privacyfence.connectors import jira as jira_module
 from privacyfence.connectors.jira import JiraConnector
 from privacyfence.jira_client import JiraClientError, JiraComment, JiraIssue, JiraProject
 
+from ...helpers import assert_all_tools_leave_an_audit_trail
+
 
 def make_connector(my_email="me@example.com"):
     client = MagicMock()
@@ -258,3 +260,22 @@ class TestUpdateIssue:
 
         with pytest.raises(RuntimeError, match="not found"):
             await connector.call("jira_update_issue", {"issue_key": "ENG-1", "summary": "x"})
+
+
+class TestEveryToolIsAudited:
+    async def test_every_declared_tool_leaves_an_audit_trail(self, monkeypatch, tmp_path):
+        connector, client = make_connector()
+        # get_issue/create_issue/add_comment/update_issue results are asdict()'d
+        # unconditionally, so they need real dataclass instances -- a bare
+        # MagicMock isn't a dataclass. jira_update_issue also validates that
+        # at least one field is being changed before reaching the gate, so its
+        # stub args need a non-empty field.
+        client.get_issue.return_value = make_issue()
+        client.create_issue.return_value = make_issue()
+        client.add_comment.return_value = JiraComment(id="c1", author="me@example.com", body="ack")
+        client.update_issue.return_value = make_issue()
+
+        await assert_all_tools_leave_an_audit_trail(
+            connector, jira_module, monkeypatch, tmp_path,
+            arg_overrides={"jira_update_issue": {"summary": "Updated summary"}},
+        )

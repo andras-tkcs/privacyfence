@@ -23,6 +23,8 @@ from privacyfence.calendar_client import (
 from privacyfence.connectors import calendar as calendar_module
 from privacyfence.connectors.calendar import CalendarConnector, _day_of_week
 
+from ...helpers import assert_all_tools_leave_an_audit_trail
+
 
 def make_connector(my_email="me@example.com"):
     client = MagicMock()
@@ -275,3 +277,9 @@ class TestFetchErrorMapping:
 
         with pytest.raises(RuntimeError, match="auth expired"):
             await connector.call("calendar_list_calendars", {})
+
+
+class TestEveryToolIsAudited:
+    async def test_every_declared_tool_leaves_an_audit_trail(self, monkeypatch, tmp_path):
+        connector, client = make_connector()
+        await assert_all_tools_leave_an_audit_trail(connector, calendar_module, monkeypatch, tmp_path)

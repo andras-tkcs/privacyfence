@@ -24,6 +24,8 @@ from privacyfence.connectors import salesforce as salesforce_module
 from privacyfence.connectors.salesforce import SalesforceConnector
 from privacyfence.salesforce_client import SalesforceClientError, SalesforceRecord, SalesforceReport
 
+from ...helpers import assert_all_tools_leave_an_audit_trail
+
 
 def make_connector(my_email="me@example.com"):
     client = MagicMock()
@@ -188,3 +190,13 @@ class TestRunReport:
 
         with pytest.raises(RuntimeError, match="report locked"):
             await connector.call("salesforce_run_report", {"report_id": "00O1"})
+
+
+class TestEveryToolIsAudited:
+    async def test_every_declared_tool_leaves_an_audit_trail(self, monkeypatch, tmp_path):
+        connector, client = make_connector()
+        # get_record's result is asdict()'d unconditionally, so it needs a
+        # real SalesforceRecord -- a bare MagicMock isn't a dataclass instance.
+        client.get_record.return_value = SalesforceRecord(object_type="Account", id="001", fields={})
+
+        await assert_all_tools_leave_an_audit_trail(connector, salesforce_module, monkeypatch, tmp_path)

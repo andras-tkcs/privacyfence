@@ -12,8 +12,11 @@ from unittest.mock import MagicMock
 import pytest
 
 from privacyfence.audit_log import current_week, init_audit_logger
+from privacyfence.connectors import tasks as tasks_module
 from privacyfence.connectors.tasks import TasksConnector
 from privacyfence.tasks_client import Task, TaskList, TasksClientError
+
+from ...helpers import assert_all_tools_leave_an_audit_trail
 
 
 def make_connector():
@@ -147,3 +150,9 @@ class TestErrorMapping:
 
         with pytest.raises(RuntimeError, match="token expired"):
             await connector.call("tasks_list_task_lists", {})
+
+
+class TestEveryToolIsAudited:
+    async def test_every_declared_tool_leaves_an_audit_trail(self, monkeypatch, tmp_path):
+        connector, client = make_connector()
+        await assert_all_tools_leave_an_audit_trail(connector, tasks_module, monkeypatch, tmp_path)

@@ -26,6 +26,8 @@ from privacyfence.confluence_client import (
 from privacyfence.connectors import confluence as confluence_module
 from privacyfence.connectors.confluence import ConfluenceConnector
 
+from ...helpers import assert_all_tools_leave_an_audit_trail
+
 
 def make_connector(my_email="me@example.com"):
     client = MagicMock()
@@ -256,3 +258,17 @@ class TestUpdatePage:
 
         with pytest.raises(RuntimeError, match="locked"):
             await connector.call("confluence_update_page", {"page_id": "p1", "title": "x", "body": "y"})
+
+
+class TestEveryToolIsAudited:
+    async def test_every_declared_tool_leaves_an_audit_trail(self, monkeypatch, tmp_path):
+        connector, client = make_connector()
+        # get_page/get_page_by_title/create_page/update_page results are
+        # asdict()'d unconditionally -- need real ConfluencePage instances,
+        # not a bare MagicMock.
+        client.get_page.return_value = make_page()
+        client.get_page_by_title.return_value = make_page()
+        client.create_page.return_value = make_page()
+        client.update_page.return_value = make_page()
+
+        await assert_all_tools_leave_an_audit_trail(connector, confluence_module, monkeypatch, tmp_path)

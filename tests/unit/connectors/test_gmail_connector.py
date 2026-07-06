@@ -25,6 +25,8 @@ from privacyfence.connectors import gmail as gmail_module
 from privacyfence.connectors.gmail import GmailConnector
 from privacyfence.gmail_client import Attachment, GmailClientError, GmailMessage, GmailThread
 
+from ...helpers import assert_all_tools_leave_an_audit_trail
+
 
 def make_connector(my_email="me@example.com"):
     client = MagicMock()
@@ -249,3 +251,9 @@ class TestFetchErrorMapping:
 
         with pytest.raises(RuntimeError, match="token expired"):
             await connector.call("gmail_list_messages", {"query": "q"})
+
+
+class TestEveryToolIsAudited:
+    async def test_every_declared_tool_leaves_an_audit_trail(self, monkeypatch, tmp_path):
+        connector, client = make_connector()
+        await assert_all_tools_leave_an_audit_trail(connector, gmail_module, monkeypatch, tmp_path)
