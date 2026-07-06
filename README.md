@@ -74,7 +74,8 @@ Claude already describes the action it is about to take in the chat. When the ga
 | `gmail_list_threads` | read | auto | — | — |
 | `gmail_get_message` | read | review | from, recipients, date, subject | Full body text |
 | `gmail_get_thread` | read | review | subject, all participants, message count, date range | All messages in thread |
-| `gmail_list_message_attachments` | read | review | from, recipients, date, subject | Attachment names & sizes |
+| `gmail_list_message_attachments` | read | auto | — | — |
+| `gmail_download_attachment` | read | review | from, subject, attachment name, size, save path | — |
 | `gmail_create_draft` | write | popup | — | To, cc, subject, full body |
 | `gmail_add_label` | write | popup | — | From, subject, label name |
 | `gmail_remove_label` | write | popup | — | From, subject, label name |
