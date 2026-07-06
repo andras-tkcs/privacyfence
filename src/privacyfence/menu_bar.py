@@ -109,11 +109,11 @@ RULES_BY_OPERATION: dict[str, list[str]] = {
     "drive.upload_file":            ["parent_folder_allowlist"],
     "drive.move_file":              ["move_within_approved_folders"],
     "drive.comment_file":           ["i_am_owner", "created_this_session"],
-    "sheets.read_values":           ["i_am_owner", "created_by_me", "approved_folder", "created_this_session", "shared_drive_exclusion"],
-    "sheets.write_range":           ["i_am_owner", "approved_sandbox_folder", "created_this_session"],
-    "sheets.add_sheet":             ["i_am_owner", "approved_sandbox_folder", "created_this_session"],
-    "sheets.rename_sheet":          ["i_am_owner", "created_this_session"],
-    "sheets.format_range":          ["i_am_owner", "created_this_session"],
+    "sheets.read_values":           ["approved_spreadsheet", "i_am_owner", "created_by_me", "approved_folder", "created_this_session", "shared_drive_exclusion"],
+    "sheets.write_range":           ["approved_spreadsheet", "i_am_owner", "approved_sandbox_folder", "created_this_session"],
+    "sheets.add_sheet":             ["approved_spreadsheet", "i_am_owner", "approved_sandbox_folder", "created_this_session"],
+    "sheets.rename_sheet":          ["approved_spreadsheet", "i_am_owner", "created_this_session"],
+    "sheets.format_range":          ["approved_spreadsheet", "i_am_owner", "created_this_session"],
     "slack.read_messages":          ["dm_with_myself", "approved_channel", "public_channels_only", "no_file_attachments"],
     "slack.send_message":           ["dm_with_myself", "send_to_myself", "approved_channel", "approved_recipient", "reply_in_existing_thread"],
     "calendar.read_event_details":  ["i_am_organizer", "no_external_attendees", "personal_calendar", "past_event", "time_window_days", "no_conferencing_link"],
@@ -144,6 +144,8 @@ RULES_LIST_VALUE: set[str] = {
 }
 # Rules that take a single integer value
 RULES_INT_VALUE: set[str] = {"age_threshold_days", "time_window_days"}
+# Rules that take a list of "spreadsheet_id" or "spreadsheet_id:tab" pairs
+RULES_PAIR_VALUE: set[str] = {"approved_spreadsheet"}
 
 # All connectors PrivacyFence supports, in display order
 ALL_CONNECTORS: list[str] = [
@@ -196,6 +198,7 @@ RULE_HINTS: dict[str, str] = {
     "approved_project_keys": "MYPROJ\nOTHERPROJ",
     "approved_space_keys":   "TEAM\nDOCS",
     "approved_chats":        "123456789\n-100987654321",
+    "approved_spreadsheet":  "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms\n1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms:Sheet1",
 }
 
 
@@ -301,7 +304,7 @@ class PrivacyFenceMenuBar(rumps.App):
         for idx, rule_cfg in enumerate(op_rules):
             rule_name = rule_cfg.get("rule", "")
             value = rule_cfg.get("value")
-            has_value = rule_name in RULES_LIST_VALUE or rule_name in RULES_INT_VALUE
+            has_value = rule_name in RULES_LIST_VALUE or rule_name in RULES_INT_VALUE or rule_name in RULES_PAIR_VALUE
 
             # Toggle item
             toggle = rumps.MenuItem(f"  ✓ {rule_name}")
@@ -407,9 +410,14 @@ class PrivacyFenceMenuBar(rumps.App):
 
         new_rule: dict[str, Any] = {"rule": rule_name}
 
-        if rule_name in RULES_LIST_VALUE or rule_name in RULES_INT_VALUE:
+        if rule_name in RULES_LIST_VALUE or rule_name in RULES_INT_VALUE or rule_name in RULES_PAIR_VALUE:
             hint = RULE_HINTS.get(rule_name, "")
-            kind = "integer" if rule_name in RULES_INT_VALUE else "one value per line"
+            if rule_name in RULES_INT_VALUE:
+                kind = "integer"
+            elif rule_name in RULES_PAIR_VALUE:
+                kind = "one 'spreadsheet_id' or 'spreadsheet_id:tab' per line"
+            else:
+                kind = "one value per line"
             w = rumps.Window(
                 title=f"Configure: {rule_name}",
                 message=f"Enter value ({kind}):",
@@ -430,6 +438,8 @@ class PrivacyFenceMenuBar(rumps.App):
                 except ValueError:
                     rumps.alert("Invalid value", f"Expected an integer, got: {text!r}")
                     return
+            elif rule_name in RULES_PAIR_VALUE:
+                new_rule["value"] = _parse_pair_lines(text)
             else:
                 new_rule["value"] = [v.strip() for v in text.splitlines() if v.strip()]
 
@@ -467,6 +477,10 @@ class PrivacyFenceMenuBar(rumps.App):
         if rule_name in RULES_INT_VALUE:
             default_text = str(current) if current is not None else ""
             kind = "integer"
+        elif rule_name in RULES_PAIR_VALUE:
+            entries = current if isinstance(current, list) else []
+            default_text = "\n".join(_format_pair_line(e) for e in entries)
+            kind = "one 'spreadsheet_id' or 'spreadsheet_id:tab' per line"
         else:
             vals = current if isinstance(current, list) else ([current] if current else [])
             default_text = "\n".join(str(v) for v in vals)
@@ -493,6 +507,8 @@ class PrivacyFenceMenuBar(rumps.App):
             except ValueError:
                 rumps.alert("Invalid value", f"Expected an integer, got: {text!r}")
                 return
+        elif rule_name in RULES_PAIR_VALUE:
+            rule["value"] = _parse_pair_lines(text)
         else:
             rule["value"] = [v.strip() for v in text.splitlines() if v.strip()]
 
@@ -921,13 +937,38 @@ def _bind(fn, *bound_args):
     return _cb
 
 
+def _format_pair_line(entry: Any) -> str:
+    """Render an approved_spreadsheet entry as "id" or "id:tab"."""
+    if not isinstance(entry, dict):
+        return str(entry)
+    spreadsheet_id = entry.get("spreadsheet_id", "")
+    tab = entry.get("tab")
+    return f"{spreadsheet_id}:{tab}" if tab else spreadsheet_id
+
+
+def _parse_pair_lines(text: str) -> list[dict[str, str]]:
+    """Parse "spreadsheet_id" / "spreadsheet_id:tab" lines into rule entries."""
+    entries: list[dict[str, str]] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        spreadsheet_id, sep, tab = line.partition(":")
+        entry: dict[str, str] = {"spreadsheet_id": spreadsheet_id.strip()}
+        if sep and tab.strip():
+            entry["tab"] = tab.strip()
+        entries.append(entry)
+    return entries
+
+
 def _format_value(value: Any) -> str:
     if value is None:
         return "(none)"
     if isinstance(value, list):
         if not value:
             return "(empty)"
-        preview = ", ".join(str(v) for v in value[:3])
+        items = [_format_pair_line(v) if isinstance(v, dict) else str(v) for v in value[:3]]
+        preview = ", ".join(items)
         return preview + (f" +{len(value) - 3} more" if len(value) > 3 else "")
     return str(value)
 

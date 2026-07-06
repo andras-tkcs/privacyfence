@@ -253,6 +253,31 @@ configured independently of plain-file Drive operations: `sheets.read_values` (`
 `created_this_session`). A spreadsheet is a Drive file, so e.g. `created_this_session` fires for
 a spreadsheet `drive_sheets_create` made earlier in the same conversation.
 
+All five `sheets.*` operations also accept `approved_spreadsheet`, which scopes a rule to one
+specific spreadsheet — optionally narrowed to one tab within it:
+
+```yaml
+auto_accept_rules:
+  sheets.read_values:
+    - rule: approved_spreadsheet
+      value:
+        - spreadsheet_id: "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms"   # whole spreadsheet, any tab
+        - spreadsheet_id: "1AbCdEf..."
+          tab: "Budget"                                                   # only this tab
+```
+
+`spreadsheet_id` is the ID from the sheet's URL
+(`docs.google.com/spreadsheets/d/<spreadsheet_id>/edit`). `tab` is optional — omit it to approve
+every tab of that spreadsheet. When present, `tab` means the tab's **name** (e.g. `"Sheet1"`) for
+`sheets.read_values` / `sheets.write_range`, since that's all range_a1 carries (`"Sheet1!A1:C10"`);
+for `sheets.rename_sheet` / `sheets.format_range` it means the tab's **numeric** `sheet_id` (from
+`drive_sheets_get_metadata`) as a string, since those tools address the tab that way instead.
+`sheets.add_sheet` has no existing tab to scope to, so only bare `spreadsheet_id` entries apply
+there.
+
+Clicking **Accept All** on a "Read Sheet Values" prompt proposes exactly this rule — scoped to the
+spreadsheet and tab you just read — rather than a broader ownership- or folder-based rule.
+
 **Slack**
 
 | Rule | Matches when… |
