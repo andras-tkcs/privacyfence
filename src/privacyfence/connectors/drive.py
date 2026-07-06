@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -13,6 +14,26 @@ from ..drive_client import DriveClient, DriveClientError
 from ..gate import gated_call
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_json_str_list(value: str) -> list[str] | None:
+    """Parse a JSON array-of-strings tool argument, or None if empty/invalid."""
+    if not value or not value.strip():
+        return None
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, list) and all(isinstance(v, str) for v in parsed) else None
+
+
+def _parse_json_2d_list(value: str) -> list[list] | None:
+    """Parse a JSON array-of-arrays tool argument, or None if invalid."""
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, list) else None
 
 
 class DriveConnector(Connector):
@@ -164,6 +185,135 @@ class DriveConnector(Connector):
                 ],
                 read_only=True,
             ),
+            ToolSpec(
+                name="drive_sheets_create",
+                description=(
+                    "Create a new Google Sheets spreadsheet, optionally with "
+                    "named tabs. Auto-approved."
+                ),
+                params=[
+                    ToolParam("name", "str"),
+                    ToolParam(
+                        "sheet_titles", "str", required=False, default="",
+                        description=(
+                            'JSON array of tab names, e.g. ["Q1","Q2"]. '
+                            "Defaults to a single 'Sheet1' tab if omitted."
+                        ),
+                    ),
+                    ToolParam("parent_folder_id", "str", required=False, default=""),
+                ],
+            ),
+            ToolSpec(
+                name="drive_sheets_get_metadata",
+                description=(
+                    "List the tabs in a spreadsheet (id, title, index, row/column "
+                    "count). Auto-approved."
+                ),
+                params=[ToolParam("spreadsheet_id", "str")],
+                read_only=True,
+            ),
+            ToolSpec(
+                name="drive_sheets_get_values",
+                description="Read a range of cell values from a spreadsheet. Requires user approval.",
+                params=[
+                    ToolParam("spreadsheet_id", "str"),
+                    ToolParam(
+                        "range_a1", "str",
+                        description="A1 notation range, e.g. 'Sheet1!A1:C10'",
+                    ),
+                ],
+                read_only=True,
+            ),
+            ToolSpec(
+                name="drive_sheets_write_range",
+                description=(
+                    "Write values and/or formulas into a range of an existing "
+                    "spreadsheet. A cell string starting with '=' is evaluated as "
+                    "a formula, exactly as if typed into the Sheets UI — there is "
+                    "no separate tool for formulas. Writing an empty row/column "
+                    "clears those cells. Requires user approval."
+                ),
+                params=[
+                    ToolParam("spreadsheet_id", "str"),
+                    ToolParam(
+                        "range_a1", "str",
+                        description="A1 notation range, e.g. 'Sheet1!A1:C10'",
+                    ),
+                    ToolParam(
+                        "values", "str",
+                        description=(
+                            'JSON 2D array of rows, e.g. [["Name","Total"],'
+                            '["Alice","=B2*2"]]'
+                        ),
+                    ),
+                ],
+            ),
+            ToolSpec(
+                name="drive_sheets_add_sheet",
+                description="Add a new tab to an existing spreadsheet. Requires user approval.",
+                params=[
+                    ToolParam("spreadsheet_id", "str"),
+                    ToolParam("title", "str"),
+                    ToolParam("rows", "int", required=False, default=1000),
+                    ToolParam("cols", "int", required=False, default=26),
+                ],
+            ),
+            ToolSpec(
+                name="drive_sheets_rename_sheet",
+                description=(
+                    "Rename an existing tab in a spreadsheet. There is no delete-sheet "
+                    "tool — to mark a tab for removal, rename it (e.g. to "
+                    "'TO BE DELETED - <original title>') and the user can delete it "
+                    "by hand in the Sheets UI. Requires user approval."
+                ),
+                params=[
+                    ToolParam("spreadsheet_id", "str"),
+                    ToolParam("sheet_id", "int", description="Numeric tab id, from drive_sheets_get_metadata"),
+                    ToolParam("new_title", "str"),
+                ],
+            ),
+            ToolSpec(
+                name="drive_sheets_format_range",
+                description=(
+                    "Apply formatting to a range in a spreadsheet: bold/italic, "
+                    "colors, number format, alignment, column width, frozen rows/"
+                    "columns, and merged cells. Every parameter is opt-in — its "
+                    "default means 'leave that aspect unchanged', so a call that "
+                    "only sets a background color never touches unrelated "
+                    "formatting already on the range. Requires user approval."
+                ),
+                params=[
+                    ToolParam("spreadsheet_id", "str"),
+                    ToolParam("sheet_id", "int", description="Numeric tab id, from drive_sheets_get_metadata"),
+                    ToolParam(
+                        "range_a1", "str",
+                        description=(
+                            "Plain A1 range scoped to sheet_id, e.g. 'A1:C10' "
+                            "(no sheet-name prefix, must be fully bounded)"
+                        ),
+                    ),
+                    ToolParam("bold", "str", required=False, default="",
+                              description="'true' or 'false'; omit to leave unchanged"),
+                    ToolParam("italic", "str", required=False, default="",
+                              description="'true' or 'false'; omit to leave unchanged"),
+                    ToolParam("background_color", "str", required=False, default="",
+                              description="hex color e.g. '#ffcc00'; omit to leave unchanged"),
+                    ToolParam("text_color", "str", required=False, default="",
+                              description="hex color e.g. '#ffffff'; omit to leave unchanged"),
+                    ToolParam("number_format", "str", required=False, default="",
+                              description="Sheets number-format pattern, e.g. '0.00%', '$#,##0.00', 'yyyy-mm-dd'; omit to leave unchanged"),
+                    ToolParam("horizontal_alignment", "str", required=False, default="",
+                              description="'LEFT' / 'CENTER' / 'RIGHT'; omit to leave unchanged"),
+                    ToolParam("freeze_rows", "int", required=False, default=-1,
+                              description="Number of rows to freeze at the top (0 unfreezes); omit (-1) to leave unchanged"),
+                    ToolParam("freeze_cols", "int", required=False, default=-1,
+                              description="Number of columns to freeze at the left (0 unfreezes); omit (-1) to leave unchanged"),
+                    ToolParam("column_width", "int", required=False, default=-1,
+                              description="Pixel width for the range's columns; omit (-1) to leave unchanged"),
+                    ToolParam("merge_type", "str", required=False, default="KEEP",
+                              description="KEEP (default) / NONE (unmerge) / MERGE_ALL / MERGE_COLUMNS / MERGE_ROWS"),
+                ],
+            ),
         ]
 
     async def call(self, tool: str, args: dict[str, Any]) -> Any:
@@ -191,6 +341,20 @@ class DriveConnector(Connector):
             return await self._list_shared_drives(**args)
         if tool == "drive_download_file":
             return await self._download_file(**args)
+        if tool == "drive_sheets_create":
+            return await self._sheets_create(**args)
+        if tool == "drive_sheets_get_metadata":
+            return await self._sheets_get_metadata(**args)
+        if tool == "drive_sheets_get_values":
+            return await self._sheets_get_values(**args)
+        if tool == "drive_sheets_write_range":
+            return await self._sheets_write_range(**args)
+        if tool == "drive_sheets_add_sheet":
+            return await self._sheets_add_sheet(**args)
+        if tool == "drive_sheets_rename_sheet":
+            return await self._sheets_rename_sheet(**args)
+        if tool == "drive_sheets_format_range":
+            return await self._sheets_format_range(**args)
         raise ValueError(f"Unknown Drive tool: {tool!r}")
 
     # ------------------------------------------------------------------ #
@@ -238,6 +402,26 @@ class DriveConnector(Connector):
                          f"Create: {name} ({mime_type})", f"id={file_id}", t0)
         return result
 
+    async def _sheets_create(
+        self, name: str, sheet_titles: str = "", parent_folder_id: str = ""
+    ) -> Any:
+        t0 = time.time()
+        titles = _parse_json_str_list(sheet_titles)
+        result = await self._fetch(self._drive.create_spreadsheet, name, titles, parent_folder_id)
+        spreadsheet_id = result.get("id", "")
+        if spreadsheet_id:
+            self.session_created_ids.add(spreadsheet_id)
+        self._auto_audit("drive_sheets_create", "Create Spreadsheet",
+                         f"Create spreadsheet: {name}", f"id={spreadsheet_id}", t0)
+        return result
+
+    async def _sheets_get_metadata(self, spreadsheet_id: str) -> Any:
+        t0 = time.time()
+        sheets = await self._fetch(self._drive.list_sheets, spreadsheet_id)
+        self._auto_audit("drive_sheets_get_metadata", "Get Spreadsheet Metadata",
+                         f"List tabs: {spreadsheet_id}", f"{len(sheets)} tab(s)", t0)
+        return sheets
+
     # ------------------------------------------------------------------ #
     # Review gate (reads)
     # ------------------------------------------------------------------ #
@@ -272,6 +456,30 @@ class DriveConnector(Connector):
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={"file_id": file_id},
+        )
+
+    async def _sheets_get_values(self, spreadsheet_id: str, range_a1: str) -> Any:
+        drive_file = await self._fetch(self._drive.get_file_metadata, spreadsheet_id)
+        name = getattr(drive_file, "name", spreadsheet_id)
+        owners = getattr(drive_file, "owners", [])
+        values = await self._fetch(self._drive.get_sheet_values, spreadsheet_id, range_a1)
+        preview = {"Spreadsheet": name, "Owner": ", ".join(owners) or "(unknown)", "Range": range_a1}
+        rows_preview = "\n".join(", ".join(str(cell) for cell in row) for row in values[:50])
+        details = f"Spreadsheet: {name}\nOwner: {', '.join(owners)}\nRange: {range_a1}\n\n{rows_preview}"
+        return await gated_call(
+            connector=self.name,
+            tool="drive_sheets_get_values",
+            tool_name="Read Sheet Values",
+            summary=f"Read {range_a1} from \"{name}\"",
+            sender=", ".join(owners) or "(unknown)",
+            raw_data={"file": drive_file, "values": values},
+            filtered_data=values,
+            gate="review",
+            preview=preview,
+            details_text=details,
+            my_email=self.my_email,
+            session_created_ids=self.session_created_ids,
+            args={"spreadsheet_id": spreadsheet_id, "range_a1": range_a1},
         )
 
     async def _download_file(
@@ -471,6 +679,150 @@ class DriveConnector(Connector):
             args={"file_id": file_id},
         )
         return await self._fetch(self._drive.add_comment, file_id, comment)
+
+    async def _sheets_write_range(self, spreadsheet_id: str, range_a1: str, values: str) -> Any:
+        drive_file = await self._fetch(self._drive.get_file_metadata, spreadsheet_id)
+        name = getattr(drive_file, "name", spreadsheet_id)
+        owners = getattr(drive_file, "owners", [])
+        parsed_values = _parse_json_2d_list(values)
+        if parsed_values is None:
+            raise ValueError(
+                "drive_sheets_write_range: 'values' must be a JSON 2D array, e.g. [[\"a\",\"b\"]]"
+            )
+        preview = {"Spreadsheet": name, "Owner": ", ".join(owners) or "(unknown)", "Range": range_a1}
+        await gated_call(
+            connector=self.name,
+            tool="drive_sheets_write_range",
+            tool_name="Write Sheet Range",
+            summary=f"Write {range_a1} in \"{name}\"",
+            sender=", ".join(owners) or "(unknown)",
+            raw_data={"file": drive_file, "values_preview": values[:200]},
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text=f"Spreadsheet: {name}\nRange: {range_a1}\n\n{values}",
+            my_email=self.my_email,
+            session_created_ids=self.session_created_ids,
+            args={"spreadsheet_id": spreadsheet_id, "range_a1": range_a1},
+        )
+        return await self._fetch(self._drive.write_sheet_values, spreadsheet_id, range_a1, parsed_values)
+
+    async def _sheets_add_sheet(
+        self, spreadsheet_id: str, title: str, rows: int = 1000, cols: int = 26
+    ) -> Any:
+        drive_file = await self._fetch(self._drive.get_file_metadata, spreadsheet_id)
+        name = getattr(drive_file, "name", spreadsheet_id)
+        owners = getattr(drive_file, "owners", [])
+        preview = {"Spreadsheet": name, "Owner": ", ".join(owners) or "(unknown)", "New tab": title}
+        await gated_call(
+            connector=self.name,
+            tool="drive_sheets_add_sheet",
+            tool_name="Add Sheet Tab",
+            summary=f"Add tab \"{title}\" to \"{name}\"",
+            sender=", ".join(owners) or "(unknown)",
+            raw_data={"file": drive_file, "title": title},
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text=f"Add tab \"{title}\" ({rows} rows x {cols} cols) to \"{name}\"",
+            my_email=self.my_email,
+            session_created_ids=self.session_created_ids,
+            args={"spreadsheet_id": spreadsheet_id, "title": title, "rows": rows, "cols": cols},
+        )
+        return await self._fetch(self._drive.add_sheet, spreadsheet_id, title, rows, cols)
+
+    async def _sheets_rename_sheet(self, spreadsheet_id: str, sheet_id: int, new_title: str) -> Any:
+        drive_file = await self._fetch(self._drive.get_file_metadata, spreadsheet_id)
+        name = getattr(drive_file, "name", spreadsheet_id)
+        owners = getattr(drive_file, "owners", [])
+        preview = {
+            "Spreadsheet": name, "Owner": ", ".join(owners) or "(unknown)",
+            "Tab id": sheet_id, "New title": new_title,
+        }
+        await gated_call(
+            connector=self.name,
+            tool="drive_sheets_rename_sheet",
+            tool_name="Rename Sheet Tab",
+            summary=f"Rename tab {sheet_id} in \"{name}\" to \"{new_title}\"",
+            sender=", ".join(owners) or "(unknown)",
+            raw_data={"file": drive_file, "sheet_id": sheet_id, "new_title": new_title},
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text=f"Rename tab {sheet_id} to \"{new_title}\"",
+            my_email=self.my_email,
+            session_created_ids=self.session_created_ids,
+            args={"spreadsheet_id": spreadsheet_id, "sheet_id": sheet_id, "new_title": new_title},
+        )
+        return await self._fetch(self._drive.rename_sheet, spreadsheet_id, sheet_id, new_title)
+
+    async def _sheets_format_range(
+        self,
+        spreadsheet_id: str,
+        sheet_id: int,
+        range_a1: str,
+        bold: str = "",
+        italic: str = "",
+        background_color: str = "",
+        text_color: str = "",
+        number_format: str = "",
+        horizontal_alignment: str = "",
+        freeze_rows: int = -1,
+        freeze_cols: int = -1,
+        column_width: int = -1,
+        merge_type: str = "KEEP",
+    ) -> Any:
+        drive_file = await self._fetch(self._drive.get_file_metadata, spreadsheet_id)
+        name = getattr(drive_file, "name", spreadsheet_id)
+        owners = getattr(drive_file, "owners", [])
+
+        applied = []
+        if bold:
+            applied.append(f"bold={bold}")
+        if italic:
+            applied.append(f"italic={italic}")
+        if background_color:
+            applied.append(f"background={background_color}")
+        if text_color:
+            applied.append(f"text_color={text_color}")
+        if number_format:
+            applied.append(f"number_format={number_format}")
+        if horizontal_alignment:
+            applied.append(f"align={horizontal_alignment}")
+        if freeze_rows >= 0:
+            applied.append(f"freeze_rows={freeze_rows}")
+        if freeze_cols >= 0:
+            applied.append(f"freeze_cols={freeze_cols}")
+        if column_width >= 0:
+            applied.append(f"column_width={column_width}px")
+        if merge_type != "KEEP":
+            applied.append(f"merge={merge_type}")
+        summary_detail = ", ".join(applied) or "(no changes)"
+
+        preview = {
+            "Spreadsheet": name, "Owner": ", ".join(owners) or "(unknown)",
+            "Range": range_a1, "Format": summary_detail,
+        }
+        await gated_call(
+            connector=self.name,
+            tool="drive_sheets_format_range",
+            tool_name="Format Sheet Range",
+            summary=f"Format {range_a1} in \"{name}\": {summary_detail}",
+            sender=", ".join(owners) or "(unknown)",
+            raw_data={"file": drive_file, "range_a1": range_a1, "format": summary_detail},
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text=f"Range: {range_a1}\nFormat: {summary_detail}",
+            my_email=self.my_email,
+            session_created_ids=self.session_created_ids,
+            args={"spreadsheet_id": spreadsheet_id, "sheet_id": sheet_id, "range_a1": range_a1},
+        )
+        return await self._fetch(
+            self._drive.format_sheet_range, spreadsheet_id, sheet_id, range_a1,
+            bold, italic, background_color, text_color, number_format,
+            horizontal_alignment, freeze_rows, freeze_cols, column_width, merge_type,
+        )
 
     # ------------------------------------------------------------------ #
     # Helpers

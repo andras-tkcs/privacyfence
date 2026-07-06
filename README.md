@@ -97,6 +97,20 @@ Claude already describes the action it is about to take in the chat. When the ga
 | `drive_write_doc_content` | write | popup | — | File name, owner, Markdown preview (headings, bold, italic, links, lists rendered as rich formatting in the Google Doc) |
 | `drive_move_file` | write | popup | — | File name, from folder → to folder |
 | `drive_add_comment` | write | popup | — | File name, full comment text |
+| `drive_sheets_create` | write | auto | — | — |
+| `drive_sheets_get_metadata` | read | auto | — | — |
+| `drive_sheets_get_values` | read | review | spreadsheet name, owner, range | Cell values in the range |
+| `drive_sheets_write_range` | write | popup | — | Spreadsheet name, owner, range, values/formulas being written |
+| `drive_sheets_add_sheet` | write | popup | — | Spreadsheet name, owner, new tab title/dimensions |
+| `drive_sheets_rename_sheet` | write | popup | — | Spreadsheet name, owner, tab id, new title |
+| `drive_sheets_format_range` | write | popup | — | Spreadsheet name, owner, range, formatting being applied |
+
+Google Sheets is not a separate connector — the `drive_sheets_*` tools live on the Drive
+connector and reuse its OAuth grant (the Sheets API accepts the same `drive` scope). There is
+intentionally no delete-sheet tool: `drive_sheets_rename_sheet` is the sanctioned way to mark a
+tab for removal (e.g. rename it to `TO BE DELETED - <original title>`) — you delete it by hand
+in the Sheets UI. `drive_sheets_write_range` has no separate "set formula" tool either — a cell
+string starting with `=` is evaluated as a formula, exactly like typing it into the Sheets UI.
 
 ### Slack
 
@@ -229,6 +243,14 @@ Routine, low-risk requests can be approved automatically without a prompt. Rules
 | `file_type_allowlist` | File MIME type is in the allowlist |
 | `created_this_session` | File was created by Claude in the current session |
 | `shared_drive_exclusion` | File is NOT on a shared drive |
+
+The same rules apply to the `drive_sheets_*` tools, under their own operation keys so they can be
+configured independently of plain-file Drive operations: `sheets.read_values` (`i_am_owner`,
+`created_by_me`, `approved_folder`, `created_this_session`, `shared_drive_exclusion`),
+`sheets.write_range` / `sheets.add_sheet` (`i_am_owner`, `approved_sandbox_folder`,
+`created_this_session`), and `sheets.rename_sheet` / `sheets.format_range` (`i_am_owner`,
+`created_this_session`). A spreadsheet is a Drive file, so e.g. `created_this_session` fires for
+a spreadsheet `drive_sheets_create` made earlier in the same conversation.
 
 **Slack**
 

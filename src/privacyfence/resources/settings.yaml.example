@@ -32,6 +32,8 @@ privacy:
     thread_history: allow
 
 drive_privacy:
+  # Also covers Google Sheets (drive_sheets_* tools) - Sheets is not a
+  # separate connector, it rides on the Drive connector's OAuth grant.
   default_policy: block
   categories:
     file_content: allow      # the actual document text / bytes (highest risk)
@@ -59,6 +61,10 @@ auto_accept_rules:
   contacts.edit:
     # Auto-accept edits to contacts I created (no rule for this yet — left empty)
     # - rule: i_am_owner  # not applicable to contacts
+  # sheets.write_range:
+    # Auto-accept writes to spreadsheets created earlier in the same session
+    # (e.g. filling in a sheet PrivacyFence just created for you)
+    # - rule: created_this_session
 
 mcp:
   server_name: privacyfence-gmail
