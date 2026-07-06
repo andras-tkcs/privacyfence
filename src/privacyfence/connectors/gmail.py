@@ -365,6 +365,22 @@ class GmailConnector(Connector):
             preview["Cc"] = cc
         if bcc:
             preview["Bcc"] = bcc
+        # The full expanded audience this reply-all will actually reach —
+        # original sender + original recipients + any extra cc — minus
+        # ourselves. Auto-accept rules (to_is_myself, approved_recipient_domain)
+        # check ALL of these, not just the primary sender, so a rule scoped to
+        # a trusted domain can't be satisfied by the sender alone while an
+        # external Cc'd participant slips through.
+        original_recipients = message.recipients if isinstance(message.recipients, list) else (
+            [r.strip() for r in (message.recipients or "").split(",") if r.strip()]
+        )
+        extra_cc = [r.strip() for r in cc.split(",") if r.strip()] if cc else []
+        all_recipients = [message.sender or ""] + list(original_recipients) + extra_cc
+        my_email_lower = self.my_email.lower()
+        expanded_to = [
+            r for r in all_recipients
+            if r and (not self.my_email or my_email_lower not in r.lower())
+        ]
         await gated_call(
             connector=self.name,
             tool="gmail_reply_all_draft",
@@ -377,7 +393,7 @@ class GmailConnector(Connector):
             preview=preview,
             details_text=body,
             my_email=self.my_email,
-            args={"message_id": message_id, "to": message.sender or ""},
+            args={"message_id": message_id, "to": expanded_to or [message.sender or ""]},
         )
         return await self._fetch(
             self._gmail.create_reply_draft, message_id, body, True, self.my_email, cc, bcc

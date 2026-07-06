@@ -280,15 +280,25 @@ class AutoAcceptEvaluator:
 
     def _rule_to_is_myself(self, _v, ctx):
         to = ctx.args.get("to", "") or ""
-        return bool(ctx.my_email) and ctx.my_email.lower() in to.lower()
+        # gmail_reply_all_draft passes the full expanded audience (a list) so
+        # this only matches if every recipient is you; plain drafts and
+        # single replies pass a lone "to" string.
+        recipients = to if isinstance(to, list) else [to]
+        recipients = [r for r in recipients if r]
+        return bool(ctx.my_email) and bool(recipients) and all(ctx.my_email.lower() in r.lower() for r in recipients)
 
     def _rule_approved_recipient_domain(self, value, ctx):
         if not value:
             return False
         to = ctx.args.get("to", "") or ""
-        domain = _domain_of(to)
+        # See _rule_to_is_myself: reply-all passes a list of every recipient
+        # it will actually reach, not just the original sender, so this rule
+        # can't be satisfied by a trusted sender while an external Cc slips
+        # through unauthorized.
+        recipients = to if isinstance(to, list) else [to]
+        recipients = [r for r in recipients if r]
         allowed = {d.lower().strip() for d in (value if isinstance(value, list) else [value])}
-        return domain in allowed
+        return bool(recipients) and all(_domain_of(r) in allowed for r in recipients)
 
     def _rule_label_name_allowlist(self, value, ctx):
         if not value:
