@@ -310,6 +310,127 @@ class GmailClient:
         logger.info("create_draft: draft_id=%s to=%s", draft_id, to)
         return {"draft_id": draft_id, "to": to, "subject": subject}
 
+    def create_reply_draft(
+        self,
+        message_id: str,
+        body: str,
+        reply_all: bool = False,
+        my_email: str = "",
+        cc: str = "",
+        bcc: str = "",
+    ) -> dict:
+        """Create a draft that replies to an existing message in-thread.
+
+        Gmail only nests a draft under the original thread in the UI if,
+        beyond setting ``threadId``, the RFC 2822 ``In-Reply-To``/``References``
+        headers chain back to the original message's ``Message-ID``. We fetch
+        those headers (plus From/To/Cc/Subject) with a cheap metadata-only
+        call rather than reusing the normalized GmailMessage, which doesn't
+        carry them.
+        """
+        import email.mime.text
+        import email.utils
+
+        if not message_id:
+            raise GmailClientError("create_reply_draft requires a non-empty message_id")
+
+        headers = self._get_reply_headers(message_id)
+        thread_id = headers.get("thread_id", "")
+        original_message_id = headers.get("message-id", "")
+        original_subject = headers.get("subject", "")
+        original_from = headers.get("from", "")
+        original_references = headers.get("references", "")
+
+        subject = (
+            original_subject
+            if original_subject.lower().startswith("re:")
+            else f"Re: {original_subject}"
+        )
+
+        my_addr = email.utils.parseaddr(my_email)[1].lower()
+        to_addr = original_from
+
+        cc_candidates: list[str] = []
+        if reply_all:
+            cc_candidates.extend(self._split_addresses(headers.get("to", "")))
+            cc_candidates.extend(self._split_addresses(headers.get("cc", "")))
+        if cc:
+            cc_candidates.extend(self._split_addresses(cc))
+
+        exclude = {my_addr, email.utils.parseaddr(to_addr)[1].lower()}
+        seen: set[str] = set()
+        final_cc: list[str] = []
+        for addr in cc_candidates:
+            key = email.utils.parseaddr(addr)[1].lower()
+            if not key or key in exclude or key in seen:
+                continue
+            seen.add(key)
+            final_cc.append(addr)
+
+        msg = email.mime.text.MIMEText(body)
+        msg["to"] = to_addr
+        msg["subject"] = subject
+        if final_cc:
+            msg["cc"] = ", ".join(final_cc)
+        if bcc:
+            msg["bcc"] = bcc
+        if original_message_id:
+            msg["In-Reply-To"] = original_message_id
+            msg["References"] = (
+                f"{original_references} {original_message_id}".strip()
+                if original_references
+                else original_message_id
+            )
+
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+        message_body: dict[str, Any] = {"raw": raw}
+        if thread_id:
+            message_body["threadId"] = thread_id
+
+        service = self._get_service()
+        try:
+            draft = (
+                service.users()
+                .drafts()
+                .create(userId="me", body={"message": message_body})
+                .execute()
+            )
+        except HttpError as exc:
+            raise GmailClientError(f"create_reply_draft failed: {exc}") from exc
+        draft_id = draft.get("id", "")
+        logger.info(
+            "create_reply_draft: draft_id=%s thread_id=%s to=%s reply_all=%s",
+            draft_id, thread_id, to_addr, reply_all,
+        )
+        return {
+            "draft_id": draft_id,
+            "thread_id": thread_id,
+            "to": to_addr,
+            "cc": ", ".join(final_cc),
+            "subject": subject,
+        }
+
+    def _get_reply_headers(self, message_id: str) -> dict[str, str]:
+        """Fetch just the headers needed to build a correctly threaded reply."""
+        service = self._get_service()
+        try:
+            raw = (
+                service.users()
+                .messages()
+                .get(
+                    userId="me",
+                    id=message_id,
+                    format="metadata",
+                    metadataHeaders=["Subject", "From", "To", "Cc", "Message-ID", "References"],
+                )
+                .execute()
+            )
+        except HttpError as exc:
+            raise GmailClientError(f"get_message({message_id}) failed: {exc}") from exc
+        headers = self._headers_to_dict(raw)
+        headers["thread_id"] = raw.get("threadId", "")
+        return headers
+
     def add_label(self, message_id: str, label_name: str) -> dict:
         """Add a label to a message. Creates the label if it does not exist."""
         service = self._get_service()

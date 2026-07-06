@@ -16,6 +16,8 @@ TOOL_TO_OPERATION: dict[str, str] = {
     "gmail_get_thread":               "gmail.read_thread",
     "gmail_list_message_attachments": "gmail.list_attachments",
     "gmail_create_draft":             "gmail.create_draft",
+    "gmail_reply_draft":              "gmail.create_draft",
+    "gmail_reply_all_draft":          "gmail.create_draft",
     "gmail_add_label":                "gmail.add_label",
     "gmail_remove_label":             "gmail.remove_label",
     "gmail_archive_message":          "gmail.archive_message",

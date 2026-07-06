@@ -157,6 +157,10 @@ class GmailConnector(Connector):
             return await self._list_message_attachments(**args)
         if tool == "gmail_create_draft":
             return await self._create_draft(**args)
+        if tool == "gmail_reply_draft":
+            return await self._reply_draft(**args)
+        if tool == "gmail_reply_all_draft":
+            return await self._reply_all_draft(**args)
         if tool == "gmail_add_label":
             return await self._add_label(**args)
         if tool == "gmail_remove_label":
@@ -314,6 +318,70 @@ class GmailConnector(Connector):
             args={"to": to, "subject": subject},
         )
         return await self._fetch(self._gmail.create_draft, to, subject, body, cc, bcc)
+
+    async def _reply_draft(
+        self, message_id: str, body: str, cc: str = "", bcc: str = ""
+    ) -> Any:
+        message = await self._fetch(self._gmail.get_message, message_id)
+        preview = {
+            "In reply to": message.subject or "(no subject)",
+            "To": message.sender or "(unknown)",
+        }
+        if cc:
+            preview["Cc"] = cc
+        if bcc:
+            preview["Bcc"] = bcc
+        await gated_call(
+            connector=self.name,
+            tool="gmail_reply_draft",
+            tool_name="Create Gmail Reply Draft",
+            summary=f"Reply draft: {message.subject or '(no subject)'}",
+            sender=message.sender or "",
+            raw_data={"message_id": message_id, "body": body, "cc": cc, "bcc": bcc},
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text=body,
+            my_email=self.my_email,
+            args={"message_id": message_id, "to": message.sender or ""},
+        )
+        return await self._fetch(
+            self._gmail.create_reply_draft, message_id, body, False, self.my_email, cc, bcc
+        )
+
+    async def _reply_all_draft(
+        self, message_id: str, body: str, cc: str = "", bcc: str = ""
+    ) -> Any:
+        message = await self._fetch(self._gmail.get_message, message_id)
+        recipients = (
+            message.recipients if isinstance(message.recipients, str) else ", ".join(message.recipients or [])
+        )
+        preview = {
+            "In reply to": message.subject or "(no subject)",
+            "To": message.sender or "(unknown)",
+            "Also to": recipients or "(none)",
+        }
+        if cc:
+            preview["Cc"] = cc
+        if bcc:
+            preview["Bcc"] = bcc
+        await gated_call(
+            connector=self.name,
+            tool="gmail_reply_all_draft",
+            tool_name="Create Gmail Reply-All Draft",
+            summary=f"Reply-all draft: {message.subject or '(no subject)'}",
+            sender=message.sender or "",
+            raw_data={"message_id": message_id, "body": body, "cc": cc, "bcc": bcc},
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text=body,
+            my_email=self.my_email,
+            args={"message_id": message_id, "to": message.sender or ""},
+        )
+        return await self._fetch(
+            self._gmail.create_reply_draft, message_id, body, True, self.my_email, cc, bcc
+        )
 
     async def _add_label(self, message_id: str, label_name: str) -> Any:
         message = await self._fetch(self._gmail.get_message, message_id)
