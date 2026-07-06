@@ -1,6 +1,7 @@
 # Credentials and secrets
 credentials/*
 !credentials/.gitkeep
+org/*
 .env
 *.pem
 *.key
@@ -29,6 +30,15 @@ dist/
 .venv/
 venv/
 env/
+
+# Test / coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Logs
 *.log
