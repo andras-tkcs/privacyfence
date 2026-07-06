@@ -204,7 +204,7 @@ class ConfluenceConnector(Connector):
             "Title": page.title or page_id,
             "Space": page.space_key or "(unknown)",
             "Author": page.author or "(unknown)",
-            "Last modified": str(getattr(page, "last_modified", "") or ""),
+            "Last modified": page.updated or "(unknown)",
         }
         body_text = getattr(page, "body", "") or getattr(page, "body_text", "") or ""
         details = f"Title: {page.title}\nSpace: {page.space_key}\nAuthor: {page.author}\n\n{body_text}"
@@ -230,7 +230,7 @@ class ConfluenceConnector(Connector):
             "Title": page.title or title,
             "Space": page.space_key or space_key,
             "Author": page.author or "(unknown)",
-            "Last modified": str(getattr(page, "last_modified", "") or ""),
+            "Last modified": page.updated or "(unknown)",
         }
         body_text = getattr(page, "body", "") or getattr(page, "body_text", "") or ""
         details = f"Title: {page.title}\nSpace: {page.space_key}\nAuthor: {page.author}\n\n{body_text}"
