@@ -17,6 +17,8 @@ import json
 import logging
 from typing import Any
 
+from .ipc import LINE_LIMIT
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,7 +42,9 @@ class IPCClient:
 
     async def connect(self) -> None:
         """Open the connection. Must be called once inside an event loop."""
-        self._reader, self._writer = await asyncio.open_unix_connection(self._path)
+        self._reader, self._writer = await asyncio.open_unix_connection(
+            self._path, limit=LINE_LIMIT
+        )
         self._reader_task = asyncio.create_task(self._read_loop())
         logger.debug("IPC client connected to %s", self._path)
 
@@ -97,8 +101,10 @@ class IPCClient:
                     fut.set_exception(IPCError(msg["error"]))
                 else:
                     fut.set_result(msg.get("result"))
-        except (asyncio.CancelledError, ConnectionResetError):
+        except asyncio.CancelledError:
             pass
+        except (ConnectionResetError, ValueError) as exc:
+            logger.warning("IPC read loop terminated: %s", exc)
         finally:
             # Fail all in-flight requests if the connection drops.
             for fut in self._pending.values():

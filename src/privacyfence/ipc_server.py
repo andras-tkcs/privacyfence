@@ -17,7 +17,7 @@ import os
 from typing import Any
 
 from .connector import Connector, ToolSpec
-from .ipc import SOCKET_PATH, VERSION
+from .ipc import LINE_LIMIT, SOCKET_PATH, VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ class IPCServer:
         except FileNotFoundError:
             pass
         self._server = await asyncio.start_unix_server(
-            self._handle_connection, path=SOCKET_PATH
+            self._handle_connection, path=SOCKET_PATH, limit=LINE_LIMIT
         )
         logger.info("IPC server listening on %s", SOCKET_PATH)
 
@@ -77,8 +77,8 @@ class IPCServer:
                 if not line:
                     break
                 asyncio.create_task(self._dispatch(line, writer))
-        except (ConnectionResetError, asyncio.IncompleteReadError):
-            pass
+        except (ConnectionResetError, asyncio.IncompleteReadError, ValueError) as exc:
+            logger.warning("Bridge connection %s terminated: %s", peer, exc)
         finally:
             logger.debug("Bridge disconnected: %s", peer)
             writer.close()

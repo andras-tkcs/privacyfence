@@ -29,3 +29,9 @@ import os
 from . import __version__ as VERSION
 
 SOCKET_PATH = os.path.expanduser("~/.privacyfence/privacyfence.sock")
+
+# Messages are newline-delimited JSON; asyncio's default StreamReader line
+# limit is 64 KiB, well under drive's 100 KiB file-content cap (before JSON
+# escaping overhead even). Raise it generously so a big tool result never
+# breaks the line framing.
+LINE_LIMIT = 8 * 1024 * 1024
