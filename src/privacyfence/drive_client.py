@@ -204,6 +204,55 @@ def _markdown_to_docs_requests(markdown: str) -> list[dict]:
     return requests
 
 
+# ------------------------------------------------------------------ #
+# Sheets API helpers
+# ------------------------------------------------------------------ #
+
+def _col_letters_to_index(letters: str) -> int:
+    """Convert an A1 column reference ('A', 'Z', 'AA', ...) to a 0-based index."""
+    idx = 0
+    for ch in letters.upper():
+        idx = idx * 26 + (ord(ch) - ord("A") + 1)
+    return idx - 1
+
+
+def _parse_a1_range(range_a1: str) -> dict:
+    """Parse a fully-bounded A1 range ('A1:C10') into a 0-indexed GridRange dict
+    (without sheetId, which the caller merges in).
+
+    Only the ``<col><row>:<col><row>`` form is supported - no whole-row,
+    whole-column, or sheet-name-prefixed references. The caller specifies the
+    sheet separately via sheet_id, so no sheet-name prefix is expected here.
+    """
+    m = _re.match(r"^([A-Za-z]+)(\d+):([A-Za-z]+)(\d+)$", range_a1.strip())
+    if not m:
+        raise DriveClientError(
+            f"Unsupported range syntax {range_a1!r}; use a fully-bounded "
+            "range like 'A1:C10' (no sheet-name prefix, no open-ended rows/columns)."
+        )
+    c1, r1, c2, r2 = m.groups()
+    col1, col2 = _col_letters_to_index(c1), _col_letters_to_index(c2)
+    row1, row2 = int(r1) - 1, int(r2) - 1
+    return {
+        "startRowIndex": min(row1, row2),
+        "endRowIndex": max(row1, row2) + 1,
+        "startColumnIndex": min(col1, col2),
+        "endColumnIndex": max(col1, col2) + 1,
+    }
+
+
+def _hex_to_rgb_dict(hex_color: str) -> dict:
+    """Convert '#rrggbb' (or 'rrggbb') to a Sheets API Color dict (0..1 floats)."""
+    value = hex_color.strip().lstrip("#")
+    if len(value) != 6:
+        raise DriveClientError(f"Invalid hex color {hex_color!r}; expected '#rrggbb'")
+    try:
+        r, g, b = (int(value[i : i + 2], 16) for i in (0, 2, 4))
+    except ValueError as exc:
+        raise DriveClientError(f"Invalid hex color {hex_color!r}: {exc}") from exc
+    return {"red": r / 255, "green": g / 255, "blue": b / 255}
+
+
 class DriveClientError(Exception):
     """Raised for unrecoverable Drive client problems (auth, config, API)."""
 
@@ -260,7 +309,8 @@ class DriveClient:
     def __init__(self, client_config: dict, token_file: str) -> None:
         self._client_config = client_config
         self._token_file = token_file
-        self._service = None  # lazily built googleapiclient resource
+        self._service = None  # lazily built googleapiclient resource (Drive v3)
+        self._sheets_service = None  # lazily built googleapiclient resource (Sheets v4)
 
     # ------------------------------------------------------------------ #
     # Authentication
@@ -338,6 +388,11 @@ class DriveClient:
             )
             logger.debug("Drive API service initialized")
         return self._service
+
+    def get_credentials(self) -> Credentials:
+        """Expose the cached OAuth credentials for sibling API clients (Sheets)
+        that reuse the Drive OAuth grant instead of requesting their own scope."""
+        return self._load_credentials()
 
     def check_connection(self) -> str:
         """Verify the credentials work. Returns the authorized email address."""
@@ -777,6 +832,302 @@ class DriveClient:
         drives = response.get("drives", [])
         logger.info("list_shared_drives returned %d drives", len(drives))
         return [{"id": d.get("id", ""), "name": d.get("name", "")} for d in drives]
+
+    # ------------------------------------------------------------------ #
+    # Sheets operations
+    #
+    # These reuse the Drive OAuth grant (the Sheets API v4 accepts the
+    # ``drive`` scope) the same way write_doc_rich_content() above reuses it
+    # for the Docs API - no separate consent screen or token file.
+    # ------------------------------------------------------------------ #
+    def _get_sheets_service(self):
+        if self._sheets_service is None:
+            creds = self._load_credentials()
+            self._sheets_service = build(
+                "sheets", "v4", credentials=creds, cache_discovery=False
+            )
+            logger.debug("Sheets API service initialized")
+        return self._sheets_service
+
+    def create_spreadsheet(
+        self, name: str, sheet_titles: list[str] | None = None, parent_folder_id: str = ""
+    ) -> dict:
+        """Create a new spreadsheet, optionally with named tabs (defaults to one
+        tab named 'Sheet1' if ``sheet_titles`` is empty). Returns id/name/web link.
+
+        The Sheets API always creates in "My Drive" root; if a parent folder is
+        given we move the resulting file there via the Drive API afterward.
+        """
+        if not name.strip():
+            raise DriveClientError("create_spreadsheet requires a non-empty name")
+        body: dict = {"properties": {"title": name}}
+        if sheet_titles:
+            body["sheets"] = [{"properties": {"title": t}} for t in sheet_titles]
+        service = self._get_sheets_service()
+        try:
+            result = service.spreadsheets().create(
+                body=body, fields="spreadsheetId,properties.title,spreadsheetUrl"
+            ).execute()
+        except HttpError as exc:
+            raise DriveClientError(f"create_spreadsheet({name}) failed: {exc}") from exc
+
+        spreadsheet_id = result.get("spreadsheetId", "")
+        if parent_folder_id:
+            self.move_file(spreadsheet_id, parent_folder_id)
+        logger.info("create_spreadsheet: id=%s name=%s", spreadsheet_id, name)
+        return {
+            "id": spreadsheet_id,
+            "name": result.get("properties", {}).get("title", name),
+            "web_view_link": result.get("spreadsheetUrl", ""),
+        }
+
+    def list_sheets(self, spreadsheet_id: str) -> list[dict]:
+        """List the tabs (sheets) within a spreadsheet."""
+        if not spreadsheet_id:
+            raise DriveClientError("list_sheets requires a non-empty spreadsheet_id")
+        service = self._get_sheets_service()
+        try:
+            result = service.spreadsheets().get(
+                spreadsheetId=spreadsheet_id, fields="sheets.properties"
+            ).execute()
+        except HttpError as exc:
+            raise DriveClientError(f"list_sheets({spreadsheet_id}) failed: {exc}") from exc
+        sheets = []
+        for s in result.get("sheets", []):
+            props = s.get("properties", {})
+            grid = props.get("gridProperties", {})
+            sheets.append({
+                "sheet_id": props.get("sheetId"),
+                "title": props.get("title", ""),
+                "index": props.get("index"),
+                "row_count": grid.get("rowCount"),
+                "column_count": grid.get("columnCount"),
+                "hidden": bool(props.get("hidden", False)),
+            })
+        logger.info("list_sheets %s returned %d tab(s)", spreadsheet_id, len(sheets))
+        return sheets
+
+    def get_sheet_values(self, spreadsheet_id: str, range_a1: str) -> list[list]:
+        """Read a range of cell values (A1 notation, e.g. 'Sheet1!A1:C10')."""
+        if not spreadsheet_id or not range_a1:
+            raise DriveClientError("get_sheet_values requires spreadsheet_id and range")
+        service = self._get_sheets_service()
+        try:
+            result = service.spreadsheets().values().get(
+                spreadsheetId=spreadsheet_id, range=range_a1
+            ).execute()
+        except HttpError as exc:
+            raise DriveClientError(
+                f"get_sheet_values({spreadsheet_id}, {range_a1}) failed: {exc}"
+            ) from exc
+        values = result.get("values", [])
+        logger.info("get_sheet_values %s %s: %d row(s)", spreadsheet_id, range_a1, len(values))
+        return values
+
+    def write_sheet_values(
+        self, spreadsheet_id: str, range_a1: str, values: list[list], value_input_option: str = "USER_ENTERED"
+    ) -> dict:
+        """Write a 2D array of values into a range (A1 notation, e.g.
+        'Sheet1!A1:C10'). With the default ``USER_ENTERED`` option, cell strings
+        starting with '=' are evaluated as formulas, exactly as if typed into
+        the Sheets UI - there is no separate "set formula" operation.
+        """
+        if not spreadsheet_id or not range_a1:
+            raise DriveClientError("write_sheet_values requires spreadsheet_id and range")
+        service = self._get_sheets_service()
+        try:
+            result = service.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=range_a1,
+                valueInputOption=value_input_option,
+                body={"values": values},
+            ).execute()
+        except HttpError as exc:
+            raise DriveClientError(
+                f"write_sheet_values({spreadsheet_id}, {range_a1}) failed: {exc}"
+            ) from exc
+        logger.info(
+            "write_sheet_values %s %s: updated %s cell(s)",
+            spreadsheet_id, range_a1, result.get("updatedCells", 0),
+        )
+        return {
+            "spreadsheet_id": spreadsheet_id,
+            "updated_range": result.get("updatedRange", range_a1),
+            "updated_cells": result.get("updatedCells", 0),
+        }
+
+    def add_sheet(self, spreadsheet_id: str, title: str, rows: int = 1000, cols: int = 26) -> dict:
+        """Add a new tab to an existing spreadsheet."""
+        if not spreadsheet_id or not title.strip():
+            raise DriveClientError("add_sheet requires spreadsheet_id and a non-empty title")
+        service = self._get_sheets_service()
+        request = {
+            "addSheet": {
+                "properties": {
+                    "title": title,
+                    "gridProperties": {"rowCount": max(1, rows), "columnCount": max(1, cols)},
+                }
+            }
+        }
+        try:
+            result = service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id, body={"requests": [request]}
+            ).execute()
+        except HttpError as exc:
+            raise DriveClientError(f"add_sheet({spreadsheet_id}, {title}) failed: {exc}") from exc
+        props = result["replies"][0]["addSheet"]["properties"]
+        logger.info("add_sheet: spreadsheet=%s sheet_id=%s title=%s", spreadsheet_id, props.get("sheetId"), title)
+        return {"sheet_id": props.get("sheetId"), "title": props.get("title", title), "index": props.get("index")}
+
+    def rename_sheet(self, spreadsheet_id: str, sheet_id: int, new_title: str) -> dict:
+        """Rename an existing tab. Also the sanctioned way to mark a tab for
+        deletion (rename it, e.g. to 'TO BE DELETED - <original title>') since
+        this client intentionally has no delete-sheet operation."""
+        if not spreadsheet_id or not new_title.strip():
+            raise DriveClientError("rename_sheet requires spreadsheet_id and a non-empty new_title")
+        service = self._get_sheets_service()
+        request = {
+            "updateSheetProperties": {
+                "properties": {"sheetId": sheet_id, "title": new_title},
+                "fields": "title",
+            }
+        }
+        try:
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id, body={"requests": [request]}
+            ).execute()
+        except HttpError as exc:
+            raise DriveClientError(
+                f"rename_sheet({spreadsheet_id}, {sheet_id}) failed: {exc}"
+            ) from exc
+        logger.info("rename_sheet: spreadsheet=%s sheet_id=%s new_title=%s", spreadsheet_id, sheet_id, new_title)
+        return {"spreadsheet_id": spreadsheet_id, "sheet_id": sheet_id, "title": new_title}
+
+    def format_sheet_range(
+        self,
+        spreadsheet_id: str,
+        sheet_id: int,
+        range_a1: str,
+        bold: str = "",
+        italic: str = "",
+        background_color: str = "",
+        text_color: str = "",
+        number_format: str = "",
+        horizontal_alignment: str = "",
+        freeze_rows: int = -1,
+        freeze_cols: int = -1,
+        column_width: int = -1,
+        merge_type: str = "KEEP",
+    ) -> dict:
+        """Apply formatting to a range. Every parameter is opt-in: its "unset"
+        value (empty string / -1 / 'KEEP') means "leave that aspect unchanged" -
+        a format call only ever touches the aspects it's explicitly given, so
+        e.g. changing a background color never silently clears bold text or
+        un-merges cells set by an earlier call.
+
+        ``range_a1`` is plain A1 notation scoped to ``sheet_id`` (e.g. 'A1:C10',
+        no sheet-name prefix - only fully-bounded ranges are supported).
+        ``merge_type`` is one of KEEP / NONE (unmerge) / MERGE_ALL /
+        MERGE_COLUMNS / MERGE_ROWS.
+        """
+        if not spreadsheet_id:
+            raise DriveClientError("format_sheet_range requires a non-empty spreadsheet_id")
+        grid_range = {"sheetId": sheet_id, **_parse_a1_range(range_a1)}
+
+        requests: list[dict] = []
+
+        cell_format: dict = {}
+        fields: list[str] = []
+        text_style: dict = {}
+        text_fields: list[str] = []
+        if bold:
+            text_style["bold"] = bold.strip().lower() == "true"
+            text_fields.append("bold")
+        if italic:
+            text_style["italic"] = italic.strip().lower() == "true"
+            text_fields.append("italic")
+        if text_color:
+            text_style["foregroundColor"] = _hex_to_rgb_dict(text_color)
+            text_fields.append("foregroundColor")
+        if text_fields:
+            cell_format["textFormat"] = text_style
+            fields.append("userEnteredFormat.textFormat(" + ",".join(text_fields) + ")")
+        if background_color:
+            cell_format["backgroundColor"] = _hex_to_rgb_dict(background_color)
+            fields.append("userEnteredFormat.backgroundColor")
+        if number_format:
+            cell_format["numberFormat"] = {"type": "NUMBER", "pattern": number_format}
+            fields.append("userEnteredFormat.numberFormat")
+        if horizontal_alignment:
+            cell_format["horizontalAlignment"] = horizontal_alignment.upper()
+            fields.append("userEnteredFormat.horizontalAlignment")
+        if fields:
+            requests.append({
+                "repeatCell": {
+                    "range": grid_range,
+                    "cell": {"userEnteredFormat": cell_format},
+                    "fields": ",".join(fields),
+                }
+            })
+
+        if column_width >= 0:
+            requests.append({
+                "updateDimensionProperties": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "dimension": "COLUMNS",
+                        "startIndex": grid_range["startColumnIndex"],
+                        "endIndex": grid_range["endColumnIndex"],
+                    },
+                    "properties": {"pixelSize": column_width},
+                    "fields": "pixelSize",
+                }
+            })
+
+        if freeze_rows >= 0 or freeze_cols >= 0:
+            grid_properties: dict = {}
+            sheet_fields: list[str] = []
+            if freeze_rows >= 0:
+                grid_properties["frozenRowCount"] = freeze_rows
+                sheet_fields.append("gridProperties.frozenRowCount")
+            if freeze_cols >= 0:
+                grid_properties["frozenColumnCount"] = freeze_cols
+                sheet_fields.append("gridProperties.frozenColumnCount")
+            requests.append({
+                "updateSheetProperties": {
+                    "properties": {"sheetId": sheet_id, "gridProperties": grid_properties},
+                    "fields": ",".join(sheet_fields),
+                }
+            })
+
+        merge_type = merge_type.upper()
+        if merge_type == "NONE":
+            requests.append({"unmergeCells": {"range": grid_range}})
+        elif merge_type in ("MERGE_ALL", "MERGE_COLUMNS", "MERGE_ROWS"):
+            requests.append({"mergeCells": {"range": grid_range, "mergeType": merge_type}})
+        elif merge_type != "KEEP":
+            raise DriveClientError(
+                f"format_sheet_range: invalid merge_type {merge_type!r}; "
+                "use KEEP, NONE, MERGE_ALL, MERGE_COLUMNS, or MERGE_ROWS"
+            )
+
+        if not requests:
+            return {"spreadsheet_id": spreadsheet_id, "sheet_id": sheet_id, "requests_applied": 0}
+
+        service = self._get_sheets_service()
+        try:
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id, body={"requests": requests}
+            ).execute()
+        except HttpError as exc:
+            raise DriveClientError(
+                f"format_sheet_range({spreadsheet_id}, {range_a1}) failed: {exc}"
+            ) from exc
+        logger.info(
+            "format_sheet_range: spreadsheet=%s sheet_id=%s range=%s requests=%d",
+            spreadsheet_id, sheet_id, range_a1, len(requests),
+        )
+        return {"spreadsheet_id": spreadsheet_id, "sheet_id": sheet_id, "requests_applied": len(requests)}
 
     # ------------------------------------------------------------------ #
     # Parsing helpers
