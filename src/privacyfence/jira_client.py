@@ -9,6 +9,11 @@ Required config keys:
   cloud_id     – the Atlassian site's cloud id, used to build the
                  api.atlassian.com/ex/jira/{cloud_id} proxy URL
   site_url     – the human-facing site URL (for issue links), optional
+
+Optional config keys (needed to refresh an expired access token — see
+``_try_refresh`` below):
+  client_id / client_secret – the organization's Atlassian OAuth app
+  refresh_token             – from the same OAuth grant as access_token
 """
 
 from __future__ import annotations
@@ -19,6 +24,14 @@ from typing import Any, Optional
 
 import requests
 from atlassian import Jira
+
+from .atlassian_oauth import (
+    AtlassianOAuthError,
+    is_unauthorized,
+    load_token_file,
+    refresh as atlassian_refresh,
+    save_token_file,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,12 +97,23 @@ class JiraComment:
 
 
 class JiraClient:
-    """Jira Cloud client backed by an Atlassian OAuth 2.0 bearer token."""
+    """Jira Cloud client backed by an Atlassian OAuth 2.0 bearer token.
 
-    def __init__(self, config: dict[str, Any]) -> None:
-        access_token = config.get("access_token", "")
-        cloud_id = config.get("cloud_id", "")
-        site_url = (config.get("site_url") or "").rstrip("/")
+    ``config`` merges the organization's Atlassian OAuth app credentials
+    (``client_id``, ``client_secret``) with the per-user token
+    (``access_token``, ``refresh_token``, ``cloud_id``, ``site_url``). When
+    the access token has expired (Atlassian tokens are short-lived), the
+    client refreshes it once and retries automatically; if ``token_file`` is
+    given, the refreshed token is persisted back to disk so the next app
+    launch doesn't need a fresh sign-in.
+    """
+
+    def __init__(self, config: dict[str, Any], token_file: str | None = None) -> None:
+        self._config = dict(config)
+        self._token_file = token_file
+        access_token = self._config.get("access_token", "")
+        cloud_id = self._config.get("cloud_id", "")
+        site_url = (self._config.get("site_url") or "").rstrip("/")
 
         if not access_token or not cloud_id:
             raise JiraClientError(
@@ -98,12 +122,62 @@ class JiraClient:
 
         api_url = f"https://api.atlassian.com/ex/jira/{cloud_id}"
         self._base_url = site_url or api_url
-        session = requests.Session()
-        session.headers["Authorization"] = f"Bearer {access_token}"
+        self._session = requests.Session()
+        self._session.headers["Authorization"] = f"Bearer {access_token}"
         try:
-            self._client = Jira(url=api_url, session=session, cloud=True, api_version="3")
+            self._client = Jira(url=api_url, session=self._session, cloud=True, api_version="3")
         except Exception as exc:
             raise JiraClientError(f"Failed to initialise Jira client: {exc}") from exc
+
+    # ------------------------------------------------------------------ #
+    # Token refresh
+    # ------------------------------------------------------------------ #
+
+    def _try_refresh(self) -> bool:
+        """Attempt to refresh the access token in place. Returns True on success."""
+        client_id = self._config.get("client_id", "")
+        client_secret = self._config.get("client_secret", "")
+        refresh_token = self._config.get("refresh_token", "")
+        if self._token_file:
+            # The token file is shared with ConfluenceClient; if it already
+            # refreshed (and Atlassian rotated the refresh token), pick up
+            # its latest value instead of retrying a spent one.
+            try:
+                refresh_token = load_token_file(self._token_file).get("refresh_token") or refresh_token
+            except AtlassianOAuthError:
+                pass
+        if not client_id or not client_secret or not refresh_token:
+            return False
+        try:
+            data = atlassian_refresh(client_id, client_secret, refresh_token)
+        except AtlassianOAuthError as exc:
+            logger.warning("Jira token refresh failed: %s", exc)
+            return False
+        access_token = data.get("access_token", "")
+        if not access_token:
+            return False
+        self._config["access_token"] = access_token
+        self._config["refresh_token"] = data.get("refresh_token", refresh_token)
+        self._session.headers["Authorization"] = f"Bearer {access_token}"
+        if self._token_file:
+            save_token_file(self._token_file, {
+                "access_token": access_token,
+                "refresh_token": self._config["refresh_token"],
+                "cloud_id": self._config.get("cloud_id", ""),
+                "site_url": self._config.get("site_url", ""),
+                "account_email": self._config.get("account_email", ""),
+            })
+        logger.info("Jira access token refreshed")
+        return True
+
+    def _request(self, fn, *args: Any, **kwargs: Any) -> Any:
+        """Call ``fn`` with one automatic refresh-and-retry on an expired token."""
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            if is_unauthorized(exc) and self._try_refresh():
+                return fn(*args, **kwargs)
+            raise
 
     # ------------------------------------------------------------------ #
     # Connection
@@ -112,7 +186,7 @@ class JiraClient:
     def check_connection(self) -> str:
         """Verify credentials. Returns the site URL on success."""
         try:
-            myself = self._client.myself()
+            myself = self._request(self._client.myself)
             display = myself.get("displayName", "unknown user")
             logger.info("Connected to Jira at %s as %r", self._base_url, display)
             return f"{display} @ {self._base_url}"
@@ -126,7 +200,7 @@ class JiraClient:
     def list_projects(self, max_results: int = 50) -> list[JiraProject]:
         max_results = max(1, min(max_results, 500))
         try:
-            raw = self._client.projects(included_archived=None)
+            raw = self._request(self._client.projects, included_archived=None)
         except Exception as exc:
             raise JiraClientError(f"list_projects failed: {exc}") from exc
         projects = [self._parse_project(p) for p in (raw or [])][:max_results]
@@ -142,7 +216,7 @@ class JiraClient:
             raise JiraClientError("search_issues requires a non-empty JQL query")
         max_results = max(1, min(max_results, 100))
         try:
-            result = self._client.jql(jql, limit=max_results)
+            result = self._request(self._client.jql, jql, limit=max_results)
         except Exception as exc:
             raise JiraClientError(f"search_issues failed: {exc}") from exc
         issues = [self._parse_issue(i) for i in (result.get("issues") or [])]
@@ -153,7 +227,7 @@ class JiraClient:
         if not issue_key:
             raise JiraClientError("get_issue requires an issue key")
         try:
-            raw = self._client.issue(issue_key)
+            raw = self._request(self._client.issue, issue_key)
         except Exception as exc:
             raise JiraClientError(f"get_issue({issue_key!r}) failed: {exc}") from exc
         issue = self._parse_issue(raw, include_description=True)
@@ -164,7 +238,7 @@ class JiraClient:
         if not issue_key:
             raise JiraClientError("get_issue_comments requires an issue key")
         try:
-            raw = self._client.issue(issue_key, fields="comment")
+            raw = self._request(self._client.issue, issue_key, fields="comment")
             comments_raw = (raw.get("fields", {}).get("comment") or {}).get("comments", [])
         except Exception as exc:
             raise JiraClientError(f"get_issue_comments({issue_key!r}) failed: {exc}") from exc
@@ -198,7 +272,7 @@ class JiraClient:
         if labels:
             fields["labels"] = labels
         try:
-            raw = self._client.create_issue(fields=fields)
+            raw = self._request(self._client.create_issue, fields=fields)
         except Exception as exc:
             raise JiraClientError(f"create_issue failed: {exc}") from exc
         key = raw.get("key", "")
@@ -209,7 +283,7 @@ class JiraClient:
         if not issue_key or not body:
             raise JiraClientError("add_comment requires issue_key and body")
         try:
-            raw = self._client.issue_add_comment(issue_key, _text_to_adf(body))
+            raw = self._request(self._client.issue_add_comment, issue_key, _text_to_adf(body))
         except Exception as exc:
             raise JiraClientError(f"add_comment({issue_key!r}) failed: {exc}") from exc
         comment = self._parse_comment(raw)
@@ -220,7 +294,7 @@ class JiraClient:
         if not issue_key or not fields:
             raise JiraClientError("update_issue requires issue_key and fields")
         try:
-            self._client.update_issue_field(issue_key, fields)
+            self._request(self._client.update_issue_field, issue_key, fields)
         except Exception as exc:
             raise JiraClientError(f"update_issue({issue_key!r}) failed: {exc}") from exc
         logger.info("update_issue %s: updated fields %s", issue_key, list(fields.keys()))

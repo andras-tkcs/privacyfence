@@ -49,6 +49,16 @@ class AtlassianOAuthError(Exception):
     """Raised for unrecoverable Atlassian OAuth problems."""
 
 
+def is_unauthorized(exc: Exception) -> bool:
+    """True if ``exc`` (raised by atlassian-python-api) is an HTTP 401.
+
+    Used by jira_client.py / confluence_client.py to decide whether an
+    expired access token is worth a refresh-and-retry.
+    """
+    response = getattr(exc, "response", None)
+    return response is not None and getattr(response, "status_code", None) == 401
+
+
 def authorize_interactive(
     client_id: str,
     client_secret: str,
@@ -132,7 +142,7 @@ def authorize_interactive(
         "site_url": resource.get("url", ""),
         "account_email": _fetch_account_email(access_token, cloud_id),
     }
-    _save_token_file(token_file, token_record)
+    save_token_file(token_file, token_record)
     logger.info("Atlassian OAuth complete for site %s", token_record["site_url"])
     return token_record
 
@@ -200,7 +210,7 @@ def _fetch_accessible_resources(access_token: str) -> list[dict[str, Any]]:
     return resp.json()
 
 
-def _save_token_file(token_file: str, token_record: dict[str, Any]) -> None:
+def save_token_file(token_file: str, token_record: dict[str, Any]) -> None:
     os.makedirs(os.path.dirname(os.path.abspath(token_file)), exist_ok=True)
     with open(token_file, "w", encoding="utf-8") as fh:
         json.dump(token_record, fh)

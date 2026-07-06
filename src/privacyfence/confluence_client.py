@@ -10,6 +10,11 @@ Required config keys:
   cloud_id     – the Atlassian site's cloud id, used to build the
                  api.atlassian.com/ex/confluence/{cloud_id}/wiki proxy URL
   site_url     – the human-facing site URL (for page links), optional
+
+Optional config keys (needed to refresh an expired access token — see
+``_try_refresh`` below):
+  client_id / client_secret – the organization's Atlassian OAuth app
+  refresh_token             – from the same OAuth grant as access_token
 """
 
 from __future__ import annotations
@@ -20,6 +25,14 @@ from typing import Any
 
 import requests
 from atlassian import Confluence
+
+from .atlassian_oauth import (
+    AtlassianOAuthError,
+    is_unauthorized,
+    load_token_file,
+    refresh as atlassian_refresh,
+    save_token_file,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,12 +92,23 @@ class ConfluenceSearchResult:
 
 
 class ConfluenceClient:
-    """Confluence Cloud client backed by an Atlassian OAuth 2.0 bearer token."""
+    """Confluence Cloud client backed by an Atlassian OAuth 2.0 bearer token.
 
-    def __init__(self, config: dict[str, Any]) -> None:
-        access_token = config.get("access_token", "")
-        cloud_id = config.get("cloud_id", "")
-        site_url = (config.get("site_url") or "").rstrip("/")
+    ``config`` merges the organization's Atlassian OAuth app credentials
+    (``client_id``, ``client_secret``) with the per-user token
+    (``access_token``, ``refresh_token``, ``cloud_id``, ``site_url``). When
+    the access token has expired (Atlassian tokens are short-lived), the
+    client refreshes it once and retries automatically; if ``token_file`` is
+    given, the refreshed token is persisted back to disk so the next app
+    launch doesn't need a fresh sign-in.
+    """
+
+    def __init__(self, config: dict[str, Any], token_file: str | None = None) -> None:
+        self._config = dict(config)
+        self._token_file = token_file
+        access_token = self._config.get("access_token", "")
+        cloud_id = self._config.get("cloud_id", "")
+        site_url = (self._config.get("site_url") or "").rstrip("/")
 
         if not access_token or not cloud_id:
             raise ConfluenceClientError(
@@ -96,12 +120,62 @@ class ConfluenceClient:
         # jira.com URLs — not for this api.atlassian.com OAuth proxy URL.
         api_url = f"https://api.atlassian.com/ex/confluence/{cloud_id}/wiki"
         self._base_url = site_url or api_url
-        session = requests.Session()
-        session.headers["Authorization"] = f"Bearer {access_token}"
+        self._session = requests.Session()
+        self._session.headers["Authorization"] = f"Bearer {access_token}"
         try:
-            self._client = Confluence(url=api_url, session=session, cloud=True)
+            self._client = Confluence(url=api_url, session=self._session, cloud=True)
         except Exception as exc:
             raise ConfluenceClientError(f"Failed to initialise Confluence client: {exc}") from exc
+
+    # ------------------------------------------------------------------ #
+    # Token refresh
+    # ------------------------------------------------------------------ #
+
+    def _try_refresh(self) -> bool:
+        """Attempt to refresh the access token in place. Returns True on success."""
+        client_id = self._config.get("client_id", "")
+        client_secret = self._config.get("client_secret", "")
+        refresh_token = self._config.get("refresh_token", "")
+        if self._token_file:
+            # The token file is shared with JiraClient; if it already
+            # refreshed (and Atlassian rotated the refresh token), pick up
+            # its latest value instead of retrying a spent one.
+            try:
+                refresh_token = load_token_file(self._token_file).get("refresh_token") or refresh_token
+            except AtlassianOAuthError:
+                pass
+        if not client_id or not client_secret or not refresh_token:
+            return False
+        try:
+            data = atlassian_refresh(client_id, client_secret, refresh_token)
+        except AtlassianOAuthError as exc:
+            logger.warning("Confluence token refresh failed: %s", exc)
+            return False
+        access_token = data.get("access_token", "")
+        if not access_token:
+            return False
+        self._config["access_token"] = access_token
+        self._config["refresh_token"] = data.get("refresh_token", refresh_token)
+        self._session.headers["Authorization"] = f"Bearer {access_token}"
+        if self._token_file:
+            save_token_file(self._token_file, {
+                "access_token": access_token,
+                "refresh_token": self._config["refresh_token"],
+                "cloud_id": self._config.get("cloud_id", ""),
+                "site_url": self._config.get("site_url", ""),
+                "account_email": self._config.get("account_email", ""),
+            })
+        logger.info("Confluence access token refreshed")
+        return True
+
+    def _request(self, fn, *args: Any, **kwargs: Any) -> Any:
+        """Call ``fn`` with one automatic refresh-and-retry on an expired token."""
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            if is_unauthorized(exc) and self._try_refresh():
+                return fn(*args, **kwargs)
+            raise
 
     # ------------------------------------------------------------------ #
     # Connection
@@ -110,7 +184,7 @@ class ConfluenceClient:
     def check_connection(self) -> str:
         """Verify credentials by listing spaces. Returns the site URL on success."""
         try:
-            self._client.get(_V2_SPACES_PATH, params={"limit": 1})
+            self._request(self._client.get, _V2_SPACES_PATH, params={"limit": 1})
             logger.info("Connected to Confluence at %s", self._base_url)
             return self._base_url
         except Exception as exc:
@@ -126,7 +200,7 @@ class ConfluenceClient:
         if space_type:
             params["type"] = space_type
         try:
-            raw = self._client.get(_V2_SPACES_PATH, params=params)
+            raw = self._request(self._client.get, _V2_SPACES_PATH, params=params)
             results = (raw or {}).get("results") or []
         except Exception as exc:
             raise ConfluenceClientError(f"list_spaces failed: {exc}") from exc
@@ -143,7 +217,8 @@ class ConfluenceClient:
             raise ConfluenceClientError("search requires a non-empty query")
         max_results = max(1, min(max_results, 100))
         try:
-            raw = self._client.cql(
+            raw = self._request(
+                self._client.cql,
                 f'text ~ "{query}" order by lastmodified desc',
                 limit=max_results,
             )
@@ -159,7 +234,7 @@ class ConfluenceClient:
             raise ConfluenceClientError("cql_search requires a non-empty CQL query")
         max_results = max(1, min(max_results, 100))
         try:
-            raw = self._client.cql(cql, limit=max_results)
+            raw = self._request(self._client.cql, cql, limit=max_results)
             results = (raw or {}).get("results") or []
         except Exception as exc:
             raise ConfluenceClientError(f"cql_search failed: {exc}") from exc
@@ -176,8 +251,9 @@ class ConfluenceClient:
             raise ConfluenceClientError("list_pages_in_space requires a space_key")
         max_results = max(1, min(max_results, 200))
         try:
-            raw = self._client.get_all_pages_from_space(
-                space_key, start=0, limit=max_results, expand="version,space"
+            raw = self._request(
+                self._client.get_all_pages_from_space,
+                space_key, start=0, limit=max_results, expand="version,space",
             )
         except Exception as exc:
             raise ConfluenceClientError(f"list_pages_in_space({space_key!r}) failed: {exc}") from exc
@@ -189,8 +265,9 @@ class ConfluenceClient:
         if not page_id:
             raise ConfluenceClientError("get_page requires a page_id")
         try:
-            raw = self._client.get_page_by_id(
-                page_id, expand="body.storage,version,space,history.lastUpdated"
+            raw = self._request(
+                self._client.get_page_by_id,
+                page_id, expand="body.storage,version,space,history.lastUpdated",
             )
         except Exception as exc:
             raise ConfluenceClientError(f"get_page({page_id!r}) failed: {exc}") from exc
@@ -202,8 +279,9 @@ class ConfluenceClient:
         if not space_key or not title:
             raise ConfluenceClientError("get_page_by_title requires space_key and title")
         try:
-            raw = self._client.get_page_by_title(
-                space_key, title, expand="body.storage,version,space,history.lastUpdated"
+            raw = self._request(
+                self._client.get_page_by_title,
+                space_key, title, expand="body.storage,version,space,history.lastUpdated",
             )
         except Exception as exc:
             raise ConfluenceClientError(f"get_page_by_title({space_key!r}, {title!r}) failed: {exc}") from exc
@@ -221,7 +299,8 @@ class ConfluenceClient:
         if not space_key or not title:
             raise ConfluenceClientError("create_page requires space_key and title")
         try:
-            raw = self._client.create_page(
+            raw = self._request(
+                self._client.create_page,
                 space=space_key,
                 title=title,
                 body=body,
@@ -244,9 +323,10 @@ class ConfluenceClient:
             raise ConfluenceClientError("update_page requires page_id and title")
         try:
             # Get current version to bump it
-            current = self._client.get_page_by_id(page_id, expand="version")
+            current = self._request(self._client.get_page_by_id, page_id, expand="version")
             version = int((current.get("version") or {}).get("number", 1))
-            self._client.update_page(
+            self._request(
+                self._client.update_page,
                 page_id=page_id,
                 title=title,
                 body=body,

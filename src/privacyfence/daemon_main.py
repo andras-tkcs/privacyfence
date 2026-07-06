@@ -346,6 +346,10 @@ def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list
             atlassian_token = load_atlassian_token(_resolve_path(TOKEN_FILES["atlassian"]))
         except AtlassianOAuthError:
             atlassian_token = None
+    # Merge in client_id/client_secret so JiraClient/ConfluenceClient can
+    # refresh an expired access token instead of forcing re-authentication
+    # on every restart (the token file only ever holds the per-user fields).
+    atlassian_config = {**atlassian_org, **(atlassian_token or {})}
 
     if enabled("jira"):
         try:
@@ -353,7 +357,7 @@ def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list
                 raise JiraClientError("Atlassian organization config not installed")
             if not atlassian_token:
                 raise JiraClientError("Jira is not authenticated. Use Authenticate… in the menu bar.")
-            client = JiraClient(config=atlassian_token)
+            client = JiraClient(config=atlassian_config, token_file=_resolve_path(TOKEN_FILES["atlassian"]))
             info = client.check_connection()
             logger.info("Jira connector ready: %s", info)
             connector = JiraConnector(client)
@@ -368,7 +372,7 @@ def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list
                 raise ConfluenceClientError("Atlassian organization config not installed")
             if not atlassian_token:
                 raise ConfluenceClientError("Confluence is not authenticated. Use Authenticate… in the menu bar.")
-            client = ConfluenceClient(config=atlassian_token)
+            client = ConfluenceClient(config=atlassian_config, token_file=_resolve_path(TOKEN_FILES["atlassian"]))
             url = client.check_connection()
             logger.info("Confluence connector ready: %s", url)
             connector = ConfluenceConnector(client)
