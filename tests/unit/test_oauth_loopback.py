@@ -18,7 +18,7 @@ import socket
 import pytest
 import requests
 
-from privacyfence.oauth_loopback import OAuthLoopbackError, _make_pkce_pair, run_browser_oauth
+from privacyfence.oauth_loopback import OAuthLoopbackError, _LoopbackHTTPServer, _make_pkce_pair, run_browser_oauth
 
 # A loopback redirect must never be routed through an HTTP(S)_PROXY that
 # happens to be set in the environment (common on hosted CI runners) --
@@ -74,6 +74,36 @@ class _Flow:
             _NO_PROXY_SESSION.get(self.captured["redirect_uri"], params=params, timeout=5)
             return True
         return opener
+
+
+# ---------------------------------------------------------------------------- #
+# _LoopbackHTTPServer: must not do a reverse-DNS lookup on bind
+# ---------------------------------------------------------------------------- #
+
+class TestLoopbackHTTPServer:
+    """HTTPServer.server_bind() normally calls socket.getfqdn(host) purely to
+    set server_name for access logging -- a real reverse-DNS-style lookup
+    that can hang for a long time on machines/networks with slow or unusual
+    DNS resolution, even for 127.0.0.1, and it runs synchronously inside the
+    constructor before the accept loop even starts. _LoopbackHTTPServer must
+    never trigger that call."""
+
+    def test_construction_never_calls_socket_getfqdn(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(socket, "getfqdn", lambda host="": calls.append(host) or "should-not-be-used")
+
+        server = _LoopbackHTTPServer(("127.0.0.1", 0), _DummyHandler)
+        try:
+            assert calls == []
+            assert server.server_name == "127.0.0.1"
+        finally:
+            server.server_close()
+
+
+class _DummyHandler:
+    """Never instantiated in this test -- HTTPServer.__init__ only needs a
+    handler *class* reference, it doesn't construct one until a connection
+    actually arrives."""
 
 
 # ---------------------------------------------------------------------------- #
