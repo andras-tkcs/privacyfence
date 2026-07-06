@@ -14,6 +14,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
+import uuid
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 import yaml
@@ -22,7 +26,7 @@ from privacyfence import daemon_main
 
 
 def fake_client_class(*, result=None, connection_error: Exception | None = None,
-                       init_error: Exception | None = None):
+                       init_error: Exception | None = None, authorize_error: Exception | None = None):
     """A stand-in for a *Client class. Captures the kwargs it was
     constructed with (on the class, since daemon_main always constructs
     exactly one instance per connector) and controls check_connection()."""
@@ -30,12 +34,18 @@ def fake_client_class(*, result=None, connection_error: Exception | None = None,
     class _FakeClient:
         captured_kwargs: dict | None = None
         instantiated = False
+        authorize_called = False
 
         def __init__(self, **kwargs):
             type(self).instantiated = True
             type(self).captured_kwargs = kwargs
             if init_error is not None:
                 raise init_error
+
+        def authorize_interactive(self):
+            type(self).authorize_called = True
+            if authorize_error is not None:
+                raise authorize_error
 
         def check_connection(self):
             if connection_error is not None:
@@ -652,3 +662,384 @@ class TestInstanceLock:
 
     def test_release_without_acquire_is_a_no_op(self):
         daemon_main._release_instance_lock()  # must not raise
+
+
+# ---------------------------------------------------------------------------- #
+# run_*_oauth: headless/dev CLI setup commands
+# ---------------------------------------------------------------------------- #
+
+GOOGLE_OAUTH_RUNNERS = [
+    pytest.param("run_gmail_oauth", "GmailClient", "GmailClientError", id="gmail"),
+    pytest.param("run_drive_oauth", "DriveClient", "DriveClientError", id="drive"),
+    pytest.param("run_contacts_oauth", "ContactsClient", "ContactsClientError", id="contacts"),
+    pytest.param("run_calendar_oauth", "CalendarClient", "CalendarClientError", id="calendar"),
+    pytest.param("run_tasks_oauth", "TasksClient", "TasksClientError", id="tasks"),
+]
+
+
+class TestGoogleOauthRunners:
+    @pytest.mark.parametrize("runner_name,client_attr,error_attr", GOOGLE_OAUTH_RUNNERS)
+    def test_success_authorizes_and_prints_email(self, monkeypatch, capsys, runner_name, client_attr, error_attr):
+        fake = fake_client_class(result="me@example.com")
+        monkeypatch.setattr(daemon_main, client_attr, fake)
+        runner = getattr(daemon_main, runner_name)
+
+        code = runner({"google": {"client_id": "id", "client_secret": "secret"}})
+
+        assert code == 0
+        assert fake.authorize_called is True
+        assert "me@example.com" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("runner_name,client_attr,error_attr", GOOGLE_OAUTH_RUNNERS)
+    def test_client_error_prints_to_stderr_and_returns_1(self, monkeypatch, capsys, runner_name, client_attr, error_attr):
+        error_cls = getattr(daemon_main, error_attr)
+        fake = fake_client_class(authorize_error=error_cls("no browser available"))
+        monkeypatch.setattr(daemon_main, client_attr, fake)
+        runner = getattr(daemon_main, runner_name)
+
+        code = runner({})
+
+        assert code == 1
+        assert "no browser available" in capsys.readouterr().err
+
+
+class TestSlackOauthRunner:
+    def test_missing_org_config_prints_error_and_returns_1(self, capsys):
+        assert daemon_main.run_slack_oauth({}) == 1
+        assert "No Slack organization config" in capsys.readouterr().err
+
+    def test_success_prints_team_name_and_returns_0(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            daemon_main, "slack_authorize_interactive",
+            lambda **kw: {"team_name": "Acme"},
+        )
+        code = daemon_main.run_slack_oauth({"slack": {"client_id": "id", "client_secret": "s"}})
+        assert code == 0
+        assert "Acme" in capsys.readouterr().out
+
+    def test_client_error_prints_to_stderr_and_returns_1(self, monkeypatch, capsys):
+        def raiser(**kw):
+            raise daemon_main.SlackClientError("invalid redirect")
+        monkeypatch.setattr(daemon_main, "slack_authorize_interactive", raiser)
+        code = daemon_main.run_slack_oauth({"slack": {"client_id": "id", "client_secret": "s"}})
+        assert code == 1
+        assert "invalid redirect" in capsys.readouterr().err
+
+
+class TestSalesforceOauthRunner:
+    def test_missing_org_config_prints_error_and_returns_1(self, capsys):
+        assert daemon_main.run_salesforce_oauth({}) == 1
+        assert "No Salesforce organization config" in capsys.readouterr().err
+
+    def test_success_prints_instance_url_and_returns_0(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            daemon_main, "salesforce_authorize_interactive",
+            lambda **kw: {"instance_url": "https://x.salesforce.com"},
+        )
+        code = daemon_main.run_salesforce_oauth({"salesforce": {"consumer_key": "ck", "consumer_secret": "cs"}})
+        assert code == 0
+        assert "x.salesforce.com" in capsys.readouterr().out
+
+    def test_client_error_prints_to_stderr_and_returns_1(self, monkeypatch, capsys):
+        def raiser(**kw):
+            raise daemon_main.SalesforceClientError("bad login url")
+        monkeypatch.setattr(daemon_main, "salesforce_authorize_interactive", raiser)
+        code = daemon_main.run_salesforce_oauth({"salesforce": {"consumer_key": "ck", "consumer_secret": "cs"}})
+        assert code == 1
+        assert "bad login url" in capsys.readouterr().err
+
+
+class TestAtlassianOauthRunner:
+    def test_missing_org_config_prints_error_and_returns_1(self, capsys):
+        assert daemon_main.run_atlassian_oauth({}) == 1
+        assert "No Atlassian organization config" in capsys.readouterr().err
+
+    def test_success_prints_site_url_and_returns_0(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            daemon_main, "atlassian_authorize_interactive",
+            lambda **kw: {"site_url": "https://acme.atlassian.net"},
+        )
+        code = daemon_main.run_atlassian_oauth({"atlassian": {"client_id": "ci", "client_secret": "cs"}})
+        assert code == 0
+        assert "acme.atlassian.net" in capsys.readouterr().out
+
+    def test_client_error_prints_to_stderr_and_returns_1(self, monkeypatch, capsys):
+        def raiser(**kw):
+            raise daemon_main.AtlassianOAuthError("consent denied")
+        monkeypatch.setattr(daemon_main, "atlassian_authorize_interactive", raiser)
+        code = daemon_main.run_atlassian_oauth({"atlassian": {"client_id": "ci", "client_secret": "cs"}})
+        assert code == 1
+        assert "consent denied" in capsys.readouterr().err
+
+
+class TestTelegramSetupRunner:
+    def test_missing_app_credentials_prints_error_and_returns_1(self, monkeypatch, capsys):
+        monkeypatch.setattr(daemon_main, "telegram_app_credentials", lambda: None)
+        code = daemon_main.run_telegram_setup()
+        assert code == 1
+        assert "No Telegram app credentials" in capsys.readouterr().err
+
+    def test_success_authorizes_and_prints_session_path(self, monkeypatch, capsys, tmp_path):
+        monkeypatch.setattr(daemon_main, "telegram_app_credentials", lambda: (123, "hash"))
+        monkeypatch.setattr(daemon_main, "PROJECT_ROOT", str(tmp_path))
+
+        captured = {}
+        class FakeTelegramClient:
+            def __init__(self, api_id, api_hash, session_file):
+                captured["api_id"] = api_id
+                captured["session_file"] = session_file
+            async def authorize_interactive(self):
+                captured["authorized"] = True
+        monkeypatch.setattr(daemon_main, "TelegramPrivacyFenceClient", FakeTelegramClient)
+
+        code = daemon_main.run_telegram_setup()
+
+        assert code == 0
+        assert captured["authorized"] is True
+        assert captured["session_file"] in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------- #
+# IPCServerThread
+# ---------------------------------------------------------------------------- #
+
+@pytest.fixture
+def short_socket_path():
+    """AF_UNIX's sun_path is too short (~104 bytes) for pytest's nested
+    tmp_path dirs -- use /tmp directly with a short unique name."""
+    directory = f"/tmp/pf-{uuid.uuid4().hex[:8]}"
+    os.makedirs(directory, exist_ok=True)
+    path = f"{directory}/s.sock"
+    yield path
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    try:
+        os.rmdir(directory)
+    except OSError:
+        pass
+
+
+class TestIPCServerThread:
+    def test_starts_a_fresh_event_loop_and_becomes_ready(self, monkeypatch, short_socket_path):
+        from privacyfence import ipc_server as ipc_server_module
+        from privacyfence.ipc_server import IPCServer
+
+        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+        server = IPCServer([])
+        thread = daemon_main.IPCServerThread(server)
+
+        thread.start()
+        try:
+            assert thread._ready.wait(timeout=5)
+            assert thread._loop is not None
+            assert thread.is_alive()
+        finally:
+            thread._loop.call_soon_threadsafe(thread._loop.stop)
+            thread.join(timeout=5)
+
+    def test_crash_during_startup_is_logged_not_raised(self, caplog):
+        class FailingServer:
+            async def start(self):
+                raise RuntimeError("bind failed")
+
+        thread = daemon_main.IPCServerThread(FailingServer())
+        with caplog.at_level(logging.ERROR):
+            thread.start()
+            thread.join(timeout=5)
+
+        assert not thread.is_alive()
+        assert "IPC server thread crashed" in caplog.text
+
+
+# ---------------------------------------------------------------------------- #
+# run_app
+# ---------------------------------------------------------------------------- #
+
+class _FakeIPCServerThread:
+    instances: list["_FakeIPCServerThread"] = []
+
+    def __init__(self, server):
+        self.server = server
+        self._ready = threading.Event()
+        self._ready.set()
+        self.started = False
+        type(self).instances.append(self)
+
+    def start(self):
+        self.started = True
+
+
+class TestRunApp:
+    def _patch_common(self, monkeypatch, connectors=None):
+        connectors = [] if connectors is None else connectors
+        monkeypatch.setattr(daemon_main, "init_config_path", lambda path: None)
+        monkeypatch.setattr(daemon_main, "reload_rules", lambda rules: None)
+        fake_audit_logger = MagicMock()
+        monkeypatch.setattr(daemon_main, "init_audit_logger", lambda path: fake_audit_logger)
+        monkeypatch.setattr(daemon_main, "load_org_config", lambda: {})
+        monkeypatch.setattr(daemon_main, "build_connectors", lambda cfg, org: connectors)
+        monkeypatch.setattr(daemon_main, "IPCServer", lambda conns: SimpleNamespace(connectors=conns))
+        _FakeIPCServerThread.instances = []
+        monkeypatch.setattr(daemon_main, "IPCServerThread", _FakeIPCServerThread)
+        return fake_audit_logger
+
+    def test_lock_already_held_returns_1_without_building_connectors(self, monkeypatch, capsys):
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: False)
+        build_calls = []
+        monkeypatch.setattr(daemon_main, "build_connectors", lambda cfg, org: build_calls.append(1))
+
+        result = daemon_main.run_app({}, "config.yaml")
+
+        assert result == 1
+        assert build_calls == []
+        assert "already running" in capsys.readouterr().err
+
+    def test_successful_startup_runs_menu_bar_and_releases_lock(self, monkeypatch):
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        release_calls = []
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: release_calls.append(1))
+        connector = SimpleNamespace(name="gmail")
+        self._patch_common(monkeypatch, connectors=[connector])
+
+        menu_bar_calls = []
+        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: menu_bar_calls.append(kw))
+
+        result = daemon_main.run_app({}, "config.yaml")
+
+        assert result == 0
+        assert len(menu_bar_calls) == 1
+        assert menu_bar_calls[0]["config_path"] == "config.yaml"
+        assert menu_bar_calls[0]["connectors"] == ["gmail"]
+        assert menu_bar_calls[0]["ipc_server"] is _FakeIPCServerThread.instances[0].server
+        assert _FakeIPCServerThread.instances[0].started is True
+        assert release_calls == [1]
+
+    def test_no_connectors_built_still_starts_ipc_and_menu_bar(self, monkeypatch, caplog):
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        self._patch_common(monkeypatch, connectors=[])
+        menu_bar_calls = []
+        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: menu_bar_calls.append(kw))
+
+        with caplog.at_level(logging.WARNING):
+            result = daemon_main.run_app({}, "config.yaml")
+
+        assert result == 0
+        assert menu_bar_calls[0]["connectors"] == []
+        assert "No connectors could be initialized" in caplog.text
+
+    def test_keyboard_interrupt_is_caught_lock_released_returns_0(self, monkeypatch, caplog):
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        release_calls = []
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: release_calls.append(1))
+        self._patch_common(monkeypatch)
+
+        def raise_interrupt(**kw):
+            raise KeyboardInterrupt()
+        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", raise_interrupt)
+
+        with caplog.at_level(logging.INFO):
+            result = daemon_main.run_app({}, "config.yaml")
+
+        assert result == 0
+        assert release_calls == [1]
+        assert "Interrupted; shutting down" in caplog.text
+
+    def test_unexpected_exception_still_releases_lock_then_propagates(self, monkeypatch):
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        release_calls = []
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: release_calls.append(1))
+        self._patch_common(monkeypatch)
+
+        def raise_other(**kw):
+            raise RuntimeError("menu bar crashed")
+        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", raise_other)
+
+        with pytest.raises(RuntimeError, match="menu bar crashed"):
+            daemon_main.run_app({}, "config.yaml")
+
+        assert release_calls == [1]
+
+    def test_exports_pending_audit_entries_on_startup(self, monkeypatch):
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        fake_audit_logger = self._patch_common(monkeypatch)
+        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
+
+        daemon_main.run_app({}, "config.yaml")
+
+        fake_audit_logger.export_all_pending.assert_called_once()
+
+
+# ---------------------------------------------------------------------------- #
+# main(): CLI dispatch
+# ---------------------------------------------------------------------------- #
+
+class TestMain:
+    def _patch_config(self, monkeypatch, config=None):
+        monkeypatch.setattr(daemon_main, "load_config", lambda path: config or {})
+        monkeypatch.setattr(daemon_main, "setup_logging", lambda cfg: None)
+        monkeypatch.setattr(daemon_main, "load_org_config", lambda: {})
+
+    def test_config_load_failure_prints_error_and_returns_1(self, monkeypatch, capsys):
+        def raiser(path):
+            raise ValueError("bad yaml")
+        monkeypatch.setattr(daemon_main, "load_config", raiser)
+
+        result = daemon_main.main([])
+
+        assert result == 1
+        assert "Configuration error" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("flag,runner_name", [
+        ("--gmail-oauth", "run_gmail_oauth"),
+        ("--drive-oauth", "run_drive_oauth"),
+        ("--contacts-oauth", "run_contacts_oauth"),
+        ("--calendar-oauth", "run_calendar_oauth"),
+        ("--tasks-oauth", "run_tasks_oauth"),
+        ("--slack-oauth", "run_slack_oauth"),
+        ("--salesforce-oauth", "run_salesforce_oauth"),
+        ("--atlassian-oauth", "run_atlassian_oauth"),
+    ])
+    def test_oauth_flag_dispatches_to_the_right_runner(self, monkeypatch, flag, runner_name):
+        self._patch_config(monkeypatch)
+        calls = []
+        monkeypatch.setattr(daemon_main, runner_name, lambda org_config: calls.append(1) or 0)
+
+        result = daemon_main.main([flag])
+
+        assert result == 0
+        assert calls == [1]
+
+    def test_telegram_setup_flag_dispatches_with_no_org_config_arg(self, monkeypatch):
+        self._patch_config(monkeypatch)
+        calls = []
+        monkeypatch.setattr(daemon_main, "run_telegram_setup", lambda: calls.append(1) or 0)
+
+        result = daemon_main.main(["--telegram-setup"])
+
+        assert result == 0
+        assert calls == [1]
+
+    def test_no_oauth_flag_calls_run_app(self, monkeypatch):
+        self._patch_config(monkeypatch)
+        calls = []
+        monkeypatch.setattr(daemon_main, "run_app", lambda config, path: calls.append((config, path)) or 0)
+
+        result = daemon_main.main([])
+
+        assert result == 0
+        assert len(calls) == 1
+
+    def test_fatal_exception_is_caught_prints_error_and_returns_1(self, monkeypatch, capsys):
+        self._patch_config(monkeypatch)
+        def raiser(config, path):
+            raise RuntimeError("unexpected crash")
+        monkeypatch.setattr(daemon_main, "run_app", raiser)
+
+        result = daemon_main.main([])
+
+        assert result == 1
+        assert "Fatal error" in capsys.readouterr().err
