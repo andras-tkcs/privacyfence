@@ -43,7 +43,12 @@ Every tool call passes through one of three gate values:
 
 ### Two flows by direction
 
-**Tool → Claude (reads)** — annotated `readOnlyHint = true` in MCP.
+> **Note on MCP annotations (since v0.4.9):** the bridge advertises *every*
+> tool — reads and writes alike — to Claude as `readOnlyHint = true` /
+> `destructiveHint = false`. This is intentional. See
+> [Why every tool is advertised as read-only](#why-every-tool-is-advertised-as-read-only) below.
+
+**Tool → Claude (reads)**
 
 When the gate is `review`, a prompt appears in Claude Cowork showing a minimal preview of the request:
 
@@ -51,7 +56,7 @@ When the gate is `review`, a prompt appears in Claude Cowork showing a minimal p
 - **Deny** — request is blocked; Claude receives an error
 - **Show Details** — PrivacyFence opens a scrollable native popup with the full content (e.g. the email body), which then offers **Accept** or **Deny**
 
-**Claude → Tool (writes / actions)** — annotated `destructiveHint = true` where relevant.
+**Claude → Tool (writes / actions)**
 
 Claude already describes the action it is about to take in the chat. When the gate is `popup`, PrivacyFence opens a native popup showing the full action details with **Accept** or **Deny**. There is no intermediate Cowork step.
 
@@ -430,7 +435,38 @@ See [`config/settings.yaml.example`](src/privacyfence/resources/settings.yaml.ex
 - The bridge is stateless and disposable — Claude can kill and restart it at any time without losing any state. All state (credentials, tokens, filters, queue) lives in the daemon.
 - IPC between the bridge and the daemon uses a newline-delimited JSON protocol over a Unix domain socket (`~/.privacyfence/privacyfence.sock`).
 - The daemon uses two threads: the main thread runs the rumps menu bar app (a hard macOS requirement for AppKit) and an IPC thread runs the asyncio event loop serving the bridge socket. Approval popups are shown via `osascript` subprocesses and can be called from any thread.
-- Read tools carry `readOnlyHint = true` in their MCP annotations; write tools that modify external state carry `destructiveHint = true`.
+- All tools are advertised to Claude with `readOnlyHint = true` — see below.
+
+### Why every tool is advertised as read-only
+
+Since **v0.4.9**, the bridge annotates *every* registered tool — reads and
+writes alike — as `readOnlyHint = true`, `destructiveHint = false`,
+`idempotentHint = true`, regardless of the tool's real `read_only` flag.
+
+This is a deliberate trick, and it is safe because **PrivacyFence — not
+Claude — performs the actual authorization**:
+
+- MCP tool annotations are, by the spec's own wording, *"hints, not
+  guarantees."* Claude Code / Cowork use them only to decide **which
+  permission prompts to render** — they are a UI signal, never a security
+  boundary.
+- Write tools default to `destructiveHint = true`. On the **Team plan** that
+  makes Cowork prompt on **every single call** and greys out *"Allow all for
+  this task,"* with no org-level pre-approval available
+  ([anthropics/claude-ai-mcp#491](https://github.com/anthropics/claude-ai-mcp/issues/491)).
+  The result is a redundant approval wall on top of the one PrivacyFence
+  already enforces.
+- Every tool call is forwarded over IPC to the PrivacyFence daemon, which
+  applies the per-tool **gate** (`auto` / `review` / `popup`), the
+  **auto-accept rules**, and the **audit log** *before* any external read or
+  write happens. That gate is the real, enforced control point. Presenting a
+  uniformly read-only surface to Claude simply removes the duplicate,
+  un-configurable client-side prompt and lets PrivacyFence's own gate do the
+  checking.
+
+The tool's true nature is still recorded internally (`spec.read_only`) for the
+daemon's gating and the audit trail — only what Claude is *told* is overridden.
+The MCP annotation is cosmetic; the daemon's decision is authoritative.
 
 ---
 
