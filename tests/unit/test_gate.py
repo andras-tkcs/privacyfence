@@ -11,11 +11,29 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+import time
 
 import pytest
 
 from privacyfence import gate
 from privacyfence.audit_log import init_audit_logger
+
+
+def wait_until(predicate, timeout=2.0, interval=0.005) -> bool:
+    """Poll ``predicate`` until it's true or ``timeout`` elapses.
+
+    Used from a background thread to synchronize with state mutated by the
+    event loop's thread, without an artificial fixed sleep -- ``time.sleep``
+    releases the GIL, so the event-loop thread gets to make progress while
+    this polls.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return predicate()
 
 
 class FakeEvaluator:
@@ -26,6 +44,22 @@ class FakeEvaluator:
     def should_auto_accept(self, operation_key, ctx):
         self.calls.append((operation_key, ctx))
         return self.result
+
+
+@pytest.fixture(autouse=True)
+def _fresh_popup_lock():
+    # gate._popup_lock is a module-level asyncio.Lock, so it outlives any one
+    # test. asyncio.Lock only binds itself to a running event loop lazily, the
+    # first time a second waiter actually contends for it (see cpython's
+    # asyncio.Lock.acquire: an uncontended acquire never calls _get_loop()).
+    # pytest-asyncio gives each test function its own event loop, so once one
+    # test creates real contention on this lock, it's permanently bound to
+    # that (soon-to-be-closed) loop and every later contention test would
+    # raise "bound to a different event loop". Give each test a fresh lock so
+    # tests that exercise concurrent gated_call() waiters never depend on
+    # test execution order.
+    gate._popup_lock = asyncio.Lock()
+    yield
 
 
 @pytest.fixture
@@ -268,6 +302,120 @@ class TestPopupSerialization:
         ])
 
         assert max_concurrent == 1
+
+
+class TestQueuedRequestReCheck:
+    """Regression for the race fixed alongside the stale-menu bug: gated_call
+    re-checks should_auto_accept() *after* acquiring _popup_lock, not just
+    before. Without that re-check, a request that was merely queued behind
+    another popup would show its own dialog for something the user had
+    already approved via Accept All (or via a rule added out-of-band, e.g.
+    from the menu bar) a moment earlier.
+
+    A plain FakeEvaluator with a fixed answer can't exercise this: the whole
+    point is that should_auto_accept()'s answer changes *while a second call
+    is already queued*. These tests use a stateful evaluator whose answer
+    flips only once the racing call has done its work.
+    """
+
+    async def test_second_read_request_auto_accepts_after_first_creates_rule_via_accept_all(
+        self, monkeypatch, audit_dir
+    ):
+        rules_created: list[str] = []
+
+        class LiveEvaluator:
+            def should_auto_accept(self, operation_key, ctx):
+                if rules_created:
+                    return True, rules_created[0]
+                return False, ""
+
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: LiveEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: ("i_am_sender", None))
+        monkeypatch.setattr(gate, "add_auto_accept_rule", lambda op, name, value: rules_created.append(name))
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
+
+        popup_calls = []
+
+        def fake_show_read_popup(title, preview, details, allow_accept_all):
+            popup_calls.append(title)
+            return "accept_all"
+
+        monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
+
+        # Both calls target the same operation. The first (created first,
+        # so it acquires _popup_lock first under asyncio's scheduling) shows
+        # a real popup and creates a standing rule via Accept All. The
+        # second is queued behind the lock the whole time.
+        results = await asyncio.gather(
+            gate.gated_call(**base_kwargs(gate="review", tool="gmail_get_message")),
+            gate.gated_call(**base_kwargs(gate="review", tool="gmail_get_message")),
+        )
+
+        assert results == [FILTERED, FILTERED]
+        # The dialog must have been shown exactly once -- the second caller
+        # was auto-accepted by the re-check, not popped up again.
+        assert len(popup_calls) == 1
+
+        entries = read_audit_entries(audit_dir)
+        decisions = sorted(e["decision"] for e in entries)
+        assert decisions == ["accepted_via_accept_all", "auto_accepted"]
+
+    async def test_second_write_request_auto_accepts_if_rule_added_while_first_holds_lock(
+        self, monkeypatch, audit_dir
+    ):
+        # Unlike the review gate, the popup (write) gate has no Accept All of
+        # its own -- but a rule can still appear mid-flight if the user adds
+        # one from the menu bar's "Auto-accept Rules" submenu while a write
+        # popup is on screen. The second, queued write request must not pop
+        # its own dialog once that happens.
+        #
+        # should_auto_accept() is consulted twice per call: once *before* the
+        # lock (a fast path for the common case) and once *inside* it (the
+        # re-check this test targets). To make sure this test actually
+        # exercises the in-lock re-check -- and doesn't just pass "by
+        # accident" because the pre-lock check happened to win a timing race
+        # -- the rule is only flipped on after both callers' pre-lock checks
+        # have already run (3rd should_auto_accept call: A's pre-lock check,
+        # A's in-lock re-check, B's pre-lock check). At that point B must
+        # already be blocked waiting for the lock, since a write gated_call
+        # has no other await point in between.
+        rule_now_active = threading.Event()
+        check_calls: list[None] = []
+
+        class LiveEvaluator:
+            def should_auto_accept(self, operation_key, ctx):
+                check_calls.append(None)
+                if rule_now_active.is_set():
+                    return True, "manually_added_rule"
+                return False, ""
+
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: LiveEvaluator())
+
+        popup_calls = []
+
+        def fake_show_popup(title, preview, details):
+            popup_calls.append(title)
+            wait_until(lambda: len(check_calls) >= 3, timeout=1.0)
+            # Simulate a rule appearing (e.g. added from the menu bar) while
+            # this dialog is up, independent of anything gated_call did.
+            rule_now_active.set()
+            return "deny"
+
+        monkeypatch.setattr(gate, "show_popup", fake_show_popup)
+
+        results = await asyncio.gather(
+            gate.gated_call(**base_kwargs(gate="popup", tool="gmail_create_draft")),
+            gate.gated_call(**base_kwargs(gate="popup", tool="gmail_create_draft")),
+            return_exceptions=True,
+        )
+
+        assert len(popup_calls) == 1  # only the first request showed a dialog
+        assert isinstance(results[0], RuntimeError)  # denied, as its popup said
+        assert results[1] is FILTERED  # auto-accepted via the re-check, no popup of its own
+
+        entries = read_audit_entries(audit_dir)
+        decisions = sorted(e["decision"] for e in entries)
+        assert decisions == ["auto_accepted", "rejected"]
 
 
 class TestDefaultDetails:
