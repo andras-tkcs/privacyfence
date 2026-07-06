@@ -12,11 +12,19 @@ GmailClient.__init__ does no I/O, so we construct it normally and set
 from __future__ import annotations
 
 import base64
+import os
 from unittest.mock import MagicMock
 
 import pytest
 
-from privacyfence.gmail_client import Attachment, GmailClient, GmailClientError, GmailMessage, GmailThread
+from privacyfence.gmail_client import (
+    Attachment,
+    GmailClient,
+    GmailClientError,
+    GmailMessage,
+    GmailThread,
+    resolve_attachment_destination,
+)
 from googleapiclient.errors import HttpError
 
 
@@ -140,7 +148,9 @@ class TestParseMessage:
         }
         msg = client._parse_message(raw)
         assert msg.body_text == "body text"
-        assert msg.attachments == [Attachment(name="report.pdf", mime_type="application/pdf", size=4096)]
+        assert msg.attachments == [
+            Attachment(name="report.pdf", mime_type="application/pdf", size=4096, attachment_id="att-1")
+        ]
 
     def test_attachment_body_never_fetched_or_decoded_into_text(self):
         # An attachment part carries a filename; even if it also has a data
@@ -627,3 +637,104 @@ class TestArchiveMessage:
         client = make_client(service)
         with pytest.raises(GmailClientError, match="archive_message"):
             client.archive_message("m1")
+
+
+# ---------------------------------------------------------------------------- #
+# resolve_attachment_destination: path-traversal sanitization
+# ---------------------------------------------------------------------------- #
+
+class TestResolveAttachmentDestination:
+    def test_joins_basename_with_destination_dir(self, tmp_path):
+        result = resolve_attachment_destination("report.pdf", str(tmp_path))
+        assert result == str(tmp_path / "report.pdf")
+
+    def test_strips_directory_traversal_from_filename(self, tmp_path):
+        # A crafted filename from the sender's MIME headers must never be
+        # able to write outside destination_dir.
+        result = resolve_attachment_destination("../../.ssh/authorized_keys", str(tmp_path))
+        assert result == str(tmp_path / "authorized_keys")
+
+    def test_strips_absolute_path_prefix_from_filename(self, tmp_path):
+        result = resolve_attachment_destination("/etc/passwd", str(tmp_path))
+        assert result == str(tmp_path / "passwd")
+
+    def test_empty_filename_falls_back_to_generic_name(self, tmp_path):
+        assert resolve_attachment_destination("", str(tmp_path)) == str(tmp_path / "attachment")
+
+    def test_empty_destination_dir_defaults_to_downloads(self, monkeypatch):
+        monkeypatch.setattr(os.path, "expanduser", lambda p: "/home/user/Downloads" if p == "~/Downloads" else p)
+        assert resolve_attachment_destination("report.pdf", "") == "/home/user/Downloads/report.pdf"
+
+    def test_whitespace_only_destination_dir_defaults_to_downloads(self, monkeypatch):
+        monkeypatch.setattr(os.path, "expanduser", lambda p: "/home/user/Downloads" if p == "~/Downloads" else p)
+        assert resolve_attachment_destination("report.pdf", "   ") == "/home/user/Downloads/report.pdf"
+
+
+# ---------------------------------------------------------------------------- #
+# download_attachment
+# ---------------------------------------------------------------------------- #
+
+class TestDownloadAttachment:
+    def test_requires_message_id_and_attachment_id(self):
+        client = make_client(MagicMock())
+        with pytest.raises(GmailClientError, match="non-empty message_id and attachment_id"):
+            client.download_attachment("", "att1", "file.pdf")
+        with pytest.raises(GmailClientError, match="non-empty message_id and attachment_id"):
+            client.download_attachment("m1", "", "file.pdf")
+
+    def test_downloads_decodes_and_saves_content(self, tmp_path):
+        service = MagicMock()
+        service.users.return_value.messages.return_value.attachments.return_value.get.return_value.execute.return_value = {
+            "data": b64("file contents")
+        }
+        client = make_client(service)
+
+        result = client.download_attachment("m1", "att1", "report.pdf", str(tmp_path))
+
+        dest = tmp_path / "report.pdf"
+        assert dest.read_bytes() == b"file contents"
+        assert result == {"path": str(dest), "name": "report.pdf", "size_bytes": len(b"file contents")}
+        service.users.return_value.messages.return_value.attachments.return_value.get.assert_called_once_with(
+            userId="me", messageId="m1", id="att1"
+        )
+
+    def test_sanitizes_filename_before_writing(self, tmp_path):
+        service = MagicMock()
+        service.users.return_value.messages.return_value.attachments.return_value.get.return_value.execute.return_value = {
+            "data": b64("data")
+        }
+        client = make_client(service)
+
+        result = client.download_attachment("m1", "att1", "../../evil.txt", str(tmp_path))
+
+        assert result == {"path": str(tmp_path / "evil.txt"), "name": "evil.txt", "size_bytes": 4}
+
+    def test_empty_filename_falls_back_to_attachment_id(self, tmp_path):
+        service = MagicMock()
+        service.users.return_value.messages.return_value.attachments.return_value.get.return_value.execute.return_value = {
+            "data": b64("data")
+        }
+        client = make_client(service)
+
+        result = client.download_attachment("m1", "att1", "", str(tmp_path))
+
+        assert result["name"] == "att1"
+
+    def test_creates_destination_directory_if_missing(self, tmp_path):
+        nested = tmp_path / "nested" / "dir"
+        service = MagicMock()
+        service.users.return_value.messages.return_value.attachments.return_value.get.return_value.execute.return_value = {
+            "data": b64("data")
+        }
+        client = make_client(service)
+
+        client.download_attachment("m1", "att1", "f.txt", str(nested))
+
+        assert (nested / "f.txt").read_bytes() == b"data"
+
+    def test_http_error_becomes_gmail_client_error(self):
+        service = MagicMock()
+        service.users.return_value.messages.return_value.attachments.return_value.get.return_value.execute.side_effect = http_error(404)
+        client = make_client(service)
+        with pytest.raises(GmailClientError, match="download_attachment"):
+            client.download_attachment("m1", "att1", "f.txt")

@@ -328,6 +328,48 @@ class TestFormatValue:
     def test_scalar_stringified(self):
         assert menu_bar._format_value(30) == "30"
 
+    def test_list_of_spreadsheet_pair_dicts_uses_format_pair_line(self):
+        value = [{"spreadsheet_id": "sheet1", "tab": "Sheet1"}, {"spreadsheet_id": "sheet2"}]
+        assert menu_bar._format_value(value) == "sheet1:Sheet1, sheet2"
+
+
+class TestFormatPairLine:
+    def test_with_tab(self):
+        assert menu_bar._format_pair_line({"spreadsheet_id": "sheet1", "tab": "Sheet1"}) == "sheet1:Sheet1"
+
+    def test_without_tab(self):
+        assert menu_bar._format_pair_line({"spreadsheet_id": "sheet1"}) == "sheet1"
+
+    def test_non_dict_falls_back_to_str(self):
+        assert menu_bar._format_pair_line("sheet1") == "sheet1"
+
+
+class TestParsePairLines:
+    def test_parses_id_only_lines(self):
+        assert menu_bar._parse_pair_lines("sheet1\nsheet2") == [
+            {"spreadsheet_id": "sheet1"}, {"spreadsheet_id": "sheet2"},
+        ]
+
+    def test_parses_id_colon_tab_lines(self):
+        assert menu_bar._parse_pair_lines("sheet1:Sheet1\nsheet2:My Tab") == [
+            {"spreadsheet_id": "sheet1", "tab": "Sheet1"},
+            {"spreadsheet_id": "sheet2", "tab": "My Tab"},
+        ]
+
+    def test_strips_whitespace_around_id_and_tab(self):
+        assert menu_bar._parse_pair_lines("  sheet1 : Sheet1  ") == [{"spreadsheet_id": "sheet1", "tab": "Sheet1"}]
+
+    def test_blank_lines_are_skipped(self):
+        assert menu_bar._parse_pair_lines("sheet1\n\n\nsheet2") == [
+            {"spreadsheet_id": "sheet1"}, {"spreadsheet_id": "sheet2"},
+        ]
+
+    def test_trailing_colon_with_empty_tab_omits_tab_key(self):
+        assert menu_bar._parse_pair_lines("sheet1:") == [{"spreadsheet_id": "sheet1"}]
+
+    def test_empty_text_yields_empty_list(self):
+        assert menu_bar._parse_pair_lines("") == []
+
 
 class TestBind:
     def test_forwards_bound_args_and_sender(self):
@@ -653,6 +695,32 @@ class TestAddRule:
 
         assert app._load_config().get("auto_accept_rules", {}) == {}
 
+    def test_pair_value_rule_parses_id_and_id_colon_tab_lines(self, app, monkeypatch):
+        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: "approved_spreadsheet")
+        monkeypatch.setattr(menu_bar.rumps, "Window", _fake_window(clicked=True, text="sheet1\nsheet2:Sheet1"))
+
+        app._add_rule("sheets.read_values")
+
+        cfg = app._load_config()
+        assert cfg["auto_accept_rules"]["sheets.read_values"] == [{
+            "rule": "approved_spreadsheet",
+            "value": [{"spreadsheet_id": "sheet1"}, {"spreadsheet_id": "sheet2", "tab": "Sheet1"}],
+        }]
+
+    def test_pair_value_rule_prompt_uses_pair_specific_hint_kind(self, app, monkeypatch):
+        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: "approved_spreadsheet")
+        captured = {}
+        class _CapturingWindow:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+            def run(self):
+                return _FakeWindowResponse(clicked=False)
+        monkeypatch.setattr(menu_bar.rumps, "Window", _CapturingWindow)
+
+        app._add_rule("sheets.read_values")
+
+        assert "spreadsheet_id" in captured["message"]
+
 
 class TestToggleRule:
     def _seed(self, app, op_key, rules):
@@ -707,6 +775,34 @@ class TestEditRuleValue:
 
         rules = app._load_config()["auto_accept_rules"]["gmail.read_message"]
         assert rules[0]["value"] == 99
+
+    def test_edits_pair_value_in_place(self, app, monkeypatch):
+        self._seed(app, "sheets.read_values", [{
+            "rule": "approved_spreadsheet", "value": [{"spreadsheet_id": "old"}],
+        }])
+        monkeypatch.setattr(menu_bar.rumps, "Window", _fake_window(clicked=True, text="new1\nnew2:Sheet1"))
+
+        app._edit_rule_value("sheets.read_values", 0)
+
+        rules = app._load_config()["auto_accept_rules"]["sheets.read_values"]
+        assert rules[0]["value"] == [{"spreadsheet_id": "new1"}, {"spreadsheet_id": "new2", "tab": "Sheet1"}]
+
+    def test_prefills_pair_value_as_id_colon_tab_lines(self, app, monkeypatch):
+        self._seed(app, "sheets.read_values", [{
+            "rule": "approved_spreadsheet",
+            "value": [{"spreadsheet_id": "sheet1", "tab": "Sheet1"}, {"spreadsheet_id": "sheet2"}],
+        }])
+        captured = {}
+        class _CapturingWindow:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+            def run(self):
+                return _FakeWindowResponse(clicked=False)
+        monkeypatch.setattr(menu_bar.rumps, "Window", _CapturingWindow)
+
+        app._edit_rule_value("sheets.read_values", 0)
+
+        assert captured["default_text"] == "sheet1:Sheet1\nsheet2"
 
     def test_prefills_current_value_as_default_text(self, app, monkeypatch):
         self._seed(app, "gmail.read_message", [{"rule": "trusted_sender_domain", "value": ["a.com", "b.com"]}])
@@ -1159,6 +1255,56 @@ class TestMiscActions:
         app.open_audit_log()
 
         assert len(alerts) == 1
+
+    def test_open_audit_log_refreshes_current_week_excel_and_opens_it(self, app, monkeypatch, tmp_path):
+        from privacyfence.audit_log import AuditEntry
+
+        log_dir = tmp_path / "logs" / "audit"
+        log_dir.mkdir(parents=True)
+        monkeypatch.setattr(menu_bar, "data_dir", lambda: tmp_path)
+
+        week = menu_bar.current_week()
+        entry = AuditEntry(
+            timestamp="2026-07-06T12:00:00+00:00", week=week, request_id="",
+            connector="gmail", tool="gmail_get_message", tool_name="Read Gmail message",
+            summary="s", sender="a@x.com", decision="approved", auto_accept_rule="", latency_seconds=1.0,
+        )
+        menu_bar.AuditLogger(str(log_dir)).record(entry)
+
+        run_calls = []
+        monkeypatch.setattr(menu_bar.subprocess, "run", lambda *a, **k: run_calls.append(a))
+
+        app.open_audit_log()
+
+        expected_xlsx = log_dir / f"{week}.xlsx"
+        assert expected_xlsx.exists()
+        assert run_calls == [(["open", str(expected_xlsx)],)]
+
+    def test_open_audit_log_falls_back_to_folder_when_nothing_logged_this_week(self, app, monkeypatch, tmp_path):
+        log_dir = tmp_path / "logs" / "audit"
+        log_dir.mkdir(parents=True)
+        monkeypatch.setattr(menu_bar, "data_dir", lambda: tmp_path)
+        run_calls = []
+        monkeypatch.setattr(menu_bar.subprocess, "run", lambda *a, **k: run_calls.append(a))
+
+        app.open_audit_log()
+
+        assert run_calls == [(["open", str(log_dir)],)]
+
+    def test_open_audit_log_falls_back_to_folder_when_export_returns_none(self, app, monkeypatch, tmp_path):
+        # e.g. openpyxl not installed -- export_week_to_excel returns None.
+        log_dir = tmp_path / "logs" / "audit"
+        log_dir.mkdir(parents=True)
+        monkeypatch.setattr(menu_bar, "data_dir", lambda: tmp_path)
+        week = menu_bar.current_week()
+        (log_dir / f"{week}.jsonl").write_text("")
+        monkeypatch.setattr(menu_bar.AuditLogger, "export_week_to_excel", lambda self, w: None)
+        run_calls = []
+        monkeypatch.setattr(menu_bar.subprocess, "run", lambda *a, **k: run_calls.append(a))
+
+        app.open_audit_log()
+
+        assert run_calls == [(["open", str(log_dir)],)]
 
     def test_show_about_opens_github_on_first_button(self, app, monkeypatch):
         monkeypatch.setattr(menu_bar.rumps, "alert", lambda **kw: 1)

@@ -148,11 +148,16 @@ class TestGetThread:
 
 
 class TestListMessageAttachments:
-    async def test_attachments_carry_no_content(self, gated_call_spy):
+    """gmail_list_message_attachments is auto-approved (metadata only, no
+    content) -- gmail_download_attachment (below) is the separate,
+    approval-gated tool for fetching actual attachment bytes."""
+
+    async def test_attachments_carry_no_content_and_auto_accepts(self, tmp_path):
+        init_audit_logger(str(tmp_path))
         connector, client = make_connector()
         message = GmailMessage(
             id="m1", thread_id="t1", subject="s", sender="a@b.com",
-            attachments=[Attachment(name="report.pdf", mime_type="application/pdf", size=1024)],
+            attachments=[Attachment(name="report.pdf", mime_type="application/pdf", size=1024, attachment_id="att-1")],
         )
         client.get_message.return_value = message
 
@@ -162,8 +167,80 @@ class TestListMessageAttachments:
             "message_id": "m1",
             "attachments": [{"name": "report.pdf", "mime_type": "application/pdf", "size": 1024}],
         }
+        entries = (tmp_path / f"{current_week()}.jsonl").read_text(encoding="utf-8").splitlines()
+        assert '"decision": "auto_accepted"' in entries[0]
+        assert '"tool": "gmail_list_message_attachments"' in entries[0]
+
+    async def test_no_attachments_yields_empty_list(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        client.get_message.return_value = GmailMessage(id="m1", thread_id="t1", subject="s", sender="a@b.com")
+
+        result = await connector.call("gmail_list_message_attachments", {"message_id": "m1"})
+
+        assert result == {"message_id": "m1", "attachments": []}
+
+
+class TestDownloadAttachment:
+    def _message_with_attachment(self, **overrides):
+        defaults = dict(name="report.pdf", mime_type="application/pdf", size=1024, attachment_id="att-1")
+        defaults.update(overrides)
+        return GmailMessage(
+            id="m1", thread_id="t1", subject="Q3 numbers", sender="alice@example.com",
+            attachments=[Attachment(**defaults)],
+        )
+
+    async def test_preview_and_gate(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_message.return_value = self._message_with_attachment()
+        client.download_attachment.return_value = {"path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024}
+
+        result = await connector.call(
+            "gmail_download_attachment",
+            {"message_id": "m1", "attachment_name": "report.pdf", "destination_dir": "/tmp"},
+        )
+
         kwargs = gated_call_spy[0]
         assert kwargs["gate"] == "review"
+        assert kwargs["preview"]["Attachment"] == "report.pdf"
+        assert kwargs["preview"]["Size"] == "1,024 bytes"
+        assert kwargs["preview"]["Will save to"] == "/tmp/report.pdf"
+        assert kwargs["filtered_data"] is None
+        assert kwargs["args"] == {"message_id": "m1", "attachment_name": "report.pdf"}
+        assert result == {"path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024}
+        client.download_attachment.assert_called_once_with("m1", "att-1", "report.pdf", "/tmp")
+
+    async def test_destination_dir_forwarded_to_client(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_message.return_value = self._message_with_attachment()
+        client.download_attachment.return_value = {"path": "/x/report.pdf", "name": "report.pdf", "size_bytes": 1024}
+
+        await connector.call(
+            "gmail_download_attachment",
+            {"message_id": "m1", "attachment_name": "report.pdf", "destination_dir": "/x"},
+        )
+
+        client.download_attachment.assert_called_once_with("m1", "att-1", "report.pdf", "/x")
+
+    async def test_unknown_attachment_name_raises_without_gating(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_message.return_value = self._message_with_attachment()
+
+        with pytest.raises(RuntimeError, match="No attachment named 'nope.pdf' on message m1"):
+            await connector.call(
+                "gmail_download_attachment", {"message_id": "m1", "attachment_name": "nope.pdf"}
+            )
+        assert gated_call_spy == []
+
+    async def test_client_error_after_approval_becomes_runtime_error(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_message.return_value = self._message_with_attachment()
+        client.download_attachment.side_effect = GmailClientError("disk full")
+
+        with pytest.raises(RuntimeError, match="disk full"):
+            await connector.call(
+                "gmail_download_attachment", {"message_id": "m1", "attachment_name": "report.pdf"}
+            )
 
 
 class TestWriteToolsGateAndPreview:
@@ -256,4 +333,12 @@ class TestFetchErrorMapping:
 class TestEveryToolIsAudited:
     async def test_every_declared_tool_leaves_an_audit_trail(self, monkeypatch, tmp_path):
         connector, client = make_connector()
+        # gmail_download_attachment looks up the attachment by name on the
+        # fetched message before ever reaching the gate, so the generic
+        # "stub" arg needs a matching attachment on the mocked client.
+        client.get_message.return_value = GmailMessage(
+            id="m1", thread_id="t1", subject="s", sender="a@b.com",
+            attachments=[Attachment(name="stub", mime_type="application/octet-stream", size=1, attachment_id="att-1")],
+        )
+
         await assert_all_tools_leave_an_audit_trail(connector, gmail_module, monkeypatch, tmp_path)
