@@ -47,6 +47,7 @@ dev = [
 test = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    "pytest-timeout>=2.3",
     "freezegun>=1.5",
     "openpyxl>=3.1",
 ]
@@ -54,3 +55,6 @@ test = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# A hung asyncio socket test (e.g. a fixture never closing a connection)
+# would otherwise block the whole suite indefinitely instead of failing.
+timeout = 30
