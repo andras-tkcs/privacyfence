@@ -14,7 +14,6 @@ import json
 import os
 import socket
 import threading
-import time as time_module
 import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -153,12 +152,19 @@ class TestEnsureDaemonRunning:
 # _fetch_manifest_sync: real Unix socket, blocking client
 # ---------------------------------------------------------------------------- #
 
-def _serve_one_manifest_request(socket_path: str, response: dict) -> threading.Thread:
+def _serve_one_manifest_request(socket_path: str, response: dict) -> tuple[threading.Thread, threading.Event]:
+    ready = threading.Event()
+
     def serve():
         srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         srv.bind(socket_path)
         srv.listen(1)
         srv.settimeout(5)
+        # listen() has already queued the backlog, so signaling readiness
+        # here (rather than merely polling for the socket *file* to exist,
+        # which can race bind() vs. listen()) means a connect() right after
+        # this event fires is guaranteed to succeed rather than racing.
+        ready.set()
         conn, _ = srv.accept()
         conn.recv(65536)
         conn.sendall((json.dumps({"id": "m0", "result": response}) + "\n").encode())
@@ -166,19 +172,15 @@ def _serve_one_manifest_request(socket_path: str, response: dict) -> threading.T
         srv.close()
     thread = threading.Thread(target=serve, daemon=True)
     thread.start()
-    return thread
+    return thread, ready
 
 
 class TestFetchManifestSync:
     def test_fetches_and_parses_result(self, short_socket_path, monkeypatch):
         monkeypatch.setattr(bridge_main_module, "SOCKET_PATH", short_socket_path)
-        thread = _serve_one_manifest_request(short_socket_path, {"version": "0.4.11", "connectors": []})
+        thread, ready = _serve_one_manifest_request(short_socket_path, {"version": "0.4.11", "connectors": []})
 
-        # Give the server a moment to bind before connecting.
-        for _ in range(50):
-            if os.path.exists(short_socket_path):
-                break
-            time_module.sleep(0.01)
+        assert ready.wait(timeout=5), "server never reached listen()"
 
         manifest = bridge_main_module._fetch_manifest_sync()
         assert manifest == {"version": "0.4.11", "connectors": []}
