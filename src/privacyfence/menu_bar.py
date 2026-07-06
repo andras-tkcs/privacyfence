@@ -233,42 +233,7 @@ class PrivacyFenceMenuBar(rumps.App):
         rules_cfg: dict[str, list[dict]] = cfg.get("auto_accept_rules", {}) or {}
         connectors_cfg: dict[str, dict] = cfg.get("connectors", {}) or {}
 
-        rules_parent = rumps.MenuItem("Auto-accept Rules")
-        for op_key, label in OPERATION_LABELS.items():
-            op_item = rumps.MenuItem(label)
-            op_rules = rules_cfg.get(op_key) or []
-
-            # "Add rule…" at the top
-            add_item = rumps.MenuItem("  + Add rule…")
-            add_item.set_callback(_bind(self._add_rule, op_key))
-            op_item.add(add_item)
-
-            if op_rules:
-                op_item.add(rumps.MenuItem("  ─────────────────"))
-
-            for idx, rule_cfg in enumerate(op_rules):
-                rule_name = rule_cfg.get("rule", "")
-                value = rule_cfg.get("value")
-                has_value = rule_name in RULES_LIST_VALUE or rule_name in RULES_INT_VALUE
-
-                # Toggle item
-                toggle = rumps.MenuItem(f"  ✓ {rule_name}")
-                toggle.set_callback(_bind(self._toggle_rule, op_key, idx))
-                op_item.add(toggle)
-
-                # Edit value item (only if rule takes a value)
-                if has_value:
-                    value_preview = _format_value(value)
-                    edit = rumps.MenuItem(f"      ↳ {value_preview}  Edit…")
-                    edit.set_callback(_bind(self._edit_rule_value, op_key, idx))
-                    op_item.add(edit)
-
-                # Remove item
-                remove = rumps.MenuItem(f"      ✕ Remove")
-                remove.set_callback(_bind(self._remove_rule, op_key, idx))
-                op_item.add(remove)
-
-            rules_parent.add(op_item)
+        rules_parent = self._build_rules_menu(rules_cfg)
 
         org_parent = self._build_org_menu(org_config)
         connectors_parent = self._build_connectors_menu(org_config, connectors_cfg)
@@ -286,6 +251,65 @@ class PrivacyFenceMenuBar(rumps.App):
             rumps.separator,
             rumps.MenuItem("Quit PrivacyFence", callback=self.quit_app),
         ]
+
+    def _build_rules_menu(self, rules_cfg: dict[str, list[dict]]) -> rumps.MenuItem:
+        rules_parent = rumps.MenuItem("Auto-accept Rules")
+
+        ops_by_connector: dict[str, list[str]] = {}
+        for op_key in OPERATION_LABELS:
+            ops_by_connector.setdefault(op_key.split(".", 1)[0], []).append(op_key)
+
+        for cname in ALL_CONNECTORS:
+            op_keys = ops_by_connector.get(cname)
+            connector_item = rumps.MenuItem(cname.capitalize())
+            if not op_keys:
+                connector_item.add(rumps.MenuItem("  All operations always auto-approved — no rules needed"))
+                rules_parent.add(connector_item)
+                continue
+
+            for op_key in op_keys:
+                label = OPERATION_LABELS[op_key]
+                short_label = label.split(" – ", 1)[1] if " – " in label else label
+                connector_item.add(self._build_operation_menu(op_key, short_label, rules_cfg.get(op_key) or []))
+
+            rules_parent.add(connector_item)
+
+        return rules_parent
+
+    def _build_operation_menu(self, op_key: str, label: str, op_rules: list[dict]) -> rumps.MenuItem:
+        op_item = rumps.MenuItem(label)
+
+        # "Add rule…" at the top
+        add_item = rumps.MenuItem("  + Add rule…")
+        add_item.set_callback(_bind(self._add_rule, op_key))
+        op_item.add(add_item)
+
+        if op_rules:
+            op_item.add(rumps.MenuItem("  ─────────────────"))
+
+        for idx, rule_cfg in enumerate(op_rules):
+            rule_name = rule_cfg.get("rule", "")
+            value = rule_cfg.get("value")
+            has_value = rule_name in RULES_LIST_VALUE or rule_name in RULES_INT_VALUE
+
+            # Toggle item
+            toggle = rumps.MenuItem(f"  ✓ {rule_name}")
+            toggle.set_callback(_bind(self._toggle_rule, op_key, idx))
+            op_item.add(toggle)
+
+            # Edit value item (only if rule takes a value)
+            if has_value:
+                value_preview = _format_value(value)
+                edit = rumps.MenuItem(f"      ↳ {value_preview}  Edit…")
+                edit.set_callback(_bind(self._edit_rule_value, op_key, idx))
+                op_item.add(edit)
+
+            # Remove item
+            remove = rumps.MenuItem(f"      ✕ Remove")
+            remove.set_callback(_bind(self._remove_rule, op_key, idx))
+            op_item.add(remove)
+
+        return op_item
 
     def _build_org_menu(self, org_config: dict[str, Any]) -> rumps.MenuItem:
         org_parent = rumps.MenuItem("Organization Config")
