@@ -600,6 +600,14 @@ class TestShouldAutoAccept:
         ok, matched = ev.should_auto_accept("gmail.read_message", make_ctx())
         assert (ok, matched) == (False, "")
 
+    def test_null_rules_list_for_operation_is_not_fatal(self):
+        # A hand-edited settings.yaml can leave an operation key present with
+        # no value (YAML null) instead of an empty list, e.g. after removing
+        # every rule under it by hand.
+        ev = AutoAcceptEvaluator({"gmail.read_message": None})
+        ok, matched = ev.should_auto_accept("gmail.read_message", make_ctx())
+        assert (ok, matched) == (False, "")
+
     def test_unknown_rule_name_is_skipped_not_fatal(self):
         ev = AutoAcceptEvaluator({"gmail.read_message": [{"rule": "does_not_exist"}]})
         ok, matched = ev.should_auto_accept("gmail.read_message", make_ctx(raw_data=SimpleNamespace()))
