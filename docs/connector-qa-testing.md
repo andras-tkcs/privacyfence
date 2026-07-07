@@ -156,6 +156,15 @@ in the tool result.
 2. Ask me which contact is safe to touch before calling `contacts_update` —
    don't pick one yourself. Append ` (PrivacyFence QA test)` to a low-stakes
    field and tell me the exact before/after. Popup, Accept.
+3. `contacts_create` — display name `PrivacyFence QA test contact — safe to delete`.
+   Popup, Accept.
+4. `contacts_add_label` on the contact you just created, label
+   `PrivacyFence QA test`. Popup, Accept. Confirm the label appears on the
+   contact in Google Contacts.
+5. `contacts_remove_label` on the same contact/label. Popup, Accept. Confirm
+   the label is gone.
+6. Note for me: there's no delete-contact tool, so I'll remove the test
+   contact manually afterward.
 
 ## Phase 6 — Google Tasks
 Reads are unconditionally auto-accepted; writes are `popup`-gated like every

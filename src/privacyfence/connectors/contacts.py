@@ -71,6 +71,45 @@ class ContactsConnector(Connector):
                     ToolParam("notes", "str", required=False, default=""),
                 ],
             ),
+            ToolSpec(
+                name="contacts_create",
+                description=(
+                    "Create a new contact in the user's Google address book. "
+                    "Requires user approval. "
+                    "emails and phones are JSON strings, e.g. "
+                    "'[{\"value\": \"a@b.com\", \"type\": \"work\"}]'. "
+                    "Contact deletion is not supported."
+                ),
+                params=[
+                    ToolParam("display_name", "str"),
+                    ToolParam("emails", "str", required=False, default="",
+                              description="JSON array of {value, type} dicts"),
+                    ToolParam("phones", "str", required=False, default="",
+                              description="JSON array of {value, type} dicts"),
+                    ToolParam("organization", "str", required=False, default=""),
+                    ToolParam("job_title", "str", required=False, default=""),
+                    ToolParam("notes", "str", required=False, default=""),
+                ],
+            ),
+            ToolSpec(
+                name="contacts_add_label",
+                description=(
+                    "Add a label to a contact, creating the label if it doesn't already exist. "
+                    "Requires user approval."
+                ),
+                params=[
+                    ToolParam("resource_name", "str"),
+                    ToolParam("label_name", "str"),
+                ],
+            ),
+            ToolSpec(
+                name="contacts_remove_label",
+                description="Remove a label from a contact. Requires user approval.",
+                params=[
+                    ToolParam("resource_name", "str"),
+                    ToolParam("label_name", "str"),
+                ],
+            ),
         ]
 
     async def call(self, tool: str, args: dict[str, Any]) -> Any:
@@ -82,6 +121,12 @@ class ContactsConnector(Connector):
             return await self._contacts_get(**args)
         if tool == "contacts_update":
             return await self._contacts_update(**args)
+        if tool == "contacts_create":
+            return await self._contacts_create(**args)
+        if tool == "contacts_add_label":
+            return await self._contacts_add_label(**args)
+        if tool == "contacts_remove_label":
+            return await self._contacts_remove_label(**args)
         raise ValueError(f"Unknown Contacts tool: {tool!r}")
 
     # ------------------------------------------------------------------ #
@@ -129,11 +174,7 @@ class ContactsConnector(Connector):
         emails_list: list[dict] | None = _parse_json_list(emails)
         phones_list: list[dict] | None = _parse_json_list(phones)
 
-        try:
-            current = await self._fetch(self._contacts.get_contact, resource_name)
-            contact_name = current.display_name or resource_name
-        except Exception:
-            contact_name = resource_name
+        contact_name = await self._contact_name_for(resource_name)
 
         preview = {"Contact": contact_name}
         if display_name:
@@ -178,9 +219,101 @@ class ContactsConnector(Connector):
         )
         return updated.to_dict()
 
+    async def _contacts_create(
+        self,
+        display_name: str,
+        emails: str = "",
+        phones: str = "",
+        organization: str = "",
+        job_title: str = "",
+        notes: str = "",
+    ) -> Any:
+        emails_list = _parse_json_list(emails)
+        phones_list = _parse_json_list(phones)
+
+        preview = {"Name": display_name}
+        if emails_list:
+            preview["Emails"] = ", ".join(e.get("value", "") for e in emails_list)
+        if phones_list:
+            preview["Phones"] = ", ".join(p.get("value", "") for p in phones_list)
+        if organization:
+            preview["Organization"] = organization
+        if job_title:
+            preview["Job title"] = job_title
+
+        args = {
+            "display_name": display_name, "emails": emails, "phones": phones,
+            "organization": organization, "job_title": job_title, "notes": notes,
+        }
+        await gated_call(
+            connector=self.name,
+            tool="contacts_create",
+            tool_name="Create Contact",
+            summary=f"Create contact: {display_name}",
+            sender=display_name,
+            raw_data=args,
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text=notes,
+            my_email=self.my_email,
+            args=args,
+        )
+        created = await self._fetch(
+            self._contacts.create_contact,
+            display_name, emails_list, phones_list,
+            organization or None, job_title or None, notes or None,
+        )
+        return created.to_dict()
+
+    async def _contacts_add_label(self, resource_name: str, label_name: str) -> Any:
+        contact_name = await self._contact_name_for(resource_name)
+        args = {"resource_name": resource_name, "label_name": label_name}
+        await gated_call(
+            connector=self.name,
+            tool="contacts_add_label",
+            tool_name="Add Contact Label",
+            summary=f"Add label '{label_name}' to: {contact_name}",
+            sender=contact_name,
+            raw_data=args,
+            filtered_data=None,
+            gate="popup",
+            preview={"Contact": contact_name, "Label": label_name},
+            details_text="",
+            my_email=self.my_email,
+            args=args,
+        )
+        return await self._fetch(self._contacts.add_label, resource_name, label_name)
+
+    async def _contacts_remove_label(self, resource_name: str, label_name: str) -> Any:
+        contact_name = await self._contact_name_for(resource_name)
+        args = {"resource_name": resource_name, "label_name": label_name}
+        await gated_call(
+            connector=self.name,
+            tool="contacts_remove_label",
+            tool_name="Remove Contact Label",
+            summary=f"Remove label '{label_name}' from: {contact_name}",
+            sender=contact_name,
+            raw_data=args,
+            filtered_data=None,
+            gate="popup",
+            preview={"Contact": contact_name, "Label": label_name},
+            details_text="",
+            my_email=self.my_email,
+            args=args,
+        )
+        return await self._fetch(self._contacts.remove_label, resource_name, label_name)
+
     # ------------------------------------------------------------------ #
     # Helpers
     # ------------------------------------------------------------------ #
+
+    async def _contact_name_for(self, resource_name: str) -> str:
+        try:
+            current = await self._fetch(self._contacts.get_contact, resource_name)
+            return current.display_name or resource_name
+        except Exception:
+            return resource_name
 
     async def _fetch(self, func, *args) -> Any:
         try:

@@ -362,6 +362,173 @@ class TestUpdateContact:
 
 
 # ---------------------------------------------------------------------------- #
+# create_contact
+# ---------------------------------------------------------------------------- #
+
+class TestCreateContact:
+    def test_builds_person_body_from_provided_fields(self):
+        service = MagicMock()
+        service.people.return_value.createContact.return_value.execute.return_value = {
+            "resourceName": "people/c9", "names": [{"displayName": "Jane Doe"}],
+        }
+        client = make_client(service)
+
+        contact = client.create_contact(
+            display_name="Jane Doe",
+            emails=[{"value": "jane@x.com", "type": "work"}],
+            phones=[{"value": "555", "type": "mobile"}],
+            organization="Acme",
+            job_title="Engineer",
+            notes="met at conference",
+        )
+
+        body = service.people.return_value.createContact.call_args.kwargs["body"]
+        assert body["names"] == [{"displayName": "Jane Doe", "givenName": "Jane", "familyName": "Doe"}]
+        assert body["emailAddresses"] == [{"value": "jane@x.com", "type": "work"}]
+        assert body["phoneNumbers"] == [{"value": "555", "type": "mobile"}]
+        assert body["organizations"] == [{"name": "Acme", "title": "Engineer"}]
+        assert body["biographies"] == [{"value": "met at conference", "contentType": "TEXT_PLAIN"}]
+        assert contact.display_name == "Jane Doe"
+
+    def test_omitted_fields_are_not_included_in_body(self):
+        service = MagicMock()
+        service.people.return_value.createContact.return_value.execute.return_value = {
+            "resourceName": "people/c9", "names": [{"displayName": "Jane"}],
+        }
+        client = make_client(service)
+
+        client.create_contact(display_name="Jane")
+
+        body = service.people.return_value.createContact.call_args.kwargs["body"]
+        assert "emailAddresses" not in body
+        assert "phoneNumbers" not in body
+        assert "organizations" not in body
+        assert "biographies" not in body
+
+    def test_no_display_name_produces_no_names_field(self):
+        service = MagicMock()
+        service.people.return_value.createContact.return_value.execute.return_value = {"resourceName": "people/c9"}
+        client = make_client(service)
+
+        client.create_contact(emails=[{"value": "jane@x.com", "type": "work"}])
+
+        body = service.people.return_value.createContact.call_args.kwargs["body"]
+        assert "names" not in body
+
+    def test_http_error_becomes_contacts_client_error(self):
+        service = MagicMock()
+        service.people.return_value.createContact.return_value.execute.side_effect = http_error(400)
+        client = make_client(service)
+        with pytest.raises(ContactsClientError, match="create_contact failed"):
+            client.create_contact(display_name="Jane")
+
+
+# ---------------------------------------------------------------------------- #
+# Labels (contact groups): add_label / remove_label
+# ---------------------------------------------------------------------------- #
+
+class TestLabels:
+    def test_add_label_uses_existing_group(self):
+        service = MagicMock()
+        service.contactGroups.return_value.list.return_value.execute.return_value = {
+            "contactGroups": [{"resourceName": "contactGroups/g1", "formattedName": "VIP"}]
+        }
+        client = make_client(service)
+
+        result = client.add_label("people/c1", "VIP")
+
+        service.contactGroups.return_value.create.assert_not_called()
+        service.contactGroups.return_value.members.return_value.modify.assert_called_once_with(
+            resourceName="contactGroups/g1",
+            body={"resourceNamesToAdd": ["people/c1"]},
+        )
+        assert result == {"resource_name": "people/c1", "label_added": "VIP"}
+
+    def test_add_label_is_case_insensitive_match(self):
+        service = MagicMock()
+        service.contactGroups.return_value.list.return_value.execute.return_value = {
+            "contactGroups": [{"resourceName": "contactGroups/g1", "formattedName": "vip"}]
+        }
+        client = make_client(service)
+
+        client.add_label("people/c1", "VIP")
+
+        service.contactGroups.return_value.create.assert_not_called()
+
+    def test_add_label_creates_group_when_missing(self):
+        service = MagicMock()
+        service.contactGroups.return_value.list.return_value.execute.return_value = {"contactGroups": []}
+        service.contactGroups.return_value.create.return_value.execute.return_value = {
+            "resourceName": "contactGroups/new"
+        }
+        client = make_client(service)
+
+        client.add_label("people/c1", "Brand New Label")
+
+        service.contactGroups.return_value.create.assert_called_once_with(
+            body={"contactGroup": {"name": "Brand New Label"}}
+        )
+        service.contactGroups.return_value.members.return_value.modify.assert_called_once_with(
+            resourceName="contactGroups/new",
+            body={"resourceNamesToAdd": ["people/c1"]},
+        )
+
+    def test_add_label_modify_http_error_becomes_contacts_client_error(self):
+        service = MagicMock()
+        service.contactGroups.return_value.list.return_value.execute.return_value = {
+            "contactGroups": [{"resourceName": "contactGroups/g1", "formattedName": "VIP"}]
+        }
+        service.contactGroups.return_value.members.return_value.modify.return_value.execute.side_effect = http_error(400)
+        client = make_client(service)
+        with pytest.raises(ContactsClientError, match="add_label"):
+            client.add_label("people/c1", "VIP")
+
+    def test_remove_label_uses_existing_group(self):
+        service = MagicMock()
+        service.contactGroups.return_value.list.return_value.execute.return_value = {
+            "contactGroups": [{"resourceName": "contactGroups/g1", "formattedName": "VIP"}]
+        }
+        client = make_client(service)
+
+        result = client.remove_label("people/c1", "VIP")
+
+        service.contactGroups.return_value.members.return_value.modify.assert_called_once_with(
+            resourceName="contactGroups/g1",
+            body={"resourceNamesToRemove": ["people/c1"]},
+        )
+        assert result == {"resource_name": "people/c1", "label_removed": "VIP"}
+
+    def test_remove_label_missing_group_is_a_no_op_not_an_error(self):
+        service = MagicMock()
+        service.contactGroups.return_value.list.return_value.execute.return_value = {"contactGroups": []}
+        client = make_client(service)
+
+        result = client.remove_label("people/c1", "Nonexistent")
+
+        service.contactGroups.return_value.members.return_value.modify.assert_not_called()
+        assert result == {
+            "resource_name": "people/c1", "label_removed": "Nonexistent", "note": "label not found",
+        }
+
+    def test_remove_label_modify_http_error_becomes_contacts_client_error(self):
+        service = MagicMock()
+        service.contactGroups.return_value.list.return_value.execute.return_value = {
+            "contactGroups": [{"resourceName": "contactGroups/g1", "formattedName": "VIP"}]
+        }
+        service.contactGroups.return_value.members.return_value.modify.return_value.execute.side_effect = http_error(400)
+        client = make_client(service)
+        with pytest.raises(ContactsClientError, match="remove_label"):
+            client.remove_label("people/c1", "VIP")
+
+    def test_contact_groups_list_http_error_becomes_contacts_client_error(self):
+        service = MagicMock()
+        service.contactGroups.return_value.list.return_value.execute.side_effect = http_error(500)
+        client = make_client(service)
+        with pytest.raises(ContactsClientError, match="contactGroups.list failed"):
+            client.add_label("people/c1", "VIP")
+
+
+# ---------------------------------------------------------------------------- #
 # Thread safety: concurrent calls must not overlap on the shared httplib2
 # connection (regression for the "SSL: DECRYPTION_FAILED_OR_BAD_RECORD_MAC"
 # crash caused by two threads driving the same connection at once).

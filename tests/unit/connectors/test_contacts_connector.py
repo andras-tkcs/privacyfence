@@ -2,8 +2,11 @@
 
 Same approach as the other Google connector tests: ContactsClient is
 mocked, gate.gated_call is stubbed to capture what's sent into the gate.
-contacts_update is the only gated tool here (gate="popup"); everything
-else is unconditionally auto-approved per README.
+contacts_update, contacts_create, contacts_add_label, and
+contacts_remove_label are all gated (gate="popup"); the read tools
+(contacts_list, contacts_search, contacts_get) are unconditionally
+auto-approved per README. Contact deletion is not supported by this
+connector.
 """
 from __future__ import annotations
 
@@ -179,6 +182,98 @@ class TestContactsUpdate:
         result = await connector.call("contacts_update", {"resource_name": "people/c1", "display_name": "Updated Name"})
 
         assert result["display_name"] == "Updated Name"
+
+
+class TestContactsCreate:
+    async def test_preview_only_includes_provided_fields(self, gated_call_spy):
+        connector, client = make_connector()
+        client.create_contact.return_value = make_contact(display_name="New Person")
+
+        await connector.call("contacts_create", {"display_name": "New Person"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview"] == {"Name": "New Person"}
+        assert kwargs["gate"] == "popup"
+        assert kwargs["summary"] == "Create contact: New Person"
+
+    async def test_preview_includes_parsed_emails_and_phones(self, gated_call_spy):
+        connector, client = make_connector()
+        client.create_contact.return_value = make_contact()
+
+        await connector.call("contacts_create", {
+            "display_name": "New Person",
+            "emails": '[{"value": "new@example.com", "type": "home"}]',
+            "phones": '[{"value": "+1 555 0199", "type": "mobile"}]',
+        })
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview"]["Emails"] == "new@example.com"
+        assert kwargs["preview"]["Phones"] == "+1 555 0199"
+        client.create_contact.assert_called_once_with(
+            "New Person",
+            [{"value": "new@example.com", "type": "home"}],
+            [{"value": "+1 555 0199", "type": "mobile"}],
+            None, None, None,
+        )
+
+    async def test_invalid_json_emails_are_dropped_not_shown_and_passed_as_none(self, gated_call_spy):
+        connector, client = make_connector()
+        client.create_contact.return_value = make_contact()
+
+        await connector.call("contacts_create", {"display_name": "New Person", "emails": "not valid json"})
+
+        kwargs = gated_call_spy[0]
+        assert "Emails" not in kwargs["preview"]
+        client.create_contact.assert_called_once_with("New Person", None, None, None, None, None)
+
+    async def test_result_converted_to_dict(self, gated_call_spy):
+        connector, client = make_connector()
+        client.create_contact.return_value = make_contact(display_name="New Person")
+
+        result = await connector.call("contacts_create", {"display_name": "New Person"})
+
+        assert result["display_name"] == "New Person"
+
+
+class TestContactsAddLabel:
+    async def test_gates_with_contact_name_and_label_in_preview(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_contact.return_value = make_contact()
+        client.add_label.return_value = {"resource_name": "people/c1", "label_added": "VIP"}
+
+        result = await connector.call("contacts_add_label", {"resource_name": "people/c1", "label_name": "VIP"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview"] == {"Contact": "Bob Smith", "Label": "VIP"}
+        assert kwargs["gate"] == "popup"
+        assert kwargs["summary"] == "Add label 'VIP' to: Bob Smith"
+        client.add_label.assert_called_once_with("people/c1", "VIP")
+        assert result == {"resource_name": "people/c1", "label_added": "VIP"}
+
+    async def test_contact_name_falls_back_to_resource_name_when_lookup_fails(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_contact.side_effect = ContactsClientError("not found")
+        client.add_label.return_value = {"resource_name": "people/c999", "label_added": "VIP"}
+
+        await connector.call("contacts_add_label", {"resource_name": "people/c999", "label_name": "VIP"})
+
+        assert gated_call_spy[0]["preview"]["Contact"] == "people/c999"
+
+
+class TestContactsRemoveLabel:
+    async def test_gates_with_contact_name_and_label_in_preview(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_contact.return_value = make_contact()
+        client.remove_label.return_value = {"resource_name": "people/c1", "label_removed": "VIP"}
+
+        result = await connector.call("contacts_remove_label", {"resource_name": "people/c1", "label_name": "VIP"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview"] == {"Contact": "Bob Smith", "Label": "VIP"}
+        assert kwargs["gate"] == "popup"
+        assert kwargs["summary"] == "Remove label 'VIP' from: Bob Smith"
+        client.remove_label.assert_called_once_with("people/c1", "VIP")
+        assert result == {"resource_name": "people/c1", "label_removed": "VIP"}
 
 
 class TestFetchErrorMapping:
