@@ -1,23 +1,33 @@
 # PrivacyFence
 
-**PrivacyFence** is a macOS privacy proxy that sits between Claude (via MCP) and your personal data sources. Every time Claude tries to read an email, open a file, or fetch a Slack message, PrivacyFence intercepts the request and requires your approval before any data reaches the AI.
+**PrivacyFence** is an enterprise AI governance platform for macOS that sits between Claude (via MCP) and your personal data sources. Every time Claude tries to read an email, open a file, or fetch a Slack message, PrivacyFence intercepts the request and requires your approval before any data reaches the AI.
 
 ---
 
 ## Why PrivacyFence?
 
-Organizations are rapidly adopting AI assistants, but existing permission models were designed for humans, not autonomous agents.
+Organizations are rapidly adopting AI assistants, but existing access control models were designed for people — not autonomous AI agents. As AI becomes capable of independently reading emails, documents, chats, and business systems, organizations need a new governance model that balances productivity with privacy, security, and regulatory compliance.
 
-PrivacyFence introduces a governance layer that allows AI to work with enterprise systems while keeping humans in control of sensitive information.
+PrivacyFence introduces a governance layer between AI assistants and enterprise systems. It keeps humans in control of sensitive information while allowing AI to become a trusted productivity tool rather than an unmanaged security risk.
 
-## Who is this for?
+## Who is PrivacyFence for?
 
-- **CIO** — visibility and control as AI assistants reach into enterprise systems
-- **CISO** — a real, auditable enforcement point instead of relying on client-side prompts
-- **AI Governance** — a policy layer for what AI agents can read and do, with a full audit trail
-- **Enterprise IT** — connector-level access control that IT provisions and users authenticate into
-- **Compliance** — human-in-the-loop review and logging for GDPR / EU AI Act obligations
-- **Developers** — a drop-in MCP proxy that gates and logs tool calls without touching agent code
+- **CIOs and CTOs** introducing AI into the enterprise
+- **CISOs and Information Security teams**
+- **AI Governance and Compliance leaders**
+- **Enterprise IT administrators**
+- **Developers** building AI-enabled workflows
+- **Organizations** adopting AI under GDPR and the EU AI Act
+
+## Why existing approaches fall short
+
+| Existing approach | PrivacyFence |
+|---|---|
+| Block AI | Enable AI safely |
+| Trust the AI client | Independent governance layer |
+| Static permissions | Context-aware human approval |
+| Limited visibility | Complete audit trail |
+| One-size-fits-all access | Fine-grained policy control |
 
 ---
 

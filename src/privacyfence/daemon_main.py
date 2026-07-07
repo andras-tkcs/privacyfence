@@ -625,7 +625,7 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="privacyfence-app",
-        description="PrivacyFence daemon — privacy proxy UI and connector host.",
+        description="PrivacyFence daemon — governance UI and connector host.",
     )
     default_config = os.path.join(PROJECT_ROOT, "config", "settings.yaml")
     parser.add_argument("--config", default=default_config)
