@@ -256,6 +256,14 @@ class ConfluenceClient:
             raw = self._request(self._client.get, _V2_SPACES_PATH, params={"keys": space_key, "limit": 1})
             results = (raw or {}).get("results") or []
         except Exception as exc:
+            # The v2 spaces endpoint 404s (rather than returning 200 with an
+            # empty `results` list) when the `keys` filter matches nothing,
+            # so an unmatched key surfaces the same way as any other request
+            # failure. Recognize it and report the same clean "Space not
+            # found" error as the empty-results case below.
+            response = getattr(exc, "response", None)
+            if getattr(response, "status_code", None) == 404:
+                raise ConfluenceClientError(f"Space not found: {space_key!r}") from exc
             raise ConfluenceClientError(f"resolving space id for {space_key!r} failed: {exc}") from exc
         if not results:
             raise ConfluenceClientError(f"Space not found: {space_key!r}")
