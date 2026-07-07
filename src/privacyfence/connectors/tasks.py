@@ -1,4 +1,12 @@
-"""Google Tasks connector: all tools are auto-approved."""
+"""Google Tasks connector.
+
+Reads (list task lists, list tasks, get a task) are low-sensitivity metadata
+and stay auto-approved, like every other connector's read-only listing calls.
+Writes (create/update/complete/uncomplete/move) go through the popup gate,
+same as every other connector's writes — this connector used to auto-approve
+everything, including writes, which was the one connector whose behavior
+didn't match the documented default ("writes require review/popup").
+"""
 
 from __future__ import annotations
 
@@ -11,6 +19,7 @@ from typing import Any
 
 from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
+from ..gate import gated_call
 from ..tasks_client import TasksClient, TasksClientError
 
 logger = logging.getLogger(__name__)
@@ -28,31 +37,31 @@ class TasksConnector(Connector):
         return [
             ToolSpec(
                 name="tasks_list_task_lists",
-                description="List all Google Task lists. Always allowed.",
+                description="List all Google Task lists. Auto-approved.",
                 params=[],
-            read_only=True,
+                read_only=True,
             ),
             ToolSpec(
                 name="tasks_list_tasks",
-                description="List tasks in a task list. Always allowed.",
+                description="List tasks in a task list. Auto-approved.",
                 params=[
                     ToolParam("task_list_id", "str"),
                     ToolParam("show_completed", "bool", required=False, default=False),
                 ],
-            read_only=True,
+                read_only=True,
             ),
             ToolSpec(
                 name="tasks_get_task",
-                description="Fetch a single task by id. Always allowed.",
+                description="Fetch a single task by id. Auto-approved.",
                 params=[
                     ToolParam("task_list_id", "str"),
                     ToolParam("task_id", "str"),
                 ],
-            read_only=True,
+                read_only=True,
             ),
             ToolSpec(
                 name="tasks_create_task",
-                description="Create a new task. Always allowed.",
+                description="Create a new task. Requires user approval.",
                 params=[
                     ToolParam("task_list_id", "str"),
                     ToolParam("title", "str"),
@@ -63,7 +72,7 @@ class TasksConnector(Connector):
             ),
             ToolSpec(
                 name="tasks_update_task",
-                description="Update a task's title, notes, or due date. Always allowed.",
+                description="Update a task's title, notes, or due date. Requires user approval.",
                 params=[
                     ToolParam("task_list_id", "str"),
                     ToolParam("task_id", "str"),
@@ -74,7 +83,7 @@ class TasksConnector(Connector):
             ),
             ToolSpec(
                 name="tasks_complete_task",
-                description="Mark a task as completed. Always allowed.",
+                description="Mark a task as completed. Requires user approval.",
                 params=[
                     ToolParam("task_list_id", "str"),
                     ToolParam("task_id", "str"),
@@ -82,7 +91,7 @@ class TasksConnector(Connector):
             ),
             ToolSpec(
                 name="tasks_uncomplete_task",
-                description="Mark a task as not completed. Always allowed.",
+                description="Mark a task as not completed. Requires user approval.",
                 params=[
                     ToolParam("task_list_id", "str"),
                     ToolParam("task_id", "str"),
@@ -90,7 +99,7 @@ class TasksConnector(Connector):
             ),
             ToolSpec(
                 name="tasks_move_task",
-                description="Move a task from one list to another. Always allowed.",
+                description="Move a task from one list to another. Requires user approval.",
                 params=[
                     ToolParam("source_list_id", "str"),
                     ToolParam("task_id", "str"),
@@ -107,36 +116,168 @@ class TasksConnector(Connector):
         if tool == "tasks_get_task":
             return await self._run("tasks_get_task", "Get Task", f"Get task {args.get('task_id', '')}", self._tasks.get_task, args.get("task_list_id", ""), args.get("task_id", ""))
         if tool == "tasks_create_task":
-            return await self._run("tasks_create_task", "Create Task", f"Create task: {args.get('title', '')}", self._tasks.create_task, args.get("task_list_id", ""), args.get("title", ""), args.get("notes", ""), args.get("due", ""))
+            return await self._create_task(**args)
         if tool == "tasks_update_task":
-            title = args.get("title") or None
-            notes = args.get("notes") or None
-            due = args.get("due") or None
-            return await self._run("tasks_update_task", "Update Task", f"Update task {args.get('task_id', '')}", self._tasks.update_task, args.get("task_list_id", ""), args.get("task_id", ""), title, notes, due)
+            return await self._update_task(**args)
         if tool == "tasks_complete_task":
-            return await self._run("tasks_complete_task", "Complete Task", f"Complete task {args.get('task_id', '')}", self._tasks.complete_task, args.get("task_list_id", ""), args.get("task_id", ""))
+            return await self._complete_task(**args)
         if tool == "tasks_uncomplete_task":
-            return await self._run("tasks_uncomplete_task", "Uncomplete Task", f"Uncomplete task {args.get('task_id', '')}", self._tasks.uncomplete_task, args.get("task_list_id", ""), args.get("task_id", ""))
+            return await self._uncomplete_task(**args)
         if tool == "tasks_move_task":
-            return await self._run("tasks_move_task", "Move Task", f"Move task {args.get('task_id', '')}", self._tasks.move_task, args.get("source_list_id", ""), args.get("task_id", ""), args.get("destination_list_id", ""))
+            return await self._move_task(**args)
         raise ValueError(f"Unknown Tasks tool: {tool!r}")
+
+    # ------------------------------------------------------------------ #
+    # Auto (no gate) — read-only metadata
+    # ------------------------------------------------------------------ #
 
     async def _run(self, tool: str, tool_name: str, summary: str, func, *func_args) -> Any:
         t0 = time.time()
+        result = await self._fetch(func, *func_args)
+        self._auto_audit(tool, tool_name, summary, t0)
+        return self._serialize(result)
+
+    # ------------------------------------------------------------------ #
+    # Popup gate (writes)
+    # ------------------------------------------------------------------ #
+
+    async def _create_task(
+        self, task_list_id: str, title: str, notes: str = "", due: str = ""
+    ) -> Any:
+        preview = {"Task list": task_list_id, "Title": title}
+        if due:
+            preview["Due"] = due
+        await gated_call(
+            connector=self.name,
+            tool="tasks_create_task",
+            tool_name="Create Task",
+            summary=f"Create task: {title}",
+            sender="",
+            raw_data={"task_list_id": task_list_id, "title": title, "notes": notes, "due": due},
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text=notes,
+            args={"task_list_id": task_list_id, "title": title},
+        )
+        result = await self._fetch(self._tasks.create_task, task_list_id, title, notes, due)
+        return self._serialize(result)
+
+    async def _update_task(
+        self, task_list_id: str, task_id: str, title: str = "", notes: str = "", due: str = ""
+    ) -> Any:
+        existing = await self._fetch(self._tasks.get_task, task_list_id, task_id)
+        preview = {"Task list": task_list_id, "Task": existing.title}
+        if title:
+            preview["New title"] = title
+        if due:
+            preview["New due"] = due
+        await gated_call(
+            connector=self.name,
+            tool="tasks_update_task",
+            tool_name="Update Task",
+            summary=f"Update task: {existing.title}",
+            sender="",
+            raw_data=existing,
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text=notes,
+            args={"task_list_id": task_list_id, "task_id": task_id},
+        )
+        result = await self._fetch(
+            self._tasks.update_task, task_list_id, task_id,
+            title or None, notes or None, due or None,
+        )
+        return self._serialize(result)
+
+    async def _complete_task(self, task_list_id: str, task_id: str) -> Any:
+        existing = await self._fetch(self._tasks.get_task, task_list_id, task_id)
+        preview = {"Task list": task_list_id, "Task": existing.title}
+        await gated_call(
+            connector=self.name,
+            tool="tasks_complete_task",
+            tool_name="Complete Task",
+            summary=f"Complete task: {existing.title}",
+            sender="",
+            raw_data=existing,
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text="",
+            args={"task_list_id": task_list_id, "task_id": task_id},
+        )
+        result = await self._fetch(self._tasks.complete_task, task_list_id, task_id)
+        return self._serialize(result)
+
+    async def _uncomplete_task(self, task_list_id: str, task_id: str) -> Any:
+        existing = await self._fetch(self._tasks.get_task, task_list_id, task_id)
+        preview = {"Task list": task_list_id, "Task": existing.title}
+        await gated_call(
+            connector=self.name,
+            tool="tasks_uncomplete_task",
+            tool_name="Uncomplete Task",
+            summary=f"Uncomplete task: {existing.title}",
+            sender="",
+            raw_data=existing,
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text="",
+            args={"task_list_id": task_list_id, "task_id": task_id},
+        )
+        result = await self._fetch(self._tasks.uncomplete_task, task_list_id, task_id)
+        return self._serialize(result)
+
+    async def _move_task(
+        self, source_list_id: str, task_id: str, destination_list_id: str
+    ) -> Any:
+        existing = await self._fetch(self._tasks.get_task, source_list_id, task_id)
+        preview = {
+            "Task": existing.title,
+            "From list": source_list_id,
+            "To list": destination_list_id,
+        }
+        await gated_call(
+            connector=self.name,
+            tool="tasks_move_task",
+            tool_name="Move Task",
+            summary=f"Move task: {existing.title}",
+            sender="",
+            raw_data=existing,
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text="",
+            args={
+                "source_list_id": source_list_id,
+                "task_id": task_id,
+                "destination_list_id": destination_list_id,
+            },
+        )
+        result = await self._fetch(self._tasks.move_task, source_list_id, task_id, destination_list_id)
+        return self._serialize(result)
+
+    # ------------------------------------------------------------------ #
+    # Helpers
+    # ------------------------------------------------------------------ #
+
+    async def _fetch(self, func, *args) -> Any:
         try:
-            result = await asyncio.to_thread(func, *func_args)
+            return await asyncio.to_thread(func, *args)
         except TasksClientError as exc:
             logger.error("Tasks call failed: %s", exc)
             raise RuntimeError(str(exc)) from exc
 
-        # Serialize dataclasses
+    @staticmethod
+    def _serialize(result: Any) -> Any:
         if isinstance(result, list):
-            serialized = [asdict(r) for r in result]
-        elif hasattr(result, "__dataclass_fields__"):
-            serialized = asdict(result)
-        else:
-            serialized = result
+            return [asdict(r) for r in result]
+        if hasattr(result, "__dataclass_fields__"):
+            return asdict(result)
+        return result
 
+    def _auto_audit(self, tool: str, tool_name: str, summary: str, created_at: float) -> None:
         try:
             get_audit_logger().record(AuditEntry(
                 timestamp=datetime.now(timezone.utc).isoformat(),
@@ -149,10 +290,7 @@ class TasksConnector(Connector):
                 sender="",
                 decision="auto_accepted",
                 auto_accept_rule="auto",
-                latency_seconds=time.time() - t0,
+                latency_seconds=time.time() - created_at,
             ))
         except Exception as exc:
             logger.warning("Audit log write failed: %s", exc)
-
-        logger.info("%s auto-approved", tool)
-        return serialized

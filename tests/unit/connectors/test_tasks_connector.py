@@ -1,9 +1,16 @@
 """Unit tests for privacyfence.connectors.tasks.TasksConnector.
 
-Every Tasks tool is unconditionally auto-approved (README: "Always
-allowed") and funnels through the single _run() helper, which serializes
-dataclass results with dataclasses.asdict() and records an audit entry.
-No gate.gated_call involvement at all for this connector.
+Reads (list task lists, list tasks, get task) are unconditionally
+auto-approved and funnel through the single _run() helper, which serializes
+dataclass results with dataclasses.asdict() and records an audit entry
+directly — no gate.gated_call involvement.
+
+Writes (create/update/complete/uncomplete/move) go through gate.gated_call
+with gate="popup", same as every other connector's writes. gated_call itself
+is stubbed here (never spawn a real osascript dialog from a unit test); these
+tests instead assert that each write tool sends a minimal, non-body-carrying
+preview into the gate, and that a denial genuinely blocks the underlying
+client call from ever happening.
 """
 from __future__ import annotations
 
@@ -32,6 +39,19 @@ def make_task(**overrides):
     )
     defaults.update(overrides)
     return Task(**defaults)
+
+
+@pytest.fixture
+def gated_call_spy(monkeypatch):
+    """Stub gated_call to record its kwargs and act as if the user approved."""
+    calls = []
+
+    async def fake_gated_call(**kwargs):
+        calls.append(kwargs)
+        return kwargs["filtered_data"]
+
+    monkeypatch.setattr(tasks_module, "gated_call", fake_gated_call)
+    return calls
 
 
 class TestDispatch:
@@ -74,26 +94,40 @@ class TestListAndGet:
 
 
 class TestCreateAndUpdate:
-    async def test_create_task_passes_all_fields(self):
+    async def test_create_task_gates_before_writing_with_metadata_only_preview(self, gated_call_spy):
         connector, client = make_connector()
         client.create_task.return_value = make_task()
 
         await connector.call("tasks_create_task", {
-            "task_list_id": "list1", "title": "Buy milk", "notes": "2%", "due": "2026-07-10T00:00:00Z",
+            "task_list_id": "list1", "title": "Buy milk",
+            "notes": "Secret grocery list details", "due": "2026-07-10T00:00:00Z",
         })
 
-        client.create_task.assert_called_once_with("list1", "Buy milk", "2%", "2026-07-10T00:00:00Z")
+        kwargs = gated_call_spy[0]
+        assert kwargs["gate"] == "popup"
+        assert kwargs["preview"] == {
+            "Task list": "list1", "Title": "Buy milk", "Due": "2026-07-10T00:00:00Z",
+        }
+        # Notes go into details_text (shown only after "Show Details"), never the preview.
+        assert "Secret grocery list details" not in kwargs["preview"].values()
+        assert kwargs["details_text"] == "Secret grocery list details"
+        client.create_task.assert_called_once_with(
+            "list1", "Buy milk", "Secret grocery list details", "2026-07-10T00:00:00Z"
+        )
 
-    async def test_update_task_coerces_empty_strings_to_none(self):
+    async def test_update_task_coerces_empty_strings_to_none(self, gated_call_spy):
         connector, client = make_connector()
+        client.get_task.return_value = make_task()
         client.update_task.return_value = make_task()
 
         await connector.call("tasks_update_task", {"task_list_id": "list1", "task_id": "t1"})
 
         client.update_task.assert_called_once_with("list1", "t1", None, None, None)
+        assert gated_call_spy[0]["gate"] == "popup"
 
-    async def test_update_task_passes_through_provided_values(self):
+    async def test_update_task_passes_through_provided_values(self, gated_call_spy):
         connector, client = make_connector()
+        client.get_task.return_value = make_task()
         client.update_task.return_value = make_task()
 
         await connector.call("tasks_update_task", {
@@ -104,25 +138,30 @@ class TestCreateAndUpdate:
 
 
 class TestCompleteUncompleteMove:
-    async def test_complete_task(self):
+    async def test_complete_task(self, gated_call_spy):
         connector, client = make_connector()
+        client.get_task.return_value = make_task()
         client.complete_task.return_value = make_task(status="completed")
 
         result = await connector.call("tasks_complete_task", {"task_list_id": "list1", "task_id": "t1"})
 
         client.complete_task.assert_called_once_with("list1", "t1")
         assert result["status"] == "completed"
+        assert gated_call_spy[0]["gate"] == "popup"
 
-    async def test_uncomplete_task(self):
+    async def test_uncomplete_task(self, gated_call_spy):
         connector, client = make_connector()
+        client.get_task.return_value = make_task()
         client.uncomplete_task.return_value = make_task(status="needsAction")
 
         await connector.call("tasks_uncomplete_task", {"task_list_id": "list1", "task_id": "t1"})
 
         client.uncomplete_task.assert_called_once_with("list1", "t1")
+        assert gated_call_spy[0]["gate"] == "popup"
 
-    async def test_move_task(self):
+    async def test_move_task(self, gated_call_spy):
         connector, client = make_connector()
+        client.get_task.return_value = make_task()
         client.move_task.return_value = make_task(task_list_id="list2")
 
         result = await connector.call(
@@ -131,11 +170,34 @@ class TestCompleteUncompleteMove:
 
         client.move_task.assert_called_once_with("list1", "t1", "list2")
         assert result["task_list_id"] == "list2"
+        assert gated_call_spy[0]["preview"] == {
+            "Task": "Buy milk", "From list": "list1", "To list": "list2",
+        }
+
+
+class TestPopupGateBlocksWrites:
+    """The point of gating these tools at all: a denial must stop the write
+    from ever reaching the client, not just get logged after the fact."""
+
+    async def test_denied_write_raises_and_client_is_never_called(self, monkeypatch):
+        connector, client = make_connector()
+        client.get_task.return_value = make_task()
+
+        async def deny(**kwargs):
+            raise RuntimeError("Request denied by user")
+
+        monkeypatch.setattr(tasks_module, "gated_call", deny)
+
+        with pytest.raises(RuntimeError, match="denied"):
+            await connector.call("tasks_complete_task", {"task_list_id": "list1", "task_id": "t1"})
+
+        client.complete_task.assert_not_called()
 
 
 class TestNonDataclassResultPassesThroughUnchanged:
-    async def test_plain_dict_result_is_not_mangled(self):
+    async def test_plain_dict_result_is_not_mangled(self, gated_call_spy):
         connector, client = make_connector()
+        client.get_task.return_value = make_task()
         client.complete_task.return_value = {"ok": True}
 
         result = await connector.call("tasks_complete_task", {"task_list_id": "list1", "task_id": "t1"})
@@ -155,4 +217,5 @@ class TestErrorMapping:
 class TestEveryToolIsAudited:
     async def test_every_declared_tool_leaves_an_audit_trail(self, monkeypatch, tmp_path):
         connector, client = make_connector()
+        client.get_task.return_value = make_task()
         await assert_all_tools_leave_an_audit_trail(connector, tasks_module, monkeypatch, tmp_path)

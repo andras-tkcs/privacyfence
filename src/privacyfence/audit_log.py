@@ -14,7 +14,6 @@ from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +47,7 @@ class AuditLogger:
                 fh.write(line)
         logger.debug("Audit: %s %s/%s", entry.decision, entry.connector, entry.tool)
 
-    def export_week_to_excel(self, week: str) -> Optional[str]:
+    def export_week_to_excel(self, week: str) -> str | None:
         """Export one week's .jsonl to .xlsx, overwriting any existing file.
 
         Callers that only want to fill in weeks that have never been
@@ -160,7 +159,7 @@ def current_week() -> str:
     return f"{iso[0]}-W{iso[1]:02d}"
 
 
-_INSTANCE: Optional[AuditLogger] = None
+_INSTANCE: AuditLogger | None = None
 _LOCK = threading.Lock()
 
 

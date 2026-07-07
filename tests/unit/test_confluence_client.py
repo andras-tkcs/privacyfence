@@ -84,24 +84,24 @@ class TestParseSpace:
 
 
 # ---------------------------------------------------------------------------- #
-# _parse_page
+# _parse_page_v2
 # ---------------------------------------------------------------------------- #
 
-class TestParsePage:
+class TestParsePageV2:
     def test_full_page_without_body(self):
         client = make_client()
         raw = {
-            "id": "123", "title": "My Page", "space": {"key": "ENG", "name": "Engineering"},
-            "version": {"number": 3},
-            "history": {"createdDate": "created-date", "lastUpdated": {"when": "updated-date", "by": {"displayName": "Jane"}}},
+            "id": "123", "title": "My Page", "spaceId": "999",
+            "version": {"number": 3, "createdAt": "updated-date"},
+            "authorId": "acc-1", "createdAt": "created-date",
             "_links": {"webui": "/spaces/ENG/pages/123"},
         }
-        page = client._parse_page(raw)
+        page = client._parse_page_v2(raw, space_key="ENG")
         assert page.id == "123"
         assert page.title == "My Page"
         assert page.space_key == "ENG"
         assert page.version == 3
-        assert page.author == "Jane"
+        assert page.author == "acc-1"
         assert page.created == "created-date"
         assert page.updated == "updated-date"
         assert page.body == ""
@@ -110,17 +110,27 @@ class TestParsePage:
     def test_body_included_only_when_requested(self):
         client = make_client()
         raw = {"id": "1", "body": {"storage": {"value": "<p>content</p>"}}}
-        without_body = client._parse_page(raw, include_body=False)
-        with_body = client._parse_page(raw, include_body=True)
+        without_body = client._parse_page_v2(raw, include_body=False)
+        with_body = client._parse_page_v2(raw, include_body=True)
         assert without_body.body == ""
         assert with_body.body == "<p>content</p>"
 
     def test_missing_optional_fields_default_sensibly(self):
         client = make_client()
-        page = client._parse_page({})
+        # No spaceId, so _resolve_space_key is skipped rather than firing an
+        # HTTP call for an empty id.
+        page = client._parse_page_v2({})
         assert page.id == ""
         assert page.version == 0
         assert page.author == ""
+        assert page.space_key == ""
+
+    def test_space_key_resolved_from_space_id_when_not_passed_in(self):
+        client = make_client()
+        client._client.get.return_value = {"key": "ENG"}
+        page = client._parse_page_v2({"id": "1", "spaceId": "999"})
+        assert page.space_key == "ENG"
+        assert client._client.get.call_args.args[0] == "api/v2/spaces/999"
 
     def test_short_summary_truncates_long_title(self):
         page = ConfluencePage(id="1", title="x" * 100, space_key="ENG")
@@ -345,13 +355,27 @@ class TestListPagesInSpace:
 
     def test_maps_pages(self):
         client = make_client()
-        client._client.get_all_pages_from_space.return_value = [{"id": "1", "title": "Page"}]
+        client._client.get.side_effect = [
+            {"results": [{"id": "999", "key": "ENG"}]},  # space id resolution
+            {"results": [{"id": "1", "title": "Page"}]},  # pages in space
+        ]
         pages = client.list_pages_in_space("ENG")
         assert pages[0].title == "Page"
+        assert pages[0].space_key == "ENG"
+        assert client._client.get.call_args_list[1].args[0] == "api/v2/spaces/999/pages"
+
+    def test_space_not_found_raises_confluence_client_error(self):
+        client = make_client()
+        client._client.get.return_value = {"results": []}
+        with pytest.raises(ConfluenceClientError, match="Space not found"):
+            client.list_pages_in_space("ENG")
 
     def test_http_error_becomes_confluence_client_error(self):
         client = make_client()
-        client._client.get_all_pages_from_space.side_effect = RuntimeError("boom")
+        client._client.get.side_effect = [
+            {"results": [{"id": "999"}]},
+            RuntimeError("boom"),
+        ]
         with pytest.raises(ConfluenceClientError, match="list_pages_in_space"):
             client.list_pages_in_space("ENG")
 
@@ -364,11 +388,13 @@ class TestGetPage:
 
     def test_fetches_with_body(self):
         client = make_client()
-        client._client.get_page_by_id.return_value = {
+        client._client.get.return_value = {
             "id": "1", "title": "Page", "body": {"storage": {"value": "content"}},
         }
         page = client.get_page("1")
         assert page.body == "content"
+        assert client._client.get.call_args.args[0] == "api/v2/pages/1"
+        assert client._client.get.call_args.kwargs["params"]["body-format"] == "storage"
 
 
 class TestGetPageByTitle:
@@ -381,15 +407,22 @@ class TestGetPageByTitle:
 
     def test_not_found_raises_confluence_client_error(self):
         client = make_client()
-        client._client.get_page_by_title.return_value = None
+        client._client.get.side_effect = [
+            {"results": [{"id": "999"}]},  # space id resolution
+            {"results": []},  # no matching page
+        ]
         with pytest.raises(ConfluenceClientError, match="Page not found"):
             client.get_page_by_title("ENG", "Nonexistent")
 
     def test_found_returns_parsed_page(self):
         client = make_client()
-        client._client.get_page_by_title.return_value = {"id": "1", "title": "Found"}
+        client._client.get.side_effect = [
+            {"results": [{"id": "999"}]},
+            {"results": [{"id": "1", "title": "Found"}]},
+        ]
         page = client.get_page_by_title("ENG", "Found")
         assert page.title == "Found"
+        assert page.space_key == "ENG"
 
 
 # ---------------------------------------------------------------------------- #
@@ -406,26 +439,31 @@ class TestCreatePage:
 
     def test_creates_and_refetches_full_page(self):
         client = make_client()
-        client._client.create_page.return_value = {"id": "99"}
-        client._client.get_page_by_id.return_value = {"id": "99", "title": "New Page"}
+        client._client.get.side_effect = [
+            {"results": [{"id": "999"}]},  # space id resolution
+            {"id": "99", "title": "New Page"},  # refetch after create
+        ]
+        client._client.post.return_value = {"id": "99"}
 
         page = client.create_page("ENG", "New Page", "<p>body</p>", parent_id="1")
 
-        create_kwargs = client._client.create_page.call_args.kwargs
-        assert create_kwargs["space"] == "ENG"
-        assert create_kwargs["parent_id"] == "1"
+        create_kwargs = client._client.post.call_args.kwargs
+        assert create_kwargs["data"]["spaceId"] == "999"
+        assert create_kwargs["data"]["parentId"] == "1"
+        assert create_kwargs["data"]["body"] == {"representation": "storage", "value": "<p>body</p>"}
         assert page.title == "New Page"
 
-    def test_no_parent_id_passes_none(self):
+    def test_no_parent_id_key_omitted(self):
         client = make_client()
-        client._client.create_page.return_value = {"id": "99"}
-        client._client.get_page_by_id.return_value = {"id": "99"}
+        client._client.get.side_effect = [{"results": [{"id": "999"}]}, {"id": "99"}]
+        client._client.post.return_value = {"id": "99"}
         client.create_page("ENG", "New Page", "body")
-        assert client._client.create_page.call_args.kwargs["parent_id"] is None
+        assert "parentId" not in client._client.post.call_args.kwargs["data"]
 
     def test_http_error_becomes_confluence_client_error(self):
         client = make_client()
-        client._client.create_page.side_effect = RuntimeError("boom")
+        client._client.get.return_value = {"results": [{"id": "999"}]}
+        client._client.post.side_effect = RuntimeError("boom")
         with pytest.raises(ConfluenceClientError, match="create_page failed"):
             client.create_page("ENG", "Title", "body")
 
@@ -440,27 +478,27 @@ class TestUpdatePage:
 
     def test_bumps_version_number_from_current(self):
         client = make_client()
-        client._client.get_page_by_id.side_effect = [
+        client._client.get.side_effect = [
             {"version": {"number": 5}},  # fetch current version
             {"id": "1", "title": "Updated", "version": {"number": 6}},  # refetch after update
         ]
         page = client.update_page("1", "Updated", "new body")
 
-        update_kwargs = client._client.update_page.call_args.kwargs
-        assert update_kwargs["version_number"] == 6
+        update_kwargs = client._client.put.call_args.kwargs
+        assert update_kwargs["data"]["version"]["number"] == 6
         assert page.version == 6
 
     def test_missing_version_defaults_to_one_then_bumps_to_two(self):
         client = make_client()
-        client._client.get_page_by_id.side_effect = [
+        client._client.get.side_effect = [
             {},  # no version field at all
             {"id": "1", "title": "Updated"},
         ]
         client.update_page("1", "Updated", "body")
-        assert client._client.update_page.call_args.kwargs["version_number"] == 2
+        assert client._client.put.call_args.kwargs["data"]["version"]["number"] == 2
 
     def test_http_error_becomes_confluence_client_error(self):
         client = make_client()
-        client._client.get_page_by_id.side_effect = RuntimeError("boom")
+        client._client.get.side_effect = RuntimeError("boom")
         with pytest.raises(ConfluenceClientError, match="update_page"):
             client.update_page("1", "Title", "body")

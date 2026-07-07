@@ -342,3 +342,18 @@ class TestUpdateContact:
         client = make_client(service)
         with pytest.raises(ContactsClientError, match="update_contact failed"):
             client.update_contact("people/c1", notes="x")
+
+    def test_unexpected_non_http_error_becomes_contacts_client_error(self):
+        # Regression: a bare Python exception raised while mutating the
+        # fetched person (e.g. a surprising People API payload shape) used to
+        # propagate straight past this function as a raw, unhelpful error
+        # ("'NoneType' object is not iterable") instead of a clean
+        # ContactsClientError.
+        service = MagicMock()
+        service.people.return_value.get.return_value.execute.return_value = {"resourceName": "people/c1"}
+        service.people.return_value.updateContact.return_value.execute.side_effect = TypeError(
+            "'NoneType' object is not iterable"
+        )
+        client = make_client(service)
+        with pytest.raises(ContactsClientError, match="update_contact failed unexpectedly"):
+            client.update_contact("people/c1", notes="x")
