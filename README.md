@@ -211,11 +211,11 @@ string starting with `=` is evaluated as a formula, exactly like typing it into 
 | `tasks_list_task_lists` | read | auto | — | — |
 | `tasks_list_tasks` | read | auto | — | — |
 | `tasks_get_task` | read | auto | — | — |
-| `tasks_create_task` | write | auto | — | — |
-| `tasks_update_task` | write | auto | — | — |
-| `tasks_complete_task` | write | auto | — | — |
-| `tasks_uncomplete_task` | write | auto | — | — |
-| `tasks_move_task` | write | auto | — | — |
+| `tasks_create_task` | write | popup | — | Task list, title, due date, full notes |
+| `tasks_update_task` | write | popup | — | Task list, task, new title/due date, full notes |
+| `tasks_complete_task` | write | popup | — | Task list, task |
+| `tasks_uncomplete_task` | write | popup | — | Task list, task |
+| `tasks_move_task` | write | popup | — | Task, from list, to list |
 
 ---
 
@@ -309,13 +309,22 @@ spreadsheet and tab you just read — rather than a broader ownership- or folder
 | `approved_object_types` | Object type (Account, Contact, …) is in the allowlist |
 | `approved_report_ids` | Report ID is in the approved list |
 
-> **Google Contacts and Google Tasks** have no configurable auto-accept rules — all their tools are unconditionally auto-accepted and logged as `auto_accepted`. **Telegram** read tools (`telegram_list_chats`, `telegram_get_messages`, `telegram_search_messages`) are also unconditionally auto-accepted; `telegram_send_message` requires popup approval. **Jira and Confluence** likewise have no configurable auto-accept rules yet — `jira_get_issue`, `confluence_get_page`, and `confluence_get_page_by_title` always require review approval.
+> **Google Contacts** has no configurable auto-accept rules — all its tools are unconditionally auto-accepted and logged as `auto_accepted`. **Google Tasks** read tools (`tasks_list_task_lists`, `tasks_list_tasks`, `tasks_get_task`) are unconditionally auto-accepted the same way; its write tools (`tasks_create_task`, `tasks_update_task`, `tasks_complete_task`, `tasks_uncomplete_task`, `tasks_move_task`) require popup approval like every other connector's writes, and likewise have no configurable auto-accept rules yet. **Telegram** read tools (`telegram_list_chats`, `telegram_get_messages`, `telegram_search_messages`) are also unconditionally auto-accepted; `telegram_send_message` requires popup approval. **Jira and Confluence** likewise have no configurable auto-accept rules yet — `jira_get_issue`, `confluence_get_page`, and `confluence_get_page_by_title` always require review approval.
 
 ---
 
 ## Audit log
 
 Every decision — accepted, denied, or auto-accepted — is appended to a JSON-lines file in `logs/audit/YYYY-WNN.jsonl`. At startup, any week that has a `.jsonl` file but no `.xlsx` is automatically exported to a formatted Excel workbook with a colour-coded **Decisions** sheet and a **Summary** tab.
+
+---
+
+## Security, privacy & compliance
+
+For information security, IT, GDPR, and EU AI Act reviewers: see
+[docs/security-and-compliance.md](docs/security-and-compliance.md) for the deployment model
+(local, not SaaS), IT's connector-level access authority, the human-in-the-loop review model,
+data handling, and PrivacyFence's positioning under GDPR and the AI Act.
 
 ---
 

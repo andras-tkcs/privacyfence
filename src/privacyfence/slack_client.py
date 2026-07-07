@@ -26,7 +26,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlencode
 
 from slack_sdk import WebClient
@@ -171,7 +171,7 @@ class SlackMessage:
     reply_count: int = 0
     attachments: list[dict[str, Any]] = field(default_factory=list)
     files: list[SlackFile] = field(default_factory=list)
-    timestamp: Optional[datetime] = None
+    timestamp: datetime | None = None
 
     def short_summary(self) -> str:
         """Human-readable one-liner for the review UI / logs."""
@@ -261,7 +261,7 @@ class SlackClient:
         """
         max_results = self._clamp(max_results, default=100, hi=1000)
         channels: list[SlackChannel] = []
-        cursor: Optional[str] = None
+        cursor: str | None = None
         try:
             while len(channels) < max_results:
                 page_size = min(200, max_results - len(channels))
@@ -528,7 +528,7 @@ class SlackClient:
         )
 
     @staticmethod
-    def _parse_ts(ts: str) -> Optional[datetime]:
+    def _parse_ts(ts: str) -> datetime | None:
         """Slack ts is a unix epoch string like '1697030400.001500'."""
         if not ts:
             return None

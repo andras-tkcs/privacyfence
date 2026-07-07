@@ -248,7 +248,6 @@ class TelegramPrivacyFenceClient:
             me = await client.get_me()
             name = f"{me.first_name or ''} {me.last_name or ''}".strip()
             logger.info("Telegram authorized as %s", name)
-            print(f"Authorized as: {name}")
         finally:
             await client.disconnect()
 
