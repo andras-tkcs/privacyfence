@@ -1,0 +1,31 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:   # allow manual runs from the Actions tab
+
+jobs:
+  test:
+    # macOS-only project (rumps/PyObjC, real Unix-socket/osascript-backed
+    # tests) — must run on the same platform the app actually ships for.
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: pip install -e ".[test]"
+
+      # Plain `pytest` already fails the step (non-zero exit) on the first
+      # failing test — no extra flags needed to enforce a 100% pass rate.
+      # pytest-timeout (configured in pyproject.toml) also fails any test
+      # that hangs, so a stuck test can't stall the job indefinitely. The
+      # coverage report here is informational only — nothing gates on it.
+      - name: Run test suite (100% pass rate required)
+        run: pytest -v --cov=src/privacyfence --cov-report=term-missing

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "privacyfence"
-version = "0.4.11"
+version = "0.5.0"
 description = "macOS menu bar privacy proxy between Claude (MCP) and your personal data"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -44,3 +44,18 @@ privacyfence = ["resources/*.png", "resources/settings.yaml.example"]
 dev = [
     "pyinstaller>=6.0",
 ]
+test = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-timeout>=2.3",
+    "pytest-cov>=5.0",
+    "freezegun>=1.5",
+    "openpyxl>=3.1",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# A hung asyncio socket test (e.g. a fixture never closing a connection)
+# would otherwise block the whole suite indefinitely instead of failing.
+timeout = 30

@@ -1,0 +1,740 @@
+"""Tests for GmailClient's parsing/normalization logic: MIME-part walking,
+address splitting, header extraction, and the reply-draft address-dedup
+logic. These call real GmailClient methods against a MagicMock stand-in for
+the googleapiclient service object (the same chained-call shape Google's
+client library produces), so the actual normalization code runs -- unlike
+the connector-layer tests, which mock GmailClient itself and never touch
+this file.
+
+GmailClient.__init__ does no I/O, so we construct it normally and set
+._service directly to skip the OAuth/credential-loading path entirely.
+"""
+from __future__ import annotations
+
+import base64
+import os
+from unittest.mock import MagicMock
+
+import pytest
+
+from privacyfence.gmail_client import (
+    Attachment,
+    GmailClient,
+    GmailClientError,
+    GmailMessage,
+    GmailThread,
+    resolve_attachment_destination,
+)
+from googleapiclient.errors import HttpError
+
+
+def make_client(service: MagicMock) -> GmailClient:
+    client = GmailClient(client_config={}, token_file="/tmp/unused-token.json")
+    client._service = service
+    return client
+
+
+def b64(text: str) -> str:
+    return base64.urlsafe_b64encode(text.encode("utf-8")).decode("utf-8")
+
+
+def http_error(status: int = 404, body: bytes = b'{"error": "nope"}') -> HttpError:
+    class _Resp:
+        pass
+    resp = _Resp()
+    resp.status = status
+    resp.reason = "error"
+    return HttpError(resp, body)
+
+
+def header_list(**kv) -> list[dict]:
+    return [{"name": k, "value": v} for k, v in kv.items()]
+
+
+# ---------------------------------------------------------------------------- #
+# Small pure helpers
+# ---------------------------------------------------------------------------- #
+
+class TestClampMaxResults:
+    @pytest.mark.parametrize("value,expected", [
+        (10, 10), (1, 1), (100, 100), (0, 1), (-5, 1), (500, 100),
+        ("20", 20), ("not a number", 10), (None, 10),
+    ])
+    def test_clamps_into_1_to_100(self, value, expected):
+        assert GmailClient._clamp_max_results(value) == expected
+
+
+class TestHeadersToDict:
+    def test_lowercases_names_and_maps_values(self):
+        message = {"payload": {"headers": header_list(Subject="Hi", From="a@x.com")}}
+        assert GmailClient._headers_to_dict(message) == {"subject": "Hi", "from": "a@x.com"}
+
+    def test_missing_headers_yields_empty_dict(self):
+        assert GmailClient._headers_to_dict({"payload": {}}) == {}
+        assert GmailClient._headers_to_dict({}) == {}
+
+
+class TestSplitAddresses:
+    def test_splits_on_comma_and_strips_whitespace(self):
+        assert GmailClient._split_addresses("a@x.com, b@x.com,  c@x.com") == ["a@x.com", "b@x.com", "c@x.com"]
+
+    def test_empty_string_yields_empty_list(self):
+        assert GmailClient._split_addresses("") == []
+
+    def test_drops_empty_entries_from_trailing_comma(self):
+        assert GmailClient._split_addresses("a@x.com,,") == ["a@x.com"]
+
+
+# ---------------------------------------------------------------------------- #
+# _parse_message / _walk_parts: MIME tree walking
+# ---------------------------------------------------------------------------- #
+
+class TestParseMessage:
+    def test_flat_text_plain_message(self):
+        client = make_client(MagicMock())
+        raw = {
+            "id": "m1", "threadId": "t1", "labelIds": ["INBOX", "UNREAD"],
+            "payload": {
+                "headers": header_list(Subject="Hello", From="a@x.com", To="b@x.com", Date="today"),
+                "mimeType": "text/plain",
+                "body": {"data": b64("plain body")},
+            },
+        }
+        msg = client._parse_message(raw)
+        assert msg == GmailMessage(
+            id="m1", thread_id="t1", subject="Hello", sender="a@x.com",
+            recipients=["b@x.com"], date="today", body_text="plain body", body_html="",
+            attachments=[], labels=["INBOX", "UNREAD"],
+        )
+
+    def test_multipart_alternative_collects_both_text_and_html(self):
+        client = make_client(MagicMock())
+        raw = {
+            "id": "m1", "threadId": "t1",
+            "payload": {
+                "headers": header_list(Subject="Hi", From="a@x.com"),
+                "mimeType": "multipart/alternative",
+                "parts": [
+                    {"mimeType": "text/plain", "body": {"data": b64("plain part")}},
+                    {"mimeType": "text/html", "body": {"data": b64("<p>html part</p>")}},
+                ],
+            },
+        }
+        msg = client._parse_message(raw)
+        assert msg.body_text == "plain part"
+        assert msg.body_html == "<p>html part</p>"
+
+    def test_nested_multipart_mixed_with_attachment_and_body(self):
+        client = make_client(MagicMock())
+        raw = {
+            "id": "m1", "threadId": "t1",
+            "payload": {
+                "headers": header_list(Subject="Hi", From="a@x.com"),
+                "mimeType": "multipart/mixed",
+                "parts": [
+                    {
+                        "mimeType": "multipart/alternative",
+                        "parts": [
+                            {"mimeType": "text/plain", "body": {"data": b64("body text")}},
+                        ],
+                    },
+                    {
+                        "mimeType": "application/pdf",
+                        "filename": "report.pdf",
+                        "body": {"size": 4096, "attachmentId": "att-1"},
+                    },
+                ],
+            },
+        }
+        msg = client._parse_message(raw)
+        assert msg.body_text == "body text"
+        assert msg.attachments == [
+            Attachment(name="report.pdf", mime_type="application/pdf", size=4096, attachment_id="att-1")
+        ]
+
+    def test_attachment_body_never_fetched_or_decoded_into_text(self):
+        # An attachment part carries a filename; even if it also has a data
+        # blob, that data must never be decoded into body_text/body_html --
+        # attachment *content* must never leak into the normalized message.
+        client = make_client(MagicMock())
+        raw = {
+            "id": "m1", "threadId": "t1",
+            "payload": {
+                "headers": header_list(Subject="Hi", From="a@x.com"),
+                "mimeType": "multipart/mixed",
+                "parts": [
+                    {
+                        "mimeType": "text/plain",
+                        "filename": "notes.txt",
+                        "body": {"data": b64("secret file contents"), "size": 20},
+                    },
+                ],
+            },
+        }
+        msg = client._parse_message(raw)
+        assert msg.body_text == ""
+        assert msg.attachments == [Attachment(name="notes.txt", mime_type="text/plain", size=20)]
+
+    def test_large_body_part_without_filename_is_fetched_via_attachment_id(self):
+        service = MagicMock()
+        service.users.return_value.messages.return_value.attachments.return_value.get.return_value.execute.return_value = {
+            "data": b64("fetched large body")
+        }
+        client = make_client(service)
+        raw = {
+            "id": "m1", "threadId": "t1",
+            "payload": {
+                "headers": header_list(Subject="Hi", From="a@x.com"),
+                "mimeType": "text/plain",
+                "body": {"attachmentId": "att-body-1"},
+            },
+        }
+        msg = client._parse_message(raw)
+        assert msg.body_text == "fetched large body"
+        service.users.return_value.messages.return_value.attachments.return_value.get.assert_called_once_with(
+            userId="me", messageId="m1", id="att-body-1"
+        )
+
+    def test_attachment_fetch_failure_is_swallowed_not_fatal(self):
+        service = MagicMock()
+        service.users.return_value.messages.return_value.attachments.return_value.get.return_value.execute.side_effect = (
+            RuntimeError("network blip")
+        )
+        client = make_client(service)
+        raw = {
+            "id": "m1", "threadId": "t1",
+            "payload": {
+                "headers": header_list(Subject="Hi", From="a@x.com"),
+                "mimeType": "text/plain",
+                "body": {"attachmentId": "att-body-1"},
+            },
+        }
+        msg = client._parse_message(raw)  # must not raise
+        assert msg.body_text == ""
+
+    def test_malformed_base64_body_decodes_to_empty_string_not_fatal(self):
+        client = make_client(MagicMock())
+        raw = {
+            "id": "m1", "threadId": "t1",
+            "payload": {
+                "headers": header_list(Subject="Hi", From="a@x.com"),
+                "mimeType": "text/plain",
+                "body": {"data": "%%%not-base64%%%"},
+            },
+        }
+        msg = client._parse_message(raw)
+        assert msg.body_text == ""
+
+    def test_missing_optional_fields_default_sensibly(self):
+        client = make_client(MagicMock())
+        msg = client._parse_message({"payload": {}})
+        assert msg.id == ""
+        assert msg.thread_id == ""
+        assert msg.subject == ""
+        assert msg.sender == ""
+        assert msg.recipients == []
+        assert msg.labels == []
+        assert msg.short_summary() == "(no subject) - from (unknown sender)"
+
+
+# ---------------------------------------------------------------------------- #
+# list_messages / get_message / list_threads / get_thread
+# ---------------------------------------------------------------------------- #
+
+class TestListMessages:
+    def test_builds_summaries_from_metadata(self):
+        service = MagicMock()
+        service.users.return_value.messages.return_value.list.return_value.execute.return_value = {
+            "messages": [{"id": "1"}, {"id": "2"}]
+        }
+        def get_side_effect(**kwargs):
+            mock = MagicMock()
+            if kwargs["id"] == "1":
+                mock.execute.return_value = {
+                    "id": "1", "threadId": "t1",
+                    "payload": {"headers": header_list(Subject="One", From="a@x.com", Date="d1")},
+                }
+            else:
+                mock.execute.return_value = {
+                    "id": "2", "threadId": "t2",
+                    "payload": {"headers": header_list(Subject="Two", From="b@x.com", Date="d2")},
+                }
+            return mock
+        service.users.return_value.messages.return_value.get.side_effect = get_side_effect
+
+        client = make_client(service)
+        summaries = client.list_messages("is:unread", max_results=5)
+
+        assert summaries == [
+            {"id": "1", "thread_id": "t1", "subject": "One", "sender": "a@x.com", "date": "d1"},
+            {"id": "2", "thread_id": "t2", "subject": "Two", "sender": "b@x.com", "date": "d2"},
+        ]
+
+    def test_message_that_fails_to_fetch_is_skipped_not_fatal(self):
+        service = MagicMock()
+        service.users.return_value.messages.return_value.list.return_value.execute.return_value = {
+            "messages": [{"id": "1"}, {"id": "2"}]
+        }
+        def get_side_effect(**kwargs):
+            mock = MagicMock()
+            if kwargs["id"] == "1":
+                mock.execute.side_effect = http_error(404)
+            else:
+                mock.execute.return_value = {
+                    "id": "2", "threadId": "t2",
+                    "payload": {"headers": header_list(Subject="Two", From="b@x.com")},
+                }
+            return mock
+        service.users.return_value.messages.return_value.get.side_effect = get_side_effect
+
+        client = make_client(service)
+        summaries = client.list_messages("q")
+
+        assert len(summaries) == 1
+        assert summaries[0]["id"] == "2"
+
+    def test_list_call_failure_raises_gmail_client_error(self):
+        service = MagicMock()
+        service.users.return_value.messages.return_value.list.return_value.execute.side_effect = http_error(500)
+        client = make_client(service)
+        with pytest.raises(GmailClientError, match="list_messages failed"):
+            client.list_messages("q")
+
+
+class TestGetMessage:
+    def test_empty_message_id_raises(self):
+        client = make_client(MagicMock())
+        with pytest.raises(GmailClientError, match="non-empty message_id"):
+            client.get_message("")
+
+    def test_fetches_and_normalizes(self):
+        service = MagicMock()
+        service.users.return_value.messages.return_value.get.return_value.execute.return_value = {
+            "id": "m1", "threadId": "t1",
+            "payload": {
+                "headers": header_list(Subject="Hi", From="a@x.com"),
+                "mimeType": "text/plain",
+                "body": {"data": b64("hello")},
+            },
+        }
+        client = make_client(service)
+        msg = client.get_message("m1")
+        assert msg.subject == "Hi"
+        assert msg.body_text == "hello"
+
+    def test_http_error_becomes_gmail_client_error(self):
+        service = MagicMock()
+        service.users.return_value.messages.return_value.get.return_value.execute.side_effect = http_error(404)
+        client = make_client(service)
+        with pytest.raises(GmailClientError, match="get_message"):
+            client.get_message("m1")
+
+
+class TestListThreads:
+    def test_builds_id_and_snippet_summaries(self):
+        service = MagicMock()
+        service.users.return_value.threads.return_value.list.return_value.execute.return_value = {
+            "threads": [{"id": "t1", "snippet": "snip1"}, {"id": "t2", "snippet": "snip2"}]
+        }
+        client = make_client(service)
+        assert client.list_threads("q") == [
+            {"id": "t1", "snippet": "snip1"}, {"id": "t2", "snippet": "snip2"},
+        ]
+
+    def test_http_error_becomes_gmail_client_error(self):
+        service = MagicMock()
+        service.users.return_value.threads.return_value.list.return_value.execute.side_effect = http_error(500)
+        client = make_client(service)
+        with pytest.raises(GmailClientError, match="list_threads failed"):
+            client.list_threads("q")
+
+
+class TestGetThread:
+    def test_empty_thread_id_raises(self):
+        client = make_client(MagicMock())
+        with pytest.raises(GmailClientError, match="non-empty thread_id"):
+            client.get_thread("")
+
+    def test_subject_taken_from_first_message(self):
+        service = MagicMock()
+        service.users.return_value.threads.return_value.get.return_value.execute.return_value = {
+            "id": "t1",
+            "messages": [
+                {"id": "m1", "threadId": "t1", "payload": {"headers": header_list(Subject="First", From="a@x.com")}},
+                {"id": "m2", "threadId": "t1", "payload": {"headers": header_list(Subject="Second", From="b@x.com")}},
+            ],
+        }
+        client = make_client(service)
+        thread = client.get_thread("t1")
+        assert thread.subject == "First"
+        assert len(thread.messages) == 2
+        assert thread.short_summary() == "First (2 messages)"
+
+    def test_empty_thread_yields_empty_subject(self):
+        service = MagicMock()
+        service.users.return_value.threads.return_value.get.return_value.execute.return_value = {
+            "id": "t1", "messages": [],
+        }
+        client = make_client(service)
+        thread = client.get_thread("t1")
+        assert thread.subject == ""
+        assert thread.messages == []
+
+
+# ---------------------------------------------------------------------------- #
+# create_draft
+# ---------------------------------------------------------------------------- #
+
+class TestCreateDraft:
+    def test_builds_mime_message_with_to_subject_body(self):
+        service = MagicMock()
+        service.users.return_value.drafts.return_value.create.return_value.execute.return_value = {"id": "d1"}
+        client = make_client(service)
+
+        result = client.create_draft(to="a@x.com", subject="Hi", body="body text")
+
+        assert result == {"draft_id": "d1", "to": "a@x.com", "subject": "Hi"}
+        call_kwargs = service.users.return_value.drafts.return_value.create.call_args.kwargs
+        raw = call_kwargs["body"]["message"]["raw"]
+        decoded = base64.urlsafe_b64decode(raw.encode()).decode()
+        assert "to: a@x.com" in decoded
+        assert "subject: Hi" in decoded
+        assert "body text" in decoded
+
+    def test_cc_and_bcc_included_when_provided(self):
+        service = MagicMock()
+        service.users.return_value.drafts.return_value.create.return_value.execute.return_value = {"id": "d1"}
+        client = make_client(service)
+
+        client.create_draft(to="a@x.com", subject="Hi", body="b", cc="c@x.com", bcc="d@x.com")
+
+        raw = service.users.return_value.drafts.return_value.create.call_args.kwargs["body"]["message"]["raw"]
+        decoded = base64.urlsafe_b64decode(raw.encode()).decode()
+        assert "cc: c@x.com" in decoded
+        assert "bcc: d@x.com" in decoded
+
+    def test_http_error_becomes_gmail_client_error(self):
+        service = MagicMock()
+        service.users.return_value.drafts.return_value.create.return_value.execute.side_effect = http_error(400)
+        client = make_client(service)
+        with pytest.raises(GmailClientError, match="create_draft failed"):
+            client.create_draft(to="a@x.com", subject="s", body="b")
+
+
+# ---------------------------------------------------------------------------- #
+# create_reply_draft: threading headers + reply-all address dedup
+# ---------------------------------------------------------------------------- #
+
+def make_reply_service(headers: dict, thread_id: str = "t1") -> MagicMock:
+    service = MagicMock()
+    service.users.return_value.messages.return_value.get.return_value.execute.return_value = {
+        "threadId": thread_id,
+        "payload": {"headers": header_list(**headers)},
+    }
+    service.users.return_value.drafts.return_value.create.return_value.execute.return_value = {"id": "d1"}
+    return service
+
+
+class TestCreateReplyDraft:
+    def test_empty_message_id_raises(self):
+        client = make_client(MagicMock())
+        with pytest.raises(GmailClientError, match="non-empty message_id"):
+            client.create_reply_draft("", body="b")
+
+    def test_reply_to_original_sender_only_by_default(self):
+        service = make_reply_service({
+            "Subject": "Original", "From": "sender@x.com", "To": "me@x.com",
+            "Message-ID": "<orig@x.com>",
+        })
+        client = make_client(service)
+        result = client.create_reply_draft("m1", body="reply body", my_email="me@x.com")
+
+        assert result["to"] == "sender@x.com"
+        assert result["cc"] == ""
+        assert result["subject"] == "Re: Original"
+
+    def test_subject_already_prefixed_with_re_is_not_doubled(self):
+        service = make_reply_service({"Subject": "Re: Original", "From": "s@x.com", "To": "me@x.com"})
+        client = make_client(service)
+        result = client.create_reply_draft("m1", body="b", my_email="me@x.com")
+        assert result["subject"] == "Re: Original"
+
+    def test_reply_all_includes_to_and_cc_excluding_self_and_sender(self):
+        service = make_reply_service({
+            "Subject": "Original", "From": "sender@x.com",
+            "To": "me@x.com, other1@x.com", "Cc": "other2@x.com",
+        })
+        client = make_client(service)
+        result = client.create_reply_draft("m1", body="b", reply_all=True, my_email="me@x.com")
+
+        assert result["to"] == "sender@x.com"
+        assert set(a.strip() for a in result["cc"].split(",")) == {"other1@x.com", "other2@x.com"}
+
+    def test_reply_all_dedup_is_case_and_display_name_insensitive(self):
+        service = make_reply_service({
+            "Subject": "Original", "From": "Sender <sender@X.com>",
+            "To": "Me <ME@x.com>, Other <OTHER@x.com>", "Cc": "other@X.COM",
+        })
+        client = make_client(service)
+        result = client.create_reply_draft("m1", body="b", reply_all=True, my_email="me@x.com")
+
+        # "me" excluded (self), "other" appears once despite case/display-name
+        # variation between To and Cc.
+        assert result["cc"].lower().count("other@x.com") == 1
+        assert "me@x.com" not in result["cc"].lower()
+
+    def test_explicit_cc_param_merged_with_reply_all_and_deduped(self):
+        service = make_reply_service({
+            "Subject": "Original", "From": "sender@x.com", "To": "me@x.com, other@x.com",
+        })
+        client = make_client(service)
+        result = client.create_reply_draft(
+            "m1", body="b", reply_all=True, my_email="me@x.com", cc="other@x.com, extra@x.com",
+        )
+        addrs = {a.strip() for a in result["cc"].split(",")}
+        assert addrs == {"other@x.com", "extra@x.com"}
+
+    def test_threading_headers_chain_off_original_message_id(self):
+        service = make_reply_service({
+            "Subject": "Original", "From": "sender@x.com",
+            "Message-ID": "<orig-id@x.com>", "References": "<earlier@x.com>",
+        }, thread_id="t99")
+        client = make_client(service)
+        client.create_reply_draft("m1", body="b", my_email="me@x.com")
+
+        raw = service.users.return_value.drafts.return_value.create.call_args.kwargs["body"]["message"]["raw"]
+        decoded = base64.urlsafe_b64decode(raw.encode()).decode()
+        assert "In-Reply-To: <orig-id@x.com>" in decoded
+        assert "References: <earlier@x.com> <orig-id@x.com>" in decoded
+
+        body_dict = service.users.return_value.drafts.return_value.create.call_args.kwargs["body"]["message"]
+        assert body_dict["threadId"] == "t99"
+
+    def test_no_references_header_falls_back_to_message_id_only(self):
+        service = make_reply_service({
+            "Subject": "Original", "From": "sender@x.com", "Message-ID": "<orig-id@x.com>",
+        })
+        client = make_client(service)
+        client.create_reply_draft("m1", body="b", my_email="me@x.com")
+
+        raw = service.users.return_value.drafts.return_value.create.call_args.kwargs["body"]["message"]["raw"]
+        decoded = base64.urlsafe_b64decode(raw.encode()).decode()
+        assert "References: <orig-id@x.com>" in decoded
+
+    def test_bcc_included_when_provided(self):
+        service = make_reply_service({"Subject": "Original", "From": "sender@x.com"})
+        client = make_client(service)
+        client.create_reply_draft("m1", body="b", my_email="me@x.com", bcc="hidden@x.com")
+
+        raw = service.users.return_value.drafts.return_value.create.call_args.kwargs["body"]["message"]["raw"]
+        decoded = base64.urlsafe_b64decode(raw.encode()).decode()
+        assert "bcc: hidden@x.com" in decoded
+
+    def test_http_error_on_headers_fetch_becomes_gmail_client_error(self):
+        service = MagicMock()
+        service.users.return_value.messages.return_value.get.return_value.execute.side_effect = http_error(404)
+        client = make_client(service)
+        with pytest.raises(GmailClientError, match="get_message"):
+            client.create_reply_draft("m1", body="b", my_email="me@x.com")
+
+
+# ---------------------------------------------------------------------------- #
+# Label operations
+# ---------------------------------------------------------------------------- #
+
+class TestAddLabel:
+    def test_reuses_existing_label_id(self):
+        service = MagicMock()
+        service.users.return_value.labels.return_value.list.return_value.execute.return_value = {
+            "labels": [{"id": "Label_1", "name": "Important"}]
+        }
+        client = make_client(service)
+
+        result = client.add_label("m1", "Important")
+
+        assert result == {"message_id": "m1", "label_added": "Important"}
+        service.users.return_value.labels.return_value.create.assert_not_called()
+        service.users.return_value.messages.return_value.modify.assert_called_once_with(
+            userId="me", id="m1", body={"addLabelIds": ["Label_1"]}
+        )
+
+    def test_creates_label_when_not_found(self):
+        service = MagicMock()
+        service.users.return_value.labels.return_value.list.return_value.execute.return_value = {"labels": []}
+        service.users.return_value.labels.return_value.create.return_value.execute.return_value = {"id": "Label_new"}
+        client = make_client(service)
+
+        client.add_label("m1", "NewLabel")
+
+        service.users.return_value.labels.return_value.create.assert_called_once_with(
+            userId="me", body={"name": "NewLabel"}
+        )
+        service.users.return_value.messages.return_value.modify.assert_called_once_with(
+            userId="me", id="m1", body={"addLabelIds": ["Label_new"]}
+        )
+
+    def test_label_lookup_is_case_insensitive(self):
+        service = MagicMock()
+        service.users.return_value.labels.return_value.list.return_value.execute.return_value = {
+            "labels": [{"id": "Label_1", "name": "important"}]
+        }
+        client = make_client(service)
+        client.add_label("m1", "IMPORTANT")
+        service.users.return_value.labels.return_value.create.assert_not_called()
+
+    def test_http_error_on_modify_becomes_gmail_client_error(self):
+        service = MagicMock()
+        service.users.return_value.labels.return_value.list.return_value.execute.return_value = {
+            "labels": [{"id": "Label_1", "name": "Important"}]
+        }
+        service.users.return_value.messages.return_value.modify.return_value.execute.side_effect = http_error(400)
+        client = make_client(service)
+        with pytest.raises(GmailClientError, match="add_label"):
+            client.add_label("m1", "Important")
+
+
+class TestRemoveLabel:
+    def test_removes_existing_label(self):
+        service = MagicMock()
+        service.users.return_value.labels.return_value.list.return_value.execute.return_value = {
+            "labels": [{"id": "Label_1", "name": "Important"}]
+        }
+        client = make_client(service)
+
+        result = client.remove_label("m1", "Important")
+
+        assert result == {"message_id": "m1", "label_removed": "Important"}
+        service.users.return_value.messages.return_value.modify.assert_called_once_with(
+            userId="me", id="m1", body={"removeLabelIds": ["Label_1"]}
+        )
+
+    def test_returns_note_when_label_not_found_no_api_call(self):
+        service = MagicMock()
+        service.users.return_value.labels.return_value.list.return_value.execute.return_value = {"labels": []}
+        client = make_client(service)
+
+        result = client.remove_label("m1", "Nonexistent")
+
+        assert result == {"message_id": "m1", "label_removed": "Nonexistent", "note": "label not found"}
+        service.users.return_value.messages.return_value.modify.assert_not_called()
+
+
+class TestArchiveMessage:
+    def test_removes_inbox_label(self):
+        service = MagicMock()
+        client = make_client(service)
+
+        result = client.archive_message("m1")
+
+        assert result == {"message_id": "m1", "archived": True}
+        service.users.return_value.messages.return_value.modify.assert_called_once_with(
+            userId="me", id="m1", body={"removeLabelIds": ["INBOX"]}
+        )
+
+    def test_http_error_becomes_gmail_client_error(self):
+        service = MagicMock()
+        service.users.return_value.messages.return_value.modify.return_value.execute.side_effect = http_error(400)
+        client = make_client(service)
+        with pytest.raises(GmailClientError, match="archive_message"):
+            client.archive_message("m1")
+
+
+# ---------------------------------------------------------------------------- #
+# resolve_attachment_destination: path-traversal sanitization
+# ---------------------------------------------------------------------------- #
+
+class TestResolveAttachmentDestination:
+    def test_joins_basename_with_destination_dir(self, tmp_path):
+        result = resolve_attachment_destination("report.pdf", str(tmp_path))
+        assert result == str(tmp_path / "report.pdf")
+
+    def test_strips_directory_traversal_from_filename(self, tmp_path):
+        # A crafted filename from the sender's MIME headers must never be
+        # able to write outside destination_dir.
+        result = resolve_attachment_destination("../../.ssh/authorized_keys", str(tmp_path))
+        assert result == str(tmp_path / "authorized_keys")
+
+    def test_strips_absolute_path_prefix_from_filename(self, tmp_path):
+        result = resolve_attachment_destination("/etc/passwd", str(tmp_path))
+        assert result == str(tmp_path / "passwd")
+
+    def test_empty_filename_falls_back_to_generic_name(self, tmp_path):
+        assert resolve_attachment_destination("", str(tmp_path)) == str(tmp_path / "attachment")
+
+    def test_empty_destination_dir_defaults_to_downloads(self, monkeypatch):
+        monkeypatch.setattr(os.path, "expanduser", lambda p: "/home/user/Downloads" if p == "~/Downloads" else p)
+        assert resolve_attachment_destination("report.pdf", "") == "/home/user/Downloads/report.pdf"
+
+    def test_whitespace_only_destination_dir_defaults_to_downloads(self, monkeypatch):
+        monkeypatch.setattr(os.path, "expanduser", lambda p: "/home/user/Downloads" if p == "~/Downloads" else p)
+        assert resolve_attachment_destination("report.pdf", "   ") == "/home/user/Downloads/report.pdf"
+
+
+# ---------------------------------------------------------------------------- #
+# download_attachment
+# ---------------------------------------------------------------------------- #
+
+class TestDownloadAttachment:
+    def test_requires_message_id_and_attachment_id(self):
+        client = make_client(MagicMock())
+        with pytest.raises(GmailClientError, match="non-empty message_id and attachment_id"):
+            client.download_attachment("", "att1", "file.pdf")
+        with pytest.raises(GmailClientError, match="non-empty message_id and attachment_id"):
+            client.download_attachment("m1", "", "file.pdf")
+
+    def test_downloads_decodes_and_saves_content(self, tmp_path):
+        service = MagicMock()
+        service.users.return_value.messages.return_value.attachments.return_value.get.return_value.execute.return_value = {
+            "data": b64("file contents")
+        }
+        client = make_client(service)
+
+        result = client.download_attachment("m1", "att1", "report.pdf", str(tmp_path))
+
+        dest = tmp_path / "report.pdf"
+        assert dest.read_bytes() == b"file contents"
+        assert result == {"path": str(dest), "name": "report.pdf", "size_bytes": len(b"file contents")}
+        service.users.return_value.messages.return_value.attachments.return_value.get.assert_called_once_with(
+            userId="me", messageId="m1", id="att1"
+        )
+
+    def test_sanitizes_filename_before_writing(self, tmp_path):
+        service = MagicMock()
+        service.users.return_value.messages.return_value.attachments.return_value.get.return_value.execute.return_value = {
+            "data": b64("data")
+        }
+        client = make_client(service)
+
+        result = client.download_attachment("m1", "att1", "../../evil.txt", str(tmp_path))
+
+        assert result == {"path": str(tmp_path / "evil.txt"), "name": "evil.txt", "size_bytes": 4}
+
+    def test_empty_filename_falls_back_to_attachment_id(self, tmp_path):
+        service = MagicMock()
+        service.users.return_value.messages.return_value.attachments.return_value.get.return_value.execute.return_value = {
+            "data": b64("data")
+        }
+        client = make_client(service)
+
+        result = client.download_attachment("m1", "att1", "", str(tmp_path))
+
+        assert result["name"] == "att1"
+
+    def test_creates_destination_directory_if_missing(self, tmp_path):
+        nested = tmp_path / "nested" / "dir"
+        service = MagicMock()
+        service.users.return_value.messages.return_value.attachments.return_value.get.return_value.execute.return_value = {
+            "data": b64("data")
+        }
+        client = make_client(service)
+
+        client.download_attachment("m1", "att1", "f.txt", str(nested))
+
+        assert (nested / "f.txt").read_bytes() == b"data"
+
+    def test_http_error_becomes_gmail_client_error(self):
+        service = MagicMock()
+        service.users.return_value.messages.return_value.attachments.return_value.get.return_value.execute.side_effect = http_error(404)
+        client = make_client(service)
+        with pytest.raises(GmailClientError, match="download_attachment"):
+            client.download_attachment("m1", "att1", "f.txt")

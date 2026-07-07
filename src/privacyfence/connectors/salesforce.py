@@ -84,7 +84,8 @@ class SalesforceConnector(Connector):
         except SalesforceClientError as exc:
             raise RuntimeError(str(exc)) from exc
         record_dict = asdict(record)
-        name = record_dict.get("Name") or record_dict.get("name") or record_id
+        record_fields = record_dict.get("fields", {})
+        name = record_fields.get("Name") or record_fields.get("name") or record_id
         preview = {
             "Object type": object_type,
             "Name": str(name),
@@ -113,8 +114,15 @@ class SalesforceConnector(Connector):
         except SalesforceClientError as exc:
             raise RuntimeError(str(exc)) from exc
         result_dict = asdict(result) if hasattr(result, "__dataclass_fields__") else result
-        report_name = (result_dict.get("name") or result_dict.get("reportName") or report_id
-                       if isinstance(result_dict, dict) else report_id)
+        # Salesforce's report-run response nests the report's name under
+        # reportMetadata.name, not at the top level -- report_dict.get("name")
+        # is always None for a real API response.
+        report_metadata = result_dict.get("reportMetadata") or {} if isinstance(result_dict, dict) else {}
+        report_name = (
+            report_metadata.get("name")
+            or (result_dict.get("name") or result_dict.get("reportName") if isinstance(result_dict, dict) else None)
+            or report_id
+        )
         preview = {
             "Report": str(report_name),
             "Report ID": report_id,

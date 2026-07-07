@@ -1,0 +1,466 @@
+"""Tests for ConfluenceClient's parsing logic, refresh-and-retry token
+logic, and result normalization. Mirrors test_jira_client.py's approach --
+same Atlassian OAuth refresh regression target (commit 862ff43), same
+"construct atlassian.Confluence for real, swap in a MagicMock for ._client"
+pattern.
+"""
+from __future__ import annotations
+
+from unittest.mock import MagicMock
+
+import pytest
+
+from privacyfence import confluence_client as confluence_client_module
+from privacyfence.atlassian_oauth import AtlassianOAuthError
+from privacyfence.confluence_client import (
+    ConfluenceClient,
+    ConfluenceClientError,
+    ConfluencePage,
+    ConfluenceSearchResult,
+    ConfluenceSpace,
+)
+
+
+def make_client(config: dict | None = None, token_file: str | None = None) -> ConfluenceClient:
+    base = {"access_token": "tok", "cloud_id": "cloud-1", "site_url": "https://acme.atlassian.net"}
+    base.update(config or {})
+    client = ConfluenceClient(config=base, token_file=token_file)
+    client._client = MagicMock()
+    return client
+
+
+def unauthorized_error() -> Exception:
+    exc = Exception("401 Unauthorized")
+    response = MagicMock()
+    response.status_code = 401
+    exc.response = response
+    return exc
+
+
+# ---------------------------------------------------------------------------- #
+# Construction
+# ---------------------------------------------------------------------------- #
+
+class TestConstruction:
+    def test_missing_access_token_raises(self):
+        with pytest.raises(ConfluenceClientError, match="not authenticated"):
+            ConfluenceClient(config={"cloud_id": "c1"})
+
+    def test_missing_cloud_id_raises(self):
+        with pytest.raises(ConfluenceClientError, match="not authenticated"):
+            ConfluenceClient(config={"access_token": "t"})
+
+    def test_base_url_prefers_site_url(self):
+        client = ConfluenceClient(config={"access_token": "t", "cloud_id": "c1", "site_url": "https://acme.atlassian.net/"})
+        assert client._base_url == "https://acme.atlassian.net"
+
+    def test_base_url_falls_back_to_wiki_api_url(self):
+        client = ConfluenceClient(config={"access_token": "t", "cloud_id": "c1"})
+        assert client._base_url == "https://api.atlassian.com/ex/confluence/c1/wiki"
+
+
+# ---------------------------------------------------------------------------- #
+# _parse_space
+# ---------------------------------------------------------------------------- #
+
+class TestParseSpace:
+    def test_full_space(self):
+        client = make_client()
+        raw = {"key": "ENG", "name": "Engineering", "type": "global",
+               "description": {"plain": {"value": "desc"}}}
+        space = client._parse_space(raw)
+        assert space == ConfluenceSpace(
+            key="ENG", name="Engineering", space_type="global", description="desc",
+            url="https://acme.atlassian.net/wiki/spaces/ENG",
+        )
+
+    def test_missing_description_defaults_empty(self):
+        client = make_client()
+        space = client._parse_space({"key": "ENG", "name": "Engineering"})
+        assert space.description == ""
+
+    def test_short_summary(self):
+        assert ConfluenceSpace(key="ENG", name="Engineering").short_summary() == "[ENG] Engineering"
+
+
+# ---------------------------------------------------------------------------- #
+# _parse_page
+# ---------------------------------------------------------------------------- #
+
+class TestParsePage:
+    def test_full_page_without_body(self):
+        client = make_client()
+        raw = {
+            "id": "123", "title": "My Page", "space": {"key": "ENG", "name": "Engineering"},
+            "version": {"number": 3},
+            "history": {"createdDate": "created-date", "lastUpdated": {"when": "updated-date", "by": {"displayName": "Jane"}}},
+            "_links": {"webui": "/spaces/ENG/pages/123"},
+        }
+        page = client._parse_page(raw)
+        assert page.id == "123"
+        assert page.title == "My Page"
+        assert page.space_key == "ENG"
+        assert page.version == 3
+        assert page.author == "Jane"
+        assert page.created == "created-date"
+        assert page.updated == "updated-date"
+        assert page.body == ""
+        assert page.url == "https://acme.atlassian.net/wiki/spaces/ENG/pages/123"
+
+    def test_body_included_only_when_requested(self):
+        client = make_client()
+        raw = {"id": "1", "body": {"storage": {"value": "<p>content</p>"}}}
+        without_body = client._parse_page(raw, include_body=False)
+        with_body = client._parse_page(raw, include_body=True)
+        assert without_body.body == ""
+        assert with_body.body == "<p>content</p>"
+
+    def test_missing_optional_fields_default_sensibly(self):
+        client = make_client()
+        page = client._parse_page({})
+        assert page.id == ""
+        assert page.version == 0
+        assert page.author == ""
+
+    def test_short_summary_truncates_long_title(self):
+        page = ConfluencePage(id="1", title="x" * 100, space_key="ENG")
+        assert page.short_summary().startswith("[ENG]")
+        assert page.short_summary().endswith("…")
+
+
+# ---------------------------------------------------------------------------- #
+# _parse_search_result: space resolution priority
+# ---------------------------------------------------------------------------- #
+
+class TestParseSearchResult:
+    def test_space_resolved_from_content_when_present(self):
+        client = make_client()
+        raw = {
+            "title": "Result", "entityType": "page", "excerpt": "...", "url": "/x",
+            "content": {"id": "1", "space": {"key": "ENG", "name": "Engineering"}},
+            "resultGlobalContainer": {"title": "Fallback Name"},
+        }
+        result = client._parse_search_result(raw)
+        assert result.space_key == "ENG"
+        assert result.space_name == "Engineering"
+
+    def test_falls_back_to_global_container_title_when_no_content_space(self):
+        client = make_client()
+        raw = {"title": "Result", "resultGlobalContainer": {"title": "Container Name"}}
+        result = client._parse_search_result(raw)
+        assert result.space_key == ""
+        assert result.space_name == "Container Name"
+
+    def test_url_prefixed_with_base_url_and_wiki(self):
+        client = make_client()
+        result = client._parse_search_result({"url": "/spaces/ENG/pages/1"})
+        assert result.url == "https://acme.atlassian.net/wiki/spaces/ENG/pages/1"
+
+    def test_short_summary(self):
+        result = ConfluenceSearchResult(id="1", title="Found It", content_type="page", space_key="ENG")
+        assert result.short_summary() == "[ENG] Found It"
+
+
+# ---------------------------------------------------------------------------- #
+# _try_refresh / _request: same reauth-on-restart regression target as Jira
+# ---------------------------------------------------------------------------- #
+
+class TestTryRefresh:
+    def test_missing_credentials_returns_false(self):
+        client = make_client({"refresh_token": "rt"})
+        assert client._try_refresh() is False
+
+    def test_successful_refresh_updates_config_and_session_header(self, monkeypatch):
+        monkeypatch.setattr(confluence_client_module, "atlassian_refresh",
+                             lambda cid, cs, rt: {"access_token": "new-tok", "refresh_token": "new-rt"})
+        client = make_client({"client_id": "ci", "client_secret": "cs", "refresh_token": "rt"})
+
+        assert client._try_refresh() is True
+        assert client._config["access_token"] == "new-tok"
+        assert client._session.headers["Authorization"] == "Bearer new-tok"
+
+    def test_picks_up_refresh_token_already_rotated_by_jira_client(self, monkeypatch, tmp_path):
+        captured = {}
+        def fake_refresh(cid, cs, rt):
+            captured["used"] = rt
+            return {"access_token": "new-tok", "refresh_token": "newer-rt"}
+        monkeypatch.setattr(confluence_client_module, "atlassian_refresh", fake_refresh)
+        monkeypatch.setattr(confluence_client_module, "load_token_file", lambda path: {"refresh_token": "rotated-by-jira"})
+        monkeypatch.setattr(confluence_client_module, "save_token_file", lambda path, record: None)
+
+        client = make_client(
+            {"client_id": "ci", "client_secret": "cs", "refresh_token": "stale-rt"},
+            token_file=str(tmp_path / "shared_token.json"),
+        )
+        client._try_refresh()
+
+        assert captured["used"] == "rotated-by-jira"
+
+    def test_refresh_api_failure_returns_false(self, monkeypatch):
+        def raiser(cid, cs, rt):
+            raise AtlassianOAuthError("refresh failed")
+        monkeypatch.setattr(confluence_client_module, "atlassian_refresh", raiser)
+        client = make_client({"client_id": "ci", "client_secret": "cs", "refresh_token": "rt"})
+        assert client._try_refresh() is False
+
+    def test_persists_to_shared_token_file(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(confluence_client_module, "atlassian_refresh",
+                             lambda cid, cs, rt: {"access_token": "new-tok", "refresh_token": "new-rt"})
+        monkeypatch.setattr(
+            confluence_client_module, "load_token_file",
+            lambda path: (_ for _ in ()).throw(AtlassianOAuthError("no file yet")),
+        )
+        saved = {}
+        monkeypatch.setattr(confluence_client_module, "save_token_file", lambda path, record: saved.update(record))
+
+        client = make_client(
+            {"client_id": "ci", "client_secret": "cs", "refresh_token": "rt", "account_email": "me@x.com"},
+            token_file=str(tmp_path / "atlassian_token.json"),
+        )
+        client._try_refresh()
+
+        assert saved == {
+            "access_token": "new-tok", "refresh_token": "new-rt",
+            "cloud_id": "cloud-1", "site_url": "https://acme.atlassian.net", "account_email": "me@x.com",
+        }
+
+
+class TestRequest:
+    def test_happy_path(self):
+        client = make_client()
+        assert client._request(lambda: "ok") == "ok"
+
+    def test_401_triggers_refresh_and_retry(self, monkeypatch):
+        client = make_client()
+        monkeypatch.setattr(client, "_try_refresh", lambda: True)
+        calls = {"n": 0}
+        def fn():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise unauthorized_error()
+            return "retried-ok"
+        assert client._request(fn) == "retried-ok"
+
+    def test_401_refresh_fails_reraises(self, monkeypatch):
+        client = make_client()
+        monkeypatch.setattr(client, "_try_refresh", lambda: False)
+        def fn():
+            raise unauthorized_error()
+        with pytest.raises(Exception, match="401"):
+            client._request(fn)
+
+
+# ---------------------------------------------------------------------------- #
+# check_connection / list_spaces / search / cql_search
+# ---------------------------------------------------------------------------- #
+
+class TestCheckConnection:
+    def test_returns_base_url_on_success(self):
+        client = make_client()
+        client._client.get.return_value = {"results": []}
+        assert client.check_connection() == "https://acme.atlassian.net"
+
+    def test_error_becomes_confluence_client_error(self):
+        client = make_client()
+        client._client.get.side_effect = RuntimeError("boom")
+        with pytest.raises(ConfluenceClientError, match="Confluence connection check failed"):
+            client.check_connection()
+
+
+class TestListSpaces:
+    def test_maps_results(self):
+        client = make_client()
+        client._client.get.return_value = {"results": [{"key": "ENG", "name": "Engineering"}]}
+        spaces = client.list_spaces()
+        assert spaces[0].key == "ENG"
+
+    def test_uses_v2_spaces_endpoint_with_type_filter(self):
+        client = make_client()
+        client._client.get.return_value = {"results": []}
+        client.list_spaces(space_type="personal")
+        args, kwargs = client._client.get.call_args
+        assert args[0] == "api/v2/spaces"
+        assert kwargs["params"]["type"] == "personal"
+
+    def test_none_response_yields_empty_list(self):
+        client = make_client()
+        client._client.get.return_value = None
+        assert client.list_spaces() == []
+
+    def test_http_error_becomes_confluence_client_error(self):
+        client = make_client()
+        client._client.get.side_effect = RuntimeError("boom")
+        with pytest.raises(ConfluenceClientError, match="list_spaces failed"):
+            client.list_spaces()
+
+
+class TestSearch:
+    def test_requires_query(self):
+        client = make_client()
+        with pytest.raises(ConfluenceClientError, match="non-empty query"):
+            client.search("")
+
+    def test_wraps_query_in_cql_text_search(self):
+        client = make_client()
+        client._client.cql.return_value = {"results": []}
+        client.search("budget")
+        cql = client._client.cql.call_args.args[0]
+        assert 'text ~ "budget"' in cql
+
+    def test_maps_results(self):
+        client = make_client()
+        client._client.cql.return_value = {"results": [{"title": "Doc", "entityType": "page"}]}
+        results = client.search("q")
+        assert results[0].title == "Doc"
+
+    def test_http_error_becomes_confluence_client_error(self):
+        client = make_client()
+        client._client.cql.side_effect = RuntimeError("boom")
+        with pytest.raises(ConfluenceClientError, match="search\\('q'\\) failed"):
+            client.search("q")
+
+
+class TestCqlSearch:
+    def test_requires_cql(self):
+        client = make_client()
+        with pytest.raises(ConfluenceClientError, match="non-empty CQL"):
+            client.cql_search("")
+
+    def test_passes_cql_through_unmodified(self):
+        client = make_client()
+        client._client.cql.return_value = {"results": []}
+        client.cql_search('space = "ENG" and type = "page"')
+        assert client._client.cql.call_args.args[0] == 'space = "ENG" and type = "page"'
+
+
+# ---------------------------------------------------------------------------- #
+# list_pages_in_space / get_page / get_page_by_title
+# ---------------------------------------------------------------------------- #
+
+class TestListPagesInSpace:
+    def test_requires_space_key(self):
+        client = make_client()
+        with pytest.raises(ConfluenceClientError, match="requires a space_key"):
+            client.list_pages_in_space("")
+
+    def test_maps_pages(self):
+        client = make_client()
+        client._client.get_all_pages_from_space.return_value = [{"id": "1", "title": "Page"}]
+        pages = client.list_pages_in_space("ENG")
+        assert pages[0].title == "Page"
+
+    def test_http_error_becomes_confluence_client_error(self):
+        client = make_client()
+        client._client.get_all_pages_from_space.side_effect = RuntimeError("boom")
+        with pytest.raises(ConfluenceClientError, match="list_pages_in_space"):
+            client.list_pages_in_space("ENG")
+
+
+class TestGetPage:
+    def test_requires_page_id(self):
+        client = make_client()
+        with pytest.raises(ConfluenceClientError, match="requires a page_id"):
+            client.get_page("")
+
+    def test_fetches_with_body(self):
+        client = make_client()
+        client._client.get_page_by_id.return_value = {
+            "id": "1", "title": "Page", "body": {"storage": {"value": "content"}},
+        }
+        page = client.get_page("1")
+        assert page.body == "content"
+
+
+class TestGetPageByTitle:
+    def test_requires_space_key_and_title(self):
+        client = make_client()
+        with pytest.raises(ConfluenceClientError, match="requires space_key and title"):
+            client.get_page_by_title("", "Title")
+        with pytest.raises(ConfluenceClientError, match="requires space_key and title"):
+            client.get_page_by_title("ENG", "")
+
+    def test_not_found_raises_confluence_client_error(self):
+        client = make_client()
+        client._client.get_page_by_title.return_value = None
+        with pytest.raises(ConfluenceClientError, match="Page not found"):
+            client.get_page_by_title("ENG", "Nonexistent")
+
+    def test_found_returns_parsed_page(self):
+        client = make_client()
+        client._client.get_page_by_title.return_value = {"id": "1", "title": "Found"}
+        page = client.get_page_by_title("ENG", "Found")
+        assert page.title == "Found"
+
+
+# ---------------------------------------------------------------------------- #
+# create_page / update_page
+# ---------------------------------------------------------------------------- #
+
+class TestCreatePage:
+    def test_requires_space_key_and_title(self):
+        client = make_client()
+        with pytest.raises(ConfluenceClientError, match="requires space_key and title"):
+            client.create_page("", "Title", "body")
+        with pytest.raises(ConfluenceClientError, match="requires space_key and title"):
+            client.create_page("ENG", "", "body")
+
+    def test_creates_and_refetches_full_page(self):
+        client = make_client()
+        client._client.create_page.return_value = {"id": "99"}
+        client._client.get_page_by_id.return_value = {"id": "99", "title": "New Page"}
+
+        page = client.create_page("ENG", "New Page", "<p>body</p>", parent_id="1")
+
+        create_kwargs = client._client.create_page.call_args.kwargs
+        assert create_kwargs["space"] == "ENG"
+        assert create_kwargs["parent_id"] == "1"
+        assert page.title == "New Page"
+
+    def test_no_parent_id_passes_none(self):
+        client = make_client()
+        client._client.create_page.return_value = {"id": "99"}
+        client._client.get_page_by_id.return_value = {"id": "99"}
+        client.create_page("ENG", "New Page", "body")
+        assert client._client.create_page.call_args.kwargs["parent_id"] is None
+
+    def test_http_error_becomes_confluence_client_error(self):
+        client = make_client()
+        client._client.create_page.side_effect = RuntimeError("boom")
+        with pytest.raises(ConfluenceClientError, match="create_page failed"):
+            client.create_page("ENG", "Title", "body")
+
+
+class TestUpdatePage:
+    def test_requires_page_id_and_title(self):
+        client = make_client()
+        with pytest.raises(ConfluenceClientError, match="requires page_id and title"):
+            client.update_page("", "Title", "body")
+        with pytest.raises(ConfluenceClientError, match="requires page_id and title"):
+            client.update_page("1", "", "body")
+
+    def test_bumps_version_number_from_current(self):
+        client = make_client()
+        client._client.get_page_by_id.side_effect = [
+            {"version": {"number": 5}},  # fetch current version
+            {"id": "1", "title": "Updated", "version": {"number": 6}},  # refetch after update
+        ]
+        page = client.update_page("1", "Updated", "new body")
+
+        update_kwargs = client._client.update_page.call_args.kwargs
+        assert update_kwargs["version_number"] == 6
+        assert page.version == 6
+
+    def test_missing_version_defaults_to_one_then_bumps_to_two(self):
+        client = make_client()
+        client._client.get_page_by_id.side_effect = [
+            {},  # no version field at all
+            {"id": "1", "title": "Updated"},
+        ]
+        client.update_page("1", "Updated", "body")
+        assert client._client.update_page.call_args.kwargs["version_number"] == 2
+
+    def test_http_error_becomes_confluence_client_error(self):
+        client = make_client()
+        client._client.get_page_by_id.side_effect = RuntimeError("boom")
+        with pytest.raises(ConfluenceClientError, match="update_page"):
+            client.update_page("1", "Title", "body")

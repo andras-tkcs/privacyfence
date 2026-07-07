@@ -17,6 +17,7 @@ import base64
 import hashlib
 import logging
 import secrets
+import socketserver
 import threading
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -24,6 +25,28 @@ from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
 logger = logging.getLogger(__name__)
+
+
+class _LoopbackHTTPServer(HTTPServer):
+    """HTTPServer, minus the reverse-DNS lookup HTTPServer.server_bind()
+    normally does on every bind (``socket.getfqdn(host)``, purely to set
+    ``self.server_name`` for access logging).
+
+    That lookup can hang for a long time on machines/networks with slow or
+    unusual DNS resolution — even for 127.0.0.1 — and it runs synchronously
+    inside the constructor, before the accept loop's background thread ever
+    starts, so a slow resolver here stalls the whole OAuth flow before the
+    user even sees a browser window. We never read server_name (log_message
+    is overridden to a no-op below), so skip HTTPServer's override entirely
+    and fall back to TCPServer's plain bind.
+    """
+
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
+
 
 _SUCCESS_HTML = b"""<!doctype html><html><head><title>PrivacyFence</title></head>
 <body style="font-family: -apple-system, sans-serif; text-align: center; padding-top: 4em;">
@@ -118,7 +141,7 @@ def run_browser_oauth(
             done.set()
 
     try:
-        server = HTTPServer(("127.0.0.1", port), Handler)
+        server = _LoopbackHTTPServer(("127.0.0.1", port), Handler)
     except OSError as exc:
         raise OAuthLoopbackError(
             f"Could not bind 127.0.0.1:{port} for the OAuth redirect — is another "
