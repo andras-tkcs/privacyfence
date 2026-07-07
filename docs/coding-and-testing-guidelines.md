@@ -19,8 +19,8 @@ implements. This document is about how to write and test the code correctly, not
 - Python 3.11+. Every module starts with `from __future__ import annotations` (right after the
   module docstring, before other imports).
 - Prefer the standard library over new dependencies (stated in `CONTRIBUTING.md`).
-- Use modern union syntax, `X | None`, not `Optional[X]`. A handful of older call sites still use
-  `Optional[...]` (see §3) — treat those as legacy, not a pattern to copy.
+- Use modern union syntax, `X | None`, not `Optional[X]`. The codebase has no remaining
+  `Optional[...]` call sites — keep it that way in new code.
 - Type-hint function signatures, including return types (`-> None`, `-> Any`, etc.). Dataclass
   fields are always typed.
 

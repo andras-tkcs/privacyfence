@@ -158,15 +158,15 @@ in the tool result.
    field and tell me the exact before/after. Popup, Accept.
 
 ## Phase 6 — Google Tasks
-Run the full lifecycle — every one of these is documented as unconditionally
-auto-accepted, so I expect **zero prompts** for this entire phase. Flag it
-loudly if any of them DO prompt me:
-1. `tasks_list_task_lists`, `tasks_list_tasks`.
-2. `tasks_create_task` — title `PrivacyFence QA test task — safe to delete`.
-3. `tasks_get_task` on it.
-4. `tasks_update_task` (change the title slightly).
-5. `tasks_complete_task`, then `tasks_uncomplete_task`.
-6. `tasks_move_task` (move it within the same list).
+Reads are unconditionally auto-accepted; writes are `popup`-gated like every
+other connector's writes. Expect **zero prompts** for step 1, and a popup for
+each of steps 2, 4, 5, and 6:
+1. `tasks_list_task_lists`, `tasks_list_tasks` (expect: silent).
+2. `tasks_create_task` — title `PrivacyFence QA test task — safe to delete`. Popup, Accept.
+3. `tasks_get_task` on it (expect: silent).
+4. `tasks_update_task` (change the title slightly). Popup, Accept.
+5. `tasks_complete_task`, then `tasks_uncomplete_task`. Popup, Accept each.
+6. `tasks_move_task` (move it within the same list). Popup, Accept.
 
 ## Phase 7 — Telegram
 1. `telegram_list_chats` (expect: silent — the only genuinely unconditional one).
@@ -260,10 +260,13 @@ Running this method surfaced, in one pass:
 - **The README's auto-accept-rules section had drifted from the code**: a
   stale footnote claimed Telegram's read tools were unconditionally
   auto-accepted (only `telegram_list_chats` is) and that Tasks writes needed
-  popup approval (they don't — all 8 Tasks tools are auto). The same
-  cross-check also turned up real, working auto-accept rule evaluators for
-  Jira, Confluence, Telegram, and Contacts in `auto_accept.py` that were
-  entirely missing from the README's rule tables.
+  popup approval like every other connector (a later doc-only edit briefly
+  reverted this footnote to claim all 8 Tasks tools were auto — they aren't;
+  the 5 write tools are `popup`-gated in `tasks.py`, matching the table
+  elsewhere in the README). The same cross-check also turned up real,
+  working auto-accept rule evaluators for Jira, Confluence, Telegram, and
+  Contacts in `auto_accept.py` that were entirely missing from the README's
+  rule tables.
 
 None of these were caught by the unit test suite, because the unit tests mock
 each connector's client — they verify the code does what it's told, not that

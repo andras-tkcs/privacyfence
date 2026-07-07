@@ -236,6 +236,15 @@ Routine, low-risk requests can be approved automatically without a prompt. Rules
 | `age_threshold_days` | Message is older than N days |
 | `no_attachments` | Message has no attachments |
 
+These apply to Gmail's read tools. Gmail's write tools (`gmail_create_draft`, `gmail_reply_draft`,
+`gmail_reply_all_draft`, `gmail_add_label`, `gmail_remove_label`) have their own rules:
+
+| Rule | Matches when… |
+|------|--------------|
+| `to_is_myself` | Every recipient of the draft/reply is the authenticated account itself |
+| `approved_recipient_domain` | Every recipient's domain is in the allowlist |
+| `label_name_allowlist` | The label being added/removed is in the allowlist |
+
 **Google Drive**
 
 | Rule | Matches when… |
@@ -247,6 +256,9 @@ Routine, low-risk requests can be approved automatically without a prompt. Rules
 | `file_type_allowlist` | File MIME type is in the allowlist |
 | `created_this_session` | File was created by Claude in the current session |
 | `shared_drive_exclusion` | File is NOT on a shared drive |
+
+`drive_upload_file` additionally supports `parent_folder_allowlist` (matches when the upload's
+destination folder ID is in the allowlist).
 
 The same rules apply to the `drive_sheets_*` tools, under their own operation keys so they can be
 configured independently of plain-file Drive operations: `sheets.read_values` (`i_am_owner`,
@@ -337,7 +349,7 @@ spreadsheet and tab you just read — rather than a broader ownership- or folder
 | `approved_chats` | Chat ID is in the allowlist |
 | `no_media_attachments` | Messages have no media attachments |
 
-> **Google Contacts**: `contacts_list`, `contacts_search`, and `contacts_get` are unconditionally auto-accepted. Only `contacts_update` is gated (`popup`), and it's the one tool the `no_contact_info_change` rule above applies to. **Google Tasks** has no configurable auto-accept rules at all — every one of its eight tools, including the write ones (`tasks_create_task`, `tasks_update_task`, `tasks_complete_task`, `tasks_uncomplete_task`, `tasks_move_task`), is unconditionally auto-accepted and logged as `auto_accepted`. **Telegram**: `telegram_list_chats` is unconditionally auto-accepted; `telegram_get_messages` and `telegram_search_messages` are `review`-gated by default but configurable via the rules above; `telegram_send_message` is `popup`-gated with no configurable rule. **Jira and Confluence** read tools (`jira_get_issue`, `confluence_get_page`, `confluence_get_page_by_title`) are `review`-gated by default but configurable via the rules above; their write tools have no configurable auto-accept rules and remain `popup`-gated.
+> **Google Contacts**: `contacts_list`, `contacts_search`, and `contacts_get` are unconditionally auto-accepted. Only `contacts_update` is gated (`popup`), and it's the one tool the `no_contact_info_change` rule above applies to. **Google Tasks**: all three read tools plus `tasks_list_task_lists` are unconditionally auto-accepted; the five write tools (`tasks_create_task`, `tasks_update_task`, `tasks_complete_task`, `tasks_uncomplete_task`, `tasks_move_task`) are `popup`-gated with no configurable auto-accept rule, matching every other connector's write behavior. **Telegram**: `telegram_list_chats` is unconditionally auto-accepted; `telegram_get_messages` and `telegram_search_messages` are `review`-gated by default but configurable via the rules above; `telegram_send_message` is `popup`-gated with no configurable rule. **Jira and Confluence** read tools (`jira_get_issue`, `confluence_get_page`, `confluence_get_page_by_title`) are `review`-gated by default but configurable via the rules above; their write tools have no configurable auto-accept rules and remain `popup`-gated.
 
 ---
 
@@ -346,15 +358,6 @@ spreadsheet and tab you just read — rather than a broader ownership- or folder
 Every decision — accepted, denied, or auto-accepted — is appended to a JSON-lines file in `logs/audit/YYYY-WNN.jsonl`. At startup, any week that has a `.jsonl` file but no `.xlsx` is automatically exported to a formatted Excel workbook with a colour-coded **Decisions** sheet and a **Summary** tab.
 
 See [docs/connector-qa-testing.md](docs/connector-qa-testing.md) for a Claude Cowork prompt that drives every connector's tools end to end against real accounts — the fastest way to catch a gate, auto-accept rule, or connector client that's drifted from what's documented here.
-
----
-
-## Security, privacy & compliance
-
-For information security, IT, GDPR, and EU AI Act reviewers: see
-[docs/security-and-compliance.md](docs/security-and-compliance.md) for the deployment model
-(local, not SaaS), IT's connector-level access authority, the human-in-the-loop review model,
-data handling, and PrivacyFence's positioning under GDPR and the AI Act.
 
 ---
 
@@ -571,4 +574,4 @@ The MCP annotation is cosmetic; the daemon's decision is authoritative.
 
 ## License
 
-Proprietary. All rights reserved.
+Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

@@ -28,12 +28,15 @@ Open **APIs & Services → Library** and enable each of the following APIs one b
 | Google People API | `People API` | Contacts connector |
 | Google Calendar API | `Google Calendar API` | Calendar connector |
 | Google Tasks API | `Tasks API` | Google Tasks connector |
+| Admin SDK API | `Admin SDK API` | Calendar connector (`calendar_list_rooms` only) |
 
 For each: click the API in the search results, then click **Enable**.
 
 > **Note:** The People API covers Google Contacts. Do not confuse it with the older Contacts API, which is deprecated.
 
 > **Note:** The Sheets API doesn't need its own OAuth scope or consent-screen entry — it accepts the same `drive` scope already granted, so users don't re-authenticate. It still has to be individually **enabled** in this project's API Library like every other API here; if it's left disabled, `drive_sheets_*` calls fail with an `accessNotConfigured` / "API has not been used in project ... before or it is disabled" error even though the user's OAuth token is otherwise valid.
+
+> **Note:** The Admin SDK API is only needed for `calendar_list_rooms` (Workspace room/resource booking), which requires the `admin.directory.resource.calendar.readonly` scope and a Workspace admin account. If your organization doesn't use room booking, you can skip enabling it — every other Calendar tool works without it.
 
 ### 3. Configure the OAuth consent screen
 

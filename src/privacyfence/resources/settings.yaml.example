@@ -67,14 +67,6 @@ auto_accept_rules:
     # (e.g. filling in a sheet PrivacyFence just created for you)
     # - rule: created_this_session
 
-mcp:
-  server_name: privacyfence-gmail
-  server_version: 0.1.0
-
-drive_mcp:
-  server_name: privacyfence-drive
-  server_version: 0.1.0
-
 logging:
   # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
   level: INFO
