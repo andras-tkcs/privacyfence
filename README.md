@@ -162,6 +162,11 @@ string starting with `=` is evaluated as a formula, exactly like typing it into 
 | `contacts_search` | read | auto | — | — |
 | `contacts_get` | read | auto | — | — |
 | `contacts_update` | write | popup | — | Contact name, fields changing (old → new) |
+| `contacts_create` | write | popup | — | Name, fields being set |
+| `contacts_add_label` | write | popup | — | Contact name, label (creates the label if it doesn't exist) |
+| `contacts_remove_label` | write | popup | — | Contact name, label |
+
+Contact deletion is not supported by this connector.
 
 ### Telegram
 
@@ -359,7 +364,7 @@ spreadsheet and tab you just read — rather than a broader ownership- or folder
 | `approved_chats` | Chat ID is in the allowlist |
 | `no_media_attachments` | Messages have no media attachments |
 
-> **Google Contacts**: `contacts_list`, `contacts_search`, and `contacts_get` are unconditionally auto-accepted. Only `contacts_update` is gated (`popup`), and it's the one tool the `no_contact_info_change` rule above applies to. **Google Tasks**: all three read tools plus `tasks_list_task_lists` are unconditionally auto-accepted; the five write tools (`tasks_create_task`, `tasks_update_task`, `tasks_complete_task`, `tasks_uncomplete_task`, `tasks_move_task`) are `popup`-gated with no configurable auto-accept rule, matching every other connector's write behavior. **Telegram**: `telegram_list_chats` is unconditionally auto-accepted; `telegram_get_messages` and `telegram_search_messages` are `review`-gated by default but configurable via the rules above; `telegram_send_message` is `popup`-gated with no configurable rule. **Jira and Confluence** read tools (`jira_get_issue`, `confluence_get_page`, `confluence_get_page_by_title`) are `review`-gated by default but configurable via the rules above; their write tools have no configurable auto-accept rules and remain `popup`-gated.
+> **Google Contacts**: `contacts_list`, `contacts_search`, and `contacts_get` are unconditionally auto-accepted. `contacts_update`, `contacts_create`, `contacts_add_label`, and `contacts_remove_label` are all `popup`-gated; `no_contact_info_change` above is the only configurable auto-accept rule, and it applies only to `contacts_update`. Contact deletion is not supported. **Google Tasks**: all three read tools plus `tasks_list_task_lists` are unconditionally auto-accepted; the five write tools (`tasks_create_task`, `tasks_update_task`, `tasks_complete_task`, `tasks_uncomplete_task`, `tasks_move_task`) are `popup`-gated with no configurable auto-accept rule, matching every other connector's write behavior. **Telegram**: `telegram_list_chats` is unconditionally auto-accepted; `telegram_get_messages` and `telegram_search_messages` are `review`-gated by default but configurable via the rules above; `telegram_send_message` is `popup`-gated with no configurable rule. **Jira and Confluence** read tools (`jira_get_issue`, `confluence_get_page`, `confluence_get_page_by_title`) are `review`-gated by default but configurable via the rules above; their write tools have no configurable auto-accept rules and remain `popup`-gated.
 
 ---
 

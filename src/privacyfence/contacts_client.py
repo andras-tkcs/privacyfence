@@ -374,6 +374,127 @@ class ContactsClient:
         logger.info("update_contact %s: %s", resource_name, contact.short_summary())
         return contact
 
+    def create_contact(
+        self,
+        display_name: str = "",
+        emails: list[dict] | None = None,
+        phones: list[dict] | None = None,
+        organization: str | None = None,
+        job_title: str | None = None,
+        notes: str | None = None,
+    ) -> Contact:
+        """Create a new contact. Contact deletion is not supported."""
+        person: dict[str, Any] = {}
+        if display_name:
+            person["names"] = [{
+                "displayName": display_name,
+                "givenName": display_name.split()[0] if display_name.split() else "",
+                "familyName": " ".join(display_name.split()[1:]),
+            }]
+        if emails:
+            person["emailAddresses"] = [
+                {"value": e.get("value", ""), "type": e.get("type", "")} for e in emails
+            ]
+        if phones:
+            person["phoneNumbers"] = [
+                {"value": p.get("value", ""), "type": p.get("type", "")} for p in phones
+            ]
+        if organization or job_title:
+            org: dict[str, Any] = {}
+            if organization:
+                org["name"] = organization
+            if job_title:
+                org["title"] = job_title
+            person["organizations"] = [org]
+        if notes:
+            person["biographies"] = [{"value": notes, "contentType": "TEXT_PLAIN"}]
+
+        try:
+            with self._request_lock:
+                created = (
+                    self._get_service()
+                    .people()
+                    .createContact(personFields=_PERSON_FIELDS, body=person)
+                    .execute()
+                )
+        except HttpError as exc:
+            raise ContactsClientError(f"create_contact failed: {exc}") from exc
+
+        contact = _parse_person(created)
+        logger.info("create_contact: %s", contact.short_summary())
+        return contact
+
+    # ------------------------------------------------------------------ #
+    # Labels (contact groups)
+    # ------------------------------------------------------------------ #
+
+    def add_label(self, resource_name: str, label_name: str) -> dict:
+        """Add a contact to a label, creating the label if it does not exist."""
+        service = self._get_service()
+        group_resource_name = self._get_or_create_contact_group(label_name)
+        try:
+            with self._request_lock:
+                service.contactGroups().members().modify(
+                    resourceName=group_resource_name,
+                    body={"resourceNamesToAdd": [resource_name]},
+                ).execute()
+        except HttpError as exc:
+            raise ContactsClientError(
+                f"add_label({resource_name}, {label_name!r}) failed: {exc}"
+            ) from exc
+        logger.info("add_label: resource_name=%s label=%s", resource_name, label_name)
+        return {"resource_name": resource_name, "label_added": label_name}
+
+    def remove_label(self, resource_name: str, label_name: str) -> dict:
+        """Remove a contact from a label."""
+        service = self._get_service()
+        group_resource_name = self._get_contact_group_resource_name(label_name)
+        if not group_resource_name:
+            return {"resource_name": resource_name, "label_removed": label_name, "note": "label not found"}
+        try:
+            with self._request_lock:
+                service.contactGroups().members().modify(
+                    resourceName=group_resource_name,
+                    body={"resourceNamesToRemove": [resource_name]},
+                ).execute()
+        except HttpError as exc:
+            raise ContactsClientError(
+                f"remove_label({resource_name}, {label_name!r}) failed: {exc}"
+            ) from exc
+        logger.info("remove_label: resource_name=%s label=%s", resource_name, label_name)
+        return {"resource_name": resource_name, "label_removed": label_name}
+
+    def _get_or_create_contact_group(self, label_name: str) -> str:
+        """Return an existing contact group's resource name, or create it."""
+        existing = self._get_contact_group_resource_name(label_name)
+        if existing:
+            return existing
+        service = self._get_service()
+        try:
+            with self._request_lock:
+                result = (
+                    service.contactGroups()
+                    .create(body={"contactGroup": {"name": label_name}})
+                    .execute()
+                )
+        except HttpError as exc:
+            raise ContactsClientError(f"create_contact_group({label_name!r}) failed: {exc}") from exc
+        return result.get("resourceName", "")
+
+    def _get_contact_group_resource_name(self, label_name: str) -> str:
+        """Return the resource name for a label (contact group) by name, or '' if not found."""
+        service = self._get_service()
+        try:
+            with self._request_lock:
+                response = service.contactGroups().list(pageSize=1000).execute()
+        except HttpError as exc:
+            raise ContactsClientError(f"contactGroups.list failed: {exc}") from exc
+        for group in response.get("contactGroups", []):
+            name = group.get("formattedName") or group.get("name", "")
+            if name.lower() == label_name.lower():
+                return group.get("resourceName", "")
+        return ""
+
 
 # ------------------------------------------------------------------ #
 # HTTP helper

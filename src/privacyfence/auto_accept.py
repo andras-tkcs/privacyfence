@@ -43,6 +43,9 @@ TOOL_TO_OPERATION: dict[str, str] = {
     "salesforce_get_record":          "salesforce.read_record",
     "salesforce_run_report":          "salesforce.run_report",
     "contacts_update":                "contacts.edit",
+    "contacts_create":                "contacts.create",
+    "contacts_add_label":             "contacts.add_label",
+    "contacts_remove_label":          "contacts.remove_label",
     "jira_get_issue":                 "jira.read_issue",
     "jira_create_issue":              "jira.create_issue",
     "jira_add_comment":               "jira.add_comment",
@@ -75,7 +78,7 @@ class AutoAcceptEvaluator:
 
     def should_auto_accept(self, operation_key: str, ctx: ReviewContext) -> tuple[bool, str]:
         """Return (should_auto_accept, matched_rule_name)."""
-        for rule_cfg in self._rules.get(operation_key, []):
+        for rule_cfg in self._rules.get(operation_key) or []:
             rule_name = rule_cfg.get("rule", "")
             value = rule_cfg.get("value")
             try:
