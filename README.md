@@ -358,6 +358,15 @@ data handling, and PrivacyFence's positioning under GDPR and the AI Act.
 
 ---
 
+## Security, privacy & compliance
+
+For information security, IT, GDPR, and EU AI Act reviewers: see
+[docs/security-and-compliance.md](docs/security-and-compliance.md) for the deployment model
+(local, not SaaS), IT's connector-level access authority, the human-in-the-loop review model,
+data handling, and PrivacyFence's positioning under GDPR and the AI Act.
+
+---
+
 ## Installation
 
 PrivacyFence splits configuration into two steps done by two different people:
