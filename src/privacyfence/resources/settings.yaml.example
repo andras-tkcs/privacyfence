@@ -59,8 +59,9 @@ slack_privacy:
 
 auto_accept_rules:
   contacts.edit:
-    # Auto-accept edits to contacts I created (no rule for this yet — left empty)
-    # - rule: i_am_owner  # not applicable to contacts
+    # Auto-accept contact edits that don't touch emails/phones (name,
+    # organization, or notes-only changes)
+    - rule: no_contact_info_change
   # sheets.write_range:
     # Auto-accept writes to spreadsheets created earlier in the same session
     # (e.g. filling in a sheet PrivacyFence just created for you)
