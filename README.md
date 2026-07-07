@@ -345,6 +345,8 @@ spreadsheet and tab you just read — rather than a broader ownership- or folder
 
 Every decision — accepted, denied, or auto-accepted — is appended to a JSON-lines file in `logs/audit/YYYY-WNN.jsonl`. At startup, any week that has a `.jsonl` file but no `.xlsx` is automatically exported to a formatted Excel workbook with a colour-coded **Decisions** sheet and a **Summary** tab.
 
+See [docs/connector-qa-testing.md](docs/connector-qa-testing.md) for a Claude Cowork prompt that drives every connector's tools end to end against real accounts — the fastest way to catch a gate, auto-accept rule, or connector client that's drifted from what's documented here.
+
 ---
 
 ## Security, privacy & compliance
