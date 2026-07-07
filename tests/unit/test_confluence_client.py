@@ -370,6 +370,16 @@ class TestListPagesInSpace:
         with pytest.raises(ConfluenceClientError, match="Space not found"):
             client.list_pages_in_space("ENG")
 
+    def test_space_not_found_404_raises_confluence_client_error(self):
+        # The v2 spaces endpoint 404s (instead of 200 + empty results) when
+        # the `keys` filter matches no space.
+        client = make_client()
+        exc = Exception("404 Client Error: Not Found for url: ...")
+        exc.response = MagicMock(status_code=404)
+        client._client.get.side_effect = exc
+        with pytest.raises(ConfluenceClientError, match="Space not found: 'ENG'"):
+            client.list_pages_in_space("ENG")
+
     def test_http_error_becomes_confluence_client_error(self):
         client = make_client()
         client._client.get.side_effect = [
