@@ -4,6 +4,8 @@ fallback, and update_contact's partial-field update building.
 """
 from __future__ import annotations
 
+import threading
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -357,3 +359,43 @@ class TestUpdateContact:
         client = make_client(service)
         with pytest.raises(ContactsClientError, match="update_contact failed unexpectedly"):
             client.update_contact("people/c1", notes="x")
+
+
+# ---------------------------------------------------------------------------- #
+# Thread safety: concurrent calls must not overlap on the shared httplib2
+# connection (regression for the "SSL: DECRYPTION_FAILED_OR_BAD_RECORD_MAC"
+# crash caused by two threads driving the same connection at once).
+# ---------------------------------------------------------------------------- #
+
+class TestConcurrentRequestsAreSerialized:
+    def test_list_and_search_calls_never_overlap(self):
+        active = 0
+        max_active = 0
+        state_lock = threading.Lock()
+
+        def fake_execute():
+            nonlocal active, max_active
+            with state_lock:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.05)
+            with state_lock:
+                active -= 1
+            return {"connections": [], "results": []}
+
+        service = MagicMock()
+        service.people.return_value.connections.return_value.list.return_value.execute.side_effect = fake_execute
+        service.people.return_value.searchContacts.return_value.execute.side_effect = fake_execute
+        client = make_client(service)
+
+        threads = [
+            threading.Thread(target=client.list_contacts),
+            threading.Thread(target=client.search_contacts, args=("jane",)),
+            threading.Thread(target=client.list_contacts),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert max_active == 1
