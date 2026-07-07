@@ -55,6 +55,8 @@ class Contact:
     job_title: str = ""
     notes: str = ""
     photo_url: str = ""
+    source: str = "other"  # "personal" | "directory" | "both" | "other"
+    source_types: list[str] = field(default_factory=list)
 
     def short_summary(self) -> str:
         emails = ", ".join(e.value for e in self.emails[:2])
@@ -72,10 +74,51 @@ class Contact:
             "job_title": self.job_title,
             "notes": self.notes,
             "photo_url": self.photo_url,
+            "source": self.source,
+            "source_types": list(self.source_types),
         }
 
 
-_PERSON_FIELDS = "names,emailAddresses,phoneNumbers,organizations,biographies,photos"
+_PERSON_FIELDS = "names,emailAddresses,phoneNumbers,organizations,biographies,photos,metadata"
+
+# Google's People API can back a single merged Person with multiple sources
+# (Person.metadata.sources[].type): "CONTACT" is the user's own saved
+# address book; "DOMAIN_PROFILE"/"DOMAIN_CONTACT" mean the entry comes from
+# the Workspace directory instead (a colleague's profile, or a domain-shared
+# contact). connections.list blends these together by default, so we
+# classify each entry from its source metadata to let callers split them
+# back apart.
+_VALID_SOURCES = ("personal", "directory", "both")
+_DIRECTORY_SOURCE_TYPES = frozenset({"DOMAIN_PROFILE", "DOMAIN_CONTACT"})
+
+
+def _normalize_source(source: str) -> str:
+    normalized = (source or "both").strip().lower()
+    if normalized not in _VALID_SOURCES:
+        raise ContactsClientError(f"Invalid source {source!r}: must be one of {_VALID_SOURCES}")
+    return normalized
+
+
+def _classify_source(source_types: list[str]) -> str:
+    is_personal = "CONTACT" in source_types
+    is_directory = any(t in _DIRECTORY_SOURCE_TYPES for t in source_types)
+    if is_personal and is_directory:
+        return "both"
+    if is_directory:
+        return "directory"
+    if is_personal:
+        return "personal"
+    return "other"
+
+
+def _matches_source(contact_source: str, requested: str) -> bool:
+    if requested == "both":
+        return True
+    if requested == "personal":
+        return contact_source in ("personal", "both")
+    if requested == "directory":
+        return contact_source in ("directory", "both")
+    return False
 
 
 class ContactsClient:
@@ -190,8 +233,16 @@ class ContactsClient:
     # Read operations
     # ------------------------------------------------------------------ #
 
-    def list_contacts(self, max_results: int = 50) -> list[Contact]:
-        """List contacts from the authenticated user's address book."""
+    def list_contacts(self, max_results: int = 50, source: str = "both") -> list[Contact]:
+        """List contacts from the authenticated user's address book.
+
+        ``source`` filters the personal/directory-merged response after
+        classifying each entry via its ``metadata.sources`` (see
+        ``_classify_source``): "personal", "directory", or "both" (default).
+        Filtering happens client-side after fetching ``max_results`` raw
+        entries, so a narrow filter may return fewer than ``max_results``.
+        """
+        source = _normalize_source(source)
         max_results = max(1, min(int(max_results), 1000))
         try:
             with self._request_lock:
@@ -203,6 +254,11 @@ class ContactsClient:
                         resourceName="people/me",
                         pageSize=max_results,
                         personFields=_PERSON_FIELDS,
+                        sources=[
+                            "READ_SOURCE_TYPE_CONTACT",
+                            "READ_SOURCE_TYPE_PROFILE",
+                            "READ_SOURCE_TYPE_DOMAIN_CONTACT",
+                        ],
                     )
                     .execute()
                 )
@@ -211,12 +267,40 @@ class ContactsClient:
         contacts = [
             _parse_person(p) for p in result.get("connections", [])
         ]
-        logger.info("list_contacts returned %d contacts", len(contacts))
+        if source != "both":
+            contacts = [c for c in contacts if _matches_source(c.source, source)]
+        logger.info("list_contacts source=%s returned %d contacts", source, len(contacts))
         return contacts
 
-    def search_contacts(self, query: str, max_results: int = 20) -> list[Contact]:
-        """Search contacts by name/email using the People API searchContacts endpoint."""
+    def search_contacts(self, query: str, max_results: int = 20, source: str = "both") -> list[Contact]:
+        """Search contacts by name/email.
+
+        ``source="personal"``/``"both"`` uses the People API's dedicated
+        searchContacts endpoint (which only matches CONTACT-sourced, i.e.
+        personally-saved, entries). ``source="directory"`` has no dedicated
+        search endpoint available under this app's OAuth scope, so it scans
+        the directory-classified subset of ``list_contacts`` client-side.
+        """
+        source = _normalize_source(source)
         max_results = max(1, min(int(max_results), 1000))
+        results: dict[str, Contact] = {}
+
+        if source in ("personal", "both"):
+            for c in self._search_personal(query, max_results):
+                results[c.resource_name] = c
+
+        if source == "directory":
+            q = query.lower()
+            for c in self.list_contacts(max_results=1000, source="directory"):
+                if q in c.display_name.lower() or any(q in e.value.lower() for e in c.emails):
+                    results[c.resource_name] = c
+
+        ordered = list(results.values())[:max_results]
+        logger.info("search_contacts query=%r source=%s returned %d", query, source, len(ordered))
+        return ordered
+
+    def _search_personal(self, query: str, max_results: int) -> list[Contact]:
+        """Search CONTACT-sourced (personally-saved) contacts via searchContacts."""
         service = self._get_service()
         try:
             with self._request_lock:
@@ -247,11 +331,16 @@ class ContactsClient:
                 or any(q in e.value.lower() for e in c.emails)
             ][:max_results]
 
-        logger.info("search_contacts query=%r returned %d", query, len(contacts))
         return contacts
 
-    def get_contact(self, resource_name: str) -> Contact:
-        """Fetch a single contact by resource name."""
+    def get_contact(self, resource_name: str, source: str = "both") -> Contact:
+        """Fetch a single contact by resource name.
+
+        ``source`` asserts the expected kind of contact ("personal",
+        "directory", or "both"/default); raises if the fetched resource
+        doesn't match.
+        """
+        source = _normalize_source(source)
         try:
             with self._request_lock:
                 person = (
@@ -263,6 +352,11 @@ class ContactsClient:
         except HttpError as exc:
             raise ContactsClientError(f"get_contact({resource_name}) failed: {exc}") from exc
         contact = _parse_person(person)
+        if not _matches_source(contact.source, source):
+            raise ContactsClientError(
+                f"get_contact({resource_name}): contact source is {contact.source!r}, "
+                f"but source={source!r} was requested"
+            )
         logger.info("get_contact %s: %s", resource_name, contact.short_summary())
         return contact
 
@@ -571,6 +665,11 @@ def _parse_person(person: dict[str, Any]) -> Contact:
     photos = person.get("photos") or []
     photo_url = photos[0].get("url", "") if photos else ""
 
+    # Source classification (personal vs Workspace directory)
+    sources_meta = person.get("metadata") or {}
+    source_types = [s.get("type", "") for s in (sources_meta.get("sources") or []) if s.get("type")]
+    source = _classify_source(source_types)
+
     return Contact(
         resource_name=resource_name,
         display_name=display_name,
@@ -582,4 +681,6 @@ def _parse_person(person: dict[str, Any]) -> Contact:
         job_title=job_title,
         notes=notes,
         photo_url=photo_url,
+        source=source,
+        source_types=source_types,
     )

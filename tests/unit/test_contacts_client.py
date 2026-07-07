@@ -90,6 +90,7 @@ class TestParsePerson:
             "emails": [{"value": "j@x.com", "type": "work"}],
             "phones": [{"value": "123", "type": "home"}],
             "organization": "Acme", "job_title": "Eng", "notes": "n", "photo_url": "p",
+            "source": "other", "source_types": [],
         }
 
     def test_short_summary_uses_at_most_two_emails(self):
@@ -98,6 +99,49 @@ class TestParsePerson:
             emails=[ContactEmail("a@x.com", ""), ContactEmail("b@x.com", ""), ContactEmail("c@x.com", "")],
         )
         assert contact.short_summary() == "Jane (a@x.com, b@x.com)"
+
+
+# ---------------------------------------------------------------------------- #
+# Source classification: Google's People API blends personal ("CONTACT") and
+# Workspace directory ("DOMAIN_PROFILE"/"DOMAIN_CONTACT") sources into one
+# merged Person; metadata.sources[].type is what lets us split them back apart.
+# ---------------------------------------------------------------------------- #
+
+class TestSourceClassification:
+    def test_contact_source_classified_personal(self):
+        contact = _parse_person({"metadata": {"sources": [{"type": "CONTACT"}]}})
+        assert contact.source == "personal"
+        assert contact.source_types == ["CONTACT"]
+
+    def test_domain_profile_source_classified_directory(self):
+        contact = _parse_person({"metadata": {"sources": [{"type": "DOMAIN_PROFILE"}]}})
+        assert contact.source == "directory"
+
+    def test_domain_contact_source_classified_directory(self):
+        contact = _parse_person({"metadata": {"sources": [{"type": "DOMAIN_CONTACT"}]}})
+        assert contact.source == "directory"
+
+    def test_personal_and_directory_sources_classified_both(self):
+        contact = _parse_person({
+            "metadata": {"sources": [{"type": "CONTACT"}, {"type": "DOMAIN_PROFILE"}]},
+        })
+        assert contact.source == "both"
+        assert contact.source_types == ["CONTACT", "DOMAIN_PROFILE"]
+
+    def test_no_metadata_classified_other(self):
+        contact = _parse_person({})
+        assert contact.source == "other"
+        assert contact.source_types == []
+
+    def test_explicit_null_metadata_tolerated(self):
+        contact = _parse_person({"metadata": None})
+        assert contact.source == "other"
+
+    def test_account_only_source_classified_other(self):
+        # ACCOUNT-only means "has a Google account" -- not a saved contact or
+        # a colleague, so it shouldn't count as personal or directory.
+        contact = _parse_person({"metadata": {"sources": [{"type": "ACCOUNT"}]}})
+        assert contact.source == "other"
 
 
 # ---------------------------------------------------------------------------- #
@@ -130,6 +174,64 @@ class TestListContacts:
         with pytest.raises(ContactsClientError, match="list_contacts failed"):
             client.list_contacts()
 
+    def test_requests_personal_profile_and_domain_contact_sources(self):
+        service = MagicMock()
+        service.people.return_value.connections.return_value.list.return_value.execute.return_value = {
+            "connections": []
+        }
+        client = make_client(service)
+        client.list_contacts()
+        kwargs = service.people.return_value.connections.return_value.list.call_args.kwargs
+        assert kwargs["sources"] == [
+            "READ_SOURCE_TYPE_CONTACT", "READ_SOURCE_TYPE_PROFILE", "READ_SOURCE_TYPE_DOMAIN_CONTACT",
+        ]
+
+    def test_source_personal_filters_out_directory_only_entries(self):
+        service = MagicMock()
+        service.people.return_value.connections.return_value.list.return_value.execute.return_value = {
+            "connections": [
+                {"resourceName": "people/c1", "names": [{"displayName": "Directory Only"}],
+                 "metadata": {"sources": [{"type": "DOMAIN_PROFILE"}]}},
+                {"resourceName": "people/c2", "names": [{"displayName": "Saved Contact"}],
+                 "metadata": {"sources": [{"type": "CONTACT"}]}},
+            ]
+        }
+        client = make_client(service)
+        contacts = client.list_contacts(source="personal")
+        assert [c.display_name for c in contacts] == ["Saved Contact"]
+
+    def test_source_directory_filters_out_personal_only_entries(self):
+        service = MagicMock()
+        service.people.return_value.connections.return_value.list.return_value.execute.return_value = {
+            "connections": [
+                {"resourceName": "people/c1", "names": [{"displayName": "Directory Only"}],
+                 "metadata": {"sources": [{"type": "DOMAIN_PROFILE"}]}},
+                {"resourceName": "people/c2", "names": [{"displayName": "Saved Contact"}],
+                 "metadata": {"sources": [{"type": "CONTACT"}]}},
+            ]
+        }
+        client = make_client(service)
+        contacts = client.list_contacts(source="directory")
+        assert [c.display_name for c in contacts] == ["Directory Only"]
+
+    def test_source_both_returns_everything_unfiltered(self):
+        service = MagicMock()
+        service.people.return_value.connections.return_value.list.return_value.execute.return_value = {
+            "connections": [
+                {"resourceName": "people/c1", "names": [{"displayName": "Directory Only"}],
+                 "metadata": {"sources": [{"type": "DOMAIN_PROFILE"}]}},
+                {"resourceName": "people/c2", "names": [{"displayName": "Unclassified"}]},
+            ]
+        }
+        client = make_client(service)
+        contacts = client.list_contacts()
+        assert len(contacts) == 2
+
+    def test_invalid_source_raises(self):
+        client = make_client(MagicMock())
+        with pytest.raises(ContactsClientError, match="Invalid source"):
+            client.list_contacts(source="bogus")
+
 
 class TestGetContact:
     def test_fetches_and_normalizes(self):
@@ -147,6 +249,35 @@ class TestGetContact:
         client = make_client(service)
         with pytest.raises(ContactsClientError, match="get_contact"):
             client.get_contact("people/c1")
+
+    def test_source_both_default_skips_matching(self):
+        service = MagicMock()
+        service.people.return_value.get.return_value.execute.return_value = {
+            "resourceName": "people/c1", "names": [{"displayName": "A"}],
+        }
+        client = make_client(service)
+        contact = client.get_contact("people/c1")
+        assert contact.display_name == "A"
+
+    def test_source_match_returns_contact(self):
+        service = MagicMock()
+        service.people.return_value.get.return_value.execute.return_value = {
+            "resourceName": "people/c1", "names": [{"displayName": "A"}],
+            "metadata": {"sources": [{"type": "DOMAIN_PROFILE"}]},
+        }
+        client = make_client(service)
+        contact = client.get_contact("people/c1", source="directory")
+        assert contact.display_name == "A"
+
+    def test_source_mismatch_raises(self):
+        service = MagicMock()
+        service.people.return_value.get.return_value.execute.return_value = {
+            "resourceName": "people/c1", "names": [{"displayName": "A"}],
+            "metadata": {"sources": [{"type": "CONTACT"}]},
+        }
+        client = make_client(service)
+        with pytest.raises(ContactsClientError, match="source is 'personal'"):
+            client.get_contact("people/c1", source="directory")
 
 
 # ---------------------------------------------------------------------------- #
@@ -224,6 +355,55 @@ class TestSearchContacts:
         contacts = client.search_contacts("match", max_results=2)
 
         assert len(contacts) == 2
+
+    def test_source_directory_uses_list_contacts_not_search_endpoint(self):
+        service = MagicMock()
+        service.people.return_value.connections.return_value.list.return_value.execute.return_value = {
+            "connections": [
+                {"resourceName": "people/c1", "names": [{"displayName": "Jane Directory"}],
+                 "emailAddresses": [], "metadata": {"sources": [{"type": "DOMAIN_PROFILE"}]}},
+                {"resourceName": "people/c2", "names": [{"displayName": "Bob Personal"}],
+                 "emailAddresses": [], "metadata": {"sources": [{"type": "CONTACT"}]}},
+            ]
+        }
+        client = make_client(service)
+
+        contacts = client.search_contacts("jane", source="directory")
+
+        assert [c.display_name for c in contacts] == ["Jane Directory"]
+        service.people.return_value.searchContacts.assert_not_called()
+
+    def test_source_directory_matches_on_email_too(self):
+        service = MagicMock()
+        service.people.return_value.connections.return_value.list.return_value.execute.return_value = {
+            "connections": [
+                {"resourceName": "people/c1", "names": [{"displayName": "No Match"}],
+                 "emailAddresses": [{"value": "findme@x.com"}],
+                 "metadata": {"sources": [{"type": "DOMAIN_PROFILE"}]}},
+            ]
+        }
+        client = make_client(service)
+
+        contacts = client.search_contacts("findme", source="directory")
+
+        assert len(contacts) == 1
+
+    def test_source_personal_does_not_call_directory_scan(self):
+        service = MagicMock()
+        service.people.return_value.searchContacts.return_value.execute.return_value = {
+            "results": [{"person": {"resourceName": "people/c1", "names": [{"displayName": "Jane"}]}}]
+        }
+        client = make_client(service)
+
+        contacts = client.search_contacts("jane", source="personal")
+
+        assert len(contacts) == 1
+        service.people.return_value.connections.return_value.list.assert_not_called()
+
+    def test_invalid_source_raises(self):
+        client = make_client(MagicMock())
+        with pytest.raises(ContactsClientError, match="Invalid source"):
+            client.search_contacts("jane", source="bogus")
 
 
 # ---------------------------------------------------------------------------- #

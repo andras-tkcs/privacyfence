@@ -168,6 +168,18 @@ string starting with `=` is evaluated as a formula, exactly like typing it into 
 
 Contact deletion is not supported by this connector.
 
+Google's People API blends personally-saved contacts together with Workspace
+directory profiles (colleagues) into a single response by default. `contacts_list`,
+`contacts_search`, and `contacts_get` each accept a `source` parameter
+(`personal`, `directory`, or `both` — default `both`) to split them apart, and
+every returned contact carries a `source` field (`personal`, `directory`, `both`
+if it's a saved contact who's also a colleague, or `other` for unclassifiable
+entries) plus the raw `source_types` it was derived from. `contacts_get` fails
+if the fetched resource doesn't match the requested `source`. Directory search
+(`contacts_search` with `source="directory"`) is limited to directory profiles
+you already have some contact history with — there is no full company-directory
+search under this connector's OAuth scope.
+
 ### Telegram
 
 **Auth:** Telethon (MTProto). Reads your chats as you, not as a bot.
