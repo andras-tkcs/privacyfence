@@ -286,53 +286,60 @@ class ContactsClient:
                 f"update_contact: fetch failed for {resource_name}: {exc}"
             ) from exc
 
-        etag = person.get("etag", "")
-        update_fields: list[str] = []
-
-        if display_name is not None:
-            names = person.get("names") or [{}]
-            if names:
-                names[0]["displayName"] = display_name
-                names[0]["givenName"] = display_name.split()[0] if display_name else ""
-                names[0]["familyName"] = " ".join(display_name.split()[1:]) if display_name else ""
-            else:
-                names = [{"displayName": display_name}]
-            person["names"] = names
-            update_fields.append("names")
-
-        if emails is not None:
-            person["emailAddresses"] = [
-                {"value": e.get("value", ""), "type": e.get("type", "")}
-                for e in (emails or [])
-            ]
-            update_fields.append("emailAddresses")
-
-        if phones is not None:
-            person["phoneNumbers"] = [
-                {"value": p.get("value", ""), "type": p.get("type", "")}
-                for p in (phones or [])
-            ]
-            update_fields.append("phoneNumbers")
-
-        if organization is not None or job_title is not None:
-            orgs = person.get("organizations") or [{}]
-            if organization is not None:
-                orgs[0]["name"] = organization
-            if job_title is not None:
-                orgs[0]["title"] = job_title
-            person["organizations"] = orgs
-            update_fields.append("organizations")
-
-        if notes is not None:
-            person["biographies"] = [{"value": notes, "contentType": "TEXT_PLAIN"}]
-            update_fields.append("biographies")
-
-        if not update_fields:
-            logger.info("update_contact: no fields to update for %s", resource_name)
-            return _parse_person(person)
-
-        person["etag"] = etag
+        # Everything below mutates a raw, not-fully-predictable People API
+        # payload (fields the API considers "requested but empty" can come
+        # back as an explicit null instead of being omitted - see the module
+        # docstring on _parse_person). A broad catch here turns any surprise
+        # in that shape into a clean, actionable ContactsClientError instead
+        # of a bare Python exception (e.g. "'NoneType' object is not
+        # iterable") leaking straight through the gate to the end user.
         try:
+            etag = person.get("etag", "")
+            update_fields: list[str] = []
+
+            if display_name is not None:
+                names = person.get("names") or [{}]
+                if names:
+                    names[0]["displayName"] = display_name
+                    names[0]["givenName"] = display_name.split()[0] if display_name else ""
+                    names[0]["familyName"] = " ".join(display_name.split()[1:]) if display_name else ""
+                else:
+                    names = [{"displayName": display_name}]
+                person["names"] = names
+                update_fields.append("names")
+
+            if emails is not None:
+                person["emailAddresses"] = [
+                    {"value": e.get("value", ""), "type": e.get("type", "")}
+                    for e in (emails or [])
+                ]
+                update_fields.append("emailAddresses")
+
+            if phones is not None:
+                person["phoneNumbers"] = [
+                    {"value": p.get("value", ""), "type": p.get("type", "")}
+                    for p in (phones or [])
+                ]
+                update_fields.append("phoneNumbers")
+
+            if organization is not None or job_title is not None:
+                orgs = person.get("organizations") or [{}]
+                if organization is not None:
+                    orgs[0]["name"] = organization
+                if job_title is not None:
+                    orgs[0]["title"] = job_title
+                person["organizations"] = orgs
+                update_fields.append("organizations")
+
+            if notes is not None:
+                person["biographies"] = [{"value": notes, "contentType": "TEXT_PLAIN"}]
+                update_fields.append("biographies")
+
+            if not update_fields:
+                logger.info("update_contact: no fields to update for %s", resource_name)
+                return _parse_person(person)
+
+            person["etag"] = etag
             updated = (
                 service.people()
                 .updateContact(
@@ -345,6 +352,9 @@ class ContactsClient:
             )
         except HttpError as exc:
             raise ContactsClientError(f"update_contact failed: {exc}") from exc
+        except Exception as exc:
+            logger.exception("update_contact: unexpected failure for %s", resource_name)
+            raise ContactsClientError(f"update_contact failed unexpectedly: {exc}") from exc
 
         contact = _parse_person(updated)
         logger.info("update_contact %s: %s", resource_name, contact.short_summary())
