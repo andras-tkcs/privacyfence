@@ -153,17 +153,26 @@ in the tool result.
 
 ## Phase 5 — Contacts
 1. `contacts_list`, `contacts_search`, `contacts_get` (expect: all silent).
-2. Ask me which contact is safe to touch before calling `contacts_update` —
+2. `contacts_list` with `source="personal"`, then again with `source="directory"`.
+   Confirm the two result sets don't overlap and every returned contact's
+   `source` field matches what you asked for (or `"both"` for a contact that's
+   both a saved contact and a colleague). If your account has no Workspace
+   directory colleagues, `source="directory"` should come back empty rather
+   than erroring.
+3. `contacts_get` on a contact from the `source="personal"` list above, passing
+   `source="directory"` — expect this to fail with a clear "source mismatch"
+   error rather than silently returning the contact.
+4. Ask me which contact is safe to touch before calling `contacts_update` —
    don't pick one yourself. Append ` (PrivacyFence QA test)` to a low-stakes
    field and tell me the exact before/after. Popup, Accept.
-3. `contacts_create` — display name `PrivacyFence QA test contact — safe to delete`.
+5. `contacts_create` — display name `PrivacyFence QA test contact — safe to delete`.
    Popup, Accept.
-4. `contacts_add_label` on the contact you just created, label
+6. `contacts_add_label` on the contact you just created, label
    `PrivacyFence QA test`. Popup, Accept. Confirm the label appears on the
    contact in Google Contacts.
-5. `contacts_remove_label` on the same contact/label. Popup, Accept. Confirm
+7. `contacts_remove_label` on the same contact/label. Popup, Accept. Confirm
    the label is gone.
-6. Note for me: there's no delete-contact tool, so I'll remove the test
+8. Note for me: there's no delete-contact tool, so I'll remove the test
    contact manually afterward.
 
 ## Phase 6 — Google Tasks

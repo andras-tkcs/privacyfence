@@ -30,25 +30,51 @@ class ContactsConnector(Connector):
             ToolSpec(
                 name="contacts_list",
                 description=(
-                    "List contacts from the user's Google address book. "
-                    "Returns display name, emails, phones, organization, and job title. Auto-approved."
+                    "List contacts from the user's Google address book. Google blends "
+                    "personally-saved contacts together with Workspace directory profiles "
+                    "(colleagues) by default; use 'source' to split them apart. "
+                    "Returns display name, emails, phones, organization, job title, and a "
+                    "'source' field ('personal', 'directory', or 'both' if the same person "
+                    "is both a saved contact and a colleague). Auto-approved."
                 ),
-                params=[ToolParam("max_results", "int", required=False, default=50)],
+                params=[
+                    ToolParam("max_results", "int", required=False, default=50),
+                    ToolParam("source", "str", required=False, default="both",
+                              description="'personal' (saved contacts only), 'directory' "
+                                           "(Workspace directory only), or 'both' (default)."),
+                ],
                 read_only=True,
             ),
             ToolSpec(
                 name="contacts_search",
-                description="Search contacts by name or email address. Auto-approved.",
+                description=(
+                    "Search contacts by name or email address. Use 'source' to search only "
+                    "personally-saved contacts, only Workspace directory contacts, or both "
+                    "(default). Note: 'directory' search only finds directory profiles you "
+                    "already have some contact history with; there is no full company-directory "
+                    "search under this app's permissions. Auto-approved."
+                ),
                 params=[
                     ToolParam("query", "str"),
                     ToolParam("max_results", "int", required=False, default=20),
+                    ToolParam("source", "str", required=False, default="both",
+                              description="'personal', 'directory', or 'both' (default)."),
                 ],
                 read_only=True,
             ),
             ToolSpec(
                 name="contacts_get",
-                description="Fetch a single contact by resource name (e.g. 'people/c12345'). Auto-approved.",
-                params=[ToolParam("resource_name", "str")],
+                description=(
+                    "Fetch a single contact by resource name (e.g. 'people/c12345'). "
+                    "'source' asserts the expected kind of contact ('personal', 'directory', "
+                    "or 'both'/default); the call fails if the resource doesn't match. "
+                    "Auto-approved."
+                ),
+                params=[
+                    ToolParam("resource_name", "str"),
+                    ToolParam("source", "str", required=False, default="both",
+                              description="'personal', 'directory', or 'both' (default)."),
+                ],
                 read_only=True,
             ),
             ToolSpec(
@@ -133,25 +159,25 @@ class ContactsConnector(Connector):
     # Auto
     # ------------------------------------------------------------------ #
 
-    async def _contacts_list(self, max_results: int = 50) -> Any:
+    async def _contacts_list(self, max_results: int = 50, source: str = "both") -> Any:
         t0 = time.time()
-        contacts = await self._fetch(self._contacts.list_contacts, max_results)
+        contacts = await self._fetch(self._contacts.list_contacts, max_results, source)
         result = [c.to_dict() for c in contacts]
         self._auto_audit("contacts_list", "List Contacts",
-                         f"List contacts (max {max_results})", f"{len(result)} contact(s)", t0)
+                         f"List contacts (max {max_results}, source={source})", f"{len(result)} contact(s)", t0)
         return result
 
-    async def _contacts_search(self, query: str, max_results: int = 20) -> Any:
+    async def _contacts_search(self, query: str, max_results: int = 20, source: str = "both") -> Any:
         t0 = time.time()
-        contacts = await self._fetch(self._contacts.search_contacts, query, max_results)
+        contacts = await self._fetch(self._contacts.search_contacts, query, max_results, source)
         result = [c.to_dict() for c in contacts]
         self._auto_audit("contacts_search", "Search Contacts",
-                         f"Search: {query!r}", f"{len(result)} result(s)", t0)
+                         f"Search: {query!r} (source={source})", f"{len(result)} result(s)", t0)
         return result
 
-    async def _contacts_get(self, resource_name: str) -> Any:
+    async def _contacts_get(self, resource_name: str, source: str = "both") -> Any:
         t0 = time.time()
-        contact = await self._fetch(self._contacts.get_contact, resource_name)
+        contact = await self._fetch(self._contacts.get_contact, resource_name, source)
         result = contact.to_dict()
         self._auto_audit("contacts_get", "Get Contact",
                          f"Get: {resource_name}", contact.display_name or resource_name, t0)

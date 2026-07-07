@@ -85,7 +85,7 @@ class TestAutoTools:
         result = await connector.call("contacts_list", {"max_results": 10})
 
         assert result == [make_contact().to_dict()]
-        client.list_contacts.assert_called_once_with(10)
+        client.list_contacts.assert_called_once_with(10, "both")
         entries = (tmp_path / f"{current_week()}.jsonl").read_text(encoding="utf-8").splitlines()
         assert '"decision": "auto_accepted"' in entries[0]
 
@@ -97,7 +97,7 @@ class TestAutoTools:
         result = await connector.call("contacts_search", {"query": "Bob"})
 
         assert result == [make_contact().to_dict()]
-        client.search_contacts.assert_called_once_with("Bob", 20)
+        client.search_contacts.assert_called_once_with("Bob", 20, "both")
 
     async def test_contacts_get(self, tmp_path):
         init_audit_logger(str(tmp_path))
@@ -107,6 +107,47 @@ class TestAutoTools:
         result = await connector.call("contacts_get", {"resource_name": "people/c1"})
 
         assert result == make_contact().to_dict()
+        client.get_contact.assert_called_once_with("people/c1", "both")
+
+
+class TestSourceParam:
+    """Verify 'source' defaults to 'both' and is plumbed through to the client."""
+
+    async def test_contacts_list_passes_explicit_source(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        client.list_contacts.return_value = [make_contact()]
+
+        await connector.call("contacts_list", {"max_results": 10, "source": "directory"})
+
+        client.list_contacts.assert_called_once_with(10, "directory")
+
+    async def test_contacts_search_passes_explicit_source(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        client.search_contacts.return_value = [make_contact()]
+
+        await connector.call("contacts_search", {"query": "Bob", "source": "personal"})
+
+        client.search_contacts.assert_called_once_with("Bob", 20, "personal")
+
+    async def test_contacts_get_passes_explicit_source(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        client.get_contact.return_value = make_contact()
+
+        await connector.call("contacts_get", {"resource_name": "people/c1", "source": "directory"})
+
+        client.get_contact.assert_called_once_with("people/c1", "directory")
+
+    async def test_contacts_get_source_mismatch_becomes_runtime_error(self):
+        connector, client = make_connector()
+        client.get_contact.side_effect = ContactsClientError(
+            "get_contact(people/c1): contact source is 'personal', but source='directory' was requested"
+        )
+
+        with pytest.raises(RuntimeError, match="but source='directory' was requested"):
+            await connector.call("contacts_get", {"resource_name": "people/c1", "source": "directory"})
 
 
 class TestContactsUpdate:
