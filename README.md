@@ -4,26 +4,26 @@
 
 ---
 
+## Why PrivacyFence?
+
+Organizations are rapidly adopting AI assistants, but existing permission models were designed for humans, not autonomous agents.
+
+PrivacyFence introduces a governance layer that allows AI to work with enterprise systems while keeping humans in control of sensitive information.
+
+## Who is this for?
+
+- **CIO** — visibility and control as AI assistants reach into enterprise systems
+- **CISO** — a real, auditable enforcement point instead of relying on client-side prompts
+- **AI Governance** — a policy layer for what AI agents can read and do, with a full audit trail
+- **Enterprise IT** — connector-level access control that IT provisions and users authenticate into
+- **Compliance** — human-in-the-loop review and logging for GDPR / EU AI Act obligations
+- **Developers** — a drop-in MCP proxy that gates and logs tool calls without touching agent code
+
+---
+
 ## How it works
 
-```
-Claude ──MCP stdio──▶ privacyfence-bridge ──Unix socket──▶ privacyfence-app (daemon)
-                                                              │
-                                                   ┌──────────▼──────────┐
-                                                   │  Auto-accept rules   │
-                                                   │  (skip review gate)  │
-                                                   └──────────┬──────────┘
-                                                              │
-                                                   ┌──────────▼──────────┐
-                                                   │  Review gate         │
-                                                   │  Cowork / popup      │
-                                                   └──────────┬──────────┘
-                                                              │
-                                                   ┌──────────▼──────────┐
-                                                   │  Audit log           │
-                                                   │  (JSONL + Excel)     │
-                                                   └─────────────────────┘
-```
+![PrivacyFence architecture: Claude talks to the ephemeral bridge over MCP stdio, the bridge forwards every call over a Unix socket to the persistent daemon, which runs it through auto-accept rules, the review gate, and the audit log before any connector reaches a personal data source.](docs/images/architecture.svg)
 
 **`privacyfence-bridge`** — an ephemeral MCP server spawned by Claude on each session. It auto-starts the daemon if it is not already running, fetches the connector manifest, and forwards every tool call over a Unix socket. Claude only ever talks to the bridge; the bridge carries no credentials.
 

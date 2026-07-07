@@ -1,0 +1,113 @@
+<svg viewBox="0 0 1180 620" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5b6472"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2f8f5b"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1180" height="620" fill="#ffffff"/>
+
+  <text x="40" y="38" font-size="20" font-weight="700" fill="#1f2430">PrivacyFence architecture</text>
+  <text x="40" y="60" font-size="13" fill="#6b7280">Every tool call from Claude passes through the daemon's gate before any data moves</text>
+
+  <!-- Claude -->
+  <g>
+    <rect x="30" y="230" width="150" height="90" rx="12" fill="#f4ecff" stroke="#8b5cf6" stroke-width="1.5"/>
+    <text x="105" y="266" font-size="15" font-weight="700" fill="#5b21b6" text-anchor="middle">Claude</text>
+    <text x="105" y="286" font-size="11.5" fill="#6d5a99" text-anchor="middle">Cowork / Desktop</text>
+  </g>
+
+  <line x1="180" y1="275" x2="248" y2="275" stroke="#5b6472" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="214" y="264" font-size="10.5" fill="#5b6472" text-anchor="middle">MCP stdio</text>
+
+  <!-- Bridge -->
+  <g>
+    <rect x="250" y="215" width="180" height="120" rx="12" fill="#eaf2ff" stroke="#3b82f6" stroke-width="1.5" stroke-dasharray="6 4"/>
+    <text x="340" y="248" font-size="15" font-weight="700" fill="#1d4ed8" text-anchor="middle">privacyfence-bridge</text>
+    <text x="340" y="268" font-size="11" fill="#3a5a91" text-anchor="middle">ephemeral MCP server</text>
+    <text x="340" y="285" font-size="11" fill="#3a5a91" text-anchor="middle">no credentials</text>
+    <text x="340" y="302" font-size="11" fill="#3a5a91" text-anchor="middle">spawned per session</text>
+  </g>
+
+  <line x1="430" y1="275" x2="498" y2="275" stroke="#5b6472" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="464" y="264" font-size="10.5" fill="#5b6472" text-anchor="middle">Unix socket</text>
+
+  <!-- Daemon outer -->
+  <g>
+    <rect x="500" y="110" width="330" height="440" rx="14" fill="#eefaf1" stroke="#2f8f5b" stroke-width="1.5"/>
+    <text x="665" y="140" font-size="15" font-weight="700" fill="#1f6b40" text-anchor="middle">privacyfence-app (daemon)</text>
+    <text x="665" y="158" font-size="11" fill="#3a7a55" text-anchor="middle">owns credentials · connectors · gate · audit log</text>
+  </g>
+
+  <!-- pipeline steps -->
+  <line x1="665" y1="172" x2="665" y2="196" stroke="#2f8f5b" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+  <g>
+    <rect x="535" y="198" width="260" height="66" rx="10" fill="#ffffff" stroke="#2f8f5b" stroke-width="1.3"/>
+    <text x="665" y="223" font-size="13" font-weight="600" fill="#1f2430" text-anchor="middle">Auto-accept rules</text>
+    <text x="665" y="241" font-size="11" fill="#6b7280" text-anchor="middle">gate = auto → skip review, log it</text>
+  </g>
+
+  <line x1="665" y1="264" x2="665" y2="288" stroke="#2f8f5b" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+  <g>
+    <rect x="535" y="290" width="260" height="66" rx="10" fill="#ffffff" stroke="#2f8f5b" stroke-width="1.3"/>
+    <text x="665" y="315" font-size="13" font-weight="600" fill="#1f2430" text-anchor="middle">Review gate</text>
+    <text x="665" y="333" font-size="11" fill="#6b7280" text-anchor="middle">gate = review / popup → human approval</text>
+  </g>
+
+  <line x1="665" y1="356" x2="665" y2="380" stroke="#2f8f5b" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+  <g>
+    <rect x="535" y="382" width="260" height="66" rx="10" fill="#ffffff" stroke="#2f8f5b" stroke-width="1.3"/>
+    <text x="665" y="407" font-size="13" font-weight="600" fill="#1f2430" text-anchor="middle">Audit log</text>
+    <text x="665" y="425" font-size="11" fill="#6b7280" text-anchor="middle">JSONL + Excel, every decision recorded</text>
+  </g>
+
+  <line x1="665" y1="448" x2="665" y2="472" stroke="#2f8f5b" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+  <g>
+    <rect x="535" y="474" width="260" height="60" rx="10" fill="#ffffff" stroke="#2f8f5b" stroke-width="1.3"/>
+    <text x="665" y="499" font-size="13" font-weight="600" fill="#1f2430" text-anchor="middle">Connectors</text>
+    <text x="665" y="517" font-size="11" fill="#6b7280" text-anchor="middle">per-service OAuth clients</text>
+  </g>
+
+  <!-- Arrow out to data sources -->
+  <line x1="830" y1="504" x2="898" y2="504" stroke="#5b6472" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Data sources -->
+  <g>
+    <rect x="900" y="170" width="250" height="380" rx="14" fill="#fbfaf5" stroke="#c9a227" stroke-width="1.5"/>
+    <text x="1025" y="198" font-size="14" font-weight="700" fill="#8a6d1c" text-anchor="middle">Personal data sources</text>
+
+    <g font-size="11.5" fill="#4a4030">
+      <text x="925" y="230">Gmail</text>
+      <text x="1050" y="230">Drive / Sheets</text>
+      <text x="925" y="260">Calendar</text>
+      <text x="1050" y="260">Contacts</text>
+      <text x="925" y="290">Tasks</text>
+      <text x="1050" y="290">Slack</text>
+      <text x="925" y="320">Telegram</text>
+      <text x="1050" y="320">Jira</text>
+      <text x="925" y="350">Confluence</text>
+      <text x="1050" y="350">Salesforce</text>
+    </g>
+
+    <line x1="900" y1="370" x2="1150" y2="370" stroke="#e4dcb8" stroke-width="1"/>
+    <text x="1025" y="392" font-size="10.5" fill="#8a6d1c" text-anchor="middle">Only the daemon ever</text>
+    <text x="1025" y="408" font-size="10.5" fill="#8a6d1c" text-anchor="middle">holds OAuth tokens.</text>
+    <text x="1025" y="424" font-size="10.5" fill="#8a6d1c" text-anchor="middle">Claude never touches</text>
+    <text x="1025" y="440" font-size="10.5" fill="#8a6d1c" text-anchor="middle">this box directly.</text>
+  </g>
+
+  <!-- legend -->
+  <g font-size="10.5" fill="#6b7280">
+    <rect x="40" y="560" width="14" height="14" rx="3" fill="#f4ecff" stroke="#8b5cf6"/>
+    <text x="60" y="571">AI client</text>
+    <rect x="150" y="560" width="14" height="14" rx="3" fill="#eaf2ff" stroke="#3b82f6" stroke-dasharray="4 3"/>
+    <text x="170" y="571">Ephemeral, no credentials</text>
+    <rect x="360" y="560" width="14" height="14" rx="3" fill="#eefaf1" stroke="#2f8f5b"/>
+    <text x="380" y="571">Persistent daemon (trust boundary)</text>
+    <rect x="640" y="560" width="14" height="14" rx="3" fill="#fbfaf5" stroke="#c9a227"/>
+    <text x="660" y="571">External services</text>
+  </g>
+</svg>
