@@ -36,10 +36,14 @@ from .atlassian_oauth import (
 
 logger = logging.getLogger(__name__)
 
-# Confluence Cloud removed the v1 space list endpoint (`rest/api/space`, what
-# atlassian-python-api's get_all_spaces() calls) — it now 410s with a
-# GoneException. Space listing has to go through the v2 API instead.
+# Confluence Cloud removed the v1 content endpoints (`rest/api/space`,
+# `rest/api/content*` — what atlassian-python-api's get_all_spaces(),
+# get_all_pages_from_space(), get_page_by_id(), get_page_by_title(),
+# create_page(), and update_page() all call) — they now 410 with a
+# GoneException. Space and page operations have to go through the v2 API
+# instead, via the library's raw get/post/put helpers.
 _V2_SPACES_PATH = "api/v2/spaces"
+_V2_PAGES_PATH = "api/v2/pages"
 
 
 class ConfluenceClientError(Exception):
@@ -243,21 +247,49 @@ class ConfluenceClient:
         return items
 
     # ------------------------------------------------------------------ #
+    # Space id/key resolution (v2 endpoints address spaces by numeric id,
+    # not the human-facing key everything else in this module uses)
+    # ------------------------------------------------------------------ #
+
+    def _resolve_space_id(self, space_key: str) -> str:
+        try:
+            raw = self._request(self._client.get, _V2_SPACES_PATH, params={"keys": space_key, "limit": 1})
+            results = (raw or {}).get("results") or []
+        except Exception as exc:
+            raise ConfluenceClientError(f"resolving space id for {space_key!r} failed: {exc}") from exc
+        if not results:
+            raise ConfluenceClientError(f"Space not found: {space_key!r}")
+        return str(results[0].get("id", ""))
+
+    def _resolve_space_key(self, space_id: str) -> str:
+        if not space_id:
+            return ""
+        try:
+            raw = self._request(self._client.get, f"{_V2_SPACES_PATH}/{space_id}")
+        except Exception as exc:
+            logger.warning("resolving space key for id %s failed: %s", space_id, exc)
+            return ""
+        return (raw or {}).get("key", "")
+
+    # ------------------------------------------------------------------ #
     # Pages
     # ------------------------------------------------------------------ #
 
     def list_pages_in_space(self, space_key: str, max_results: int = 20) -> list[ConfluencePage]:
         if not space_key:
             raise ConfluenceClientError("list_pages_in_space requires a space_key")
-        max_results = max(1, min(max_results, 200))
+        max_results = max(1, min(max_results, 200))  # v2 API page size cap is 250
+        space_id = self._resolve_space_id(space_key)
         try:
             raw = self._request(
-                self._client.get_all_pages_from_space,
-                space_key, start=0, limit=max_results, expand="version,space",
+                self._client.get,
+                f"{_V2_SPACES_PATH}/{space_id}/pages",
+                params={"limit": max_results},
             )
+            results = (raw or {}).get("results") or []
         except Exception as exc:
             raise ConfluenceClientError(f"list_pages_in_space({space_key!r}) failed: {exc}") from exc
-        pages = [self._parse_page(p) for p in (raw or [])]
+        pages = [self._parse_page_v2(p, space_key=space_key) for p in results]
         logger.info("list_pages_in_space %s returned %d page(s)", space_key, len(pages))
         return pages
 
@@ -266,28 +298,30 @@ class ConfluenceClient:
             raise ConfluenceClientError("get_page requires a page_id")
         try:
             raw = self._request(
-                self._client.get_page_by_id,
-                page_id, expand="body.storage,version,space,history.lastUpdated",
+                self._client.get, f"{_V2_PAGES_PATH}/{page_id}", params={"body-format": "storage"},
             )
         except Exception as exc:
             raise ConfluenceClientError(f"get_page({page_id!r}) failed: {exc}") from exc
-        page = self._parse_page(raw, include_body=True)
+        page = self._parse_page_v2(raw, include_body=True)
         logger.info("get_page %s: %s", page_id, page.short_summary())
         return page
 
     def get_page_by_title(self, space_key: str, title: str) -> ConfluencePage:
         if not space_key or not title:
             raise ConfluenceClientError("get_page_by_title requires space_key and title")
+        space_id = self._resolve_space_id(space_key)
         try:
             raw = self._request(
-                self._client.get_page_by_title,
-                space_key, title, expand="body.storage,version,space,history.lastUpdated",
+                self._client.get,
+                _V2_PAGES_PATH,
+                params={"space-id": space_id, "title": title, "body-format": "storage"},
             )
+            results = (raw or {}).get("results") or []
         except Exception as exc:
             raise ConfluenceClientError(f"get_page_by_title({space_key!r}, {title!r}) failed: {exc}") from exc
-        if not raw:
+        if not results:
             raise ConfluenceClientError(f"Page not found: {title!r} in space {space_key!r}")
-        return self._parse_page(raw, include_body=True)
+        return self._parse_page_v2(results[0], include_body=True, space_key=space_key)
 
     def create_page(
         self,
@@ -298,15 +332,17 @@ class ConfluenceClient:
     ) -> ConfluencePage:
         if not space_key or not title:
             raise ConfluenceClientError("create_page requires space_key and title")
+        space_id = self._resolve_space_id(space_key)
+        payload: dict[str, Any] = {
+            "spaceId": space_id,
+            "status": "current",
+            "title": title,
+            "body": {"representation": "storage", "value": body},
+        }
+        if parent_id:
+            payload["parentId"] = parent_id
         try:
-            raw = self._request(
-                self._client.create_page,
-                space=space_key,
-                title=title,
-                body=body,
-                parent_id=parent_id or None,
-                representation="storage",
-            )
+            raw = self._request(self._client.post, _V2_PAGES_PATH, data=payload)
         except Exception as exc:
             raise ConfluenceClientError(f"create_page failed: {exc}") from exc
         page_id = raw.get("id", "")
@@ -322,17 +358,16 @@ class ConfluenceClient:
         if not page_id or not title:
             raise ConfluenceClientError("update_page requires page_id and title")
         try:
-            # Get current version to bump it
-            current = self._request(self._client.get_page_by_id, page_id, expand="version")
+            current = self._request(self._client.get, f"{_V2_PAGES_PATH}/{page_id}")
             version = int((current.get("version") or {}).get("number", 1))
-            self._request(
-                self._client.update_page,
-                page_id=page_id,
-                title=title,
-                body=body,
-                version_number=version + 1,
-                representation="storage",
-            )
+            payload = {
+                "id": page_id,
+                "status": "current",
+                "title": title,
+                "body": {"representation": "storage", "value": body},
+                "version": {"number": version + 1},
+            }
+            self._request(self._client.put, f"{_V2_PAGES_PATH}/{page_id}", data=payload)
         except Exception as exc:
             raise ConfluenceClientError(f"update_page({page_id!r}) failed: {exc}") from exc
         logger.info("update_page %s updated to version %d", page_id, version + 1)
@@ -353,11 +388,19 @@ class ConfluenceClient:
             url=f"{self._base_url}/wiki/spaces/{raw.get('key', '')}",
         )
 
-    def _parse_page(self, raw: dict[str, Any], include_body: bool = False) -> ConfluencePage:
-        space = raw.get("space") or {}
+    def _parse_page_v2(
+        self, raw: dict[str, Any], include_body: bool = False, space_key: str = "",
+    ) -> ConfluencePage:
+        """Parse a Confluence v2 page resource (``api/v2/pages/...`` shape).
+
+        Unlike the old v1 ``history.lastUpdated.by.displayName``, v2 only
+        gives back an ``authorId`` (an opaque account id) — resolving it to a
+        display name would need a separate Users API call per page, so
+        ``author`` is best-effort here rather than a human-readable name.
+        """
         version = raw.get("version") or {}
-        history = (raw.get("history") or {}).get("lastUpdated") or {}
         page_id = raw.get("id", "")
+        space_key = space_key or self._resolve_space_key(str(raw.get("spaceId", "")))
         body = ""
         if include_body:
             body_raw = (raw.get("body") or {}).get("storage") or {}
@@ -365,12 +408,12 @@ class ConfluenceClient:
         return ConfluencePage(
             id=page_id,
             title=raw.get("title", ""),
-            space_key=space.get("key", ""),
-            space_name=space.get("name", ""),
+            space_key=space_key,
+            space_name="",
             version=int(version.get("number", 0)),
-            author=(history.get("by") or {}).get("displayName", ""),
-            created=raw.get("history", {}).get("createdDate", "") if isinstance(raw.get("history"), dict) else "",
-            updated=history.get("when", ""),
+            author=raw.get("authorId", ""),
+            created=raw.get("createdAt", ""),
+            updated=version.get("createdAt", ""),
             body=body,
             url=f"{self._base_url}/wiki{raw.get('_links', {}).get('webui', '')}",
         )

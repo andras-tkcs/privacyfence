@@ -453,6 +453,24 @@ class TestCreateReplyDraft:
         assert result["cc"] == ""
         assert result["subject"] == "Re: Original"
 
+    def test_reply_to_sender_with_non_ascii_display_name_keeps_address_plain(self):
+        # Regression: assigning "Kázmér Kovács <kazmer@x.com>" straight to a
+        # Message header RFC-2047-encodes the *whole* value (name, brackets,
+        # and address) as one opaque blob once it contains non-ASCII text.
+        # Gmail's own header parser then rejects the draft with "Invalid To
+        # header", since an encoded-word can't stand in for a whole addr-spec.
+        service = make_reply_service({
+            "Subject": "Original", "From": "Kázmér Kovács <kazmer@x.com>", "To": "me@x.com",
+        })
+        client = make_client(service)
+        client.create_reply_draft("m1", body="b", my_email="me@x.com")
+
+        raw = service.users.return_value.drafts.return_value.create.call_args.kwargs["body"]["message"]["raw"]
+        decoded = base64.urlsafe_b64decode(raw.encode()).decode()
+        to_header = next(line for line in decoded.splitlines() if line.lower().startswith("to:"))
+        assert "<kazmer@x.com>" in to_header
+        assert "kazmer@x.com" not in to_header.split("<")[0]
+
     def test_subject_already_prefixed_with_re_is_not_doubled(self):
         service = make_reply_service({"Subject": "Re: Original", "From": "s@x.com", "To": "me@x.com"})
         client = make_client(service)

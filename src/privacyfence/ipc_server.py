@@ -102,7 +102,7 @@ class IPCServer:
 
             await self._send(writer, {"id": req_id, "result": result})
         except Exception as exc:  # noqa: BLE001
-            logger.error("IPC dispatch error for request %s: %s", req_id, exc)
+            logger.error("IPC dispatch error for request %s: %s", req_id, exc, exc_info=True)
             await self._send(writer, {"id": req_id, "error": str(exc)})
 
     async def _call_connector(self, params: dict) -> Any:

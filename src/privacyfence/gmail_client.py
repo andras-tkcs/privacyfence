@@ -343,12 +343,12 @@ class GmailClient:
         import base64
 
         msg = email.mime.text.MIMEText(body)
-        msg["to"] = to
+        msg["to"] = self._encode_addresses(to)
         msg["subject"] = subject
         if cc:
-            msg["cc"] = cc
+            msg["cc"] = self._encode_addresses(cc)
         if bcc:
-            msg["bcc"] = bcc
+            msg["bcc"] = self._encode_addresses(bcc)
 
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
         service = self._get_service()
@@ -423,12 +423,12 @@ class GmailClient:
             final_cc.append(addr)
 
         msg = email.mime.text.MIMEText(body)
-        msg["to"] = to_addr
+        msg["to"] = self._encode_address(to_addr)
         msg["subject"] = subject
         if final_cc:
-            msg["cc"] = ", ".join(final_cc)
+            msg["cc"] = ", ".join(self._encode_address(addr) for addr in final_cc)
         if bcc:
-            msg["bcc"] = bcc
+            msg["bcc"] = self._encode_addresses(bcc)
         if original_message_id:
             msg["In-Reply-To"] = original_message_id
             msg["References"] = (
@@ -682,6 +682,32 @@ class GmailClient:
         if not value:
             return []
         return [addr.strip() for addr in value.split(",") if addr.strip()]
+
+    @staticmethod
+    def _encode_address(addr: str) -> str:
+        """Re-encode a "Display Name <addr@x.com>" string for a safe RFC 2822 header.
+
+        Assigning a raw ``"Kázmér Kovács <kazmer@example.com>"`` string straight
+        to a ``Message`` header encodes the *entire* value (name, brackets, and
+        address) as one opaque RFC 2047 encoded-word once it contains non-ASCII
+        text. Gmail's own header parser then rejects it with "Invalid To
+        header", since an encoded-word isn't a valid substitute for a whole
+        addr-spec. Round-tripping through parseaddr/formataddr instead encodes
+        only the display name, leaving the address itself as plain ASCII
+        inside ``<...>``.
+        """
+        import email.utils
+
+        if not addr:
+            return addr
+        name, email_addr = email.utils.parseaddr(addr)
+        if not email_addr:
+            return addr
+        return email.utils.formataddr((name, email_addr))
+
+    @classmethod
+    def _encode_addresses(cls, value: str) -> str:
+        return ", ".join(cls._encode_address(a) for a in cls._split_addresses(value))
 
 
 @dataclass
