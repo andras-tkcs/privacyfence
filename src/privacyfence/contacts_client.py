@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -84,6 +85,13 @@ class ContactsClient:
         self._client_config = client_config
         self._token_file = token_file
         self._service = None  # lazily built
+        # Connector calls run concurrently on the asyncio.to_thread pool (see
+        # ipc_server.py), but the underlying httplib2.Http connection this
+        # client's service is built on is not thread-safe: two threads
+        # writing/reading the same persistent socket at once corrupts the TLS
+        # record stream (observed as "SSL: DECRYPTION_FAILED_OR_BAD_RECORD_MAC").
+        # Serialize actual network calls through this lock to avoid that.
+        self._request_lock = threading.Lock()
 
     # ------------------------------------------------------------------ #
     # Authentication
@@ -160,17 +168,18 @@ class ContactsClient:
     def check_connection(self) -> str:
         """Verify credentials work. Returns a confirmation string."""
         try:
-            result = (
-                self._get_service()
-                .people()
-                .connections()
-                .list(
-                    resourceName="people/me",
-                    pageSize=1,
-                    personFields="names",
+            with self._request_lock:
+                result = (
+                    self._get_service()
+                    .people()
+                    .connections()
+                    .list(
+                        resourceName="people/me",
+                        pageSize=1,
+                        personFields="names",
+                    )
+                    .execute()
                 )
-                .execute()
-            )
         except HttpError as exc:
             raise ContactsClientError(f"Contacts connection check failed: {exc}") from exc
         total = result.get("totalPeople", result.get("totalItems", "?"))
@@ -185,17 +194,18 @@ class ContactsClient:
         """List contacts from the authenticated user's address book."""
         max_results = max(1, min(int(max_results), 1000))
         try:
-            result = (
-                self._get_service()
-                .people()
-                .connections()
-                .list(
-                    resourceName="people/me",
-                    pageSize=max_results,
-                    personFields=_PERSON_FIELDS,
+            with self._request_lock:
+                result = (
+                    self._get_service()
+                    .people()
+                    .connections()
+                    .list(
+                        resourceName="people/me",
+                        pageSize=max_results,
+                        personFields=_PERSON_FIELDS,
+                    )
+                    .execute()
                 )
-                .execute()
-            )
         except HttpError as exc:
             raise ContactsClientError(f"list_contacts failed: {exc}") from exc
         contacts = [
@@ -209,15 +219,16 @@ class ContactsClient:
         max_results = max(1, min(int(max_results), 1000))
         service = self._get_service()
         try:
-            result = (
-                service.people()
-                .searchContacts(
-                    query=query,
-                    readMask=_PERSON_FIELDS,
-                    pageSize=max_results,
+            with self._request_lock:
+                result = (
+                    service.people()
+                    .searchContacts(
+                        query=query,
+                        readMask=_PERSON_FIELDS,
+                        pageSize=max_results,
+                    )
+                    .execute()
                 )
-                .execute()
-            )
             contacts = [
                 _parse_person(r.get("person", r))
                 for r in result.get("results", [])
@@ -242,12 +253,13 @@ class ContactsClient:
     def get_contact(self, resource_name: str) -> Contact:
         """Fetch a single contact by resource name."""
         try:
-            person = (
-                self._get_service()
-                .people()
-                .get(resourceName=resource_name, personFields=_PERSON_FIELDS)
-                .execute()
-            )
+            with self._request_lock:
+                person = (
+                    self._get_service()
+                    .people()
+                    .get(resourceName=resource_name, personFields=_PERSON_FIELDS)
+                    .execute()
+                )
         except HttpError as exc:
             raise ContactsClientError(f"get_contact({resource_name}) failed: {exc}") from exc
         contact = _parse_person(person)
@@ -276,11 +288,12 @@ class ContactsClient:
         service = self._get_service()
         # Fetch current data + etag.
         try:
-            person = (
-                service.people()
-                .get(resourceName=resource_name, personFields=_PERSON_FIELDS)
-                .execute()
-            )
+            with self._request_lock:
+                person = (
+                    service.people()
+                    .get(resourceName=resource_name, personFields=_PERSON_FIELDS)
+                    .execute()
+                )
         except HttpError as exc:
             raise ContactsClientError(
                 f"update_contact: fetch failed for {resource_name}: {exc}"
@@ -340,16 +353,17 @@ class ContactsClient:
                 return _parse_person(person)
 
             person["etag"] = etag
-            updated = (
-                service.people()
-                .updateContact(
-                    resourceName=resource_name,
-                    updatePersonFields=",".join(update_fields),
-                    personFields=_PERSON_FIELDS,
-                    body=person,
+            with self._request_lock:
+                updated = (
+                    service.people()
+                    .updateContact(
+                        resourceName=resource_name,
+                        updatePersonFields=",".join(update_fields),
+                        personFields=_PERSON_FIELDS,
+                        body=person,
+                    )
+                    .execute()
                 )
-                .execute()
-            )
         except HttpError as exc:
             raise ContactsClientError(f"update_contact failed: {exc}") from exc
         except Exception as exc:
