@@ -27,9 +27,11 @@ Run from source — never install the DMG here.
 
 `scripts/dev_start.sh` handles the repetitive part: it creates `.venv` and
 `config/settings.yaml` if missing, (re-)registers `privacyfence-bridge` from
-this checkout's venv with `claude mcp`, and starts the daemon in the
-foreground (Ctrl-C to stop). Safe to re-run any time, e.g. after switching
-branches:
+this checkout's venv — via `claude mcp` if that CLI is on PATH, otherwise by
+editing Claude Desktop's own config file directly — and starts the daemon in
+the foreground. Ctrl-C stops the daemon and de-registers the dev bridge again
+(prompting you to restart Claude Desktop when it went the config-file route).
+Safe to re-run any time, e.g. after switching branches:
 
 ```bash
 cd /Users/user1/Coding/privacyfence
@@ -40,7 +42,7 @@ The one-time step it doesn't do for you: installing a (test) org config
 bundle and authenticating connectors headlessly, before your first run:
 
 ```bash
-mkdir -p ~/.privacyfence/org && cp org_config.json ~/.privacyfence/org/
+mkdir -p org && cp org_config.json org/
 
 privacyfence-app --gmail-oauth
 privacyfence-app --drive-oauth

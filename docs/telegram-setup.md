@@ -57,7 +57,9 @@ The session file is missing or expired. Click **Reconnect…** on Telegram in th
 Enter your Telegram cloud password when the PrivacyFence menu bar prompts for it during sign-in.
 
 **"PHONE_NUMBER_BANNED" or "AUTH_KEY_UNREGISTERED"**
-Telegram has invalidated your session. Delete `~/.privacyfence/credentials/telegram.session` and click **Authenticate…** again.
+Telegram has invalidated your session. Delete `credentials/telegram.session` — under `~/.privacyfence/`
+for a bundled install, or the repo root if running from source (see
+[dev-vs-live-setup.md](dev-vs-live-setup.md)) — and click **Authenticate…** again.
 
 **Verification code arrives in the Telegram app, not by SMS**
 This is expected for accounts that already have the Telegram app installed. Open Telegram on your phone or desktop and look for the code in the official **Telegram** system message.

@@ -55,6 +55,35 @@ def fake_client_class(*, result=None, connection_error: Exception | None = None,
     return _FakeClient
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_telegram(monkeypatch):
+    """build_connectors() wires up Telegram independently of any org config --
+    only telegram_app_credentials() (baked into the local checkout, or set via
+    PRIVACYFENCE_TELEGRAM_API_ID/HASH) and a real credentials/telegram.session
+    under PROJECT_ROOT gate it. Without this, tests that don't care about
+    Telegram would silently pick up whatever real session a developer has
+    authenticated from source with -- default it off here; the Telegram-
+    specific tests below override this themselves via their own
+    monkeypatch.setattr calls."""
+    monkeypatch.setattr(daemon_main, "telegram_app_credentials", lambda: None)
+
+
+_GOOGLE_CLIENT_ATTRS = ["GmailClient", "DriveClient", "CalendarClient", "ContactsClient", "TasksClient"]
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_google_clients(monkeypatch):
+    """Google-family tests are parametrized to mock only the one *Client class
+    under test, leaving the other four as the real classes -- previously safe
+    because they'd fail closed on a missing token file. A real, valid token
+    for any of them in this checkout's credentials/ (e.g. from `--tasks-oauth`
+    or the menu bar) would let that one actually construct and succeed,
+    silently changing these tests' results. Default all five to fail closed;
+    a test overrides one via its own monkeypatch.setattr, same as above."""
+    for attr in _GOOGLE_CLIENT_ATTRS:
+        monkeypatch.setattr(daemon_main, attr, fake_client_class(init_error=FileNotFoundError("no token file")))
+
+
 # ---------------------------------------------------------------------------- #
 # _resolve_path / _google_client_config
 # ---------------------------------------------------------------------------- #

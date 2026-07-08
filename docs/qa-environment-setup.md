@@ -37,10 +37,14 @@ Before starting, confirm:
 2. You have `privacyfence-app` (the daemon) running, and admin/owner-level
    access on each external service to create a project/space/channel/folder
    in it (not just read access).
-3. You can edit `~/.privacyfence/config/settings.yaml` directly (it's a
-   local file, not managed through the menu bar UI) and either restart the
-   daemon afterward, or trigger a hot-reload by using the approval popup's
-   "Accept All" button once, which calls `reload_rules()` for you.
+3. You can edit `settings.yaml` directly (it's a local file, not managed
+   through the menu bar UI) — at `~/.privacyfence/config/settings.yaml` for a
+   bundled install, or `config/settings.yaml` in the repo root if running
+   from source (see [dev-vs-live-setup.md](dev-vs-live-setup.md)) — and
+   either restart the daemon afterward, or trigger a hot-reload by using the
+   approval popup's "Accept All" button once, which calls `reload_rules()`
+   for you. The rest of this doc just says "`settings.yaml`" — use whichever
+   of the two paths applies to your setup.
 4. You know your own email address as PrivacyFence sees it (the
    `my_email` used internally for rules like `i_am_sender`/`i_am_organizer`)
    — this is just whatever address you authenticated Gmail/Calendar/etc.
@@ -64,7 +68,7 @@ mail from:
 1. Look through your inbox (or run `gmail_list_messages`) and pick any
    sender domain you get recurring mail from — a newsletter, a receipt
    sender, a notification address. Anything works; it just has to be real.
-2. In `~/.privacyfence/config/settings.yaml`:
+2. In `settings.yaml`:
    ```yaml
    auto_accept_rules:
      gmail.read_message:
@@ -199,8 +203,9 @@ prompt creates and cleans up its own task. Exercising `approved_task_list`
 needs a second list, though:
 
 1. Your default list (usually named **My Tasks**) works fine as the
-   **approved** one — get its ID from `tasks_list_task_lists` and add it to
-   `settings.yaml`:
+   **approved** one — get its ID from `tasks_list_task_lists` (via a live
+   Claude session) or headlessly with `scripts/qa_list_ids.py tasks`, and add
+   it to `settings.yaml`:
    ```yaml
    auto_accept_rules:
      tasks.update_task:
@@ -243,8 +248,10 @@ needs a second list, though:
    `telegram_list_chats` already returns, not by matching a name.
 2. Decide what `approved_chats` should point at. Either:
    - Point it at Saved Messages itself (get its numeric `chat_id` from
-     `telegram_list_chats` after step 1) — safe, since it's always fine to
-     auto-accept reads of your own messages to yourself, or
+     `telegram_list_chats` after step 1, or headlessly with
+     `scripts/qa_list_ids.py telegram` — look for `is_self=True`) — safe,
+     since it's always fine to auto-accept reads of your own messages to
+     yourself, or
    - Create/repurpose a second low-stakes chat (a private group with just
      you, or a throwaway test contact) and use its `chat_id` instead.
    ```yaml
@@ -357,7 +364,7 @@ The only thing worth confirming beforehand:
 
 1. **PII Detection Gate** is enabled in the PrivacyFence menu bar (it is by
    default — equivalently, `pii_detection.enabled` is `true` or absent in
-   `~/.privacyfence/config/settings.yaml`). If you've turned it off, the
+   `settings.yaml`). If you've turned it off, the
    dedicated check still runs but correctly produces the *disabled* result
    (no tint, no second confirmation, `pii_detected: false` in the audit log)
    — that's expected behavior for that state, not a failure, but the test
@@ -386,7 +393,7 @@ The only thing worth confirming beforehand:
 ## Consolidated `auto_accept_rules` block
 
 Everything from the sections above, in one place. Merge this into
-`~/.privacyfence/config/settings.yaml` under the `auto_accept_rules:` key,
+`settings.yaml` under the `auto_accept_rules:` key,
 replacing every `<placeholder>` with your actual value:
 
 ```yaml
@@ -443,7 +450,9 @@ popup once, which hot-reloads rules for you via `reload_rules()`).
 
 What [`connector-qa-testing.md`](connector-qa-testing.md)'s Phase 0 looks up,
 and how it finds each one. Use this table to sanity-check your setup before
-a run, or to debug a fixture Phase 0 reports as missing.
+a run, or to debug a fixture Phase 0 reports as missing. For the Telegram and
+Tasks rows, `scripts/qa_list_ids.py` prints the same IDs Phase 0 would find,
+headlessly, without needing a live Claude session first.
 
 | Fixture | How it's found | Source |
 |---|---|---|
