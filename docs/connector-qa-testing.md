@@ -46,8 +46,8 @@ combination only breaks for non-ASCII input.
   "PrivacyFence QA Sandbox" folder, a second (non-approved) Slack channel with
   a thread in it, a Telegram "Saved Messages" chat plus one approved chat, and
   Salesforce sample records/report. Without these, several phases below fall
-  back to being untestable exactly like the 2026-07-08 run — that doc explains
-  why each one is needed and is a one-time setup, not a per-run step.
+  back to being untestable — work through that doc once per environment; it's
+  a standalone installation guide, not something you redo per run.
 
 ## The prompt
 
@@ -102,6 +102,14 @@ Ground rules:
 - After each numbered phase, pause and give me a one-line status ("Phase 3 done,
   4 tool calls, 2 required approval") before moving to the next phase, so I'm not
   flooded with 40 popups back to back.
+- **Whenever a step expects something other than a plain Accept — Deny, "Show
+  Details," or "Accept All" — send that instruction as its own message and stop.
+  Don't make the tool call in the same turn.** Wait for me to reply (e.g. "go" or
+  "ready") before calling the tool. The native approval popup can appear on top
+  of this chat window the instant the tool call fires, so if the instruction and
+  the call land in the same turn I may only see the popup, not what I was
+  supposed to do with it, and default to clicking Accept out of habit. A step
+  marked "pause here" below means: stop, wait for my go-ahead, then call it.
 - Keep a running table as you go: `tool name | gate observed (silent / Cowork
   review / native popup) | my decision | audit-log decision | notes`. This is a
   test environment against my own accounts, so read
@@ -114,11 +122,13 @@ Ground rules:
   tag | deletable via tool? (yes/no)`. Print it at the very end too, split into
   "cleaned up in Phase 11" vs. "needs manual deletion."
 
-I (the human) will be watching for the approval prompts as they appear. Some
-instructions below tell you to expect a prompt and note what I'll do with it
-(Accept / Deny / Show Details) — do that, then report back what actually happened
-in the tool result, and confirm it against the audit log entry for that call
-before writing it into the table as settled rather than assumed.
+I (the human) will be watching for the approval prompts as they appear. Most
+steps expect a plain Accept and you can just make the call. The ones marked
+**"pause here"** expect something else (Deny / Show Details / Accept All) —
+for those, stop and wait for my go-ahead as the ground rules above describe,
+*then* call the tool, then report back what actually happened in the tool
+result, and confirm it against the audit log entry for that call before
+writing it into the table as settled rather than assumed.
 
 ---
 
@@ -168,17 +178,22 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
 
 ## Phase 1 — Gmail
 1. `gmail_list_messages` and `gmail_list_threads` (expect: silent, no prompt).
-2. Pick any recent message and call `gmail_get_message` on it. **I will click
+2. Pick any recent message — call it the **label-test message**, you'll reuse
+   it in steps 9–12 — and call `gmail_get_message` on it. **I will click
    Accept.** Confirm you received the body.
 3. Pick a **short** message with no large attachments (this matters — a big one
-   makes a Deny indistinguishable from a size-truncation error) and call
-   `gmail_get_message` again. **I will click Deny this time.** Confirm you get an
-   error, not data — and don't fabricate a fallback answer. Then read the audit
-   log entry for this call and state definitively whether it was `denied` or a
-   truncation with a different underlying cause — don't leave this as a guess.
-4. Pick a message that has a thread with 2+ messages, call `gmail_get_thread`.
-   **I will click "Show Details"** instead of Accept/Deny directly, then approve
-   from the native popup. Report what came back.
+   makes a Deny indistinguishable from a size-truncation error). **Pause here**:
+   tell me you're about to call `gmail_get_message` on it and that **I will
+   click Deny this time**, then wait for me to say go. Once I do, make the
+   call and confirm you get an error, not data — and don't fabricate a
+   fallback answer. Then read the audit log entry for this call and state
+   definitively whether it was `denied` or a truncation with a different
+   underlying cause — don't leave this as a guess.
+4. Pick a message that has a thread with 2+ messages. **Pause here**: tell me
+   you're about to call `gmail_get_thread` on it and that **I will click "Show
+   Details"** instead of Accept/Deny directly, then approve from the native
+   popup, then wait for me to say go. Once I do, make the call and report what
+   came back.
 5. `gmail_list_message_attachments` on any message with attachments (expect:
    silent). Then `gmail_download_attachment` on one — this is `review` gated,
    I'll Accept.
@@ -191,10 +206,28 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
    — safe to delete`. This is popup-gated, I'll Accept. Add it to the manifest.
 8. `gmail_reply_draft` on the thread from step 4, again clearly marked as a test
    with `{RUN_ID}`. Popup, I'll Accept. Add it to the manifest.
-9. `gmail_add_label` on the test message from step 7/8 (any existing label).
-   Popup, I'll Accept.
-10. Skip `gmail_archive_message` and `gmail_remove_label` unless I tell you
-    otherwise in chat.
+9. `gmail_add_label` on the **label-test message from step 2** — use a fresh
+   label named exactly `PrivacyFence QA {RUN_ID}` (the tool creates it if it
+   doesn't already exist, per `_get_or_create_label` in `gmail_client.py`).
+   Popup, Accept.
+10. `gmail_archive_message` on the same message. Popup, Accept. Then
+    `gmail_list_messages` (silent, no prompt) with query
+    `in:inbox label:"PrivacyFence QA {RUN_ID}"` and confirm it comes back
+    empty — that's archiving's entire visible effect: `archive_message` in
+    `gmail_client.py` does nothing but remove the `INBOX` system label via
+    `modify(removeLabelIds=["INBOX"])`.
+11. Because archiving is *only* removing the `INBOX` label, un-archiving is
+    just adding it back: `gmail_add_label` on the same message again, this
+    time with label name `INBOX` (the literal system label, not a new one —
+    `_get_or_create_label` resolves it to Gmail's existing `INBOX` label by
+    name instead of creating a duplicate). Popup, Accept. Then repeat the same
+    `gmail_list_messages` query from step 10 and confirm the message is back.
+12. `gmail_remove_label` on the same message, removing the
+    `PrivacyFence QA {RUN_ID}` label added in step 9. Popup, Accept. Then
+    `gmail_list_messages` (silent) with query `label:"PrivacyFence QA {RUN_ID}"`
+    and confirm zero results. After this step the label-test message is back
+    exactly where it started — still in the inbox, with no leftover label —
+    so there's nothing to add to the manifest or clean up for it in Phase 11.
 
 ## Phase 2 — Drive & Sheets
 All of this run's Drive/Sheets artifacts go inside `{FIXTURES}.drive_qa_folder_id`
@@ -224,9 +257,11 @@ in step 3, if you configured it.
 10. `drive_sheets_create` named `PrivacyFence QA test sheet [{RUN_ID}] — safe to
     delete`, inside the QA Sandbox folder (expect: silent, auto). Add to manifest.
 11. `drive_sheets_get_metadata` on it (expect: silent).
-12. `drive_sheets_get_values` on a small range like `Sheet1!A1:B2` — review gate,
-    I'll click **"Accept All"** this time. Tell me exactly what rule text/scope
-    it proposes (expect: scoped to this spreadsheet + tab, not a broad rule).
+12. `drive_sheets_get_values` on a small range like `Sheet1!A1:B2` — review gate.
+    **Pause here**: tell me you're about to call it and that **I will click
+    "Accept All"** this time, then wait for me to say go. Once I do, make the
+    call and tell me exactly what rule text/scope it proposes (expect: scoped
+    to this spreadsheet + tab, not a broad rule).
 13. `drive_sheets_write_range` — write `A1: "hello"`, `A2: "=1+1"` to prove
     formulas evaluate. Popup, Accept.
 14. `drive_sheets_add_sheet` — add a tab named `Extra`. Popup, Accept.
@@ -382,11 +417,14 @@ a delete/remove/archive/close tool available, call it now:
 4. Delete the Confluence page from Phase 10 if a delete tool exists; otherwise
    note it for manual cleanup.
 5. Uncomplete/delete the Google Task from Phase 6 if a delete tool exists.
-6. For anything with **no delete tool at all** (Calendar event, Contact, Slack
-   message, Telegram message, any Gmail label added to a real message), do NOT
-   attempt a workaround — list it plainly in the final manifest under "needs
-   manual deletion," grouped by connector, so I can batch-clean these across
-   multiple runs instead of doing it one run at a time.
+6. The Gmail label-test message from Phase 1 steps 2/9–12 needs nothing here —
+   the archive/unarchive/remove-label sequence already restores it to exactly
+   its starting state.
+7. For anything with **no delete tool at all** (Calendar event, Contact, Slack
+   message, Telegram message), do NOT attempt a workaround — list it plainly
+   in the final manifest under "needs manual deletion," grouped by connector,
+   so I can batch-clean these across multiple runs instead of doing it one run
+   at a time.
 
 ---
 
