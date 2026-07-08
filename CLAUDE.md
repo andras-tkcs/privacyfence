@@ -25,8 +25,10 @@ pending CRs") and let the version get bumped once, at actual release time, not p
 
 ## Branching & PRs
 
-- Branch names are `<type>/<kebab-case-description>` — `feat/`, `feature/`, `fix/`, `chore/`,
-  `tests/` are all in use; `fix/` for bug fixes, `feat/`/`feature/` for new functionality.
+- Branch names are `<type>/<kebab-case-description>`. Standard types: `feature/` for new
+  functionality, `fix/` for bug fixes, `chore/` for non-functional maintenance, `tests/` for
+  test-only changes. Use `feature/`, not `feat/` — a few early branches used `feat/` before this
+  was settled; that prefix is retired, don't reintroduce it on new branches.
 - `main` is protected — all changes land via PR (`CONTRIBUTING.md`). PRs merge with a real merge
   commit (`Merge pull request #N from <fork>/<branch>`), not squash — keep that in mind when writing
   commit messages on a feature branch, since they survive into `main`'s history individually.
