@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -99,7 +100,15 @@ class GmailClient:
     def __init__(self, client_config: dict, token_file: str) -> None:
         self._client_config = client_config
         self._token_file = token_file
-        self._service = None  # lazily built googleapiclient resource
+        # googleapiclient service objects (and the httplib2 transport they
+        # wrap) are not thread-safe. Requests are dispatched to a thread per
+        # call (see connectors/*.py._fetch), so a single shared service can
+        # have two threads read/write the same socket concurrently,
+        # corrupting the connection (observed as SSL: WRONG_VERSION_NUMBER
+        # on a later, unrelated request reusing the same connection). Keep
+        # one service per thread instead of one shared instance.
+        self._local = threading.local()
+        self._creds_lock = threading.Lock()
         self._current_message_id: str = ""
 
     # ------------------------------------------------------------------ #
@@ -130,33 +139,36 @@ class GmailClient:
 
         Raises if no usable token exists - the user must run `--oauth-setup`.
         """
-        if not os.path.exists(self._token_file):
-            raise GmailClientError(
-                f"No OAuth token found at '{self._token_file}'. "
-                "Run the application once with '--oauth-setup' to authorize."
-            )
-
-        creds = Credentials.from_authorized_user_file(self._token_file, SCOPES)
-
-        if creds.valid:
-            return creds
-
-        if creds.expired and creds.refresh_token:
-            logger.info("Refreshing expired OAuth token")
-            try:
-                creds.refresh(Request())
-            except Exception as exc:  # noqa: BLE001 - surface a clear message
+        # Guards concurrent refresh/save of the shared token file when
+        # multiple threads hit an expired token at the same time.
+        with self._creds_lock:
+            if not os.path.exists(self._token_file):
                 raise GmailClientError(
-                    f"Failed to refresh OAuth token: {exc}. "
-                    "Re-run with '--oauth-setup' to re-authorize."
-                ) from exc
-            self._save_token(creds)
-            return creds
+                    f"No OAuth token found at '{self._token_file}'. "
+                    "Run the application once with '--oauth-setup' to authorize."
+                )
 
-        raise GmailClientError(
-            "Cached OAuth token is invalid and cannot be refreshed. "
-            "Re-run with '--oauth-setup' to re-authorize."
-        )
+            creds = Credentials.from_authorized_user_file(self._token_file, SCOPES)
+
+            if creds.valid:
+                return creds
+
+            if creds.expired and creds.refresh_token:
+                logger.info("Refreshing expired OAuth token")
+                try:
+                    creds.refresh(Request())
+                except Exception as exc:  # noqa: BLE001 - surface a clear message
+                    raise GmailClientError(
+                        f"Failed to refresh OAuth token: {exc}. "
+                        "Re-run with '--oauth-setup' to re-authorize."
+                    ) from exc
+                self._save_token(creds)
+                return creds
+
+            raise GmailClientError(
+                "Cached OAuth token is invalid and cannot be refreshed. "
+                "Re-run with '--oauth-setup' to re-authorize."
+            )
 
     def _save_token(self, creds: Credentials) -> None:
         os.makedirs(os.path.dirname(os.path.abspath(self._token_file)), exist_ok=True)
@@ -169,15 +181,17 @@ class GmailClient:
             logger.debug("Could not chmod token file (non-fatal)")
 
     def _get_service(self):
-        """Build (or reuse) the Gmail API service resource."""
-        if self._service is None:
+        """Build (or reuse) the Gmail API service resource for this thread."""
+        service = getattr(self._local, "service", None)
+        if service is None:
             creds = self._load_credentials()
             # cache_discovery=False avoids noisy warnings without a file cache.
-            self._service = build(
+            service = build(
                 "gmail", "v1", credentials=creds, cache_discovery=False
             )
-            logger.debug("Gmail API service initialized")
-        return self._service
+            self._local.service = service
+            logger.debug("Gmail API service initialized for thread %s", threading.current_thread().name)
+        return service
 
     def check_connection(self) -> str:
         """Verify the credentials work. Returns the authorized email address."""

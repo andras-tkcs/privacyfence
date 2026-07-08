@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -111,7 +112,15 @@ class CalendarClient:
     def __init__(self, client_config: dict, token_file: str) -> None:
         self._client_config = client_config
         self._token_file = token_file
-        self._service = None  # lazily built
+        # googleapiclient service objects (and the httplib2 transport they
+        # wrap) are not thread-safe. Requests are dispatched to a thread per
+        # call (see connectors/*.py._fetch), so a single shared service can
+        # have two threads read/write the same socket concurrently,
+        # corrupting the connection (observed as SSL: WRONG_VERSION_NUMBER
+        # on a later, unrelated request reusing the same connection). Keep
+        # one service per thread instead of one shared instance.
+        self._local = threading.local()
+        self._creds_lock = threading.Lock()
 
     # ------------------------------------------------------------------ #
     # Authentication
@@ -135,28 +144,31 @@ class CalendarClient:
         logger.info("Calendar OAuth token saved to '%s'", self._token_file)
 
     def _load_credentials(self) -> Credentials:
-        if not os.path.exists(self._token_file):
-            raise CalendarClientError(
-                f"No OAuth token found at '{self._token_file}'. "
-                "Run with '--calendar-oauth' to authorize."
-            )
-        creds = Credentials.from_authorized_user_file(self._token_file, SCOPES)
-        if creds.valid:
-            return creds
-        if creds.expired and creds.refresh_token:
-            logger.info("Refreshing expired Calendar OAuth token")
-            try:
-                creds.refresh(Request())
-            except Exception as exc:
+        # Guards concurrent refresh/save of the shared token file when
+        # multiple threads hit an expired token at the same time.
+        with self._creds_lock:
+            if not os.path.exists(self._token_file):
                 raise CalendarClientError(
-                    f"Failed to refresh Calendar OAuth token: {exc}. "
-                    "Re-run with '--calendar-oauth' to re-authorize."
-                ) from exc
-            self._save_token(creds)
-            return creds
-        raise CalendarClientError(
-            "Cached Calendar OAuth token is invalid. Re-run with '--calendar-oauth'."
-        )
+                    f"No OAuth token found at '{self._token_file}'. "
+                    "Run with '--calendar-oauth' to authorize."
+                )
+            creds = Credentials.from_authorized_user_file(self._token_file, SCOPES)
+            if creds.valid:
+                return creds
+            if creds.expired and creds.refresh_token:
+                logger.info("Refreshing expired Calendar OAuth token")
+                try:
+                    creds.refresh(Request())
+                except Exception as exc:
+                    raise CalendarClientError(
+                        f"Failed to refresh Calendar OAuth token: {exc}. "
+                        "Re-run with '--calendar-oauth' to re-authorize."
+                    ) from exc
+                self._save_token(creds)
+                return creds
+            raise CalendarClientError(
+                "Cached Calendar OAuth token is invalid. Re-run with '--calendar-oauth'."
+            )
 
     def _save_token(self, creds: Credentials) -> None:
         os.makedirs(os.path.dirname(os.path.abspath(self._token_file)), exist_ok=True)
@@ -168,15 +180,21 @@ class CalendarClient:
             logger.debug("Could not chmod calendar token file (non-fatal)")
 
     def _get_service(self):
-        if self._service is None:
+        service = getattr(self._local, "service", None)
+        if service is None:
             creds = self._load_credentials()
-            self._service = build("calendar", "v3", credentials=creds, cache_discovery=False)
-            logger.debug("Calendar API service initialized")
-        return self._service
+            service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+            self._local.service = service
+            logger.debug("Calendar API service initialized for thread %s", threading.current_thread().name)
+        return service
 
     def _get_directory_service(self):
-        creds = self._load_credentials()
-        return build("admin", "directory_v1", credentials=creds, cache_discovery=False)
+        service = getattr(self._local, "directory_service", None)
+        if service is None:
+            creds = self._load_credentials()
+            service = build("admin", "directory_v1", credentials=creds, cache_discovery=False)
+            self._local.directory_service = service
+        return service
 
     # ------------------------------------------------------------------ #
     # Connection check

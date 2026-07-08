@@ -5,8 +5,7 @@ fallback, and update_contact's partial-field update building.
 from __future__ import annotations
 
 import threading
-import time
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -23,7 +22,7 @@ from googleapiclient.errors import HttpError
 
 def make_client(service: MagicMock) -> ContactsClient:
     client = ContactsClient(client_config={}, token_file="/tmp/unused-token.json")
-    client._service = service
+    client._local.service = service
     return client
 
 
@@ -709,40 +708,37 @@ class TestLabels:
 
 
 # ---------------------------------------------------------------------------- #
-# Thread safety: concurrent calls must not overlap on the shared httplib2
-# connection (regression for the "SSL: DECRYPTION_FAILED_OR_BAD_RECORD_MAC"
-# crash caused by two threads driving the same connection at once).
+# _get_service: must not share one service (and its underlying httplib2
+# transport) across threads, since concurrent requests dispatched via
+# asyncio.to_thread corrupt a shared connection (regression for the "SSL:
+# DECRYPTION_FAILED_OR_BAD_RECORD_MAC" crash caused by two threads driving
+# the same connection at once).
 # ---------------------------------------------------------------------------- #
 
-class TestConcurrentRequestsAreSerialized:
-    def test_list_and_search_calls_never_overlap(self):
-        active = 0
-        max_active = 0
-        state_lock = threading.Lock()
+class TestServiceIsThreadLocal:
+    def test_each_thread_gets_its_own_service_instance(self):
+        client = ContactsClient(client_config={}, token_file="/tmp/unused-token.json")
+        with patch("privacyfence.contacts_client.build") as mock_build, \
+             patch.object(client, "_load_credentials", return_value=MagicMock()):
+            mock_build.side_effect = lambda *a, **k: MagicMock()
 
-        def fake_execute():
-            nonlocal active, max_active
-            with state_lock:
-                active += 1
-                max_active = max(max_active, active)
-            time.sleep(0.05)
-            with state_lock:
-                active -= 1
-            return {"connections": [], "results": []}
+            services: dict[int, object] = {}
 
-        service = MagicMock()
-        service.people.return_value.connections.return_value.list.return_value.execute.side_effect = fake_execute
-        service.people.return_value.searchContacts.return_value.execute.side_effect = fake_execute
-        client = make_client(service)
+            def worker(idx: int) -> None:
+                services[idx] = client._get_service()
 
-        threads = [
-            threading.Thread(target=client.list_contacts),
-            threading.Thread(target=client.search_contacts, args=("jane",)),
-            threading.Thread(target=client.list_contacts),
-        ]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(5)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
 
-        assert max_active == 1
+            assert len({id(s) for s in services.values()}) == 5
+
+    def test_same_thread_reuses_cached_service(self):
+        client = ContactsClient(client_config={}, token_file="/tmp/unused-token.json")
+        with patch("privacyfence.contacts_client.build") as mock_build, \
+             patch.object(client, "_load_credentials", return_value=MagicMock()):
+            mock_build.side_effect = lambda *a, **k: MagicMock()
+            assert client._get_service() is client._get_service()
+            assert mock_build.call_count == 1
