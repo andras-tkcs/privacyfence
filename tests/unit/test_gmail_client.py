@@ -719,6 +719,286 @@ class TestArchiveMessage:
 
 
 # ---------------------------------------------------------------------------- #
+# Labels: list / create (incl. nested)
+# ---------------------------------------------------------------------------- #
+
+class TestListLabels:
+    def test_returns_id_name_type(self):
+        service = MagicMock()
+        service.users.return_value.labels.return_value.list.return_value.execute.return_value = {
+            "labels": [
+                {"id": "INBOX", "name": "INBOX", "type": "system"},
+                {"id": "Label_1", "name": "Work/Projects", "type": "user"},
+            ]
+        }
+        client = make_client(service)
+
+        result = client.list_labels()
+
+        assert result == [
+            {"id": "INBOX", "name": "INBOX", "type": "system"},
+            {"id": "Label_1", "name": "Work/Projects", "type": "user"},
+        ]
+
+    def test_http_error_becomes_gmail_client_error(self):
+        service = MagicMock()
+        service.users.return_value.labels.return_value.list.return_value.execute.side_effect = http_error(500)
+        client = make_client(service)
+        with pytest.raises(GmailClientError, match="list_labels"):
+            client.list_labels()
+
+
+class TestCreateLabel:
+    def test_creates_simple_label(self):
+        service = MagicMock()
+        service.users.return_value.labels.return_value.list.return_value.execute.return_value = {"labels": []}
+        service.users.return_value.labels.return_value.create.return_value.execute.return_value = {
+            "id": "Label_1", "name": "Receipts", "type": "user"
+        }
+        client = make_client(service)
+
+        result = client.create_label("Receipts")
+
+        assert result == {"id": "Label_1", "name": "Receipts", "type": "user"}
+        service.users.return_value.labels.return_value.create.assert_called_once_with(
+            userId="me", body={"name": "Receipts"}
+        )
+
+    def test_fails_if_exact_label_already_exists(self):
+        service = MagicMock()
+        service.users.return_value.labels.return_value.list.return_value.execute.return_value = {
+            "labels": [{"id": "Label_1", "name": "Receipts", "type": "user"}]
+        }
+        client = make_client(service)
+
+        with pytest.raises(GmailClientError, match="already exists"):
+            client.create_label("Receipts")
+        service.users.return_value.labels.return_value.create.assert_not_called()
+
+    def test_existing_check_is_case_insensitive(self):
+        service = MagicMock()
+        service.users.return_value.labels.return_value.list.return_value.execute.return_value = {
+            "labels": [{"id": "Label_1", "name": "receipts", "type": "user"}]
+        }
+        client = make_client(service)
+
+        with pytest.raises(GmailClientError, match="already exists"):
+            client.create_label("Receipts")
+
+    def test_nested_name_creates_missing_parent_segment_first(self):
+        service = MagicMock()
+        service.users.return_value.labels.return_value.list.return_value.execute.return_value = {"labels": []}
+        service.users.return_value.labels.return_value.create.return_value.execute.side_effect = [
+            {"id": "Label_parent", "name": "Work", "type": "user"},
+            {"id": "Label_child", "name": "Work/Projects", "type": "user"},
+        ]
+        client = make_client(service)
+
+        result = client.create_label("Work/Projects")
+
+        assert result == {"id": "Label_child", "name": "Work/Projects", "type": "user"}
+        create_calls = service.users.return_value.labels.return_value.create.call_args_list
+        assert create_calls[0].kwargs == {"userId": "me", "body": {"name": "Work"}}
+        assert create_calls[1].kwargs == {"userId": "me", "body": {"name": "Work/Projects"}}
+
+    def test_nested_name_reuses_existing_parent_segment(self):
+        service = MagicMock()
+        service.users.return_value.labels.return_value.list.return_value.execute.return_value = {
+            "labels": [{"id": "Label_parent", "name": "Work", "type": "user"}]
+        }
+        service.users.return_value.labels.return_value.create.return_value.execute.return_value = {
+            "id": "Label_child", "name": "Work/Projects", "type": "user"
+        }
+        client = make_client(service)
+
+        client.create_label("Work/Projects")
+
+        service.users.return_value.labels.return_value.create.assert_called_once_with(
+            userId="me", body={"name": "Work/Projects"}
+        )
+
+    def test_double_slash_normalizes_before_exists_check(self):
+        # Regression: the exists-check and the segment-creation loop must
+        # agree on the collapsed name, or "Work//Projects" (a stray double
+        # slash) slips past an existing "Work/Projects" label undetected
+        # and creates a spurious standalone "Work" label as a side effect.
+        service = MagicMock()
+        service.users.return_value.labels.return_value.list.return_value.execute.return_value = {
+            "labels": [{"id": "Label_1", "name": "Work/Projects", "type": "user"}]
+        }
+        client = make_client(service)
+
+        with pytest.raises(GmailClientError, match="already exists"):
+            client.create_label("Work//Projects")
+        service.users.return_value.labels.return_value.create.assert_not_called()
+
+    def test_empty_name_raises_without_api_call(self):
+        service = MagicMock()
+        client = make_client(service)
+
+        with pytest.raises(GmailClientError, match="non-empty label_name"):
+            client.create_label("   ")
+        service.users.return_value.labels.return_value.list.assert_not_called()
+
+    def test_http_error_on_create_becomes_gmail_client_error(self):
+        service = MagicMock()
+        service.users.return_value.labels.return_value.list.return_value.execute.return_value = {"labels": []}
+        service.users.return_value.labels.return_value.create.return_value.execute.side_effect = http_error(400)
+        client = make_client(service)
+        with pytest.raises(GmailClientError, match="create_label"):
+            client.create_label("Receipts")
+
+
+# ---------------------------------------------------------------------------- #
+# Filters: list / create / update (delete+recreate)
+# ---------------------------------------------------------------------------- #
+
+class TestListFilters:
+    def test_returns_id_criteria_action(self):
+        service = MagicMock()
+        service.users.return_value.settings.return_value.filters.return_value.list.return_value.execute.return_value = {
+            "filter": [
+                {"id": "f1", "criteria": {"from": "boss@example.com"}, "action": {"addLabelIds": ["Label_1"]}},
+            ]
+        }
+        client = make_client(service)
+
+        result = client.list_filters()
+
+        assert result == [
+            {"id": "f1", "criteria": {"from": "boss@example.com"}, "action": {"addLabelIds": ["Label_1"]}},
+        ]
+
+    def test_http_error_becomes_gmail_client_error(self):
+        service = MagicMock()
+        service.users.return_value.settings.return_value.filters.return_value.list.return_value.execute.side_effect = http_error(500)
+        client = make_client(service)
+        with pytest.raises(GmailClientError, match="list_filters"):
+            client.list_filters()
+
+
+class TestCreateFilter:
+    def test_builds_criteria_and_action_and_calls_api(self):
+        service = MagicMock()
+        service.users.return_value.settings.return_value.filters.return_value.create.return_value.execute.return_value = {
+            "id": "f1",
+            "criteria": {"from": "boss@example.com", "hasAttachment": True},
+            "action": {"removeLabelIds": ["INBOX"]},
+        }
+        client = make_client(service)
+
+        result = client.create_filter(from_address="boss@example.com", has_attachment=True, archive=True)
+
+        assert result["id"] == "f1"
+        service.users.return_value.settings.return_value.filters.return_value.create.assert_called_once_with(
+            userId="me",
+            body={
+                "criteria": {"from": "boss@example.com", "hasAttachment": True},
+                "action": {"removeLabelIds": ["INBOX"]},
+            },
+        )
+
+    def test_add_label_names_resolved_via_get_or_create_label(self):
+        service = MagicMock()
+        service.users.return_value.labels.return_value.list.return_value.execute.return_value = {"labels": []}
+        service.users.return_value.labels.return_value.create.return_value.execute.return_value = {"id": "Label_new"}
+        service.users.return_value.settings.return_value.filters.return_value.create.return_value.execute.return_value = {
+            "id": "f1", "criteria": {"subject": "x"}, "action": {"addLabelIds": ["Label_new"]}
+        }
+        client = make_client(service)
+
+        client.create_filter(subject="x", add_label_names="NewLabel")
+
+        service.users.return_value.labels.return_value.create.assert_called_once_with(
+            userId="me", body={"name": "NewLabel"}
+        )
+        service.users.return_value.settings.return_value.filters.return_value.create.assert_called_once_with(
+            userId="me",
+            body={"criteria": {"subject": "x"}, "action": {"addLabelIds": ["Label_new"]}},
+        )
+
+    def test_requires_at_least_one_criteria_field(self):
+        client = make_client(MagicMock())
+        with pytest.raises(GmailClientError, match="at least one criteria field"):
+            client.create_filter(archive=True)
+
+    def test_requires_at_least_one_action(self):
+        client = make_client(MagicMock())
+        with pytest.raises(GmailClientError, match="at least one action"):
+            client.create_filter(subject="x")
+
+    def test_http_error_becomes_gmail_client_error(self):
+        service = MagicMock()
+        service.users.return_value.settings.return_value.filters.return_value.create.return_value.execute.side_effect = http_error(400)
+        client = make_client(service)
+        with pytest.raises(GmailClientError, match="create_filter"):
+            client.create_filter(subject="x", archive=True)
+
+
+class TestUpdateFilter:
+    def test_deletes_old_and_creates_new(self):
+        service = MagicMock()
+        service.users.return_value.settings.return_value.filters.return_value.create.return_value.execute.return_value = {
+            "id": "f2", "criteria": {"subject": "y"}, "action": {"removeLabelIds": ["INBOX"]}
+        }
+        client = make_client(service)
+
+        result = client.update_filter("f1", subject="y", archive=True)
+
+        assert result == {
+            "old_id": "f1", "id": "f2",
+            "criteria": {"subject": "y"}, "action": {"removeLabelIds": ["INBOX"]},
+        }
+        service.users.return_value.settings.return_value.filters.return_value.delete.assert_called_once_with(
+            userId="me", id="f1"
+        )
+        service.users.return_value.settings.return_value.filters.return_value.create.assert_called_once_with(
+            userId="me", body={"criteria": {"subject": "y"}, "action": {"removeLabelIds": ["INBOX"]}}
+        )
+
+    def test_requires_filter_id(self):
+        client = make_client(MagicMock())
+        with pytest.raises(GmailClientError, match="non-empty filter_id"):
+            client.update_filter("", subject="y", archive=True)
+
+    def test_validates_criteria_before_deleting_anything(self):
+        service = MagicMock()
+        client = make_client(service)
+
+        with pytest.raises(GmailClientError, match="at least one criteria field"):
+            client.update_filter("f1", archive=True)
+        service.users.return_value.settings.return_value.filters.return_value.delete.assert_not_called()
+
+    def test_validates_action_before_deleting_anything(self):
+        service = MagicMock()
+        client = make_client(service)
+
+        with pytest.raises(GmailClientError, match="at least one action"):
+            client.update_filter("f1", subject="y")
+        service.users.return_value.settings.return_value.filters.return_value.delete.assert_not_called()
+
+    def test_delete_http_error_becomes_gmail_client_error_and_skips_create(self):
+        service = MagicMock()
+        service.users.return_value.settings.return_value.filters.return_value.delete.return_value.execute.side_effect = http_error(404)
+        client = make_client(service)
+
+        with pytest.raises(GmailClientError, match="failed to delete existing filter"):
+            client.update_filter("f1", subject="y", archive=True)
+        service.users.return_value.settings.return_value.filters.return_value.create.assert_not_called()
+
+    def test_create_http_error_after_delete_reports_original_filter_is_gone(self):
+        service = MagicMock()
+        service.users.return_value.settings.return_value.filters.return_value.create.return_value.execute.side_effect = http_error(400)
+        client = make_client(service)
+
+        with pytest.raises(GmailClientError, match="original filter is gone"):
+            client.update_filter("f1", subject="y", archive=True)
+        service.users.return_value.settings.return_value.filters.return_value.delete.assert_called_once_with(
+            userId="me", id="f1"
+        )
+
+
+# ---------------------------------------------------------------------------- #
 # resolve_attachment_destination: path-traversal sanitization
 # ---------------------------------------------------------------------------- #
 

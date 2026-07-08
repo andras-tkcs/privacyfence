@@ -160,6 +160,85 @@ class GmailConnector(Connector):
                 ),
                 params=[ToolParam("message_id", "str")],
             ),
+            ToolSpec(
+                name="gmail_list_filters",
+                description=(
+                    "List all Gmail filters with their criteria and actions. "
+                    "Auto-approved -- filter rules only, no message content is returned."
+                ),
+                params=[],
+                read_only=True,
+            ),
+            ToolSpec(
+                name="gmail_list_labels",
+                description=(
+                    "List all Gmail labels (system and user-created). Nested labels "
+                    "have a '/' in their name (e.g. 'Work/Projects'). "
+                    "Auto-approved -- label metadata only."
+                ),
+                params=[],
+                read_only=True,
+            ),
+            ToolSpec(
+                name="gmail_create_filter",
+                description=(
+                    "Create a Gmail filter. Provide at least one criteria field "
+                    "(from_address, to_address, subject, query, has_attachment) and "
+                    "at least one action (add_label_names, archive, mark_as_read, "
+                    "star, forward_to). Requires user approval."
+                ),
+                params=[
+                    ToolParam("from_address", "str", required=False, default=""),
+                    ToolParam("to_address", "str", required=False, default=""),
+                    ToolParam("subject", "str", required=False, default=""),
+                    ToolParam(
+                        "query", "str", required=False, default="",
+                        description="Gmail search syntax; matches the filter's 'Has the words' field",
+                    ),
+                    ToolParam("has_attachment", "bool", required=False, default=False),
+                    ToolParam(
+                        "add_label_names", "str", required=False, default="",
+                        description="Comma-separated label names to apply; created if missing",
+                    ),
+                    ToolParam("archive", "bool", required=False, default=False, description="Skip the Inbox"),
+                    ToolParam("mark_as_read", "bool", required=False, default=False),
+                    ToolParam("star", "bool", required=False, default=False),
+                    ToolParam("forward_to", "str", required=False, default=""),
+                ],
+            ),
+            ToolSpec(
+                name="gmail_update_filter",
+                description=(
+                    "Replace an existing Gmail filter's criteria and actions, "
+                    "identified by filter_id (from gmail_list_filters). Gmail's API "
+                    "has no native filter update, so this deletes the filter and "
+                    "creates a new one with the given fields, which gets a new id. "
+                    "Requires user approval."
+                ),
+                params=[
+                    ToolParam("filter_id", "str"),
+                    ToolParam("from_address", "str", required=False, default=""),
+                    ToolParam("to_address", "str", required=False, default=""),
+                    ToolParam("subject", "str", required=False, default=""),
+                    ToolParam("query", "str", required=False, default=""),
+                    ToolParam("has_attachment", "bool", required=False, default=False),
+                    ToolParam("add_label_names", "str", required=False, default=""),
+                    ToolParam("archive", "bool", required=False, default=False),
+                    ToolParam("mark_as_read", "bool", required=False, default=False),
+                    ToolParam("star", "bool", required=False, default=False),
+                    ToolParam("forward_to", "str", required=False, default=""),
+                ],
+            ),
+            ToolSpec(
+                name="gmail_create_label",
+                description=(
+                    "Create a Gmail label. Use '/' to create nested labels (e.g. "
+                    "'Work/Projects' creates 'Projects' nested under 'Work', "
+                    "creating 'Work' first if it doesn't already exist). Fails if "
+                    "the exact label name already exists. Requires user approval."
+                ),
+                params=[ToolParam("label_name", "str")],
+            ),
         ]
 
     async def call(self, tool: str, args: dict[str, Any]) -> Any:
@@ -187,6 +266,16 @@ class GmailConnector(Connector):
             return await self._remove_label(**args)
         if tool == "gmail_archive_message":
             return await self._archive_message(**args)
+        if tool == "gmail_list_filters":
+            return await self._list_filters(**args)
+        if tool == "gmail_list_labels":
+            return await self._list_labels(**args)
+        if tool == "gmail_create_filter":
+            return await self._create_filter(**args)
+        if tool == "gmail_update_filter":
+            return await self._update_filter(**args)
+        if tool == "gmail_create_label":
+            return await self._create_label(**args)
         raise ValueError(f"Unknown Gmail tool: {tool!r}")
 
     # ------------------------------------------------------------------ #
@@ -220,6 +309,20 @@ class GmailConnector(Connector):
             message.sender or "", t0,
         )
         return {"message_id": message_id, "attachments": attachments}
+
+    async def _list_filters(self) -> Any:
+        t0 = time.time()
+        filters = await self._fetch(self._gmail.list_filters)
+        self._auto_audit("gmail_list_filters", "List Gmail Filters",
+                         "List filters", f"{len(filters)} result(s)", t0)
+        return filters
+
+    async def _list_labels(self) -> Any:
+        t0 = time.time()
+        labels = await self._fetch(self._gmail.list_labels)
+        self._auto_audit("gmail_list_labels", "List Gmail Labels",
+                         "List labels", f"{len(labels)} result(s)", t0)
+        return labels
 
     # ------------------------------------------------------------------ #
     # Review gate (reads)
@@ -508,6 +611,151 @@ class GmailConnector(Connector):
             args={"message_id": message_id},
         )
         return await self._fetch(self._gmail.archive_message, message_id)
+
+    @staticmethod
+    def _filter_preview(
+        from_address: str, to_address: str, subject: str, query: str, has_attachment: bool,
+        add_label_names: str, archive: bool, mark_as_read: bool, star: bool, forward_to: str,
+    ) -> dict[str, str]:
+        criteria_parts = []
+        if from_address:
+            criteria_parts.append(f"from: {from_address}")
+        if to_address:
+            criteria_parts.append(f"to: {to_address}")
+        if subject:
+            criteria_parts.append(f"subject: {subject}")
+        if query:
+            criteria_parts.append(f"has the words: {query}")
+        if has_attachment:
+            criteria_parts.append("has attachment")
+        action_parts = []
+        if add_label_names:
+            action_parts.append(f"apply label(s): {add_label_names}")
+        if star:
+            action_parts.append("star it")
+        if archive:
+            action_parts.append("archive it (skip inbox)")
+        if mark_as_read:
+            action_parts.append("mark as read")
+        if forward_to:
+            action_parts.append(f"forward to: {forward_to}")
+        return {
+            "Criteria": "; ".join(criteria_parts) or "(none)",
+            "Actions": "; ".join(action_parts) or "(none)",
+        }
+
+    async def _create_filter(
+        self,
+        from_address: str = "",
+        to_address: str = "",
+        subject: str = "",
+        query: str = "",
+        has_attachment: bool = False,
+        add_label_names: str = "",
+        archive: bool = False,
+        mark_as_read: bool = False,
+        star: bool = False,
+        forward_to: str = "",
+    ) -> Any:
+        preview = self._filter_preview(
+            from_address, to_address, subject, query, has_attachment,
+            add_label_names, archive, mark_as_read, star, forward_to,
+        )
+        await gated_call(
+            connector=self.name,
+            tool="gmail_create_filter",
+            tool_name="Create Gmail Filter",
+            summary=f"Create filter — {preview['Criteria']}",
+            sender="",
+            raw_data=preview,
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text="",
+            my_email=self.my_email,
+            args={
+                "from_address": from_address, "to_address": to_address, "subject": subject,
+                "query": query, "has_attachment": has_attachment, "add_label_names": add_label_names,
+                "archive": archive, "mark_as_read": mark_as_read, "star": star, "forward_to": forward_to,
+            },
+        )
+        return await self._fetch(
+            self._gmail.create_filter, from_address, to_address, subject, query, has_attachment,
+            add_label_names, archive, mark_as_read, star, forward_to,
+        )
+
+    async def _update_filter(
+        self,
+        filter_id: str,
+        from_address: str = "",
+        to_address: str = "",
+        subject: str = "",
+        query: str = "",
+        has_attachment: bool = False,
+        add_label_names: str = "",
+        archive: bool = False,
+        mark_as_read: bool = False,
+        star: bool = False,
+        forward_to: str = "",
+    ) -> Any:
+        preview = {
+            "Filter ID": filter_id,
+            **self._filter_preview(
+                from_address, to_address, subject, query, has_attachment,
+                add_label_names, archive, mark_as_read, star, forward_to,
+            ),
+        }
+        details = (
+            "Gmail has no filter-update API: this deletes the existing filter "
+            f"(id: {filter_id}) and creates a new one with the settings above. "
+            "The replacement filter will have a different id."
+        )
+        await gated_call(
+            connector=self.name,
+            tool="gmail_update_filter",
+            tool_name="Update Gmail Filter",
+            summary=f"Update filter {filter_id} — {preview['Criteria']}",
+            sender="",
+            raw_data=preview,
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text=details,
+            my_email=self.my_email,
+            args={
+                "filter_id": filter_id, "from_address": from_address, "to_address": to_address,
+                "subject": subject, "query": query, "has_attachment": has_attachment,
+                "add_label_names": add_label_names, "archive": archive, "mark_as_read": mark_as_read,
+                "star": star, "forward_to": forward_to,
+            },
+        )
+        return await self._fetch(
+            self._gmail.update_filter, filter_id, from_address, to_address, subject, query,
+            has_attachment, add_label_names, archive, mark_as_read, star, forward_to,
+        )
+
+    async def _create_label(self, label_name: str) -> Any:
+        stripped = label_name.strip("/")
+        preview = {"Label": label_name}
+        details = ""
+        if "/" in stripped:
+            parent = stripped.rsplit("/", 1)[0]
+            details = f"Nested label — parent '{parent}' will be created too if it doesn't already exist."
+        await gated_call(
+            connector=self.name,
+            tool="gmail_create_label",
+            tool_name="Create Gmail Label",
+            summary=f"Create label: {label_name}",
+            sender="",
+            raw_data={"label_name": label_name},
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text=details,
+            my_email=self.my_email,
+            args={"label_name": label_name},
+        )
+        return await self._fetch(self._gmail.create_label, label_name)
 
     # ------------------------------------------------------------------ #
     # Helpers
