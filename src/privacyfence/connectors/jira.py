@@ -153,6 +153,10 @@ class JiraConnector(Connector):
                 for c in comments
             )
         )
+        pii_scan_text = (
+            f"{getattr(issue, 'description', '') or ''}\n\n" +
+            "\n".join(getattr(c, "body", "") or "" for c in comments)
+        )
         return await gated_call(
             connector=self.name,
             tool="jira_get_issue",
@@ -164,6 +168,7 @@ class JiraConnector(Connector):
             gate="review",
             preview=preview,
             details_text=details,
+            pii_scan_text=pii_scan_text,
             my_email=self.my_email,
             args={"issue_key": issue_key},
         )

@@ -169,6 +169,20 @@ class TestGetFileContentBugFix:
         # wrapper shape must be preserved, not unwrapped.
         assert kwargs["raw_data"].file.owners == ["alice@example.com"]
 
+    async def test_pii_scan_text_is_content_only_not_owner(self, gated_call_spy):
+        # owner defaults to an email address, present on every file
+        # regardless of content -- the PII scan must not see it.
+        connector, client = make_connector()
+        content = DriveFileContent(file=make_file(), content_text="nothing sensitive")
+        client.get_file_content.return_value = content
+
+        await connector.call("drive_get_file_content", {"file_id": "f1"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["pii_scan_text"] == "nothing sensitive"
+        assert "alice@example.com" in kwargs["details_text"]
+        assert "alice@example.com" not in kwargs["pii_scan_text"]
+
 
 class TestDownloadFile:
     async def test_download_file_preview_and_args(self, gated_call_spy):
@@ -183,6 +197,7 @@ class TestDownloadFile:
         assert kwargs["gate"] == "review"
         assert kwargs["preview"]["Saved to"] == "/tmp/Q3 Report.pdf"
         assert kwargs["args"] == {"file_id": "f1", "destination_dir": "/tmp"}
+        assert kwargs["pii_scan_text"] == ""  # no content involved, nothing to scan
 
 
 class TestWriteToolsGateAndPreview:
@@ -383,6 +398,7 @@ class TestSheetsGatedTools:
         assert kwargs["preview"] == {"Spreadsheet": "Budget", "Owner": "alice@example.com", "Range": "Sheet1!A1:B2"}
         assert kwargs["filtered_data"] == [["a", "b"], ["1", "2"]]
         assert result == [["a", "b"], ["1", "2"]]
+        assert kwargs["pii_scan_text"] == "a, b\n1, 2"  # rows only, not the "Owner: alice@example.com" header
 
     async def test_get_values_no_owner_shows_unknown(self, gated_call_spy):
         connector, client = make_connector()

@@ -155,6 +155,19 @@ class TestGetPage:
         assert kwargs["args"] == {"page_id": "p1"}
         assert kwargs["raw_data"] is kwargs["filtered_data"]
 
+    async def test_pii_scan_text_is_body_only_not_author(self, gated_call_spy):
+        # author defaults to an email address, present on every page
+        # regardless of content -- the PII scan must not see it.
+        connector, client = make_connector()
+        client.get_page.return_value = make_page(body="nothing sensitive here")
+
+        await connector.call("confluence_get_page", {"page_id": "p1"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["pii_scan_text"] == "nothing sensitive here"
+        assert "alice@example.com" in kwargs["details_text"]
+        assert "alice@example.com" not in kwargs["pii_scan_text"]
+
     async def test_client_error_becomes_runtime_error(self):
         connector, client = make_connector()
         client.get_page.side_effect = ConfluenceClientError("page deleted")

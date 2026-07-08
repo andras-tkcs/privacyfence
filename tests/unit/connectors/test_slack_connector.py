@@ -97,6 +97,23 @@ class TestGetChannelHistory:
         assert kwargs["args"] == {"channel_id": "C123"}
         client.get_channel_history.assert_called_once_with("C123", 10)
 
+    async def test_pii_scan_text_is_message_text_only_not_usernames_or_ids(self, gated_call_spy):
+        # Regression: user_id/user_name are on every message regardless of
+        # content, so scanning the full details_text (which prefixes each
+        # line with them) could flag PII that isn't actually in what was
+        # said. The scan must only see the message text.
+        connector, client = make_connector()
+        client.get_channel_history.return_value = [
+            make_message(user_name="alice@example.com", text="nothing sensitive"),
+        ]
+
+        await connector.call("slack_get_channel_history", {"channel_id": "C123"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["pii_scan_text"] == "nothing sensitive"
+        assert "alice@example.com" in kwargs["details_text"]  # still shown in the popup
+        assert "alice@example.com" not in kwargs["pii_scan_text"]
+
     async def test_empty_channel_shows_placeholder(self, gated_call_spy):
         connector, client = make_connector()
         client.get_channel_history.return_value = []
@@ -139,6 +156,18 @@ class TestGetThreadReplies:
         assert gated_call_spy[0]["preview"]["Replies"] == "0"
         assert gated_call_spy[0]["preview"]["Thread starter"] == "(empty)"
 
+    async def test_pii_scan_text_is_message_text_only(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_thread_replies.return_value = [
+            make_message(user_name="alice@example.com", text="starter"),
+            make_message(user_name="bob@example.com", text="reply"),
+        ]
+
+        await connector.call("slack_get_thread_replies", {"channel_id": "C123", "thread_ts": "t1"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["pii_scan_text"] == "starter\nreply"
+
 
 class TestSearchMessages:
     async def test_preview_and_gate(self, gated_call_spy):
@@ -152,6 +181,18 @@ class TestSearchMessages:
         assert kwargs["gate"] == "review"
         assert kwargs["args"] == {"query": "budget"}
         client.search_messages.assert_called_once_with("budget", 5)
+
+    async def test_pii_scan_text_is_message_text_only(self, gated_call_spy):
+        connector, client = make_connector()
+        client.search_messages.return_value = [
+            make_message(user_name="alice@example.com", text="nothing sensitive"),
+        ]
+
+        await connector.call("slack_search_messages", {"query": "budget"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["pii_scan_text"] == "nothing sensitive"
+        assert "alice@example.com" not in kwargs["pii_scan_text"]
 
 
 class TestSendMessage:

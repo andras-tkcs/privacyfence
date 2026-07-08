@@ -307,6 +307,7 @@ class CalendarConnector(Connector):
             gate="review",
             preview=preview,
             details_text="\n".join(details_lines),
+            pii_scan_text=event.description or "",
             my_email=self.my_email,
             args={"calendar_id": calendar_id, "event_id": event_id},
         )

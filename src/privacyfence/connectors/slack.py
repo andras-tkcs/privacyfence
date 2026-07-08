@@ -159,6 +159,7 @@ class SlackConnector(Connector):
             gate="review",
             preview=preview,
             details_text=details,
+            pii_scan_text="\n".join(m.text or "" for m in messages),
             my_email=self.my_email,
             args={"channel_id": channel_id},
         )
@@ -189,6 +190,7 @@ class SlackConnector(Connector):
             gate="review",
             preview=preview,
             details_text=details,
+            pii_scan_text="\n".join(m.text or "" for m in messages),
             my_email=self.my_email,
             args={"channel_id": channel_id, "thread_ts": thread_ts},
         )
@@ -217,6 +219,7 @@ class SlackConnector(Connector):
             gate="review",
             preview=preview,
             details_text=details,
+            pii_scan_text="\n".join(m.text or "" for m in messages),
             my_email=self.my_email,
             args={"query": query},
         )
