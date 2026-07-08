@@ -25,15 +25,19 @@ always under `~/.privacyfence`, bundled or not.
 
 Run from source — never install the DMG here.
 
+`scripts/dev_start.sh` handles the repetitive part: it creates `.venv` and
+`config/settings.yaml` if missing, (re-)registers `privacyfence-bridge` from
+this checkout's venv with `claude mcp`, and starts the daemon in the
+foreground (Ctrl-C to stop). Safe to re-run any time, e.g. after switching
+branches:
+
 ```bash
 cd /Users/user1/Coding/privacyfence
-python -m venv .venv && source .venv/bin/activate
-pip install -e .
-
-cp src/privacyfence/resources/settings.yaml.example config/settings.yaml
+./scripts/dev_start.sh
 ```
 
-Install a (test) org config bundle and authenticate connectors headlessly:
+The one-time step it doesn't do for you: installing a (test) org config
+bundle and authenticating connectors headlessly, before your first run:
 
 ```bash
 mkdir -p ~/.privacyfence/org && cp org_config.json ~/.privacyfence/org/
@@ -41,19 +45,6 @@ mkdir -p ~/.privacyfence/org && cp org_config.json ~/.privacyfence/org/
 privacyfence-app --gmail-oauth
 privacyfence-app --drive-oauth
 # ...etc for whichever connectors you're testing
-```
-
-Run the daemon in the foreground while iterating — easier to see logs, and
-Ctrl-C/restart after code changes — instead of installing the LaunchAgent:
-
-```bash
-privacyfence-app
-```
-
-Point Claude Code at the venv's bridge binary (not the `.mcpb`):
-
-```bash
-claude mcp add privacyfence /Users/user1/Coding/privacyfence/.venv/bin/privacyfence-bridge
 ```
 
 For structured testing, follow [qa-environment-setup.md](qa-environment-setup.md)
