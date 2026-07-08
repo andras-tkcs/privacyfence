@@ -219,6 +219,7 @@ class ConfluenceConnector(Connector):
             gate="review",
             preview=preview_fields,
             details_text=details,
+            pii_scan_text=body_text,
             my_email=self.my_email,
             args={"page_id": page_id},
         )
@@ -245,6 +246,7 @@ class ConfluenceConnector(Connector):
             gate="review",
             preview=preview_fields,
             details_text=details,
+            pii_scan_text=body_text,
             my_email=self.my_email,
             args={"space_key": space_key, "title": title},
         )

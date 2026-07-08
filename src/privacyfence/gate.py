@@ -17,16 +17,24 @@ release gated data on its own.
     materially bigger blast radius than auto-accepting reads, so Accept All
     is not offered here.
 
-PII gate: before any auto-accept check, ``details`` is scanned by
-pii_detector.py for likely Hungarian/English/German personal data. A match
-overrides a matching auto-accept rule — the call is routed to the normal
-interactive popup regardless — which is then tinted, and after the user
-clicks Accept (or Accept All), one more explicit "Are you sure?" dialog is
-required before the decision is finalized. Declining it is treated the same
-as denying the original request. Auto-accept rules are typically scoped to
-metadata (sender domain, folder, "I am the organizer") rather than content,
-so a rule that would silently pass through PII-bearing content still gets a
-human in the loop for that specific item.
+PII gate: before any auto-accept check, the scan text (``pii_scan_text`` if
+the caller provided one, otherwise the same ``details`` shown in the popup)
+is scanned by pii_detector.py for likely Hungarian/English/German personal
+data. A match overrides a matching auto-accept rule — the call is routed to
+the normal interactive popup regardless — which is then tinted, and after
+the user clicks Accept (or Accept All), one more explicit "Are you sure?"
+dialog is required before the decision is finalized. Declining it is treated
+the same as denying the original request. Auto-accept rules are typically
+scoped to metadata (sender domain, folder, "I am the organizer") rather than
+content, so a rule that would silently pass through PII-bearing content
+still gets a human in the loop for that specific item.
+
+Callers should pass ``pii_scan_text`` whenever ``details_text`` mixes
+structural envelope metadata (an email's From/To headers, a chat message's
+channel/sender, a page's author) with the actual content (body, message
+text, description) -- that metadata is present on every item regardless of
+what it says and will otherwise make the PII gate fire on essentially every
+read. ``pii_scan_text`` should carry only the actual content being read.
 """
 from __future__ import annotations
 
@@ -71,6 +79,7 @@ async def gated_call(
     gate: str = "review",         # "review" | "popup"
     preview: dict | None = None,  # fields shown in the review-gate dialog
     details_text: str = "",       # full text shown inline or via TextEdit
+    pii_scan_text: str | None = None,  # content-only text for the PII scan; defaults to details_text
     my_email: str = "",
     session_created_ids: set | None = None,
     args: dict | None = None,
@@ -88,7 +97,7 @@ async def gated_call(
     )
     details = details_text or _default_details(raw_data)
     popup_title = f"PrivacyFence — {tool_name}"
-    pii_categories = detect_pii_categories(details)
+    pii_categories = detect_pii_categories(details if pii_scan_text is None else pii_scan_text)
 
     evaluator = get_auto_accept_evaluator()
     auto_ok, matched_rule = evaluator.should_auto_accept(operation_key, ctx)

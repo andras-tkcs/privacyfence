@@ -556,6 +556,96 @@ class TestPIIGateWrites:
         assert entries[0]["decision"] == "auto_accepted"
 
 
+class TestPiiScanText:
+    """``pii_scan_text`` lets a caller scan different text than what's shown
+    in the popup (``details_text``) -- e.g. an email body without its From/To
+    headers, which would otherwise flag "Email address" on every single
+    message regardless of what it actually says.
+    """
+
+    PII_TEXT = "Contact me at jane@example.com about this."
+
+    async def test_pii_scan_text_overrides_details_text_for_detection(self, monkeypatch, audit_dir):
+        # details_text (shown in the popup) has PII in the "headers", but the
+        # caller-supplied pii_scan_text (the actual body) does not.
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        captured = {}
+
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None):
+            captured["pii_categories"] = pii_categories
+            return "deny"
+
+        monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
+
+        with pytest.raises(RuntimeError):
+            await gate.gated_call(**base_kwargs(
+                gate="review",
+                details_text=f"From: {self.PII_TEXT}\n\nnothing sensitive in the body",
+                pii_scan_text="nothing sensitive in the body",
+            ))
+
+        assert captured["pii_categories"] == []
+
+    async def test_pii_scan_text_can_detect_pii_absent_from_details_text(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        captured = {}
+
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None):
+            captured["pii_categories"] = pii_categories
+            return "deny"
+
+        monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
+
+        with pytest.raises(RuntimeError):
+            await gate.gated_call(**base_kwargs(
+                gate="review",
+                details_text="nothing sensitive here",
+                pii_scan_text=self.PII_TEXT,
+            ))
+
+        assert captured["pii_categories"] == ["Email address"]
+
+    async def test_pii_scan_text_empty_string_skips_detection_even_if_details_has_pii(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        captured = {}
+
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None):
+            captured["pii_categories"] = pii_categories
+            return "deny"
+
+        monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
+
+        with pytest.raises(RuntimeError):
+            await gate.gated_call(**base_kwargs(
+                gate="review",
+                details_text=self.PII_TEXT,
+                pii_scan_text="",
+            ))
+
+        assert captured["pii_categories"] == []
+
+    async def test_pii_scan_text_omitted_falls_back_to_details_text(self, monkeypatch, audit_dir):
+        # No pii_scan_text passed at all -- same behavior as before this
+        # parameter existed.
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        captured = {}
+
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None):
+            captured["pii_categories"] = pii_categories
+            return "deny"
+
+        monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
+
+        with pytest.raises(RuntimeError):
+            await gate.gated_call(**base_kwargs(gate="review", details_text=self.PII_TEXT))
+
+        assert captured["pii_categories"] == ["Email address"]
+
+
 class TestPopupSerialization:
     async def test_only_one_popup_shown_at_a_time(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())

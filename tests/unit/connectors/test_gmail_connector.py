@@ -143,6 +143,26 @@ class TestGetMessagePreviewMinimization:
         assert result["subject"] == "s"
         assert result["id"] == "m1"
 
+    async def test_pii_scan_text_is_body_only_not_the_envelope_headers(self, gated_call_spy):
+        # Regression: From/To are addresses on every single message
+        # regardless of content, so scanning the full details_text (which
+        # includes them) flagged "Email address" PII on essentially every
+        # email read. The PII scan must only see the body.
+        connector, client = make_connector()
+        message = GmailMessage(
+            id="m1", thread_id="t1", subject="s",
+            sender="alice@example.com", recipients=["me@example.com"],
+            body_text="Nothing sensitive in here.",
+        )
+        client.get_message.return_value = message
+
+        await connector.call("gmail_get_message", {"message_id": "m1"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["pii_scan_text"] == "Nothing sensitive in here."
+        assert "alice@example.com" in kwargs["details_text"]  # still shown in the popup
+        assert "alice@example.com" not in kwargs["pii_scan_text"]
+
 
 class TestGetThread:
     async def test_preview_aggregates_participants_without_bodies(self, gated_call_spy):
@@ -169,6 +189,12 @@ class TestGetThread:
         assert "body two secret" in kwargs["details_text"]
         assert kwargs["gate"] == "review"
         assert kwargs["raw_data"] is thread
+        # PII scan sees only the concatenated bodies, not the per-message
+        # From:/Date: header lines (alice@example.com, bob@example.com).
+        assert "body one secret" in kwargs["pii_scan_text"]
+        assert "body two secret" in kwargs["pii_scan_text"]
+        assert "alice@example.com" not in kwargs["pii_scan_text"]
+        assert "bob@example.com" not in kwargs["pii_scan_text"]
 
 
 class TestListMessageAttachments:
@@ -232,6 +258,7 @@ class TestDownloadAttachment:
         assert kwargs["filtered_data"] is None
         assert kwargs["args"] == {"message_id": "m1", "attachment_name": "report.pdf"}
         assert result == {"path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024}
+        assert kwargs["pii_scan_text"] == ""  # no message body involved, nothing to scan
         client.download_attachment.assert_called_once_with("m1", "att-1", "report.pdf", "/tmp")
 
     async def test_destination_dir_forwarded_to_client(self, gated_call_spy):
