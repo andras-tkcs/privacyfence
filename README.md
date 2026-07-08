@@ -70,6 +70,36 @@ When the gate is `review`, a prompt appears in Claude Cowork showing a minimal p
 
 Claude already describes the action it is about to take in the chat. When the gate is `popup`, PrivacyFence opens a native popup showing the full action details with **Accept** or **Deny**. There is no intermediate Cowork step.
 
+### PII detection gate
+
+On top of the normal Accept/Deny popup, PrivacyFence can scan the message/document/spreadsheet
+content shown in every `review` and `popup` dialog for likely personal data — in **Hungarian,
+English, and German** — before you approve it: email addresses, phone numbers, IBANs, credit card
+numbers, and national identifiers (Hungarian TAJ/adóazonosító jel/ID card number, German
+Steuer-ID/Sozialversicherungsnummer, US SSN, UK National Insurance number), plus common
+labels like "date of birth" / "születési dátum" / "Geburtsdatum" that flag a nearby value even
+when its own format is too ambiguous to match structurally.
+
+When something is flagged:
+
+- The popup is tinted light red and shows a banner naming the categories found.
+- After clicking **Accept** (or **Accept All**), one more explicit **"Are you sure?"** dialog is
+  required before the decision takes effect — declining it denies the whole request, the same as
+  clicking **Deny** on the original popup.
+
+This is a local, regex-based heuristic (see `src/privacyfence/pii_detector.py`) — it runs
+entirely on-device with no network calls, and it can both miss real PII and flag things that
+aren't; treat a hit as "look more carefully," not a guarantee either way. It never logs or stores
+the matched text itself, only the category labels (e.g. "Email address") — those category labels,
+and whether any were flagged, are recorded in the [audit log](#audit-log).
+
+The gate applies only to the interactive popup path — a request that matches a standing
+[auto-accept rule](#auto-accept-rules) skips it exactly as it skips the popup itself, since that
+trust decision was already made when the rule was created.
+
+**Toggle:** enable or disable the whole gate from the menu bar (**PII Detection Gate**), or set
+`pii_detection.enabled: true|false` directly in `config/settings.yaml`. Enabled by default.
+
 ---
 
 ## Connectors & privacy matrix
@@ -382,7 +412,7 @@ spreadsheet and tab you just read — rather than a broader ownership- or folder
 
 ## Audit log
 
-Every decision — accepted, denied, or auto-accepted — is appended to a JSON-lines file in `logs/audit/YYYY-WNN.jsonl`. At startup, any week that has a `.jsonl` file but no `.xlsx` is automatically exported to a formatted Excel workbook with a colour-coded **Decisions** sheet and a **Summary** tab.
+Every decision — accepted, denied, or auto-accepted — is appended to a JSON-lines file in `logs/audit/YYYY-WNN.jsonl`. At startup, any week that has a `.jsonl` file but no `.xlsx` is automatically exported to a formatted Excel workbook with a colour-coded **Decisions** sheet and a **Summary** tab. Each entry also records whether the [PII detection gate](#pii-detection-gate) flagged the content (category labels only — never the matched text itself).
 
 See [docs/connector-qa-testing.md](docs/connector-qa-testing.md) for a Claude Cowork prompt that drives every connector's tools end to end against real accounts — the fastest way to catch a gate, auto-accept rule, or connector client that's drifted from what's documented here.
 

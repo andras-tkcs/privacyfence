@@ -18,7 +18,8 @@ Configuration is split into two files (see paths.py):
     the PrivacyFence app itself (not an organization) and are baked into the
     release build — see app_credentials.py.
   - ``config/settings.yaml``   — per-user settings: privacy policy,
-    connectors{enabled}, auto_accept_rules. No secrets live here.
+    connectors{enabled}, auto_accept_rules, pii_detection{enabled}. No
+    secrets live here.
 Per-user credentials (OAuth tokens, Telegram session) live under
 ``credentials/``, one file per connector.
 """
@@ -42,6 +43,7 @@ from .paths import data_dir, org_dir
 from .app_credentials import telegram_app_credentials
 from .audit_log import init_audit_logger
 from .auto_accept import init_config_path, reload_rules
+from .pii_detector import init_pii_detection
 from .connectors.calendar import CalendarConnector
 from .connectors.confluence import ConfluenceConnector
 from .connectors.contacts import ContactsConnector
@@ -592,6 +594,7 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
 
     init_config_path(_resolve_path(config_path))
     reload_rules(config.get("auto_accept_rules", {}) or {})
+    init_pii_detection((config.get("pii_detection", {}) or {}).get("enabled", True))
 
     audit_logger = init_audit_logger(str(Path(data_dir()) / "logs" / "audit"))
     audit_logger.export_all_pending()

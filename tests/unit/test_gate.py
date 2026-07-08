@@ -175,7 +175,7 @@ class TestReviewGateDecisions:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: ("i_am_sender", None))
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None):
             captured["allow_accept_all"] = allow_accept_all
             return "deny"
 
@@ -191,7 +191,7 @@ class TestReviewGateDecisions:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None):
             captured["allow_accept_all"] = allow_accept_all
             return "deny"
 
@@ -277,6 +277,221 @@ class TestPopupGateWrites:
         assert entries[0]["decision"] == "rejected"
 
 
+class TestPIIGate:
+    """gate.py runs pii_detector.detect_pii_categories() over ``details``
+    before either popup. A match forces a second, explicit confirmation
+    dialog on top of the popup's own Accept/Accept All -- declining it is
+    treated as a full deny, same as clicking Deny on the original popup.
+    """
+
+    PII_TEXT = "Contact me at jane@example.com about this."
+
+    async def test_read_popup_receives_detected_categories(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        captured = {}
+
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None):
+            captured["pii_categories"] = pii_categories
+            return "deny"
+
+        monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
+
+        with pytest.raises(RuntimeError):
+            await gate.gated_call(**base_kwargs(gate="review", details_text=self.PII_TEXT))
+
+        assert captured["pii_categories"] == ["Email address"]
+
+    async def test_read_popup_receives_empty_list_when_no_pii(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        captured = {}
+
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None):
+            captured["pii_categories"] = pii_categories
+            return "deny"
+
+        monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
+
+        with pytest.raises(RuntimeError):
+            await gate.gated_call(**base_kwargs(gate="review", details_text="nothing sensitive here"))
+
+        assert captured["pii_categories"] == []
+
+    async def test_no_pii_never_shows_confirmation_popup(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+        confirm_calls = []
+        monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda *a, **k: confirm_calls.append(1) or True)
+
+        result = await gate.gated_call(**base_kwargs(gate="review", details_text="nothing sensitive here"))
+
+        assert result is FILTERED
+        assert confirm_calls == []
+
+    async def test_pii_confirmed_returns_data_and_audits_pii_detected(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: True)
+
+        result = await gate.gated_call(**base_kwargs(gate="review", details_text=self.PII_TEXT))
+
+        assert result is FILTERED
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "approved"
+        assert entries[0]["pii_detected"] is True
+
+    async def test_pii_declined_denies_the_whole_request(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: False)
+
+        with pytest.raises(RuntimeError, match="denied"):
+            await gate.gated_call(**base_kwargs(gate="review", details_text=self.PII_TEXT))
+
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "rejected"
+        assert entries[0]["pii_detected"] is True
+
+    async def test_non_pii_deny_audits_pii_detected_false(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "deny")
+
+        with pytest.raises(RuntimeError):
+            await gate.gated_call(**base_kwargs(gate="review", details_text="nothing sensitive here"))
+
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["pii_detected"] is False
+
+    async def test_pii_confirmation_happens_before_accept_all_rule_confirmation(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: ("i_am_sender", None))
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept_all")
+        call_order = []
+        monkeypatch.setattr(
+            gate, "show_pii_confirmation_popup",
+            lambda categories: call_order.append("pii") or True,
+        )
+        monkeypatch.setattr(
+            gate, "show_rule_confirmation_popup",
+            lambda description: call_order.append("rule") or True,
+        )
+        monkeypatch.setattr(gate, "add_auto_accept_rule", lambda *a: None)
+
+        result = await gate.gated_call(**base_kwargs(gate="review", details_text=self.PII_TEXT))
+
+        assert result is FILTERED
+        assert call_order == ["pii", "rule"]
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "accepted_via_accept_all"
+        assert entries[0]["pii_detected"] is True
+
+    async def test_declining_pii_confirmation_on_accept_all_skips_rule_creation(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: ("i_am_sender", None))
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: False)
+        rule_confirm_calls = []
+        monkeypatch.setattr(
+            gate, "show_rule_confirmation_popup",
+            lambda description: rule_confirm_calls.append(1) or True,
+        )
+        added = []
+        monkeypatch.setattr(gate, "add_auto_accept_rule", lambda *a: added.append(a))
+
+        with pytest.raises(RuntimeError, match="denied"):
+            await gate.gated_call(**base_kwargs(gate="review", details_text=self.PII_TEXT))
+
+        assert rule_confirm_calls == []  # never reached: PII confirmation already denied
+        assert added == []
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "rejected"
+
+    async def test_auto_accept_skips_pii_check_entirely(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "i_am_sender")))
+        confirm_calls = []
+        monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda *a, **k: confirm_calls.append(1) or True)
+        popup_calls = []
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: popup_calls.append(1) or "deny")
+
+        result = await gate.gated_call(**base_kwargs(gate="review", details_text=self.PII_TEXT))
+
+        assert result is FILTERED
+        assert confirm_calls == []
+        assert popup_calls == []
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "auto_accepted"
+        assert entries[0]["pii_detected"] is False
+
+
+class TestPIIGateWrites:
+    """Same PII confirmation contract, for the popup (write) gate."""
+
+    PII_TEXT = "Please send this to jane@example.com."
+
+    async def test_write_popup_receives_detected_categories(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        captured = {}
+
+        def fake_show_popup(title, preview, details, pii_categories=None):
+            captured["pii_categories"] = pii_categories
+            return "deny"
+
+        monkeypatch.setattr(gate, "show_popup", fake_show_popup)
+
+        with pytest.raises(RuntimeError):
+            await gate.gated_call(
+                **base_kwargs(gate="popup", tool="gmail_create_draft", details_text=self.PII_TEXT)
+            )
+
+        assert captured["pii_categories"] == ["Email address"]
+
+    async def test_pii_confirmed_accepts_and_audits(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: True)
+
+        result = await gate.gated_call(
+            **base_kwargs(gate="popup", tool="gmail_create_draft", details_text=self.PII_TEXT)
+        )
+
+        assert result is FILTERED
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "approved"
+        assert entries[0]["pii_detected"] is True
+
+    async def test_pii_declined_denies_the_write(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: False)
+
+        with pytest.raises(RuntimeError, match="denied"):
+            await gate.gated_call(
+                **base_kwargs(gate="popup", tool="gmail_create_draft", details_text=self.PII_TEXT)
+            )
+
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "rejected"
+        assert entries[0]["pii_detected"] is True
+
+    async def test_no_pii_never_shows_confirmation_popup(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
+        confirm_calls = []
+        monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda *a, **k: confirm_calls.append(1) or True)
+
+        result = await gate.gated_call(
+            **base_kwargs(gate="popup", tool="gmail_create_draft", details_text="nothing sensitive here")
+        )
+
+        assert result is FILTERED
+        assert confirm_calls == []
+
+
 class TestPopupSerialization:
     async def test_only_one_popup_shown_at_a_time(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
@@ -285,7 +500,7 @@ class TestPopupSerialization:
         concurrent = 0
         max_concurrent = 0
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None):
             nonlocal concurrent, max_concurrent
             concurrent += 1
             max_concurrent = max(max_concurrent, concurrent)
@@ -336,7 +551,7 @@ class TestQueuedRequestReCheck:
 
         popup_calls = []
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None):
             popup_calls.append(title)
             return "accept_all"
 
@@ -393,7 +608,7 @@ class TestQueuedRequestReCheck:
 
         popup_calls = []
 
-        def fake_show_popup(title, preview, details):
+        def fake_show_popup(title, preview, details, pii_categories=None):
             popup_calls.append(title)
             wait_until(lambda: len(check_calls) >= 3, timeout=1.0)
             # Simulate a rule appearing (e.g. added from the menu bar) while

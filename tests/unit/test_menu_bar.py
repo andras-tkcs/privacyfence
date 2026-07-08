@@ -978,6 +978,44 @@ class TestToggleConnector:
         assert app._load_config()["connectors"]["gmail"]["enabled"] is True
 
 
+class TestTogglePiiDetection:
+    def test_flips_enabled_flag_and_saves(self, app):
+        app._toggle_pii_detection()
+
+        cfg = app._load_config()
+        assert cfg["pii_detection"]["enabled"] is False
+
+    def test_toggling_twice_re_enables(self, app):
+        app._toggle_pii_detection()
+        app._toggle_pii_detection()
+
+        assert app._load_config()["pii_detection"]["enabled"] is True
+
+    def test_defaults_to_enabled_when_unset(self, app):
+        # No pii_detection section in config yet -> treated as enabled, so
+        # the first toggle should turn it off.
+        assert "pii_detection" not in app._load_config()
+
+        app._toggle_pii_detection()
+
+        assert app._load_config()["pii_detection"]["enabled"] is False
+
+    def test_hot_reloads_live_detector_state(self, app):
+        from privacyfence import pii_detector
+
+        assert pii_detector.is_pii_detection_enabled() is True
+
+        app._toggle_pii_detection()
+
+        assert pii_detector.is_pii_detection_enabled() is False
+
+    def test_menu_item_state_reflects_config(self, app):
+        app._toggle_pii_detection()  # now disabled
+
+        item = app.menu["PII Detection Gate"]
+        assert bool(item.state) is False
+
+
 class TestRefreshConnectors:
     def test_updates_connectors_and_pushes_to_ipc_server_after_drain(self, app, monkeypatch):
         recorded = []
