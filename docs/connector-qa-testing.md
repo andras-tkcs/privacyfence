@@ -355,6 +355,46 @@ has configured.
     supported, and flag anything that should have matched but didn't (or
     vice versa) as a finding, not something to silently reconcile.
 
+### Auto-accept override check (steps 21–23)
+
+The PII scan runs *before* the auto-accept check and overrides a matching
+rule — a request that would otherwise pass through silently must still stop
+for the popup + second confirmation if its content contains PII. Steps
+17–20 above prove the gate fires with no rule in play at all; this section
+proves the more specific claim: it also fires when a rule *would* have
+matched. It reuses `{FIXTURES}.drive_qa_folder_id` itself as the parent this
+time — deliberately the opposite choice from step 18 — since that's exactly
+the folder `drive.read_file_contents` → `approved_folder` matches against,
+if you configured it per `qa-environment-setup.md`.
+
+21. `drive_write_doc_content` — create a new Google Doc **directly inside
+    `{FIXTURES}.drive_qa_folder_id`** (not the PII-test subfolder from step
+    17), titled `PrivacyFence QA test PII-vs-rule doc [{RUN_ID}] — safe to
+    delete`, with the same fake-PII body as step 18. This write is
+    popup-gated regardless of any rule (writes never auto-accept via
+    `approved_folder`), so nothing to prove here — just Accept, then Accept
+    on the PII confirmation. Add the doc to the manifest.
+22. `drive_get_file_content` on that doc. This file's parent *is*
+    `{FIXTURES}.drive_qa_folder_id` — if `drive.read_file_contents` →
+    `approved_folder` is configured, this read would normally auto-accept
+    with **no popup at all** (confirm that's what you saw for the plain,
+    no-PII file back in step 3). **Pause here**: tell me you're about to
+    call it and that, even though this file lives in the auto-accepted
+    folder, you expect a popup anyway — tinted, with a category banner,
+    then the second "Are you sure?" confirmation — because the PII scan
+    overrides the rule. Wait for me to say go. Once I do, make the call and
+    report explicitly whether a popup appeared. If `approved_folder` isn't
+    configured in this environment, say so plainly — this step can't
+    distinguish "the override worked" from "there was no rule to override"
+    in that case, so don't claim the override was proven either way.
+23. Read the audit log entry for step 22 and confirm `"decision": "approved"`
+    (not `"auto_accepted"`), `"auto_accept_rule": ""`, and
+    `"pii_detected": true` — this is the field-level proof that the override
+    fired, independent of whether the popup was visually confirmed. Compare
+    it against step 3's entry for the plain file (`"decision":
+    "auto_accepted"` if the rule is configured) to make the contrast
+    explicit in your report.
+
 ## Phase 3 — Slack
 1. `slack_list_channels` (expect: silent).
 2. Auto-accept rule check: `slack_get_channel_history` on
@@ -496,8 +536,8 @@ Go through the manifest table and, for every artifact tagged `{RUN_ID}` that has
 a delete/remove/archive/close tool available, call it now:
 1. Delete/trash the Drive file, Doc, sheet, and the throwaway moved file from
    Phase 2 (`drive` has no bulk-delete — one call per artifact is fine). This
-   includes the PII test doc and its subfolder from steps 17–20 — trash the
-   doc, then the now-empty subfolder.
+   includes the PII test doc and its subfolder from steps 17–20 (trash the
+   doc, then the now-empty subfolder) and the PII-vs-rule doc from step 21.
 2. Delete the Gmail draft(s) from Phase 1 if a delete-draft tool exists;
    otherwise leave the label/note in the manifest for manual cleanup.
 3. Close or transition the Jira issue from Phase 9 to a terminal status (don't
@@ -535,6 +575,15 @@ Phase 11" vs. "needs manual deletion." Then:
   Gate** turned off, that changes the expected result to "no tint, no second
   dialog, `pii_detected: false`" — state which case you're actually in rather
   than assuming it's enabled.
+- Give the auto-accept override check (steps 21–23) its own explicit answer
+  too, separate from the above: was `approved_folder` actually configured
+  for `drive.read_file_contents` in this environment (check what you read
+  from `settings.yaml` in Phase 0)? If yes, did step 22 still prompt despite
+  the rule matching, and did step 22's audit entry show `"decision":
+  "approved"` rather than `"auto_accepted"`? If the rule wasn't configured,
+  say explicitly that this check only re-confirmed the plain PII-gate
+  behavior and didn't exercise the override itself — don't report it as a
+  pass for a claim it couldn't actually test.
 - List every other step across the whole run where the PII gate fired
   organically (per the ground rule above) — real accounts routinely surface
   this outside the dedicated check, and it's useful signal for how noisy the

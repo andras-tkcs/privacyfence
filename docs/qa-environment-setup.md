@@ -326,6 +326,15 @@ The only thing worth confirming beforehand:
    silently auto-accepted. No action needed here beyond knowing why the
    check is structured that way, in case you ever restructure the Sandbox
    folder yourself.
+3. A second, related check (`connector-qa-testing.md` steps 21–23) proves
+   the stronger claim that PII detection *overrides* a matching auto-accept
+   rule, rather than just running independently of one — it deliberately
+   writes the same synthetic PII directly into `drive_qa_folder_id` itself,
+   the folder `approved_folder` *does* cover. This one only exercises the
+   override if you actually configured the `drive.read_file_contents` →
+   `approved_folder` rule from §2; without it there's no rule in play to
+   override, and the test prompt is told to say so plainly rather than
+   claim the override was proven.
 
 ---
 
