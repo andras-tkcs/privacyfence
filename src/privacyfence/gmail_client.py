@@ -109,7 +109,6 @@ class GmailClient:
         # one service per thread instead of one shared instance.
         self._local = threading.local()
         self._creds_lock = threading.Lock()
-        self._current_message_id: str = ""
 
     # ------------------------------------------------------------------ #
     # Authentication
@@ -621,8 +620,7 @@ class GmailClient:
         recipients = self._split_addresses(headers.get("to", ""))
         attachments: list[Attachment] = []
         body = _Body()
-        self._current_message_id = raw.get("id", "")
-        self._walk_parts(raw.get("payload", {}), body, attachments)
+        self._walk_parts(raw.get("payload", {}), body, attachments, raw.get("id", ""))
 
         return GmailMessage(
             id=raw.get("id", ""),
@@ -638,9 +636,16 @@ class GmailClient:
         )
 
     def _walk_parts(
-        self, part: dict[str, Any], body: "_Body", attachments: list[Attachment]
+        self, part: dict[str, Any], body: "_Body", attachments: list[Attachment], message_id: str
     ) -> None:
-        """Recursively walk a MIME part tree collecting bodies and attachments."""
+        """Recursively walk a MIME part tree collecting bodies and attachments.
+
+        ``message_id`` is threaded through as a parameter rather than kept on
+        ``self``: this client is shared across concurrently running threads
+        (see ``connectors/*.py._fetch``), and instance state set here would
+        race with another thread parsing a different message at the same
+        time, fetching an attachment against the wrong message id.
+        """
         mime_type = part.get("mimeType", "")
         filename = part.get("filename", "")
         part_body = part.get("body", {})
@@ -665,7 +670,7 @@ class GmailClient:
                     .users()
                     .messages()
                     .attachments()
-                    .get(userId="me", messageId=self._current_message_id, id=attachment_id)
+                    .get(userId="me", messageId=message_id, id=attachment_id)
                     .execute()
                 )
                 data = att.get("data")
@@ -679,7 +684,7 @@ class GmailClient:
                 body.html += decoded
 
         for sub_part in part.get("parts", []) or []:
-            self._walk_parts(sub_part, body, attachments)
+            self._walk_parts(sub_part, body, attachments, message_id)
 
     @staticmethod
     def _decode_body(data: str) -> str:

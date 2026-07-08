@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import os
 import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -237,6 +238,64 @@ class TestParseMessage:
         assert msg.recipients == []
         assert msg.labels == []
         assert msg.short_summary() == "(no subject) - from (unknown sender)"
+
+    def test_concurrent_parses_never_fetch_attachment_against_wrong_message_id(self):
+        # message_id used to be stashed on self during _parse_message and
+        # read back deeper in the recursive _walk_parts -- two threads
+        # parsing different messages at once could race on that shared
+        # attribute and fetch an attachment against the wrong message id.
+        # It's threaded through as a parameter now instead, which removes
+        # the shared state outright (the race window on the old attribute
+        # was narrow enough that GIL scheduling rarely hit it even before
+        # the fix, so this asserts correctness going forward rather than
+        # reliably reproducing the old bug on demand).
+        seen_message_ids: dict[str, str] = {}
+
+        def get_side_effect(**kwargs):
+            # Force interleaving: message "1" pauses mid-fetch so message
+            # "2"'s parse runs (and would clobber shared state, if any).
+            if kwargs["messageId"] == "m1":
+                time.sleep(0.05)
+            seen_message_ids[kwargs["messageId"]] = kwargs["id"]
+            mock = MagicMock()
+            mock.execute.return_value = {"data": b64(f"body-for-{kwargs['messageId']}")}
+            return mock
+
+        service = MagicMock()
+        service.users.return_value.messages.return_value.attachments.return_value.get.side_effect = get_side_effect
+        client = make_client(service)
+        # _get_service() caches per-thread (see TestServiceIsThreadLocal below),
+        # so worker threads need the mock service patched in directly rather
+        # than relying on the main thread's cached instance.
+        client._get_service = lambda: service
+
+        def make_raw(message_id: str, attachment_id: str) -> dict:
+            return {
+                "id": message_id, "threadId": "t1",
+                "payload": {
+                    "headers": header_list(Subject="Hi", From="a@x.com"),
+                    "mimeType": "text/plain",
+                    "body": {"attachmentId": attachment_id},
+                },
+            }
+
+        results: dict[str, GmailMessage] = {}
+
+        def worker(message_id: str, attachment_id: str) -> None:
+            results[message_id] = client._parse_message(make_raw(message_id, attachment_id))
+
+        threads = [
+            threading.Thread(target=worker, args=("m1", "att-1")),
+            threading.Thread(target=worker, args=("m2", "att-2")),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert seen_message_ids == {"m1": "att-1", "m2": "att-2"}
+        assert results["m1"].body_text == "body-for-m1"
+        assert results["m2"].body_text == "body-for-m2"
 
 
 # ---------------------------------------------------------------------------- #
