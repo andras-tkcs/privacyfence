@@ -7,13 +7,16 @@ the connector-layer tests, which mock GmailClient itself and never touch
 this file.
 
 GmailClient.__init__ does no I/O, so we construct it normally and set
-._service directly to skip the OAuth/credential-loading path entirely.
+the thread-local service directly to skip the OAuth/credential-loading
+path entirely.
 """
 from __future__ import annotations
 
 import base64
 import os
-from unittest.mock import MagicMock
+import threading
+import time
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -30,7 +33,7 @@ from googleapiclient.errors import HttpError
 
 def make_client(service: MagicMock) -> GmailClient:
     client = GmailClient(client_config={}, token_file="/tmp/unused-token.json")
-    client._service = service
+    client._local.service = service
     return client
 
 
@@ -235,6 +238,64 @@ class TestParseMessage:
         assert msg.recipients == []
         assert msg.labels == []
         assert msg.short_summary() == "(no subject) - from (unknown sender)"
+
+    def test_concurrent_parses_never_fetch_attachment_against_wrong_message_id(self):
+        # message_id used to be stashed on self during _parse_message and
+        # read back deeper in the recursive _walk_parts -- two threads
+        # parsing different messages at once could race on that shared
+        # attribute and fetch an attachment against the wrong message id.
+        # It's threaded through as a parameter now instead, which removes
+        # the shared state outright (the race window on the old attribute
+        # was narrow enough that GIL scheduling rarely hit it even before
+        # the fix, so this asserts correctness going forward rather than
+        # reliably reproducing the old bug on demand).
+        seen_message_ids: dict[str, str] = {}
+
+        def get_side_effect(**kwargs):
+            # Force interleaving: message "1" pauses mid-fetch so message
+            # "2"'s parse runs (and would clobber shared state, if any).
+            if kwargs["messageId"] == "m1":
+                time.sleep(0.05)
+            seen_message_ids[kwargs["messageId"]] = kwargs["id"]
+            mock = MagicMock()
+            mock.execute.return_value = {"data": b64(f"body-for-{kwargs['messageId']}")}
+            return mock
+
+        service = MagicMock()
+        service.users.return_value.messages.return_value.attachments.return_value.get.side_effect = get_side_effect
+        client = make_client(service)
+        # _get_service() caches per-thread (see TestServiceIsThreadLocal below),
+        # so worker threads need the mock service patched in directly rather
+        # than relying on the main thread's cached instance.
+        client._get_service = lambda: service
+
+        def make_raw(message_id: str, attachment_id: str) -> dict:
+            return {
+                "id": message_id, "threadId": "t1",
+                "payload": {
+                    "headers": header_list(Subject="Hi", From="a@x.com"),
+                    "mimeType": "text/plain",
+                    "body": {"attachmentId": attachment_id},
+                },
+            }
+
+        results: dict[str, GmailMessage] = {}
+
+        def worker(message_id: str, attachment_id: str) -> None:
+            results[message_id] = client._parse_message(make_raw(message_id, attachment_id))
+
+        threads = [
+            threading.Thread(target=worker, args=("m1", "att-1")),
+            threading.Thread(target=worker, args=("m2", "att-2")),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert seen_message_ids == {"m1": "att-1", "m2": "att-2"}
+        assert results["m1"].body_text == "body-for-m1"
+        assert results["m2"].body_text == "body-for-m2"
 
 
 # ---------------------------------------------------------------------------- #
@@ -756,3 +817,38 @@ class TestDownloadAttachment:
         client = make_client(service)
         with pytest.raises(GmailClientError, match="download_attachment"):
             client.download_attachment("m1", "att1", "f.txt")
+
+
+# ---------------------------------------------------------------------------- #
+# _get_service: must not share one service (and its underlying httplib2
+# transport) across threads, since concurrent requests dispatched via
+# asyncio.to_thread corrupt a shared connection (SSL: WRONG_VERSION_NUMBER).
+# ---------------------------------------------------------------------------- #
+
+class TestServiceIsThreadLocal:
+    def test_each_thread_gets_its_own_service_instance(self):
+        client = GmailClient(client_config={}, token_file="/tmp/unused-token.json")
+        with patch("privacyfence.gmail_client.build") as mock_build, \
+             patch.object(client, "_load_credentials", return_value=MagicMock()):
+            mock_build.side_effect = lambda *a, **k: MagicMock()
+
+            services: dict[int, object] = {}
+
+            def worker(idx: int) -> None:
+                services[idx] = client._get_service()
+
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(5)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            assert len({id(s) for s in services.values()}) == 5
+
+    def test_same_thread_reuses_cached_service(self):
+        client = GmailClient(client_config={}, token_file="/tmp/unused-token.json")
+        with patch("privacyfence.gmail_client.build") as mock_build, \
+             patch.object(client, "_load_credentials", return_value=MagicMock()):
+            mock_build.side_effect = lambda *a, **k: MagicMock()
+            assert client._get_service() is client._get_service()
+            assert mock_build.call_count == 1

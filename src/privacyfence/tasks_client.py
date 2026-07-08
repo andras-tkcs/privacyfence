@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -60,7 +61,15 @@ class TasksClient:
     def __init__(self, client_config: dict, token_file: str) -> None:
         self._client_config = client_config
         self._token_file = token_file
-        self._service = None  # lazily built
+        # googleapiclient service objects (and the httplib2 transport they
+        # wrap) are not thread-safe. Requests are dispatched to a thread per
+        # call (see connectors/tasks.py._fetch), so a single shared service
+        # can have two threads read/write the same socket concurrently,
+        # corrupting the connection (observed as SSL: WRONG_VERSION_NUMBER
+        # on a later, unrelated request reusing the same connection). Keep
+        # one service per thread instead of one shared instance.
+        self._local = threading.local()
+        self._creds_lock = threading.Lock()
 
     # ------------------------------------------------------------------ #
     # Authentication
@@ -84,28 +93,31 @@ class TasksClient:
         logger.info("Tasks OAuth token saved to '%s'", self._token_file)
 
     def _load_credentials(self) -> Credentials:
-        if not os.path.exists(self._token_file):
-            raise TasksClientError(
-                f"No OAuth token found at '{self._token_file}'. "
-                "Run with '--tasks-oauth' to authorize."
-            )
-        creds = Credentials.from_authorized_user_file(self._token_file, SCOPES)
-        if creds.valid:
-            return creds
-        if creds.expired and creds.refresh_token:
-            logger.info("Refreshing expired Tasks OAuth token")
-            try:
-                creds.refresh(Request())
-            except Exception as exc:
+        # Guards concurrent refresh/save of the shared token file when
+        # multiple threads hit an expired token at the same time.
+        with self._creds_lock:
+            if not os.path.exists(self._token_file):
                 raise TasksClientError(
-                    f"Failed to refresh Tasks OAuth token: {exc}. "
-                    "Re-run with '--tasks-oauth' to re-authorize."
-                ) from exc
-            self._save_token(creds)
-            return creds
-        raise TasksClientError(
-            "Cached Tasks OAuth token is invalid. Re-run with '--tasks-oauth'."
-        )
+                    f"No OAuth token found at '{self._token_file}'. "
+                    "Run with '--tasks-oauth' to authorize."
+                )
+            creds = Credentials.from_authorized_user_file(self._token_file, SCOPES)
+            if creds.valid:
+                return creds
+            if creds.expired and creds.refresh_token:
+                logger.info("Refreshing expired Tasks OAuth token")
+                try:
+                    creds.refresh(Request())
+                except Exception as exc:
+                    raise TasksClientError(
+                        f"Failed to refresh Tasks OAuth token: {exc}. "
+                        "Re-run with '--tasks-oauth' to re-authorize."
+                    ) from exc
+                self._save_token(creds)
+                return creds
+            raise TasksClientError(
+                "Cached Tasks OAuth token is invalid. Re-run with '--tasks-oauth'."
+            )
 
     def _save_token(self, creds: Credentials) -> None:
         os.makedirs(os.path.dirname(os.path.abspath(self._token_file)), exist_ok=True)
@@ -117,11 +129,13 @@ class TasksClient:
             logger.debug("Could not chmod tasks token file (non-fatal)")
 
     def _get_service(self):
-        if self._service is None:
+        service = getattr(self._local, "service", None)
+        if service is None:
             creds = self._load_credentials()
-            self._service = build("tasks", "v1", credentials=creds, cache_discovery=False)
-            logger.debug("Tasks API service initialized")
-        return self._service
+            service = build("tasks", "v1", credentials=creds, cache_discovery=False)
+            self._local.service = service
+            logger.debug("Tasks API service initialized for thread %s", threading.current_thread().name)
+        return service
 
     # ------------------------------------------------------------------ #
     # Connection check
