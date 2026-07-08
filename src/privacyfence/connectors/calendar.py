@@ -75,7 +75,10 @@ class CalendarConnector(Connector):
                 name="calendar_get_event_details",
                 description=(
                     "Fetch full details of a calendar event including attendees, description, "
-                    "and conferencing links. Requires user approval."
+                    "conferencing links, and file attachments (e.g. the \"Notes by Gemini\" and "
+                    "transcript docs Google Meet attaches after a meeting ends). Each attachment's "
+                    "file_id can be passed to drive_get_file_content to read its content. "
+                    "Requires user approval."
                 ),
                 params=[
                     ToolParam("calendar_id", "str"),
@@ -236,15 +239,22 @@ class CalendarConnector(Connector):
     async def _get_event_details(self, calendar_id: str, event_id: str) -> Any:
         event = await self._fetch(self._calendar.get_event, calendar_id, event_id)
         attendee_count = len(event.attendees) if hasattr(event, "attendees") else 0
+        attachments = event.attachments or []
         preview = {
             "Title": event.title or "(untitled)",
             "Time": f"{event.start_time} – {event.end_time}",
             "Organizer": event.organizer_email or "(unknown)",
             "Attendees": str(attendee_count),
         }
+        if attachments:
+            preview["Attachments"] = str(len(attachments))
         attendee_lines = [
             f"  {a.display_name or a.email} <{a.email}> [{a.response_status}]"
             for a in (event.attendees or [])
+        ]
+        attachment_lines = [
+            f"  {a.title or '(untitled)'} [{a.mime_type or 'unknown type'}] file_id={a.file_id}"
+            for a in attachments
         ]
         details_lines = [
             f"Title: {event.title}",
@@ -256,7 +266,10 @@ class CalendarConnector(Connector):
             f"Description:\n{event.description or '(none)'}",
             "",
             "Attendees:",
-        ] + (attendee_lines or ["  (none)"])
+        ] + (attendee_lines or ["  (none)"]) + [
+            "",
+            "Attachments (use drive_get_file_content with file_id to read):",
+        ] + (attachment_lines or ["  (none)"])
         filtered_data = {
             "id": event.id,
             "calendar_id": event.calendar_id,
@@ -277,6 +290,11 @@ class CalendarConnector(Connector):
             "conference_link": event.conference_link,
             "status": event.status,
             "html_link": event.html_link,
+            "attachments": [
+                {"file_id": a.file_id, "title": a.title,
+                 "mime_type": a.mime_type, "file_url": a.file_url}
+                for a in attachments
+            ],
         }
         return await gated_call(
             connector=self.name,

@@ -14,6 +14,7 @@ import pytest
 
 from privacyfence.audit_log import current_week, init_audit_logger
 from privacyfence.calendar_client import (
+    CalendarAttachment,
     CalendarAttendee,
     CalendarClientError,
     CalendarEvent,
@@ -180,6 +181,60 @@ class TestGetEventDetails:
         await connector.call("calendar_get_event_details", {"calendar_id": "primary", "event_id": "e1"})
 
         assert "  (none)" in gated_call_spy[0]["details_text"]
+
+    async def test_no_attachments_omits_preview_field_and_shows_none_placeholder(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_event.return_value = make_event(attachments=[])
+
+        await connector.call("calendar_get_event_details", {"calendar_id": "primary", "event_id": "e1"})
+
+        kwargs = gated_call_spy[0]
+        assert "Attachments" not in kwargs["preview"]
+        assert "Attachments (use drive_get_file_content with file_id to read):" in kwargs["details_text"]
+        assert kwargs["filtered_data"]["attachments"] == []
+
+    async def test_attachments_surfaced_in_preview_details_and_filtered_data(self, gated_call_spy):
+        # This is what lets an agent get at the "Notes by Gemini" / transcript
+        # docs Google Meet attaches to an event after a meeting ends: the
+        # file_id here can be handed straight to drive_get_file_content.
+        connector, client = make_connector()
+        client.get_event.return_value = make_event(attachments=[
+            CalendarAttachment(
+                file_id="doc123",
+                title="Notes by Gemini - Q3 Planning",
+                mime_type="application/vnd.google-apps.document",
+                file_url="https://docs.google.com/document/d/doc123/edit",
+            ),
+            CalendarAttachment(
+                file_id="doc456",
+                title="Transcript - Q3 Planning",
+                mime_type="application/vnd.google-apps.document",
+                file_url="https://docs.google.com/document/d/doc456/edit",
+            ),
+        ])
+
+        result = await connector.call(
+            "calendar_get_event_details", {"calendar_id": "primary", "event_id": "e1"}
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview"]["Attachments"] == "2"
+        assert "Notes by Gemini - Q3 Planning" in kwargs["details_text"]
+        assert "file_id=doc123" in kwargs["details_text"]
+        assert "Transcript - Q3 Planning" in kwargs["details_text"]
+        assert "file_id=doc456" in kwargs["details_text"]
+        assert result["attachments"] == [
+            {
+                "file_id": "doc123", "title": "Notes by Gemini - Q3 Planning",
+                "mime_type": "application/vnd.google-apps.document",
+                "file_url": "https://docs.google.com/document/d/doc123/edit",
+            },
+            {
+                "file_id": "doc456", "title": "Transcript - Q3 Planning",
+                "mime_type": "application/vnd.google-apps.document",
+                "file_url": "https://docs.google.com/document/d/doc456/edit",
+            },
+        ]
 
 
 class TestCreateEvent:

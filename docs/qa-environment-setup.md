@@ -164,6 +164,15 @@ auto_accept_rules:
     - rule: i_am_organizer
 ```
 
+**Optional, for exercising event attachments:** `calendar_get_event_details`
+also returns file attachments — most commonly the "Notes by Gemini" and
+transcript Docs that Google Meet attaches to an event once a meeting with
+"take notes for me" enabled ends. There's no fixture for this (attachments
+can't be created via `calendar_create_event`), so it's opportunistic: if this
+account's calendar history already has a past meeting like that, the test
+prompt will find and use it; otherwise that step is skipped as a known
+limitation, not a regression.
+
 ## 5. Contacts
 
 No fixture needed for `source="personal"` vs. `source="directory"` — whether
