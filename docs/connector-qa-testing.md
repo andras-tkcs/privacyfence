@@ -36,20 +36,31 @@ combination only breaks for non-ASCII input.
   decisions afterward — **Claude cannot see whether a popup appeared or what
   you clicked**, only whether the tool call ultimately succeeded or errored.
   The audit log is the only ground truth for actual gate/UI behavior.
+- **The environment fixtures from [`qa-environment-setup.md`](qa-environment-setup.md)
+  already exist**: a `PFQA` Jira project, a `PFQA` Confluence space, a Drive
+  "PrivacyFence QA Sandbox" folder, a second (non-approved) Slack channel with
+  a thread in it, a Telegram "Saved Messages" chat plus one approved chat, and
+  Salesforce sample records/report. Without these, several phases below fall
+  back to being untestable exactly like the 2026-07-08 run — that doc explains
+  why each one is needed and is a one-time setup, not a per-run step.
 
 ## The prompt
 
 Paste this as a single message into the Cowork conversation. It walks every
 connector in dependency order (list/search before get, get before write),
-deliberately hits any auto-accept rules you have configured back-to-back with
-a contrasting call that should still prompt, and ends with a self-report you
-diff against the audit log.
+deliberately hits every auto-accept rule you have configured (see the
+environment doc's consolidated rules block) back-to-back with a contrasting
+call that should still prompt, and ends with a self-report you diff against
+the audit log.
 
-Before running it, swap in specifics for your own environment: your
-configured auto-accept rules (e.g. a trusted sender domain, an approved Slack
-channel/chat) won't match the placeholders below, so replace those steps with
-whatever rules `~/.privacyfence/config/settings.yaml` actually has, or skip
-them if none are configured yet.
+**This version is safe to run repeatedly against the same accounts.** Every
+artifact it creates is stamped with a run ID, so re-running it never collides
+with (or gets confused by) what a previous run left behind, and it ends with
+a teardown phase that cleans up everything it can. Before running it, replace
+`<QA_FIXTURES>` in Phase 0 below with the actual IDs/keys from your
+environment setup (folder ID, project/space keys, channel IDs, chat IDs,
+Salesforce report/record IDs) — everything else in the prompt refers back to
+those via `{...}` placeholders rather than hardcoding them again.
 
 ````markdown
 You are connected to my personal accounts (Gmail, Drive/Sheets, Slack, Calendar,
@@ -60,19 +71,30 @@ than describing what you'd do.
 
 Ground rules:
 - Any content you write, send, or create anywhere must be obviously a test artifact:
-  prefix titles/subjects/messages with `PrivacyFence QA test —` and add "safe to
-  ignore/delete" somewhere in the body. Never edit or send anything real.
-- For destination-picking (which channel to message, which Jira project/Confluence
-  space to write to, which contact to touch), prefer sending to myself
-  (Slack self-DM, Telegram "Saved Messages", a file/sheet/event/page you just
-  created) over touching someone else's data. If no safe destination is obvious
-  for a given tool, stop and ask me which project/space/channel to use before
-  calling it — don't guess.
+  prefix titles/subjects/messages with `PrivacyFence QA test [{RUN_ID}] —` and add
+  "safe to ignore/delete" somewhere in the body. Never edit or send anything real.
+- Everything durable this run creates (drafts, files, events, issues, pages,
+  contacts, tasks…) must go in the running manifest table described below, tagged
+  with `{RUN_ID}` — Phase 11 (teardown) depends on that manifest to find and remove
+  them, and future runs depend on it to tell "this run's" artifacts apart from a
+  previous run's leftovers.
+- Prefer QA-owned destinations over guessing at real ones: the Drive "PrivacyFence
+  QA Sandbox" folder, the `PFQA` Jira project, the `PFQA` Confluence space, the
+  non-approved Slack channel, Telegram "Saved Messages" / the approved chat. If a
+  step needs a destination not covered by `<QA_FIXTURES>` below, stop and ask me —
+  don't guess, and don't fall back to a real project/space/channel.
+- When a step says "pick any existing X," prefer the most recently created
+  `PrivacyFence QA test [...]`-tagged item over real data, and ignore items tagged
+  with a *different* `{RUN_ID}` (previous runs' leftovers) — call them out in the
+  final report instead of touching or recounting them.
 - After each numbered phase, pause and give me a one-line status ("Phase 3 done,
   4 tool calls, 2 required approval") before moving to the next phase, so I'm not
   flooded with 40 popups back to back.
 - Keep a running table as you go: `tool name | gate observed (silent / Cowork
   review / native popup) | decision | notes`. Print the full table at the very end.
+- Keep a second running table, the manifest: `connector | artifact | id | {RUN_ID}
+  tag | deletable via tool? (yes/no)`. Print it at the very end too, split into
+  "cleaned up in Phase 11" vs. "needs manual deletion."
 
 I (the human) will be watching for the approval prompts as they appear. Some
 instructions below tell you to expect a prompt and note what I'll do with it
@@ -81,150 +103,263 @@ in the tool result.
 
 ---
 
+## Phase 0 — Setup
+1. Generate `{RUN_ID}` yourself right now as `YYYY-MM-DD-HHmm` in my local time.
+   Use it verbatim in every title for the rest of this run.
+2. `<QA_FIXTURES>` — I'm replacing this whole block with my actual values before
+   sending this prompt:
+   ```
+   drive_qa_folder_id:       <Drive "PrivacyFence QA Sandbox" folder id>
+   slack_approved_channel:   <channel id already in slack.read_messages.approved_channel>
+   slack_control_channel:    <second channel id, NOT in any auto-accept rule, has a thread>
+   jira_qa_project_key:      PFQA
+   jira_contrast_project_key: KAN          # or your real project, used only as contrast
+   confluence_qa_space_key:  PFQA
+   confluence_contrast_space_key: OOP      # or your real space, used only as contrast
+   telegram_saved_messages_chat_id: <chat_id>
+   telegram_approved_chat_id: <chat_id>    # may be the same as saved messages
+   salesforce_qa_report_id:  <PrivacyFence QA Report id>
+   salesforce_qa_object_type: Account
+   ```
+   If any value is missing, don't invent one — tell me which fixture from
+   `qa-environment-setup.md` isn't set up yet, skip only the steps that need it,
+   and keep going with the rest.
+3. Read `~/.privacyfence/config/settings.yaml` yourself and tell me which
+   `auto_accept_rules` are currently configured, so the "should NOT prompt" steps
+   below use whatever's actually live rather than what this prompt assumes.
+
 ## Phase 1 — Gmail
 1. `gmail_list_messages` and `gmail_list_threads` (expect: silent, no prompt).
 2. Pick any recent message and call `gmail_get_message` on it. **I will click
    Accept.** Confirm you received the body.
-3. Pick a different recent message and call `gmail_get_message` again. **I will
-   click Deny this time.** Confirm you get an error, not data — and don't
-   fabricate a fallback answer.
+3. Pick a **short** message with no large attachments (this matters — a big one
+   makes a Deny indistinguishable from a size-truncation error) and call
+   `gmail_get_message` again. **I will click Deny this time.** Confirm you get an
+   error, not data — and don't fabricate a fallback answer. Note whether the
+   error text looks like a denial or a truncation, but don't treat that guess as
+   confirmed; that's what the audit log is for.
 4. Pick a message that has a thread with 2+ messages, call `gmail_get_thread`.
    **I will click "Show Details"** instead of Accept/Deny directly, then approve
    from the native popup. Report what came back.
 5. `gmail_list_message_attachments` on any message with attachments (expect:
    silent). Then `gmail_download_attachment` on one — this is `review` gated,
    I'll Accept.
-6. Auto-accept rule check: [replace with your own configured rule, e.g. find a
-   message from a sender domain in your `trusted_sender_domain` list] and call
-   `gmail_get_message` on it. This should NOT prompt me at all. Tell me whether
-   a prompt appeared or not.
-7. `gmail_create_draft` — draft to myself, subject `PrivacyFence QA test — safe
-   to delete`. This is popup-gated, I'll Accept.
-8. `gmail_reply_draft` on the thread from step 4, again clearly marked as a test.
-   Popup, I'll Accept.
+6. Auto-accept rule check: using whatever `gmail.read_message` /
+   `trusted_sender_domain` value Phase 0 step 3 found, find a message from that
+   domain and call `gmail_get_message` on it. This should NOT prompt me at all.
+   Tell me whether a prompt appeared or not. If no such rule is configured, skip
+   and say so.
+7. `gmail_create_draft` — draft to myself, subject `PrivacyFence QA test [{RUN_ID}]
+   — safe to delete`. This is popup-gated, I'll Accept. Add it to the manifest.
+8. `gmail_reply_draft` on the thread from step 4, again clearly marked as a test
+   with `{RUN_ID}`. Popup, I'll Accept. Add it to the manifest.
 9. `gmail_add_label` on the test message from step 7/8 (any existing label).
    Popup, I'll Accept.
 10. Skip `gmail_archive_message` and `gmail_remove_label` unless I tell you
     otherwise in chat.
 
 ## Phase 2 — Drive & Sheets
+All of this run's Drive/Sheets artifacts go inside `<QA_FIXTURES>.drive_qa_folder_id`
+(pass it as `parent_folder_id` everywhere that accepts one) — that's also what
+should trigger the `drive.read_file_contents` / `approved_folder` auto-accept rule
+in step 3, if you configured it.
 1. `drive_list_files`, `drive_get_file_metadata`, `drive_list_folder`,
    `drive_list_shared_drives` (expect: all silent).
-2. `drive_create_blank_file` named `PrivacyFence QA test file — safe to delete`
-   (expect: silent, auto).
-3. `drive_get_file_content` on that new file — review gate, I'll Accept.
+2. `drive_create_blank_file` named `PrivacyFence QA test file [{RUN_ID}] — safe to
+   delete`, inside the QA Sandbox folder (expect: silent, auto). Add to manifest.
+3. `drive_get_file_content` on that new file. If `drive.read_file_contents` has an
+   `approved_folder` rule matching the QA Sandbox folder, this should NOT prompt —
+   tell me either way. If no such rule exists, expect the normal review gate,
+   Accept.
 4. `drive_write_file_content` on it, write a short test sentence — popup, Accept.
 5. `drive_add_comment` on it, any test comment — popup, Accept.
-6. `drive_sheets_create` named `PrivacyFence QA test sheet — safe to delete`
-   (expect: silent, auto).
-7. `drive_sheets_get_metadata` on it (expect: silent).
-8. `drive_sheets_get_values` on a small range like `Sheet1!A1:B2` — review gate,
-   I'll click **"Accept All"** this time. Tell me exactly what rule text/scope
-   it proposes (expect: scoped to this spreadsheet + tab, not a broad rule).
-9. `drive_sheets_write_range` — write `A1: "hello"`, `A2: "=1+1"` to prove
-   formulas evaluate. Popup, Accept.
-10. `drive_sheets_add_sheet` — add a tab named `Extra`. Popup, Accept.
-11. `drive_sheets_rename_sheet` — rename `Extra` to `TO BE DELETED - Extra`.
+6. `drive_upload_file` — upload any small local text file into the QA Sandbox
+   folder. Popup, Accept. Add to manifest.
+7. `drive_write_doc_content` — create/write a short Google Doc in the QA Sandbox
+   folder, title `PrivacyFence QA test doc [{RUN_ID}] — safe to delete`. Popup,
+   Accept. Add to manifest.
+8. `drive_download_file` on the file from step 2 — popup, Accept. Save it
+   somewhere obviously temporary and tell me the path.
+9. `drive_move_file` — create one more throwaway blank file, then move it into a
+   subfolder of the QA Sandbox folder (create the subfolder first if needed).
+   Popup, Accept.
+10. `drive_sheets_create` named `PrivacyFence QA test sheet [{RUN_ID}] — safe to
+    delete`, inside the QA Sandbox folder (expect: silent, auto). Add to manifest.
+11. `drive_sheets_get_metadata` on it (expect: silent).
+12. `drive_sheets_get_values` on a small range like `Sheet1!A1:B2` — review gate,
+    I'll click **"Accept All"** this time. Tell me exactly what rule text/scope
+    it proposes (expect: scoped to this spreadsheet + tab, not a broad rule).
+13. `drive_sheets_write_range` — write `A1: "hello"`, `A2: "=1+1"` to prove
+    formulas evaluate. Popup, Accept.
+14. `drive_sheets_add_sheet` — add a tab named `Extra`. Popup, Accept.
+15. `drive_sheets_rename_sheet` — rename `Extra` to `TO BE DELETED - Extra`.
     Popup, Accept.
-12. `drive_sheets_format_range` — bold `A1:B2`. Popup, Accept.
-13. Skip `drive_download_file`, `drive_upload_file`, `drive_write_doc_content`,
-    `drive_move_file` unless doable safely against your test file/sheet —
-    otherwise tell me it's skipped and why.
+16. `drive_sheets_format_range` — bold `A1:B2`. Popup, Accept.
 
 ## Phase 3 — Slack
 1. `slack_list_channels` (expect: silent).
-2. Auto-accept rule check: `slack_get_channel_history` on [replace with your own
-   `approved_channel`-listed channel ID]. This should NOT prompt me. Confirm.
-3. `slack_get_channel_history` on a **different** channel — should prompt for
-   review. I'll Accept.
+2. Auto-accept rule check: `slack_get_channel_history` on
+   `<QA_FIXTURES>.slack_approved_channel`. This should NOT prompt me. Confirm.
+3. `slack_get_channel_history` on `<QA_FIXTURES>.slack_control_channel` (the
+   non-approved one) — should prompt for review. I'll Accept.
 4. `slack_search_messages` with any query — review gate, Accept.
-5. If step 3/4 surfaced a message with replies, `slack_get_thread_replies` on
-   it — review gate, Accept.
-6. `slack_send_message` to my own self-DM only, test text. Popup, Accept.
+5. `slack_get_thread_replies` on the thread that already exists in
+   `slack_control_channel` — review gate, Accept. (This fixture exists precisely
+   so this step always has something to find, instead of depending on step 3/4
+   having surfaced a threaded message.)
+6. `slack_send_message` to my own self-DM only, test text tagged `{RUN_ID}`.
+   Popup, Accept.
 
 ## Phase 4 — Calendar
-1. `calendar_list_calendars`, `calendar_list_events`, `calendar_get_free_busy`,
-   `calendar_list_rooms` (expect: all silent).
+1. `calendar_list_calendars`, `calendar_list_events`, `calendar_get_free_busy`
+   (expect: all silent). Then `calendar_list_rooms`: if the Calendar room fixture
+   from `qa-environment-setup.md` is set up, expect it to succeed and list at
+   least one room, silently. If it isn't (no Workspace admin access), expect the
+   same permissions error as before — that's a standing, known environment
+   limitation, not a new finding, so don't report it as a regression each run.
 2. Pick any existing event, `calendar_get_event_details` — review gate, Accept.
-3. `calendar_create_event` — title `PrivacyFence QA test event — safe to
-   delete`, date far in the future, no attendees, no Meet link. Popup, Accept.
+3. `calendar_create_event` — title `PrivacyFence QA test event [{RUN_ID}] — safe
+   to delete`, date far in the future, no attendees, no Meet link. Popup, Accept.
+   Add to manifest (not deletable via tool).
 4. `calendar_update_event` on the event you just created. Popup, Accept.
-5. Note for me: there's no delete-event tool, so I'll remove it manually after.
+5. `calendar_get_event_details` again on that same event — you're its organizer,
+   so if `calendar.read_event_details` has an `i_am_organizer` rule this should
+   NOT prompt. Tell me either way.
 
 ## Phase 5 — Contacts
 1. `contacts_list`, `contacts_search`, `contacts_get` (expect: all silent).
 2. `contacts_list` with `source="personal"`, then again with `source="directory"`.
    Confirm the two result sets don't overlap and every returned contact's
    `source` field matches what you asked for (or `"both"` for a contact that's
-   both a saved contact and a colleague). If your account has no Workspace
-   directory colleagues, `source="directory"` should come back empty rather
-   than erroring.
+   both a saved contact and a colleague). If I've told you this account has no
+   Workspace directory colleagues, `source="directory"` coming back empty is the
+   expected, correct result — confirm it stays empty, don't re-flag it as a gap.
 3. `contacts_get` on a contact from the `source="personal"` list above, passing
    `source="directory"` — expect this to fail with a clear "source mismatch"
    error rather than silently returning the contact.
-4. Ask me which contact is safe to touch before calling `contacts_update` —
-   don't pick one yourself. Append ` (PrivacyFence QA test)` to a low-stakes
-   field and tell me the exact before/after. Popup, Accept.
-5. `contacts_create` — display name `PrivacyFence QA test contact — safe to delete`.
-   Popup, Accept.
-6. `contacts_add_label` on the contact you just created, label
-   `PrivacyFence QA test`. Popup, Accept. Confirm the label appears on the
-   contact in Google Contacts.
-7. `contacts_remove_label` on the same contact/label. Popup, Accept. Confirm
+4. `contacts_create` — display name `PrivacyFence QA test contact [{RUN_ID}] —
+   safe to delete`. Popup, Accept. Add to manifest (not deletable via tool).
+5. `contacts_update` on the contact you just created — append
+   ` (edited [{RUN_ID}])` to its name/note only, no email/phone change. If
+   `contacts.edit` has a `no_contact_info_change` rule, this should NOT prompt —
+   tell me either way.
+6. `contacts_update` on the same contact again, this time changing its phone or
+   email — even with that rule configured, this must still prompt (the rule only
+   covers non-contact-info fields). Popup, Accept. Tell me the exact before/after
+   for both updates.
+7. `contacts_add_label` on the contact, label `PrivacyFence QA test`. Popup,
+   Accept. Confirm the label appears on the contact in Google Contacts.
+8. `contacts_remove_label` on the same contact/label. Popup, Accept. Confirm
    the label is gone.
-8. Note for me: there's no delete-contact tool, so I'll remove the test
-   contact manually afterward.
 
 ## Phase 6 — Google Tasks
 Reads are unconditionally auto-accepted; writes are `popup`-gated like every
 other connector's writes. Expect **zero prompts** for step 1, and a popup for
 each of steps 2, 4, 5, and 6:
 1. `tasks_list_task_lists`, `tasks_list_tasks` (expect: silent).
-2. `tasks_create_task` — title `PrivacyFence QA test task — safe to delete`. Popup, Accept.
+2. `tasks_create_task` — title `PrivacyFence QA test task [{RUN_ID}] — safe to
+   delete`. Popup, Accept. Add to manifest.
 3. `tasks_get_task` on it (expect: silent).
-4. `tasks_update_task` (change the title slightly). Popup, Accept.
+4. `tasks_update_task` (change the title slightly, keep the `{RUN_ID}` tag).
+   Popup, Accept.
 5. `tasks_complete_task`, then `tasks_uncomplete_task`. Popup, Accept each.
 6. `tasks_move_task` (move it within the same list). Popup, Accept.
 
 ## Phase 7 — Telegram
 1. `telegram_list_chats` (expect: silent — the only genuinely unconditional one).
-2. `telegram_get_messages` on any chat — tell me whether a Cowork review
-   prompt appeared. I'll Accept if it does.
-3. `telegram_search_messages` with any query — same check.
-4. `telegram_send_message` to "Saved Messages" only, test text. Popup, Accept.
+   Confirm `<QA_FIXTURES>.telegram_saved_messages_chat_id` is now present in the
+   results.
+2. `telegram_get_messages` on `<QA_FIXTURES>.telegram_approved_chat_id` — **watch
+   for a Cowork review popup and tell me explicitly whether you see one before I
+   respond**, don't infer it from the tool result; I'll Accept if it appears.
+3. `telegram_get_messages` on a **different** chat that isn't in
+   `approved_chats` — same explicit "did a popup appear?" question. I'll Accept.
+4. `telegram_search_messages` with a query that matches the seed message from
+   setup — same explicit popup check.
+5. `telegram_send_message` to "Saved Messages"
+   (`telegram_saved_messages_chat_id`), test text tagged `{RUN_ID}`. Popup,
+   Accept.
 
 ## Phase 8 — Salesforce
 1. `salesforce_list_reports` (expect: silent).
-2. `salesforce_run_report` on any report — review gate, Accept.
-3. From its rows, pick a record and call `salesforce_get_record` — review
-   gate, Accept. (No write tools exist for Salesforce in this build.)
+2. `salesforce_run_report` on `<QA_FIXTURES>.salesforce_qa_report_id` — if
+   `salesforce.run_report` has an `approved_report_ids` rule matching it, this
+   should NOT prompt. Tell me either way. Confirm you get actual data rows back,
+   not an empty result.
+3. `salesforce_run_report` on any *other* report you can access — should still
+   prompt for review regardless of the rule above. Accept.
+4. From the QA report's rows, pick a record and call `salesforce_get_record`
+   with `object_type` set to `<QA_FIXTURES>.salesforce_qa_object_type`. If
+   `salesforce.read_record` has an `approved_object_types` rule matching it, this
+   should NOT prompt — tell me either way. Confirm you get real field data back,
+   not `NOT_FOUND`.
+5. `salesforce_get_record` on a record of a *different* object type — should
+   still prompt. Accept. (No write tools exist for Salesforce in this build.)
 
 ## Phase 9 — Jira
 1. `jira_list_projects`, `jira_search_issues` (expect: both silent).
-2. Pick any existing issue, `jira_get_issue` — review gate, Accept.
-3. Ask me which project key is safe for a test issue before creating anything.
-   Then `jira_create_issue` — summary `PrivacyFence QA test issue — safe to
-   delete/close`. Popup, Accept.
-4. `jira_add_comment` on it, test comment. Popup, Accept.
-5. `jira_update_issue` on it (e.g. change description). Popup, Accept.
+2. `jira_get_issue` on any existing issue in `<QA_FIXTURES>.jira_qa_project_key`.
+   If `jira.read_issue` has an `approved_project_keys` rule matching it, this
+   should NOT prompt — tell me either way.
+3. `jira_get_issue` on any issue in `jira_contrast_project_key` — should still
+   prompt regardless of that rule. Accept.
+4. `jira_create_issue` in `jira_qa_project_key` — summary `PrivacyFence QA test
+   issue [{RUN_ID}] — safe to delete/close`. Popup, Accept. Add to manifest.
+5. `jira_get_issue` on the issue you just created — you're both its reporter and
+   assignee, so if `i_am_reporter`/`i_am_assignee` rules are configured for
+   `jira.read_issue` this should NOT prompt either, independent of the project
+   rule. Tell me which rule (if any) actually matched.
+6. `jira_add_comment` on it, test comment. Popup, Accept.
+7. `jira_update_issue` on it (e.g. change description). Popup, Accept.
 
 ## Phase 10 — Confluence
 1. `confluence_list_spaces`, `confluence_search`, `confluence_cql_search`,
    `confluence_list_pages` (expect: all silent).
-2. Pick any existing page, `confluence_get_page`(`_by_title`) — review gate,
-   Accept.
-3. Ask me which space is safe for a test page before creating anything. Then
-   `confluence_create_page` titled `PrivacyFence QA test page — safe to
-   delete`. Popup, Accept.
-4. `confluence_update_page` on it, minor edit. Popup, Accept.
+2. Pick any existing page in `<QA_FIXTURES>.confluence_qa_space_key`,
+   `confluence_get_page`(`_by_title`) — if `confluence.read_page` has an
+   `approved_space_keys` rule matching it, this should NOT prompt. Tell me
+   either way.
+3. Same call against a page in `confluence_contrast_space_key` — should still
+   prompt regardless. Accept.
+4. `confluence_create_page` in `confluence_qa_space_key`, titled `PrivacyFence
+   QA test page [{RUN_ID}] — safe to delete`. Popup, Accept. Add to manifest.
+5. `confluence_get_page` on the page you just created — you're its author, so if
+   an `i_am_author` rule is configured for `confluence.read_page` this should NOT
+   prompt, independent of the space rule. Tell me which rule (if any) matched.
+6. `confluence_update_page` on it, minor edit. Popup, Accept.
+
+## Phase 11 — Teardown
+Go through the manifest table and, for every artifact tagged `{RUN_ID}` that has
+a delete/remove/archive/close tool available, call it now:
+1. Delete/trash the Drive file, Doc, sheet, and the throwaway moved file from
+   Phase 2 (`drive` has no bulk-delete — one call per artifact is fine).
+2. Delete the Gmail draft(s) from Phase 1 if a delete-draft tool exists;
+   otherwise leave the label/note in the manifest for manual cleanup.
+3. Close or transition the Jira issue from Phase 9 to a terminal status (don't
+   delete it — closed test issues are useful QA history); note its final status.
+4. Delete the Confluence page from Phase 10 if a delete tool exists; otherwise
+   note it for manual cleanup.
+5. Uncomplete/delete the Google Task from Phase 6 if a delete tool exists.
+6. For anything with **no delete tool at all** (Calendar event, Contact, Slack
+   message, Telegram message, any Gmail label added to a real message), do NOT
+   attempt a workaround — list it plainly in the final manifest under "needs
+   manual deletion," grouped by connector, so I can batch-clean these across
+   multiple runs instead of doing it one run at a time.
 
 ---
 
 ## Final report
-Print the full running table (tool | gate observed | decision | notes). Then:
+Print the full running table (tool | gate observed | decision | notes), then the
+full manifest table split into "cleaned up in Phase 11" vs. "needs manual
+deletion." Then:
 - Call out any tool whose observed gate didn't match what I told you to expect.
-- Give the Phase 7 (Telegram) discrepancy verdict, if applicable.
-- List every test artifact you created so I know what to clean up.
+- Give the Phase 7 (Telegram) popup-visibility answers from steps 2–4 explicitly
+  — don't let this collapse back into "I can't tell," since I told you to watch
+  for the popup directly this time.
+- List any pre-existing `PrivacyFence QA test [...]` artifacts you noticed that
+  carry a **different** `{RUN_ID}` (or no `{RUN_ID}` at all, from before this
+  version of the prompt existed) — flag them as leftovers from a previous run,
+  don't touch them, and don't count them as part of this run's manifest.
 
 I'll separately check `~/.privacyfence/logs/audit/<this-week>.jsonl` myself to
 cross-reference every call's logged decision — you don't need to access that file.
