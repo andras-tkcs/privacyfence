@@ -60,11 +60,10 @@ Every tool call passes through one of three gate values:
 
 **Tool → Claude (reads)**
 
-When the gate is `review`, a prompt appears in Claude Cowork showing a minimal preview of the request:
+When the gate is `review`, PrivacyFence opens a native popup with a summary box and a scrollable pane showing the full content (e.g. the email body) up front, offering:
 
 - **Accept** — data is returned to Claude
 - **Deny** — request is blocked; Claude receives an error
-- **Show Details** — PrivacyFence opens a scrollable native popup with the full content (e.g. the email body), which then offers **Accept** or **Deny**
 
 **Claude → Tool (writes / actions)**
 

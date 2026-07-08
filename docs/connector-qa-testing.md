@@ -157,7 +157,7 @@ Ground rules:
 
 I (the human) will be watching for the approval prompts as they appear. Most
 steps expect a plain Accept and you can just make the call. The ones marked
-**"pause here"** expect something else (Deny / Show Details / Accept All) —
+**"pause here"** expect something else (Deny / Accept All) —
 for those, stop and wait for my go-ahead as the ground rules above describe,
 *then* call the tool, then report back what actually happened in the tool
 result, and confirm it against the audit log entry for that call before
@@ -234,11 +234,9 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
    fallback answer. Then read the audit log entry for this call and state
    definitively whether it was `denied` or a truncation with a different
    underlying cause — don't leave this as a guess.
-4. Pick a message that has a thread with 2+ messages. **Pause here**: tell me
-   you're about to call `gmail_get_thread` on it and that **I will click "Show
-   Details"** instead of Accept/Deny directly, then approve from the native
-   popup, then wait for me to say go. Once I do, make the call and report what
-   came back.
+4. Pick a message that has a thread with 2+ messages. Call `gmail_get_thread`
+   on it. **I will click Accept.** Confirm the response includes all messages
+   in the thread, not just one.
 5. `gmail_list_message_attachments` on any message with attachments (expect:
    silent). Then `gmail_download_attachment` on one — this is `review` gated,
    I'll Accept.
