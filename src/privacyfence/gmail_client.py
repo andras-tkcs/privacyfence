@@ -26,8 +26,14 @@ from googleapiclient.errors import HttpError
 
 logger = logging.getLogger(__name__)
 
-# Modify scope: allows reading and modifying messages/labels, creating drafts.
-SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
+# gmail.modify: reading and modifying messages/labels, creating drafts.
+# gmail.settings.basic: required separately for filter create/update/delete —
+# gmail.modify covers filters.list but the settings-mutation endpoints reject
+# it with a 403 insufficientPermissions unless this scope is also granted.
+SCOPES = [
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.settings.basic",
+]
 
 
 class GmailClientError(Exception):
