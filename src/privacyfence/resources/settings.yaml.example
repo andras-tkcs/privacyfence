@@ -66,6 +66,11 @@ auto_accept_rules:
     # Auto-accept writes to spreadsheets created earlier in the same session
     # (e.g. filling in a sheet PrivacyFence just created for you)
     # - rule: created_this_session
+  # gmail.create_label:
+    # Auto-accept creating labels whose name is in the allowlist (nested
+    # names match on the full "Parent/Child" string)
+    # - rule: label_name_allowlist
+    #   value: ["Receipts", "Travel/Bookings"]
 
 logging:
   # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL

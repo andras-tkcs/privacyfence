@@ -92,6 +92,11 @@ Claude already describes the action it is about to take in the chat. When the ga
 | `gmail_add_label` | write | popup | — | From, subject, label name |
 | `gmail_remove_label` | write | popup | — | From, subject, label name |
 | `gmail_archive_message` | write | popup | — | From, subject, confirmation that message stays in All Mail |
+| `gmail_list_filters` | read | auto | — | — |
+| `gmail_list_labels` | read | auto | — | — |
+| `gmail_create_filter` | write | popup | — | Criteria, actions |
+| `gmail_update_filter` | write | popup | — | Filter ID, criteria, actions, note that this deletes + recreates under a new id |
+| `gmail_create_label` | write | popup | — | Label name, note when a parent segment will also be created |
 
 ### Google Drive
 
@@ -264,13 +269,17 @@ Routine, low-risk requests can be approved automatically without a prompt. Rules
 | `no_attachments` | Message has no attachments |
 
 These apply to Gmail's read tools. Gmail's write tools (`gmail_create_draft`, `gmail_reply_draft`,
-`gmail_reply_all_draft`, `gmail_add_label`, `gmail_remove_label`) have their own rules:
+`gmail_reply_all_draft`, `gmail_add_label`, `gmail_remove_label`, `gmail_create_label`) have their
+own rules:
 
 | Rule | Matches when… |
 |------|--------------|
 | `to_is_myself` | Every recipient of the draft/reply is the authenticated account itself |
 | `approved_recipient_domain` | Every recipient's domain is in the allowlist |
-| `label_name_allowlist` | The label being added/removed is in the allowlist |
+| `label_name_allowlist` | The label being added/removed/created is in the allowlist |
+
+`gmail_create_filter` and `gmail_update_filter` have no built-in rule and always prompt — a
+filter's criteria/action combination is too open-ended for a simple allowlist match.
 
 **Google Drive**
 

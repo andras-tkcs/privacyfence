@@ -228,6 +228,39 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
     and confirm zero results. After this step the label-test message is back
     exactly where it started — still in the inbox, with no leftover label —
     so there's nothing to add to the manifest or clean up for it in Phase 11.
+13. `gmail_list_labels` (expect: silent, no prompt). Confirm the response
+    includes both system labels (e.g. `INBOX`) and any user labels, each with
+    an `id`/`name`/`type`.
+14. `gmail_create_label` with a **nested** name:
+    `PrivacyFence QA {RUN_ID}/Nested`. Popup, I'll Accept. Since Gmail has no
+    parent-id field, `create_label` in `gmail_client.py` creates the missing
+    `PrivacyFence QA {RUN_ID}` parent segment first, then the child — call
+    `gmail_list_labels` again (silent) and confirm **both** segments now
+    exist as separate labels. Add the parent label name to the manifest
+    (no delete tool — see Phase 11).
+15. `gmail_create_label` again with the **exact same** nested name from step
+    14. This should fail with a "label already exists" error rather than
+    prompting a popup — `create_label` raises before ever reaching the gate,
+    unlike `gmail_add_label`'s silent get-or-create. Confirm you got an
+    error, and that no new popup or audit entry appeared for it.
+16. `gmail_list_filters` (expect: silent, no prompt). Note the current count.
+17. `gmail_create_filter` — criteria `subject="PrivacyFence QA {RUN_ID}"`,
+    action `add_label_names="PrivacyFence QA {RUN_ID}/Nested"` (reusing the
+    label from step 14) plus `archive=true`. Popup, I'll Accept. Record the
+    returned filter `id` and add it to the manifest (no delete tool — see
+    Phase 11).
+18. `gmail_list_filters` (silent) and confirm the new filter appears with the
+    `id` from step 17 and the criteria/action you set.
+19. `gmail_update_filter` on that `id`, changing `archive` to `false` and
+    `mark_as_read` to `true` (same `subject`/`add_label_names` as step 17).
+    Popup, I'll Accept — the details popup should explicitly say the old
+    filter is being deleted and replaced. Record the **new** `id` returned
+    (Gmail has no update endpoint, so `update_filter` deletes the old filter
+    and creates a fresh one — the id changes). Update the manifest entry from
+    step 17 with the new id.
+20. `gmail_list_filters` (silent) and confirm the `id` from step 17 is now
+    **gone** and the `id` from step 19 is present with the updated action
+    (`mark_as_read` instead of `archive`).
 
 ## Phase 2 — Drive & Sheets
 All of this run's Drive/Sheets artifacts go inside `{FIXTURES}.drive_qa_folder_id`
@@ -421,10 +454,13 @@ a delete/remove/archive/close tool available, call it now:
    the archive/unarchive/remove-label sequence already restores it to exactly
    its starting state.
 7. For anything with **no delete tool at all** (Calendar event, Contact, Slack
-   message, Telegram message), do NOT attempt a workaround — list it plainly
-   in the final manifest under "needs manual deletion," grouped by connector,
-   so I can batch-clean these across multiple runs instead of doing it one run
-   at a time.
+   message, Telegram message, the Gmail filter from Phase 1 steps 17/19, the
+   Gmail label(s) from Phase 1 step 14), do NOT attempt a workaround — list it
+   plainly in the final manifest under "needs manual deletion," grouped by
+   connector, so I can batch-clean these across multiple runs instead of doing
+   it one run at a time. For the Gmail filter/label specifically, note that
+   manual cleanup happens in Gmail's web UI (Settings → Filters and Blocked
+   Addresses / Settings → Labels), not via any PrivacyFence tool.
 
 ---
 

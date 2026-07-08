@@ -81,6 +81,30 @@ class TestAutoTools:
 
         assert result == [{"id": "t1"}]
 
+    async def test_list_filters_auto_accepts_without_gate(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        client.list_filters.return_value = [{"id": "f1", "criteria": {}, "action": {}}]
+
+        result = await connector.call("gmail_list_filters", {})
+
+        assert result == [{"id": "f1", "criteria": {}, "action": {}}]
+        entries = (tmp_path / f"{current_week()}.jsonl").read_text(encoding="utf-8").splitlines()
+        assert '"decision": "auto_accepted"' in entries[0]
+        assert '"tool": "gmail_list_filters"' in entries[0]
+
+    async def test_list_labels_auto_accepts_without_gate(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        client.list_labels.return_value = [{"id": "L1", "name": "Work/Projects", "type": "user"}]
+
+        result = await connector.call("gmail_list_labels", {})
+
+        assert result == [{"id": "L1", "name": "Work/Projects", "type": "user"}]
+        entries = (tmp_path / f"{current_week()}.jsonl").read_text(encoding="utf-8").splitlines()
+        assert '"decision": "auto_accepted"' in entries[0]
+        assert '"tool": "gmail_list_labels"' in entries[0]
+
 
 class TestGetMessagePreviewMinimization:
     async def test_preview_contains_only_metadata_no_body(self, gated_call_spy):
@@ -320,6 +344,84 @@ class TestWriteToolsGateAndPreview:
         assert kwargs["gate"] == "popup"
         assert "not deleted" in kwargs["details_text"]
 
+    async def test_create_filter_gate_popup_and_preview_and_args(self, gated_call_spy):
+        connector, client = make_connector()
+        client.create_filter.return_value = {"id": "f1", "criteria": {}, "action": {}}
+
+        await connector.call(
+            "gmail_create_filter",
+            {
+                "from_address": "boss@example.com", "to_address": "", "subject": "", "query": "",
+                "has_attachment": False, "add_label_names": "Work", "archive": True,
+                "mark_as_read": False, "star": False, "forward_to": "",
+            },
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["gate"] == "popup"
+        assert kwargs["preview"]["Criteria"] == "from: boss@example.com"
+        assert kwargs["preview"]["Actions"] == "apply label(s): Work; archive it (skip inbox)"
+        assert kwargs["args"]["from_address"] == "boss@example.com"
+        assert kwargs["args"]["archive"] is True
+        client.create_filter.assert_called_once_with(
+            "boss@example.com", "", "", "", False, "Work", True, False, False, ""
+        )
+
+    async def test_create_filter_with_no_criteria_still_gated(self, gated_call_spy):
+        # Business-rule validation (require >=1 criteria/action) lives in
+        # GmailClient, which is mocked here -- the connector only needs to
+        # build a sensible "(none)" preview and gate the call.
+        connector, client = make_connector()
+        client.create_filter.return_value = {"id": "f1", "criteria": {}, "action": {}}
+
+        await connector.call("gmail_create_filter", {})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview"] == {"Criteria": "(none)", "Actions": "(none)"}
+
+    async def test_update_filter_gate_popup_includes_filter_id_and_delete_recreate_note(self, gated_call_spy):
+        connector, client = make_connector()
+        client.update_filter.return_value = {"old_id": "f1", "id": "f2", "criteria": {}, "action": {}}
+
+        await connector.call(
+            "gmail_update_filter",
+            {"filter_id": "f1", "subject": "Invoices", "add_label_names": "Receipts"},
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["gate"] == "popup"
+        assert kwargs["preview"]["Filter ID"] == "f1"
+        assert kwargs["preview"]["Criteria"] == "subject: Invoices"
+        assert "deletes the existing filter" in kwargs["details_text"]
+        assert kwargs["args"]["filter_id"] == "f1"
+        client.update_filter.assert_called_once_with(
+            "f1", "", "", "Invoices", "", False, "Receipts", False, False, False, ""
+        )
+
+    async def test_create_label_gate_popup_simple_name(self, gated_call_spy):
+        connector, client = make_connector()
+        client.create_label.return_value = {"id": "L1", "name": "Receipts", "type": "user"}
+
+        result = await connector.call("gmail_create_label", {"label_name": "Receipts"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["gate"] == "popup"
+        assert kwargs["preview"] == {"Label": "Receipts"}
+        assert kwargs["details_text"] == ""
+        assert kwargs["args"] == {"label_name": "Receipts"}
+        assert result == {"id": "L1", "name": "Receipts", "type": "user"}
+        client.create_label.assert_called_once_with("Receipts")
+
+    async def test_create_label_nested_name_notes_parent_creation(self, gated_call_spy):
+        connector, client = make_connector()
+        client.create_label.return_value = {"id": "L2", "name": "Work/Projects", "type": "user"}
+
+        await connector.call("gmail_create_label", {"label_name": "Work/Projects"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview"] == {"Label": "Work/Projects"}
+        assert "parent 'Work' will be created" in kwargs["details_text"]
+
 
 class TestFetchErrorMapping:
     async def test_gmail_client_error_becomes_runtime_error(self):
@@ -328,6 +430,20 @@ class TestFetchErrorMapping:
 
         with pytest.raises(RuntimeError, match="token expired"):
             await connector.call("gmail_list_messages", {"query": "q"})
+
+    async def test_create_label_client_error_after_approval_becomes_runtime_error(self, gated_call_spy):
+        connector, client = make_connector()
+        client.create_label.side_effect = GmailClientError("label already exists")
+
+        with pytest.raises(RuntimeError, match="label already exists"):
+            await connector.call("gmail_create_label", {"label_name": "Receipts"})
+
+    async def test_update_filter_client_error_after_approval_becomes_runtime_error(self, gated_call_spy):
+        connector, client = make_connector()
+        client.update_filter.side_effect = GmailClientError("deleted the old filter but failed")
+
+        with pytest.raises(RuntimeError, match="deleted the old filter but failed"):
+            await connector.call("gmail_update_filter", {"filter_id": "f1", "subject": "x"})
 
 
 class TestEveryToolIsAudited:

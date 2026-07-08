@@ -551,6 +551,254 @@ class GmailClient:
         logger.info("remove_label: message_id=%s label=%s", message_id, label_name)
         return {"message_id": message_id, "label_removed": label_name}
 
+    def list_labels(self) -> list[dict]:
+        """List all labels (system and user-created).
+
+        Nested labels are plain user labels whose name contains "/" (e.g.
+        "Work/Projects") -- Gmail has no separate parent-id field, so callers
+        that want to render a hierarchy should split "name" on "/" themselves.
+        """
+        service = self._get_service()
+        try:
+            response = service.users().labels().list(userId="me").execute()
+        except HttpError as exc:
+            raise GmailClientError(f"list_labels failed: {exc}") from exc
+        labels = [
+            {"id": label.get("id", ""), "name": label.get("name", ""), "type": label.get("type", "")}
+            for label in response.get("labels", [])
+        ]
+        logger.info("list_labels returned %d labels", len(labels))
+        return labels
+
+    def create_label(self, label_name: str) -> dict:
+        """Create a label, or a nested chain of labels for a "Parent/Child" name.
+
+        Gmail represents label hierarchy purely through "/" in the label
+        name, with no separate parent-id field, and does not implicitly
+        create ancestor labels -- a bare "Parent/Child" label with no
+        "Parent" label of its own won't show up correctly nested in Gmail's
+        UI. So each path segment that doesn't already exist is created in
+        order. Unlike add_label's silent get-or-create, this raises if the
+        full label name already exists, since the caller explicitly asked to
+        create it.
+        """
+        segments = [s for s in (label_name or "").split("/") if s.strip()]
+        segments = [s.strip() for s in segments]
+        if not segments:
+            raise GmailClientError("create_label requires a non-empty label_name")
+        # Rebuild from the split segments (not just a leading/trailing strip)
+        # so a stray double slash like "Work//Projects" normalizes to the
+        # same "Work/Projects" used below to check for an existing label --
+        # otherwise the exists-check and the segment-by-segment creation
+        # loop disagree, and a malformed name can create a spurious
+        # intermediate label as a side effect.
+        label_name = "/".join(segments)
+
+        service = self._get_service()
+        try:
+            response = service.users().labels().list(userId="me").execute()
+        except HttpError as exc:
+            raise GmailClientError(f"create_label({label_name!r}) failed: {exc}") from exc
+        existing_by_name = {lbl.get("name", "").lower(): lbl for lbl in response.get("labels", [])}
+
+        if label_name.lower() in existing_by_name:
+            raise GmailClientError(f"create_label({label_name!r}) failed: label already exists")
+
+        path = ""
+        result: dict = {}
+        for segment in segments:
+            path = f"{path}/{segment}" if path else segment
+            found = existing_by_name.get(path.lower())
+            if found:
+                result = found
+                continue
+            try:
+                result = service.users().labels().create(
+                    userId="me", body={"name": path}
+                ).execute()
+            except HttpError as exc:
+                raise GmailClientError(
+                    f"create_label({label_name!r}) failed while creating {path!r}: {exc}"
+                ) from exc
+            existing_by_name[path.lower()] = result
+
+        logger.info("create_label: name=%s id=%s", label_name, result.get("id", ""))
+        return {
+            "id": result.get("id", ""),
+            "name": result.get("name", label_name),
+            "type": result.get("type", "user"),
+        }
+
+    def list_filters(self) -> list[dict]:
+        """List all Gmail filters with their raw criteria/action payloads."""
+        service = self._get_service()
+        try:
+            response = service.users().settings().filters().list(userId="me").execute()
+        except HttpError as exc:
+            raise GmailClientError(f"list_filters failed: {exc}") from exc
+        filters = [
+            {"id": f.get("id", ""), "criteria": f.get("criteria", {}), "action": f.get("action", {})}
+            for f in response.get("filter", [])
+        ]
+        logger.info("list_filters returned %d filters", len(filters))
+        return filters
+
+    @staticmethod
+    def _build_filter_criteria(
+        from_address: str, to_address: str, subject: str, query: str, has_attachment: bool
+    ) -> dict:
+        criteria: dict[str, Any] = {}
+        if from_address:
+            criteria["from"] = from_address
+        if to_address:
+            criteria["to"] = to_address
+        if subject:
+            criteria["subject"] = subject
+        if query:
+            criteria["query"] = query
+        if has_attachment:
+            criteria["hasAttachment"] = True
+        return criteria
+
+    def _build_filter_action(
+        self, add_label_names: str, archive: bool, mark_as_read: bool, star: bool, forward_to: str
+    ) -> dict:
+        add_label_ids = []
+        if star:
+            add_label_ids.append("STARRED")
+        for name in [n.strip() for n in add_label_names.split(",") if n.strip()]:
+            add_label_ids.append(self._get_or_create_label(name))
+        remove_label_ids = []
+        if archive:
+            remove_label_ids.append("INBOX")
+        if mark_as_read:
+            remove_label_ids.append("UNREAD")
+        action: dict[str, Any] = {}
+        if add_label_ids:
+            action["addLabelIds"] = add_label_ids
+        if remove_label_ids:
+            action["removeLabelIds"] = remove_label_ids
+        if forward_to:
+            action["forward"] = forward_to
+        return action
+
+    def create_filter(
+        self,
+        from_address: str = "",
+        to_address: str = "",
+        subject: str = "",
+        query: str = "",
+        has_attachment: bool = False,
+        add_label_names: str = "",
+        archive: bool = False,
+        mark_as_read: bool = False,
+        star: bool = False,
+        forward_to: str = "",
+    ) -> dict:
+        """Create a Gmail filter.
+
+        Raises if neither a criteria nor an action field was provided --
+        Gmail's API rejects an empty filter too, but this gives a clearer
+        error before making the call.
+        """
+        criteria = self._build_filter_criteria(from_address, to_address, subject, query, has_attachment)
+        if not criteria:
+            raise GmailClientError(
+                "create_filter requires at least one criteria field "
+                "(from_address, to_address, subject, query, or has_attachment)"
+            )
+        action = self._build_filter_action(add_label_names, archive, mark_as_read, star, forward_to)
+        if not action:
+            raise GmailClientError(
+                "create_filter requires at least one action "
+                "(add_label_names, archive, mark_as_read, star, or forward_to)"
+            )
+        service = self._get_service()
+        try:
+            result = (
+                service.users()
+                .settings()
+                .filters()
+                .create(userId="me", body={"criteria": criteria, "action": action})
+                .execute()
+            )
+        except HttpError as exc:
+            raise GmailClientError(f"create_filter failed: {exc}") from exc
+        filter_id = result.get("id", "")
+        logger.info("create_filter: id=%s criteria=%s action=%s", filter_id, criteria, action)
+        return {
+            "id": filter_id,
+            "criteria": result.get("criteria", criteria),
+            "action": result.get("action", action),
+        }
+
+    def update_filter(
+        self,
+        filter_id: str,
+        from_address: str = "",
+        to_address: str = "",
+        subject: str = "",
+        query: str = "",
+        has_attachment: bool = False,
+        add_label_names: str = "",
+        archive: bool = False,
+        mark_as_read: bool = False,
+        star: bool = False,
+        forward_to: str = "",
+    ) -> dict:
+        """Replace a filter's criteria/action.
+
+        The Gmail API has no filters.update/patch endpoint -- filters only
+        support list/get/create/delete -- so this validates and builds the
+        new criteria/action first, deletes the old filter, then creates a
+        replacement, which is assigned a new id. Validating first keeps the
+        common failure mode (caller passed no criteria/action) from deleting
+        the original filter before discovering there's nothing to replace it
+        with.
+        """
+        if not filter_id:
+            raise GmailClientError("update_filter requires a non-empty filter_id")
+        criteria = self._build_filter_criteria(from_address, to_address, subject, query, has_attachment)
+        if not criteria:
+            raise GmailClientError(
+                "update_filter requires at least one criteria field "
+                "(from_address, to_address, subject, query, or has_attachment)"
+            )
+        action = self._build_filter_action(add_label_names, archive, mark_as_read, star, forward_to)
+        if not action:
+            raise GmailClientError(
+                "update_filter requires at least one action "
+                "(add_label_names, archive, mark_as_read, star, or forward_to)"
+            )
+        service = self._get_service()
+        try:
+            service.users().settings().filters().delete(userId="me", id=filter_id).execute()
+        except HttpError as exc:
+            raise GmailClientError(
+                f"update_filter({filter_id}) failed to delete existing filter: {exc}"
+            ) from exc
+        try:
+            result = (
+                service.users()
+                .settings()
+                .filters()
+                .create(userId="me", body={"criteria": criteria, "action": action})
+                .execute()
+            )
+        except HttpError as exc:
+            raise GmailClientError(
+                f"update_filter({filter_id}) deleted the old filter but failed to create its "
+                f"replacement: {exc}. The original filter is gone -- recreate it manually."
+            ) from exc
+        new_id = result.get("id", "")
+        logger.info("update_filter: old_id=%s new_id=%s", filter_id, new_id)
+        return {
+            "old_id": filter_id,
+            "id": new_id,
+            "criteria": result.get("criteria", criteria),
+            "action": result.get("action", action),
+        }
+
     def _get_or_create_label(self, label_name: str) -> str:
         """Return an existing label id, or create the label and return its new id."""
         existing = self._get_label_id(label_name)
