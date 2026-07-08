@@ -1,12 +1,13 @@
 # Full-Connector QA Testing via Claude Cowork
 
 PrivacyFence's real attack surface is the interaction between ten connectors,
-three gate types (`auto` / `review` / `popup`), and a growing set of
-auto-accept rules — none of which unit tests exercise end to end, since they
-mock the gate itself. The fastest way to catch drift between what the code
-does and what a user actually experiences is to drive every tool through a
-live Claude Cowork/Desktop session connected to the real `privacyfence`
-daemon, against real accounts, and watch what actually prompts.
+three gate types (`auto` / `review` / `popup`), a growing set of auto-accept
+rules, and the PII detection gate layered on top of the popup itself — none
+of which unit tests exercise end to end, since they mock the gate itself.
+The fastest way to catch drift between what the code does and what a user
+actually experiences is to drive every tool through a live Claude
+Cowork/Desktop session connected to the real `privacyfence` daemon, against
+real accounts, and watch what actually prompts.
 
 This method found four real bugs and two stale-documentation sections in a
 single pass (see [Example findings](#example-findings-from-the-2026-07-run)
@@ -48,6 +49,13 @@ combination only breaks for non-ASCII input.
   Salesforce sample records/report. Without these, several phases below fall
   back to being untestable — work through that doc once per environment; it's
   a standalone installation guide, not something you redo per run.
+- The PII detection gate check (Phase 2, steps 17–20) needs **no environment
+  fixture** — it's self-contained, creating and tearing down its own
+  throwaway Drive subfolder and Doc. Confirm **PII Detection Gate** is
+  enabled in the menu bar (it is by default; see
+  [`qa-environment-setup.md`](qa-environment-setup.md#11-pii-detection-gate))
+  so the check exercises the tinted-popup/confirmation path rather than the
+  (equally valid, but different) disabled path.
 
 ## The prompt
 
@@ -110,6 +118,24 @@ Ground rules:
   the call land in the same turn I may only see the popup, not what I was
   supposed to do with it, and default to clicking Accept out of habit. A step
   marked "pause here" below means: stop, wait for my go-ahead, then call it.
+- **The PII detection gate can fire on any popup, in any phase, not just the
+  dedicated steps in Phase 2** — it scans whatever content a popup is about to
+  show (message body, file content, page body...) for likely personal data in
+  Hungarian/English/German, and real accounts routinely contain real emails,
+  phone numbers, etc. If a popup renders tinted red with a category banner:
+  Accept it as the step normally instructs, then a second **"Are you sure?"**
+  dialog appears — click **Proceed** to continue as planned (or **Cancel** only
+  if the step's *own* instruction was to Deny). Note "PII gate fired" plus the
+  categories shown in that step's row of the running table; this is expected
+  behavior on real data, not a bug, unless a step explicitly says otherwise.
+  **This includes steps marked "should NOT prompt" for an auto-accept rule**
+  (e.g. Phase 1 step 6, Phase 4 step 5): the PII scan runs before the
+  auto-accept check and overrides a matching rule, so a message/event/page
+  whose *content* contains something PII-shaped will still show the tinted
+  popup even though the rule matched — that's the gate doing its job, not a
+  rule-evaluation bug. Only flag it as a bug if the popup appears with no PII
+  category banner at all (a plain popup for a step that should've been silent
+  is still worth reporting).
 - Keep a running table as you go: `tool name | gate observed (silent / Cowork
   review / native popup) | my decision | audit-log decision | notes`. This is a
   test environment against my own accounts, so read
@@ -269,6 +295,106 @@ in step 3, if you configured it.
     Popup, Accept.
 16. `drive_sheets_format_range` — bold `A1:B2`. Popup, Accept.
 
+### PII detection gate check (steps 17–20)
+
+Self-contained: this doesn't depend on any fixture from Phase 0 or
+`qa-environment-setup.md` — it creates its own throwaway subfolder and Google
+Doc, and Phase 11 tears both down. It deliberately does **not** reuse
+`{FIXTURES}.drive_qa_folder_id` as the doc's direct parent: that folder is
+what `drive.read_file_contents` → `approved_folder` (if you configured it)
+matches against, and an auto-accepted read never shows a popup at all — which
+would make it impossible to actually see the tint/banner this check exists to
+demonstrate. A subfolder one level down has a different (unmatched) parent
+ID, so the normal `review` gate — and the PII gate layered on top of it —
+is guaranteed to fire regardless of what auto-accept rules this environment
+has configured.
+
+17. Create a subfolder named `PrivacyFence QA PII test [{RUN_ID}]` inside the
+    QA Sandbox folder (same pattern as step 9). Add it to the manifest.
+18. `drive_write_doc_content` — create a new Google Doc **inside that
+    subfolder**, titled `PrivacyFence QA test PII doc [{RUN_ID}] — safe to
+    delete`, with this exact body (obviously-fake, clearly-labeled test data —
+    do not substitute anything real):
+
+    ```
+    FAKE TEST DATA for PrivacyFence QA — no real person. Safe to delete.
+
+    Email: test.user+pii-qa@example.com
+    Phone: +36 20 123 4567
+    Hungarian TAJ szám: 123 456 789
+    Adóazonosító jel: 8123456789
+    Születési dátum: 1990.01.01
+    US SSN: 123-45-6789
+    Date of birth: 1990-01-01
+    German Steuer-IdNr. 65 929 970 489
+    Geburtsdatum: 01.01.1990
+    UK NI number: AB123456C
+    ```
+
+    This write is popup-gated regardless of any rule. **Pause here**: tell me
+    you're about to call it and that, because the body above contains
+    synthetic PII spanning all three supported languages, you expect the
+    popup to render tinted red with a category-listing banner, and that
+    after I click **Accept** a second **"Are you sure?"** dialog should
+    appear — I'll click **Proceed** on that one. Wait for me to say go. Once
+    I do, make the call and report back: did the tint/banner appear, which
+    categories did it list, and did the second confirmation dialog appear?
+    Add the doc to the manifest.
+19. `drive_get_file_content` on the doc you just created — `review` gate, not
+    covered by any `approved_folder` rule per the note above, so this must
+    prompt every time regardless of environment config. Same expectation as
+    step 18: tinted popup with a category banner, then the second "Are you
+    sure?" confirmation after Accept. **Pause here** the same way, then make
+    the call and report the same details, plus confirm the returned content
+    matches what was written.
+20. Read the audit log entries for steps 18 and 19 and confirm both have
+    `"pii_detected": true` — this is the one field in the log that proves the
+    gate fired even if a screenshot of the popup itself isn't available to
+    me. Report the categories PrivacyFence actually detected (from the popup
+    banner) against what `src/privacyfence/pii_detector.py` documents as
+    supported, and flag anything that should have matched but didn't (or
+    vice versa) as a finding, not something to silently reconcile.
+
+### Auto-accept override check (steps 21–23)
+
+The PII scan runs *before* the auto-accept check and overrides a matching
+rule — a request that would otherwise pass through silently must still stop
+for the popup + second confirmation if its content contains PII. Steps
+17–20 above prove the gate fires with no rule in play at all; this section
+proves the more specific claim: it also fires when a rule *would* have
+matched. It reuses `{FIXTURES}.drive_qa_folder_id` itself as the parent this
+time — deliberately the opposite choice from step 18 — since that's exactly
+the folder `drive.read_file_contents` → `approved_folder` matches against,
+if you configured it per `qa-environment-setup.md`.
+
+21. `drive_write_doc_content` — create a new Google Doc **directly inside
+    `{FIXTURES}.drive_qa_folder_id`** (not the PII-test subfolder from step
+    17), titled `PrivacyFence QA test PII-vs-rule doc [{RUN_ID}] — safe to
+    delete`, with the same fake-PII body as step 18. This write is
+    popup-gated regardless of any rule (writes never auto-accept via
+    `approved_folder`), so nothing to prove here — just Accept, then Accept
+    on the PII confirmation. Add the doc to the manifest.
+22. `drive_get_file_content` on that doc. This file's parent *is*
+    `{FIXTURES}.drive_qa_folder_id` — if `drive.read_file_contents` →
+    `approved_folder` is configured, this read would normally auto-accept
+    with **no popup at all** (confirm that's what you saw for the plain,
+    no-PII file back in step 3). **Pause here**: tell me you're about to
+    call it and that, even though this file lives in the auto-accepted
+    folder, you expect a popup anyway — tinted, with a category banner,
+    then the second "Are you sure?" confirmation — because the PII scan
+    overrides the rule. Wait for me to say go. Once I do, make the call and
+    report explicitly whether a popup appeared. If `approved_folder` isn't
+    configured in this environment, say so plainly — this step can't
+    distinguish "the override worked" from "there was no rule to override"
+    in that case, so don't claim the override was proven either way.
+23. Read the audit log entry for step 22 and confirm `"decision": "approved"`
+    (not `"auto_accepted"`), `"auto_accept_rule": ""`, and
+    `"pii_detected": true` — this is the field-level proof that the override
+    fired, independent of whether the popup was visually confirmed. Compare
+    it against step 3's entry for the plain file (`"decision":
+    "auto_accepted"` if the rule is configured) to make the contrast
+    explicit in your report.
+
 ## Phase 3 — Slack
 1. `slack_list_channels` (expect: silent).
 2. Auto-accept rule check: `slack_get_channel_history` on
@@ -409,7 +535,9 @@ each of steps 2, 4, 5, and 6:
 Go through the manifest table and, for every artifact tagged `{RUN_ID}` that has
 a delete/remove/archive/close tool available, call it now:
 1. Delete/trash the Drive file, Doc, sheet, and the throwaway moved file from
-   Phase 2 (`drive` has no bulk-delete — one call per artifact is fine).
+   Phase 2 (`drive` has no bulk-delete — one call per artifact is fine). This
+   includes the PII test doc and its subfolder from steps 17–20 (trash the
+   doc, then the now-empty subfolder) and the PII-vs-rule doc from step 21.
 2. Delete the Gmail draft(s) from Phase 1 if a delete-draft tool exists;
    otherwise leave the label/note in the manifest for manual cleanup.
 3. Close or transition the Jira issue from Phase 9 to a terminal status (don't
@@ -439,6 +567,28 @@ Phase 11" vs. "needs manual deletion." Then:
   explicitly, each one backed by the matching audit-log entry — don't let this
   collapse back into "I can't tell," since both your own observation and the
   log are available this time.
+- Give the Phase 2 PII detection gate check (steps 17–20) its own explicit
+  answer: did the tint/banner render on both the write and the read, what
+  categories were listed each time, did the second "Are you sure?" dialog
+  appear both times, and did both audit-log entries show
+  `"pii_detected": true`. If PrivacyFence's menu bar has **PII Detection
+  Gate** turned off, that changes the expected result to "no tint, no second
+  dialog, `pii_detected: false`" — state which case you're actually in rather
+  than assuming it's enabled.
+- Give the auto-accept override check (steps 21–23) its own explicit answer
+  too, separate from the above: was `approved_folder` actually configured
+  for `drive.read_file_contents` in this environment (check what you read
+  from `settings.yaml` in Phase 0)? If yes, did step 22 still prompt despite
+  the rule matching, and did step 22's audit entry show `"decision":
+  "approved"` rather than `"auto_accepted"`? If the rule wasn't configured,
+  say explicitly that this check only re-confirmed the plain PII-gate
+  behavior and didn't exercise the override itself — don't report it as a
+  pass for a claim it couldn't actually test.
+- List every other step across the whole run where the PII gate fired
+  organically (per the ground rule above) — real accounts routinely surface
+  this outside the dedicated check, and it's useful signal for how noisy the
+  detector is against this account's actual data, not just the synthetic
+  case in Phase 2.
 - List any pre-existing `PrivacyFence QA test [...]` artifacts you noticed that
   carry a **different** `{RUN_ID}` (or no `{RUN_ID}` at all, from before this
   version of the prompt existed) — flag them as leftovers from a previous run,

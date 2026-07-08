@@ -298,6 +298,44 @@ data:
    without it (a 410 "Gone" error from Atlassian's removed v1 endpoint), and
    that failure has nothing to do with this environment setup.
 
+## 11. PII Detection Gate
+
+No fixture to create — this is the one part of the QA test that's genuinely
+self-contained. The dedicated check in
+[`connector-qa-testing.md`](connector-qa-testing.md) (Phase 2, steps 17–20)
+creates its own throwaway Drive subfolder and Google Doc seeded with
+synthetic, obviously-fake PII, reads it back, and tears both down in
+Phase 11 — nothing here to provision ahead of time, and nothing that
+persists between runs.
+
+The only thing worth confirming beforehand:
+
+1. **PII Detection Gate** is enabled in the PrivacyFence menu bar (it is by
+   default — equivalently, `pii_detection.enabled` is `true` or absent in
+   `~/.privacyfence/config/settings.yaml`). If you've turned it off, the
+   dedicated check still runs but correctly produces the *disabled* result
+   (no tint, no second confirmation, `pii_detected: false` in the audit log)
+   — that's expected behavior for that state, not a failure, but the test
+   prompt needs to know which state it's in rather than assume enabled.
+2. The check deliberately writes to a **subfolder** of the Drive QA Sandbox
+   folder, not the Sandbox folder's own top level. `approved_folder` (§2
+   above) matches a file's *immediate* parent folder ID only, not folders
+   nested inside it — so even if you configured that rule, it does not
+   cover the subfolder, and the read step is guaranteed to hit the normal
+   `review` gate (and the PII gate layered on top of it) instead of being
+   silently auto-accepted. No action needed here beyond knowing why the
+   check is structured that way, in case you ever restructure the Sandbox
+   folder yourself.
+3. A second, related check (`connector-qa-testing.md` steps 21–23) proves
+   the stronger claim that PII detection *overrides* a matching auto-accept
+   rule, rather than just running independently of one — it deliberately
+   writes the same synthetic PII directly into `drive_qa_folder_id` itself,
+   the folder `approved_folder` *does* cover. This one only exercises the
+   override if you actually configured the `drive.read_file_contents` →
+   `approved_folder` rule from §2; without it there's no rule in play to
+   override, and the test prompt is told to say so plainly rather than
+   claim the override was proven.
+
 ---
 
 ## Consolidated `auto_accept_rules` block

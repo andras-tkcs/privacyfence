@@ -57,6 +57,17 @@ slack_privacy:
 # connectors:
 #   telegram: { enabled: false }
 
+pii_detection:
+  # Extra confirmation gate, on top of the normal Accept/Deny popup: scans
+  # the message/document/spreadsheet content shown in the approval popup for
+  # likely personal data (Hungarian, English, and German — emails, phone
+  # numbers, IBANs, credit card numbers, national ID/tax/social-security
+  # numbers, and similar). When something is flagged, the popup is tinted
+  # red and a second "Are you sure?" dialog is required before Accept (or
+  # Accept All) takes effect. Toggled automatically when you use "PII
+  # Detection Gate" in the menu bar.
+  enabled: true
+
 auto_accept_rules:
   contacts.edit:
     # Auto-accept contact edits that don't touch emails/phones (name,

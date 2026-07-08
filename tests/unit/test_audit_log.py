@@ -33,6 +33,31 @@ def make_entry(**overrides) -> AuditEntry:
     return AuditEntry(**defaults)
 
 
+class TestPiiDetectedField:
+    def test_defaults_to_false(self):
+        assert make_entry().pii_detected is False
+
+    def test_round_trips_through_jsonl(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry(pii_detected=True))
+
+        line = (tmp_path / "2026-W28.jsonl").read_text(encoding="utf-8").splitlines()[0]
+        assert json.loads(line)["pii_detected"] is True
+
+    def test_old_jsonl_lines_without_the_field_still_parse(self):
+        # Entries written before this field existed have no "pii_detected"
+        # key at all; export_week_to_excel reconstructs AuditEntry(**line),
+        # so the field needs a default rather than being required.
+        legacy = dict(
+            timestamp="2026-07-06T12:00:00+00:00", week="2026-W28", request_id="",
+            connector="gmail", tool="gmail_get_message", tool_name="Read Gmail message",
+            summary="s", sender="a@example.com", decision="approved",
+            auto_accept_rule="", latency_seconds=1.0,
+        )
+        entry = AuditEntry(**legacy)
+        assert entry.pii_detected is False
+
+
 class TestCurrentWeek:
     @freeze_time("2026-07-06")  # a Monday, ISO week 28 of 2026
     def test_format(self):
@@ -89,7 +114,7 @@ class TestExportWeekToExcel:
         openpyxl = pytest.importorskip("openpyxl")
 
         logger = AuditLogger(str(tmp_path))
-        logger.record(make_entry(decision="approved"))
+        logger.record(make_entry(decision="approved", pii_detected=True))
         logger.record(make_entry(decision="auto_accepted", auto_accept_rule="i_am_sender"))
         logger.record(make_entry(decision="rejected"))
 
@@ -104,12 +129,17 @@ class TestExportWeekToExcel:
         decisions_col = [ws.cell(row=r, column=8).value for r in range(2, 5)]
         assert decisions_col == ["approved", "auto_accepted", "rejected"]
 
+        assert ws.cell(row=1, column=11).value == "PII Detected"
+        pii_col = [ws.cell(row=r, column=11).value for r in range(2, 5)]
+        assert pii_col == ["Yes", None, None]  # openpyxl reads back "" cells as None
+
         summary = wb["Summary"]
         summary_rows = {row[0].value: row[1].value for row in summary.iter_rows(min_row=2) if row[0].value}
         assert summary_rows["Total decisions"] == 3
         assert summary_rows["Approved (manual)"] == 1
         assert summary_rows["Auto-accepted"] == 1
         assert summary_rows["Rejected"] == 1
+        assert summary_rows["PII flagged (any decision)"] == 1
 
     def test_export_skips_malformed_lines(self, tmp_path):
         pytest.importorskip("openpyxl")
