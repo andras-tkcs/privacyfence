@@ -148,7 +148,7 @@ string starting with `=` is evaluated as a formula, exactly like typing it into 
 | `calendar_list_events` | read | auto | — | — |
 | `calendar_get_free_busy` | read | auto | — | — (returns full events when calendar access is available; falls back to busy-slot list otherwise) |
 | `calendar_list_rooms` | read | auto | — | — (lists Google Workspace meeting rooms with name, email, building, floor, capacity; requires Workspace admin directory access) |
-| `calendar_get_event_details` | read | review | title, time, organizer, attendee count | Description, full attendee list, conferencing link |
+| `calendar_get_event_details` | read | review | title, time, organizer, attendee count | Description, full attendee list, conferencing link, file attachments (e.g. Gemini meeting notes/transcript) |
 | `calendar_create_event` | write | popup | — | Title, time, attendees, description, location, Google Meet flag, room bookings |
 | `calendar_update_event` | write | popup | — | Title, time, fields changing (old → new), Google Meet flag, room bookings |
 

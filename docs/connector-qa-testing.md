@@ -298,6 +298,20 @@ in step 3, if you configured it.
 5. `calendar_get_event_details` again on that same event — you're its organizer,
    so if `calendar.read_event_details` has an `i_am_organizer` rule this should
    NOT prompt. Tell me either way.
+6. Attachments: use `calendar_list_events` to look through recent past events on
+   the primary calendar for one that has a Google Meet "Notes by Gemini" /
+   transcript doc attached (any real past meeting where "take notes for me" was
+   used works — this isn't something the test prompt can fabricate, since
+   `calendar_create_event` has no way to attach a file). If you find one:
+   - `calendar_get_event_details` on it — review gate, Accept. Confirm the
+     result's `attachments` list is non-empty and each entry has `file_id`,
+     `title`, `mime_type`, `file_url`.
+   - `drive_get_file_content` using one of those `file_id` values — confirm it
+     resolves to the actual notes/transcript Doc content (Drive's own
+     `review` gate applies here as normal).
+   If no such event exists in this account's calendar history, note that and
+   skip this step rather than reporting a gap — it's a fixture-availability
+   limitation, not a regression.
 
 ## Phase 5 — Contacts
 1. `contacts_list`, `contacts_search`, `contacts_get` (expect: all silent).
