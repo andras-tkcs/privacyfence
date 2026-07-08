@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -54,6 +55,21 @@ class CalendarAttendee:
 
 
 @dataclass
+class CalendarAttachment:
+    """A file attached to an event — e.g. the "Notes by Gemini" doc and
+    transcript that Google Meet's Gemini note-taker attaches to the Calendar
+    event after a meeting ends. ``file_id`` is a Drive file id and can be
+    passed straight to ``drive_get_file_content`` to read the content,
+    provided the authenticated user has Drive access to it."""
+
+    file_id: str
+    title: str
+    mime_type: str
+    file_url: str
+    icon_link: str = ""
+
+
+@dataclass
 class CalendarEvent:
     id: str
     calendar_id: str
@@ -69,6 +85,7 @@ class CalendarEvent:
     conference_link: str
     status: str       # "confirmed" | "tentative" | "cancelled"
     html_link: str
+    attachments: list[CalendarAttachment] = field(default_factory=list)
 
     def short_summary(self) -> str:
         return f"{self.title} ({self.start_time})"
@@ -111,7 +128,15 @@ class CalendarClient:
     def __init__(self, client_config: dict, token_file: str) -> None:
         self._client_config = client_config
         self._token_file = token_file
-        self._service = None  # lazily built
+        # googleapiclient service objects (and the httplib2 transport they
+        # wrap) are not thread-safe. Requests are dispatched to a thread per
+        # call (see connectors/*.py._fetch), so a single shared service can
+        # have two threads read/write the same socket concurrently,
+        # corrupting the connection (observed as SSL: WRONG_VERSION_NUMBER
+        # on a later, unrelated request reusing the same connection). Keep
+        # one service per thread instead of one shared instance.
+        self._local = threading.local()
+        self._creds_lock = threading.Lock()
 
     # ------------------------------------------------------------------ #
     # Authentication
@@ -135,28 +160,31 @@ class CalendarClient:
         logger.info("Calendar OAuth token saved to '%s'", self._token_file)
 
     def _load_credentials(self) -> Credentials:
-        if not os.path.exists(self._token_file):
-            raise CalendarClientError(
-                f"No OAuth token found at '{self._token_file}'. "
-                "Run with '--calendar-oauth' to authorize."
-            )
-        creds = Credentials.from_authorized_user_file(self._token_file, SCOPES)
-        if creds.valid:
-            return creds
-        if creds.expired and creds.refresh_token:
-            logger.info("Refreshing expired Calendar OAuth token")
-            try:
-                creds.refresh(Request())
-            except Exception as exc:
+        # Guards concurrent refresh/save of the shared token file when
+        # multiple threads hit an expired token at the same time.
+        with self._creds_lock:
+            if not os.path.exists(self._token_file):
                 raise CalendarClientError(
-                    f"Failed to refresh Calendar OAuth token: {exc}. "
-                    "Re-run with '--calendar-oauth' to re-authorize."
-                ) from exc
-            self._save_token(creds)
-            return creds
-        raise CalendarClientError(
-            "Cached Calendar OAuth token is invalid. Re-run with '--calendar-oauth'."
-        )
+                    f"No OAuth token found at '{self._token_file}'. "
+                    "Run with '--calendar-oauth' to authorize."
+                )
+            creds = Credentials.from_authorized_user_file(self._token_file, SCOPES)
+            if creds.valid:
+                return creds
+            if creds.expired and creds.refresh_token:
+                logger.info("Refreshing expired Calendar OAuth token")
+                try:
+                    creds.refresh(Request())
+                except Exception as exc:
+                    raise CalendarClientError(
+                        f"Failed to refresh Calendar OAuth token: {exc}. "
+                        "Re-run with '--calendar-oauth' to re-authorize."
+                    ) from exc
+                self._save_token(creds)
+                return creds
+            raise CalendarClientError(
+                "Cached Calendar OAuth token is invalid. Re-run with '--calendar-oauth'."
+            )
 
     def _save_token(self, creds: Credentials) -> None:
         os.makedirs(os.path.dirname(os.path.abspath(self._token_file)), exist_ok=True)
@@ -168,15 +196,21 @@ class CalendarClient:
             logger.debug("Could not chmod calendar token file (non-fatal)")
 
     def _get_service(self):
-        if self._service is None:
+        service = getattr(self._local, "service", None)
+        if service is None:
             creds = self._load_credentials()
-            self._service = build("calendar", "v3", credentials=creds, cache_discovery=False)
-            logger.debug("Calendar API service initialized")
-        return self._service
+            service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+            self._local.service = service
+            logger.debug("Calendar API service initialized for thread %s", threading.current_thread().name)
+        return service
 
     def _get_directory_service(self):
-        creds = self._load_credentials()
-        return build("admin", "directory_v1", credentials=creds, cache_discovery=False)
+        service = getattr(self._local, "directory_service", None)
+        if service is None:
+            creds = self._load_credentials()
+            service = build("admin", "directory_v1", credentials=creds, cache_discovery=False)
+            self._local.directory_service = service
+        return service
 
     # ------------------------------------------------------------------ #
     # Connection check
@@ -245,11 +279,21 @@ class CalendarClient:
         return events
 
     def get_event(self, calendar_id: str, event_id: str) -> CalendarEvent:
-        """Fetch a single event by id."""
+        """Fetch a single event by id, including its attachments.
+
+        ``supportsAttachments=True`` is required for the API to populate the
+        ``attachments`` field — this is where Google Meet's Gemini note-taker
+        attaches the meeting notes/transcript doc once a meeting ends.
+        """
         if not calendar_id or not event_id:
             raise CalendarClientError("get_event requires calendar_id and event_id")
         try:
-            raw = self._get_service().events().get(calendarId=calendar_id, eventId=event_id).execute()
+            raw = (
+                self._get_service()
+                .events()
+                .get(calendarId=calendar_id, eventId=event_id, supportsAttachments=True)
+                .execute()
+            )
         except HttpError as exc:
             raise CalendarClientError(f"get_event({calendar_id}, {event_id}) failed: {exc}") from exc
         event = self._parse_event(raw, calendar_id)
@@ -517,6 +561,17 @@ class CalendarClient:
                 conference_link = ep.get("uri", "")
                 break
 
+        attachments = [
+            CalendarAttachment(
+                file_id=a.get("fileId", ""),
+                title=a.get("title", ""),
+                mime_type=a.get("mimeType", ""),
+                file_url=a.get("fileUrl", ""),
+                icon_link=a.get("iconLink", ""),
+            )
+            for a in raw.get("attachments", []) or []
+        ]
+
         return CalendarEvent(
             id=raw.get("id", ""),
             calendar_id=calendar_id,
@@ -532,4 +587,5 @@ class CalendarClient:
             conference_link=conference_link,
             status=raw.get("status", "confirmed"),
             html_link=raw.get("htmlLink", ""),
+            attachments=attachments,
         )

@@ -7,6 +7,12 @@ content. This replaces the AppleScript `display dialog` popups that used to
 live in approval_popup.py — those had no room for a real layout, an icon, or
 a genuinely scrollable body.
 
+When gate.py's PII detector (pii_detector.py) flags categories in the
+content, the window renders a light-red wash over the whole panel plus a
+warning banner naming what was found — the visual cue that a second,
+explicit "Are you sure?" confirmation (approval_popup.show_pii_confirmation_
+popup) is coming after Accept, not a decision by itself.
+
 AppKit windows must be created and driven on the main thread, but gate.py
 calls in here from the IPC server thread (via asyncio.to_thread). show_native_
 approval() hands the actual window-building to the main thread with
@@ -68,6 +74,13 @@ _BUTTON_ROW_HEIGHT = 66.0
 # Brand colors sampled from resources/icon_512.png — a fixed identity, not a
 # themed value, so these stay literal rather than following light/dark mode.
 _BLUE = NSColor.colorWithSRGBRed_green_blue_alpha_(0x5B / 255, 0xA4 / 255, 0xFF / 255, 1.0)
+
+# PII warning tint. systemRedColor is a dynamic (light/dark-aware) color, so
+# a low-alpha wash of it reads as "light red" in light mode and a muted red
+# tint in dark mode, rather than a literal color that fights the OS theme.
+_PII_RED = NSColor.systemRedColor()
+_PII_BACKGROUND_ALPHA = 0.10
+_PII_BANNER_FILL_ALPHA = 0.16
 
 _popup_lock = threading.Lock()  # only one native window on screen at a time
 
@@ -138,6 +151,7 @@ class ApprovalWindowController(NSObject):
         self.preview: dict[str, str] = {}
         self.details_text = ""
         self.allow_accept_all = False
+        self.pii_categories: list[str] = []
         self.result = "deny"
         self.panel = None
         return self
@@ -185,6 +199,21 @@ class ApprovalWindowController(NSObject):
             row_y += h + _SUMMARY_ROW_GAP
 
         return box, box_h
+
+    # ------------------------------------------------------------------ #
+    # PII warning banner
+    # ------------------------------------------------------------------ #
+
+    def _pii_banner_text(self) -> str:
+        return "\u26a0 Possible PII detected — review carefully: " + ", ".join(self.pii_categories)
+
+    def _pii_banner_height(self, width: float) -> float:
+        if not self.pii_categories:
+            return 0.0
+        text_h = _text_height(
+            self._pii_banner_text(), width - 2 * _SUMMARY_PAD, NSFont.boldSystemFontOfSize_(13)
+        )
+        return max(20.0, text_h) + _SUMMARY_PAD
 
     # ------------------------------------------------------------------ #
     # Details (scrollable body)
@@ -247,6 +276,8 @@ class ApprovalWindowController(NSObject):
         y += _KICKER_HEIGHT + 4.0
         title_h = max(24.0, _text_height(self.title, content_width - _TITLE_RIGHT_RESERVE, NSFont.boldSystemFontOfSize_(21)))
         y += title_h + 18.0
+        if self.pii_categories:
+            y += self._pii_banner_height(content_width) + 18.0
         if self.preview:
             y += self._summary_height(content_width) + 18.0
         y += 20.0  # "Message" label row
@@ -291,6 +322,17 @@ class ApprovalWindowController(NSObject):
         content = _FlippedView.alloc().initWithFrame_(NSMakeRect(0, 0, _WINDOW_WIDTH, window_height))
         panel.setContentView_(content)
 
+        if self.pii_categories:
+            # Full-window wash, added first so every other subview draws on
+            # top of it — this is the "the popup window becomes light red"
+            # signal, independent of the more specific banner text below.
+            tint = _background_box(
+                NSMakeRect(0, 0, _WINDOW_WIDTH, window_height),
+                fill=_PII_RED.colorWithAlphaComponent_(_PII_BACKGROUND_ALPHA),
+                corner_radius=0.0,
+            )
+            content.addSubview_(tint)
+
         y = 22.0
 
         kicker = _make_label("PrivacyFence", size=12, color=NSColor.secondaryLabelColor())
@@ -312,6 +354,21 @@ class ApprovalWindowController(NSObject):
         title_field.setFrame_(NSMakeRect(_MARGIN, y, content_width - _TITLE_RIGHT_RESERVE, title_h))
         content.addSubview_(title_field)
         y += title_h + 18.0
+
+        if self.pii_categories:
+            banner_h = self._pii_banner_height(content_width)
+            banner_bg = _background_box(
+                NSMakeRect(_MARGIN, y, content_width, banner_h),
+                fill=_PII_RED.colorWithAlphaComponent_(_PII_BANNER_FILL_ALPHA),
+            )
+            content.addSubview_(banner_bg)
+            banner_label = _make_label(self._pii_banner_text(), size=13, bold=True, color=_PII_RED)
+            banner_label.setFrame_(NSMakeRect(
+                _MARGIN + _SUMMARY_PAD, y + _SUMMARY_PAD / 2,
+                content_width - 2 * _SUMMARY_PAD, banner_h - _SUMMARY_PAD,
+            ))
+            content.addSubview_(banner_label)
+            y += banner_h + 18.0
 
         if self.preview:
             box_h = self._summary_height(content_width)
@@ -368,7 +425,12 @@ class ApprovalWindowController(NSObject):
 
 
 def show_native_approval(
-    *, title: str, preview: dict[str, str], details_text: str, allow_accept_all: bool
+    *,
+    title: str,
+    preview: dict[str, str],
+    details_text: str,
+    allow_accept_all: bool,
+    pii_categories: list[str] | None = None,
 ) -> str:
     """Show the approval window and block until the user picks a button.
 
@@ -382,6 +444,7 @@ def show_native_approval(
         controller.preview = preview or {}
         controller.details_text = details_text
         controller.allow_accept_all = allow_accept_all
+        controller.pii_categories = pii_categories or []
 
         controller.performSelectorOnMainThread_withObject_waitUntilDone_(
             "runApproval:", None, True

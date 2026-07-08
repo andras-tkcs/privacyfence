@@ -7,11 +7,13 @@ googleapiclient service object.
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+import threading
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from privacyfence.calendar_client import (
+    CalendarAttachment,
     CalendarAttendee,
     CalendarClient,
     CalendarClientError,
@@ -27,7 +29,7 @@ from googleapiclient.errors import HttpError
 
 def make_client(service: MagicMock) -> CalendarClient:
     client = CalendarClient(client_config={}, token_file="/tmp/unused-token.json")
-    client._service = service
+    client._local.service = service
     return client
 
 
@@ -131,6 +133,51 @@ class TestParseEvent:
         event = client._parse_event({"id": "e1"}, "someone@x.com")
         assert event.calendar_id == "someone@x.com"
 
+    def test_no_attachments_yields_empty_list(self):
+        client = make_client(MagicMock())
+        event = client._parse_event({"id": "e1"}, "primary")
+        assert event.attachments == []
+
+    def test_attachments_parsed_from_raw_event(self):
+        # This is the shape Google Meet's Gemini note-taker attaches after a
+        # meeting ends: a "Notes by Gemini" Doc and a transcript Doc.
+        client = make_client(MagicMock())
+        raw = {
+            "id": "e1",
+            "attachments": [
+                {
+                    "fileId": "doc123",
+                    "title": "Notes by Gemini - Q3 Planning - 2026/07/08",
+                    "mimeType": "application/vnd.google-apps.document",
+                    "fileUrl": "https://docs.google.com/document/d/doc123/edit",
+                    "iconLink": "https://icon.example/doc.png",
+                },
+                {
+                    "fileId": "doc456",
+                    "title": "Transcript - Q3 Planning - 2026/07/08",
+                    "mimeType": "application/vnd.google-apps.document",
+                    "fileUrl": "https://docs.google.com/document/d/doc456/edit",
+                },
+            ],
+        }
+        event = client._parse_event(raw, "primary")
+        assert event.attachments == [
+            CalendarAttachment(
+                file_id="doc123",
+                title="Notes by Gemini - Q3 Planning - 2026/07/08",
+                mime_type="application/vnd.google-apps.document",
+                file_url="https://docs.google.com/document/d/doc123/edit",
+                icon_link="https://icon.example/doc.png",
+            ),
+            CalendarAttachment(
+                file_id="doc456",
+                title="Transcript - Q3 Planning - 2026/07/08",
+                mime_type="application/vnd.google-apps.document",
+                file_url="https://docs.google.com/document/d/doc456/edit",
+                icon_link="",
+            ),
+        ]
+
 
 # ---------------------------------------------------------------------------- #
 # list_calendars / list_events / get_event
@@ -206,6 +253,22 @@ class TestGetEvent:
         client = make_client(service)
         event = client.get_event("primary", "e1")
         assert event.title == "Hi"
+
+    def test_requests_attachments_via_supports_attachments_param(self):
+        # supportsAttachments=True is required for the API to populate the
+        # attachments field at all (e.g. Gemini's notes/transcript docs).
+        service = MagicMock()
+        service.events.return_value.get.return_value.execute.return_value = {"id": "e1"}
+        client = make_client(service)
+        client.get_event("primary", "e1")
+        assert service.events.return_value.get.call_args.kwargs["supportsAttachments"] is True
+
+    def test_http_error_becomes_calendar_client_error(self):
+        service = MagicMock()
+        service.events.return_value.get.return_value.execute.side_effect = http_error(500)
+        client = make_client(service)
+        with pytest.raises(CalendarClientError, match="get_event"):
+            client.get_event("primary", "e1")
 
 
 # ---------------------------------------------------------------------------- #
@@ -527,3 +590,39 @@ class TestUpdateEvent:
         client = make_client(service)
         with pytest.raises(CalendarClientError, match="update_event\\(e1\\)"):
             client.update_event("primary", "e1", title="x")
+
+
+# ---------------------------------------------------------------------------- #
+# _get_service / _get_directory_service: must not share one service (and its
+# underlying httplib2 transport) across threads, since concurrent requests
+# dispatched via asyncio.to_thread corrupt a shared connection
+# (SSL: WRONG_VERSION_NUMBER).
+# ---------------------------------------------------------------------------- #
+
+class TestServiceIsThreadLocal:
+    def test_each_thread_gets_its_own_service_instance(self):
+        client = CalendarClient(client_config={}, token_file="/tmp/unused-token.json")
+        with patch("privacyfence.calendar_client.build") as mock_build, \
+             patch.object(client, "_load_credentials", return_value=MagicMock()):
+            mock_build.side_effect = lambda *a, **k: MagicMock()
+
+            services: dict[int, object] = {}
+
+            def worker(idx: int) -> None:
+                services[idx] = client._get_service()
+
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(5)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            assert len({id(s) for s in services.values()}) == 5
+
+    def test_same_thread_reuses_cached_service(self):
+        client = CalendarClient(client_config={}, token_file="/tmp/unused-token.json")
+        with patch("privacyfence.calendar_client.build") as mock_build, \
+             patch.object(client, "_load_credentials", return_value=MagicMock()):
+            mock_build.side_effect = lambda *a, **k: MagicMock()
+            assert client._get_service() is client._get_service()
+            assert mock_build.call_count == 1

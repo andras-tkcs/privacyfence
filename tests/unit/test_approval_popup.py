@@ -146,8 +146,17 @@ class TestShowPopupAndShowReadPopup:
 
         assert captured == {
             "title": "Title", "preview": {"Field": "Value"}, "details_text": "details", "allow_accept_all": False,
+            "pii_categories": None,
         }
         assert result == "accept"
+
+    def test_show_popup_forwards_pii_categories(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(approval_popup, "show_native_approval", lambda **kw: captured.update(kw) or "accept")
+
+        approval_popup.show_popup("Title", {}, "details", pii_categories=["Email address"])
+
+        assert captured["pii_categories"] == ["Email address"]
 
     def test_show_read_popup_forwards_allow_accept_all_true(self, monkeypatch):
         captured = {}
@@ -165,3 +174,61 @@ class TestShowPopupAndShowReadPopup:
         approval_popup.show_read_popup("Title", {}, "details", allow_accept_all=False)
 
         assert captured["allow_accept_all"] is False
+
+    def test_show_read_popup_forwards_pii_categories(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(approval_popup, "show_native_approval", lambda **kw: captured.update(kw) or "deny")
+
+        approval_popup.show_read_popup(
+            "Title", {}, "details", allow_accept_all=False, pii_categories=["Phone number"]
+        )
+
+        assert captured["pii_categories"] == ["Phone number"]
+
+    def test_show_read_popup_defaults_pii_categories_to_none(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(approval_popup, "show_native_approval", lambda **kw: captured.update(kw) or "deny")
+
+        approval_popup.show_read_popup("Title", {}, "details", allow_accept_all=False)
+
+        assert captured["pii_categories"] is None
+
+
+class TestShowPiiConfirmationPopup:
+    def test_proceed_returns_true(self, monkeypatch):
+        monkeypatch.setattr(approval_popup, "_display_dialog", lambda *a, **kw: "Proceed")
+        assert approval_popup.show_pii_confirmation_popup(["Email address"]) is True
+
+    def test_cancel_returns_false(self, monkeypatch):
+        monkeypatch.setattr(approval_popup, "_display_dialog", lambda *a, **kw: "Cancel")
+        assert approval_popup.show_pii_confirmation_popup(["Email address"]) is False
+
+    def test_none_returns_false(self, monkeypatch):
+        monkeypatch.setattr(approval_popup, "_display_dialog", lambda *a, **kw: None)
+        assert approval_popup.show_pii_confirmation_popup(["Email address"]) is False
+
+    def test_default_button_is_cancel_not_proceed(self, monkeypatch):
+        captured = {}
+        def fake_display_dialog(title, lines, buttons, default):
+            captured["default"] = default
+            captured["buttons"] = buttons
+            captured["lines"] = lines
+            return "Cancel"
+        monkeypatch.setattr(approval_popup, "_display_dialog", fake_display_dialog)
+
+        approval_popup.show_pii_confirmation_popup(["Email address", "Phone number"])
+
+        assert captured["default"] == "Cancel"
+        assert captured["buttons"] == ["Cancel", "Proceed"]
+        assert any("Email address, Phone number" in line for line in captured["lines"])
+
+    def test_empty_categories_still_shows_generic_dialog(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            approval_popup, "_display_dialog",
+            lambda title, lines, buttons, default: captured.setdefault("lines", lines) and "Cancel",
+        )
+
+        approval_popup.show_pii_confirmation_popup([])
+
+        assert any("personal data" in line for line in captured["lines"])

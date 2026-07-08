@@ -21,6 +21,7 @@ import logging
 import mimetypes
 import os
 import re as _re
+import threading
 import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any
@@ -309,8 +310,15 @@ class DriveClient:
     def __init__(self, client_config: dict, token_file: str) -> None:
         self._client_config = client_config
         self._token_file = token_file
-        self._service = None  # lazily built googleapiclient resource (Drive v3)
-        self._sheets_service = None  # lazily built googleapiclient resource (Sheets v4)
+        # googleapiclient service objects (and the httplib2 transport they
+        # wrap) are not thread-safe. Requests are dispatched to a thread per
+        # call (see connectors/*.py._fetch), so a single shared service can
+        # have two threads read/write the same socket concurrently,
+        # corrupting the connection (observed as SSL: WRONG_VERSION_NUMBER
+        # on a later, unrelated request reusing the same connection). Keep
+        # one service per thread instead of one shared instance.
+        self._local = threading.local()
+        self._creds_lock = threading.Lock()
 
     # ------------------------------------------------------------------ #
     # Authentication
@@ -340,33 +348,36 @@ class DriveClient:
 
         Raises if no usable token exists - the user must run `--oauth-setup`.
         """
-        if not os.path.exists(self._token_file):
-            raise DriveClientError(
-                f"No OAuth token found at '{self._token_file}'. "
-                "Run the application once with '--oauth-setup' to authorize."
-            )
-
-        creds = Credentials.from_authorized_user_file(self._token_file, SCOPES)
-
-        if creds.valid:
-            return creds
-
-        if creds.expired and creds.refresh_token:
-            logger.info("Refreshing expired OAuth token")
-            try:
-                creds.refresh(Request())
-            except Exception as exc:  # noqa: BLE001 - surface a clear message
+        # Guards concurrent refresh/save of the shared token file when
+        # multiple threads hit an expired token at the same time.
+        with self._creds_lock:
+            if not os.path.exists(self._token_file):
                 raise DriveClientError(
-                    f"Failed to refresh OAuth token: {exc}. "
-                    "Re-run with '--oauth-setup' to re-authorize."
-                ) from exc
-            self._save_token(creds)
-            return creds
+                    f"No OAuth token found at '{self._token_file}'. "
+                    "Run the application once with '--oauth-setup' to authorize."
+                )
 
-        raise DriveClientError(
-            "Cached OAuth token is invalid and cannot be refreshed. "
-            "Re-run with '--oauth-setup' to re-authorize."
-        )
+            creds = Credentials.from_authorized_user_file(self._token_file, SCOPES)
+
+            if creds.valid:
+                return creds
+
+            if creds.expired and creds.refresh_token:
+                logger.info("Refreshing expired OAuth token")
+                try:
+                    creds.refresh(Request())
+                except Exception as exc:  # noqa: BLE001 - surface a clear message
+                    raise DriveClientError(
+                        f"Failed to refresh OAuth token: {exc}. "
+                        "Re-run with '--oauth-setup' to re-authorize."
+                    ) from exc
+                self._save_token(creds)
+                return creds
+
+            raise DriveClientError(
+                "Cached OAuth token is invalid and cannot be refreshed. "
+                "Re-run with '--oauth-setup' to re-authorize."
+            )
 
     def _save_token(self, creds: Credentials) -> None:
         os.makedirs(os.path.dirname(os.path.abspath(self._token_file)), exist_ok=True)
@@ -379,15 +390,17 @@ class DriveClient:
             logger.debug("Could not chmod token file (non-fatal)")
 
     def _get_service(self):
-        """Build (or reuse) the Drive API service resource."""
-        if self._service is None:
+        """Build (or reuse) the Drive API service resource for this thread."""
+        service = getattr(self._local, "service", None)
+        if service is None:
             creds = self._load_credentials()
             # cache_discovery=False avoids noisy warnings without a file cache.
-            self._service = build(
+            service = build(
                 "drive", "v3", credentials=creds, cache_discovery=False
             )
-            logger.debug("Drive API service initialized")
-        return self._service
+            self._local.service = service
+            logger.debug("Drive API service initialized for thread %s", threading.current_thread().name)
+        return service
 
     def get_credentials(self) -> Credentials:
         """Expose the cached OAuth credentials for sibling API clients (Sheets)
@@ -841,13 +854,15 @@ class DriveClient:
     # for the Docs API - no separate consent screen or token file.
     # ------------------------------------------------------------------ #
     def _get_sheets_service(self):
-        if self._sheets_service is None:
+        service = getattr(self._local, "sheets_service", None)
+        if service is None:
             creds = self._load_credentials()
-            self._sheets_service = build(
+            service = build(
                 "sheets", "v4", credentials=creds, cache_discovery=False
             )
-            logger.debug("Sheets API service initialized")
-        return self._sheets_service
+            self._local.sheets_service = service
+            logger.debug("Sheets API service initialized for thread %s", threading.current_thread().name)
+        return service
 
     def create_spreadsheet(
         self, name: str, sheet_titles: list[str] | None = None, parent_folder_id: str = ""

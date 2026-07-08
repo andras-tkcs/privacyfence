@@ -127,14 +127,16 @@ class ContactsClient:
     def __init__(self, client_config: dict, token_file: str) -> None:
         self._client_config = client_config
         self._token_file = token_file
-        self._service = None  # lazily built
-        # Connector calls run concurrently on the asyncio.to_thread pool (see
-        # ipc_server.py), but the underlying httplib2.Http connection this
-        # client's service is built on is not thread-safe: two threads
-        # writing/reading the same persistent socket at once corrupts the TLS
-        # record stream (observed as "SSL: DECRYPTION_FAILED_OR_BAD_RECORD_MAC").
-        # Serialize actual network calls through this lock to avoid that.
-        self._request_lock = threading.Lock()
+        # googleapiclient service objects (and the httplib2 transport they
+        # wrap) are not thread-safe. Requests are dispatched to a thread per
+        # call (see connectors/*.py._fetch), so a single shared service can
+        # have two threads read/write the same socket concurrently,
+        # corrupting the connection (observed as "SSL:
+        # DECRYPTION_FAILED_OR_BAD_RECORD_MAC" here, and as "SSL:
+        # WRONG_VERSION_NUMBER" in the other Google clients). Keep one
+        # service per thread instead of one shared instance.
+        self._local = threading.local()
+        self._creds_lock = threading.Lock()
 
     # ------------------------------------------------------------------ #
     # Authentication
@@ -158,29 +160,32 @@ class ContactsClient:
         logger.info("Contacts OAuth token saved to '%s'", self._token_file)
 
     def _load_credentials(self) -> Credentials:
-        if not os.path.exists(self._token_file):
-            raise ContactsClientError(
-                f"No OAuth token found at '{self._token_file}'. "
-                "Run the application with '--contacts-oauth' to authorize."
-            )
-        creds = Credentials.from_authorized_user_file(self._token_file, SCOPES)
-        if creds.valid:
-            return creds
-        if creds.expired and creds.refresh_token:
-            logger.info("Refreshing expired Contacts OAuth token")
-            try:
-                creds.refresh(Request())
-            except Exception as exc:
+        # Guards concurrent refresh/save of the shared token file when
+        # multiple threads hit an expired token at the same time.
+        with self._creds_lock:
+            if not os.path.exists(self._token_file):
                 raise ContactsClientError(
-                    f"Failed to refresh Contacts OAuth token: {exc}. "
-                    "Re-run with '--contacts-oauth' to re-authorize."
-                ) from exc
-            self._save_token(creds)
-            return creds
-        raise ContactsClientError(
-            "Cached Contacts OAuth token is invalid and cannot be refreshed. "
-            "Re-run with '--contacts-oauth' to re-authorize."
-        )
+                    f"No OAuth token found at '{self._token_file}'. "
+                    "Run the application with '--contacts-oauth' to authorize."
+                )
+            creds = Credentials.from_authorized_user_file(self._token_file, SCOPES)
+            if creds.valid:
+                return creds
+            if creds.expired and creds.refresh_token:
+                logger.info("Refreshing expired Contacts OAuth token")
+                try:
+                    creds.refresh(Request())
+                except Exception as exc:
+                    raise ContactsClientError(
+                        f"Failed to refresh Contacts OAuth token: {exc}. "
+                        "Re-run with '--contacts-oauth' to re-authorize."
+                    ) from exc
+                self._save_token(creds)
+                return creds
+            raise ContactsClientError(
+                "Cached Contacts OAuth token is invalid and cannot be refreshed. "
+                "Re-run with '--contacts-oauth' to re-authorize."
+            )
 
     def _save_token(self, creds: Credentials) -> None:
         os.makedirs(os.path.dirname(os.path.abspath(self._token_file)), exist_ok=True)
@@ -192,17 +197,19 @@ class ContactsClient:
             logger.debug("Could not chmod Contacts token file (non-fatal)")
 
     def _get_service(self):
-        if self._service is None:
+        service = getattr(self._local, "service", None)
+        if service is None:
             creds = self._load_credentials()
             # The People API sometimes returns responses that httplib2 fails to
             # decompress (zlib "incorrect header check"). Requesting uncompressed
             # responses via a custom Http avoids this.
             http = _build_uncompressed_http(creds)
-            self._service = build(
+            service = build(
                 "people", "v1", http=http, cache_discovery=False
             )
-            logger.debug("People API service initialized")
-        return self._service
+            self._local.service = service
+            logger.debug("People API service initialized for thread %s", threading.current_thread().name)
+        return service
 
     # ------------------------------------------------------------------ #
     # Connection check
@@ -211,18 +218,17 @@ class ContactsClient:
     def check_connection(self) -> str:
         """Verify credentials work. Returns a confirmation string."""
         try:
-            with self._request_lock:
-                result = (
-                    self._get_service()
-                    .people()
-                    .connections()
-                    .list(
-                        resourceName="people/me",
-                        pageSize=1,
-                        personFields="names",
-                    )
-                    .execute()
+            result = (
+                self._get_service()
+                .people()
+                .connections()
+                .list(
+                    resourceName="people/me",
+                    pageSize=1,
+                    personFields="names",
                 )
+                .execute()
+            )
         except HttpError as exc:
             raise ContactsClientError(f"Contacts connection check failed: {exc}") from exc
         total = result.get("totalPeople", result.get("totalItems", "?"))
@@ -245,23 +251,22 @@ class ContactsClient:
         source = _normalize_source(source)
         max_results = max(1, min(int(max_results), 1000))
         try:
-            with self._request_lock:
-                result = (
-                    self._get_service()
-                    .people()
-                    .connections()
-                    .list(
-                        resourceName="people/me",
-                        pageSize=max_results,
-                        personFields=_PERSON_FIELDS,
-                        sources=[
-                            "READ_SOURCE_TYPE_CONTACT",
-                            "READ_SOURCE_TYPE_PROFILE",
-                            "READ_SOURCE_TYPE_DOMAIN_CONTACT",
-                        ],
-                    )
-                    .execute()
+            result = (
+                self._get_service()
+                .people()
+                .connections()
+                .list(
+                    resourceName="people/me",
+                    pageSize=max_results,
+                    personFields=_PERSON_FIELDS,
+                    sources=[
+                        "READ_SOURCE_TYPE_CONTACT",
+                        "READ_SOURCE_TYPE_PROFILE",
+                        "READ_SOURCE_TYPE_DOMAIN_CONTACT",
+                    ],
                 )
+                .execute()
+            )
         except HttpError as exc:
             raise ContactsClientError(f"list_contacts failed: {exc}") from exc
         contacts = [
@@ -303,16 +308,15 @@ class ContactsClient:
         """Search CONTACT-sourced (personally-saved) contacts via searchContacts."""
         service = self._get_service()
         try:
-            with self._request_lock:
-                result = (
-                    service.people()
-                    .searchContacts(
-                        query=query,
-                        readMask=_PERSON_FIELDS,
-                        pageSize=max_results,
-                    )
-                    .execute()
+            result = (
+                service.people()
+                .searchContacts(
+                    query=query,
+                    readMask=_PERSON_FIELDS,
+                    pageSize=max_results,
                 )
+                .execute()
+            )
             contacts = [
                 _parse_person(r.get("person", r))
                 for r in result.get("results", [])
@@ -342,13 +346,12 @@ class ContactsClient:
         """
         source = _normalize_source(source)
         try:
-            with self._request_lock:
-                person = (
-                    self._get_service()
-                    .people()
-                    .get(resourceName=resource_name, personFields=_PERSON_FIELDS)
-                    .execute()
-                )
+            person = (
+                self._get_service()
+                .people()
+                .get(resourceName=resource_name, personFields=_PERSON_FIELDS)
+                .execute()
+            )
         except HttpError as exc:
             raise ContactsClientError(f"get_contact({resource_name}) failed: {exc}") from exc
         contact = _parse_person(person)
@@ -382,12 +385,11 @@ class ContactsClient:
         service = self._get_service()
         # Fetch current data + etag.
         try:
-            with self._request_lock:
-                person = (
-                    service.people()
-                    .get(resourceName=resource_name, personFields=_PERSON_FIELDS)
-                    .execute()
-                )
+            person = (
+                service.people()
+                .get(resourceName=resource_name, personFields=_PERSON_FIELDS)
+                .execute()
+            )
         except HttpError as exc:
             raise ContactsClientError(
                 f"update_contact: fetch failed for {resource_name}: {exc}"
@@ -447,17 +449,16 @@ class ContactsClient:
                 return _parse_person(person)
 
             person["etag"] = etag
-            with self._request_lock:
-                updated = (
-                    service.people()
-                    .updateContact(
-                        resourceName=resource_name,
-                        updatePersonFields=",".join(update_fields),
-                        personFields=_PERSON_FIELDS,
-                        body=person,
-                    )
-                    .execute()
+            updated = (
+                service.people()
+                .updateContact(
+                    resourceName=resource_name,
+                    updatePersonFields=",".join(update_fields),
+                    personFields=_PERSON_FIELDS,
+                    body=person,
                 )
+                .execute()
+            )
         except HttpError as exc:
             raise ContactsClientError(f"update_contact failed: {exc}") from exc
         except Exception as exc:
@@ -504,13 +505,12 @@ class ContactsClient:
             person["biographies"] = [{"value": notes, "contentType": "TEXT_PLAIN"}]
 
         try:
-            with self._request_lock:
-                created = (
-                    self._get_service()
-                    .people()
-                    .createContact(personFields=_PERSON_FIELDS, body=person)
-                    .execute()
-                )
+            created = (
+                self._get_service()
+                .people()
+                .createContact(personFields=_PERSON_FIELDS, body=person)
+                .execute()
+            )
         except HttpError as exc:
             raise ContactsClientError(f"create_contact failed: {exc}") from exc
 
@@ -527,11 +527,10 @@ class ContactsClient:
         service = self._get_service()
         group_resource_name = self._get_or_create_contact_group(label_name)
         try:
-            with self._request_lock:
-                service.contactGroups().members().modify(
-                    resourceName=group_resource_name,
-                    body={"resourceNamesToAdd": [resource_name]},
-                ).execute()
+            service.contactGroups().members().modify(
+                resourceName=group_resource_name,
+                body={"resourceNamesToAdd": [resource_name]},
+            ).execute()
         except HttpError as exc:
             raise ContactsClientError(
                 f"add_label({resource_name}, {label_name!r}) failed: {exc}"
@@ -546,11 +545,10 @@ class ContactsClient:
         if not group_resource_name:
             return {"resource_name": resource_name, "label_removed": label_name, "note": "label not found"}
         try:
-            with self._request_lock:
-                service.contactGroups().members().modify(
-                    resourceName=group_resource_name,
-                    body={"resourceNamesToRemove": [resource_name]},
-                ).execute()
+            service.contactGroups().members().modify(
+                resourceName=group_resource_name,
+                body={"resourceNamesToRemove": [resource_name]},
+            ).execute()
         except HttpError as exc:
             raise ContactsClientError(
                 f"remove_label({resource_name}, {label_name!r}) failed: {exc}"
@@ -565,12 +563,11 @@ class ContactsClient:
             return existing
         service = self._get_service()
         try:
-            with self._request_lock:
-                result = (
-                    service.contactGroups()
-                    .create(body={"contactGroup": {"name": label_name}})
-                    .execute()
-                )
+            result = (
+                service.contactGroups()
+                .create(body={"contactGroup": {"name": label_name}})
+                .execute()
+            )
         except HttpError as exc:
             raise ContactsClientError(f"create_contact_group({label_name!r}) failed: {exc}") from exc
         return result.get("resourceName", "")
@@ -579,8 +576,7 @@ class ContactsClient:
         """Return the resource name for a label (contact group) by name, or '' if not found."""
         service = self._get_service()
         try:
-            with self._request_lock:
-                response = service.contactGroups().list(pageSize=1000).execute()
+            response = service.contactGroups().list(pageSize=1000).execute()
         except HttpError as exc:
             raise ContactsClientError(f"contactGroups.list failed: {exc}") from exc
         for group in response.get("contactGroups", []):

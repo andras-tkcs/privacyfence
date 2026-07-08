@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import base64
 import os
-from unittest.mock import MagicMock
+import threading
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -30,13 +31,13 @@ from googleapiclient.errors import HttpError
 
 def make_client(service: MagicMock) -> DriveClient:
     client = DriveClient(client_config={}, token_file="/tmp/unused-token.json")
-    client._service = service
+    client._local.service = service
     return client
 
 
 def make_client_with_sheets(sheets_service: MagicMock) -> DriveClient:
     client = DriveClient(client_config={}, token_file="/tmp/unused-token.json")
-    client._sheets_service = sheets_service
+    client._local.sheets_service = sheets_service
     return client
 
 
@@ -859,7 +860,7 @@ class TestCreateSpreadsheet:
         drive_service.files.return_value.update.return_value.execute.return_value = {"id": "sheet1"}
 
         client = make_client_with_sheets(sheets_service)
-        client._service = drive_service
+        client._local.service = drive_service
 
         client.create_spreadsheet("Budget", parent_folder_id="folder1")
 
@@ -1202,3 +1203,58 @@ class TestFormatSheetRange:
         client = make_client_with_sheets(sheets_service)
         with pytest.raises(DriveClientError, match="format_sheet_range"):
             client.format_sheet_range("sheet1", 0, "A1:B2", bold="true")
+
+
+# ---------------------------------------------------------------------------- #
+# _get_service / _get_sheets_service: must not share one service (and its
+# underlying httplib2 transport) across threads, since concurrent requests
+# dispatched via asyncio.to_thread corrupt a shared connection
+# (SSL: WRONG_VERSION_NUMBER).
+# ---------------------------------------------------------------------------- #
+
+class TestServiceIsThreadLocal:
+    def test_each_thread_gets_its_own_service_instance(self):
+        client = DriveClient(client_config={}, token_file="/tmp/unused-token.json")
+        with patch("privacyfence.drive_client.build") as mock_build, \
+             patch.object(client, "_load_credentials", return_value=MagicMock()):
+            mock_build.side_effect = lambda *a, **k: MagicMock()
+
+            services: dict[int, object] = {}
+
+            def worker(idx: int) -> None:
+                services[idx] = client._get_service()
+
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(5)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            assert len({id(s) for s in services.values()}) == 5
+
+    def test_same_thread_reuses_cached_service(self):
+        client = DriveClient(client_config={}, token_file="/tmp/unused-token.json")
+        with patch("privacyfence.drive_client.build") as mock_build, \
+             patch.object(client, "_load_credentials", return_value=MagicMock()):
+            mock_build.side_effect = lambda *a, **k: MagicMock()
+            assert client._get_service() is client._get_service()
+            assert mock_build.call_count == 1
+
+    def test_sheets_service_is_also_thread_local(self):
+        client = DriveClient(client_config={}, token_file="/tmp/unused-token.json")
+        with patch("privacyfence.drive_client.build") as mock_build, \
+             patch.object(client, "_load_credentials", return_value=MagicMock()):
+            mock_build.side_effect = lambda *a, **k: MagicMock()
+
+            services: dict[int, object] = {}
+
+            def worker(idx: int) -> None:
+                services[idx] = client._get_sheets_service()
+
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(5)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            assert len({id(s) for s in services.values()}) == 5

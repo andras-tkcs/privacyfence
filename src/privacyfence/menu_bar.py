@@ -6,6 +6,8 @@ Main thread only, except where noted. Provides:
     connector setup — see the module docstring in daemon_main.py)
   - Per-connector Authenticate…: runs each service's browser OAuth flow (or,
     for Telegram, the phone+code(+2FA) flow) directly, no Terminal window
+  - PII Detection Gate: on/off toggle for the extra confirmation gate in
+    pii_detector.py, persisted to settings.yaml and hot-reloaded live
   - Open Audit Log / About panel
 
 Long-running auth flows (anything that waits on a browser) run on a
@@ -32,6 +34,7 @@ from . import __version__
 from .audit_log import AuditLogger, current_week
 from .auto_accept import reload_rules, set_rules_changed_listener
 from .paths import data_dir, org_dir
+from .pii_detector import set_pii_detection_enabled
 from .app_credentials import telegram_app_credentials
 from .daemon_main import TOKEN_FILES, build_connectors, load_org_config
 from .atlassian_oauth import authorize_interactive as atlassian_authorize_interactive
@@ -258,15 +261,21 @@ class PrivacyFenceMenuBar(rumps.App):
         org_config = load_org_config()
         rules_cfg: dict[str, list[dict]] = cfg.get("auto_accept_rules", {}) or {}
         connectors_cfg: dict[str, dict] = cfg.get("connectors", {}) or {}
+        pii_enabled: bool = (cfg.get("pii_detection", {}) or {}).get("enabled", True)
 
         rules_parent = self._build_rules_menu(rules_cfg)
 
         org_parent = self._build_org_menu(org_config)
         connectors_parent = self._build_connectors_menu(org_config, connectors_cfg)
 
+        pii_item = rumps.MenuItem("PII Detection Gate", callback=self._toggle_pii_detection)
+        pii_item.state = pii_enabled
+
         self.menu.clear()
         self.menu = [
             rumps.MenuItem("PrivacyFence is running"),
+            rumps.separator,
+            pii_item,
             rumps.separator,
             org_parent,
             rules_parent,
@@ -596,6 +605,19 @@ class PrivacyFenceMenuBar(rumps.App):
             f"Services available: {installed}\n\n"
             "Use Authenticate… on each connector you want to use.",
         )
+
+    # ------------------------------------------------------------------ #
+    # PII detection gate
+    # ------------------------------------------------------------------ #
+
+    def _toggle_pii_detection(self, _sender: Any = None) -> None:
+        cfg = self._load_config()
+        pii_cfg = cfg.setdefault("pii_detection", {})
+        enabled = not pii_cfg.get("enabled", True)
+        pii_cfg["enabled"] = enabled
+        self._save_config(cfg)
+        set_pii_detection_enabled(enabled)
+        self._rebuild()
 
     # ------------------------------------------------------------------ #
     # Connector actions

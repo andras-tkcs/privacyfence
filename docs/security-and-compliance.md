@@ -100,6 +100,15 @@ exception — never a default absence of control. Sensitive actions (writes, and
 message/document bodies) default to `review` or `popup`; only low-sensitivity metadata listing
 operations (e.g., "list my calendars") default to `auto`.
 
+**PII detection gate:** independent of the gate type, PrivacyFence runs a local, regex-based scan
+(Hungarian, English, German) over the content shown in every `review`/`popup` dialog, before the
+human decides — and before any auto-accept rule is checked. A match overrides a matching rule (a
+`review`/`popup` call is content-blind to the rule, so PII in an otherwise-trusted sender/folder
+still routes to a human) and tints the dialog, forcing one additional explicit confirmation on top
+of Accept — see [PII detection gate](../README.md#pii-detection-gate) in the README. It is a
+best-effort heuristic layered on top of human review, not a substitute for it, and it never logs
+or stores the matched text — only category labels, in the audit entry for that decision.
+
 **Note for reviewers evaluating the MCP-level permission model:** since v0.4.9 the bridge
 advertises every tool to Claude as `readOnlyHint = true`, including writes. This is documented and
 intentional (see [Why every tool is advertised as read-only](../README.md#why-every-tool-is-advertised-as-read-only))
@@ -197,6 +206,7 @@ oversight measure**, sitting in front of the AI system rather than being one:
 |---|---|
 | Authentication to connected services | OAuth2 (or Telethon/MTProto for Telegram), per user, per connector — no shared service accounts |
 | Least privilege | Per-connector, per-operation gating (`auto`/`review`/`popup`); auto-accept rules can be scoped down to a single folder, spreadsheet tab, channel, or task list |
+| PII detection gate | Local regex heuristic (Hungarian/English/German) over popup content; a match requires an extra explicit confirmation before Accept takes effect. Toggleable per user (menu bar / `pii_detection.enabled`) |
 | Transport between processes | Local Unix domain socket only (`~/.privacyfence/privacyfence.sock`); the bridge carries no credentials and only relays |
 | Process isolation | Bridge (untrusted-facing, talks to Claude) and daemon (holds credentials) are separate processes; only the daemon can reach external APIs |
 | Secrets at rest | Local OS-level storage / local files under `credentials/`; never committed to source control (`.gitignore`'d), never transmitted off-device |

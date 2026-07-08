@@ -5,9 +5,10 @@ There is no separate "show details" step and no pending-approval handshake:
 full content is always shown before the decision, so the human always sees
 what they're approving before they can click Accept. The main gate
 (show_popup / show_read_popup) renders through approval_window.py's custom
-AppKit window; show_rule_confirmation_popup is a much smaller secondary
-prompt (confirming a standing auto-accept rule, not data access) and stays
-on the simpler osascript `display dialog`.
+AppKit window; show_rule_confirmation_popup and show_pii_confirmation_popup
+are smaller secondary prompts (confirming a standing auto-accept rule, or
+confirming approval of content the PII detector flagged) and stay on the
+simpler osascript `display dialog`.
 """
 from __future__ import annotations
 
@@ -76,10 +77,13 @@ def _display_dialog(title: str, lines: list[str], buttons: list[str], default: s
 # Write gate (actions: send, create, edit, move, comment)
 # ---------------------------------------------------------------------------- #
 
-def show_popup(title: str, preview: dict[str, str], details_text: str) -> str:
+def show_popup(
+    title: str, preview: dict[str, str], details_text: str, pii_categories: list[str] | None = None
+) -> str:
     """Approval popup for write tools. Returns 'accept' or 'deny'."""
     return show_native_approval(
-        title=title, preview=preview, details_text=details_text, allow_accept_all=False
+        title=title, preview=preview, details_text=details_text, allow_accept_all=False,
+        pii_categories=pii_categories,
     )
 
 
@@ -88,7 +92,11 @@ def show_popup(title: str, preview: dict[str, str], details_text: str) -> str:
 # ---------------------------------------------------------------------------- #
 
 def show_read_popup(
-    title: str, preview: dict[str, str], details_text: str, allow_accept_all: bool
+    title: str,
+    preview: dict[str, str],
+    details_text: str,
+    allow_accept_all: bool,
+    pii_categories: list[str] | None = None,
 ) -> str:
     """Approval popup for read tools. Full content is always shown before the
     decision, in a scrollable pane — the user never has to click through to
@@ -98,8 +106,28 @@ def show_read_popup(
     allow_accept_all is True).
     """
     return show_native_approval(
-        title=title, preview=preview, details_text=details_text, allow_accept_all=allow_accept_all
+        title=title, preview=preview, details_text=details_text, allow_accept_all=allow_accept_all,
+        pii_categories=pii_categories,
     )
+
+
+def show_pii_confirmation_popup(categories: list[str]) -> bool:
+    """Second-step confirmation shown when the PII detector flagged possible
+    personal data in the content just approved.
+
+    Defaults to Cancel, same rationale as show_rule_confirmation_popup:
+    hitting Enter shouldn't silently let flagged content through.
+    """
+    cats = ", ".join(categories) if categories else "personal data"
+    lines = [
+        f"PrivacyFence detected possible personal data in this content: {cats}.",
+        "",
+        "Are you sure you want to proceed?",
+    ]
+    clicked = _display_dialog(
+        "PrivacyFence — Possible PII Detected", lines, ["Cancel", "Proceed"], default="Cancel"
+    )
+    return clicked == "Proceed"
 
 
 def show_rule_confirmation_popup(description: str) -> bool:
