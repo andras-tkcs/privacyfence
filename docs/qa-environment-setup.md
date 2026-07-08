@@ -184,8 +184,44 @@ prompts even with this rule present.
 
 ## 6. Google Tasks
 
-No fixture needed — every Tasks tool works against whatever task list you
-already have; the test prompt creates and cleans up its own task.
+Reads and the create/update/complete/uncomplete lifecycle work against
+whatever task list you already have — no fixture needed for those; the test
+prompt creates and cleans up its own task. Exercising `approved_task_list`
+needs a second list, though:
+
+1. Your default list (usually named **My Tasks**) works fine as the
+   **approved** one — get its ID from `tasks_list_task_lists` and add it to
+   `settings.yaml`:
+   ```yaml
+   auto_accept_rules:
+     tasks.update_task:
+       - rule: approved_task_list
+         value: ["<default list id>"]
+     tasks.complete_task:
+       - rule: approved_task_list
+         value: ["<default list id>"]
+     tasks.uncomplete_task:
+       - rule: approved_task_list
+         value: ["<default list id>"]
+   ```
+   (`tasks.create_task` and `tasks.move_task` are left out here deliberately —
+   see step 3.)
+2. In Google Tasks (web or mobile), create a second list named **exactly
+   `PrivacyFence QA Contrast List`**. There's no tool to create a task list
+   through PrivacyFence itself, so this has to be done outside it. **Do not**
+   add it to `approved_task_list` — it exists specifically to *not* match, and
+   the test prompt finds it by this exact name via `tasks_list_task_lists`.
+3. Optional: add `tasks.create_task` the same way as step 1, and/or add
+   `tasks.move_task` pointing at *both* list IDs (a move only auto-accepts
+   when both the source and destination list are approved):
+   ```yaml
+   auto_accept_rules:
+     tasks.move_task:
+       - rule: approved_task_list
+         value: ["<default list id>", "<contrast list id>"]
+   ```
+   Skip any of these you'd rather leave always-prompting — the test prompt
+   handles "not configured" gracefully for each one independently.
 
 ## 7. Telegram
 
@@ -336,6 +372,15 @@ auto_accept_rules:
   confluence.read_page:
     - rule: approved_space_keys
       value: [PFQA]
+  tasks.update_task:
+    - rule: approved_task_list
+      value: ["<default task list id>"]
+  tasks.complete_task:
+    - rule: approved_task_list
+      value: ["<default task list id>"]
+  tasks.uncomplete_task:
+    - rule: approved_task_list
+      value: ["<default task list id>"]
 ```
 
 `sheets.read_values` → `approved_spreadsheet` isn't included here because it
@@ -367,6 +412,8 @@ a run, or to debug a fixture Phase 0 reports as missing.
 | Jira contrast project | Any project key that isn't `PFQA` | `jira_list_projects` |
 | Confluence QA space | Literal key `PFQA` | — |
 | Confluence contrast space | Any space key that isn't `PFQA` | `confluence_list_spaces` |
+| Tasks approved list | `tasks.update_task` → `approved_task_list` (falls back to the default list) | `settings.yaml` / `tasks_list_task_lists` |
+| Tasks contrast list | Exact name `PrivacyFence QA Contrast List` | `tasks_list_task_lists` |
 
 ---
 

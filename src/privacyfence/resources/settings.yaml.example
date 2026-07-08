@@ -66,6 +66,13 @@ auto_accept_rules:
     # Auto-accept writes to spreadsheets created earlier in the same session
     # (e.g. filling in a sheet PrivacyFence just created for you)
     # - rule: created_this_session
+  # tasks.create_task:
+    # Auto-accept task edits scoped to specific Google Tasks list(s) — the
+    # same rule/value applies to tasks.update_task, tasks.complete_task,
+    # tasks.uncomplete_task, and tasks.move_task (a move only auto-accepts
+    # when BOTH the source and destination list are in this list).
+    # - rule: approved_task_list
+    #   value: ["<task list id>"]
 
 logging:
   # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL

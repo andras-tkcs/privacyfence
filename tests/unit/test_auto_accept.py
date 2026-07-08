@@ -545,6 +545,45 @@ class TestTelegramRules:
 
 
 # --------------------------------------------------------------------------- #
+# Tasks rules
+# --------------------------------------------------------------------------- #
+
+class TestTasksRules:
+    def test_approved_task_list_matches_task_list_id(self):
+        ev = AutoAcceptEvaluator({})
+        ctx = make_ctx(args={"task_list_id": "list1", "task_id": "t1"})
+        assert ev._rule_approved_task_list(["list1"], ctx) is True
+        assert ev._rule_approved_task_list(["list2"], ctx) is False
+
+    def test_approved_task_list_empty_value_never_matches(self):
+        ev = AutoAcceptEvaluator({})
+        ctx = make_ctx(args={"task_list_id": "list1"})
+        assert ev._rule_approved_task_list([], ctx) is False
+        assert ev._rule_approved_task_list(None, ctx) is False
+
+    def test_approved_task_list_move_requires_both_ends_approved(self):
+        # tasks_move_task carries source_list_id/destination_list_id instead
+        # of task_list_id -- a move only auto-accepts when neither end can
+        # smuggle the task into (or out of) an unapproved list.
+        ev = AutoAcceptEvaluator({})
+        allowed = ["list1", "list2"]
+        both_approved = make_ctx(args={"source_list_id": "list1", "destination_list_id": "list2"})
+        one_unapproved = make_ctx(args={"source_list_id": "list1", "destination_list_id": "list3"})
+        assert ev._rule_approved_task_list(allowed, both_approved) is True
+        assert ev._rule_approved_task_list(allowed, one_unapproved) is False
+
+    def test_approved_task_list_move_missing_ids_does_not_match(self):
+        ev = AutoAcceptEvaluator({})
+        ctx = make_ctx(args={})
+        assert ev._rule_approved_task_list(["list1"], ctx) is False
+
+    def test_approved_task_list_single_string_value_not_wrapped_in_a_list_is_accepted(self):
+        ev = AutoAcceptEvaluator({})
+        ctx = make_ctx(args={"task_list_id": "list1"})
+        assert ev._rule_approved_task_list("list1", ctx) is True
+
+
+# --------------------------------------------------------------------------- #
 # Dict-shaped raw_data support (calendar rules now accept dicts too)
 # --------------------------------------------------------------------------- #
 

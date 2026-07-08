@@ -495,12 +495,24 @@ class TestBuildRulesMenu:
         for cname in menu_bar.ALL_CONNECTORS:
             assert cname.capitalize() in titles
 
-    def test_connector_with_no_configurable_ops_shows_placeholder(self, app):
-        # "tasks" has no entries in OPERATION_LABELS.
+    def test_connector_with_no_configurable_ops_shows_placeholder(self, app, monkeypatch):
+        # Every real connector has at least one entry in OPERATION_LABELS
+        # now, so this exercises the placeholder branch with a synthetic
+        # connector that deliberately has none.
+        monkeypatch.setattr(menu_bar, "ALL_CONNECTORS", menu_bar.ALL_CONNECTORS + ["nullconnector"])
+        rules_parent = app._build_rules_menu({})
+        placeholder_item = rules_parent["Nullconnector"]
+        sub_titles = [i.title for i in placeholder_item.values()]
+        assert any("always auto-approved" in t for t in sub_titles)
+
+    def test_tasks_shows_its_write_operations(self, app):
         rules_parent = app._build_rules_menu({})
         tasks_item = rules_parent["Tasks"]
-        sub_titles = [i.title for i in tasks_item.values()]
-        assert any("always auto-approved" in t for t in sub_titles)
+        sub_titles = {i.title for i in tasks_item.values()}
+        assert sub_titles == {
+            "Create task", "Update task", "Complete task",
+            "Uncomplete task", "Move task",
+        }
 
     def test_existing_rule_appears_with_toggle_and_remove(self, app):
         rules_cfg = {"gmail.read_message": [{"rule": "i_am_sender"}]}
@@ -628,7 +640,7 @@ class TestAddRule:
         alerts = []
         monkeypatch.setattr(menu_bar.rumps, "alert", lambda *a, **k: alerts.append((a, k)))
 
-        app._add_rule("tasks.anything")  # tasks has no entries in RULES_BY_OPERATION
+        app._add_rule("tasks.anything")  # not a real operation key -- no entry in RULES_BY_OPERATION
 
         assert len(alerts) == 1
 
