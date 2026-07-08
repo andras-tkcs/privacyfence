@@ -17,14 +17,16 @@ release gated data on its own.
     materially bigger blast radius than auto-accepting reads, so Accept All
     is not offered here.
 
-PII gate: before either popup is shown, ``details`` is scanned by
+PII gate: before any auto-accept check, ``details`` is scanned by
 pii_detector.py for likely Hungarian/English/German personal data. A match
-tints the popup and, after the user clicks Accept (or Accept All), forces
-one more explicit "Are you sure?" dialog before the decision is finalized --
-declining it is treated the same as denying the original request. This only
-runs on the interactive path: an auto-accepted call (a pre-approved standing
-rule) skips it exactly as it skips the popup itself, since that trust
-decision was already made when the rule was created.
+overrides a matching auto-accept rule — the call is routed to the normal
+interactive popup regardless — which is then tinted, and after the user
+clicks Accept (or Accept All), one more explicit "Are you sure?" dialog is
+required before the decision is finalized. Declining it is treated the same
+as denying the original request. Auto-accept rules are typically scoped to
+metadata (sender domain, folder, "I am the organizer") rather than content,
+so a rule that would silently pass through PII-bearing content still gets a
+human in the loop for that specific item.
 """
 from __future__ import annotations
 
@@ -84,21 +86,22 @@ async def gated_call(
         my_email=my_email,
         session_created_ids=session_created_ids or set(),
     )
+    details = details_text or _default_details(raw_data)
+    popup_title = f"PrivacyFence — {tool_name}"
+    pii_categories = detect_pii_categories(details)
+
     evaluator = get_auto_accept_evaluator()
     auto_ok, matched_rule = evaluator.should_auto_accept(operation_key, ctx)
 
-    if auto_ok:
+    if auto_ok and not pii_categories:
         _audit(
             created_at=created_at, connector=connector, tool=tool,
             tool_name=tool_name, summary=summary, sender=sender,
             decision="auto_accepted", auto_accept_rule=matched_rule,
+            pii_detected=False,
         )
         logger.info("Auto-accepted: %s/%s rule=%r", connector, tool, matched_rule)
         return filtered_data
-
-    details = details_text or _default_details(raw_data)
-    popup_title = f"PrivacyFence — {tool_name}"
-    pii_categories = detect_pii_categories(details)
 
     if gate == "review":
         suggestion = suggest_rule(operation_key, ctx)
@@ -112,9 +115,9 @@ async def gated_call(
         async with _popup_lock:
             # Re-check: while this call was queued behind another popup, that
             # popup's "Accept All" may have just created a rule that now
-            # covers this item too.
+            # covers this item too. A PII match still overrides it either way.
             auto_ok, matched_rule = evaluator.should_auto_accept(operation_key, ctx)
-            if auto_ok:
+            if auto_ok and not pii_categories:
                 _audit(
                     created_at=created_at, connector=connector, tool=tool,
                     tool_name=tool_name, summary=summary, sender=sender,
@@ -164,11 +167,12 @@ async def gated_call(
         return filtered_data
 
     else:
-        # — Popup gate: block and show native approval dialog for a write --
+        # ── Popup gate: block and show native approval dialog for a write ───
         async with _popup_lock:
             # Same race as above: a rule may have been created while queued.
+            # A PII match still overrides it either way.
             auto_ok, matched_rule = evaluator.should_auto_accept(operation_key, ctx)
-            if auto_ok:
+            if auto_ok and not pii_categories:
                 _audit(
                     created_at=created_at, connector=connector, tool=tool,
                     tool_name=tool_name, summary=summary, sender=sender,

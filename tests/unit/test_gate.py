@@ -411,17 +411,50 @@ class TestPIIGate:
         entries = read_audit_entries(audit_dir)
         assert entries[0]["decision"] == "rejected"
 
-    async def test_auto_accept_skips_pii_check_entirely(self, monkeypatch, audit_dir):
+    async def test_pii_detection_overrides_a_matching_auto_accept_rule(self, monkeypatch, audit_dir):
+        # Auto-accept rules are scoped to metadata (sender domain, folder,
+        # "I am the organizer"), not content -- a rule that would otherwise
+        # silently pass this through must still stop for human review when
+        # the content itself contains likely PII.
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "i_am_sender")))
-        confirm_calls = []
-        monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda *a, **k: confirm_calls.append(1) or True)
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
         popup_calls = []
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: popup_calls.append(1) or "deny")
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: popup_calls.append(1) or "accept")
+        monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: True)
 
         result = await gate.gated_call(**base_kwargs(gate="review", details_text=self.PII_TEXT))
 
         assert result is FILTERED
-        assert confirm_calls == []
+        assert popup_calls == [1]  # the popup was NOT skipped, despite auto_ok
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "approved"  # not "auto_accepted"
+        assert entries[0]["auto_accept_rule"] == ""
+        assert entries[0]["pii_detected"] is True
+
+    async def test_pii_override_still_requires_its_own_confirmation_and_can_be_denied(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "i_am_sender")))
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: False)
+
+        with pytest.raises(RuntimeError, match="denied"):
+            await gate.gated_call(**base_kwargs(gate="review", details_text=self.PII_TEXT))
+
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "rejected"
+        assert entries[0]["pii_detected"] is True
+
+    async def test_matching_rule_without_pii_still_auto_accepts_silently(self, monkeypatch, audit_dir):
+        # Confirms the override is specific to PII-flagged content -- an
+        # otherwise-identical rule match with no PII in the content still
+        # takes the silent fast path, exactly as before this feature existed.
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "i_am_sender")))
+        popup_calls = []
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: popup_calls.append(1) or "deny")
+
+        result = await gate.gated_call(**base_kwargs(gate="review", details_text="nothing sensitive here"))
+
+        assert result is FILTERED
         assert popup_calls == []
         entries = read_audit_entries(audit_dir)
         assert entries[0]["decision"] == "auto_accepted"
@@ -490,6 +523,37 @@ class TestPIIGateWrites:
 
         assert result is FILTERED
         assert confirm_calls == []
+
+    async def test_pii_detection_overrides_a_matching_auto_accept_rule(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "trusted_sender_domain")))
+        popup_calls = []
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: popup_calls.append(1) or "accept")
+        monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: True)
+
+        result = await gate.gated_call(
+            **base_kwargs(gate="popup", tool="gmail_create_draft", details_text=self.PII_TEXT)
+        )
+
+        assert result is FILTERED
+        assert popup_calls == [1]  # the popup was NOT skipped, despite auto_ok
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "approved"  # not "auto_accepted"
+        assert entries[0]["auto_accept_rule"] == ""
+        assert entries[0]["pii_detected"] is True
+
+    async def test_matching_rule_without_pii_still_auto_accepts_silently(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "trusted_sender_domain")))
+        popup_calls = []
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: popup_calls.append(1) or "deny")
+
+        result = await gate.gated_call(
+            **base_kwargs(gate="popup", tool="gmail_create_draft", details_text="nothing sensitive here")
+        )
+
+        assert result is FILTERED
+        assert popup_calls == []
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "auto_accepted"
 
 
 class TestPopupSerialization:

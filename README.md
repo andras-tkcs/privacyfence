@@ -93,9 +93,12 @@ aren't; treat a hit as "look more carefully," not a guarantee either way. It nev
 the matched text itself, only the category labels (e.g. "Email address") — those category labels,
 and whether any were flagged, are recorded in the [audit log](#audit-log).
 
-The gate applies only to the interactive popup path — a request that matches a standing
-[auto-accept rule](#auto-accept-rules) skips it exactly as it skips the popup itself, since that
-trust decision was already made when the rule was created.
+The scan runs before any [auto-accept rule](#auto-accept-rules) is checked and overrides a
+matching one: auto-accept rules are scoped to metadata (sender domain, folder, "I am the
+organizer"), not content, so a rule that would otherwise pass a request through silently still
+routes it to the normal popup — tinted, with the second confirmation — whenever the content itself
+contains likely PII. A request that matches a rule *and* has no PII in its content still takes the
+silent auto-accept path exactly as before this gate existed.
 
 **Toggle:** enable or disable the whole gate from the menu bar (**PII Detection Gate**), or set
 `pii_detection.enabled: true|false` directly in `config/settings.yaml`. Enabled by default.

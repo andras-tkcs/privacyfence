@@ -128,6 +128,14 @@ Ground rules:
   if the step's *own* instruction was to Deny). Note "PII gate fired" plus the
   categories shown in that step's row of the running table; this is expected
   behavior on real data, not a bug, unless a step explicitly says otherwise.
+  **This includes steps marked "should NOT prompt" for an auto-accept rule**
+  (e.g. Phase 1 step 6, Phase 4 step 5): the PII scan runs before the
+  auto-accept check and overrides a matching rule, so a message/event/page
+  whose *content* contains something PII-shaped will still show the tinted
+  popup even though the rule matched — that's the gate doing its job, not a
+  rule-evaluation bug. Only flag it as a bug if the popup appears with no PII
+  category banner at all (a plain popup for a step that should've been silent
+  is still worth reporting).
 - Keep a running table as you go: `tool name | gate observed (silent / Cowork
   review / native popup) | my decision | audit-log decision | notes`. This is a
   test environment against my own accounts, so read

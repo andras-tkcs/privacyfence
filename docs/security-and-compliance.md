@@ -102,8 +102,10 @@ operations (e.g., "list my calendars") default to `auto`.
 
 **PII detection gate:** independent of the gate type, PrivacyFence runs a local, regex-based scan
 (Hungarian, English, German) over the content shown in every `review`/`popup` dialog, before the
-human decides. A match tints the dialog and forces one additional explicit confirmation on top of
-Accept — see [PII detection gate](../README.md#pii-detection-gate) in the README. It is a
+human decides — and before any auto-accept rule is checked. A match overrides a matching rule (a
+`review`/`popup` call is content-blind to the rule, so PII in an otherwise-trusted sender/folder
+still routes to a human) and tints the dialog, forcing one additional explicit confirmation on top
+of Accept — see [PII detection gate](../README.md#pii-detection-gate) in the README. It is a
 best-effort heuristic layered on top of human review, not a substitute for it, and it never logs
 or stores the matched text — only category labels, in the audit entry for that decision.
 
