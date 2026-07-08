@@ -495,12 +495,24 @@ class TestBuildRulesMenu:
         for cname in menu_bar.ALL_CONNECTORS:
             assert cname.capitalize() in titles
 
-    def test_connector_with_no_configurable_ops_shows_placeholder(self, app):
-        # "tasks" has no entries in OPERATION_LABELS.
+    def test_connector_with_no_configurable_ops_shows_placeholder(self, app, monkeypatch):
+        # Every real connector has at least one entry in OPERATION_LABELS
+        # now, so this exercises the placeholder branch with a synthetic
+        # connector that deliberately has none.
+        monkeypatch.setattr(menu_bar, "ALL_CONNECTORS", menu_bar.ALL_CONNECTORS + ["nullconnector"])
+        rules_parent = app._build_rules_menu({})
+        placeholder_item = rules_parent["Nullconnector"]
+        sub_titles = [i.title for i in placeholder_item.values()]
+        assert any("always auto-approved" in t for t in sub_titles)
+
+    def test_tasks_shows_its_write_operations(self, app):
         rules_parent = app._build_rules_menu({})
         tasks_item = rules_parent["Tasks"]
-        sub_titles = [i.title for i in tasks_item.values()]
-        assert any("always auto-approved" in t for t in sub_titles)
+        sub_titles = {i.title for i in tasks_item.values()}
+        assert sub_titles == {
+            "Create task", "Update task", "Complete task",
+            "Uncomplete task", "Move task",
+        }
 
     def test_existing_rule_appears_with_toggle_and_remove(self, app):
         rules_cfg = {"gmail.read_message": [{"rule": "i_am_sender"}]}
@@ -628,7 +640,7 @@ class TestAddRule:
         alerts = []
         monkeypatch.setattr(menu_bar.rumps, "alert", lambda *a, **k: alerts.append((a, k)))
 
-        app._add_rule("tasks.anything")  # tasks has no entries in RULES_BY_OPERATION
+        app._add_rule("tasks.anything")  # not a real operation key -- no entry in RULES_BY_OPERATION
 
         assert len(alerts) == 1
 
@@ -976,6 +988,44 @@ class TestToggleConnector:
         app._toggle_connector("gmail")
 
         assert app._load_config()["connectors"]["gmail"]["enabled"] is True
+
+
+class TestTogglePiiDetection:
+    def test_flips_enabled_flag_and_saves(self, app):
+        app._toggle_pii_detection()
+
+        cfg = app._load_config()
+        assert cfg["pii_detection"]["enabled"] is False
+
+    def test_toggling_twice_re_enables(self, app):
+        app._toggle_pii_detection()
+        app._toggle_pii_detection()
+
+        assert app._load_config()["pii_detection"]["enabled"] is True
+
+    def test_defaults_to_enabled_when_unset(self, app):
+        # No pii_detection section in config yet -> treated as enabled, so
+        # the first toggle should turn it off.
+        assert "pii_detection" not in app._load_config()
+
+        app._toggle_pii_detection()
+
+        assert app._load_config()["pii_detection"]["enabled"] is False
+
+    def test_hot_reloads_live_detector_state(self, app):
+        from privacyfence import pii_detector
+
+        assert pii_detector.is_pii_detection_enabled() is True
+
+        app._toggle_pii_detection()
+
+        assert pii_detector.is_pii_detection_enabled() is False
+
+    def test_menu_item_state_reflects_config(self, app):
+        app._toggle_pii_detection()  # now disabled
+
+        item = app.menu["PII Detection Gate"]
+        assert bool(item.state) is False
 
 
 class TestRefreshConnectors:

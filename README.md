@@ -70,6 +70,39 @@ When the gate is `review`, a prompt appears in Claude Cowork showing a minimal p
 
 Claude already describes the action it is about to take in the chat. When the gate is `popup`, PrivacyFence opens a native popup showing the full action details with **Accept** or **Deny**. There is no intermediate Cowork step.
 
+### PII detection gate
+
+On top of the normal Accept/Deny popup, PrivacyFence can scan the message/document/spreadsheet
+content shown in every `review` and `popup` dialog for likely personal data — in **Hungarian,
+English, and German** — before you approve it: email addresses, phone numbers, IBANs, credit card
+numbers, and national identifiers (Hungarian TAJ/adóazonosító jel/ID card number, German
+Steuer-ID/Sozialversicherungsnummer, US SSN, UK National Insurance number), plus common
+labels like "date of birth" / "születési dátum" / "Geburtsdatum" that flag a nearby value even
+when its own format is too ambiguous to match structurally.
+
+When something is flagged:
+
+- The popup is tinted light red and shows a banner naming the categories found.
+- After clicking **Accept** (or **Accept All**), one more explicit **"Are you sure?"** dialog is
+  required before the decision takes effect — declining it denies the whole request, the same as
+  clicking **Deny** on the original popup.
+
+This is a local, regex-based heuristic (see `src/privacyfence/pii_detector.py`) — it runs
+entirely on-device with no network calls, and it can both miss real PII and flag things that
+aren't; treat a hit as "look more carefully," not a guarantee either way. It never logs or stores
+the matched text itself, only the category labels (e.g. "Email address") — those category labels,
+and whether any were flagged, are recorded in the [audit log](#audit-log).
+
+The scan runs before any [auto-accept rule](#auto-accept-rules) is checked and overrides a
+matching one: auto-accept rules are scoped to metadata (sender domain, folder, "I am the
+organizer"), not content, so a rule that would otherwise pass a request through silently still
+routes it to the normal popup — tinted, with the second confirmation — whenever the content itself
+contains likely PII. A request that matches a rule *and* has no PII in its content still takes the
+silent auto-accept path exactly as before this gate existed.
+
+**Toggle:** enable or disable the whole gate from the menu bar (**PII Detection Gate**), or set
+`pii_detection.enabled: true|false` directly in `config/settings.yaml`. Enabled by default.
+
 ---
 
 ## Connectors & privacy matrix
@@ -153,7 +186,7 @@ string starting with `=` is evaluated as a formula, exactly like typing it into 
 | `calendar_list_events` | read | auto | — | — |
 | `calendar_get_free_busy` | read | auto | — | — (returns full events when calendar access is available; falls back to busy-slot list otherwise) |
 | `calendar_list_rooms` | read | auto | — | — (lists Google Workspace meeting rooms with name, email, building, floor, capacity; requires Workspace admin directory access) |
-| `calendar_get_event_details` | read | review | title, time, organizer, attendee count | Description, full attendee list, conferencing link |
+| `calendar_get_event_details` | read | review | title, time, organizer, attendee count | Description, full attendee list, conferencing link, file attachments (e.g. Gemini meeting notes/transcript) |
 | `calendar_create_event` | write | popup | — | Title, time, attendees, description, location, Google Meet flag, room bookings |
 | `calendar_update_event` | write | popup | — | Title, time, fields changing (old → new), Google Meet flag, room bookings |
 
@@ -385,13 +418,23 @@ spreadsheet and tab you just read — rather than a broader ownership- or folder
 | `approved_chats` | Chat ID is in the allowlist |
 | `no_media_attachments` | Messages have no media attachments |
 
-> **Google Contacts**: `contacts_list`, `contacts_search`, and `contacts_get` are unconditionally auto-accepted. `contacts_update`, `contacts_create`, `contacts_add_label`, and `contacts_remove_label` are all `popup`-gated; `no_contact_info_change` above is the only configurable auto-accept rule, and it applies only to `contacts_update`. Contact deletion is not supported. **Google Tasks**: all three read tools plus `tasks_list_task_lists` are unconditionally auto-accepted; the five write tools (`tasks_create_task`, `tasks_update_task`, `tasks_complete_task`, `tasks_uncomplete_task`, `tasks_move_task`) are `popup`-gated with no configurable auto-accept rule, matching every other connector's write behavior. **Telegram**: `telegram_list_chats` is unconditionally auto-accepted; `telegram_get_messages` and `telegram_search_messages` are `review`-gated by default but configurable via the rules above; `telegram_send_message` is `popup`-gated with no configurable rule. **Jira and Confluence** read tools (`jira_get_issue`, `confluence_get_page`, `confluence_get_page_by_title`) are `review`-gated by default but configurable via the rules above; their write tools have no configurable auto-accept rules and remain `popup`-gated.
+**Google Tasks**
+
+| Rule | Matches when… |
+|------|--------------|
+| `approved_task_list` | Task list is in the allowlist — for `tasks_move_task`, both the source and destination list must be |
+
+`approved_task_list` applies independently to each of `tasks.create_task`, `tasks.update_task`,
+`tasks.complete_task`, `tasks.uncomplete_task`, and `tasks.move_task`, so you can e.g. auto-accept
+edits within a personal list while still requiring review for creates.
+
+> **Google Contacts**: `contacts_list`, `contacts_search`, and `contacts_get` are unconditionally auto-accepted. `contacts_update`, `contacts_create`, `contacts_add_label`, and `contacts_remove_label` are all `popup`-gated; `no_contact_info_change` above is the only configurable auto-accept rule, and it applies only to `contacts_update`. Contact deletion is not supported. **Google Tasks**: all three read tools plus `tasks_list_task_lists` are unconditionally auto-accepted; the five write tools (`tasks_create_task`, `tasks_update_task`, `tasks_complete_task`, `tasks_uncomplete_task`, `tasks_move_task`) are `popup`-gated, each independently configurable via `approved_task_list` above. **Telegram**: `telegram_list_chats` is unconditionally auto-accepted; `telegram_get_messages` and `telegram_search_messages` are `review`-gated by default but configurable via the rules above; `telegram_send_message` is `popup`-gated with no configurable rule. **Jira and Confluence** read tools (`jira_get_issue`, `confluence_get_page`, `confluence_get_page_by_title`) are `review`-gated by default but configurable via the rules above; their write tools have no configurable auto-accept rules and remain `popup`-gated.
 
 ---
 
 ## Audit log
 
-Every decision — accepted, denied, or auto-accepted — is appended to a JSON-lines file in `logs/audit/YYYY-WNN.jsonl`. At startup, any week that has a `.jsonl` file but no `.xlsx` is automatically exported to a formatted Excel workbook with a colour-coded **Decisions** sheet and a **Summary** tab.
+Every decision — accepted, denied, or auto-accepted — is appended to a JSON-lines file in `logs/audit/YYYY-WNN.jsonl`. At startup, any week that has a `.jsonl` file but no `.xlsx` is automatically exported to a formatted Excel workbook with a colour-coded **Decisions** sheet and a **Summary** tab. Each entry also records whether the [PII detection gate](#pii-detection-gate) flagged the content (category labels only — never the matched text itself).
 
 See [docs/connector-qa-testing.md](docs/connector-qa-testing.md) for a Claude Cowork prompt that drives every connector's tools end to end against real accounts — the fastest way to catch a gate, auto-accept rule, or connector client that's drifted from what's documented here.
 

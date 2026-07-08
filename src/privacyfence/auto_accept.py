@@ -60,6 +60,11 @@ TOOL_TO_OPERATION: dict[str, str] = {
     "telegram_get_messages":          "telegram.read_chat_messages",
     "telegram_search_messages":       "telegram.search_messages",
     "telegram_send_message":          "telegram.send_message",
+    "tasks_create_task":              "tasks.create_task",
+    "tasks_update_task":              "tasks.update_task",
+    "tasks_complete_task":            "tasks.complete_task",
+    "tasks_uncomplete_task":          "tasks.uncomplete_task",
+    "tasks_move_task":                "tasks.move_task",
 }
 
 @dataclass
@@ -407,6 +412,26 @@ class AutoAcceptEvaluator:
         raw = ctx.raw_data
         items = raw if isinstance(raw, list) else [raw]
         return all(not getattr(m, "media_type", "") for m in items)
+
+    # ── Tasks ─────────────────────────────────────────────────────────────
+
+    def _rule_approved_task_list(self, value, ctx):
+        """Match a task write scoped to an approved task list.
+
+        create/update/complete/uncomplete carry a single `task_list_id`;
+        `tasks_move_task` carries `source_list_id`/`destination_list_id`
+        instead, and only matches when BOTH ends of the move are approved —
+        otherwise a move could smuggle a task out of (or into) a list the
+        user never approved.
+        """
+        if not value:
+            return False
+        allowed = set(value if isinstance(value, list) else [value])
+        if "task_list_id" in ctx.args:
+            return ctx.args.get("task_list_id", "") in allowed
+        source = ctx.args.get("source_list_id", "")
+        destination = ctx.args.get("destination_list_id", "")
+        return bool(source) and bool(destination) and source in allowed and destination in allowed
 
 
 # ── Rule suggestion for the popup's "Accept All" button ─────────────────────

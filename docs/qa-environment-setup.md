@@ -164,6 +164,15 @@ auto_accept_rules:
     - rule: i_am_organizer
 ```
 
+**Optional, for exercising event attachments:** `calendar_get_event_details`
+also returns file attachments — most commonly the "Notes by Gemini" and
+transcript Docs that Google Meet attaches to an event once a meeting with
+"take notes for me" enabled ends. There's no fixture for this (attachments
+can't be created via `calendar_create_event`), so it's opportunistic: if this
+account's calendar history already has a past meeting like that, the test
+prompt will find and use it; otherwise that step is skipped as a known
+limitation, not a regression.
+
 ## 5. Contacts
 
 No fixture needed for `source="personal"` vs. `source="directory"` — whether
@@ -184,8 +193,44 @@ prompts even with this rule present.
 
 ## 6. Google Tasks
 
-No fixture needed — every Tasks tool works against whatever task list you
-already have; the test prompt creates and cleans up its own task.
+Reads and the create/update/complete/uncomplete lifecycle work against
+whatever task list you already have — no fixture needed for those; the test
+prompt creates and cleans up its own task. Exercising `approved_task_list`
+needs a second list, though:
+
+1. Your default list (usually named **My Tasks**) works fine as the
+   **approved** one — get its ID from `tasks_list_task_lists` and add it to
+   `settings.yaml`:
+   ```yaml
+   auto_accept_rules:
+     tasks.update_task:
+       - rule: approved_task_list
+         value: ["<default list id>"]
+     tasks.complete_task:
+       - rule: approved_task_list
+         value: ["<default list id>"]
+     tasks.uncomplete_task:
+       - rule: approved_task_list
+         value: ["<default list id>"]
+   ```
+   (`tasks.create_task` and `tasks.move_task` are left out here deliberately —
+   see step 3.)
+2. In Google Tasks (web or mobile), create a second list named **exactly
+   `PrivacyFence QA Contrast List`**. There's no tool to create a task list
+   through PrivacyFence itself, so this has to be done outside it. **Do not**
+   add it to `approved_task_list` — it exists specifically to *not* match, and
+   the test prompt finds it by this exact name via `tasks_list_task_lists`.
+3. Optional: add `tasks.create_task` the same way as step 1, and/or add
+   `tasks.move_task` pointing at *both* list IDs (a move only auto-accepts
+   when both the source and destination list are approved):
+   ```yaml
+   auto_accept_rules:
+     tasks.move_task:
+       - rule: approved_task_list
+         value: ["<default list id>", "<contrast list id>"]
+   ```
+   Skip any of these you'd rather leave always-prompting — the test prompt
+   handles "not configured" gracefully for each one independently.
 
 ## 7. Telegram
 
@@ -298,6 +343,44 @@ data:
    without it (a 410 "Gone" error from Atlassian's removed v1 endpoint), and
    that failure has nothing to do with this environment setup.
 
+## 11. PII Detection Gate
+
+No fixture to create — this is the one part of the QA test that's genuinely
+self-contained. The dedicated check in
+[`connector-qa-testing.md`](connector-qa-testing.md) (Phase 2, steps 17–20)
+creates its own throwaway Drive subfolder and Google Doc seeded with
+synthetic, obviously-fake PII, reads it back, and tears both down in
+Phase 11 — nothing here to provision ahead of time, and nothing that
+persists between runs.
+
+The only thing worth confirming beforehand:
+
+1. **PII Detection Gate** is enabled in the PrivacyFence menu bar (it is by
+   default — equivalently, `pii_detection.enabled` is `true` or absent in
+   `~/.privacyfence/config/settings.yaml`). If you've turned it off, the
+   dedicated check still runs but correctly produces the *disabled* result
+   (no tint, no second confirmation, `pii_detected: false` in the audit log)
+   — that's expected behavior for that state, not a failure, but the test
+   prompt needs to know which state it's in rather than assume enabled.
+2. The check deliberately writes to a **subfolder** of the Drive QA Sandbox
+   folder, not the Sandbox folder's own top level. `approved_folder` (§2
+   above) matches a file's *immediate* parent folder ID only, not folders
+   nested inside it — so even if you configured that rule, it does not
+   cover the subfolder, and the read step is guaranteed to hit the normal
+   `review` gate (and the PII gate layered on top of it) instead of being
+   silently auto-accepted. No action needed here beyond knowing why the
+   check is structured that way, in case you ever restructure the Sandbox
+   folder yourself.
+3. A second, related check (`connector-qa-testing.md` steps 21–23) proves
+   the stronger claim that PII detection *overrides* a matching auto-accept
+   rule, rather than just running independently of one — it deliberately
+   writes the same synthetic PII directly into `drive_qa_folder_id` itself,
+   the folder `approved_folder` *does* cover. This one only exercises the
+   override if you actually configured the `drive.read_file_contents` →
+   `approved_folder` rule from §2; without it there's no rule in play to
+   override, and the test prompt is told to say so plainly rather than
+   claim the override was proven.
+
 ---
 
 ## Consolidated `auto_accept_rules` block
@@ -336,6 +419,15 @@ auto_accept_rules:
   confluence.read_page:
     - rule: approved_space_keys
       value: [PFQA]
+  tasks.update_task:
+    - rule: approved_task_list
+      value: ["<default task list id>"]
+  tasks.complete_task:
+    - rule: approved_task_list
+      value: ["<default task list id>"]
+  tasks.uncomplete_task:
+    - rule: approved_task_list
+      value: ["<default task list id>"]
 ```
 
 `sheets.read_values` → `approved_spreadsheet` isn't included here because it
@@ -367,6 +459,8 @@ a run, or to debug a fixture Phase 0 reports as missing.
 | Jira contrast project | Any project key that isn't `PFQA` | `jira_list_projects` |
 | Confluence QA space | Literal key `PFQA` | — |
 | Confluence contrast space | Any space key that isn't `PFQA` | `confluence_list_spaces` |
+| Tasks approved list | `tasks.update_task` → `approved_task_list` (falls back to the default list) | `settings.yaml` / `tasks_list_task_lists` |
+| Tasks contrast list | Exact name `PrivacyFence QA Contrast List` | `tasks_list_task_lists` |
 
 ---
 

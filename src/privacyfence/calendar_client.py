@@ -55,6 +55,21 @@ class CalendarAttendee:
 
 
 @dataclass
+class CalendarAttachment:
+    """A file attached to an event — e.g. the "Notes by Gemini" doc and
+    transcript that Google Meet's Gemini note-taker attaches to the Calendar
+    event after a meeting ends. ``file_id`` is a Drive file id and can be
+    passed straight to ``drive_get_file_content`` to read the content,
+    provided the authenticated user has Drive access to it."""
+
+    file_id: str
+    title: str
+    mime_type: str
+    file_url: str
+    icon_link: str = ""
+
+
+@dataclass
 class CalendarEvent:
     id: str
     calendar_id: str
@@ -70,6 +85,7 @@ class CalendarEvent:
     conference_link: str
     status: str       # "confirmed" | "tentative" | "cancelled"
     html_link: str
+    attachments: list[CalendarAttachment] = field(default_factory=list)
 
     def short_summary(self) -> str:
         return f"{self.title} ({self.start_time})"
@@ -263,11 +279,21 @@ class CalendarClient:
         return events
 
     def get_event(self, calendar_id: str, event_id: str) -> CalendarEvent:
-        """Fetch a single event by id."""
+        """Fetch a single event by id, including its attachments.
+
+        ``supportsAttachments=True`` is required for the API to populate the
+        ``attachments`` field — this is where Google Meet's Gemini note-taker
+        attaches the meeting notes/transcript doc once a meeting ends.
+        """
         if not calendar_id or not event_id:
             raise CalendarClientError("get_event requires calendar_id and event_id")
         try:
-            raw = self._get_service().events().get(calendarId=calendar_id, eventId=event_id).execute()
+            raw = (
+                self._get_service()
+                .events()
+                .get(calendarId=calendar_id, eventId=event_id, supportsAttachments=True)
+                .execute()
+            )
         except HttpError as exc:
             raise CalendarClientError(f"get_event({calendar_id}, {event_id}) failed: {exc}") from exc
         event = self._parse_event(raw, calendar_id)
@@ -535,6 +561,17 @@ class CalendarClient:
                 conference_link = ep.get("uri", "")
                 break
 
+        attachments = [
+            CalendarAttachment(
+                file_id=a.get("fileId", ""),
+                title=a.get("title", ""),
+                mime_type=a.get("mimeType", ""),
+                file_url=a.get("fileUrl", ""),
+                icon_link=a.get("iconLink", ""),
+            )
+            for a in raw.get("attachments", []) or []
+        ]
+
         return CalendarEvent(
             id=raw.get("id", ""),
             calendar_id=calendar_id,
@@ -550,4 +587,5 @@ class CalendarClient:
             conference_link=conference_link,
             status=raw.get("status", "confirmed"),
             html_link=raw.get("htmlLink", ""),
+            attachments=attachments,
         )
