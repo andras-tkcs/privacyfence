@@ -95,6 +95,11 @@ OPERATION_LABELS: dict[str, str] = {
     "telegram.read_chat_messages": "Telegram – Read chat messages",
     "telegram.search_messages":    "Telegram – Search messages",
     "telegram.send_message":       "Telegram – Send message",
+    "tasks.create_task":           "Tasks – Create task",
+    "tasks.update_task":           "Tasks – Update task",
+    "tasks.complete_task":         "Tasks – Complete task",
+    "tasks.uncomplete_task":       "Tasks – Uncomplete task",
+    "tasks.move_task":             "Tasks – Move task",
 }
 
 RULES_BY_OPERATION: dict[str, list[str]] = {
@@ -134,6 +139,11 @@ RULES_BY_OPERATION: dict[str, list[str]] = {
     "telegram.read_chat_messages":  ["approved_chats", "no_media_attachments"],
     "telegram.search_messages":     ["no_media_attachments"],
     "telegram.send_message":        ["approved_chats"],
+    "tasks.create_task":            ["approved_task_list"],
+    "tasks.update_task":            ["approved_task_list"],
+    "tasks.complete_task":          ["approved_task_list"],
+    "tasks.uncomplete_task":        ["approved_task_list"],
+    "tasks.move_task":              ["approved_task_list"],
 }
 
 # Rules that take a list-of-strings value
@@ -144,6 +154,7 @@ RULES_LIST_VALUE: set[str] = {
     "approved_folder", "approved_sandbox_folder",
     "approved_recipient_domain", "label_name_allowlist", "parent_folder_allowlist",
     "approved_project_keys", "approved_space_keys", "approved_chats",
+    "approved_task_list",
 }
 # Rules that take a single integer value
 RULES_INT_VALUE: set[str] = {"age_threshold_days", "time_window_days"}
@@ -202,6 +213,7 @@ RULE_HINTS: dict[str, str] = {
     "approved_space_keys":   "TEAM\nDOCS",
     "approved_chats":        "123456789\n-100987654321",
     "approved_spreadsheet":  "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms\n1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms:Sheet1",
+    "approved_task_list":    "MDAwMDAwMDAwMDAwMDAwMDAwMDA6MDow\nMTExMTExMTExMTExMTExMTExMTE6MDow",
 }
 
 

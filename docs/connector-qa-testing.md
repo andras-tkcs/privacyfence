@@ -196,11 +196,20 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
 8. `confluence_list_spaces` →
    - `confluence_qa_space_key`: confirm `PFQA` exists in the list.
    - `confluence_contrast_space_key`: any other space key in the list.
-9. For any fixture you couldn't resolve (missing folder/channel/report, or a
-   list that only contains `PFQA` with no contrast candidate), don't invent a
-   substitute — tell me which one, point at the relevant section of
-   `qa-environment-setup.md`, skip only the steps that depend on it, and keep
-   going with the rest.
+9. `tasks_list_task_lists` →
+   - `tasks_qa_list_id`: the list ID from `tasks.update_task` (or
+     `tasks.complete_task`/`tasks.uncomplete_task`) → `approved_task_list` in
+     settings.yaml, if configured; otherwise the default list (usually named
+     "My Tasks").
+   - `tasks_contrast_list_id`: the list named exactly
+     `PrivacyFence QA Contrast List`. If it doesn't exist, tell me and skip
+     the auto-accept contrast step in Phase 6 — the rest of Phase 6 doesn't
+     depend on it.
+10. For any fixture you couldn't resolve (missing folder/channel/report, or a
+    list that only contains `PFQA` with no contrast candidate), don't invent a
+    substitute — tell me which one, point at the relevant section of
+    `qa-environment-setup.md`, skip only the steps that depend on it, and keep
+    going with the rest.
 
 ## Phase 1 — Gmail
 1. `gmail_list_messages` and `gmail_list_threads` (expect: silent, no prompt).
@@ -467,16 +476,30 @@ if you configured it per `qa-environment-setup.md`.
 
 ## Phase 6 — Google Tasks
 Reads are unconditionally auto-accepted; writes are `popup`-gated like every
-other connector's writes. Expect **zero prompts** for step 1, and a popup for
-each of steps 2, 4, 5, and 6:
+other connector's writes, each independently configurable via the
+`approved_task_list` auto-accept rule:
 1. `tasks_list_task_lists`, `tasks_list_tasks` (expect: silent).
-2. `tasks_create_task` — title `PrivacyFence QA test task [{RUN_ID}] — safe to
-   delete`. Popup, Accept. Add to manifest.
+2. `tasks_create_task` in `{FIXTURES}.tasks_qa_list_id` — title
+   `PrivacyFence QA test task [{RUN_ID}] — safe to delete`. Popup, Accept.
+   Add to manifest.
 3. `tasks_get_task` on it (expect: silent).
 4. `tasks_update_task` (change the title slightly, keep the `{RUN_ID}` tag).
-   Popup, Accept.
-5. `tasks_complete_task`, then `tasks_uncomplete_task`. Popup, Accept each.
-6. `tasks_move_task` (move it within the same list). Popup, Accept.
+   If `tasks.update_task` has an `approved_task_list` rule covering
+   `tasks_qa_list_id`, this should NOT prompt — tell me either way.
+5. `tasks_complete_task`, then `tasks_uncomplete_task` on the same task — same
+   "should NOT prompt if configured" check, against `tasks.complete_task` /
+   `tasks.uncomplete_task` respectively.
+6. `tasks_move_task` (move it within the same list — a no-op move, just to
+   exercise the tool). Popup, Accept.
+7. Auto-accept contrast check (skip if `tasks_contrast_list_id` wasn't
+   resolved in Phase 0): `tasks_create_task` in `tasks_contrast_list_id`,
+   title `PrivacyFence QA contrast task [{RUN_ID}] — safe to delete`. This
+   MUST prompt regardless of any `approved_task_list` rule, since that list
+   is deliberately never added to one. Popup, Accept. Add to manifest.
+8. `tasks_update_task` on the contrast task, appending
+   ` (edited [{RUN_ID}])` to its title — same "must still prompt" expectation
+   as step 7, even if `tasks.update_task` has a rule configured for the QA
+   list. Popup, Accept.
 
 ## Phase 7 — Telegram
 1. `telegram_list_chats` (expect: silent — the only genuinely unconditional one).
@@ -558,7 +581,8 @@ a delete/remove/archive/close tool available, call it now:
    delete it — closed test issues are useful QA history); note its final status.
 4. Delete the Confluence page from Phase 10 if a delete tool exists; otherwise
    note it for manual cleanup.
-5. Uncomplete/delete the Google Task from Phase 6 if a delete tool exists.
+5. Uncomplete/delete both Google Tasks from Phase 6 (the QA-list one and the
+   contrast-list one) if a delete tool exists.
 6. The Gmail label-test message from Phase 1 steps 2/9–12 needs nothing here —
    the archive/unarchive/remove-label sequence already restores it to exactly
    its starting state.

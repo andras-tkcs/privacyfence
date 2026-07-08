@@ -205,7 +205,7 @@ oversight measure**, sitting in front of the AI system rather than being one:
 | Control | Implementation |
 |---|---|
 | Authentication to connected services | OAuth2 (or Telethon/MTProto for Telegram), per user, per connector — no shared service accounts |
-| Least privilege | Per-connector, per-operation gating (`auto`/`review`/`popup`); auto-accept rules can be scoped down to a single folder, spreadsheet tab, or channel |
+| Least privilege | Per-connector, per-operation gating (`auto`/`review`/`popup`); auto-accept rules can be scoped down to a single folder, spreadsheet tab, channel, or task list |
 | PII detection gate | Local regex heuristic (Hungarian/English/German) over popup content; a match requires an extra explicit confirmation before Accept takes effect. Toggleable per user (menu bar / `pii_detection.enabled`) |
 | Transport between processes | Local Unix domain socket only (`~/.privacyfence/privacyfence.sock`); the bridge carries no credentials and only relays |
 | Process isolation | Bridge (untrusted-facing, talks to Claude) and daemon (holds credentials) are separate processes; only the daemon can reach external APIs |
