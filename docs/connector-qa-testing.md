@@ -31,11 +31,16 @@ combination only breaks for non-ASCII input.
 - The `privacyfence` MCP server attached to a Claude Cowork/Desktop
   conversation (`claude mcp add privacyfence privacyfence-bridge`, or the
   `.mcpb` extension).
-- A terminal open on `~/.privacyfence/logs/audit/<current-ISO-week>.jsonl` (or
-  the auto-generated `.xlsx` after a daemon restart) to cross-reference
-  decisions afterward — **Claude cannot see whether a popup appeared or what
-  you clicked**, only whether the tool call ultimately succeeded or errored.
-  The audit log is the only ground truth for actual gate/UI behavior.
+- Claude needs read access to `~/.privacyfence/logs/audit/<current-ISO-week>.jsonl`
+  in the Cowork/Desktop session (filesystem access, or a Bash/Read-equivalent
+  tool) — the prompt below now has Claude read this file itself and reconcile
+  it against every call in the same report, instead of leaving that to you
+  afterward. This is a test environment against your own accounts, so there's
+  no confidentiality reason to keep the log human-only. Claude still can't
+  observe the popup UI directly (it only sees whether the tool call ultimately
+  succeeded or errored) — the audit log's `decision` field is what closes that
+  gap, since it records `accepted` / `denied` / `auto_accepted` regardless of
+  whether Claude witnessed the click.
 - **The environment fixtures from [`qa-environment-setup.md`](qa-environment-setup.md)
   already exist**: a `PFQA` Jira project, a `PFQA` Confluence space, a Drive
   "PrivacyFence QA Sandbox" folder, a second (non-approved) Slack channel with
@@ -50,8 +55,10 @@ Paste this as a single message into the Cowork conversation. It walks every
 connector in dependency order (list/search before get, get before write),
 deliberately hits every auto-accept rule you have configured (see the
 environment doc's consolidated rules block) back-to-back with a contrasting
-call that should still prompt, and ends with a self-report you diff against
-the audit log.
+call that should still prompt, and ends with a self-report that already has
+the audit log's actual decision for every call baked in — Claude reads
+`~/.privacyfence/logs/audit/<this-week>.jsonl` itself during the run rather
+than leaving reconciliation to you afterward.
 
 **This version is safe to run repeatedly against the same accounts.** Every
 artifact it creates is stamped with a run ID, so re-running it never collides
@@ -91,7 +98,13 @@ Ground rules:
   4 tool calls, 2 required approval") before moving to the next phase, so I'm not
   flooded with 40 popups back to back.
 - Keep a running table as you go: `tool name | gate observed (silent / Cowork
-  review / native popup) | decision | notes`. Print the full table at the very end.
+  review / native popup) | my decision | audit-log decision | notes`. This is a
+  test environment against my own accounts, so read
+  `~/.privacyfence/logs/audit/<this-week>.jsonl` yourself as you go (or in a
+  batch at the end of each phase) and fill in the `audit-log decision` column
+  with the actual logged `accepted` / `denied` / `auto_accepted` value for each
+  call — match entries by timestamp and tool/operation name. Don't leave that
+  column blank or defer it to me. Print the full table at the very end.
 - Keep a second running table, the manifest: `connector | artifact | id | {RUN_ID}
   tag | deletable via tool? (yes/no)`. Print it at the very end too, split into
   "cleaned up in Phase 11" vs. "needs manual deletion."
@@ -99,7 +112,8 @@ Ground rules:
 I (the human) will be watching for the approval prompts as they appear. Some
 instructions below tell you to expect a prompt and note what I'll do with it
 (Accept / Deny / Show Details) — do that, then report back what actually happened
-in the tool result.
+in the tool result, and confirm it against the audit log entry for that call
+before writing it into the table as settled rather than assumed.
 
 ---
 
@@ -135,9 +149,9 @@ in the tool result.
 3. Pick a **short** message with no large attachments (this matters — a big one
    makes a Deny indistinguishable from a size-truncation error) and call
    `gmail_get_message` again. **I will click Deny this time.** Confirm you get an
-   error, not data — and don't fabricate a fallback answer. Note whether the
-   error text looks like a denial or a truncation, but don't treat that guess as
-   confirmed; that's what the audit log is for.
+   error, not data — and don't fabricate a fallback answer. Then read the audit
+   log entry for this call and state definitively whether it was `denied` or a
+   truncation with a different underlying cause — don't leave this as a guess.
 4. Pick a message that has a thread with 2+ messages, call `gmail_get_thread`.
    **I will click "Show Details"** instead of Accept/Deny directly, then approve
    from the native popup. Report what came back.
@@ -272,10 +286,14 @@ each of steps 2, 4, 5, and 6:
 2. `telegram_get_messages` on `<QA_FIXTURES>.telegram_approved_chat_id` — **watch
    for a Cowork review popup and tell me explicitly whether you see one before I
    respond**, don't infer it from the tool result; I'll Accept if it appears.
+   Then read the audit log entry for this call and state the actual logged
+   decision (`auto_accepted` vs `accepted`) — that settles it even if my own
+   observation of the popup was ambiguous.
 3. `telegram_get_messages` on a **different** chat that isn't in
-   `approved_chats` — same explicit "did a popup appear?" question. I'll Accept.
+   `approved_chats` — same explicit "did a popup appear?" question, then the
+   same audit-log confirmation. I'll Accept.
 4. `telegram_search_messages` with a query that matches the seed message from
-   setup — same explicit popup check.
+   setup — same explicit popup check plus audit-log confirmation.
 5. `telegram_send_message` to "Saved Messages"
    (`telegram_saved_messages_chat_id`), test text tagged `{RUN_ID}`. Popup,
    Accept.
@@ -349,29 +367,43 @@ a delete/remove/archive/close tool available, call it now:
 ---
 
 ## Final report
-Print the full running table (tool | gate observed | decision | notes), then the
-full manifest table split into "cleaned up in Phase 11" vs. "needs manual
-deletion." Then:
-- Call out any tool whose observed gate didn't match what I told you to expect.
-- Give the Phase 7 (Telegram) popup-visibility answers from steps 2–4 explicitly
-  — don't let this collapse back into "I can't tell," since I told you to watch
-  for the popup directly this time.
+Print the full running table (tool | gate observed | my decision | audit-log
+decision | notes), then the full manifest table split into "cleaned up in
+Phase 11" vs. "needs manual deletion." Then:
+- Call out any tool whose observed gate, or whose audit-log decision, didn't
+  match what I told you to expect — these are two independent checks now, so
+  flag it even if only one of them disagrees.
+- Give the Phase 7 (Telegram) popup-visibility answers from steps 2–4
+  explicitly, each one backed by the matching audit-log entry — don't let this
+  collapse back into "I can't tell," since both your own observation and the
+  log are available this time.
 - List any pre-existing `PrivacyFence QA test [...]` artifacts you noticed that
   carry a **different** `{RUN_ID}` (or no `{RUN_ID}` at all, from before this
   version of the prompt existed) — flag them as leftovers from a previous run,
   don't touch them, and don't count them as part of this run's manifest.
-
-I'll separately check `~/.privacyfence/logs/audit/<this-week>.jsonl` myself to
-cross-reference every call's logged decision — you don't need to access that file.
+- Note any call you couldn't find a matching audit-log entry for at all (clock
+  skew, wrong week's file, a log write that never happened) — that's itself
+  worth reporting, not something to silently paper over with the tool-result
+  guess.
 ````
 
 ## Reading the results
 
-Claude's self-report tells you whether each call **succeeded or errored** —
-not whether a popup rendered, or what you clicked. Treat its "gate observed"
-column as a hypothesis, not ground truth: cross-reference the audit log for
-each call's actual `decision` field (`accepted` / `denied` / `auto_accepted`)
-before concluding a gate misbehaved.
+The prompt now has Claude read the audit log itself and fill in an
+`audit-log decision` column, so you shouldn't need to reconcile
+`accepted` / `denied` / `auto_accepted` by hand afterward — that column *is*
+ground truth, not a hypothesis. What Claude still can't do is independently
+confirm the popup UI rendered correctly on your screen; it can only confirm
+what the daemon actually decided. If your own observation of a popup
+disagrees with the logged decision (e.g. you saw no prompt but the log says
+`accepted` rather than `auto_accepted`), that's the interesting case worth
+investigating — it means the popup and the logged decision disagreed, which
+the tool result and the log alone can't explain by themselves.
+
+Spot-check a handful of entries yourself if you want an independent check on
+Claude's reconciliation, but treat a fully-populated `audit-log decision`
+column as the run having done its job, not as something to redo from
+scratch.
 
 Watch for these three error shapes, which are easy to mis-file as gate bugs
 when they're really something else:
