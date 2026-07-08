@@ -32,11 +32,14 @@ combination only breaks for non-ASCII input.
 - The `privacyfence` MCP server attached to a Claude Cowork/Desktop
   conversation (`claude mcp add privacyfence privacyfence-bridge`, or the
   `.mcpb` extension).
-- Claude needs read access to `~/.privacyfence/logs/audit/<current-ISO-week>.jsonl`
-  in the Cowork/Desktop session (filesystem access, or a Bash/Read-equivalent
-  tool) — the prompt below now has Claude read this file itself and reconcile
-  it against every call in the same report, instead of leaving that to you
-  afterward. This is a test environment against your own accounts, so there's
+- Claude needs read access to `logs/audit/<current-ISO-week>.jsonl` in the
+  Cowork/Desktop session (filesystem access, or a Bash/Read-equivalent tool)
+  — under `~/.privacyfence/` for a bundled/DMG install, or the project root
+  if the daemon is running from source (see
+  [dev-vs-live-setup.md](dev-vs-live-setup.md)) — the prompt below now has
+  Claude read this file itself and reconcile it against every call in the
+  same report, instead of leaving that to you afterward. This is a test
+  environment against your own accounts, so there's
   no confidentiality reason to keep the log human-only. Claude still can't
   observe the popup UI directly (it only sees whether the tool call ultimately
   succeeded or errored) — the audit log's `decision` field is what closes that
@@ -65,8 +68,9 @@ deliberately hits every auto-accept rule you have configured (see the
 environment doc's consolidated rules block) back-to-back with a contrasting
 call that should still prompt, and ends with a self-report that already has
 the audit log's actual decision for every call baked in — Claude reads
-`~/.privacyfence/logs/audit/<this-week>.jsonl` itself during the run rather
-than leaving reconciliation to you afterward.
+`logs/audit/<this-week>.jsonl` itself during the run (see the Prerequisites
+note above for which of the two possible locations that is) rather than
+leaving reconciliation to you afterward.
 
 **This version is safe to run repeatedly against the same accounts, and needs
 no editing before you paste it.** Every artifact it creates is stamped with a
@@ -139,8 +143,11 @@ Ground rules:
 - Keep a running table as you go: `tool name | gate observed (silent / Cowork
   review / native popup) | my decision | audit-log decision | notes`. This is a
   test environment against my own accounts, so read
-  `~/.privacyfence/logs/audit/<this-week>.jsonl` yourself as you go (or in a
-  batch at the end of each phase) and fill in the `audit-log decision` column
+  `logs/audit/<this-week>.jsonl` yourself as you go (or in a batch at the end
+  of each phase) — under `~/.privacyfence/` if I'm running a bundled/DMG
+  install, or the project root if the daemon is running from source; check
+  which one actually exists rather than assuming — and fill in the
+  `audit-log decision` column
   with the actual logged `accepted` / `denied` / `auto_accepted` value for each
   call — match entries by timestamp and tool/operation name. Don't leave that
   column blank or defer it to me. Print the full table at the very end.
@@ -165,7 +172,10 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
 
 1. Generate `{RUN_ID}` yourself right now as `YYYY-MM-DD-HHmm` in my local time.
    Use it verbatim in every title for the rest of this run.
-2. Read `~/.privacyfence/config/settings.yaml` and keep the full
+2. Read `settings.yaml` yourself — `~/.privacyfence/config/settings.yaml` if
+   this daemon is a bundled/DMG install, or `config/settings.yaml` in the
+   project root if it's running from source (check which one exists; see
+   [dev-vs-live-setup.md](dev-vs-live-setup.md)) — and keep the full
    `auto_accept_rules` block in mind for the rest of the run — several fixtures
    below come directly from it rather than a separate lookup.
 3. `drive_list_files` (or equivalent search) for a folder named exactly

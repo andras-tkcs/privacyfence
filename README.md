@@ -513,11 +513,14 @@ cp src/privacyfence/resources/settings.yaml.example config/settings.yaml
 ```
 
 Build (or obtain from IT) an organization config bundle, then authorize each connector you want —
-either from the menu bar once `privacyfence-app` is running, or headlessly from the CLI:
+either from the menu bar once `privacyfence-app` is running, or headlessly from the CLI. Running
+from source (unbundled) keeps all of this — config, `org/`, `credentials/`, logs — inside the repo
+folder itself; only a PyInstaller-bundled `.app` uses `~/.privacyfence` instead (see
+[docs/dev-vs-live-setup.md](docs/dev-vs-live-setup.md)):
 
 ```bash
 python3 scripts/build_org_bundle.py --google-client-secret /path/to/client_secret.json -o org_config.json
-mkdir -p ~/.privacyfence/org && cp org_config.json ~/.privacyfence/org/
+mkdir -p org && cp org_config.json org/
 
 privacyfence-app --gmail-oauth
 privacyfence-app --drive-oauth
@@ -572,7 +575,7 @@ directly — it produces `dist/PrivacyFence-<version>.mcpb`.
 
 ### Option B: manual MCP config (Claude Desktop, Claude Code, or other MCP clients)
 
-Add the bridge to Claude's MCP config (`~/.claude/claude_desktop_config.json` or equivalent):
+Add the bridge to Claude's MCP config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, or the equivalent path for Claude Code / other MCP clients):
 
 ```json
 {
