@@ -60,14 +60,19 @@ the audit log's actual decision for every call baked in — Claude reads
 `~/.privacyfence/logs/audit/<this-week>.jsonl` itself during the run rather
 than leaving reconciliation to you afterward.
 
-**This version is safe to run repeatedly against the same accounts.** Every
-artifact it creates is stamped with a run ID, so re-running it never collides
-with (or gets confused by) what a previous run left behind, and it ends with
-a teardown phase that cleans up everything it can. Before running it, replace
-`<QA_FIXTURES>` in Phase 0 below with the actual IDs/keys from your
-environment setup (folder ID, project/space keys, channel IDs, chat IDs,
-Salesforce report/record IDs) — everything else in the prompt refers back to
-those via `{...}` placeholders rather than hardcoding them again.
+**This version is safe to run repeatedly against the same accounts, and needs
+no editing before you paste it.** Every artifact it creates is stamped with a
+run ID, so re-running it never collides with (or gets confused by) what a
+previous run left behind, and it ends with a teardown phase that cleans up
+everything it can. Phase 0 has Claude look up every fixture itself — by exact
+name (the Drive Sandbox folder, the Slack control channel, the Salesforce
+report), by literal key (the `PFQA` Jira project/Confluence space), by a flag
+the connector already exposes (Telegram's `is_self` for Saved Messages), or
+straight out of `settings.yaml`'s own `auto_accept_rules` — instead of you
+pasting IDs into a `<QA_FIXTURES>` block by hand. That only works if your
+environment setup used the exact names [`qa-environment-setup.md`](qa-environment-setup.md)
+specifies; if a fixture doesn't resolve, Phase 0 reports exactly which one is
+missing and skips only the steps that need it.
 
 ````markdown
 You are connected to my personal accounts (Gmail, Drive/Sheets, Slack, Calendar,
@@ -88,8 +93,8 @@ Ground rules:
 - Prefer QA-owned destinations over guessing at real ones: the Drive "PrivacyFence
   QA Sandbox" folder, the `PFQA` Jira project, the `PFQA` Confluence space, the
   non-approved Slack channel, Telegram "Saved Messages" / the approved chat. If a
-  step needs a destination not covered by `<QA_FIXTURES>` below, stop and ask me —
-  don't guess, and don't fall back to a real project/space/channel.
+  step needs a destination Phase 0 couldn't resolve, stop and ask me — don't
+  guess, and don't fall back to a real project/space/channel.
 - When a step says "pick any existing X," prefer the most recently created
   `PrivacyFence QA test [...]`-tagged item over real data, and ignore items tagged
   with a *different* `{RUN_ID}` (previous runs' leftovers) — call them out in the
@@ -118,29 +123,48 @@ before writing it into the table as settled rather than assumed.
 ---
 
 ## Phase 0 — Setup
+Resolve every fixture yourself before Phase 1 — don't ask me for IDs, look
+them up. Build a `{FIXTURES}` table as you go and print it before moving on,
+so I can catch a wrong lookup immediately instead of at the end of the run.
+
 1. Generate `{RUN_ID}` yourself right now as `YYYY-MM-DD-HHmm` in my local time.
    Use it verbatim in every title for the rest of this run.
-2. `<QA_FIXTURES>` — I'm replacing this whole block with my actual values before
-   sending this prompt:
-   ```
-   drive_qa_folder_id:       <Drive "PrivacyFence QA Sandbox" folder id>
-   slack_approved_channel:   <channel id already in slack.read_messages.approved_channel>
-   slack_control_channel:    <second channel id, NOT in any auto-accept rule, has a thread>
-   jira_qa_project_key:      PFQA
-   jira_contrast_project_key: KAN          # or your real project, used only as contrast
-   confluence_qa_space_key:  PFQA
-   confluence_contrast_space_key: OOP      # or your real space, used only as contrast
-   telegram_saved_messages_chat_id: <chat_id>
-   telegram_approved_chat_id: <chat_id>    # may be the same as saved messages
-   salesforce_qa_report_id:  <PrivacyFence QA Report id>
-   salesforce_qa_object_type: Account
-   ```
-   If any value is missing, don't invent one — tell me which fixture from
-   `qa-environment-setup.md` isn't set up yet, skip only the steps that need it,
-   and keep going with the rest.
-3. Read `~/.privacyfence/config/settings.yaml` yourself and tell me which
-   `auto_accept_rules` are currently configured, so the "should NOT prompt" steps
-   below use whatever's actually live rather than what this prompt assumes.
+2. Read `~/.privacyfence/config/settings.yaml` and keep the full
+   `auto_accept_rules` block in mind for the rest of the run — several fixtures
+   below come directly from it rather than a separate lookup.
+3. `drive_list_files` (or equivalent search) for a folder named exactly
+   `PrivacyFence QA Sandbox` → `drive_qa_folder_id`. If more than one file
+   matches, prefer the one whose `mime_type` is a folder.
+4. `slack_list_channels` →
+   - `slack_approved_channel`: the channel ID(s) already listed under
+     `slack.read_messages` → `approved_channel` in the config you just read.
+     If that rule isn't configured, tell me and skip Phase 3 step 2.
+   - `slack_control_channel`: the channel named exactly
+     `privacyfence-qa-control`.
+5. `telegram_list_chats` →
+   - `telegram_saved_messages_chat_id`: the chat with `is_self: true`.
+   - `telegram_approved_chat_id`: the chat ID from `telegram.read_chat_messages`
+     → `approved_chats` in settings.yaml, if configured; otherwise the same
+     value as `telegram_saved_messages_chat_id`.
+   - `telegram_control_chat_id`: any other chat in the list that isn't either
+     of the two above, for the "not approved" contrast case.
+6. `salesforce_list_reports` and `salesforce.run_report` → `approved_report_ids`
+   in settings.yaml →
+   - `salesforce_qa_report_id`: the ID from the config rule if set; otherwise
+     the report named exactly `PrivacyFence QA Report`.
+   - `salesforce_qa_object_type`: the value from `salesforce.read_record` →
+     `approved_object_types` in settings.yaml if set; otherwise `Account`.
+7. `jira_list_projects` →
+   - `jira_qa_project_key`: confirm `PFQA` exists in the list.
+   - `jira_contrast_project_key`: any other project key in the list.
+8. `confluence_list_spaces` →
+   - `confluence_qa_space_key`: confirm `PFQA` exists in the list.
+   - `confluence_contrast_space_key`: any other space key in the list.
+9. For any fixture you couldn't resolve (missing folder/channel/report, or a
+   list that only contains `PFQA` with no contrast candidate), don't invent a
+   substitute — tell me which one, point at the relevant section of
+   `qa-environment-setup.md`, skip only the steps that depend on it, and keep
+   going with the rest.
 
 ## Phase 1 — Gmail
 1. `gmail_list_messages` and `gmail_list_threads` (expect: silent, no prompt).
@@ -159,10 +183,10 @@ before writing it into the table as settled rather than assumed.
    silent). Then `gmail_download_attachment` on one — this is `review` gated,
    I'll Accept.
 6. Auto-accept rule check: using whatever `gmail.read_message` /
-   `trusted_sender_domain` value Phase 0 step 3 found, find a message from that
-   domain and call `gmail_get_message` on it. This should NOT prompt me at all.
-   Tell me whether a prompt appeared or not. If no such rule is configured, skip
-   and say so.
+   `trusted_sender_domain` value you read from `settings.yaml` in Phase 0, find
+   a message from that domain and call `gmail_get_message` on it. This should
+   NOT prompt me at all. Tell me whether a prompt appeared or not. If no such
+   rule is configured, skip and say so.
 7. `gmail_create_draft` — draft to myself, subject `PrivacyFence QA test [{RUN_ID}]
    — safe to delete`. This is popup-gated, I'll Accept. Add it to the manifest.
 8. `gmail_reply_draft` on the thread from step 4, again clearly marked as a test
@@ -173,7 +197,7 @@ before writing it into the table as settled rather than assumed.
     otherwise in chat.
 
 ## Phase 2 — Drive & Sheets
-All of this run's Drive/Sheets artifacts go inside `<QA_FIXTURES>.drive_qa_folder_id`
+All of this run's Drive/Sheets artifacts go inside `{FIXTURES}.drive_qa_folder_id`
 (pass it as `parent_folder_id` everywhere that accepts one) — that's also what
 should trigger the `drive.read_file_contents` / `approved_folder` auto-accept rule
 in step 3, if you configured it.
@@ -213,8 +237,8 @@ in step 3, if you configured it.
 ## Phase 3 — Slack
 1. `slack_list_channels` (expect: silent).
 2. Auto-accept rule check: `slack_get_channel_history` on
-   `<QA_FIXTURES>.slack_approved_channel`. This should NOT prompt me. Confirm.
-3. `slack_get_channel_history` on `<QA_FIXTURES>.slack_control_channel` (the
+   `{FIXTURES}.slack_approved_channel`. This should NOT prompt me. Confirm.
+3. `slack_get_channel_history` on `{FIXTURES}.slack_control_channel` (the
    non-approved one) — should prompt for review. I'll Accept.
 4. `slack_search_messages` with any query — review gate, Accept.
 5. `slack_get_thread_replies` on the thread that already exists in
@@ -281,16 +305,16 @@ each of steps 2, 4, 5, and 6:
 
 ## Phase 7 — Telegram
 1. `telegram_list_chats` (expect: silent — the only genuinely unconditional one).
-   Confirm `<QA_FIXTURES>.telegram_saved_messages_chat_id` is now present in the
+   Confirm `{FIXTURES}.telegram_saved_messages_chat_id` is now present in the
    results.
-2. `telegram_get_messages` on `<QA_FIXTURES>.telegram_approved_chat_id` — **watch
+2. `telegram_get_messages` on `{FIXTURES}.telegram_approved_chat_id` — **watch
    for a Cowork review popup and tell me explicitly whether you see one before I
    respond**, don't infer it from the tool result; I'll Accept if it appears.
    Then read the audit log entry for this call and state the actual logged
    decision (`auto_accepted` vs `accepted`) — that settles it even if my own
    observation of the popup was ambiguous.
-3. `telegram_get_messages` on a **different** chat that isn't in
-   `approved_chats` — same explicit "did a popup appear?" question, then the
+3. `telegram_get_messages` on `{FIXTURES}.telegram_control_chat_id` (not in
+   `approved_chats`) — same explicit "did a popup appear?" question, then the
    same audit-log confirmation. I'll Accept.
 4. `telegram_search_messages` with a query that matches the seed message from
    setup — same explicit popup check plus audit-log confirmation.
@@ -300,14 +324,14 @@ each of steps 2, 4, 5, and 6:
 
 ## Phase 8 — Salesforce
 1. `salesforce_list_reports` (expect: silent).
-2. `salesforce_run_report` on `<QA_FIXTURES>.salesforce_qa_report_id` — if
+2. `salesforce_run_report` on `{FIXTURES}.salesforce_qa_report_id` — if
    `salesforce.run_report` has an `approved_report_ids` rule matching it, this
    should NOT prompt. Tell me either way. Confirm you get actual data rows back,
    not an empty result.
 3. `salesforce_run_report` on any *other* report you can access — should still
    prompt for review regardless of the rule above. Accept.
 4. From the QA report's rows, pick a record and call `salesforce_get_record`
-   with `object_type` set to `<QA_FIXTURES>.salesforce_qa_object_type`. If
+   with `object_type` set to `{FIXTURES}.salesforce_qa_object_type`. If
    `salesforce.read_record` has an `approved_object_types` rule matching it, this
    should NOT prompt — tell me either way. Confirm you get real field data back,
    not `NOT_FOUND`.
@@ -316,7 +340,7 @@ each of steps 2, 4, 5, and 6:
 
 ## Phase 9 — Jira
 1. `jira_list_projects`, `jira_search_issues` (expect: both silent).
-2. `jira_get_issue` on any existing issue in `<QA_FIXTURES>.jira_qa_project_key`.
+2. `jira_get_issue` on any existing issue in `{FIXTURES}.jira_qa_project_key`.
    If `jira.read_issue` has an `approved_project_keys` rule matching it, this
    should NOT prompt — tell me either way.
 3. `jira_get_issue` on any issue in `jira_contrast_project_key` — should still
@@ -333,7 +357,7 @@ each of steps 2, 4, 5, and 6:
 ## Phase 10 — Confluence
 1. `confluence_list_spaces`, `confluence_search`, `confluence_cql_search`,
    `confluence_list_pages` (expect: all silent).
-2. Pick any existing page in `<QA_FIXTURES>.confluence_qa_space_key`,
+2. Pick any existing page in `{FIXTURES}.confluence_qa_space_key`,
    `confluence_get_page`(`_by_title`) — if `confluence.read_page` has an
    `approved_space_keys` rule matching it, this should NOT prompt. Tell me
    either way.

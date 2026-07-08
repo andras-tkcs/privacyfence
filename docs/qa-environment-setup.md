@@ -23,9 +23,19 @@ recreated, by every future run of the test prompt. Per-run test artifacts
 
 Everything named here uses the prefix **`PFQA`** (Jira/Confluence keys) or
 **`PrivacyFence QA —`** (titles) so it's grep-able and obviously safe to
-touch. Don't reuse your real `KAN` Jira project or `OOP` Confluence space as
-the *target* of QA writes — keep them only as the "different
-project/space, should still prompt" contrast case, which they already are.
+touch. Don't reuse your real Jira project or Confluence space as the *target*
+of QA writes — keep whatever you already have as the "different
+project/space, should still prompt" contrast case, which it already is.
+
+**The test prompt is self-contained: it looks these fixtures up by name at
+the start of every run** instead of you pasting IDs into it. That only works
+if you use the *exact* names below (Jira/Confluence keys, the Drive folder
+name, the Slack channel name) — get those wrong and Phase 0 reports the
+fixture as missing instead of silently guessing. A few fixtures need no name
+at all: Claude reads `slack.read_messages`/`telegram.read_chat_messages`/
+`salesforce.run_report`/`salesforce.read_record`'s auto-accept rules straight
+out of `settings.yaml` (Phase 0 already reads that file), and Telegram's
+Saved Messages is identified by its `is_self` flag, not a name.
 
 ---
 
@@ -56,8 +66,11 @@ agree.
 
 ## 2. Drive & Sheets
 
-1. Create one durable folder: **`PrivacyFence QA Sandbox`** in "My Drive".
-   Note its file ID.
+1. Create one durable folder: **`PrivacyFence QA Sandbox`** in "My Drive" —
+   that exact name. Claude looks it up by name each run
+   (`drive_list_files` with a `name =` query), so you don't need to note or
+   paste its ID anywhere in the prompt. You do still need the ID once, for
+   step 2 below, since `settings.yaml` rules are ID-based, not name-based.
 2. Add an auto-accept fixture so `drive.read_file_contents` /
    `drive.download_file` have something to match against:
    ```yaml
@@ -79,20 +92,20 @@ agree.
 ## 3. Slack
 
 You currently have exactly one channel (`C0BF29YL6EQ`, already in
-`slack.read_messages: approved_channel`). Create a second one so the
-contrast case in Phase 3 step 3 has something to hit:
+`slack.read_messages: approved_channel`). The prompt gets that channel ID
+straight from `settings.yaml` — no name requirement on it, rename it or
+leave it as-is. Create a second one so the contrast case in Phase 3 step 3
+has something to hit:
 
-1. Create a channel, e.g. `#privacyfence-qa-control`. Join it. **Do not**
-   add it to `approved_channel` — it exists specifically to *not* match.
+1. Create a channel named **exactly `privacyfence-qa-control`**. Join it.
+   **Do not** add it to `approved_channel` — it exists specifically to *not*
+   match. Claude finds it each run via `slack_list_channels`, matching on
+   this exact name, so don't rename it later without updating this doc.
 2. Post one message in it, then reply to that message in-thread (replying
    from your own account is fine — Slack doesn't require a second person for
    a thread to exist). This gives `slack_get_thread_replies` permanent,
    reusable content instead of depending on whatever Phase 3 step 3/4
    happens to surface that run.
-3. Optional: rename your existing approved channel to something obviously
-   QA-owned (e.g. `#privacyfence-qa`) if it isn't already, so both QA
-   channels are easy to tell apart from real workspace channels in the
-   final report.
 
 ## 4. Calendar
 
@@ -153,28 +166,38 @@ once, and "Saved Messages" is no exception:
 
 1. Open Telegram (phone or desktop) and send yourself **one** message in
    Saved Messages, manually, right now. This is a one-time action — once it
-   exists it stays in `list_chats` forever.
+   exists it stays in `list_chats` forever. No naming needed: Claude finds
+   it every run by the `is_self` flag `telegram_list_chats` already returns,
+   not by matching a name.
 2. Create (or repurpose) one more low-stakes chat — a private group with
-   just yourself, or a chat with a throwaway/test contact — to use as the
-   `approved_chats` fixture:
+   just yourself, or a chat with a throwaway/test contact — and add it as
+   the `approved_chats` fixture:
    ```yaml
    auto_accept_rules:
      telegram.read_chat_messages:
        - rule: approved_chats
          value: ["<chat_id of that group/chat>"]
    ```
-   Get the numeric `chat_id` from `telegram_list_chats` after step 1. Saved
-   Messages itself is a fine choice here too, since it's always safe to
-   auto-accept reads of your own messages to yourself.
+   Get the numeric `chat_id` from `telegram_list_chats` after step 1. Once
+   it's in `settings.yaml`, Claude reads the ID from there directly — you
+   don't need to name the chat anything specific, or paste the ID into the
+   prompt. Saved Messages itself is a fine choice here too, since it's
+   always safe to auto-accept reads of your own messages to yourself; if you
+   go that route, skip this rule and Phase 0 will just treat Saved Messages
+   as both the read target and its own approved chat.
 3. Send at least one message into whichever chat you didn't just approve, so
    `telegram_search_messages` has something to actually find rather than
-   coming back empty.
+   coming back empty, and Phase 7's "different, non-approved chat" step
+   (found dynamically from `telegram_list_chats`, no name needed) has
+   something to point at.
 
 Because whether a Cowork review popup appeared for `telegram_get_messages` /
 `telegram_search_messages` is genuinely ambiguous from the tool result alone
 (see the original report's Phase 7 verdict), this is a process fix, not an
 environment fix: watch for the popup yourself and say out loud whether it
-appeared, rather than letting Claude infer it from success/failure.
+appeared. The current prompt also has Claude cross-reference the audit log's
+`decision` field for these same calls, which settles it independently of
+what either of you observed.
 
 ## 8. Salesforce
 
@@ -185,9 +208,14 @@ path (real rows, real record) has never actually been exercised. Fix:
 
 1. **Setup → Object Manager → Account** (or any object you're comfortable
    using) → create 2–3 sample records prefixed `PrivacyFence QA — `.
-2. **Reports → New Report**, base it on that object, name it
-   `PrivacyFence QA Report`. Note its report ID (from its URL).
-3. Add auto-accept fixtures:
+2. **Reports → New Report**, base it on that object, name it exactly
+   `PrivacyFence QA Report`. Claude finds it by that name via
+   `salesforce_list_reports` if you skip step 3 below; if you do add the
+   `approved_report_ids` rule, Claude reads the ID straight from
+   `settings.yaml` instead and the name stops mattering — either path works,
+   the name is just the fallback when there's no rule to read from.
+3. Add auto-accept fixtures (recommended — this also gets you the
+   `approved_report_ids`/`approved_object_types` rule coverage):
    ```yaml
    auto_accept_rules:
      salesforce.run_report:
@@ -203,12 +231,16 @@ path (real rows, real record) has never actually been exercised. Fix:
 
 ## 9. Jira
 
-`KAN` (your existing real project) stays as-is — use it only as the
-"different project, should still prompt" contrast. Create a dedicated QA
-project instead of writing more test issues into `KAN`:
+Your existing real project(s) stay as-is — the prompt now picks whichever
+one isn't `PFQA` from `jira_list_projects` at runtime as the "different
+project, should still prompt" contrast, so there's nothing to name or record
+here for that half. Create a dedicated QA project instead of writing more
+test issues into a real one:
 
-1. Create a Jira project, key **`PFQA`**, any template (Kanban is fine —
-   matches what `KAN` already uses).
+1. Create a Jira project with key **exactly `PFQA`**, any template (Kanban
+   is fine). The key has to match exactly — Claude uses it as a literal
+   string, not a lookup, so there's no fuzzy-matching to fall back on if you
+   pick something else.
 2. Add the fixture:
    ```yaml
    auto_accept_rules:
@@ -223,10 +255,11 @@ project instead of writing more test issues into `KAN`:
 
 ## 10. Confluence
 
-Same pattern as Jira. `OOP` (existing space) becomes the contrast case;
-create a dedicated space for actual QA writes:
+Same pattern as Jira: the prompt picks whichever space isn't `PFQA` from
+`confluence_list_spaces` at runtime as the contrast case. Create a dedicated
+space for actual QA writes:
 
-1. Create a Confluence space, key **`PFQA`**.
+1. Create a Confluence space with key **exactly `PFQA`**.
 2. Add the fixture:
    ```yaml
    auto_accept_rules:
@@ -297,8 +330,13 @@ Two different lifetimes are at play, and conflating them is what caused the
 
 - **Environment fixtures** (this doc): the `PFQA` Jira project/Confluence
   space, the Drive Sandbox folder, the two Slack channels, the Telegram
-  chats, the Salesforce sample records/report. Created **once**, looked up
-  by fixed name/key on every subsequent run, never recreated.
+  chats, the Salesforce sample records/report. Created **once**; the test
+  prompt re-discovers them every run — by exact name (Drive folder, Slack
+  control channel, Salesforce report), by literal key (`PFQA`), by a
+  connector-provided flag (Telegram's `is_self`), or straight out of
+  `settings.yaml`'s own `auto_accept_rules` (Slack approved channel,
+  Telegram approved chat, Salesforce approved report/object type) — never
+  recreated, and never pasted in by hand.
 - **Per-run artifacts** (the test prompt itself): drafts, events, one-off
   issues/pages/files. These should carry a run-scoped identifier so
   repeated runs don't produce indistinguishable duplicates — see the
