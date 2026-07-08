@@ -350,6 +350,7 @@ class GmailConnector(Connector):
             gate="review",
             preview=preview,
             details_text=details,
+            pii_scan_text=body,
             my_email=self.my_email,
             args={"message_id": message_id},
         )
@@ -374,12 +375,14 @@ class GmailConnector(Connector):
             "Dates": date_range,
         }
         lines = []
+        bodies = []
         for i, m in enumerate(messages, 1):
             lines.append(f"--- Message {i} ---")
             lines.append(f"From: {getattr(m, 'sender', '')}")
             lines.append(f"Date: {getattr(m, 'date', '')}")
             body = getattr(m, "body_text", "") or getattr(m, "body_html", "") or ""
             lines.append(body)
+            bodies.append(body)
         details = "\n".join(lines)
         filtered = thread.to_dict() if hasattr(thread, "to_dict") else vars(thread)
         return await gated_call(
@@ -393,6 +396,7 @@ class GmailConnector(Connector):
             gate="review",
             preview=preview,
             details_text=details,
+            pii_scan_text="\n".join(bodies),
             my_email=self.my_email,
             args={"thread_id": thread_id},
         )
@@ -434,6 +438,7 @@ class GmailConnector(Connector):
             gate="review",
             preview=preview,
             details_text=details,
+            pii_scan_text="",
             my_email=self.my_email,
             args={"message_id": message_id, "attachment_name": attachment_name},
         )

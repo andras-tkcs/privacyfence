@@ -99,6 +99,19 @@ class TestGetMessages:
         # forwarded to Claude, only the whitelisted fields below.
         assert result == [{"id": 1, "sender_name": "Alice", "text": "see you tomorrow", "date": "2026-07-06T10:00:00Z"}]
 
+    async def test_pii_scan_text_is_message_text_only_not_sender_names(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_messages.return_value = [
+            make_message(sender_name="alice@example.com", text="see you tomorrow"),
+        ]
+
+        await connector.call("telegram_get_messages", {"chat_id": 100})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["pii_scan_text"] == "see you tomorrow"
+        assert "alice@example.com" in kwargs["details_text"]  # still shown in the popup
+        assert "alice@example.com" not in kwargs["pii_scan_text"]
+
     async def test_chat_name_falls_back_to_chat_id_when_no_messages(self, gated_call_spy):
         connector, client = make_connector()
         client.get_messages.return_value = []
@@ -132,6 +145,18 @@ class TestSearchMessages:
             "id": 1, "chat_name": "Family Group", "sender_name": "Alice",
             "text": "see you tomorrow", "date": "2026-07-06T10:00:00Z",
         }
+
+    async def test_pii_scan_text_is_message_text_only(self, gated_call_spy):
+        connector, client = make_connector()
+        client.search_messages.return_value = [
+            make_message(sender_name="alice@example.com", text="see you tomorrow"),
+        ]
+
+        await connector.call("telegram_search_messages", {"query": "tomorrow"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["pii_scan_text"] == "see you tomorrow"
+        assert "alice@example.com" not in kwargs["pii_scan_text"]
 
     async def test_client_error_becomes_runtime_error(self):
         connector, client = make_connector()

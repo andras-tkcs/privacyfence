@@ -163,6 +163,21 @@ class TestGetEventDetails:
         assert kwargs["raw_data"] is client.get_event.return_value
         assert kwargs["args"] == {"calendar_id": "primary", "event_id": "e1"}
 
+    async def test_pii_scan_text_is_description_only_not_organizer_or_attendees(self, gated_call_spy):
+        # organizer_email/attendee emails are present on every event
+        # regardless of content -- the PII scan must not see them, only
+        # the description.
+        connector, client = make_connector()
+        client.get_event.return_value = make_event(description="nothing sensitive")
+
+        await connector.call("calendar_get_event_details", {"calendar_id": "primary", "event_id": "e1"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["pii_scan_text"] == "nothing sensitive"
+        assert "alice@example.com" in kwargs["details_text"]  # organizer, still shown in the popup
+        assert "alice@example.com" not in kwargs["pii_scan_text"]
+        assert "bob@example.com" not in kwargs["pii_scan_text"]  # attendee
+
     async def test_filtered_data_includes_day_of_week_and_full_attendees(self, gated_call_spy):
         connector, client = make_connector()
         client.get_event.return_value = make_event()

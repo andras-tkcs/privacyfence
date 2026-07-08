@@ -155,6 +155,25 @@ class TestGetIssue:
         kwargs = gated_call_spy[0]
         assert kwargs["raw_data"] is kwargs["filtered_data"]
 
+    async def test_pii_scan_text_is_description_and_comments_only(self, gated_call_spy):
+        # reporter/assignee/comment author default to email addresses,
+        # present on every issue regardless of content -- the PII scan
+        # must not see them, only the description and comment bodies.
+        connector, client = make_connector()
+        client.get_issue.return_value = make_issue(description="nothing sensitive")
+        client.get_issue_comments.return_value = [
+            JiraComment(id="c1", author="bob@example.com", body="still nothing sensitive", created="2026-07-01"),
+        ]
+
+        await connector.call("jira_get_issue", {"issue_key": "ENG-42"})
+
+        kwargs = gated_call_spy[0]
+        assert "nothing sensitive" in kwargs["pii_scan_text"]
+        assert "still nothing sensitive" in kwargs["pii_scan_text"]
+        assert "alice@example.com" in kwargs["details_text"]  # reporter, still shown in the popup
+        assert "alice@example.com" not in kwargs["pii_scan_text"]
+        assert "bob@example.com" not in kwargs["pii_scan_text"]  # assignee and comment author
+
     async def test_client_error_becomes_runtime_error(self):
         connector, client = make_connector()
         client.get_issue.side_effect = JiraClientError("issue not found")
