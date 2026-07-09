@@ -28,6 +28,9 @@ from ...helpers import assert_all_tools_leave_an_audit_trail
 
 def make_connector():
     client = MagicMock()
+    # Default to "not resolvable" so tests that don't care about task-list-name
+    # resolution keep seeing the raw list id, same as before this was added.
+    client.get_task_list.side_effect = TasksClientError("no such task list")
     return TasksConnector(client), client
 
 
@@ -93,6 +96,58 @@ class TestListAndGet:
         assert result == make_task().__dict__
 
 
+class TestListNameResolution:
+    async def test_task_list_name_resolved_in_preview(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_task_list.side_effect = None
+        client.get_task_list.return_value = TaskList(id="list1", title="Groceries", updated="u")
+        client.create_task.return_value = make_task()
+
+        await connector.call("tasks_create_task", {"task_list_id": "list1", "title": "Buy milk"})
+
+        assert gated_call_spy[0]["preview"]["Task list"] == "Groceries"
+
+    async def test_unresolvable_list_falls_back_to_raw_id(self, gated_call_spy):
+        connector, client = make_connector()  # default: get_task_list always fails
+        client.create_task.return_value = make_task()
+
+        await connector.call("tasks_create_task", {"task_list_id": "list1", "title": "Buy milk"})
+
+        assert gated_call_spy[0]["preview"]["Task list"] == "list1"
+
+    async def test_resolution_is_cached_across_calls(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_task_list.side_effect = None
+        client.get_task_list.return_value = TaskList(id="list1", title="Groceries", updated="u")
+        client.get_task.return_value = make_task()
+        client.complete_task.return_value = make_task(status="completed")
+        client.uncomplete_task.return_value = make_task(status="needsAction")
+
+        await connector.call("tasks_complete_task", {"task_list_id": "list1", "task_id": "t1"})
+        await connector.call("tasks_uncomplete_task", {"task_list_id": "list1", "task_id": "t1"})
+
+        assert gated_call_spy[0]["preview"]["Task list"] == "Groceries"
+        assert gated_call_spy[1]["preview"]["Task list"] == "Groceries"
+        client.get_task_list.assert_called_once_with("list1")
+
+    async def test_move_task_resolves_both_source_and_destination_lists(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_task_list.side_effect = lambda list_id: {
+            "list1": TaskList(id="list1", title="Groceries", updated="u"),
+            "list2": TaskList(id="list2", title="Errands", updated="u"),
+        }[list_id]
+        client.get_task.return_value = make_task()
+        client.move_task.return_value = make_task(task_list_id="list2")
+
+        await connector.call(
+            "tasks_move_task", {"source_list_id": "list1", "task_id": "t1", "destination_list_id": "list2"}
+        )
+
+        assert gated_call_spy[0]["preview"] == {
+            "Task": "Buy milk", "From list": "Groceries", "To list": "Errands",
+        }
+
+
 class TestCreateAndUpdate:
     async def test_create_task_gates_before_writing_with_metadata_only_preview(self, gated_call_spy):
         connector, client = make_connector()
@@ -148,6 +203,9 @@ class TestCompleteUncompleteMove:
         client.complete_task.assert_called_once_with("list1", "t1")
         assert result["status"] == "completed"
         assert gated_call_spy[0]["gate"] == "popup"
+        assert gated_call_spy[0]["details_text"] == (
+            "Task will be marked as completed; title and notes are unchanged."
+        )
 
     async def test_uncomplete_task(self, gated_call_spy):
         connector, client = make_connector()
@@ -158,6 +216,9 @@ class TestCompleteUncompleteMove:
 
         client.uncomplete_task.assert_called_once_with("list1", "t1")
         assert gated_call_spy[0]["gate"] == "popup"
+        assert gated_call_spy[0]["details_text"] == (
+            "Task will be marked as not completed; title and notes are unchanged."
+        )
 
     async def test_move_task(self, gated_call_spy):
         connector, client = make_connector()
@@ -173,6 +234,9 @@ class TestCompleteUncompleteMove:
         assert gated_call_spy[0]["preview"] == {
             "Task": "Buy milk", "From list": "list1", "To list": "list2",
         }
+        assert gated_call_spy[0]["details_text"] == (
+            "Task will be moved to the new list; title and notes are unchanged."
+        )
 
 
 class TestPopupGateBlocksWrites:

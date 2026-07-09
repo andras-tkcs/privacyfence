@@ -288,6 +288,7 @@ class TestContactsAddLabel:
         assert kwargs["preview"] == {"Contact": "Bob Smith", "Label": "VIP"}
         assert kwargs["gate"] == "popup"
         assert kwargs["summary"] == "Add label 'VIP' to: Bob Smith"
+        assert kwargs["details_text"] == "Label will be added to this contact; no other fields change."
         client.add_label.assert_called_once_with("people/c1", "VIP")
         assert result == {"resource_name": "people/c1", "label_added": "VIP"}
 
@@ -313,6 +314,7 @@ class TestContactsRemoveLabel:
         assert kwargs["preview"] == {"Contact": "Bob Smith", "Label": "VIP"}
         assert kwargs["gate"] == "popup"
         assert kwargs["summary"] == "Remove label 'VIP' from: Bob Smith"
+        assert kwargs["details_text"] == "Label will be removed from this contact; no other fields change."
         client.remove_label.assert_called_once_with("people/c1", "VIP")
         assert result == {"resource_name": "people/c1", "label_removed": "VIP"}
 

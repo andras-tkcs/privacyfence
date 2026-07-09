@@ -16,6 +16,98 @@ from ..salesforce_client import SalesforceClient, SalesforceClientError
 logger = logging.getLogger(__name__)
 
 
+def _format_flat_fields(fields: dict[str, Any]) -> str:
+    """Render a Salesforce record's (flat, scalar-valued) fields dict as one
+    'Field: value' line per field, alphabetized, skipping unset ones."""
+    lines = [
+        f"{key}: {value}" for key, value in sorted(fields.items())
+        if value not in (None, "")
+    ]
+    return "\n".join(lines) if lines else "(no populated fields)"
+
+
+def _report_column_labels(result_dict: dict) -> list[str]:
+    """Friendly column labels for detail rows, falling back to the raw API
+    field names when no extended metadata is present."""
+    detail_columns = ((result_dict.get("reportMetadata") or {}).get("detailColumns")) or []
+    column_info = ((result_dict.get("reportExtendedMetadata") or {}).get("detailColumnInfo")) or {}
+    return [(column_info.get(col) or {}).get("label", col) for col in detail_columns]
+
+
+def _grouping_label(groupings: list[dict], key: str) -> str | None:
+    """Walk a groupingsDown/groupingsAcross tree to resolve the label for a
+    (possibly compound, e.g. '0_1' for a nested sub-group) grouping key."""
+    label = None
+    nodes = groupings
+    for part in key.split("_"):
+        match = next((g for g in nodes if str(g.get("key")) == part), None)
+        if match is None:
+            return None
+        label = match.get("label") or match.get("value") or part
+        nodes = match.get("groupings") or []
+    return label
+
+
+def _report_group_label(result_dict: dict, fact_key: str) -> str:
+    """Best-effort human label for a factMap group key like '0!1' (a
+    grouping/sub-grouping combination) or 'T!T' (tabular, no grouping)."""
+    down_key, _, across_key = fact_key.partition("!")
+    parts = []
+    if down_key != "T":
+        label = _grouping_label(((result_dict.get("groupingsDown") or {}).get("groupings")) or [], down_key)
+        if label:
+            parts.append(label)
+    if across_key != "T":
+        label = _grouping_label(((result_dict.get("groupingsAcross") or {}).get("groupings")) or [], across_key)
+        if label:
+            parts.append(label)
+    return " / ".join(parts) if parts else fact_key
+
+
+def _format_report_rows(rows: list[dict], limit: int = 50) -> str:
+    lines = [
+        " | ".join(str(cell.get("label", "")) for cell in (row.get("dataCells") or []))
+        for row in rows[:limit]
+    ]
+    text = "\n".join(lines)
+    if len(rows) > limit:
+        text += f"\n… and {len(rows) - limit} more row(s)"
+    return text
+
+
+def _format_report_details(report_name: str, report_id: str, result_dict: dict) -> str:
+    """Render a Salesforce report-run result as plain text tables instead of
+    raw JSON. The envelope shape (factMap/groupingsDown/groupingsAcross) is
+    Salesforce's documented Analytics REST API response format; if a
+    particular report doesn't match these assumptions, falls back to a
+    short plain-language summary rather than a technical dump."""
+    header = f"Report: {report_name}\nID: {report_id}\n\n"
+    try:
+        fact_map = result_dict.get("factMap") if isinstance(result_dict, dict) else None
+        if not isinstance(fact_map, dict) or not fact_map:
+            return header + "No data returned."
+        columns = _report_column_labels(result_dict)
+        sections = []
+        for fact_key in sorted(fact_map.keys()):
+            group = fact_map[fact_key] or {}
+            body_lines = []
+            if columns and fact_key == "T!T":
+                body_lines.append(" | ".join(columns))
+            body_lines.append(_format_report_rows(group.get("rows") or []))
+            aggregates = group.get("aggregates") or []
+            if aggregates:
+                body_lines.append("Total: " + " | ".join(str(a.get("label", "")) for a in aggregates))
+            body = "\n".join(body_lines)
+            sections.append(body if fact_key == "T!T" else f"{_report_group_label(result_dict, fact_key)}\n{body}")
+        return header + "\n\n".join(sections)
+    except Exception:
+        group_count = len(result_dict.get("factMap") or {}) if isinstance(result_dict, dict) else 0
+        return (
+            header + f"Report ran successfully — {group_count} data group(s). "
+            "Structure too complex to preview here; open in Salesforce to view."
+        )
+
+
 class SalesforceConnector(Connector):
     def __init__(self, client: SalesforceClient) -> None:
         self._sf = client
@@ -91,8 +183,7 @@ class SalesforceConnector(Connector):
             "Name": str(name),
             "Record ID": record_id,
         }
-        import json as _json
-        details = f"Object: {object_type}\nRecord ID: {record_id}\n\nFields:\n{_json.dumps(record_dict, indent=2, default=str)}"
+        details = f"Object: {object_type}\nRecord ID: {record_id}\n\nFields:\n{_format_flat_fields(record_fields)}"
         return await gated_call(
             connector=self.name,
             tool="salesforce_get_record",
@@ -127,8 +218,7 @@ class SalesforceConnector(Connector):
             "Report": str(report_name),
             "Report ID": report_id,
         }
-        import json as _json
-        details = f"Report: {report_name}\nID: {report_id}\n\n{_json.dumps(result_dict, indent=2, default=str)}"
+        details = _format_report_details(str(report_name), report_id, result_dict)
         return await gated_call(
             connector=self.name,
             tool="salesforce_run_report",

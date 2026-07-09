@@ -12,6 +12,7 @@ regression tests below pin the corrected behavior.
 """
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -226,17 +227,30 @@ class TestWriteToolsGateAndPreview:
         assert kwargs["gate"] == "popup"
         assert kwargs["details_text"] == "# Title\n\nBody"
 
-    async def test_move_file_preview_shows_destination(self, gated_call_spy):
+    async def test_move_file_preview_shows_destination_folder_name(self, gated_call_spy):
         connector, client = make_connector()
-        client.get_file_metadata.return_value = make_file()
+        client.get_file_metadata.side_effect = [
+            make_file(),  # source file
+            make_file(id="folderB", name="Archive", mime_type="application/vnd.google-apps.folder"),
+        ]
         client.move_file.return_value = {"ok": True}
 
         await connector.call("drive_move_file", {"file_id": "f1", "destination_folder_id": "folderB"})
 
         kwargs = gated_call_spy[0]
         assert kwargs["gate"] == "popup"
-        assert kwargs["preview"]["Move to folder"] == "folderB"
+        assert kwargs["preview"]["Move to folder"] == "Archive"
+        assert kwargs["details_text"] == "File will be moved to the new folder; its content is unchanged."
         assert kwargs["args"] == {"file_id": "f1", "destination_folder_id": "folderB"}
+
+    async def test_move_file_falls_back_to_raw_folder_id_when_lookup_fails(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.side_effect = [make_file(), DriveClientError("not found")]
+        client.move_file.return_value = {"ok": True}
+
+        await connector.call("drive_move_file", {"file_id": "f1", "destination_folder_id": "folderB"})
+
+        assert gated_call_spy[0]["preview"]["Move to folder"] == "folderB"
 
     async def test_add_comment_gate_popup(self, gated_call_spy):
         connector, client = make_connector()
@@ -422,8 +436,27 @@ class TestSheetsGatedTools:
         kwargs = gated_call_spy[0]
         assert kwargs["gate"] == "popup"
         assert kwargs["preview"] == {"Spreadsheet": "Budget", "Owner": "alice@example.com", "Range": "A1:B2"}
+        # Details show the parsed values formatted like the read path does
+        # (comma-joined per row), not the raw unparsed JSON string argument.
+        assert kwargs["details_text"] == "Spreadsheet: Budget\nRange: A1:B2\n\na, b\n1, 2"
         client.write_sheet_values.assert_called_once_with("sheet1", "A1:B2", [["a", "b"], ["1", "2"]])
         assert result == {"updated_cells": 4}
+
+    async def test_write_range_details_truncates_long_row_lists(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file(name="Budget")
+        client.write_sheet_values.return_value = {"updated_cells": 51}
+        values = [[str(i)] for i in range(51)]
+
+        await connector.call(
+            "drive_sheets_write_range",
+            {"spreadsheet_id": "sheet1", "range_a1": "A1:A51", "values": json.dumps(values)},
+        )
+
+        details = gated_call_spy[0]["details_text"]
+        assert "… and 1 more row(s)" in details
+        assert "49" in details  # last of the 50 shown rows (index 49)
+        assert "50" not in details.split("… and")[0]  # the 51st row (index 50) is truncated away
 
     async def test_write_range_invalid_json_raises_before_gating(self, gated_call_spy):
         connector, client = make_connector()

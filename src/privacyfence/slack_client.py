@@ -297,7 +297,7 @@ class SlackClient:
         if not channel_id:
             raise SlackClientError("get_channel_history requires a channel_id")
         limit = self._clamp(limit, default=50, hi=1000)
-        channel_name = self._resolve_channel_name(channel_id)
+        channel_name = self.resolve_channel_name(channel_id)
 
         kwargs: dict[str, Any] = {"channel": channel_id, "limit": limit}
         if oldest:
@@ -330,7 +330,7 @@ class SlackClient:
             raise SlackClientError(
                 "get_thread_replies requires a channel_id and thread_ts"
             )
-        channel_name = self._resolve_channel_name(channel_id)
+        channel_name = self.resolve_channel_name(channel_id)
         try:
             response = self._client.conversations_replies(
                 channel=channel_id, ts=thread_ts
@@ -370,7 +370,7 @@ class SlackClient:
         for raw in matches:
             channel = raw.get("channel") or {}
             channel_id = channel.get("id", "")
-            channel_name = channel.get("name", "") or self._resolve_channel_name(
+            channel_name = channel.get("name", "") or self.resolve_channel_name(
                 channel_id
             )
             messages.append(self._parse_message(raw, channel_id, channel_name))
@@ -451,7 +451,7 @@ class SlackClient:
             value = default
         return max(lo, min(value, hi))
 
-    def _resolve_channel_name(self, channel_id: str) -> str:
+    def resolve_channel_name(self, channel_id: str) -> str:
         """Best-effort channel name lookup (cached, never raises)."""
         if not channel_id:
             return ""

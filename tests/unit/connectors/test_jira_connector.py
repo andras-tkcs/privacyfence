@@ -250,6 +250,11 @@ class TestUpdateIssue:
         kwargs = gated_call_spy[0]
         assert kwargs["preview"]["Summary"] == "Old summary → New summary"
         assert kwargs["gate"] == "popup"
+        # Regression: details_text used to unconditionally echo the (here,
+        # empty) description argument, which gate.py's fallback turns into
+        # a raw JSON dump of the update payload instead of a plain-language line.
+        assert kwargs["details_text"] == "Summary will be updated; description is unchanged."
+        assert "{" not in kwargs["details_text"]
 
     async def test_description_preview_is_placeholder_not_full_text(self, gated_call_spy):
         connector, client = make_connector()
@@ -272,6 +277,20 @@ class TestUpdateIssue:
 
         client.update_issue.assert_called_once_with("ENG-42", {"priority": {"name": "Low"}})
         assert gated_call_spy[0]["preview"]["Priority"] == "→ Low"
+        assert gated_call_spy[0]["details_text"] == "Priority will be updated; description is unchanged."
+
+    async def test_multi_field_update_lists_all_changed_fields_in_details(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_issue.return_value = make_issue(summary="Old summary")
+        client.update_issue.return_value = make_issue()
+
+        await connector.call(
+            "jira_update_issue", {"issue_key": "ENG-42", "summary": "New summary", "priority": "High"},
+        )
+
+        assert gated_call_spy[0]["details_text"] == (
+            "Summary, Priority will be updated; description is unchanged."
+        )
 
     async def test_client_error_becomes_runtime_error(self):
         connector, client = make_connector()

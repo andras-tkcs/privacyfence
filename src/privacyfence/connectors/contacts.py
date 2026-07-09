@@ -305,7 +305,7 @@ class ContactsConnector(Connector):
             filtered_data=None,
             gate="popup",
             preview={"Contact": contact_name, "Label": label_name},
-            details_text="",
+            details_text="Label will be added to this contact; no other fields change.",
             my_email=self.my_email,
             args=args,
         )
@@ -324,7 +324,7 @@ class ContactsConnector(Connector):
             filtered_data=None,
             gate="popup",
             preview={"Contact": contact_name, "Label": label_name},
-            details_text="",
+            details_text="Label will be removed from this contact; no other fields change.",
             my_email=self.my_email,
             args=args,
         )

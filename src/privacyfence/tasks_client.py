@@ -172,6 +172,16 @@ class TasksClient:
         logger.info("list_task_lists returned %d list(s)", len(items))
         return items
 
+    def get_task_list(self, task_list_id: str) -> TaskList:
+        """Fetch a single task list by id."""
+        if not task_list_id:
+            raise TasksClientError("get_task_list requires a task_list_id")
+        try:
+            raw = self._get_service().tasklists().get(tasklist=task_list_id).execute()
+        except HttpError as exc:
+            raise TasksClientError(f"get_task_list({task_list_id}) failed: {exc}") from exc
+        return TaskList(id=raw.get("id", ""), title=raw.get("title", ""), updated=raw.get("updated", ""))
+
     def list_tasks(self, task_list_id: str, show_completed: bool = False) -> list[Task]:
         """List tasks in a task list."""
         if not task_list_id:

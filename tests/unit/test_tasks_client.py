@@ -77,6 +77,32 @@ class TestListTaskLists:
             client.list_task_lists()
 
 
+class TestGetTaskList:
+    def test_requires_task_list_id(self):
+        client = make_client(MagicMock())
+        with pytest.raises(TasksClientError, match="requires a task_list_id"):
+            client.get_task_list("")
+
+    def test_maps_response(self):
+        service = MagicMock()
+        service.tasklists.return_value.get.return_value.execute.return_value = {
+            "id": "l1", "title": "Groceries", "updated": "u",
+        }
+        client = make_client(service)
+
+        result = client.get_task_list("l1")
+
+        assert result == TaskList(id="l1", title="Groceries", updated="u")
+        service.tasklists.return_value.get.assert_called_once_with(tasklist="l1")
+
+    def test_http_error_becomes_tasks_client_error(self):
+        service = MagicMock()
+        service.tasklists.return_value.get.return_value.execute.side_effect = http_error(404)
+        client = make_client(service)
+        with pytest.raises(TasksClientError, match="get_task_list\\(l1\\) failed"):
+            client.get_task_list("l1")
+
+
 class TestListTasks:
     def test_requires_task_list_id(self):
         client = make_client(MagicMock())

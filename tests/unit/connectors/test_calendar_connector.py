@@ -29,6 +29,9 @@ from ...helpers import assert_all_tools_leave_an_audit_trail
 
 def make_connector(my_email="me@example.com"):
     client = MagicMock()
+    # Default to "not resolvable" so tests that don't care about calendar-name
+    # resolution keep seeing the raw calendar id, same as before this was added.
+    client.get_calendar.side_effect = CalendarClientError("no such calendar")
     connector = CalendarConnector(client)
     connector.my_email = my_email
     return connector, client
@@ -284,6 +287,21 @@ class TestCreateEvent:
         # _rule_no_external_attendees actually evaluates against.
         assert kwargs["raw_data"]["attendees"] == ["bob@example.com", "eve@external.com"]
 
+    async def test_calendar_name_resolved_in_preview(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_calendar.side_effect = None
+        client.get_calendar.return_value = CalendarListEntry(
+            id="c_abc@group.calendar.google.com", summary="Team Offsite",
+            description="", primary=False, access_role="reader",
+        )
+        client.create_event.return_value = make_event(id="new1")
+
+        await connector.call("calendar_create_event", {
+            "calendar_id": "c_abc@group.calendar.google.com", "title": "Sync", "start_time": "t0", "end_time": "t1",
+        })
+
+        assert gated_call_spy[0]["preview"]["Calendar"] == "Team Offsite"
+
     async def test_result_includes_conference_link_only_when_present(self, gated_call_spy):
         connector, client = make_connector()
         client.create_event.return_value = make_event(id="new1", conference_link="", hangout_link="")
@@ -338,6 +356,57 @@ class TestUpdateEvent:
         )
 
         assert "Conferencing" not in gated_call_spy[0]["preview"]
+
+    async def test_calendar_name_resolved_in_preview(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_calendar.side_effect = None
+        client.get_calendar.return_value = CalendarListEntry(
+            id="c_abc@group.calendar.google.com", summary="Team Offsite",
+            description="", primary=False, access_role="reader",
+        )
+        client.get_event.return_value = make_event()
+        client.update_event.return_value = make_event()
+
+        await connector.call("calendar_update_event", {
+            "calendar_id": "c_abc@group.calendar.google.com", "event_id": "e1",
+        })
+
+        assert gated_call_spy[0]["preview"]["Calendar"] == "Team Offsite"
+
+    async def test_details_text_shows_description_when_description_changed(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_event.return_value = make_event(description="Old description")
+        client.update_event.return_value = make_event()
+
+        await connector.call("calendar_update_event", {
+            "calendar_id": "primary", "event_id": "e1", "description": "New description",
+        })
+
+        assert gated_call_spy[0]["details_text"] == "New description"
+
+    async def test_details_text_is_a_literal_when_description_unchanged(self, gated_call_spy):
+        # Regression: details_text used to fall back to "" here, which
+        # gate.py's fallback turns into a raw JSON dump of the update payload.
+        connector, client = make_connector()
+        client.get_event.return_value = make_event(title="Old Title", location="Room A")
+        client.update_event.return_value = make_event()
+
+        await connector.call("calendar_update_event", {
+            "calendar_id": "primary", "event_id": "e1", "title": "New Title",
+        })
+
+        assert gated_call_spy[0]["details_text"] == "Title will be updated; description is unchanged."
+        assert "{" not in gated_call_spy[0]["details_text"]
+
+    async def test_details_text_when_nothing_changed(self, gated_call_spy):
+        connector, client = make_connector()
+        event = make_event()
+        client.get_event.return_value = event
+        client.update_event.return_value = event
+
+        await connector.call("calendar_update_event", {"calendar_id": "primary", "event_id": "e1"})
+
+        assert gated_call_spy[0]["details_text"] == "no fields will be updated; description is unchanged."
 
 
 class TestFetchErrorMapping:

@@ -464,6 +464,35 @@ class TestSearchMessages:
             await client.search_messages("q")
 
 
+class TestGetChatName:
+    async def test_returns_cached_name_without_a_lookup(self):
+        client = connected_client(MagicMock())
+        client._chat_name_cache[5] = "General"
+
+        assert await client.get_chat_name(5) == "General"
+
+    async def test_resolves_and_caches_uncached_user_entity(self):
+        entity = MagicMock(spec=User)
+        entity.first_name = "Jane"
+        entity.last_name = "Doe"
+        fake = MagicMock()
+        fake.get_entity = AsyncMock(return_value=entity)
+        client = connected_client(fake)
+
+        name = await client.get_chat_name(5)
+
+        assert name == "Jane Doe"
+        assert client._chat_name_cache[5] == "Jane Doe"
+
+    async def test_lookup_failure_returns_empty_string_not_raise(self):
+        fake = MagicMock()
+        fake.get_entity = AsyncMock(side_effect=RuntimeError("no such peer"))
+        client = connected_client(fake)
+
+        assert await client.get_chat_name(999) == ""
+        assert 999 not in client._chat_name_cache
+
+
 class TestSendMessage:
     async def test_requires_non_empty_text(self):
         client = connected_client(MagicMock())
