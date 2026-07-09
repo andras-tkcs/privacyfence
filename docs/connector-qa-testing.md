@@ -269,7 +269,11 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
    `trusted_sender_domain` value you read from `settings.yaml` in Phase 0, find
    a message from that domain and call `gmail_get_message` on it. This should
    NOT prompt me at all. Tell me whether a prompt appeared or not. If no such
-   rule is configured, skip and say so.
+   rule is configured, skip and say so. `trusted_sender_domain` matches
+   subdomains too (e.g. a configured `trusted.com` also matches
+   `mail.trusted.com`) — if a message from a subdomain of the configured
+   value is available, prefer it for this check so the subdomain behavior
+   gets exercised, not just exact-domain matches.
 7. `gmail_create_draft` — draft to myself, subject `PrivacyFence QA test [{RUN_ID}]
    — safe to delete`. This is popup-gated, I'll Accept. Add it to the manifest.
 8. `gmail_reply_draft` on the thread from step 4, again clearly marked as a test
@@ -406,15 +410,22 @@ has configured.
     UK NI number: AB123456C
     ```
 
+    The Email/Phone lines are a deliberate **negative** check, not a typo —
+    `pii_detector.py` intentionally never flags email addresses or phone
+    numbers (see README.md's "PII detection gate" section), so those two
+    lines must *not* contribute to the category banner below; only the
+    remaining eight lines should.
+
     This write is popup-gated regardless of any rule. **Pause here**: tell me
     you're about to call it and that, because the body above contains
     synthetic PII spanning all three supported languages, you expect the
-    popup to render tinted red with a category-listing banner, and that
-    after I click **Accept** a second **"Are you sure?"** dialog should
-    appear — I'll click **Proceed** on that one. Wait for me to say go. Once
-    I do, make the call and report back: did the tint/banner appear, which
-    categories did it list, and did the second confirmation dialog appear?
-    Add the doc to the manifest.
+    popup to render tinted red with a category-listing banner covering the
+    eight non-email/phone lines, and that after I click **Accept** a second
+    **"Are you sure?"** dialog should appear — I'll click **Proceed** on that
+    one. Wait for me to say go. Once I do, make the call and report back: did
+    the tint/banner appear, which categories did it list (and did it
+    correctly omit email/phone), and did the second confirmation dialog
+    appear? Add the doc to the manifest.
 19. `drive_get_file_content` on the doc you just created — `review` gate, not
     covered by any `approved_folder` rule per the note above, so this must
     prompt every time regardless of environment config. Same expectation as
