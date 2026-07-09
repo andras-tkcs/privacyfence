@@ -28,7 +28,9 @@ class AuditEntry:
     tool_name: str
     summary: str
     sender: str
-    decision: str           # "approved" | "rejected" | "auto_accepted" | "accepted_via_accept_all"
+    decision: str           # "approved" | "rejected" | "auto_accepted" | "accepted_via_accept_all" | "error"
+                            # ("error": gate.py's gated_call exited without reaching a normal decision
+                            #  branch -- a fallback so an unanticipated failure still leaves a trail)
     auto_accept_rule: str   # rule name if auto_accepted, else ""
     latency_seconds: float
     pii_detected: bool = False  # True if pii_detector.py flagged the content before this decision
@@ -101,6 +103,7 @@ class AuditLogger:
             "auto_accepted":         PatternFill("solid", fgColor="E3F2FD"),
             "accepted_via_accept_all": PatternFill("solid", fgColor="FFF3CD"),
             "rejected":              PatternFill("solid", fgColor="FFEBEE"),
+            "error":                 PatternFill("solid", fgColor="FF6B6B"),
         }
 
         ws.append(HEADERS)
