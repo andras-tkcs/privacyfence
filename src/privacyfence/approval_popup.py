@@ -78,12 +78,21 @@ def _display_dialog(title: str, lines: list[str], buttons: list[str], default: s
 # ---------------------------------------------------------------------------- #
 
 def show_popup(
-    title: str, preview: dict[str, str], details_text: str, pii_categories: list[str] | None = None
+    title: str,
+    preview: dict[str, str],
+    details_text: str,
+    pii_categories: list[str] | None = None,
+    allow_temp_accept: bool = False,
 ) -> str:
-    """Approval popup for write tools. Returns 'accept' or 'deny'."""
+    """Approval popup for write tools.
+
+    Returns 'accept', 'deny', or 'accept_temp' (only offered when
+    allow_temp_accept is True -- see gate.py's TEMP_ACCEPT_ELIGIBLE_OPERATIONS
+    for which write operations get that button).
+    """
     return show_native_approval(
         title=title, preview=preview, details_text=details_text, allow_accept_all=False,
-        pii_categories=pii_categories,
+        pii_categories=pii_categories, allow_temp_accept=allow_temp_accept,
     )
 
 

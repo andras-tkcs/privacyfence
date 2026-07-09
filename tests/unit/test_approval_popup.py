@@ -146,7 +146,7 @@ class TestShowPopupAndShowReadPopup:
 
         assert captured == {
             "title": "Title", "preview": {"Field": "Value"}, "details_text": "details", "allow_accept_all": False,
-            "pii_categories": None,
+            "pii_categories": None, "allow_temp_accept": False,
         }
         assert result == "accept"
 
@@ -157,6 +157,17 @@ class TestShowPopupAndShowReadPopup:
         approval_popup.show_popup("Title", {}, "details", pii_categories=["Email address"])
 
         assert captured["pii_categories"] == ["Email address"]
+
+    def test_show_popup_forwards_allow_temp_accept_true(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            approval_popup, "show_native_approval", lambda **kw: captured.update(kw) or "accept_temp"
+        )
+
+        result = approval_popup.show_popup("Title", {}, "details", allow_temp_accept=True)
+
+        assert captured["allow_temp_accept"] is True
+        assert result == "accept_temp"
 
     def test_show_read_popup_forwards_allow_accept_all_true(self, monkeypatch):
         captured = {}
