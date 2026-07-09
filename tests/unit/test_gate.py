@@ -284,7 +284,7 @@ class TestPIIGate:
     treated as a full deny, same as clicking Deny on the original popup.
     """
 
-    PII_TEXT = "Contact me at jane@example.com about this."
+    PII_TEXT = "Please wire the deposit to DE89370400440532013000, thanks."
 
     async def test_read_popup_receives_detected_categories(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
@@ -300,7 +300,7 @@ class TestPIIGate:
         with pytest.raises(RuntimeError):
             await gate.gated_call(**base_kwargs(gate="review", details_text=self.PII_TEXT))
 
-        assert captured["pii_categories"] == ["Email address"]
+        assert captured["pii_categories"] == ["IBAN (bank account number)"]
 
     async def test_read_popup_receives_empty_list_when_no_pii(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
@@ -464,7 +464,7 @@ class TestPIIGate:
 class TestPIIGateWrites:
     """Same PII confirmation contract, for the popup (write) gate."""
 
-    PII_TEXT = "Please send this to jane@example.com."
+    PII_TEXT = "Please wire the deposit to DE89370400440532013000."
 
     async def test_write_popup_receives_detected_categories(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
@@ -481,7 +481,7 @@ class TestPIIGateWrites:
                 **base_kwargs(gate="popup", tool="gmail_create_draft", details_text=self.PII_TEXT)
             )
 
-        assert captured["pii_categories"] == ["Email address"]
+        assert captured["pii_categories"] == ["IBAN (bank account number)"]
 
     async def test_pii_confirmed_accepts_and_audits(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
@@ -559,11 +559,11 @@ class TestPIIGateWrites:
 class TestPiiScanText:
     """``pii_scan_text`` lets a caller scan different text than what's shown
     in the popup (``details_text``) -- e.g. an email body without its From/To
-    headers, which would otherwise flag "Email address" on every single
-    message regardless of what it actually says.
+    headers, which could otherwise flag PII found only in metadata the
+    message itself doesn't actually contain.
     """
 
-    PII_TEXT = "Contact me at jane@example.com about this."
+    PII_TEXT = "Please wire the deposit to DE89370400440532013000."
 
     async def test_pii_scan_text_overrides_details_text_for_detection(self, monkeypatch, audit_dir):
         # details_text (shown in the popup) has PII in the "headers", but the
@@ -605,7 +605,7 @@ class TestPiiScanText:
                 pii_scan_text=self.PII_TEXT,
             ))
 
-        assert captured["pii_categories"] == ["Email address"]
+        assert captured["pii_categories"] == ["IBAN (bank account number)"]
 
     async def test_pii_scan_text_empty_string_skips_detection_even_if_details_has_pii(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
@@ -643,7 +643,7 @@ class TestPiiScanText:
         with pytest.raises(RuntimeError):
             await gate.gated_call(**base_kwargs(gate="review", details_text=self.PII_TEXT))
 
-        assert captured["pii_categories"] == ["Email address"]
+        assert captured["pii_categories"] == ["IBAN (bank account number)"]
 
 
 class TestPopupSerialization:

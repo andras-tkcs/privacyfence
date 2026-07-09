@@ -13,9 +13,17 @@ already destined for the user's own screen, and it can both miss real PII
 and flag things that aren't. Treat a hit as "look more carefully before you
 approve," not as a guarantee either way.
 
-Only category labels (e.g. "Email address") ever leave this module -- the
-matched substrings themselves are deliberately not returned, logged, or
-audited, so the detector itself never becomes a new place PII gets copied to.
+Only category labels (e.g. "IBAN (bank account number)") ever leave this
+module -- the matched substrings themselves are deliberately not returned,
+logged, or audited, so the detector itself never becomes a new place PII
+gets copied to.
+
+Deliberately NOT detected: email addresses and phone numbers. Nearly every
+message this gate scans is an email, and nearly every email signature
+contains the sender's own address and phone number, so matching on those
+formats flagged almost every `review`/`popup` dialog regardless of whether
+the content actually contained anything sensitive -- see README.md's "PII
+detection gate" section for the reasoning.
 """
 from __future__ import annotations
 
@@ -59,11 +67,6 @@ def _iban_valid(candidate: str) -> bool:
     return int(numeric) % 97 == 1
 
 
-def _phone_digit_count_valid(candidate: str) -> bool:
-    digit_count = sum(1 for c in candidate if c.isdigit())
-    return 8 <= digit_count <= 15
-
-
 @dataclass(frozen=True)
 class _PIIPattern:
     category: str
@@ -80,14 +83,11 @@ def _p(category: str, regex: str, *, validator=None, flags=re.IGNORECASE) -> _PI
 # order categories are reported in.
 _PATTERNS: list[_PIIPattern] = [
     # -- Language-agnostic ---------------------------------------------------
-    _p("Email address", r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"),
+    # Deliberately no "Email address" or "Phone number" patterns here -- see
+    # the module docstring for why (email signatures make them near-universal
+    # false positives on this gate's typical input).
     _p("IBAN (bank account number)", r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b", validator=_iban_valid),
     _p("Credit card number", r"\b(?:\d[ -]?){13,19}\b", validator=_luhn_valid),
-    _p(
-        "Phone number (international format)",
-        r"(?<![\w+])\+\d{1,3}(?:[ .-]?\(?\d{1,4}\)?){2,5}(?!\w)",
-        validator=_phone_digit_count_valid,
-    ),
     _p(
         "IP address",
         r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b",

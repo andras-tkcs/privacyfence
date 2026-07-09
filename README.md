@@ -73,11 +73,18 @@ Claude already describes the action it is about to take in the chat. When the ga
 
 On top of the normal Accept/Deny popup, PrivacyFence can scan the message/document/spreadsheet
 content shown in every `review` and `popup` dialog for likely personal data — in **Hungarian,
-English, and German** — before you approve it: email addresses, phone numbers, IBANs, credit card
-numbers, and national identifiers (Hungarian TAJ/adóazonosító jel/ID card number, German
+English, and German** — before you approve it: IBANs, credit card numbers, IP addresses, and
+national identifiers (Hungarian TAJ/adóazonosító jel/ID card number, German
 Steuer-ID/Sozialversicherungsnummer, US SSN, UK National Insurance number), plus common
 labels like "date of birth" / "születési dátum" / "Geburtsdatum" that flag a nearby value even
 when its own format is too ambiguous to match structurally.
+
+**Email addresses and phone numbers are deliberately not detected.** Nearly everything this
+gate scans is email content, and nearly every email signature carries the sender's own address
+and phone number — matching on those formats meant almost every read popup got flagged
+regardless of whether the message actually contained anything sensitive, training users to
+click through the warning without reading it. The other categories above (IBANs, national IDs,
+etc.) are rare enough in ordinary correspondence that a hit is still a meaningful signal.
 
 When something is flagged:
 
@@ -89,8 +96,8 @@ When something is flagged:
 This is a local, regex-based heuristic (see `src/privacyfence/pii_detector.py`) — it runs
 entirely on-device with no network calls, and it can both miss real PII and flag things that
 aren't; treat a hit as "look more carefully," not a guarantee either way. It never logs or stores
-the matched text itself, only the category labels (e.g. "Email address") — those category labels,
-and whether any were flagged, are recorded in the [audit log](#audit-log).
+the matched text itself, only the category labels (e.g. "IBAN (bank account number)") — those
+category labels, and whether any were flagged, are recorded in the [audit log](#audit-log).
 
 The scan runs before any [auto-accept rule](#auto-accept-rules) is checked and overrides a
 matching one: auto-accept rules are scoped to metadata (sender domain, folder, "I am the
