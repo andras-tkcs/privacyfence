@@ -281,9 +281,12 @@ class CalendarClient:
     def get_event(self, calendar_id: str, event_id: str) -> CalendarEvent:
         """Fetch a single event by id, including its attachments.
 
-        ``supportsAttachments=True`` is required for the API to populate the
-        ``attachments`` field — this is where Google Meet's Gemini note-taker
-        attaches the meeting notes/transcript doc once a meeting ends.
+        Attachments (e.g. Google Meet's Gemini note-taker attaching the
+        meeting notes/transcript doc once a meeting ends) come back in the
+        response with no extra parameter needed. ``supportsAttachments`` only
+        applies to ``insert``/``update``/``patch``/``import`` — the Calendar
+        API's ``events.get`` doesn't accept it at all, and passing it raises
+        a client-side ``TypeError`` before any request is even sent.
         """
         if not calendar_id or not event_id:
             raise CalendarClientError("get_event requires calendar_id and event_id")
@@ -291,7 +294,7 @@ class CalendarClient:
             raw = (
                 self._get_service()
                 .events()
-                .get(calendarId=calendar_id, eventId=event_id, supportsAttachments=True)
+                .get(calendarId=calendar_id, eventId=event_id)
                 .execute()
             )
         except HttpError as exc:
