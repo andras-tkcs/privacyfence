@@ -1,5 +1,15 @@
 # Full-Connector QA Testing via Claude Cowork
 
+**This guide assumes PrivacyFence is running from source via `scripts/dev_start.sh`**
+(Account 1 in [dev-vs-live-setup.md](dev-vs-live-setup.md)), started from a
+checkout of this repo. In that mode `config/settings.yaml` and
+`logs/audit/<week>.jsonl` live **inside the repo root**, not `~/.privacyfence`
+(see [`paths.py`](../src/privacyfence/paths.py)) — every path below is written
+against the repo root on that basis, not hedged as "check which one exists."
+If you're instead testing a bundled/DMG install, the same prompt works, but
+substitute `~/.privacyfence/config/settings.yaml` and
+`~/.privacyfence/logs/audit/<week>.jsonl` everywhere a path is mentioned.
+
 PrivacyFence's real attack surface is the interaction between ten connectors,
 three gate types (`auto` / `review` / `popup`), a growing set of auto-accept
 rules, and the PII detection gate layered on top of the popup itself — none
@@ -30,21 +40,26 @@ combination only breaks for non-ASCII input.
 - `privacyfence-app` (the daemon) running, with every connector you want to
   test already authenticated from the menu bar.
 - The `privacyfence` MCP server attached to a Claude Cowork/Desktop
-  conversation (`claude mcp add privacyfence privacyfence-bridge`, or the
-  `.mcpb` extension).
-- Claude needs read access to `logs/audit/<current-ISO-week>.jsonl` in the
-  Cowork/Desktop session (filesystem access, or a Bash/Read-equivalent tool)
-  — under `~/.privacyfence/` for a bundled/DMG install, or the project root
-  if the daemon is running from source (see
-  [dev-vs-live-setup.md](dev-vs-live-setup.md)) — the prompt below now has
-  Claude read this file itself and reconcile it against every call in the
-  same report, instead of leaving that to you afterward. This is a test
-  environment against your own accounts, so there's
-  no confidentiality reason to keep the log human-only. Claude still can't
-  observe the popup UI directly (it only sees whether the tool call ultimately
-  succeeded or errored) — the audit log's `decision` field is what closes that
-  gap, since it records `accepted` / `denied` / `auto_accepted` regardless of
-  whether Claude witnessed the click.
+  conversation — `scripts/dev_start.sh` registers `privacyfence-bridge` from
+  this checkout's venv for you.
+- **Claude Cowork's project/working folder (set in Cowork's UI — the folder
+  picker for the conversation) must be this repo's root**, the same folder
+  `dev_start.sh` was run from. This is what gives Claude filesystem access
+  (Read/Bash-equivalent) to `config/settings.yaml` (Phase 0 fixture lookups)
+  and `logs/audit/<current-ISO-week>.jsonl` (the audit-log reconciliation
+  column running throughout the prompt) — without it, Claude has no way to
+  read either file, and Phase 0 plus every `audit-log decision` entry will
+  silently fail or come back empty rather than erroring loudly. Confirm
+  before you start by asking Claude to read `config/settings.yaml` — if it
+  can't find the file, fix the project folder before pasting the prompt
+  below. The prompt has Claude read the audit log itself and reconcile it
+  against every call in the same report, instead of leaving that to you
+  afterward — this is a test environment against your own accounts, so
+  there's no confidentiality reason to keep the log human-only. Claude still
+  can't observe the popup UI directly (it only sees whether the tool call
+  ultimately succeeded or errored) — the audit log's `decision` field is what
+  closes that gap, since it records `accepted` / `denied` / `auto_accepted`
+  regardless of whether Claude witnessed the click.
 - **The environment fixtures from [`qa-environment-setup.md`](qa-environment-setup.md)
   already exist**: a `PFQA` Jira project, a `PFQA` Confluence space, a Drive
   "PrivacyFence QA Sandbox" folder, a second (non-approved) Slack channel with
@@ -68,9 +83,9 @@ deliberately hits every auto-accept rule you have configured (see the
 environment doc's consolidated rules block) back-to-back with a contrasting
 call that should still prompt, and ends with a self-report that already has
 the audit log's actual decision for every call baked in — Claude reads
-`logs/audit/<this-week>.jsonl` itself during the run (see the Prerequisites
-note above for which of the two possible locations that is) rather than
-leaving reconciliation to you afterward.
+`logs/audit/<this-week>.jsonl` (repo root, per the assumption at the top of
+this doc) itself during the run rather than leaving reconciliation to you
+afterward.
 
 **This version is safe to run repeatedly against the same accounts, and needs
 no editing before you paste it.** Every artifact it creates is stamped with a
@@ -144,10 +159,9 @@ Ground rules:
   review / native popup) | my decision | audit-log decision | notes`. This is a
   test environment against my own accounts, so read
   `logs/audit/<this-week>.jsonl` yourself as you go (or in a batch at the end
-  of each phase) — under `~/.privacyfence/` if I'm running a bundled/DMG
-  install, or the project root if the daemon is running from source; check
-  which one actually exists rather than assuming — and fill in the
-  `audit-log decision` column
+  of each phase) — repo root, since I started PrivacyFence from source via
+  `dev_start.sh` and you have filesystem access to this same repo checkout —
+  and fill in the `audit-log decision` column
   with the actual logged `accepted` / `denied` / `auto_accepted` value for each
   call — match entries by timestamp and tool/operation name. Don't leave that
   column blank or defer it to me. Print the full table at the very end.
@@ -172,12 +186,12 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
 
 1. Generate `{RUN_ID}` yourself right now as `YYYY-MM-DD-HHmm` in my local time.
    Use it verbatim in every title for the rest of this run.
-2. Read `settings.yaml` yourself — `~/.privacyfence/config/settings.yaml` if
-   this daemon is a bundled/DMG install, or `config/settings.yaml` in the
-   project root if it's running from source (check which one exists; see
-   [dev-vs-live-setup.md](dev-vs-live-setup.md)) — and keep the full
-   `auto_accept_rules` block in mind for the rest of the run — several fixtures
-   below come directly from it rather than a separate lookup.
+2. Read `settings.yaml` yourself — `config/settings.yaml` in the repo root
+   (this run assumes PrivacyFence was started from source via
+   `scripts/dev_start.sh`, in the same repo checkout you have filesystem
+   access to; see [dev-vs-live-setup.md](dev-vs-live-setup.md)) — and keep the
+   full `auto_accept_rules` block in mind for the rest of the run — several
+   fixtures below come directly from it rather than a separate lookup.
 3. `drive_list_files` (or equivalent search) for a folder named exactly
    `PrivacyFence QA Sandbox` → `drive_qa_folder_id`. If more than one file
    matches, prefer the one whose `mime_type` is a folder.
