@@ -427,6 +427,7 @@ class TestWriteToolsGateAndPreview:
 
     async def test_create_label_gate_popup_simple_name(self, gated_call_spy):
         connector, client = make_connector()
+        client.list_labels.return_value = []
         client.create_label.return_value = {"id": "L1", "name": "Receipts", "type": "user"}
 
         result = await connector.call("gmail_create_label", {"label_name": "Receipts"})
@@ -441,6 +442,7 @@ class TestWriteToolsGateAndPreview:
 
     async def test_create_label_nested_name_notes_parent_creation(self, gated_call_spy):
         connector, client = make_connector()
+        client.list_labels.return_value = []
         client.create_label.return_value = {"id": "L2", "name": "Work/Projects", "type": "user"}
 
         await connector.call("gmail_create_label", {"label_name": "Work/Projects"})
@@ -448,6 +450,28 @@ class TestWriteToolsGateAndPreview:
         kwargs = gated_call_spy[0]
         assert kwargs["preview"] == {"Label": "Work/Projects"}
         assert "parent 'Work' will be created" in kwargs["details_text"]
+
+    async def test_create_label_duplicate_name_denied_before_gate(self, gated_call_spy):
+        # A pre-existing label with the same (normalized) name must be caught
+        # before the approval popup, not after -- the client's own duplicate
+        # check only fires once the call is already past approval.
+        connector, client = make_connector()
+        client.list_labels.return_value = [{"id": "L1", "name": "Receipts", "type": "user"}]
+
+        with pytest.raises(RuntimeError, match="label already exists"):
+            await connector.call("gmail_create_label", {"label_name": "Receipts"})
+
+        assert gated_call_spy == []  # popup never shown
+        client.create_label.assert_not_called()
+
+    async def test_create_label_duplicate_name_check_is_case_insensitive(self, gated_call_spy):
+        connector, client = make_connector()
+        client.list_labels.return_value = [{"id": "L1", "name": "receipts", "type": "user"}]
+
+        with pytest.raises(RuntimeError, match="label already exists"):
+            await connector.call("gmail_create_label", {"label_name": "Receipts"})
+
+        assert gated_call_spy == []
 
 
 class TestFetchErrorMapping:
@@ -459,7 +483,11 @@ class TestFetchErrorMapping:
             await connector.call("gmail_list_messages", {"query": "q"})
 
     async def test_create_label_client_error_after_approval_becomes_runtime_error(self, gated_call_spy):
+        # Covers a race the pre-gate check can't catch: the label didn't
+        # exist when list_labels() was checked, but does by the time
+        # create_label() actually runs (e.g. created concurrently elsewhere).
         connector, client = make_connector()
+        client.list_labels.return_value = []
         client.create_label.side_effect = GmailClientError("label already exists")
 
         with pytest.raises(RuntimeError, match="label already exists"):
@@ -483,5 +511,8 @@ class TestEveryToolIsAudited:
             id="m1", thread_id="t1", subject="s", sender="a@b.com",
             attachments=[Attachment(name="stub", mime_type="application/octet-stream", size=1, attachment_id="att-1")],
         )
+        # gmail_create_label checks for an existing label of the same name
+        # before gating; an empty list means the generic stub name is "new".
+        client.list_labels.return_value = []
 
         await assert_all_tools_leave_an_audit_trail(connector, gmail_module, monkeypatch, tmp_path)

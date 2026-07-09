@@ -18,6 +18,7 @@ import pytest
 
 from privacyfence import gate
 from privacyfence.audit_log import init_audit_logger
+from privacyfence.auto_accept import AutoAcceptEvaluator
 
 
 def wait_until(predicate, timeout=2.0, interval=0.005) -> bool:
@@ -785,6 +786,166 @@ class TestQueuedRequestReCheck:
         entries = read_audit_entries(audit_dir)
         decisions = sorted(e["decision"] for e in entries)
         assert decisions == ["auto_accepted", "rejected"]
+
+
+class TestApprovedObjectTypesNeverPopsUp:
+    """Regression/repro for a QA discrepancy that couldn't be resolved from
+    the audit log alone: the operator reported seeing a live approval popup
+    for a Salesforce Account read (salesforce_get_record), while the audit
+    log said "auto_accepted" for that same call -- a genuine contradiction,
+    since gated_call's own logic makes the two mutually exclusive: the popup
+    functions are never invoked once should_auto_accept() has already
+    returned True with no PII detected. This drives the real (non-Fake)
+    AutoAcceptEvaluator configured the way the Salesforce connector's
+    approved_object_types rule is meant to be used, args shaped exactly like
+    connectors/salesforce.py::_get_record builds them, to lock in that
+    invariant -- if this ever starts failing, that's the actual bug; if it
+    keeps passing, a future recurrence of the live discrepancy is a config
+    or observation issue (e.g. the popup belonged to a different call), not
+    a gate.py bug.
+    """
+
+    async def test_approved_object_type_read_never_shows_a_popup(self, monkeypatch, audit_dir):
+        evaluator = AutoAcceptEvaluator({
+            "salesforce.read_record": [{"rule": "approved_object_types", "value": ["Account"]}],
+        })
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: evaluator)
+
+        def fail_if_called(*a, **k):
+            raise AssertionError("show_read_popup must not be called when the object type is auto-accepted")
+
+        monkeypatch.setattr(gate, "show_read_popup", fail_if_called)
+
+        result = await gate.gated_call(**base_kwargs(
+            connector="salesforce", tool="salesforce_get_record", gate="review",
+            args={"object_type": "Account", "record_id": "001xx0000012345"},
+        ))
+
+        assert result is FILTERED
+        entries = read_audit_entries(audit_dir)
+        assert len(entries) == 1
+        assert entries[0]["decision"] == "auto_accepted"
+        assert entries[0]["auto_accept_rule"] == "approved_object_types"
+
+    async def test_object_type_outside_allowlist_still_shows_the_popup(self, monkeypatch, audit_dir):
+        # Contrast case: Opportunity isn't in the allowlist, so it must take
+        # the normal interactive path -- proving the guard above is actually
+        # meaningful (it can be reached) and not vacuously always-skipped.
+        evaluator = AutoAcceptEvaluator({
+            "salesforce.read_record": [{"rule": "approved_object_types", "value": ["Account"]}],
+        })
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: evaluator)
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        popup_calls = []
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: popup_calls.append(1) or "accept")
+
+        result = await gate.gated_call(**base_kwargs(
+            connector="salesforce", tool="salesforce_get_record", gate="review",
+            args={"object_type": "Opportunity", "record_id": "006xx"},
+        ))
+
+        assert result is FILTERED
+        assert popup_calls == [1]
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "approved"
+
+
+class TestRequestId:
+    async def test_decision_entries_carry_a_non_empty_request_id(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "i_am_sender")))
+
+        await gate.gated_call(**base_kwargs())
+
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["request_id"]
+
+    async def test_each_call_gets_a_distinct_request_id(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "i_am_sender")))
+
+        await gate.gated_call(**base_kwargs())
+        await gate.gated_call(**base_kwargs())
+
+        entries = read_audit_entries(audit_dir)
+        assert len(entries) == 2
+        assert entries[0]["request_id"] != entries[1]["request_id"]
+
+
+class TestAuditGapSafety:
+    """Regression for a real audit-log gap found during QA: a call that
+    visibly ran to completion (real data returned, the user saw and
+    completed the approval flow) left zero matching entries in the log.
+    gated_call now guarantees a decision entry on every exit path, including
+    one triggered by an exception from code nobody expected to fail (e.g. a
+    native popup call itself raising) -- see the `finally` block in
+    gated_call.
+    """
+
+    async def test_unexpected_exception_in_review_gate_still_leaves_an_audit_entry(
+        self, monkeypatch, audit_dir
+    ):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+
+        def boom(*a, **k):
+            raise RuntimeError("native popup crashed")
+
+        monkeypatch.setattr(gate, "show_read_popup", boom)
+
+        with pytest.raises(RuntimeError, match="native popup crashed"):
+            await gate.gated_call(**base_kwargs(gate="review"))
+
+        entries = read_audit_entries(audit_dir)
+        assert len(entries) == 1
+        assert entries[0]["decision"] == "error"
+        assert entries[0]["request_id"]
+
+    async def test_unexpected_exception_in_popup_gate_still_leaves_an_audit_entry(
+        self, monkeypatch, audit_dir
+    ):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+
+        def boom(*a, **k):
+            raise RuntimeError("native popup crashed")
+
+        monkeypatch.setattr(gate, "show_popup", boom)
+
+        with pytest.raises(RuntimeError, match="native popup crashed"):
+            await gate.gated_call(**base_kwargs(gate="popup", tool="gmail_create_draft"))
+
+        entries = read_audit_entries(audit_dir)
+        assert len(entries) == 1
+        assert entries[0]["decision"] == "error"
+
+    async def test_exception_while_persisting_an_accept_all_rule_still_audits(
+        self, monkeypatch, audit_dir
+    ):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: ("i_am_sender", None))
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
+
+        def boom(*a, **k):
+            raise OSError("rules file write failed")
+
+        monkeypatch.setattr(gate, "add_auto_accept_rule", boom)
+
+        with pytest.raises(OSError, match="rules file write failed"):
+            await gate.gated_call(**base_kwargs(gate="review"))
+
+        entries = read_audit_entries(audit_dir)
+        assert len(entries) == 1
+        assert entries[0]["decision"] == "error"
+
+    async def test_normal_decision_paths_are_not_double_audited(self, monkeypatch, audit_dir):
+        # The finally-block safety net must not add a second entry on top of
+        # a normal decision.
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+
+        await gate.gated_call(**base_kwargs(gate="review"))
+
+        assert len(read_audit_entries(audit_dir)) == 1
 
 
 class TestDefaultDetails:

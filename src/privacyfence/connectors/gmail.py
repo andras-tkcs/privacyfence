@@ -741,6 +741,16 @@ class GmailConnector(Connector):
 
     async def _create_label(self, label_name: str) -> Any:
         stripped = label_name.strip("/")
+        segments = [s.strip() for s in stripped.split("/") if s.strip()]
+        normalized_name = "/".join(segments)
+        # Check for a duplicate before gating, not after: create_label() only
+        # discovers "label already exists" once it's already past the
+        # approval popup, so a doomed duplicate call still cost the user an
+        # unnecessary approval decision.
+        existing = await self._fetch(self._gmail.list_labels)
+        existing_names = {lbl.get("name", "").lower() for lbl in existing}
+        if normalized_name.lower() in existing_names:
+            raise RuntimeError(f"create_label({normalized_name!r}) failed: label already exists")
         preview = {"Label": label_name}
         details = ""
         if "/" in stripped:

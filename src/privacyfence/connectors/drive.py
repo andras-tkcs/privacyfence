@@ -10,7 +10,7 @@ from typing import Any
 
 from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
-from ..drive_client import DriveClient, DriveClientError
+from ..drive_client import DriveClient, DriveClientError, _parse_a1_range
 from ..gate import gated_call
 
 logger = logging.getLogger(__name__)
@@ -779,6 +779,14 @@ class DriveConnector(Connector):
         column_width: int = -1,
         merge_type: str = "KEEP",
     ) -> Any:
+        # Validate the range syntax before gating, not after: format_sheet_range()
+        # only discovers bad A1 syntax once it's already past the approval
+        # popup, so a doomed call still cost the user an unnecessary approval
+        # decision. Same parser format_sheet_range() itself uses, just run early.
+        try:
+            _parse_a1_range(range_a1)
+        except DriveClientError as exc:
+            raise RuntimeError(str(exc)) from exc
         drive_file = await self._fetch(self._drive.get_file_metadata, spreadsheet_id)
         name = getattr(drive_file, "name", spreadsheet_id)
         owners = getattr(drive_file, "owners", [])

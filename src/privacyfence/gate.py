@@ -42,6 +42,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -85,6 +86,7 @@ async def gated_call(
     args: dict | None = None,
 ) -> Any:
     created_at = time.time()
+    request_id = uuid.uuid4().hex[:12]
     operation_key = TOOL_TO_OPERATION.get(tool, f"{connector}.{tool}")
 
     ctx = ReviewContext(
@@ -99,117 +101,112 @@ async def gated_call(
     popup_title = f"PrivacyFence — {tool_name}"
     pii_categories = detect_pii_categories(details if pii_scan_text is None else pii_scan_text)
 
-    evaluator = get_auto_accept_evaluator()
-    auto_ok, matched_rule = evaluator.should_auto_accept(operation_key, ctx)
+    # Every exit from this function -- including one triggered by an
+    # exception nobody anticipated below (a native popup call raising, a
+    # rule-file write failing) -- must leave exactly one audit entry behind.
+    # Without that guarantee, a call that visibly ran and got a real decision
+    # from the user can still leave "no matching entry" in the log: a true
+    # gap in the trust boundary this module exists to enforce. `audited`
+    # tracks whether one of the normal decision branches below already wrote
+    # one; the `finally` block below only steps in if none of them did.
+    audited = False
 
-    if auto_ok and not pii_categories:
+    def audit(*, decision: str, auto_accept_rule: str, pii_detected: bool) -> None:
+        nonlocal audited
+        audited = True
         _audit(
-            created_at=created_at, connector=connector, tool=tool,
+            created_at=created_at, request_id=request_id, connector=connector, tool=tool,
             tool_name=tool_name, summary=summary, sender=sender,
-            decision="auto_accepted", auto_accept_rule=matched_rule,
-            pii_detected=False,
+            decision=decision, auto_accept_rule=auto_accept_rule, pii_detected=pii_detected,
         )
-        logger.info("Auto-accepted: %s/%s rule=%r", connector, tool, matched_rule)
-        return filtered_data
 
-    if gate == "review":
-        suggestion = suggest_rule(operation_key, ctx)
-        # Everything interactive for this item — including the PII
-        # confirmation, the "Accept All" confirmation, and persisting the
-        # resulting rule — stays inside one continuous lock acquisition.
-        # Releasing and re-acquiring the lock between popups would open a
-        # window where a request queued behind this one slips through with
-        # the pre-rule rule set and pops up its own dialog for something the
-        # user just approved.
-        async with _popup_lock:
-            # Re-check: while this call was queued behind another popup, that
-            # popup's "Accept All" may have just created a rule that now
-            # covers this item too. A PII match still overrides it either way.
-            auto_ok, matched_rule = evaluator.should_auto_accept(operation_key, ctx)
-            if auto_ok and not pii_categories:
-                _audit(
-                    created_at=created_at, connector=connector, tool=tool,
-                    tool_name=tool_name, summary=summary, sender=sender,
-                    decision="auto_accepted", auto_accept_rule=matched_rule,
-                    pii_detected=False,
-                )
-                logger.info("Auto-accepted while queued: %s/%s rule=%r", connector, tool, matched_rule)
-                return filtered_data
+    try:
+        evaluator = get_auto_accept_evaluator()
+        auto_ok, matched_rule = evaluator.should_auto_accept(operation_key, ctx)
 
-            decision = await asyncio.to_thread(
-                show_read_popup, popup_title, preview or {}, details, suggestion is not None, pii_categories
-            )
-
-            if decision in ("accept", "accept_all") and pii_categories:
-                decision = await _confirm_pii_or_deny(decision, pii_categories)
-
-            if decision == "accept_all" and suggestion is not None:
-                rule_name, value = suggestion
-                description = describe_rule(rule_name, value)
-                confirmed = await asyncio.to_thread(show_rule_confirmation_popup, description)
-                if confirmed:
-                    add_auto_accept_rule(operation_key, rule_name, value)
-                    _audit(
-                        created_at=created_at, connector=connector, tool=tool,
-                        tool_name=tool_name, summary=summary, sender=sender,
-                        decision="accepted_via_accept_all", auto_accept_rule=rule_name,
-                        pii_detected=bool(pii_categories),
-                    )
-                    logger.info("Accept All: created rule %r for %s", rule_name, operation_key)
-                    return filtered_data
-                # Cancelled rule creation — this item is still accepted, just once.
-                decision = "accept"
-
-        if decision == "deny":
-            _audit(
-                created_at=created_at, connector=connector, tool=tool,
-                tool_name=tool_name, summary=summary, sender=sender,
-                decision="rejected", auto_accept_rule="", pii_detected=bool(pii_categories),
-            )
-            raise RuntimeError("Request denied by user")
-
-        _audit(
-            created_at=created_at, connector=connector, tool=tool,
-            tool_name=tool_name, summary=summary, sender=sender,
-            decision="approved", auto_accept_rule="", pii_detected=bool(pii_categories),
-        )
-        return filtered_data
-
-    else:
-        # ── Popup gate: block and show native approval dialog for a write ───
-        async with _popup_lock:
-            # Same race as above: a rule may have been created while queued.
-            # A PII match still overrides it either way.
-            auto_ok, matched_rule = evaluator.should_auto_accept(operation_key, ctx)
-            if auto_ok and not pii_categories:
-                _audit(
-                    created_at=created_at, connector=connector, tool=tool,
-                    tool_name=tool_name, summary=summary, sender=sender,
-                    decision="auto_accepted", auto_accept_rule=matched_rule,
-                    pii_detected=False,
-                )
-                logger.info("Auto-accepted while queued: %s/%s rule=%r", connector, tool, matched_rule)
-                return filtered_data
-
-            decision = await asyncio.to_thread(show_popup, popup_title, preview or {}, details, pii_categories)
-
-            if decision == "accept" and pii_categories:
-                decision = await _confirm_pii_or_deny(decision, pii_categories)
-
-        if decision == "accept":
-            _audit(
-                created_at=created_at, connector=connector, tool=tool,
-                tool_name=tool_name, summary=summary, sender=sender,
-                decision="approved", auto_accept_rule="", pii_detected=bool(pii_categories),
-            )
+        if auto_ok and not pii_categories:
+            audit(decision="auto_accepted", auto_accept_rule=matched_rule, pii_detected=False)
+            logger.info("Auto-accepted: %s/%s rule=%r", connector, tool, matched_rule)
             return filtered_data
 
-        _audit(
-            created_at=created_at, connector=connector, tool=tool,
-            tool_name=tool_name, summary=summary, sender=sender,
-            decision="rejected", auto_accept_rule="", pii_detected=bool(pii_categories),
-        )
-        raise RuntimeError("Request denied by user")
+        if gate == "review":
+            suggestion = suggest_rule(operation_key, ctx)
+            # Everything interactive for this item — including the PII
+            # confirmation, the "Accept All" confirmation, and persisting the
+            # resulting rule — stays inside one continuous lock acquisition.
+            # Releasing and re-acquiring the lock between popups would open a
+            # window where a request queued behind this one slips through with
+            # the pre-rule rule set and pops up its own dialog for something the
+            # user just approved.
+            async with _popup_lock:
+                # Re-check: while this call was queued behind another popup, that
+                # popup's "Accept All" may have just created a rule that now
+                # covers this item too. A PII match still overrides it either way.
+                auto_ok, matched_rule = evaluator.should_auto_accept(operation_key, ctx)
+                if auto_ok and not pii_categories:
+                    audit(decision="auto_accepted", auto_accept_rule=matched_rule, pii_detected=False)
+                    logger.info("Auto-accepted while queued: %s/%s rule=%r", connector, tool, matched_rule)
+                    return filtered_data
+
+                decision = await asyncio.to_thread(
+                    show_read_popup, popup_title, preview or {}, details, suggestion is not None, pii_categories
+                )
+
+                if decision in ("accept", "accept_all") and pii_categories:
+                    decision = await _confirm_pii_or_deny(decision, pii_categories)
+
+                if decision == "accept_all" and suggestion is not None:
+                    rule_name, value = suggestion
+                    description = describe_rule(rule_name, value)
+                    confirmed = await asyncio.to_thread(show_rule_confirmation_popup, description)
+                    if confirmed:
+                        add_auto_accept_rule(operation_key, rule_name, value)
+                        audit(
+                            decision="accepted_via_accept_all", auto_accept_rule=rule_name,
+                            pii_detected=bool(pii_categories),
+                        )
+                        logger.info("Accept All: created rule %r for %s", rule_name, operation_key)
+                        return filtered_data
+                    # Cancelled rule creation — this item is still accepted, just once.
+                    decision = "accept"
+
+            if decision == "deny":
+                audit(decision="rejected", auto_accept_rule="", pii_detected=bool(pii_categories))
+                raise RuntimeError("Request denied by user")
+
+            audit(decision="approved", auto_accept_rule="", pii_detected=bool(pii_categories))
+            return filtered_data
+
+        else:
+            # ── Popup gate: block and show native approval dialog for a write ───
+            async with _popup_lock:
+                # Same race as above: a rule may have been created while queued.
+                # A PII match still overrides it either way.
+                auto_ok, matched_rule = evaluator.should_auto_accept(operation_key, ctx)
+                if auto_ok and not pii_categories:
+                    audit(decision="auto_accepted", auto_accept_rule=matched_rule, pii_detected=False)
+                    logger.info("Auto-accepted while queued: %s/%s rule=%r", connector, tool, matched_rule)
+                    return filtered_data
+
+                decision = await asyncio.to_thread(show_popup, popup_title, preview or {}, details, pii_categories)
+
+                if decision == "accept" and pii_categories:
+                    decision = await _confirm_pii_or_deny(decision, pii_categories)
+
+            if decision == "accept":
+                audit(decision="approved", auto_accept_rule="", pii_detected=bool(pii_categories))
+                return filtered_data
+
+            audit(decision="rejected", auto_accept_rule="", pii_detected=bool(pii_categories))
+            raise RuntimeError("Request denied by user")
+    finally:
+        if not audited:
+            logger.error(
+                "gated_call for %s/%s (request %s) exited without recording a decision "
+                "-- recording a fallback 'error' entry so the audit trail has no silent gap",
+                connector, tool, request_id,
+            )
+            audit(decision="error", auto_accept_rule="", pii_detected=bool(pii_categories))
 
 
 async def _confirm_pii_or_deny(decision: str, pii_categories: list[str]) -> str:
@@ -230,14 +227,14 @@ def _default_details(raw_data: Any) -> str:
 
 
 def _audit(
-    *, created_at, connector, tool, tool_name, summary, sender, decision, auto_accept_rule,
+    *, created_at, request_id, connector, tool, tool_name, summary, sender, decision, auto_accept_rule,
     pii_detected=False,
 ) -> None:
     try:
         get_audit_logger().record(AuditEntry(
             timestamp=datetime.now(timezone.utc).isoformat(),
             week=current_week(),
-            request_id="",
+            request_id=request_id,
             connector=connector,
             tool=tool,
             tool_name=tool_name,

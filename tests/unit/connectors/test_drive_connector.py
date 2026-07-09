@@ -521,6 +521,22 @@ class TestSheetsGatedTools:
         ):
             assert expected in summary
 
+    async def test_format_range_bad_syntax_rejected_before_gate(self, gated_call_spy):
+        # format_sheet_range() only discovers bad A1 syntax once it's already
+        # past the approval popup -- this must be caught earlier so a doomed
+        # call never costs the user an approval decision.
+        connector, client = make_connector()
+
+        with pytest.raises(RuntimeError, match="Unsupported range syntax"):
+            await connector.call(
+                "drive_sheets_format_range",
+                {"spreadsheet_id": "sheet1", "sheet_id": 0, "range_a1": "not-a-range"},
+            )
+
+        assert gated_call_spy == []  # popup never shown
+        client.get_file_metadata.assert_not_called()
+        client.format_sheet_range.assert_not_called()
+
 
 class TestEveryToolIsAudited:
     async def test_every_declared_tool_leaves_an_audit_trail(self, monkeypatch, tmp_path):
@@ -537,5 +553,8 @@ class TestEveryToolIsAudited:
                 "drive_upload_file": {"content_base64": "aGVsbG8=", "name": "greeting.txt"},
                 # values must be a JSON 2D array for _parse_json_2d_list to accept.
                 "drive_sheets_write_range": {"values": '[["a", "b"]]'},
+                # range_a1 must be a fully-bounded A1 range for _parse_a1_range
+                # to accept -- it's now validated before gating.
+                "drive_sheets_format_range": {"range_a1": "A1:B2"},
             },
         )

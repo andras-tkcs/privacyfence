@@ -254,14 +254,42 @@ class TestGetEvent:
         event = client.get_event("primary", "e1")
         assert event.title == "Hi"
 
-    def test_requests_attachments_via_supports_attachments_param(self):
-        # supportsAttachments=True is required for the API to populate the
-        # attachments field at all (e.g. Gemini's notes/transcript docs).
+    def test_does_not_pass_supports_attachments(self):
+        # events.get doesn't accept supportsAttachments at all (only
+        # insert/update/patch/import do) -- passing it raises a client-side
+        # TypeError in the real googleapiclient before any request is sent,
+        # since a bare MagicMock silently accepts any kwarg and wouldn't have
+        # caught that regression on its own (see test_rejects_unknown_kwargs
+        # below for a fake that actually enforces the real API's signature).
         service = MagicMock()
         service.events.return_value.get.return_value.execute.return_value = {"id": "e1"}
         client = make_client(service)
         client.get_event("primary", "e1")
-        assert service.events.return_value.get.call_args.kwargs["supportsAttachments"] is True
+        assert "supportsAttachments" not in service.events.return_value.get.call_args.kwargs
+
+    def test_rejects_unknown_kwargs(self):
+        # A stand-in for events().get() that enforces the real Calendar API
+        # v3 signature (calendarId, eventId, alwaysIncludeEmail, maxAttendees,
+        # timeZone) -- unlike a MagicMock, it actually raises on an
+        # unsupported kwarg like supportsAttachments, the way
+        # google-api-python-client's discovery-generated methods do.
+        allowed = {"calendarId", "eventId", "alwaysIncludeEmail", "maxAttendees", "timeZone"}
+
+        class StrictEventsGet:
+            def __call__(self, **kwargs):
+                unknown = set(kwargs) - allowed
+                if unknown:
+                    raise TypeError(f"Got an unexpected keyword argument {sorted(unknown)!r}")
+                return self
+
+            def execute(self):
+                return {"id": "e1"}
+
+        service = MagicMock()
+        service.events.return_value.get = StrictEventsGet()
+        client = make_client(service)
+        event = client.get_event("primary", "e1")
+        assert event.id == "e1"
 
     def test_http_error_becomes_calendar_client_error(self):
         service = MagicMock()
