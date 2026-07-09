@@ -36,8 +36,9 @@ class ConfluenceConnector(Connector):
                 ),
                 params=[
                     ToolParam("max_results", "int", required=False, default=50),
-                    ToolParam("space_type", "str", required=False, default="global",
-                              description="'global' or 'personal'"),
+                    ToolParam("space_type", "str", required=False, default="",
+                              description="Filter to 'global' or 'personal'; "
+                                           "omit/empty to return all types"),
                 ],
             read_only=True,
             ),
@@ -151,7 +152,7 @@ class ConfluenceConnector(Connector):
     # Always-allowed
     # ------------------------------------------------------------------ #
 
-    async def _list_spaces(self, max_results: int = 50, space_type: str = "global") -> Any:
+    async def _list_spaces(self, max_results: int = 50, space_type: str = "") -> Any:
         t0 = time.time()
         spaces = await self._fetch(self._confluence.list_spaces, max_results, space_type)
         data = [asdict(s) for s in spaces]
