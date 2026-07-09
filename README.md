@@ -302,7 +302,7 @@ Routine, low-risk requests can be approved automatically without a prompt. Rules
 |------|--------------|
 | `i_am_sender` | The authenticated account is the sender |
 | `i_am_sole_recipient` | The only recipient is the authenticated account |
-| `trusted_sender_domain` | Sender's domain is in the allowlist |
+| `trusted_sender_domain` | Sender's domain is in the allowlist, including subdomains (e.g. `mail.trusted.com` matches an allowlisted `trusted.com`) |
 | `label_match` | Message carries one of the specified labels |
 | `age_threshold_days` | Message is older than N days |
 | `no_attachments` | Message has no attachments |
