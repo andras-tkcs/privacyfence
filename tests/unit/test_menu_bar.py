@@ -495,11 +495,31 @@ class TestBuildRulesMenu:
         for cname in menu_bar.ALL_CONNECTORS:
             assert cname.capitalize() in titles
 
+    def test_sheets_gets_its_own_top_level_entry_distinct_from_drive(self, app):
+        # Regression: sheets.* operation keys were bucketed under a "sheets"
+        # group by _build_rules_menu's own connector-prefix grouping, but
+        # "sheets" was never iterated (ALL_CONNECTORS has no such entry --
+        # it's not a real connector), so the whole bucket was silently
+        # dropped and no Sheets rules ever appeared in the menu at all.
+        rules_parent = app._build_rules_menu({})
+        titles = {item.title for item in rules_parent.values()}
+        assert "Sheets" in titles
+
+        sheets_item = rules_parent["Sheets"]
+        sub_titles = {i.title for i in sheets_item.values()}
+        assert sub_titles == {
+            "Read values", "Write range", "Add tab", "Rename tab", "Format range",
+        }
+
+        drive_item = rules_parent["Drive"]
+        drive_sub_titles = {i.title for i in drive_item.values()}
+        assert not (drive_sub_titles & sub_titles)  # Sheets ops aren't duplicated under Drive
+
     def test_connector_with_no_configurable_ops_shows_placeholder(self, app, monkeypatch):
         # Every real connector has at least one entry in OPERATION_LABELS
         # now, so this exercises the placeholder branch with a synthetic
         # connector that deliberately has none.
-        monkeypatch.setattr(menu_bar, "ALL_CONNECTORS", menu_bar.ALL_CONNECTORS + ["nullconnector"])
+        monkeypatch.setattr(menu_bar, "RULES_MENU_GROUPS", menu_bar.RULES_MENU_GROUPS + ["nullconnector"])
         rules_parent = app._build_rules_menu({})
         placeholder_item = rules_parent["Nullconnector"]
         sub_titles = [i.title for i in placeholder_item.values()]
