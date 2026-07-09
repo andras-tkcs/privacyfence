@@ -30,9 +30,13 @@ def make_client(config: dict | None = None, token_file: str | None = None) -> Co
 
 
 def unauthorized_error() -> Exception:
-    exc = Exception("401 Unauthorized")
+    return error_with_status(401, "401 Unauthorized")
+
+
+def error_with_status(status_code: int, message: str) -> Exception:
+    exc = Exception(message)
     response = MagicMock()
-    response.status_code = 401
+    response.status_code = status_code
     exc.response = response
     return exc
 
@@ -257,6 +261,40 @@ class TestRequest:
         def fn():
             raise unauthorized_error()
         with pytest.raises(Exception, match="401"):
+            client._request(fn)
+
+    @pytest.mark.parametrize("status_code", [403, 404])
+    def test_non_401_stale_token_status_triggers_refresh_and_retry(self, monkeypatch, status_code):
+        # api.atlassian.com's Confluence proxy doesn't reliably return 401 for
+        # an expired/invalid token: v2 REST endpoints 404, and the legacy
+        # CQL-backed endpoints 403 ("Current user not permitted to use
+        # Confluence"). Both need the same refresh-and-retry as a real 401,
+        # or a stale token silently masquerades as "not found"/"not permitted".
+        client = make_client()
+        monkeypatch.setattr(client, "_try_refresh", lambda: True)
+        calls = {"n": 0}
+        def fn():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise error_with_status(status_code, "boom")
+            return "retried-ok"
+        assert client._request(fn) == "retried-ok"
+
+    @pytest.mark.parametrize("status_code", [403, 404])
+    def test_non_401_stale_token_status_refresh_fails_reraises(self, monkeypatch, status_code):
+        client = make_client()
+        monkeypatch.setattr(client, "_try_refresh", lambda: False)
+        def fn():
+            raise error_with_status(status_code, "boom")
+        with pytest.raises(Exception, match="boom"):
+            client._request(fn)
+
+    def test_unrelated_status_code_does_not_trigger_refresh(self, monkeypatch):
+        client = make_client()
+        monkeypatch.setattr(client, "_try_refresh", lambda: (_ for _ in ()).throw(AssertionError("should not be called")))
+        def fn():
+            raise error_with_status(500, "server error")
+        with pytest.raises(Exception, match="server error"):
             client._request(fn)
 
 
