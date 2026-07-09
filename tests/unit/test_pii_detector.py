@@ -79,8 +79,10 @@ class TestNoFalsePositivesOnPlainText:
 
 
 class TestLanguageAgnosticPatterns:
-    def test_email_address(self):
-        assert detect_categories("Reach me at jane.doe@example.com please.") == ["Email address"]
+    def test_email_address_is_not_flagged(self):
+        # Deliberate: near-universal in email signatures, see module
+        # docstring / README "PII detection gate" section.
+        assert detect_categories("Reach me at jane.doe@example.com please.") == []
 
     def test_valid_iban_passes_checksum(self):
         assert detect_categories("Wire to DE89370400440532013000 today.") == ["IBAN (bank account number)"]
@@ -88,14 +90,11 @@ class TestLanguageAgnosticPatterns:
     def test_valid_credit_card_passes_luhn(self):
         assert detect_categories("Card: 4111 1111 1111 1111 exp 10/29") == ["Credit card number"]
 
-    def test_international_phone_number(self):
-        assert detect_categories("Call me at +36 20 123 4567 anytime.") == [
-            "Phone number (international format)"
-        ]
+    def test_international_phone_number_is_not_flagged(self):
+        # Deliberate: same rationale as email addresses above.
+        assert detect_categories("Call me at +36 20 123 4567 anytime.") == []
 
     def test_local_format_phone_without_country_code_is_not_flagged(self):
-        # Deliberately conservative: bare local-format numbers are too easy
-        # to confuse with other digit sequences without a leading '+'.
         assert detect_categories("Call the office at 06 1 234 5678.") == []
 
     def test_ip_address(self):
@@ -165,22 +164,22 @@ class TestEnglishPatterns:
 
 class TestMultipleCategoriesAndDeduplication:
     def test_multiple_distinct_categories_all_reported_sorted(self):
-        text = "Email jane@example.com or call +36 20 123 4567."
+        text = "Wire to DE89370400440532013000 or reach the server at 192.168.1.100."
         assert detect_categories(text) == [
-            "Email address",
-            "Phone number (international format)",
+            "IBAN (bank account number)",
+            "IP address",
         ]
 
     def test_repeated_matches_of_same_category_deduplicated(self):
-        text = "Contact jane@example.com or john@example.com."
-        assert detect_categories(text) == ["Email address"]
+        text = "Server at 192.168.1.100, backup at 192.168.1.101."
+        assert detect_categories(text) == ["IP address"]
 
 
 class TestScanTextNeverCarriesMatchedSubstring:
     def test_pii_match_objects_have_no_text_field(self):
-        matches = scan_text("Reach me at jane.doe@example.com please.")
+        matches = scan_text("Wire to DE89370400440532013000 today.")
         assert len(matches) == 1
-        assert matches[0].category == "Email address"
+        assert matches[0].category == "IBAN (bank account number)"
         assert not hasattr(matches[0], "text")
         assert not hasattr(matches[0], "matched_text")
         assert not hasattr(matches[0], "value")
@@ -202,11 +201,11 @@ class TestEnabledToggle:
 
     def test_detect_pii_categories_returns_empty_when_disabled(self):
         set_pii_detection_enabled(False)
-        assert detect_pii_categories("jane.doe@example.com") == []
+        assert detect_pii_categories("DE89370400440532013000") == []
 
     def test_detect_pii_categories_scans_when_enabled(self):
         set_pii_detection_enabled(True)
-        assert detect_pii_categories("jane.doe@example.com") == ["Email address"]
+        assert detect_pii_categories("Wire to DE89370400440532013000 today.") == ["IBAN (bank account number)"]
 
     def test_changed_listener_fires_on_toggle(self):
         calls = []
