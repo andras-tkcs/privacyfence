@@ -1,5 +1,15 @@
 # Full-Connector QA Testing via Claude Cowork
 
+**This guide assumes PrivacyFence is running from source via `scripts/dev_start.sh`**
+(Account 1 in [dev-vs-live-setup.md](dev-vs-live-setup.md)), started from a
+checkout of this repo. In that mode `config/settings.yaml` and
+`logs/audit/<week>.jsonl` live **inside the repo root**, not `~/.privacyfence`
+(see [`paths.py`](../src/privacyfence/paths.py)) — every path below is written
+against the repo root on that basis, not hedged as "check which one exists."
+If you're instead testing a bundled/DMG install, the same prompt works, but
+substitute `~/.privacyfence/config/settings.yaml` and
+`~/.privacyfence/logs/audit/<week>.jsonl` everywhere a path is mentioned.
+
 PrivacyFence's real attack surface is the interaction between ten connectors,
 three gate types (`auto` / `review` / `popup`), a growing set of auto-accept
 rules, and the PII detection gate layered on top of the popup itself — none
@@ -30,18 +40,27 @@ combination only breaks for non-ASCII input.
 - `privacyfence-app` (the daemon) running, with every connector you want to
   test already authenticated from the menu bar.
 - The `privacyfence` MCP server attached to a Claude Cowork/Desktop
-  conversation (`claude mcp add privacyfence privacyfence-bridge`, or the
-  `.mcpb` extension).
+  conversation — `scripts/dev_start.sh` registers `privacyfence-bridge` from
+  this checkout's venv for you.
+- **Claude Cowork's project/working folder (set in Cowork's UI — the folder
+  picker for the conversation) must be this repo's root**, the same folder
+  `dev_start.sh` was run from. This is what gives Claude filesystem access
+  (Read/Bash-equivalent) to `config/settings.yaml` for Phase 0's fixture
+  lookups — without it, Claude has no way to read that file, and Phase 0 will
+  silently fail or come back empty rather than erroring loudly. Confirm
+  before you start by asking Claude to read `config/settings.yaml` — if it
+  can't find the file, fix the project folder before pasting the prompt
+  below.
 - No filesystem access to the audit log is needed during the run itself — a
   live mid-run read from a Cowork/Desktop session isn't reliable (recently
   written entries can appear to lag or go missing depending on how the
   session reaches the file), so the prompt below no longer has Claude read
-  `logs/audit/<current-ISO-week>.jsonl` as it goes. Instead, the very last
-  phase asks you to **attach that file to the conversation** — under
-  `~/.privacyfence/audit/` for a bundled/DMG install, or `logs/audit/` in the
-  project root if the daemon is running from source (see
-  [dev-vs-live-setup.md](dev-vs-live-setup.md)) — and Claude reconciles every
-  call against that attached copy in one pass at the end, instead of piecemeal
+  `logs/audit/<current-ISO-week>.jsonl` as it goes, even with the project
+  folder set correctly. Instead, the very last phase asks you to **attach
+  that file to the conversation** — `logs/audit/` in the repo root per the
+  assumption at the top of this doc, or `~/.privacyfence/audit/` if you're
+  testing a bundled/DMG install instead — and Claude reconciles every call
+  against that attached copy in one pass at the end, instead of piecemeal
   during the run. This is a test environment against your own accounts, so
   there's no confidentiality reason to keep the log human-only. Claude still
   can't observe the popup UI directly (it only sees whether the tool call
@@ -70,10 +89,11 @@ connector in dependency order (list/search before get, get before write),
 deliberately hits every auto-accept rule you have configured (see the
 environment doc's consolidated rules block) back-to-back with a contrasting
 call that should still prompt, and ends with a dedicated reconciliation phase:
-Claude asks you to attach the current week's audit log to the conversation,
-then goes back through every call it made and fills in the actual logged
-decision for each one — see the Prerequisites note above for which of the two
-possible file locations to attach.
+Claude asks you to attach the current week's audit log to the conversation
+(repo root, per the assumption at the top of this doc, or `~/.privacyfence/`
+for a bundled/DMG install), then goes back through every call it made and
+fills in the actual logged decision for each one, instead of reading the file
+live during the run.
 
 **This version is safe to run repeatedly against the same accounts, and needs
 no editing before you paste it.** Every artifact it creates is stamped with a
@@ -176,12 +196,12 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
 
 1. Generate `{RUN_ID}` yourself right now as `YYYY-MM-DD-HHmm` in my local time.
    Use it verbatim in every title for the rest of this run.
-2. Read `settings.yaml` yourself — `~/.privacyfence/config/settings.yaml` if
-   this daemon is a bundled/DMG install, or `config/settings.yaml` in the
-   project root if it's running from source (check which one exists; see
-   [dev-vs-live-setup.md](dev-vs-live-setup.md)) — and keep the full
-   `auto_accept_rules` block in mind for the rest of the run — several fixtures
-   below come directly from it rather than a separate lookup.
+2. Read `settings.yaml` yourself — `config/settings.yaml` in the repo root
+   (this run assumes PrivacyFence was started from source via
+   `scripts/dev_start.sh`, in the same repo checkout you have filesystem
+   access to; see [dev-vs-live-setup.md](dev-vs-live-setup.md)) — and keep the
+   full `auto_accept_rules` block in mind for the rest of the run — several
+   fixtures below come directly from it rather than a separate lookup.
 3. `drive_list_files` (or equivalent search) for a folder named exactly
    `PrivacyFence QA Sandbox` → `drive_qa_folder_id`. If more than one file
    matches, prefer the one whose `mime_type` is a folder.
