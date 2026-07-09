@@ -80,6 +80,9 @@ class TestGmailRules:
             ("Alice <alice@untrusted.com>", ["trusted.com"], False),
             ("Alice <alice@Trusted.COM>", ["trusted.com"], True),
             ("Alice <alice@trusted.com>", [], False),
+            ("Netflix <info@members.netflix.com>", ["netflix.com"], True),
+            ("Alice <alice@mail.members.trusted.com>", ["trusted.com"], True),
+            ("Alice <alice@eviltrusted.com>", ["trusted.com"], False),
         ],
     )
     def test_trusted_sender_domain(self, sender, allowlist, expected):
