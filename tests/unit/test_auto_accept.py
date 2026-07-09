@@ -459,6 +459,56 @@ class TestSheetsRules:
         assert ev._rule_approved_spreadsheet(["not-a-dict"], ctx) is False
 
 
+class TestSheetsFolderScopedRules:
+    """rename_sheet/format_range raw_data is {"file": drive_file, ...} — the
+    same shape write_range/add_sheet already use approved_sandbox_folder
+    against (via _file_from) -- confirms the rule actually resolves the
+    spreadsheet's parent folder end-to-end for these two operations too, not
+    just that the generic rule function works in isolation (see
+    test_approved_folder_variants above for that).
+    """
+
+    def test_rename_sheet_matches_folder_via_should_auto_accept(self):
+        ev = AutoAcceptEvaluator({
+            "sheets.rename_sheet": [{"rule": "approved_sandbox_folder", "value": ["folder1"]}],
+        })
+        ctx = make_ctx(
+            args={"spreadsheet_id": "sheet1", "sheet_id": 5, "new_title": "Renamed"},
+            raw_data={"file": SimpleNamespace(parent_ids=["folder1"]), "sheet_id": 5, "new_title": "Renamed"},
+        )
+        assert ev.should_auto_accept("sheets.rename_sheet", ctx) == (True, "approved_sandbox_folder")
+
+    def test_rename_sheet_does_not_match_a_different_folder(self):
+        ev = AutoAcceptEvaluator({
+            "sheets.rename_sheet": [{"rule": "approved_sandbox_folder", "value": ["folder1"]}],
+        })
+        ctx = make_ctx(
+            args={"spreadsheet_id": "sheet1", "sheet_id": 5, "new_title": "Renamed"},
+            raw_data={"file": SimpleNamespace(parent_ids=["folder9"]), "sheet_id": 5, "new_title": "Renamed"},
+        )
+        assert ev.should_auto_accept("sheets.rename_sheet", ctx) == (False, "")
+
+    def test_format_range_matches_folder_via_should_auto_accept(self):
+        ev = AutoAcceptEvaluator({
+            "sheets.format_range": [{"rule": "approved_sandbox_folder", "value": ["folder1"]}],
+        })
+        ctx = make_ctx(
+            args={"spreadsheet_id": "sheet1", "sheet_id": 0, "range_a1": "A1:B2"},
+            raw_data={"file": SimpleNamespace(parent_ids=["folder1"]), "range_a1": "A1:B2", "format": "bold=true"},
+        )
+        assert ev.should_auto_accept("sheets.format_range", ctx) == (True, "approved_sandbox_folder")
+
+    def test_format_range_does_not_match_a_different_folder(self):
+        ev = AutoAcceptEvaluator({
+            "sheets.format_range": [{"rule": "approved_sandbox_folder", "value": ["folder1"]}],
+        })
+        ctx = make_ctx(
+            args={"spreadsheet_id": "sheet1", "sheet_id": 0, "range_a1": "A1:B2"},
+            raw_data={"file": SimpleNamespace(parent_ids=["folder9"]), "range_a1": "A1:B2", "format": "bold=true"},
+        )
+        assert ev.should_auto_accept("sheets.format_range", ctx) == (False, "")
+
+
 # --------------------------------------------------------------------------- #
 # Contacts rules
 # --------------------------------------------------------------------------- #

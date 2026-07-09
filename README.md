@@ -345,11 +345,15 @@ destination folder ID is in the allowlist).
 
 The same rules apply to the `drive_sheets_*` tools, under their own operation keys so they can be
 configured independently of plain-file Drive operations: `sheets.read_values` (`i_am_owner`,
-`created_by_me`, `approved_folder`, `created_this_session`, `shared_drive_exclusion`),
-`sheets.write_range` / `sheets.add_sheet` (`i_am_owner`, `approved_sandbox_folder`,
-`created_this_session`), and `sheets.rename_sheet` / `sheets.format_range` (`i_am_owner`,
-`created_this_session`). A spreadsheet is a Drive file, so e.g. `created_this_session` fires for
-a spreadsheet `drive_sheets_create` made earlier in the same conversation.
+`created_by_me`, `approved_folder`, `created_this_session`, `shared_drive_exclusion`) and
+`sheets.write_range` / `sheets.add_sheet` / `sheets.rename_sheet` / `sheets.format_range`
+(`i_am_owner`, `approved_sandbox_folder`, `created_this_session`). A spreadsheet is a Drive file,
+so e.g. `created_this_session` fires for a spreadsheet `drive_sheets_create` made earlier in the
+same conversation — but note that **each of these five operation keys needs the same folder ID (or
+other rule value) added to it separately**; adding a folder to `drive.write_file`/`sheets.write_range`
+does not also cover `sheets.rename_sheet`, `sheets.format_range`, or any other Sheets/Drive
+operation key — there's no "apply to all" action, each is configured independently via its own menu
+entry (or its own key under `auto_accept_rules` in `settings.yaml`).
 
 All five `sheets.*` operations also accept `approved_spreadsheet`, which scopes a rule to one
 specific spreadsheet — optionally narrowed to one tab within it:
