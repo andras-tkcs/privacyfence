@@ -69,6 +69,14 @@ When the gate is `review`, PrivacyFence opens a native popup with a summary box 
 
 Claude already describes the action it is about to take in the chat. When the gate is `popup`, PrivacyFence opens a native popup showing the full action details with **Accept** or **Deny**. There is no intermediate Cowork step.
 
+For three write operations expected to be called repeatedly against the same file in
+quick succession — `drive_sheets_write_range`, `drive_sheets_format_range`, and `drive_add_comment`
+— the popup adds a third button, **Accept for 5 min**: it auto-accepts further calls of that same
+operation against that same file for 5 minutes, entirely in memory. Unlike a standing
+[auto-accept rule](#auto-accept-rules), it's never written to `settings.yaml` and disappears on
+daemon restart — a much smaller commitment than Accept All, appropriate for writes where a
+standing rule isn't offered at all.
+
 ### PII detection gate
 
 On top of the normal Accept/Deny popup, PrivacyFence can scan the message/document/spreadsheet
@@ -337,11 +345,15 @@ destination folder ID is in the allowlist).
 
 The same rules apply to the `drive_sheets_*` tools, under their own operation keys so they can be
 configured independently of plain-file Drive operations: `sheets.read_values` (`i_am_owner`,
-`created_by_me`, `approved_folder`, `created_this_session`, `shared_drive_exclusion`),
-`sheets.write_range` / `sheets.add_sheet` (`i_am_owner`, `approved_sandbox_folder`,
-`created_this_session`), and `sheets.rename_sheet` / `sheets.format_range` (`i_am_owner`,
-`created_this_session`). A spreadsheet is a Drive file, so e.g. `created_this_session` fires for
-a spreadsheet `drive_sheets_create` made earlier in the same conversation.
+`created_by_me`, `approved_folder`, `created_this_session`, `shared_drive_exclusion`) and
+`sheets.write_range` / `sheets.add_sheet` / `sheets.rename_sheet` / `sheets.format_range`
+(`i_am_owner`, `approved_sandbox_folder`, `created_this_session`). A spreadsheet is a Drive file,
+so e.g. `created_this_session` fires for a spreadsheet `drive_sheets_create` made earlier in the
+same conversation — but note that **each of these five operation keys needs the same folder ID (or
+other rule value) added to it separately**; adding a folder to `drive.write_file`/`sheets.write_range`
+does not also cover `sheets.rename_sheet`, `sheets.format_range`, or any other Sheets/Drive
+operation key — there's no "apply to all" action, each is configured independently via its own menu
+entry (or its own key under `auto_accept_rules` in `settings.yaml`).
 
 All five `sheets.*` operations also accept `approved_spreadsheet`, which scopes a rule to one
 specific spreadsheet — optionally narrowed to one tab within it:
@@ -367,6 +379,20 @@ there.
 
 Clicking **Accept All** on a "Read Sheet Values" prompt proposes exactly this rule — scoped to the
 spreadsheet and tab you just read — rather than a broader ownership- or folder-based rule.
+
+`drive.comment_file` (`drive_add_comment` — also used for comments on Docs and Sheets, since those
+ride the Drive connector's OAuth grant) supports `i_am_owner` and `created_this_session` the same
+way plain Drive files do.
+
+**Write ops have no Accept All, but three get "Accept for 5 min" instead.** All of the above
+(including the writes) are `popup`-gated, and unlike `review`-gated reads, a write popup never
+offers to create a standing rule — see [PII detection gate](#pii-detection-gate) and the
+[review model](#review-model) above for why. `sheets.write_range`, `sheets.format_range`, and
+`drive.comment_file` are the exception: their popup additionally offers **Accept for 5 min**, an
+in-memory, non-persisted acceptance scoped to one spreadsheet/file for 5 minutes — see
+[Two flows by direction](#two-flows-by-direction). `sheets.add_sheet` and `sheets.rename_sheet`
+get neither; they're one-shot per file rather than something called repeatedly in a burst, so a
+standing rule (configured as above) is the only way to skip their popup.
 
 **Slack**
 

@@ -733,6 +733,25 @@ class TestAddRule:
 
         assert "spreadsheet_id" in captured["message"]
 
+    def test_rename_sheet_offers_approved_sandbox_folder(self, app, monkeypatch):
+        # Regression: rename_sheet/format_range used to have no folder-scoped
+        # rule at all, so a folder approved for write_range/add_sheet had no
+        # effect on these two -- they always prompted regardless.
+        captured = {}
+        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: captured.update(kw) or None)
+
+        app._add_rule("sheets.rename_sheet")
+
+        assert "approved_sandbox_folder" in captured["options"]
+
+    def test_format_range_offers_approved_sandbox_folder(self, app, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: captured.update(kw) or None)
+
+        app._add_rule("sheets.format_range")
+
+        assert "approved_sandbox_folder" in captured["options"]
+
 
 class TestToggleRule:
     def _seed(self, app, op_key, rules):

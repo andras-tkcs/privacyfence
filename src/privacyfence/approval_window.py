@@ -151,6 +151,7 @@ class ApprovalWindowController(NSObject):
         self.preview: dict[str, str] = {}
         self.details_text = ""
         self.allow_accept_all = False
+        self.allow_temp_accept = False
         self.pii_categories: list[str] = []
         self.result = "deny"
         self.panel = None
@@ -407,6 +408,12 @@ class ApprovalWindowController(NSObject):
             accept_all_btn.setFrameOrigin_((right_x, button_y))
             content.addSubview_(accept_all_btn)
 
+        if self.allow_temp_accept:
+            temp_accept_btn = self._build_button("Accept for 5 min")
+            right_x -= temp_accept_btn.frame().size.width + 8.0
+            temp_accept_btn.setFrameOrigin_((right_x, button_y))
+            content.addSubview_(temp_accept_btn)
+
         panel.makeKeyAndOrderFront_(None)
         panel.setLevel_(NSFloatingWindowLevel)
         NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
@@ -417,6 +424,8 @@ class ApprovalWindowController(NSObject):
         title = str(sender.title())
         if title == "Accept All":
             self.result = "accept_all"
+        elif title == "Accept for 5 min":
+            self.result = "accept_temp"
         elif title == "Accept":
             self.result = "accept"
         else:
@@ -431,11 +440,13 @@ def show_native_approval(
     details_text: str,
     allow_accept_all: bool,
     pii_categories: list[str] | None = None,
+    allow_temp_accept: bool = False,
 ) -> str:
     """Show the approval window and block until the user picks a button.
 
-    Returns 'accept', 'deny', or 'accept_all' (only reachable when
-    allow_accept_all is True). Thread-safe: safe to call from any thread,
+    Returns 'accept', 'deny', 'accept_all' (only reachable when
+    allow_accept_all is True), or 'accept_temp' (only reachable when
+    allow_temp_accept is True). Thread-safe: safe to call from any thread,
     the window itself is always built and driven on the main thread.
     """
     with _popup_lock:
@@ -444,6 +455,7 @@ def show_native_approval(
         controller.preview = preview or {}
         controller.details_text = details_text
         controller.allow_accept_all = allow_accept_all
+        controller.allow_temp_accept = allow_temp_accept
         controller.pii_categories = pii_categories or []
 
         controller.performSelectorOnMainThread_withObject_waitUntilDone_(

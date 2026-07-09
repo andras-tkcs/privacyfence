@@ -17,6 +17,7 @@ from freezegun import freeze_time
 from privacyfence import auto_accept
 from privacyfence.auto_accept import (
     AutoAcceptEvaluator,
+    TEMP_ACCEPT_ELIGIBLE_OPERATIONS,
     add_auto_accept_rule,
     describe_rule,
     get_auto_accept_evaluator,
@@ -25,6 +26,7 @@ from privacyfence.auto_accept import (
     reload_rules,
     set_rules_changed_listener,
     suggest_rule,
+    temp_accept_key,
 )
 
 from ..helpers import make_ctx
@@ -455,6 +457,56 @@ class TestSheetsRules:
         ev = AutoAcceptEvaluator({})
         ctx = make_ctx(args={"spreadsheet_id": "sheet1", "range_a1": "Sheet1!A1:B2"})
         assert ev._rule_approved_spreadsheet(["not-a-dict"], ctx) is False
+
+
+class TestSheetsFolderScopedRules:
+    """rename_sheet/format_range raw_data is {"file": drive_file, ...} — the
+    same shape write_range/add_sheet already use approved_sandbox_folder
+    against (via _file_from) -- confirms the rule actually resolves the
+    spreadsheet's parent folder end-to-end for these two operations too, not
+    just that the generic rule function works in isolation (see
+    test_approved_folder_variants above for that).
+    """
+
+    def test_rename_sheet_matches_folder_via_should_auto_accept(self):
+        ev = AutoAcceptEvaluator({
+            "sheets.rename_sheet": [{"rule": "approved_sandbox_folder", "value": ["folder1"]}],
+        })
+        ctx = make_ctx(
+            args={"spreadsheet_id": "sheet1", "sheet_id": 5, "new_title": "Renamed"},
+            raw_data={"file": SimpleNamespace(parent_ids=["folder1"]), "sheet_id": 5, "new_title": "Renamed"},
+        )
+        assert ev.should_auto_accept("sheets.rename_sheet", ctx) == (True, "approved_sandbox_folder")
+
+    def test_rename_sheet_does_not_match_a_different_folder(self):
+        ev = AutoAcceptEvaluator({
+            "sheets.rename_sheet": [{"rule": "approved_sandbox_folder", "value": ["folder1"]}],
+        })
+        ctx = make_ctx(
+            args={"spreadsheet_id": "sheet1", "sheet_id": 5, "new_title": "Renamed"},
+            raw_data={"file": SimpleNamespace(parent_ids=["folder9"]), "sheet_id": 5, "new_title": "Renamed"},
+        )
+        assert ev.should_auto_accept("sheets.rename_sheet", ctx) == (False, "")
+
+    def test_format_range_matches_folder_via_should_auto_accept(self):
+        ev = AutoAcceptEvaluator({
+            "sheets.format_range": [{"rule": "approved_sandbox_folder", "value": ["folder1"]}],
+        })
+        ctx = make_ctx(
+            args={"spreadsheet_id": "sheet1", "sheet_id": 0, "range_a1": "A1:B2"},
+            raw_data={"file": SimpleNamespace(parent_ids=["folder1"]), "range_a1": "A1:B2", "format": "bold=true"},
+        )
+        assert ev.should_auto_accept("sheets.format_range", ctx) == (True, "approved_sandbox_folder")
+
+    def test_format_range_does_not_match_a_different_folder(self):
+        ev = AutoAcceptEvaluator({
+            "sheets.format_range": [{"rule": "approved_sandbox_folder", "value": ["folder1"]}],
+        })
+        ctx = make_ctx(
+            args={"spreadsheet_id": "sheet1", "sheet_id": 0, "range_a1": "A1:B2"},
+            raw_data={"file": SimpleNamespace(parent_ids=["folder9"]), "range_a1": "A1:B2", "format": "bold=true"},
+        )
+        assert ev.should_auto_accept("sheets.format_range", ctx) == (False, "")
 
 
 # --------------------------------------------------------------------------- #
@@ -1024,3 +1076,114 @@ class TestConcurrentRulePersistence:
         on_disk = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         live_rules = get_auto_accept_evaluator()._rules
         assert live_rules == on_disk["auto_accept_rules"]
+
+
+# --------------------------------------------------------------------------- #
+# Session temp accept ("Accept for 5 min") -- gate.py's lighter alternative
+# to a standing Accept All rule for write ops expected to be called
+# repeatedly against the same file (sheets writes/formats, drive comments).
+# Unlike the YAML-backed rules above, this state is in-memory only and never
+# persisted.
+# --------------------------------------------------------------------------- #
+
+class TestTempAcceptKey:
+    def test_eligible_operation_returns_its_configured_arg(self):
+        ctx = make_ctx(args={"spreadsheet_id": "sheet-1", "range_a1": "A1:B2"})
+        assert temp_accept_key("sheets.write_range", ctx) == "sheet-1"
+
+    def test_drive_comment_uses_file_id(self):
+        ctx = make_ctx(args={"file_id": "file-1", "comment": "hi"})
+        assert temp_accept_key("drive.comment_file", ctx) == "file-1"
+
+    def test_ineligible_operation_returns_none(self):
+        ctx = make_ctx(args={"spreadsheet_id": "sheet-1"})
+        assert temp_accept_key("gmail.create_draft", ctx) is None
+
+    def test_eligible_operation_missing_arg_returns_none(self):
+        ctx = make_ctx(args={"range_a1": "A1:B2"})
+        assert temp_accept_key("sheets.write_range", ctx) is None
+
+    def test_eligible_operation_falsy_arg_returns_none(self):
+        ctx = make_ctx(args={"spreadsheet_id": ""})
+        assert temp_accept_key("sheets.write_range", ctx) is None
+
+    def test_covers_every_declared_eligible_operation(self):
+        # Every entry in TEMP_ACCEPT_ELIGIBLE_OPERATIONS must actually resolve
+        # a key when its arg is present -- otherwise the popup would offer
+        # "Accept for 5 min" for an operation that can never register one.
+        for op_key, arg_name in TEMP_ACCEPT_ELIGIBLE_OPERATIONS.items():
+            ctx = make_ctx(args={arg_name: "some-id"})
+            assert temp_accept_key(op_key, ctx) == "some-id"
+
+
+class TestEvaluatorTempAccept:
+    def test_not_accepted_before_registration(self):
+        ev = AutoAcceptEvaluator({})
+        ctx = make_ctx(args={"spreadsheet_id": "sheet-1"})
+        assert ev.should_auto_accept("sheets.write_range", ctx) == (False, "")
+
+    def test_registered_file_auto_accepts(self):
+        ev = AutoAcceptEvaluator({})
+        ev.register_temp_accept("sheets.write_range", "sheet-1")
+        ctx = make_ctx(args={"spreadsheet_id": "sheet-1"})
+        assert ev.should_auto_accept("sheets.write_range", ctx) == (True, "session_temp_accept")
+
+    def test_different_file_key_not_covered(self):
+        ev = AutoAcceptEvaluator({})
+        ev.register_temp_accept("sheets.write_range", "sheet-1")
+        ctx = make_ctx(args={"spreadsheet_id": "sheet-2"})
+        assert ev.should_auto_accept("sheets.write_range", ctx) == (False, "")
+
+    def test_different_operation_on_same_file_not_covered(self):
+        ev = AutoAcceptEvaluator({})
+        ev.register_temp_accept("sheets.write_range", "sheet-1")
+        ctx = make_ctx(args={"spreadsheet_id": "sheet-1"})
+        assert ev.should_auto_accept("sheets.format_range", ctx) == (False, "")
+
+    def test_standing_rule_takes_priority_over_a_matching_temp_accept(self):
+        # Both a YAML rule and a temp accept match this call; the loop over
+        # standing rules runs (and returns) before the temp-accept fallback
+        # is ever consulted, so the standing rule's name wins.
+        ev = AutoAcceptEvaluator({
+            "sheets.write_range": [{"rule": "i_am_owner"}],
+        })
+        ev.register_temp_accept("sheets.write_range", "sheet-1")
+        ctx = make_ctx(
+            args={"spreadsheet_id": "sheet-1"},
+            my_email="me@example.com",
+            raw_data={"file": SimpleNamespace(owners=["me@example.com"])},
+        )
+        assert ev.should_auto_accept("sheets.write_range", ctx) == (True, "i_am_owner")
+
+    def test_expires_after_ttl(self):
+        with freeze_time("2024-01-01 00:00:00") as frozen:
+            ev = AutoAcceptEvaluator({})
+            ev.register_temp_accept("sheets.write_range", "sheet-1", ttl_seconds=300)
+            ctx = make_ctx(args={"spreadsheet_id": "sheet-1"})
+            assert ev.should_auto_accept("sheets.write_range", ctx) == (True, "session_temp_accept")
+
+            frozen.tick(delta=301)
+            assert ev.should_auto_accept("sheets.write_range", ctx) == (False, "")
+
+    def test_still_valid_just_before_ttl_expires(self):
+        with freeze_time("2024-01-01 00:00:00") as frozen:
+            ev = AutoAcceptEvaluator({})
+            ev.register_temp_accept("sheets.write_range", "sheet-1", ttl_seconds=300)
+            frozen.tick(delta=299)
+            ctx = make_ctx(args={"spreadsheet_id": "sheet-1"})
+            assert ev.should_auto_accept("sheets.write_range", ctx) == (True, "session_temp_accept")
+
+    def test_re_registering_resets_the_ttl(self):
+        with freeze_time("2024-01-01 00:00:00") as frozen:
+            ev = AutoAcceptEvaluator({})
+            ev.register_temp_accept("sheets.write_range", "sheet-1", ttl_seconds=300)
+            frozen.tick(delta=290)
+            ev.register_temp_accept("sheets.write_range", "sheet-1", ttl_seconds=300)
+            frozen.tick(delta=290)
+            ctx = make_ctx(args={"spreadsheet_id": "sheet-1"})
+            assert ev.should_auto_accept("sheets.write_range", ctx) == (True, "session_temp_accept")
+
+    def test_no_temp_accepts_registered_never_matches(self):
+        ev = AutoAcceptEvaluator({})
+        ctx = make_ctx(args={})
+        assert ev.should_auto_accept("sheets.write_range", ctx) == (False, "")

@@ -108,6 +108,24 @@ starting state by the end, so there's nothing to provision or clean up here.
 4. Drive has no bulk-empty-trash tool, so periodically empty Drive trash by
    hand if you want a clean slate; trashed items auto-purge after 30 days
    regardless.
+5. **Optional** — only add this if you specifically want
+   `connector-qa-testing.md`'s Phase 2 to also demonstrate that
+   `sheets.rename_sheet` / `sheets.format_range` can auto-accept by folder
+   (fixed after a real report that these two had no folder-scoped rule at
+   all, unlike `sheets.write_range`/`sheets.add_sheet`). Skip this if you
+   want Phase 2's rename/format steps to keep exercising the plain popup and
+   "Accept for 5 min" flow instead — the two are mutually exclusive for the
+   same spreadsheet, since a matching rule auto-accepts before any popup
+   would appear:
+   ```yaml
+   auto_accept_rules:
+     sheets.rename_sheet:
+       - rule: approved_sandbox_folder
+         value: ["<QA Sandbox folder id>"]
+     sheets.format_range:
+       - rule: approved_sandbox_folder
+         value: ["<QA Sandbox folder id>"]
+   ```
 
 ## 3. Slack
 
@@ -440,6 +458,11 @@ auto_accept_rules:
 `sheets.read_values` → `approved_spreadsheet` isn't included here because it
 gets created automatically the first time you click **"Accept All"** on a
 `drive_sheets_get_values` call during a test run — nothing to pre-configure.
+
+`sheets.rename_sheet` / `sheets.format_range` → `approved_sandbox_folder` (§2, step 5) is also
+deliberately left out of this block — it's optional and, unlike everything above, actively changes
+what Phase 2 exercises for those two tools (silent auto-accept instead of the popup / "Accept for 5
+min" flow), so it's opt-in rather than assumed.
 
 Restart the daemon after editing this file by hand (or use the "Accept All"
 popup once, which hot-reloads rules for you via `reload_rules()`).

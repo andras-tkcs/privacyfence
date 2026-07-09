@@ -41,10 +41,14 @@ class FakeEvaluator:
     def __init__(self, result=(False, "")):
         self.result = result
         self.calls = []
+        self.temp_accepts_registered = []
 
     def should_auto_accept(self, operation_key, ctx):
         self.calls.append((operation_key, ctx))
         return self.result
+
+    def register_temp_accept(self, operation_key, file_key, ttl_seconds=None):
+        self.temp_accepts_registered.append((operation_key, file_key))
 
 
 @pytest.fixture(autouse=True)
@@ -278,6 +282,182 @@ class TestPopupGateWrites:
         assert entries[0]["decision"] == "rejected"
 
 
+class TestTempAccept:
+    """"Accept for 5 min" -- a lighter, in-memory-only alternative to a
+    standing Accept All rule, offered on the write-gate popup only for
+    operations expected to be called repeatedly against the same file in
+    quick succession (auto_accept.TEMP_ACCEPT_ELIGIBLE_OPERATIONS).
+    """
+
+    SHEETS_ARGS = {"spreadsheet_id": "sheet-1", "range_a1": "A1:B2"}
+
+    async def test_show_popup_receives_allow_temp_accept_true_for_eligible_op_with_file_key(
+        self, monkeypatch, audit_dir
+    ):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        captured = {}
+
+        def fake_show_popup(title, preview, details, pii_categories=None, allow_temp_accept=False):
+            captured["allow_temp_accept"] = allow_temp_accept
+            return "deny"
+
+        monkeypatch.setattr(gate, "show_popup", fake_show_popup)
+
+        with pytest.raises(RuntimeError):
+            await gate.gated_call(**base_kwargs(
+                gate="popup", connector="drive", tool="drive_sheets_write_range", args=self.SHEETS_ARGS,
+            ))
+
+        assert captured["allow_temp_accept"] is True
+
+    async def test_show_popup_receives_allow_temp_accept_false_for_ineligible_op(
+        self, monkeypatch, audit_dir
+    ):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        captured = {}
+
+        def fake_show_popup(title, preview, details, pii_categories=None, allow_temp_accept=False):
+            captured["allow_temp_accept"] = allow_temp_accept
+            return "deny"
+
+        monkeypatch.setattr(gate, "show_popup", fake_show_popup)
+
+        with pytest.raises(RuntimeError):
+            await gate.gated_call(**base_kwargs(gate="popup", tool="gmail_create_draft"))
+
+        assert captured["allow_temp_accept"] is False
+
+    async def test_show_popup_receives_allow_temp_accept_false_when_file_key_missing(
+        self, monkeypatch, audit_dir
+    ):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        captured = {}
+
+        def fake_show_popup(title, preview, details, pii_categories=None, allow_temp_accept=False):
+            captured["allow_temp_accept"] = allow_temp_accept
+            return "deny"
+
+        monkeypatch.setattr(gate, "show_popup", fake_show_popup)
+
+        with pytest.raises(RuntimeError):
+            await gate.gated_call(**base_kwargs(
+                gate="popup", connector="drive", tool="drive_sheets_write_range", args={"range_a1": "A1:B2"},
+            ))
+
+        assert captured["allow_temp_accept"] is False
+
+    async def test_accept_temp_registers_rule_and_audits(self, monkeypatch, audit_dir):
+        evaluator = FakeEvaluator()
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: evaluator)
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept_temp")
+
+        result = await gate.gated_call(**base_kwargs(
+            gate="popup", connector="drive", tool="drive_sheets_write_range", args=self.SHEETS_ARGS,
+        ))
+
+        assert result is FILTERED
+        assert evaluator.temp_accepts_registered == [("sheets.write_range", "sheet-1")]
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "accepted_via_temp_session"
+        assert entries[0]["auto_accept_rule"] == "session_temp_accept"
+
+    async def test_second_write_to_same_file_auto_accepts_without_a_second_popup(
+        self, monkeypatch, audit_dir
+    ):
+        from privacyfence.auto_accept import AutoAcceptEvaluator
+
+        evaluator = AutoAcceptEvaluator({})
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: evaluator)
+        popup_calls = []
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: popup_calls.append(1) or "accept_temp")
+
+        result1 = await gate.gated_call(**base_kwargs(
+            gate="popup", connector="drive", tool="drive_sheets_write_range", args=self.SHEETS_ARGS,
+        ))
+        result2 = await gate.gated_call(**base_kwargs(
+            gate="popup", connector="drive", tool="drive_sheets_write_range", args=self.SHEETS_ARGS,
+        ))
+
+        assert result1 is FILTERED
+        assert result2 is FILTERED
+        assert len(popup_calls) == 1  # second call skipped the popup entirely
+
+        entries = read_audit_entries(audit_dir)
+        decisions = sorted(e["decision"] for e in entries)
+        assert decisions == ["accepted_via_temp_session", "auto_accepted"]
+
+    async def test_a_different_spreadsheet_still_shows_its_own_popup(self, monkeypatch, audit_dir):
+        from privacyfence.auto_accept import AutoAcceptEvaluator
+
+        evaluator = AutoAcceptEvaluator({})
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: evaluator)
+        popup_calls = []
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: popup_calls.append(1) or "accept_temp")
+
+        await gate.gated_call(**base_kwargs(
+            gate="popup", connector="drive", tool="drive_sheets_write_range", args=self.SHEETS_ARGS,
+        ))
+        await gate.gated_call(**base_kwargs(
+            gate="popup", connector="drive", tool="drive_sheets_write_range",
+            args={"spreadsheet_id": "sheet-2", "range_a1": "A1:B2"},
+        ))
+
+        assert len(popup_calls) == 2
+
+    async def test_accept_temp_without_a_file_key_falls_back_to_a_plain_accept(
+        self, monkeypatch, audit_dir
+    ):
+        # Defensive path: the "Accept for 5 min" button is never offered for
+        # an ineligible operation, so accept_temp should never actually come
+        # back for one -- but if it somehow did, this must not be treated as
+        # a denial of a click the user clearly meant as approval.
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept_temp")
+
+        result = await gate.gated_call(**base_kwargs(gate="popup", tool="gmail_create_draft"))
+
+        assert result is FILTERED
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "approved"
+
+    async def test_pii_confirmation_required_before_registering_a_temp_accept(
+        self, monkeypatch, audit_dir
+    ):
+        evaluator = FakeEvaluator()
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: evaluator)
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept_temp")
+        monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: True)
+
+        result = await gate.gated_call(**base_kwargs(
+            gate="popup", connector="drive", tool="drive_sheets_write_range", args=self.SHEETS_ARGS,
+            details_text="Please wire the deposit to DE89370400440532013000.",
+        ))
+
+        assert result is FILTERED
+        assert evaluator.temp_accepts_registered == [("sheets.write_range", "sheet-1")]
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "accepted_via_temp_session"
+        assert entries[0]["pii_detected"] is True
+
+    async def test_declining_pii_confirmation_denies_and_skips_registration(
+        self, monkeypatch, audit_dir
+    ):
+        evaluator = FakeEvaluator()
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: evaluator)
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept_temp")
+        monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: False)
+
+        with pytest.raises(RuntimeError, match="denied"):
+            await gate.gated_call(**base_kwargs(
+                gate="popup", connector="drive", tool="drive_sheets_write_range", args=self.SHEETS_ARGS,
+                details_text="Please wire the deposit to DE89370400440532013000.",
+            ))
+
+        assert evaluator.temp_accepts_registered == []
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "rejected"
+
+
 class TestPIIGate:
     """gate.py runs pii_detector.detect_pii_categories() over ``details``
     before either popup. A match forces a second, explicit confirmation
@@ -471,7 +651,7 @@ class TestPIIGateWrites:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, pii_categories=None):
+        def fake_show_popup(title, preview, details, pii_categories=None, allow_temp_accept=False):
             captured["pii_categories"] = pii_categories
             return "deny"
 
@@ -763,7 +943,7 @@ class TestQueuedRequestReCheck:
 
         popup_calls = []
 
-        def fake_show_popup(title, preview, details, pii_categories=None):
+        def fake_show_popup(title, preview, details, pii_categories=None, allow_temp_accept=False):
             popup_calls.append(title)
             wait_until(lambda: len(check_calls) >= 3, timeout=1.0)
             # Simulate a rule appearing (e.g. added from the menu bar) while

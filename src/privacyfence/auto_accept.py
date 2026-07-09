@@ -2,6 +2,7 @@
 from __future__ import annotations
 import logging
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -9,6 +10,21 @@ from typing import Any, Callable
 import yaml
 
 logger = logging.getLogger(__name__)
+
+# Write operations expected to be called repeatedly against the same file in
+# quick succession (e.g. an agent filling in a sheet cell-by-cell, or building
+# up formatting one range at a time). These get a lightweight "Accept for 5
+# min" popup button, scoped to one file and never persisted to settings.yaml
+# — unlike Accept All, it disappears with the daemon and with wall-clock time,
+# so it's a much smaller commitment than a standing rule. Maps operation key
+# -> the args field that identifies "the same file" for that operation.
+TEMP_ACCEPT_ELIGIBLE_OPERATIONS: dict[str, str] = {
+    "sheets.write_range": "spreadsheet_id",
+    "sheets.format_range": "spreadsheet_id",
+    "drive.comment_file": "file_id",
+}
+
+TEMP_ACCEPT_TTL_SECONDS = 300
 
 # Maps tool name → operation key used in settings.yaml
 TOOL_TO_OPERATION: dict[str, str] = {
@@ -83,6 +99,11 @@ class ReviewContext:
 class AutoAcceptEvaluator:
     def __init__(self, rules_config: dict[str, list[dict]]) -> None:
         self._rules = rules_config or {}
+        # (operation_key, file_key) -> monotonic expiry. In-memory only, by
+        # design: it lives and dies with this evaluator instance (i.e. with
+        # the daemon process), unlike the YAML-backed rules above.
+        self._temp_accepts: dict[tuple[str, str], float] = {}
+        self._temp_accepts_lock = threading.Lock()
 
     def should_auto_accept(self, operation_key: str, ctx: ReviewContext) -> tuple[bool, str]:
         """Return (should_auto_accept, matched_rule_name)."""
@@ -95,7 +116,30 @@ class AutoAcceptEvaluator:
                     return True, rule_name
             except Exception as exc:
                 logger.warning("Rule %r evaluation error: %s", rule_name, exc)
+        if self._is_temp_accepted(operation_key, temp_accept_key(operation_key, ctx)):
+            logger.info("Auto-accept: op=%r matched rule=%r", operation_key, "session_temp_accept")
+            return True, "session_temp_accept"
         return False, ""
+
+    def register_temp_accept(
+        self, operation_key: str, file_key: str, ttl_seconds: float = TEMP_ACCEPT_TTL_SECONDS
+    ) -> None:
+        """Grant a temporary, in-memory auto-accept for one file, for ``ttl_seconds``."""
+        with self._temp_accepts_lock:
+            self._temp_accepts[(operation_key, file_key)] = time.monotonic() + ttl_seconds
+
+    def _is_temp_accepted(self, operation_key: str, file_key: str | None) -> bool:
+        if file_key is None:
+            return False
+        key = (operation_key, file_key)
+        with self._temp_accepts_lock:
+            expiry = self._temp_accepts.get(key)
+            if expiry is None:
+                return False
+            if time.monotonic() >= expiry:
+                del self._temp_accepts[key]
+                return False
+            return True
 
     def _evaluate(self, rule_name: str, value: Any, ctx: ReviewContext) -> bool:
         fn = getattr(self, f"_rule_{rule_name}", None)
@@ -460,6 +504,20 @@ def _sheet_tab_of(ctx: "ReviewContext") -> str:
     range_a1 = ctx.args.get("range_a1") or ""
     tab, sep, _ = range_a1.partition("!")
     return tab.strip("'") if sep else ""
+
+
+def temp_accept_key(operation_key: str, ctx: "ReviewContext") -> str | None:
+    """The file identity a temp accept for this operation would be scoped to.
+
+    Returns None when the operation isn't eligible for "Accept for 5 min"
+    (see TEMP_ACCEPT_ELIGIBLE_OPERATIONS) or the expected arg is missing —
+    either way, gate.py takes that as "don't offer the button."
+    """
+    arg_name = TEMP_ACCEPT_ELIGIBLE_OPERATIONS.get(operation_key)
+    if not arg_name:
+        return None
+    value = ctx.args.get(arg_name)
+    return str(value) if value else None
 
 
 def _attendee_email(attendee: Any) -> str:

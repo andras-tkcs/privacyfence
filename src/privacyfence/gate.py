@@ -15,7 +15,13 @@ release gated data on its own.
   gate="popup"   (write tools)
     Popup offers Deny / Accept only. Auto-accepting writes silently is a
     materially bigger blast radius than auto-accepting reads, so Accept All
-    is not offered here.
+    is not offered here. A small set of operations expected to be called
+    repeatedly against the same file in quick succession (see
+    auto_accept.TEMP_ACCEPT_ELIGIBLE_OPERATIONS) get a narrower "Accept for
+    5 min" button instead: it auto-accepts further calls of the same
+    operation against that same file for 5 minutes, in memory only (never
+    written to settings.yaml, gone on daemon restart) -- a much smaller
+    commitment than a standing Accept All rule.
 
 PII gate: before any auto-accept check, the scan text (``pii_scan_text`` if
 the caller provided one, otherwise the same ``details`` shown in the popup)
@@ -60,6 +66,7 @@ from .auto_accept import (
     describe_rule,
     get_auto_accept_evaluator,
     suggest_rule,
+    temp_accept_key,
 )
 from .pii_detector import detect_pii_categories
 
@@ -179,6 +186,7 @@ async def gated_call(
 
         else:
             # ── Popup gate: block and show native approval dialog for a write ───
+            file_key = temp_accept_key(operation_key, ctx)
             async with _popup_lock:
                 # Same race as above: a rule may have been created while queued.
                 # A PII match still overrides it either way.
@@ -188,10 +196,28 @@ async def gated_call(
                     logger.info("Auto-accepted while queued: %s/%s rule=%r", connector, tool, matched_rule)
                     return filtered_data
 
-                decision = await asyncio.to_thread(show_popup, popup_title, preview or {}, details, pii_categories)
+                decision = await asyncio.to_thread(
+                    show_popup, popup_title, preview or {}, details, pii_categories, file_key is not None
+                )
 
-                if decision == "accept" and pii_categories:
+                if decision in ("accept", "accept_temp") and pii_categories:
                     decision = await _confirm_pii_or_deny(decision, pii_categories)
+
+            if decision == "accept_temp":
+                if file_key is not None:
+                    evaluator.register_temp_accept(operation_key, file_key)
+                    audit(
+                        decision="accepted_via_temp_session", auto_accept_rule="session_temp_accept",
+                        pii_detected=bool(pii_categories),
+                    )
+                    logger.info(
+                        "Accept for 5 min: op=%s file=%s (%s, %s)", operation_key, file_key, connector, tool
+                    )
+                    return filtered_data
+                # Button shouldn't have been offered without a file_key -- fall
+                # back to a plain, once-only accept rather than denying a click
+                # the user clearly meant as approval.
+                decision = "accept"
 
             if decision == "accept":
                 audit(decision="approved", auto_accept_rule="", pii_detected=bool(pii_categories))
