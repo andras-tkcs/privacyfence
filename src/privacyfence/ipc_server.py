@@ -6,6 +6,16 @@ popup), so each request is dispatched as a separate asyncio Task — multiple
 in-flight requests from the same bridge connection are fully concurrent.
 Popup display itself is serialized by gate.py's own lock so only one dialog
 is ever on screen at a time.
+
+A gated call sitting on a popup can easily take longer than the calling MCP
+client's own tool-call timeout; when that fires, the client retries with an
+identical request while the first one is still waiting on the user (or has
+just finished) -- from here that's indistinguishable from the user
+genuinely asking for the same write twice, so it would otherwise double up
+the approval popup for one logical action. ``_call_connector`` dedupes
+identical (connector, tool, args) calls: a retry that arrives while the
+original is still in flight, or shortly after it completed, is served the
+same result instead of re-running the gate.
 """
 
 from __future__ import annotations
@@ -14,6 +24,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from typing import Any
 
 from .connector import Connector, ToolSpec
@@ -25,9 +36,17 @@ logger = logging.getLogger(__name__)
 class IPCServer:
     """Listens on SOCKET_PATH and dispatches connector calls."""
 
+    # How long a completed call's result is kept around to serve an
+    # identical retry without re-running it. Long enough to cover a client
+    # timeout-and-retry (observed ~7s apart in practice), short enough that a
+    # deliberate repeat of the same write minutes later isn't silently
+    # short-circuited.
+    _DEDUPE_TTL_SECONDS = 30
+
     def __init__(self, connectors: list[Connector]) -> None:
         self._connectors: dict[str, Connector] = {c.name: c for c in connectors}
         self._server: asyncio.AbstractServer | None = None
+        self._inflight: dict[str, tuple[asyncio.Future, float]] = {}
 
     def set_connectors(self, connectors: list[Connector]) -> None:
         """Swap in a freshly built connector set (e.g. after the menu bar
@@ -112,7 +131,42 @@ class IPCServer:
         connector = self._connectors.get(connector_name)
         if connector is None:
             raise ValueError(f"Unknown connector: {connector_name!r}")
-        return await connector.call(tool, args)
+
+        now = time.time()
+        self._prune_stale(now)
+        key = self._dedupe_key(connector_name, tool, args)
+        entry = self._inflight.get(key)
+        if entry is not None:
+            fut, recorded_at = entry
+            if not fut.done() or (now - recorded_at) < self._DEDUPE_TTL_SECONDS:
+                logger.info(
+                    "Deduping repeat call to %s/%s: reusing in-flight/recent result",
+                    connector_name, tool,
+                )
+                return await fut
+
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._inflight[key] = (fut, now)
+        try:
+            result = await connector.call(tool, args)
+        except Exception as exc:
+            fut.set_exception(exc)
+            fut.exception()  # mark retrieved so an unwaited future doesn't log "never retrieved"
+            raise
+        fut.set_result(result)
+        return result
+
+    def _prune_stale(self, now: float) -> None:
+        stale = [
+            key for key, (fut, recorded_at) in self._inflight.items()
+            if fut.done() and (now - recorded_at) >= self._DEDUPE_TTL_SECONDS
+        ]
+        for key in stale:
+            del self._inflight[key]
+
+    @staticmethod
+    def _dedupe_key(connector_name: str, tool: str, args: dict) -> str:
+        return f"{connector_name}:{tool}:{json.dumps(args, sort_keys=True, default=str)}"
 
     def _build_manifest(self) -> dict:
         return {

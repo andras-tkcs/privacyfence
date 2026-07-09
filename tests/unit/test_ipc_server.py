@@ -282,6 +282,111 @@ class TestConcurrency:
             await client.close()
 
 
+class TestDedupeRetries:
+    """A gated call can block for a long time waiting on a native approval
+    popup -- long enough that the calling MCP client's own tool-call timeout
+    fires and it retries with an identical request. Without dedup, that
+    retry runs the whole tool a second time and shows a second approval
+    popup for what the user experiences as one action.
+    """
+
+    async def test_identical_concurrent_calls_share_one_connector_invocation(self, running_server):
+        server, socket_path = running_server
+        connector = FakeConnector("drive", result="written", delay=0.1)
+        server.set_connectors([connector])
+        client = await _RawClient.connect(socket_path)
+        try:
+            params = {"connector": "drive", "tool": "write_file_content", "args": {"file_id": "f1", "content": "hi"}}
+            await client.send({"id": "1", "method": "call", "params": params})
+            await client.send({"id": "2", "method": "call", "params": params})
+            first = await client.recv()
+            second = await client.recv()
+
+            assert first["result"] == "written"
+            assert second["result"] == "written"
+            assert connector.calls == [("write_file_content", {"file_id": "f1", "content": "hi"})]
+        finally:
+            await client.close()
+
+    async def test_identical_call_shortly_after_completion_reuses_cached_result(self, running_server):
+        server, socket_path = running_server
+        connector = FakeConnector("drive", result="written")
+        server.set_connectors([connector])
+        client = await _RawClient.connect(socket_path)
+        try:
+            params = {"connector": "drive", "tool": "write_file_content", "args": {"file_id": "f1"}}
+            await client.send({"id": "1", "method": "call", "params": params})
+            assert (await client.recv())["result"] == "written"
+
+            # Simulates the client-timeout-then-retry scenario: a second,
+            # identical request arrives after the first already finished.
+            await client.send({"id": "2", "method": "call", "params": params})
+            assert (await client.recv())["result"] == "written"
+
+            assert len(connector.calls) == 1  # the retry did not re-run the write
+        finally:
+            await client.close()
+
+    async def test_different_args_are_not_deduped(self, running_server):
+        server, socket_path = running_server
+        connector = FakeConnector("drive", result="ok")
+        server.set_connectors([connector])
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "call",
+                "params": {"connector": "drive", "tool": "write_file_content", "args": {"file_id": "f1"}},
+            })
+            await client.recv()
+            await client.send({
+                "id": "2", "method": "call",
+                "params": {"connector": "drive", "tool": "write_file_content", "args": {"file_id": "f2"}},
+            })
+            await client.recv()
+
+            assert len(connector.calls) == 2
+        finally:
+            await client.close()
+
+    async def test_error_from_original_call_propagates_to_deduped_retry(self, running_server):
+        server, socket_path = running_server
+        connector = FakeConnector("drive", error=ValueError("boom"), delay=0.1)
+        server.set_connectors([connector])
+        client = await _RawClient.connect(socket_path)
+        try:
+            params = {"connector": "drive", "tool": "write_file_content", "args": {"file_id": "f1"}}
+            await client.send({"id": "1", "method": "call", "params": params})
+            await client.send({"id": "2", "method": "call", "params": params})
+            first = await client.recv()
+            second = await client.recv()
+
+            assert first["error"] == "boom"
+            assert second["error"] == "boom"
+            assert len(connector.calls) == 1
+        finally:
+            await client.close()
+
+    async def test_dedupe_window_expires_after_ttl(self, running_server):
+        server, socket_path = running_server
+        server._DEDUPE_TTL_SECONDS = 0.05
+        connector = FakeConnector("drive", result="ok")
+        server.set_connectors([connector])
+        client = await _RawClient.connect(socket_path)
+        try:
+            params = {"connector": "drive", "tool": "write_file_content", "args": {"file_id": "f1"}}
+            await client.send({"id": "1", "method": "call", "params": params})
+            await client.recv()
+
+            await asyncio.sleep(0.1)
+
+            await client.send({"id": "2", "method": "call", "params": params})
+            await client.recv()
+
+            assert len(connector.calls) == 2  # outside the dedupe window: a real retry
+        finally:
+            await client.close()
+
+
 class TestLineLimit:
     """Regression coverage for the v0.4.10 fix: asyncio's default
     StreamReader.readline() limit is 64 KiB; a Drive file response near/over
