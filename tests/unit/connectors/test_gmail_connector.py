@@ -359,6 +359,8 @@ class TestWriteToolsGateAndPreview:
         assert gated_call_spy[0]["gate"] == "popup"
         assert gated_call_spy[0]["args"] == {"message_id": "m1", "label_name": "Important"}
         assert gated_call_spy[1]["args"] == {"message_id": "m1", "label_name": "Important"}
+        assert "will be added" in gated_call_spy[0]["details_text"]
+        assert "will be removed" in gated_call_spy[1]["details_text"]
 
     async def test_archive_message_gate_popup_and_reassuring_details(self, gated_call_spy):
         connector, client = make_connector()
@@ -388,6 +390,7 @@ class TestWriteToolsGateAndPreview:
         assert kwargs["gate"] == "popup"
         assert kwargs["preview"]["Criteria"] == "from: boss@example.com"
         assert kwargs["preview"]["Actions"] == "apply label(s): Work; archive it (skip inbox)"
+        assert kwargs["details_text"] == "Filter will be created with the criteria and actions above."
         assert kwargs["args"]["from_address"] == "boss@example.com"
         assert kwargs["args"]["archive"] is True
         client.create_filter.assert_called_once_with(
@@ -435,7 +438,7 @@ class TestWriteToolsGateAndPreview:
         kwargs = gated_call_spy[0]
         assert kwargs["gate"] == "popup"
         assert kwargs["preview"] == {"Label": "Receipts"}
-        assert kwargs["details_text"] == ""
+        assert kwargs["details_text"] == "Label will be created; no other changes."
         assert kwargs["args"] == {"label_name": "Receipts"}
         assert result == {"id": "L1", "name": "Receipts", "type": "user"}
         client.create_label.assert_called_once_with("Receipts")

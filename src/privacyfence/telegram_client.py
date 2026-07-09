@@ -214,6 +214,27 @@ class TelegramPrivacyFenceClient:
         logger.info("search_messages query=%r: returned %d messages", query, len(result))
         return result
 
+    async def get_chat_name(self, chat_id: int) -> str:
+        """Best-effort chat display-name lookup (cached, never raises).
+
+        Reuses list_chats()'s cache when already populated; otherwise
+        resolves the entity directly via Telethon.
+        """
+        if chat_id in self._chat_name_cache:
+            return self._chat_name_cache[chat_id]
+        try:
+            from telethon import utils as telethon_utils  # type: ignore[import-untyped]
+
+            await self._ensure_connected()
+            entity = await self._client.get_entity(chat_id)  # type: ignore[union-attr]
+            name = telethon_utils.get_display_name(entity) or ""
+        except Exception as exc:
+            logger.debug("Could not resolve chat name for %s: %s", chat_id, exc)
+            return ""
+        if name:
+            self._chat_name_cache[chat_id] = name
+        return name
+
     async def send_message(self, chat_id: int, text: str) -> dict:
         """Send a text message to a chat by its numeric id."""
         await self._ensure_connected()

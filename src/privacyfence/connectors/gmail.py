@@ -569,7 +569,7 @@ class GmailConnector(Connector):
             filtered_data=None,
             gate="popup",
             preview=preview,
-            details_text="",
+            details_text="Label will be added; no other content changes.",
             my_email=self.my_email,
             args={"message_id": message_id, "label_name": label_name},
         )
@@ -588,7 +588,7 @@ class GmailConnector(Connector):
             filtered_data=None,
             gate="popup",
             preview=preview,
-            details_text="",
+            details_text="Label will be removed; no other content changes.",
             my_email=self.my_email,
             args={"message_id": message_id, "label_name": label_name},
         )
@@ -676,7 +676,7 @@ class GmailConnector(Connector):
             filtered_data=None,
             gate="popup",
             preview=preview,
-            details_text="",
+            details_text="Filter will be created with the criteria and actions above.",
             my_email=self.my_email,
             args={
                 "from_address": from_address, "to_address": to_address, "subject": subject,
@@ -752,7 +752,7 @@ class GmailConnector(Connector):
         if normalized_name.lower() in existing_names:
             raise RuntimeError(f"create_label({normalized_name!r}) failed: label already exists")
         preview = {"Label": label_name}
-        details = ""
+        details = "Label will be created; no other changes."
         if "/" in stripped:
             parent = stripped.rsplit("/", 1)[0]
             details = f"Nested label — parent '{parent}' will be created too if it doesn't already exist."

@@ -248,6 +248,22 @@ class CalendarClient:
         logger.info("list_calendars returned %d calendar(s)", len(entries))
         return entries
 
+    def get_calendar(self, calendar_id: str) -> CalendarListEntry:
+        """Fetch a single calendar's entry by id (accepts the 'primary' alias)."""
+        if not calendar_id:
+            raise CalendarClientError("get_calendar requires a calendar_id")
+        try:
+            raw = self._get_service().calendarList().get(calendarId=calendar_id).execute()
+        except HttpError as exc:
+            raise CalendarClientError(f"get_calendar({calendar_id}) failed: {exc}") from exc
+        return CalendarListEntry(
+            id=raw.get("id", ""),
+            summary=raw.get("summary", ""),
+            description=raw.get("description", ""),
+            primary=bool(raw.get("primary", False)),
+            access_role=raw.get("accessRole", ""),
+        )
+
     def list_events(
         self,
         calendar_id: str,
