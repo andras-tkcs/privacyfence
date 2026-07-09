@@ -36,6 +36,14 @@ def _parse_json_2d_list(value: str) -> list[list] | None:
     return parsed if isinstance(parsed, list) else None
 
 
+def _format_sheet_rows(rows: list[list], limit: int = 50) -> str:
+    """Render 2D sheet cell data as comma-joined lines, capped at `limit` rows."""
+    shown = "\n".join(", ".join(str(cell) for cell in row) for row in rows[:limit])
+    if len(rows) > limit:
+        shown += f"\n… and {len(rows) - limit} more row(s)"
+    return shown
+
+
 class DriveConnector(Connector):
     def __init__(self, client: DriveClient) -> None:
         self._drive = client
@@ -469,7 +477,7 @@ class DriveConnector(Connector):
         owners = getattr(drive_file, "owners", [])
         values = await self._fetch(self._drive.get_sheet_values, spreadsheet_id, range_a1)
         preview = {"Spreadsheet": name, "Owner": ", ".join(owners) or "(unknown)", "Range": range_a1}
-        rows_preview = "\n".join(", ".join(str(cell) for cell in row) for row in values[:50])
+        rows_preview = _format_sheet_rows(values)
         details = f"Spreadsheet: {name}\nOwner: {', '.join(owners)}\nRange: {range_a1}\n\n{rows_preview}"
         return await gated_call(
             connector=self.name,
@@ -647,7 +655,15 @@ class DriveConnector(Connector):
         drive_file = await self._fetch(self._drive.get_file_metadata, file_id)
         name = getattr(drive_file, "name", file_id)
         owners = getattr(drive_file, "owners", [])
-        preview = {"File": name, "Owner": ", ".join(owners) or "(unknown)", "Move to folder": destination_folder_id}
+        try:
+            destination_folder = await self._fetch(self._drive.get_file_metadata, destination_folder_id)
+            destination_name = getattr(destination_folder, "name", "") or destination_folder_id
+        except RuntimeError:
+            # Best-effort: some destinations (e.g. a Shared Drive root) aren't
+            # fetchable as a regular file. Fall back to the raw id rather than
+            # blocking the popup on a name lookup that can't succeed.
+            destination_name = destination_folder_id
+        preview = {"File": name, "Owner": ", ".join(owners) or "(unknown)", "Move to folder": destination_name}
         await gated_call(
             connector=self.name,
             tool="drive_move_file",
@@ -658,7 +674,7 @@ class DriveConnector(Connector):
             filtered_data=None,
             gate="popup",
             preview=preview,
-            details_text="",
+            details_text="File will be moved to the new folder; its content is unchanged.",
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={"file_id": file_id, "destination_folder_id": destination_folder_id},
@@ -707,7 +723,7 @@ class DriveConnector(Connector):
             filtered_data=None,
             gate="popup",
             preview=preview,
-            details_text=f"Spreadsheet: {name}\nRange: {range_a1}\n\n{values}",
+            details_text=f"Spreadsheet: {name}\nRange: {range_a1}\n\n{_format_sheet_rows(parsed_values)}",
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={"spreadsheet_id": spreadsheet_id, "range_a1": range_a1},

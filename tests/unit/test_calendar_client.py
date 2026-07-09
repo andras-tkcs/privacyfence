@@ -203,6 +203,38 @@ class TestListCalendars:
             client.list_calendars()
 
 
+class TestGetCalendar:
+    def test_requires_calendar_id(self):
+        client = make_client(MagicMock())
+        with pytest.raises(CalendarClientError, match="requires a calendar_id"):
+            client.get_calendar("")
+
+    def test_maps_response(self):
+        service = MagicMock()
+        service.calendarList.return_value.get.return_value.execute.return_value = {
+            "id": "c_abc@group.calendar.google.com", "summary": "Team Offsite",
+            "primary": False, "accessRole": "reader",
+        }
+        client = make_client(service)
+
+        result = client.get_calendar("c_abc@group.calendar.google.com")
+
+        assert result == CalendarListEntry(
+            id="c_abc@group.calendar.google.com", summary="Team Offsite",
+            description="", primary=False, access_role="reader",
+        )
+        service.calendarList.return_value.get.assert_called_once_with(
+            calendarId="c_abc@group.calendar.google.com"
+        )
+
+    def test_http_error_becomes_calendar_client_error(self):
+        service = MagicMock()
+        service.calendarList.return_value.get.return_value.execute.side_effect = http_error(404)
+        client = make_client(service)
+        with pytest.raises(CalendarClientError, match="get_calendar\\(c1\\) failed"):
+            client.get_calendar("c1")
+
+
 class TestListEvents:
     def test_clamps_max_results_into_1_to_250(self):
         service = MagicMock()

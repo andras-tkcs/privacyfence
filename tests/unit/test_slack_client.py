@@ -218,14 +218,14 @@ class TestParseMessage:
 
 
 # ---------------------------------------------------------------------------- #
-# _resolve_channel_name / _resolve_user_name: caching + error swallowing
+# resolve_channel_name / _resolve_user_name: caching + error swallowing
 # ---------------------------------------------------------------------------- #
 
 class TestResolveChannelName:
     def test_empty_channel_id_returns_empty_without_api_call(self):
         web_client = MagicMock()
         client = make_client(web_client)
-        assert client._resolve_channel_name("") == ""
+        assert client.resolve_channel_name("") == ""
         web_client.conversations_info.assert_not_called()
 
     def test_resolves_and_caches(self):
@@ -233,15 +233,15 @@ class TestResolveChannelName:
         web_client.conversations_info.return_value = {"channel": {"name": "general"}}
         client = make_client(web_client)
 
-        assert client._resolve_channel_name("C1") == "general"
-        assert client._resolve_channel_name("C1") == "general"
+        assert client.resolve_channel_name("C1") == "general"
+        assert client.resolve_channel_name("C1") == "general"
         web_client.conversations_info.assert_called_once()
 
     def test_api_error_is_swallowed_returns_empty(self):
         web_client = MagicMock()
         web_client.conversations_info.side_effect = slack_error()
         client = make_client(web_client)
-        assert client._resolve_channel_name("C1") == ""
+        assert client.resolve_channel_name("C1") == ""
 
 
 class TestResolveUserName:

@@ -19,6 +19,9 @@ from ...helpers import assert_all_tools_leave_an_audit_trail
 
 def make_connector(my_email="me@example.com"):
     client = MagicMock()
+    # Default to "not resolvable" so tests that don't care about channel-name
+    # resolution keep seeing the raw channel id, same as before this was added.
+    client.resolve_channel_name.return_value = ""
     connector = SlackConnector(client)
     connector.my_email = my_email
     return connector, client
@@ -90,12 +93,15 @@ class TestGetChannelHistory:
 
         kwargs = gated_call_spy[0]
         assert kwargs["gate"] == "review"
-        assert kwargs["preview"]["Channel"] == "C123"
+        # Resolved from the fetched message's channel_name ("general", the
+        # make_message() default), not the raw channel id -- no extra lookup.
+        assert kwargs["preview"]["Channel"] == "#general"
         assert kwargs["preview"]["Messages"] == "1"
         assert kwargs["preview"]["First message"] == "a" * 80  # truncated to 80 chars
         assert kwargs["raw_data"] == [make_message(text="a" * 100)]
         assert kwargs["args"] == {"channel_id": "C123"}
         client.get_channel_history.assert_called_once_with("C123", 10)
+        client.resolve_channel_name.assert_not_called()
 
     async def test_pii_scan_text_is_message_text_only_not_usernames_or_ids(self, gated_call_spy):
         # Regression: user_id/user_name are on every message regardless of
@@ -122,6 +128,27 @@ class TestGetChannelHistory:
 
         assert gated_call_spy[0]["preview"]["First message"] == "(empty)"
         assert gated_call_spy[0]["preview"]["Messages"] == "0"
+
+    async def test_empty_channel_falls_back_to_direct_name_lookup(self, gated_call_spy):
+        # No messages means no channel_name to read off a message, so the
+        # connector must resolve it directly instead of leaving the raw id.
+        connector, client = make_connector()
+        client.get_channel_history.return_value = []
+        client.resolve_channel_name.return_value = "announcements"
+
+        await connector.call("slack_get_channel_history", {"channel_id": "C123"})
+
+        assert gated_call_spy[0]["preview"]["Channel"] == "#announcements"
+        client.resolve_channel_name.assert_called_once_with("C123")
+
+    async def test_channel_name_unresolvable_falls_back_to_raw_id(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_channel_history.return_value = []
+        client.resolve_channel_name.return_value = ""
+
+        await connector.call("slack_get_channel_history", {"channel_id": "C123"})
+
+        assert gated_call_spy[0]["preview"]["Channel"] == "C123"
 
     async def test_filtered_data_uses_message_to_dict(self, gated_call_spy):
         connector, client = make_connector()
@@ -208,6 +235,20 @@ class TestSendMessage:
         assert kwargs["details_text"] == "hi there"
         assert kwargs["args"] == {"channel_id": "C123", "thread_ts": ""}
         client.mark_channel_unread_before.assert_not_called()
+
+    async def test_channel_name_resolved_in_preview_and_summary(self, gated_call_spy):
+        connector, client = make_connector()
+        client.send_message.return_value = {"ts": "123.456", "channel_id": "C123"}
+        client.resolve_channel_name.return_value = "team-updates"
+
+        await connector.call("slack_send_message", {"channel_id": "C123", "text": "hi there"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview"] == {"Channel": "#team-updates"}
+        assert kwargs["summary"] == "To #team-updates: hi there"
+        # The raw id is still what's sent to Slack and what auto-accept rules match on.
+        client.send_message.assert_called_once_with("C123", "hi there", "")
+        assert kwargs["sender"] == "C123"
 
     async def test_thread_reply_preview_includes_thread(self, gated_call_spy):
         connector, client = make_connector()

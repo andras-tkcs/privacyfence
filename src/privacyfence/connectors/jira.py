@@ -252,6 +252,11 @@ class JiraConnector(Connector):
             preview["Priority"] = f"→ {priority}"
         if not fields:
             raise ValueError("update_issue: at least one field must be provided")
+        if description:
+            details_text = description
+        else:
+            changed_fields = ", ".join(k for k in preview if k != "Issue")
+            details_text = f"{changed_fields} will be updated; description is unchanged."
         await gated_call(
             connector=self.name,
             tool="jira_update_issue",
@@ -262,7 +267,7 @@ class JiraConnector(Connector):
             filtered_data=None,
             gate="popup",
             preview=preview,
-            details_text=description,
+            details_text=details_text,
             my_email=self.my_email,
             args={"issue_key": issue_key},
         )

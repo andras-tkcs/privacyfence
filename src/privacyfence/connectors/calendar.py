@@ -27,6 +27,7 @@ class CalendarConnector(Connector):
     def __init__(self, client: CalendarClient) -> None:
         self._calendar = client
         self.my_email: str = ""
+        self._calendar_name_cache: dict[str, str] = {}
 
     @property
     def name(self) -> str:
@@ -333,7 +334,7 @@ class CalendarConnector(Connector):
         preview = {
             "Title": title,
             "Time": f"{start_time} – {end_time}",
-            "Calendar": calendar_id,
+            "Calendar": await self._calendar_name_for(calendar_id),
         }
         if location:
             preview["Location"] = location
@@ -403,7 +404,7 @@ class CalendarConnector(Connector):
             changes["Conferencing"] = "Add Google Meet"
         if room_list:
             changes["Rooms"] = f"Book: {', '.join(room_list)}"
-        preview = {"Event": event.title, "Calendar": calendar_id, **changes}
+        preview = {"Event": event.title, "Calendar": await self._calendar_name_for(calendar_id), **changes}
         raw_data = {
             "calendar_id": calendar_id, "event_id": event_id,
             "current_title": event.title, "new_title": title,
@@ -413,6 +414,11 @@ class CalendarConnector(Connector):
             "organizer_email": event.organizer_email,
             "attendees": [a.email for a in (event.attendees or [])],
         }
+        if description and description != event.description:
+            details_text = description
+        else:
+            changed_fields = ", ".join(changes.keys()) or "no fields"
+            details_text = f"{changed_fields} will be updated; description is unchanged."
         await gated_call(
             connector=self.name,
             tool="calendar_update_event",
@@ -423,7 +429,7 @@ class CalendarConnector(Connector):
             filtered_data=None,
             gate="popup",
             preview=preview,
-            details_text=description if description and description != event.description else "",
+            details_text=details_text,
             my_email=self.my_email,
             args={"calendar_id": calendar_id, "event_id": event_id},
         )
@@ -449,6 +455,20 @@ class CalendarConnector(Connector):
         except CalendarClientError as exc:
             logger.error("Calendar fetch failed: %s", exc)
             raise RuntimeError(str(exc)) from exc
+
+    async def _calendar_name_for(self, calendar_id: str) -> str:
+        """Best-effort, cached calendar display-name lookup; falls back to
+        the raw id (e.g. a room resource calendar_list can't resolve this
+        way) rather than blocking the popup on a lookup that can't succeed."""
+        if calendar_id in self._calendar_name_cache:
+            return self._calendar_name_cache[calendar_id]
+        try:
+            entry = await self._fetch(self._calendar.get_calendar, calendar_id)
+            name = entry.summary or calendar_id
+        except RuntimeError:
+            name = calendar_id
+        self._calendar_name_cache[calendar_id] = name
+        return name
 
     def _auto_audit(
         self, tool: str, tool_name: str, summary: str, sender: str, created_at: float

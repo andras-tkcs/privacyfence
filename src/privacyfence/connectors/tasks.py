@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 class TasksConnector(Connector):
     def __init__(self, client: TasksClient) -> None:
         self._tasks = client
+        self._list_name_cache: dict[str, str] = {}
 
     @property
     def name(self) -> str:
@@ -144,7 +145,7 @@ class TasksConnector(Connector):
     async def _create_task(
         self, task_list_id: str, title: str, notes: str = "", due: str = ""
     ) -> Any:
-        preview = {"Task list": task_list_id, "Title": title}
+        preview = {"Task list": await self._list_name_for(task_list_id), "Title": title}
         if due:
             preview["Due"] = due
         await gated_call(
@@ -167,7 +168,7 @@ class TasksConnector(Connector):
         self, task_list_id: str, task_id: str, title: str = "", notes: str = "", due: str = ""
     ) -> Any:
         existing = await self._fetch(self._tasks.get_task, task_list_id, task_id)
-        preview = {"Task list": task_list_id, "Task": existing.title}
+        preview = {"Task list": await self._list_name_for(task_list_id), "Task": existing.title}
         if title:
             preview["New title"] = title
         if due:
@@ -193,7 +194,7 @@ class TasksConnector(Connector):
 
     async def _complete_task(self, task_list_id: str, task_id: str) -> Any:
         existing = await self._fetch(self._tasks.get_task, task_list_id, task_id)
-        preview = {"Task list": task_list_id, "Task": existing.title}
+        preview = {"Task list": await self._list_name_for(task_list_id), "Task": existing.title}
         await gated_call(
             connector=self.name,
             tool="tasks_complete_task",
@@ -204,7 +205,7 @@ class TasksConnector(Connector):
             filtered_data=None,
             gate="popup",
             preview=preview,
-            details_text="",
+            details_text="Task will be marked as completed; title and notes are unchanged.",
             args={"task_list_id": task_list_id, "task_id": task_id},
         )
         result = await self._fetch(self._tasks.complete_task, task_list_id, task_id)
@@ -212,7 +213,7 @@ class TasksConnector(Connector):
 
     async def _uncomplete_task(self, task_list_id: str, task_id: str) -> Any:
         existing = await self._fetch(self._tasks.get_task, task_list_id, task_id)
-        preview = {"Task list": task_list_id, "Task": existing.title}
+        preview = {"Task list": await self._list_name_for(task_list_id), "Task": existing.title}
         await gated_call(
             connector=self.name,
             tool="tasks_uncomplete_task",
@@ -223,7 +224,7 @@ class TasksConnector(Connector):
             filtered_data=None,
             gate="popup",
             preview=preview,
-            details_text="",
+            details_text="Task will be marked as not completed; title and notes are unchanged.",
             args={"task_list_id": task_list_id, "task_id": task_id},
         )
         result = await self._fetch(self._tasks.uncomplete_task, task_list_id, task_id)
@@ -235,8 +236,8 @@ class TasksConnector(Connector):
         existing = await self._fetch(self._tasks.get_task, source_list_id, task_id)
         preview = {
             "Task": existing.title,
-            "From list": source_list_id,
-            "To list": destination_list_id,
+            "From list": await self._list_name_for(source_list_id),
+            "To list": await self._list_name_for(destination_list_id),
         }
         await gated_call(
             connector=self.name,
@@ -248,7 +249,7 @@ class TasksConnector(Connector):
             filtered_data=None,
             gate="popup",
             preview=preview,
-            details_text="",
+            details_text="Task will be moved to the new list; title and notes are unchanged.",
             args={
                 "source_list_id": source_list_id,
                 "task_id": task_id,
@@ -268,6 +269,20 @@ class TasksConnector(Connector):
         except TasksClientError as exc:
             logger.error("Tasks call failed: %s", exc)
             raise RuntimeError(str(exc)) from exc
+
+    async def _list_name_for(self, task_list_id: str) -> str:
+        """Best-effort, cached task-list title lookup; falls back to the raw
+        id (e.g. the list was deleted, or a permissions edge case) rather
+        than blocking the popup on a lookup that can't succeed."""
+        if task_list_id in self._list_name_cache:
+            return self._list_name_cache[task_list_id]
+        try:
+            task_list = await self._fetch(self._tasks.get_task_list, task_list_id)
+            name = task_list.title or task_list_id
+        except RuntimeError:
+            name = task_list_id
+        self._list_name_cache[task_list_id] = name
+        return name
 
     @staticmethod
     def _serialize(result: Any) -> Any:

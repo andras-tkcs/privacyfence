@@ -136,9 +136,10 @@ class SlackConnector(Connector):
     async def _get_channel_history(self, channel_id: str, limit: int = 50) -> Any:
         messages = await self._fetch(self._slack.get_channel_history, channel_id, limit)
         n = len(messages)
+        channel_display = await self._channel_display(channel_id, messages)
         first_preview = (messages[0].text or "")[:80] if messages else ""
         preview = {
-            "Channel": channel_id,
+            "Channel": channel_display,
             "Messages": str(n),
             "First message": first_preview or "(empty)",
         }
@@ -146,13 +147,13 @@ class SlackConnector(Connector):
             f"[{m.id}] {m.user_name or m.user_id or 'unknown'}: {m.text}"
             for m in messages
         ]
-        details = f"Channel: {channel_id}\n\n" + "\n".join(lines)
+        details = f"Channel: {channel_display}\n\n" + "\n".join(lines)
         filtered = [_message_to_dict(m) for m in messages]
         return await gated_call(
             connector=self.name,
             tool="slack_get_channel_history",
             tool_name="Read Slack Channel",
-            summary=f"{n} message{'s' if n != 1 else ''} from {channel_id}",
+            summary=f"{n} message{'s' if n != 1 else ''} from {channel_display}",
             sender=channel_id,
             raw_data=messages,
             filtered_data=filtered,
@@ -167,9 +168,10 @@ class SlackConnector(Connector):
     async def _get_thread_replies(self, channel_id: str, thread_ts: str) -> Any:
         messages = await self._fetch(self._slack.get_thread_replies, channel_id, thread_ts)
         n = len(messages)
+        channel_display = await self._channel_display(channel_id, messages)
         starter = (messages[0].text or "")[:80] if messages else ""
         preview = {
-            "Channel": channel_id,
+            "Channel": channel_display,
             "Thread starter": starter or "(empty)",
             "Replies": str(max(0, n - 1)),
         }
@@ -177,13 +179,13 @@ class SlackConnector(Connector):
             f"[{m.id}] {m.user_name or m.user_id or 'unknown'}: {m.text}"
             for m in messages
         ]
-        details = f"Channel: {channel_id}\nThread: {thread_ts}\n\n" + "\n".join(lines)
+        details = f"Channel: {channel_display}\nThread: {thread_ts}\n\n" + "\n".join(lines)
         filtered = [_message_to_dict(m) for m in messages]
         return await gated_call(
             connector=self.name,
             tool="slack_get_thread_replies",
             tool_name="Read Slack Thread",
-            summary=f"{n} repl{'ies' if n != 1 else 'y'} in {channel_id}",
+            summary=f"{n} repl{'ies' if n != 1 else 'y'} in {channel_display}",
             sender=channel_id,
             raw_data=messages,
             filtered_data=filtered,
@@ -235,7 +237,8 @@ class SlackConnector(Connector):
         thread_ts: str = "",
         mark_unread: bool = False,
     ) -> Any:
-        preview = {"Channel": channel_id}
+        channel_display = await self._channel_display(channel_id)
+        preview = {"Channel": channel_display}
         if thread_ts:
             preview["In thread"] = thread_ts
         if mark_unread:
@@ -244,7 +247,7 @@ class SlackConnector(Connector):
             connector=self.name,
             tool="slack_send_message",
             tool_name="Send Slack Message",
-            summary=f"To {channel_id}: {text[:80]}{'…' if len(text) > 80 else ''}",
+            summary=f"To {channel_display}: {text[:80]}{'…' if len(text) > 80 else ''}",
             sender=channel_id,
             raw_data={"channel_id": channel_id, "text": text, "thread_ts": thread_ts},
             filtered_data=None,
@@ -276,6 +279,15 @@ class SlackConnector(Connector):
         except SlackClientError as exc:
             logger.error("Slack fetch failed: %s", exc)
             raise RuntimeError(str(exc)) from exc
+
+    async def _channel_display(self, channel_id: str, messages: list | None = None) -> str:
+        """'#channel-name' when resolvable, else the raw channel id. Prefers
+        the channel_name already resolved onto a fetched message (avoids a
+        redundant lookup) before falling back to a direct client call."""
+        name = messages[0].channel_name if messages else ""
+        if not name:
+            name = await self._fetch(self._slack.resolve_channel_name, channel_id)
+        return f"#{name}" if name else channel_id
 
     def _auto_audit(
         self, tool: str, tool_name: str, summary: str, sender: str, created_at: float

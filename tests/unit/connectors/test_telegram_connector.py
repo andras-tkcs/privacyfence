@@ -22,6 +22,9 @@ from ...helpers import assert_all_tools_leave_an_audit_trail
 
 def make_connector():
     client = AsyncMock()
+    # Default to "not resolvable" so tests that don't care about chat-name
+    # resolution keep seeing the raw chat id, same as before this was added.
+    client.get_chat_name.return_value = ""
     return TelegramConnector(client), client
 
 
@@ -179,6 +182,20 @@ class TestSendMessage:
         assert kwargs["details_text"] == "hi"
         assert kwargs["args"] == {"chat_id": 100}
         assert result == {"id": 42}
+        client.send_message.assert_called_once_with(100, "hi")
+
+    async def test_chat_name_resolved_in_preview_and_summary(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_chat_name.return_value = "Family Group"
+        client.send_message.return_value = {"id": 42}
+
+        await connector.call("telegram_send_message", {"chat_id": 100, "text": "hi"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview"] == {"Chat": "Family Group"}
+        assert kwargs["summary"] == "To Family Group: hi"
+        # The raw id is still what's sent and what auto-accept rules match on.
+        assert kwargs["sender"] == "100"
         client.send_message.assert_called_once_with(100, "hi")
 
     async def test_summary_truncates_long_text(self, gated_call_spy):

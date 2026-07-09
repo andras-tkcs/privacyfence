@@ -138,6 +138,35 @@ class TestGetRecord:
         with pytest.raises(RuntimeError, match="insufficient access"):
             await connector.call("salesforce_get_record", {"object_type": "Account", "record_id": "x"})
 
+    async def test_details_are_flat_sorted_field_lines_not_json(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_record.return_value = SalesforceRecord(
+            object_type="Account", id="001xx0000012345",
+            fields={"Name": "Acme Corp", "Industry": "Technology", "Website": None, "Fax": ""},
+        )
+
+        await connector.call(
+            "salesforce_get_record", {"object_type": "Account", "record_id": "001xx0000012345"}
+        )
+
+        details = gated_call_spy[0]["details_text"]
+        assert details == (
+            "Object: Account\nRecord ID: 001xx0000012345\n\n"
+            "Fields:\nIndustry: Technology\nName: Acme Corp"
+        )
+        # No unset field shows up, and this is plain text, not a JSON blob.
+        assert "Website" not in details
+        assert "Fax" not in details
+        assert "{" not in details
+
+    async def test_details_when_no_fields_populated(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_record.return_value = SalesforceRecord(object_type="Task", id="00T1", fields={})
+
+        await connector.call("salesforce_get_record", {"object_type": "Task", "record_id": "00T1"})
+
+        assert "(no populated fields)" in gated_call_spy[0]["details_text"]
+
 
 class TestRunReport:
     async def test_preview_shows_actual_report_name_from_report_metadata(self, gated_call_spy):
@@ -190,6 +219,135 @@ class TestRunReport:
 
         with pytest.raises(RuntimeError, match="report locked"):
             await connector.call("salesforce_run_report", {"report_id": "00O1"})
+
+    async def test_empty_fact_map_shows_no_data_returned_not_json(self, gated_call_spy):
+        connector, client = make_connector()
+        client.run_report.return_value = {"reportMetadata": {"name": "Empty Report"}, "factMap": {}}
+
+        await connector.call("salesforce_run_report", {"report_id": "00O1"})
+
+        assert gated_call_spy[0]["details_text"] == "Report: Empty Report\nID: 00O1\n\nNo data returned."
+
+    async def test_tabular_report_renders_as_plain_text_table(self, gated_call_spy):
+        connector, client = make_connector()
+        client.run_report.return_value = {
+            "reportMetadata": {
+                "name": "Open Opportunities",
+                "detailColumns": ["OPPORTUNITY.NAME", "OPPORTUNITY.AMOUNT"],
+            },
+            "reportExtendedMetadata": {
+                "detailColumnInfo": {
+                    "OPPORTUNITY.NAME": {"label": "Opportunity Name"},
+                    "OPPORTUNITY.AMOUNT": {"label": "Amount"},
+                },
+            },
+            "factMap": {
+                "T!T": {
+                    "rows": [
+                        {"dataCells": [{"label": "Acme Deal"}, {"label": "$10,000"}]},
+                        {"dataCells": [{"label": "Globex Deal"}, {"label": "$5,000"}]},
+                    ],
+                    "aggregates": [{"label": "$15,000"}],
+                },
+            },
+        }
+
+        await connector.call("salesforce_run_report", {"report_id": "00O1"})
+
+        details = gated_call_spy[0]["details_text"]
+        assert details == (
+            "Report: Open Opportunities\nID: 00O1\n\n"
+            "Opportunity Name | Amount\n"
+            "Acme Deal | $10,000\n"
+            "Globex Deal | $5,000\n"
+            "Total: $15,000"
+        )
+        assert "{" not in details
+
+    async def test_grouped_report_renders_group_labels_from_groupings_down(self, gated_call_spy):
+        connector, client = make_connector()
+        client.run_report.return_value = {
+            "reportMetadata": {"name": "Pipeline by Stage"},
+            "groupingsDown": {
+                "groupings": [
+                    {"key": "0", "label": "Prospecting", "groupings": []},
+                    {"key": "1", "label": "Negotiation", "groupings": []},
+                ],
+            },
+            "factMap": {
+                "0!T": {"rows": [{"dataCells": [{"label": "Acme Deal"}]}], "aggregates": []},
+                "1!T": {"rows": [{"dataCells": [{"label": "Globex Deal"}]}], "aggregates": []},
+            },
+        }
+
+        await connector.call("salesforce_run_report", {"report_id": "00O2"})
+
+        details = gated_call_spy[0]["details_text"]
+        assert "Prospecting\nAcme Deal" in details
+        assert "Negotiation\nGlobex Deal" in details
+
+    async def test_matrix_report_combines_down_and_across_grouping_labels(self, gated_call_spy):
+        connector, client = make_connector()
+        client.run_report.return_value = {
+            "reportMetadata": {"name": "Pipeline by Stage and Region"},
+            "groupingsDown": {"groupings": [{"key": "0", "label": "Prospecting", "groupings": []}]},
+            "groupingsAcross": {"groupings": [{"key": "0", "label": "West", "groupings": []}]},
+            "factMap": {
+                "0!0": {"rows": [{"dataCells": [{"label": "Acme Deal"}]}], "aggregates": []},
+            },
+        }
+
+        await connector.call("salesforce_run_report", {"report_id": "00O4"})
+
+        assert "Prospecting / West\nAcme Deal" in gated_call_spy[0]["details_text"]
+
+    async def test_grouping_key_with_no_matching_label_falls_back_to_raw_key(self, gated_call_spy):
+        connector, client = make_connector()
+        client.run_report.return_value = {
+            "reportMetadata": {"name": "Pipeline by Stage"},
+            "groupingsDown": {"groupings": [{"key": "0", "label": "Prospecting", "groupings": []}]},
+            "factMap": {
+                # "5" has no matching entry in groupingsDown -- label resolution fails.
+                "5!T": {"rows": [{"dataCells": [{"label": "Mystery Deal"}]}], "aggregates": []},
+            },
+        }
+
+        await connector.call("salesforce_run_report", {"report_id": "00O5"})
+
+        assert "5!T\nMystery Deal" in gated_call_spy[0]["details_text"]
+
+    async def test_tabular_report_rows_truncated_past_50(self, gated_call_spy):
+        connector, client = make_connector()
+        rows = [{"dataCells": [{"label": str(i)}]} for i in range(51)]
+        client.run_report.return_value = {
+            "reportMetadata": {"name": "Big Report"},
+            "factMap": {"T!T": {"rows": rows, "aggregates": []}},
+        }
+
+        await connector.call("salesforce_run_report", {"report_id": "00O6"})
+
+        details = gated_call_spy[0]["details_text"]
+        assert "49\n… and 1 more row(s)" in details  # last of the 50 shown rows, then the truncation note
+        assert "50" not in details  # the 51st row (index 50) never got rendered
+
+    async def test_unexpected_fact_map_shape_falls_back_to_plain_language_summary(self, gated_call_spy):
+        # A factMap entry that doesn't match the documented shape (e.g. a
+        # future/unusual report type) must degrade to a short, non-technical
+        # message -- never a raw JSON/repr dump.
+        connector, client = make_connector()
+        client.run_report.return_value = {
+            "reportMetadata": {"name": "Weird Report"},
+            "factMap": {"0!0": "not-a-dict", "1!0": "also-not-a-dict"},
+        }
+
+        await connector.call("salesforce_run_report", {"report_id": "00O3"})
+
+        details = gated_call_spy[0]["details_text"]
+        assert details == (
+            "Report: Weird Report\nID: 00O3\n\n"
+            "Report ran successfully — 2 data group(s). "
+            "Structure too complex to preview here; open in Salesforce to view."
+        )
 
 
 class TestEveryToolIsAudited:
