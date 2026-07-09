@@ -123,7 +123,10 @@ class AutoAcceptEvaluator:
             email_part = raw_sender[raw_sender.index("<") + 1 : raw_sender.index(">")]
         domain = email_part.split("@", 1)[-1].lower().strip()
         allowed = {d.lower().strip() for d in (value if isinstance(value, list) else [value])}
-        return domain in allowed
+        # Matches subdomains too (mail.trusted.com under "trusted.com") since
+        # senders routinely mail from a subdomain of their real domain. The
+        # "." separator keeps "eviltrusted.com" from matching "trusted.com".
+        return any(domain == d or domain.endswith("." + d) for d in allowed)
 
     def _rule_label_match(self, value, ctx):
         if not value:

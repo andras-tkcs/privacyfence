@@ -330,6 +330,13 @@ class TestListSpaces:
         assert args[0] == "api/v2/spaces"
         assert kwargs["params"]["type"] == "personal"
 
+    def test_default_omits_type_filter(self):
+        client = make_client()
+        client._client.get.return_value = {"results": []}
+        client.list_spaces()
+        _args, kwargs = client._client.get.call_args
+        assert "type" not in kwargs["params"]
+
     def test_none_response_yields_empty_list(self):
         client = make_client()
         client._client.get.return_value = None

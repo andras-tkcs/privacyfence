@@ -213,7 +213,7 @@ class ConfluenceClient:
     # Spaces
     # ------------------------------------------------------------------ #
 
-    def list_spaces(self, max_results: int = 50, space_type: str = "global") -> list[ConfluenceSpace]:
+    def list_spaces(self, max_results: int = 50, space_type: str = "") -> list[ConfluenceSpace]:
         max_results = max(1, min(max_results, 250))  # v2 API page size cap
         params: dict[str, Any] = {"limit": max_results, "description-format": "plain"}
         if space_type:

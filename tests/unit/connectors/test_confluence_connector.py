@@ -78,6 +78,15 @@ class TestAutoTools:
         entries = (tmp_path / f"{current_week()}.jsonl").read_text(encoding="utf-8").splitlines()
         assert '"decision": "auto_accepted"' in entries[0]
 
+    async def test_list_spaces_default_omits_type_filter(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        client.list_spaces.return_value = []
+
+        await connector.call("confluence_list_spaces", {})
+
+        client.list_spaces.assert_called_once_with(50, "")
+
     async def test_search(self, tmp_path):
         init_audit_logger(str(tmp_path))
         connector, client = make_connector()
