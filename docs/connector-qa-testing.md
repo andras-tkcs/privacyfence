@@ -387,14 +387,22 @@ in step 3, if you configured it.
     step 13, this one has no temp-accept shortcut (it's a one-shot action, not
     something called repeatedly against the same file) — plain Accept only.
 15. `drive_sheets_rename_sheet` — rename `Extra` to `TO BE DELETED - Extra`.
-    Popup, Accept. Same as step 14: no temp-accept shortcut here either.
-16. `drive_sheets_format_range` — bold `A1:B2`. **Pause here**: tell me you're
-    about to call it and that **I will click "Accept for 5 min"** this time,
-    then wait for me to say go. Once I do, make the call, then immediately
-    call `drive_sheets_format_range` again on the same spreadsheet, a
-    different range like `A3:B3` (italic instead of bold) — this second call
-    should NOT prompt (silent, logged `auto_accepted` with rule
-    `session_temp_accept`). Tell me whether the second call prompted or not.
+    Same as step 14: no temp-accept shortcut here either. If you configured
+    the **optional** `sheets.rename_sheet` → `approved_sandbox_folder`
+    fixture (`qa-environment-setup.md` §2 step 5) matching the QA Sandbox
+    folder, this should NOT prompt — tell me either way. If you didn't
+    configure it (the default), expect the normal popup, Accept.
+16. `drive_sheets_format_range` — bold `A1:B2`. If you configured the
+    **optional** `sheets.format_range` → `approved_sandbox_folder` fixture
+    (same place as step 15's), this should NOT prompt — tell me either way,
+    and skip the rest of this step. Otherwise (the default), **pause here**:
+    tell me you're about to call it and that **I will click "Accept for 5
+    min"** this time, then wait for me to say go. Once I do, make the call,
+    then immediately call `drive_sheets_format_range` again on the same
+    spreadsheet, a different range like `A3:B3` (italic instead of bold) —
+    this second call should NOT prompt (silent, logged `auto_accepted` with
+    rule `session_temp_accept`). Tell me whether the second call prompted or
+    not.
 
 ### PII detection gate check (steps 17–20)
 
