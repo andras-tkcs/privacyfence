@@ -28,7 +28,6 @@ from atlassian import Confluence
 
 from .atlassian_oauth import (
     AtlassianOAuthError,
-    is_unauthorized,
     load_token_file,
     refresh as atlassian_refresh,
     save_token_file,
@@ -44,6 +43,17 @@ logger = logging.getLogger(__name__)
 # instead, via the library's raw get/post/put helpers.
 _V2_SPACES_PATH = "api/v2/spaces"
 _V2_PAGES_PATH = "api/v2/pages"
+
+# Unlike Jira, the api.atlassian.com OAuth proxy in front of Confluence Cloud
+# doesn't reliably surface an expired/invalid access token as 401: the v2
+# REST endpoints (spaces, pages) 404 instead, and the legacy CQL-backed
+# endpoints (search, cql_search) 403 with "Current user not permitted to use
+# Confluence". Both looked like real "not found" / "not permitted" errors and
+# masked the fact that the token just needed a refresh, so — for this client
+# only — a refresh-and-retry is attempted on any of these status codes, not
+# just 401. A false positive (a genuinely missing space/page, or an actual
+# permission error) just costs one extra retry that fails the same way.
+_STALE_TOKEN_STATUS_CODES = (401, 403, 404)
 
 
 class ConfluenceClientError(Exception):
@@ -177,9 +187,14 @@ class ConfluenceClient:
         try:
             return fn(*args, **kwargs)
         except Exception as exc:
-            if is_unauthorized(exc) and self._try_refresh():
+            if self._is_stale_token_error(exc) and self._try_refresh():
                 return fn(*args, **kwargs)
             raise
+
+    @staticmethod
+    def _is_stale_token_error(exc: Exception) -> bool:
+        response = getattr(exc, "response", None)
+        return getattr(response, "status_code", None) in _STALE_TOKEN_STATUS_CODES
 
     # ------------------------------------------------------------------ #
     # Connection
