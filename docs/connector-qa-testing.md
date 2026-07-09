@@ -32,19 +32,22 @@ combination only breaks for non-ASCII input.
 - The `privacyfence` MCP server attached to a Claude Cowork/Desktop
   conversation (`claude mcp add privacyfence privacyfence-bridge`, or the
   `.mcpb` extension).
-- Claude needs read access to `logs/audit/<current-ISO-week>.jsonl` in the
-  Cowork/Desktop session (filesystem access, or a Bash/Read-equivalent tool)
-  — under `~/.privacyfence/` for a bundled/DMG install, or the project root
-  if the daemon is running from source (see
-  [dev-vs-live-setup.md](dev-vs-live-setup.md)) — the prompt below now has
-  Claude read this file itself and reconcile it against every call in the
-  same report, instead of leaving that to you afterward. This is a test
-  environment against your own accounts, so there's
-  no confidentiality reason to keep the log human-only. Claude still can't
-  observe the popup UI directly (it only sees whether the tool call ultimately
-  succeeded or errored) — the audit log's `decision` field is what closes that
-  gap, since it records `accepted` / `denied` / `auto_accepted` regardless of
-  whether Claude witnessed the click.
+- No filesystem access to the audit log is needed during the run itself — a
+  live mid-run read from a Cowork/Desktop session isn't reliable (recently
+  written entries can appear to lag or go missing depending on how the
+  session reaches the file), so the prompt below no longer has Claude read
+  `logs/audit/<current-ISO-week>.jsonl` as it goes. Instead, the very last
+  phase asks you to **attach that file to the conversation** — under
+  `~/.privacyfence/audit/` for a bundled/DMG install, or `logs/audit/` in the
+  project root if the daemon is running from source (see
+  [dev-vs-live-setup.md](dev-vs-live-setup.md)) — and Claude reconciles every
+  call against that attached copy in one pass at the end, instead of piecemeal
+  during the run. This is a test environment against your own accounts, so
+  there's no confidentiality reason to keep the log human-only. Claude still
+  can't observe the popup UI directly (it only sees whether the tool call
+  ultimately succeeded or errored) — the audit log's `decision` field is what
+  closes that gap, since it records `accepted` / `denied` / `auto_accepted`
+  regardless of whether Claude witnessed the click.
 - **The environment fixtures from [`qa-environment-setup.md`](qa-environment-setup.md)
   already exist**: a `PFQA` Jira project, a `PFQA` Confluence space, a Drive
   "PrivacyFence QA Sandbox" folder, a second (non-approved) Slack channel with
@@ -66,11 +69,11 @@ Paste this as a single message into the Cowork conversation. It walks every
 connector in dependency order (list/search before get, get before write),
 deliberately hits every auto-accept rule you have configured (see the
 environment doc's consolidated rules block) back-to-back with a contrasting
-call that should still prompt, and ends with a self-report that already has
-the audit log's actual decision for every call baked in — Claude reads
-`logs/audit/<this-week>.jsonl` itself during the run (see the Prerequisites
-note above for which of the two possible locations that is) rather than
-leaving reconciliation to you afterward.
+call that should still prompt, and ends with a dedicated reconciliation phase:
+Claude asks you to attach the current week's audit log to the conversation,
+then goes back through every call it made and fills in the actual logged
+decision for each one — see the Prerequisites note above for which of the two
+possible file locations to attach.
 
 **This version is safe to run repeatedly against the same accounts, and needs
 no editing before you paste it.** Every artifact it creates is stamped with a
@@ -141,16 +144,16 @@ Ground rules:
   category banner at all (a plain popup for a step that should've been silent
   is still worth reporting).
 - Keep a running table as you go: `tool name | gate observed (silent / Cowork
-  review / native popup) | my decision | audit-log decision | notes`. This is a
-  test environment against my own accounts, so read
-  `logs/audit/<this-week>.jsonl` yourself as you go (or in a batch at the end
-  of each phase) — under `~/.privacyfence/` if I'm running a bundled/DMG
-  install, or the project root if the daemon is running from source; check
-  which one actually exists rather than assuming — and fill in the
-  `audit-log decision` column
-  with the actual logged `accepted` / `denied` / `auto_accepted` value for each
-  call — match entries by timestamp and tool/operation name. Don't leave that
-  column blank or defer it to me. Print the full table at the very end.
+  review / native popup) | my decision | audit-log decision | notes`. Leave
+  the `audit-log decision` column blank for now — don't guess it, don't ask me
+  for it mid-run, and don't try to read the log file yourself during the run.
+  Phase 12, the very last phase, is where that column gets filled in: I'll
+  attach the current week's audit log to the conversation at that point, and
+  you'll go back through this table and fill in every row's actual logged
+  `accepted` / `denied` / `auto_accepted` value from the attached file, matching
+  entries by timestamp and tool/operation name. Print the full table (still
+  with the column blank) at the end of each phase as normal; the populated
+  version only appears once, in the Phase 12 / final report.
 - Keep a second running table, the manifest: `connector | artifact | id | {RUN_ID}
   tag | deletable via tool? (yes/no)`. Print it at the very end too, split into
   "cleaned up in Phase 11" vs. "needs manual deletion."
@@ -160,8 +163,9 @@ steps expect a plain Accept and you can just make the call. The ones marked
 **"pause here"** expect something else (Deny / Accept All) —
 for those, stop and wait for my go-ahead as the ground rules above describe,
 *then* call the tool, then report back what actually happened in the tool
-result, and confirm it against the audit log entry for that call before
-writing it into the table as settled rather than assumed.
+result and write it into the table as provisional — Phase 12's audit-log
+reconciliation, not this step, is what turns it from "reported" into
+"settled."
 
 ---
 
@@ -231,9 +235,10 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
    tell me you're about to call `gmail_get_message` on it and that **I will
    click Deny this time**, then wait for me to say go. Once I do, make the
    call and confirm you get an error, not data — and don't fabricate a
-   fallback answer. Then read the audit log entry for this call and state
-   definitively whether it was `denied` or a truncation with a different
-   underlying cause — don't leave this as a guess.
+   fallback answer. Record the raw error in the table and flag this row for
+   Phase 12: whether it was actually `denied` versus a size-truncation error
+   with a different underlying cause isn't decidable from the tool result
+   alone, so don't guess it now.
 4. Pick a message that has a thread with 2+ messages. Call `gmail_get_thread`
    on it. **I will click Accept.** Confirm the response includes all messages
    in the thread, not just one.
@@ -397,13 +402,13 @@ has configured.
     sure?" confirmation after Accept. **Pause here** the same way, then make
     the call and report the same details, plus confirm the returned content
     matches what was written.
-20. Read the audit log entries for steps 18 and 19 and confirm both have
-    `"pii_detected": true` — this is the one field in the log that proves the
-    gate fired even if a screenshot of the popup itself isn't available to
-    me. Report the categories PrivacyFence actually detected (from the popup
-    banner) against what `src/privacyfence/pii_detector.py` documents as
-    supported, and flag anything that should have matched but didn't (or
-    vice versa) as a finding, not something to silently reconcile.
+20. Report the categories PrivacyFence actually detected (from the popup
+    banner in steps 18–19) against what `src/privacyfence/pii_detector.py`
+    documents as supported, and flag anything that should have matched but
+    didn't (or vice versa) as a finding, not something to silently reconcile.
+    Flag both rows for Phase 12: confirming `"pii_detected": true` in the
+    audit log entries for steps 18 and 19 is the one field-level proof the
+    gate fired, independent of the popup banner — do it there, not now.
 
 ### Auto-accept override check (steps 21–23)
 
@@ -437,13 +442,12 @@ if you configured it per `qa-environment-setup.md`.
     configured in this environment, say so plainly — this step can't
     distinguish "the override worked" from "there was no rule to override"
     in that case, so don't claim the override was proven either way.
-23. Read the audit log entry for step 22 and confirm `"decision": "approved"`
-    (not `"auto_accepted"`), `"auto_accept_rule": ""`, and
-    `"pii_detected": true` — this is the field-level proof that the override
-    fired, independent of whether the popup was visually confirmed. Compare
-    it against step 3's entry for the plain file (`"decision":
-    "auto_accepted"` if the rule is configured) to make the contrast
-    explicit in your report.
+23. Flag step 22 for Phase 12: the field-level proof that the override fired,
+    independent of whether the popup was visually confirmed, is its audit
+    entry showing `"decision": "approved"` (not `"auto_accepted"`),
+    `"auto_accept_rule": ""`, and `"pii_detected": true` — contrasted against
+    step 3's entry for the plain file (`"decision": "auto_accepted"` if the
+    rule is configured). Confirm both once the log is attached, not now.
 
 ## Phase 3 — Slack
 1. `slack_list_channels` (expect: silent).
@@ -549,14 +553,14 @@ other connector's writes, each independently configurable via the
 2. `telegram_get_messages` on `{FIXTURES}.telegram_approved_chat_id` — **watch
    for a Cowork review popup and tell me explicitly whether you see one before I
    respond**, don't infer it from the tool result; I'll Accept if it appears.
-   Then read the audit log entry for this call and state the actual logged
-   decision (`auto_accepted` vs `accepted`) — that settles it even if my own
-   observation of the popup was ambiguous.
+   Flag this row for Phase 12: the audit log's decision (`auto_accepted` vs
+   `accepted`) is what settles it if my own observation of the popup was
+   ambiguous — check that once the log is attached, not now.
 3. `telegram_get_messages` on `{FIXTURES}.telegram_control_chat_id` (not in
-   `approved_chats`) — same explicit "did a popup appear?" question, then the
-   same audit-log confirmation. I'll Accept.
+   `approved_chats`) — same explicit "did a popup appear?" question, same
+   Phase 12 flag. I'll Accept.
 4. `telegram_search_messages` with a query that matches the seed message from
-   setup — same explicit popup check plus audit-log confirmation.
+   setup — same explicit popup check, same Phase 12 flag.
 5. `telegram_send_message` to "Saved Messages"
    (`telegram_saved_messages_chat_id`), test text tagged `{RUN_ID}`. Popup,
    Accept.
@@ -636,36 +640,69 @@ a delete/remove/archive/close tool available, call it now:
    manual cleanup happens in Gmail's web UI (Settings → Filters and Blocked
    Addresses / Settings → Labels), not via any PrivacyFence tool.
 
+## Phase 12 — Audit Log Reconciliation
+Everything above ran with the `audit-log decision` column blank and every
+audit-dependent question (Phase 1 step 3, Phase 2 steps 20/23, Phase 7 steps
+2–4) flagged rather than answered, on purpose — a live mid-run read from a
+Cowork/Desktop session isn't reliable. This phase closes all of that out
+against a copy of the log I hand you directly.
+
+1. **Ask me to attach the audit log now, and wait for me to do it before
+   continuing.** Tell me exactly which file: `logs/audit/<this-week>.jsonl` —
+   under `~/.privacyfence/audit/` if this is a bundled/DMG install, or
+   `logs/audit/` in the project root if the daemon is running from source
+   (see [dev-vs-live-setup.md](dev-vs-live-setup.md)). If you're not sure
+   which applies, ask me rather than guessing.
+2. Once I've attached it, read it and go through the running table row by
+   row, filling in `audit-log decision` for every call that has one — match
+   by timestamp and tool/operation name, not by row order (a retried or
+   re-run call can shift the order). If a row has no matching entry, write
+   "no matching entry" explicitly rather than leaving it blank.
+3. Resolve every item flagged earlier, specifically:
+   - Phase 1 step 3: state definitively whether it was `denied` or a
+     size-truncation error with a different underlying cause.
+   - Phase 2 steps 18–19: confirm both entries show `"pii_detected": true`.
+   - Phase 2 step 22: confirm `"decision": "approved"` (not
+     `"auto_accepted"`), `"auto_accept_rule": ""`, and `"pii_detected": true`,
+     contrasted against step 3's entry for the plain file.
+   - Phase 7 steps 2–4: state the actual logged decision (`auto_accepted` vs
+     `accepted`) for each — this is what settles it even where your own
+     popup observation was already unambiguous.
+4. Note any call in the table you couldn't find a matching audit-log entry
+   for at all (clock skew, wrong week's file, a log write that never
+   happened) — that's itself worth reporting, not something to silently paper
+   over with the tool-result guess.
+
 ---
 
 ## Final report
 Print the full running table (tool | gate observed | my decision | audit-log
-decision | notes), then the full manifest table split into "cleaned up in
-Phase 11" vs. "needs manual deletion." Then:
+decision | notes), now fully reconciled from Phase 12, then the full manifest
+table split into "cleaned up in Phase 11" vs. "needs manual deletion." Then:
 - Call out any tool whose observed gate, or whose audit-log decision, didn't
   match what I told you to expect — these are two independent checks now, so
   flag it even if only one of them disagrees.
 - Give the Phase 7 (Telegram) popup-visibility answers from steps 2–4
-  explicitly, each one backed by the matching audit-log entry — don't let this
-  collapse back into "I can't tell," since both your own observation and the
-  log are available this time.
+  explicitly, each one backed by the matching audit-log entry from Phase 12 —
+  don't let this collapse back into "I can't tell," since both your own
+  observation and the log are available by this point.
 - Give the Phase 2 PII detection gate check (steps 17–20) its own explicit
   answer: did the tint/banner render on both the write and the read, what
   categories were listed each time, did the second "Are you sure?" dialog
   appear both times, and did both audit-log entries show
-  `"pii_detected": true`. If PrivacyFence's menu bar has **PII Detection
-  Gate** turned off, that changes the expected result to "no tint, no second
-  dialog, `pii_detected: false`" — state which case you're actually in rather
-  than assuming it's enabled.
+  `"pii_detected": true` (per Phase 12). If PrivacyFence's menu bar has **PII
+  Detection Gate** turned off, that changes the expected result to "no tint,
+  no second dialog, `pii_detected: false`" — state which case you're actually
+  in rather than assuming it's enabled.
 - Give the auto-accept override check (steps 21–23) its own explicit answer
   too, separate from the above: was `approved_folder` actually configured
   for `drive.read_file_contents` in this environment (check what you read
   from `settings.yaml` in Phase 0)? If yes, did step 22 still prompt despite
-  the rule matching, and did step 22's audit entry show `"decision":
-  "approved"` rather than `"auto_accepted"`? If the rule wasn't configured,
-  say explicitly that this check only re-confirmed the plain PII-gate
-  behavior and didn't exercise the override itself — don't report it as a
-  pass for a claim it couldn't actually test.
+  the rule matching, and did step 22's audit entry (per Phase 12) show
+  `"decision": "approved"` rather than `"auto_accepted"`? If the rule wasn't
+  configured, say explicitly that this check only re-confirmed the plain
+  PII-gate behavior and didn't exercise the override itself — don't report it
+  as a pass for a claim it couldn't actually test.
 - List every other step across the whole run where the PII gate fired
   organically (per the ground rule above) — real accounts routinely surface
   this outside the dedicated check, and it's useful signal for how noisy the
@@ -675,18 +712,18 @@ Phase 11" vs. "needs manual deletion." Then:
   carry a **different** `{RUN_ID}` (or no `{RUN_ID}` at all, from before this
   version of the prompt existed) — flag them as leftovers from a previous run,
   don't touch them, and don't count them as part of this run's manifest.
-- Note any call you couldn't find a matching audit-log entry for at all (clock
-  skew, wrong week's file, a log write that never happened) — that's itself
-  worth reporting, not something to silently paper over with the tool-result
-  guess.
 ````
 
 ## Reading the results
 
-The prompt now has Claude read the audit log itself and fill in an
-`audit-log decision` column, so you shouldn't need to reconcile
-`accepted` / `denied` / `auto_accepted` by hand afterward — that column *is*
-ground truth, not a hypothesis. What Claude still can't do is independently
+Phase 12 is what fills in the `audit-log decision` column, once you've
+attached the log file — the prompt no longer has Claude read it live during
+the run, since a Cowork/Desktop session reading the file mid-run isn't
+reliable (recently written entries can appear to lag or go missing depending
+on how the session reaches the file; attaching a fixed copy at the end avoids
+that entirely). Once Phase 12 has run, that column *is* ground truth, not a
+hypothesis, and you shouldn't need to reconcile `accepted` / `denied` /
+`auto_accepted` by hand afterward. What Claude still can't do is independently
 confirm the popup UI rendered correctly on your screen; it can only confirm
 what the daemon actually decided. If your own observation of a popup
 disagrees with the logged decision (e.g. you saw no prompt but the log says
@@ -694,10 +731,10 @@ disagrees with the logged decision (e.g. you saw no prompt but the log says
 investigating — it means the popup and the logged decision disagreed, which
 the tool result and the log alone can't explain by themselves.
 
-Spot-check a handful of entries yourself if you want an independent check on
-Claude's reconciliation, but treat a fully-populated `audit-log decision`
-column as the run having done its job, not as something to redo from
-scratch.
+Spot-check a handful of entries yourself against the attached file if you
+want an independent check on Claude's Phase 12 reconciliation, but treat a
+fully-populated `audit-log decision` column as the run having done its job,
+not as something to redo from scratch.
 
 Watch for these three error shapes, which are easy to mis-file as gate bugs
 when they're really something else:
