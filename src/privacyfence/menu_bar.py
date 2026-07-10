@@ -167,6 +167,20 @@ ALL_CONNECTORS: list[str] = [
     "slack", "jira", "confluence", "salesforce", "telegram",
 ]
 
+# Top-level groups shown in the "Auto-accept Rules" menu specifically --
+# distinct from ALL_CONNECTORS because "sheets" isn't a connector (it has no
+# separate auth, org-config section, or entry in GOOGLE_CONNECTORS/
+# _GOOGLE_CLIENTS/ORG_CONFIG_SERVICE -- it rides on Drive's OAuth grant), but
+# its rules live under their own "sheets.*" operation keys (see
+# TOOL_TO_OPERATION in auto_accept.py) rather than nested under "drive.*", so
+# _build_rules_menu's connector-prefix grouping needs it listed here or the
+# whole sheets.* rule bucket is silently dropped (never iterated, so never
+# rendered) -- exactly what happened before this constant existed.
+RULES_MENU_GROUPS: list[str] = [
+    "gmail", "drive", "sheets", "contacts", "calendar", "tasks",
+    "slack", "jira", "confluence", "salesforce", "telegram",
+]
+
 # Connectors authenticated via a shared Google OAuth client (org bundle's
 # "google" section).
 GOOGLE_CONNECTORS: set[str] = {"gmail", "drive", "contacts", "calendar", "tasks"}
@@ -294,7 +308,7 @@ class PrivacyFenceMenuBar(rumps.App):
         for op_key in OPERATION_LABELS:
             ops_by_connector.setdefault(op_key.split(".", 1)[0], []).append(op_key)
 
-        for cname in ALL_CONNECTORS:
+        for cname in RULES_MENU_GROUPS:
             op_keys = ops_by_connector.get(cname)
             connector_item = rumps.MenuItem(cname.capitalize())
             if not op_keys:
