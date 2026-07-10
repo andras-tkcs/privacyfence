@@ -732,7 +732,7 @@ class TestSetWorkingLocation:
         assert body["transparency"] == "transparent"
         assert body["workingLocationProperties"] == {"type": "homeOffice"}
         assert body["start"] == {"date": "2026-08-01"}
-        assert body["end"] == {"date": "2026-08-01"}
+        assert body["end"] == {"date": "2026-08-02"}  # exclusive end: day after start
 
     def test_office_location_includes_building_and_label_only_when_given(self):
         service = MagicMock()
@@ -755,6 +755,17 @@ class TestSetWorkingLocation:
         client = make_client(service)
         with pytest.raises(CalendarClientError, match="set_working_location failed"):
             client.set_working_location("2026-08-01", "home")
+
+    def test_end_date_rolls_over_month_boundary(self):
+        service = MagicMock()
+        service.events.return_value.insert.return_value.execute.return_value = {"id": "wl1"}
+        client = make_client(service)
+
+        client.set_working_location("2026-08-31", "home")
+
+        body = service.events.return_value.insert.call_args.kwargs["body"]
+        assert body["start"] == {"date": "2026-08-31"}
+        assert body["end"] == {"date": "2026-09-01"}
 
 
 # ---------------------------------------------------------------------------- #
