@@ -84,11 +84,11 @@ read or write, independent of PrivacyFence's own gating logic.
 ## 4. Human-in-the-loop control
 
 Every tool call — from either direction — passes through one of three gates before it executes,
-defined in the [Review model](../README.md#review-model) section of the README:
+defined in the [Review model](TECHNICAL_REFERENCE.md#review-model) section of the Technical Reference:
 
 - **`auto`** — allowed to proceed automatically, but still recorded in the audit log as
   `auto_accepted`. Reserved for narrow, pre-defined low-risk conditions (e.g., "I am the sender,"
-  "the file is one I created this session") — see [Auto-accept rules](../README.md#auto-accept-rules).
+  "the file is one I created this session") — see [Auto-accept rules](TECHNICAL_REFERENCE.md#auto-accept-rules).
 - **`review`** — the AI-bound read is held; the human sees a minimal preview and must explicitly
   **Accept** or **Deny** before any content reaches the AI.
 - **`popup`** — the AI-initiated write/action (send an email, post to Slack, edit a Jira issue,
@@ -105,15 +105,15 @@ regex-based scan (Hungarian, English, German) over the content shown in every `r
 before the human decides — and before any auto-accept rule is checked. A match overrides a
 matching rule (a `review` call is content-blind to the rule, so PII in an otherwise-trusted
 sender/folder still routes to a human) and tints the dialog, forcing one additional explicit
-confirmation on top of Accept — see [PII detection gate](../README.md#pii-detection-gate) in the
-README. It is a best-effort heuristic layered on top of human review, not a substitute for it,
+confirmation on top of Accept — see [PII detection gate](TECHNICAL_REFERENCE.md#pii-detection-gate) in the
+Technical Reference. It is a best-effort heuristic layered on top of human review, not a substitute for it,
 and it never logs or stores the matched text — only category labels, in the audit entry for that
 decision. It does not run on the `popup` (write) direction: that content is Claude's own generated
 output for an action already described in chat, not external personal data newly reaching Claude.
 
 **Note for reviewers evaluating the MCP-level permission model:** since v0.4.9 the bridge
 advertises every tool to Claude as `readOnlyHint = true`, including writes. This is documented and
-intentional (see [Why every tool is advertised as read-only](../README.md#why-every-tool-is-advertised-as-read-only))
+intentional (see [Why every tool is advertised as read-only](TECHNICAL_REFERENCE.md#why-every-tool-is-advertised-as-read-only))
 — it removes a redundant, non-configurable client-side prompt, because PrivacyFence's own gate,
 not the MCP client's tool annotations, is the actual enforcement point. Authorization decisions
 are made by the daemon against the tool's real `read_only`/gate metadata before any external
@@ -213,7 +213,7 @@ oversight measure**, sitting in front of the AI system rather than being one:
 | Process isolation | Bridge (untrusted-facing, talks to Claude) and daemon (holds credentials) are separate processes; only the daemon can reach external APIs |
 | Secrets at rest | Local OS-level storage / local files under `credentials/`; never committed to source control (`.gitignore`'d), never transmitted off-device |
 | Auditability | Every decision logged with outcome (accepted/denied/auto_accepted), locally, in a human-readable format (JSONL + Excel) |
-| Code signing / notarization | **Not yet notarized** as of the current release — Gatekeeper requires a manual `xattr` step on first install (see README). Treat this as an open item for endpoint security review, not a settled control. |
+| Code signing / notarization | **Not yet notarized** as of the current release — Gatekeeper requires a manual `xattr` step on first install (see [Technical Reference](TECHNICAL_REFERENCE.md#installation)). Treat this as an open item for endpoint security review, not a settled control. |
 | Third-party dependencies | Standard OAuth/SDK libraries per connector (google-auth, slack_sdk, telethon, atlassian-python-api); no PrivacyFence-operated backend dependency |
 
 ---
