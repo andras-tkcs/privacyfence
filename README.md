@@ -262,12 +262,16 @@ Continue with the organization configuration and connector authentication steps 
 - [Telegram setup](docs/telegram-setup.md)
 - [Connector QA testing](docs/connector-qa-testing.md)
 - [Development vs. installed configuration](docs/dev-vs-live-setup.md)
+- [Contributing](CONTRIBUTING.md)
 
 ---
 
 ## Status and scope
 
-PrivacyFence is an open-source project and remains under active development.
+PrivacyFence has a stable connector and policy interface as of 1.0. It remains under active
+development, and you should review the limitations and security model (including the
+notarization gap noted earlier in this README) before using it with production or regulated
+data.
 
 Current implementation assumptions:
 
@@ -276,8 +280,6 @@ Current implementation assumptions:
 - MCP-compatible AI client
 - per-user connector authentication
 - organization-provided OAuth application configuration where required
-
-Review the limitations and security model before using PrivacyFence with production or regulated data.
 
 ---
 

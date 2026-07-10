@@ -125,7 +125,7 @@ should not be read as PrivacyFence treating writes as safe.
 ## 5. Data handling
 
 - **Data minimization by default:** the default policy for undefined categories is `block` (see
-  `config/settings.yaml.example`). Each connector's privacy filter narrows what the review UI
+  `src/privacyfence/resources/settings.yaml.example`). Each connector's privacy filter narrows what the review UI
   even shows before a human approves it — filtering is a floor under human review, not a
   substitute for it.
 - **No aggregation, no secondary use:** PrivacyFence does not copy data to any store beyond the
