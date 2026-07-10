@@ -442,6 +442,12 @@ standing rule (configured as above) is the only way to skip their popup.
 | `time_window_days` | Event starts within the next N days |
 | `no_conferencing_link` | Event has no video conferencing link |
 
+`calendar_create_out_of_office` (`calendar.out_of_office`) and `calendar_set_working_location`
+(`calendar.working_location`) each have their own operation key but no rule above applies to
+either — both always act on your own primary calendar with no organizer/attendee/other-calendar
+concept for these rules to check — so they remain `popup`-gated with no configurable auto-accept,
+unlike `calendar_create_event`/`calendar_update_event` above.
+
 **Salesforce**
 
 | Rule | Matches when… |
@@ -462,6 +468,10 @@ standing rule (configured as above) is the only way to skip their popup.
 | `i_am_reporter` | Authenticated account is the issue's reporter |
 | `i_am_assignee` | Authenticated account is the issue's assignee |
 | `approved_project_keys` | Issue's project key is in the allowlist |
+
+`jira_transition_issue` (`jira.transition_issue`) also accepts `approved_project_keys` — it derives
+the project from `issue_key` the same way `jira_get_issue`/`jira_update_issue` do. `i_am_reporter` /
+`i_am_assignee` don't apply to it, since a transition call doesn't carry the issue's reporter/assignee.
 
 **Confluence**
 
@@ -487,7 +497,7 @@ standing rule (configured as above) is the only way to skip their popup.
 `tasks.complete_task`, `tasks.uncomplete_task`, and `tasks.move_task`, so you can e.g. auto-accept
 edits within a personal list while still requiring review for creates.
 
-> **Google Contacts**: `contacts_list`, `contacts_search`, and `contacts_get` are unconditionally auto-accepted. `contacts_update`, `contacts_create`, `contacts_add_label`, and `contacts_remove_label` are all `popup`-gated; `no_contact_info_change` above is the only configurable auto-accept rule, and it applies only to `contacts_update`. Contact deletion is not supported. **Google Tasks**: all three read tools plus `tasks_list_task_lists` are unconditionally auto-accepted; the five write tools (`tasks_create_task`, `tasks_update_task`, `tasks_complete_task`, `tasks_uncomplete_task`, `tasks_move_task`) are `popup`-gated, each independently configurable via `approved_task_list` above. **Telegram**: `telegram_list_chats` is unconditionally auto-accepted; `telegram_get_messages` and `telegram_search_messages` are `review`-gated by default but configurable via the rules above; `telegram_send_message` is `popup`-gated with no configurable rule. **Jira and Confluence** read tools (`jira_get_issue`, `confluence_get_page`, `confluence_get_page_by_title`) are `review`-gated by default but configurable via the rules above; their write tools have no configurable auto-accept rules and remain `popup`-gated.
+> **Google Contacts**: `contacts_list`, `contacts_search`, and `contacts_get` are unconditionally auto-accepted. `contacts_update`, `contacts_create`, `contacts_add_label`, and `contacts_remove_label` are all `popup`-gated; `no_contact_info_change` above is the only configurable auto-accept rule, and it applies only to `contacts_update`. Contact deletion is not supported. **Google Tasks**: all three read tools plus `tasks_list_task_lists` are unconditionally auto-accepted; the five write tools (`tasks_create_task`, `tasks_update_task`, `tasks_complete_task`, `tasks_uncomplete_task`, `tasks_move_task`) are `popup`-gated, each independently configurable via `approved_task_list` above. **Telegram**: `telegram_list_chats` is unconditionally auto-accepted; `telegram_get_messages` and `telegram_search_messages` are `review`-gated by default but configurable via the rules above; `telegram_send_message` is `popup`-gated with no configurable rule. **Jira and Confluence** read tools (`jira_get_issue`, `confluence_get_page`, `confluence_get_page_by_title`) are `review`-gated by default but configurable via the rules above; their write tools remain `popup`-gated with no configurable rule, except `jira_transition_issue`, which accepts `approved_project_keys` as noted above.
 
 ---
 
