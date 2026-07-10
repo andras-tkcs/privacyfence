@@ -400,7 +400,7 @@ in Phase 11 — nothing here to provision ahead of time, and nothing that
 persists between runs.
 
 The gate only ever runs on the `review` (read) direction, never on `popup`
-(write) — see README's "PII detection gate" section — so the write (step 18)
+(write) — see the Technical Reference's "PII detection gate" section — so the write (step 18)
 and the read (step 19) are expected to produce *different* results even
 though they carry the same synthetic-PII body: the write always stays plain,
 the read gets flagged (when the gate is enabled; see point 1 below).
