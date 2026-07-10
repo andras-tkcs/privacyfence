@@ -16,7 +16,8 @@ import os
 import threading
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date as _date
+from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from google.auth.transport.requests import Request
@@ -621,9 +622,13 @@ class CalendarClient:
             if label:
                 office["label"] = label
             working_location_properties["officeLocation"] = office
+        # All-day (date-only) events use an exclusive end date -- Calendar
+        # rejects start == end as a zero-length event, so a single-day
+        # working-location event's end date is the following day.
+        end_date = (_date.fromisoformat(date) + timedelta(days=1)).isoformat()
         body: dict[str, Any] = {
             "start": {"date": date},
-            "end": {"date": date},
+            "end": {"date": end_date},
             "eventType": "workingLocation",
             "visibility": "public",
             "transparency": "transparent",

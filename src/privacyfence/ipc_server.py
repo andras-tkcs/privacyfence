@@ -16,6 +16,14 @@ the approval popup for one logical action. ``_call_connector`` dedupes
 identical (connector, tool, args) calls: a retry that arrives while the
 original is still in flight, or shortly after it completed, is served the
 same result instead of re-running the gate.
+
+A handful of tools break that assumption: a second identical call is
+*supposed* to behave differently once the first has taken effect (e.g.
+"create label X" should fail with "already exists" the second time, not
+silently replay the first call's success). Those are listed in
+``_DEDUPE_EXEMPT_TOOLS`` and only lose the completed-result reuse -- a
+genuinely concurrent in-flight retry is still coalesced, since nothing has
+taken effect yet there.
 """
 
 from __future__ import annotations
@@ -42,6 +50,9 @@ class IPCServer:
     # deliberate repeat of the same write minutes later isn't silently
     # short-circuited.
     _DEDUPE_TTL_SECONDS = 30
+
+    # Tools exempt from completed-result reuse -- see module docstring.
+    _DEDUPE_EXEMPT_TOOLS = frozenset({"gmail_create_label"})
 
     def __init__(self, connectors: list[Connector]) -> None:
         self._connectors: dict[str, Connector] = {c.name: c for c in connectors}
@@ -138,7 +149,9 @@ class IPCServer:
         entry = self._inflight.get(key)
         if entry is not None:
             fut, recorded_at = entry
-            if not fut.done() or (now - recorded_at) < self._DEDUPE_TTL_SECONDS:
+            still_fresh = (now - recorded_at) < self._DEDUPE_TTL_SECONDS
+            reusable = not fut.done() or (still_fresh and tool not in self._DEDUPE_EXEMPT_TOOLS)
+            if reusable:
                 logger.info(
                     "Deduping repeat call to %s/%s: reusing in-flight/recent result",
                     connector_name, tool,
