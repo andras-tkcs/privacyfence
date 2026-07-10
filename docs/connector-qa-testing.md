@@ -576,6 +576,22 @@ configured it per `qa-environment-setup.md`.
    If no such event exists in this account's calendar history, note that and
    skip this step rather than reporting a gap — it's a fixture-availability
    limitation, not a regression.
+7. `calendar_create_out_of_office` — title `PrivacyFence QA OOO [{RUN_ID}] — safe
+   to delete`, a two-hour window far in the future, no decline message. Popup,
+   Accept. Add to manifest (not deletable via tool). Confirm the created event's
+   details in Google Calendar show it as an Out of Office entry that auto-declines
+   only new conflicting invitations (not existing ones) — this is fixed behavior,
+   not something the tool call can override.
+8. `calendar_create_out_of_office` again, this time with a `decline_message`.
+   Popup, Accept. Confirm the decline message appears on the created event.
+9. `calendar_set_working_location` for today's date, `location="office"`. Popup,
+   Accept. Confirm your presence shows as "In the office" in Google Calendar's
+   web UI for that day (not deletable via tool — calling it again for the same
+   day overwrites the prior value, so no separate cleanup is needed beyond noting
+   it in the manifest).
+10. `calendar_set_working_location` again for the same date with
+    `location="home"` — confirm it overwrites the office entry from step 9
+    rather than adding a second one.
 
 ## Phase 5 — Contacts
 1. `contacts_list`, `contacts_search`, `contacts_get` (expect: all silent).
@@ -680,6 +696,23 @@ other connector's writes, each independently configurable via the
    rule. Tell me which rule (if any) actually matched.
 6. `jira_add_comment` on it, test comment. Popup, Accept.
 7. `jira_update_issue` on it (e.g. change description). Popup, Accept.
+8. `jira_update_issue` with `custom_fields` targeting one custom field already
+   configured on `jira_qa_project_key`'s issue screen (any type works — check
+   the issue's "..." menu in Jira's web UI for available custom fields), by its
+   exact display name (e.g. `{"Story Points": 5}`). Popup, Accept. Confirm the
+   value is set correctly in Jira. If the QA project has no custom field
+   configured, note that and skip this step — it's a fixture-availability
+   limitation, not a regression.
+9. `jira_get_transitions` on it (expect: silent). Confirm the result lists at
+   least one transition name and target status reachable from the issue's
+   current status.
+10. `jira_transition_issue` to one of the transition names from step 9. Popup,
+    Accept. Confirm the issue's status actually changed in Jira, and that the
+    tool's result reflects the new status.
+11. `jira_transition_issue` again with a transition name that is *not* in the
+    list from a fresh `jira_get_transitions` call on the now-transitioned issue
+    — expect a clear error naming the invalid transition and listing what's
+    actually available, not a raw Jira API error.
 
 ## Phase 10 — Confluence
 1. `confluence_list_spaces`, `confluence_search`, `confluence_cql_search`,
@@ -706,8 +739,11 @@ a delete/remove/archive/close tool available, call it now:
    doc, then the now-empty subfolder) and the PII-vs-rule doc from step 21.
 2. Delete the Gmail draft(s) from Phase 1 if a delete-draft tool exists;
    otherwise leave the label/note in the manifest for manual cleanup.
-3. Close or transition the Jira issue from Phase 9 to a terminal status (don't
-   delete it — closed test issues are useful QA history); note its final status.
+3. The Jira issue from Phase 9 was already moved via `jira_transition_issue` in
+   steps 10–11 of that phase (don't delete it — closed test issues are useful
+   QA history); if its status after step 11 isn't already terminal (e.g. Done,
+   Closed), use `jira_get_transitions` + `jira_transition_issue` once more to
+   land it in a terminal status now. Note its final status either way.
 4. Delete the Confluence page from Phase 10 if a delete tool exists; otherwise
    note it for manual cleanup.
 5. Uncomplete/delete both Google Tasks from Phase 6 (the QA-list one and the
@@ -715,10 +751,11 @@ a delete/remove/archive/close tool available, call it now:
 6. The Gmail label-test message from Phase 1 steps 2/9–12 needs nothing here —
    the archive/unarchive/remove-label sequence already restores it to exactly
    its starting state.
-7. For anything with **no delete tool at all** (Calendar event, Contact, Slack
-   message, Telegram message, the Gmail filter from Phase 1 steps 17/19, the
-   Gmail label(s) from Phase 1 step 14), do NOT attempt a workaround — list it
-   plainly in the final manifest under "needs manual deletion," grouped by
+7. For anything with **no delete tool at all** (Calendar event, the
+   out-of-office and working-location entries from Phase 4 steps 7–10, Contact,
+   Slack message, Telegram message, the Gmail filter from Phase 1 steps 17/19,
+   the Gmail label(s) from Phase 1 step 14), do NOT attempt a workaround — list
+   it plainly in the final manifest under "needs manual deletion," grouped by
    connector, so I can batch-clean these across multiple runs instead of doing
    it one run at a time. For the Gmail filter/label specifically, note that
    manual cleanup happens in Gmail's web UI (Settings → Filters and Blocked

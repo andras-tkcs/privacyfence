@@ -409,6 +409,88 @@ class TestUpdateEvent:
         assert gated_call_spy[0]["details_text"] == "no fields will be updated; description is unchanged."
 
 
+class TestCreateOutOfOffice:
+    async def test_preview_omits_decline_message_when_absent(self, gated_call_spy):
+        connector, client = make_connector()
+        client.create_out_of_office.return_value = make_event(id="ooo1")
+
+        await connector.call("calendar_create_out_of_office", {
+            "start_time": "t0", "end_time": "t1", "title": "Vacation",
+        })
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview"] == {
+            "Title": "Vacation", "Time": "t0 – t1",
+            "Auto-decline": "New conflicting invitations only",
+        }
+        assert kwargs["gate"] == "popup"
+        assert "Decline message" not in kwargs["preview"]
+
+    async def test_preview_includes_decline_message_when_given(self, gated_call_spy):
+        connector, client = make_connector()
+        client.create_out_of_office.return_value = make_event(id="ooo1")
+
+        await connector.call("calendar_create_out_of_office", {
+            "start_time": "t0", "end_time": "t1", "decline_message": "Back Monday",
+        })
+
+        assert gated_call_spy[0]["preview"]["Decline message"] == "Back Monday"
+        assert gated_call_spy[0]["details_text"] == "Back Monday"
+
+    async def test_default_title_used_when_not_given(self, gated_call_spy):
+        connector, client = make_connector()
+        client.create_out_of_office.return_value = make_event(id="ooo1")
+
+        await connector.call("calendar_create_out_of_office", {"start_time": "t0", "end_time": "t1"})
+
+        assert gated_call_spy[0]["preview"]["Title"] == "Out of Office"
+        client.create_out_of_office.assert_called_once_with("Out of Office", "t0", "t1", "")
+
+    async def test_result_shape(self, gated_call_spy):
+        connector, client = make_connector()
+        client.create_out_of_office.return_value = make_event(id="ooo1", title="Vacation")
+
+        result = await connector.call("calendar_create_out_of_office", {"start_time": "t0", "end_time": "t1"})
+
+        assert result["id"] == "ooo1"
+        assert result["title"] == "Vacation"
+
+
+class TestSetWorkingLocation:
+    async def test_home_preview(self, gated_call_spy):
+        connector, client = make_connector()
+        client.set_working_location.return_value = make_event(id="wl1")
+
+        await connector.call("calendar_set_working_location", {"date": "2026-08-01", "location": "home"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview"] == {"Date": "2026-08-01", "Location": "Home"}
+        assert kwargs["gate"] == "popup"
+        client.set_working_location.assert_called_once_with("2026-08-01", "home", "", "")
+
+    async def test_office_preview_includes_building_and_label_only_when_given(self, gated_call_spy):
+        connector, client = make_connector()
+        client.set_working_location.return_value = make_event(id="wl1")
+
+        await connector.call("calendar_set_working_location", {
+            "date": "2026-08-01", "location": "office", "building_id": "b1", "label": "HQ Floor 3",
+        })
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview"]["Location"] == "Office"
+        assert kwargs["preview"]["Building"] == "b1"
+        assert kwargs["preview"]["Label"] == "HQ Floor 3"
+
+    async def test_result_shape(self, gated_call_spy):
+        connector, client = make_connector()
+        client.set_working_location.return_value = make_event(id="wl1")
+
+        result = await connector.call("calendar_set_working_location", {"date": "2026-08-01", "location": "home"})
+
+        assert result["id"] == "wl1"
+        assert "title" not in result
+
+
 class TestFetchErrorMapping:
     async def test_calendar_client_error_becomes_runtime_error(self):
         connector, client = make_connector()

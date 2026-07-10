@@ -653,6 +653,111 @@ class TestUpdateEvent:
 
 
 # ---------------------------------------------------------------------------- #
+# create_out_of_office: always the "new conflicts only" autoDeclineMode,
+# always on the primary calendar
+# ---------------------------------------------------------------------------- #
+
+class TestCreateOutOfOffice:
+    def test_sets_event_type_and_fixed_auto_decline_mode(self):
+        service = MagicMock()
+        service.events.return_value.insert.return_value.execute.return_value = {"id": "ooo1"}
+        client = make_client(service)
+
+        client.create_out_of_office("Vacation", "2026-08-01T00:00:00", "2026-08-05T00:00:00")
+
+        call_kwargs = service.events.return_value.insert.call_args.kwargs
+        assert call_kwargs["calendarId"] == "primary"
+        body = call_kwargs["body"]
+        assert body["eventType"] == "outOfOffice"
+        assert body["outOfOfficeProperties"] == {
+            "autoDeclineMode": "declineOnlyNewConflictingInvitations",
+        }
+        assert body["transparency"] == "opaque"
+        assert body["summary"] == "Vacation"
+
+    def test_decline_message_included_only_when_given(self):
+        service = MagicMock()
+        service.events.return_value.insert.return_value.execute.return_value = {"id": "ooo1"}
+        client = make_client(service)
+
+        client.create_out_of_office("Vacation", "t0", "t1")
+        body = service.events.return_value.insert.call_args.kwargs["body"]
+        assert "declineMessage" not in body["outOfOfficeProperties"]
+
+        client.create_out_of_office("Vacation", "t0", "t1", decline_message="Back Monday")
+        body = service.events.return_value.insert.call_args.kwargs["body"]
+        assert body["outOfOfficeProperties"]["declineMessage"] == "Back Monday"
+
+    def test_injects_utc_when_no_timezone_in_datetime(self):
+        service = MagicMock()
+        service.events.return_value.insert.return_value.execute.return_value = {"id": "ooo1"}
+        client = make_client(service)
+
+        client.create_out_of_office("Vacation", "2026-08-01T00:00:00", "2026-08-05T00:00:00")
+
+        body = service.events.return_value.insert.call_args.kwargs["body"]
+        assert body["start"] == {"dateTime": "2026-08-01T00:00:00", "timeZone": "UTC"}
+        assert body["end"] == {"dateTime": "2026-08-05T00:00:00", "timeZone": "UTC"}
+
+    def test_http_error_becomes_calendar_client_error(self):
+        service = MagicMock()
+        service.events.return_value.insert.return_value.execute.side_effect = http_error(400)
+        client = make_client(service)
+        with pytest.raises(CalendarClientError, match="create_out_of_office failed"):
+            client.create_out_of_office("Vacation", "t0", "t1")
+
+
+# ---------------------------------------------------------------------------- #
+# set_working_location: office/home presence, primary calendar only
+# ---------------------------------------------------------------------------- #
+
+class TestSetWorkingLocation:
+    def test_invalid_location_raises(self):
+        client = make_client(MagicMock())
+        with pytest.raises(CalendarClientError, match="location must be 'office' or 'home'"):
+            client.set_working_location("2026-08-01", "beach")
+
+    def test_home_office_sets_type_and_visibility(self):
+        service = MagicMock()
+        service.events.return_value.insert.return_value.execute.return_value = {"id": "wl1"}
+        client = make_client(service)
+
+        client.set_working_location("2026-08-01", "home")
+
+        call_kwargs = service.events.return_value.insert.call_args.kwargs
+        assert call_kwargs["calendarId"] == "primary"
+        body = call_kwargs["body"]
+        assert body["eventType"] == "workingLocation"
+        assert body["visibility"] == "public"
+        assert body["transparency"] == "transparent"
+        assert body["workingLocationProperties"] == {"type": "homeOffice"}
+        assert body["start"] == {"date": "2026-08-01"}
+        assert body["end"] == {"date": "2026-08-01"}
+
+    def test_office_location_includes_building_and_label_only_when_given(self):
+        service = MagicMock()
+        service.events.return_value.insert.return_value.execute.return_value = {"id": "wl1"}
+        client = make_client(service)
+
+        client.set_working_location("2026-08-01", "office")
+        body = service.events.return_value.insert.call_args.kwargs["body"]
+        assert body["workingLocationProperties"] == {"type": "officeLocation", "officeLocation": {}}
+
+        client.set_working_location("2026-08-01", "office", building_id="b1", label="HQ Floor 3")
+        body = service.events.return_value.insert.call_args.kwargs["body"]
+        assert body["workingLocationProperties"]["officeLocation"] == {
+            "buildingId": "b1", "label": "HQ Floor 3",
+        }
+
+    def test_http_error_becomes_calendar_client_error(self):
+        service = MagicMock()
+        service.events.return_value.insert.return_value.execute.side_effect = http_error(400)
+        client = make_client(service)
+        with pytest.raises(CalendarClientError, match="set_working_location failed"):
+            client.set_working_location("2026-08-01", "home")
+
+
+# ---------------------------------------------------------------------------- #
 # _get_service / _get_directory_service: must not share one service (and its
 # underlying httplib2 transport) across threads, since concurrent requests
 # dispatched via asyncio.to_thread corrupt a shared connection

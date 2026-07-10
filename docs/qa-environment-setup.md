@@ -195,6 +195,16 @@ account's calendar history already has a past meeting like that, the test
 prompt will find and use it; otherwise that step is skipped as a known
 limitation, not a regression.
 
+No fixture is needed for `calendar_create_out_of_office` or
+`calendar_set_working_location` either: both always operate on the
+authenticated user's own primary calendar (a Google Calendar API restriction,
+not something local config can change), so any account works out of the box.
+Be aware that repeated QA runs each leave behind their own out-of-office event
+and overwrite the working-location entry for whatever date was used — there's
+no delete tool for either, so they accumulate in "needs manual deletion" across
+runs the same way plain Calendar events do (see Phase 11 in
+[`connector-qa-testing.md`](connector-qa-testing.md)).
+
 ## 5. Contacts
 
 No fixture needed for `source="personal"` vs. `source="directory"` — whether
@@ -345,6 +355,17 @@ data:
    `PFQA` satisfies both automatically. If a second Jira user exists in your
    site, optionally reassign one test issue to them to get a contrast case
    for `i_am_assignee`; skip this if you're the only user.
+5. `jira_get_transitions` / `jira_transition_issue` need no setup — every Jira
+   project ships with a default workflow that has at least one transition
+   reachable from a new issue's initial status (e.g. "To Do" → "In Progress"),
+   so the QA project's default workflow is enough.
+6. `jira_update_issue`'s `custom_fields` test is opportunistic, not a required
+   fixture: it needs at least one custom field on `PFQA`'s issue screen (check
+   an issue's "..." menu or **Project settings → Fields** in Jira's web UI). If
+   `PFQA` doesn't have one and you want this exercised, add any custom field
+   (e.g. a number field called "Story Points") to the project's issue screen;
+   otherwise the test prompt skips that step as a fixture-availability
+   limitation, not a regression.
 
 ## 10. Confluence
 

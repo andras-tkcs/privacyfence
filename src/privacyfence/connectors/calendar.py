@@ -136,6 +136,37 @@ class CalendarConnector(Connector):
                               description="Comma-separated room resource email addresses to book"),
                 ],
             ),
+            ToolSpec(
+                name="calendar_create_out_of_office",
+                description=(
+                    "Create an out-of-office event on the primary calendar. Always auto-declines "
+                    "new conflicting meeting invitations that arrive while it's in effect — existing "
+                    "invitations already on the calendar are left alone. Requires user approval."
+                ),
+                params=[
+                    ToolParam("start_time", "str", description="ISO 8601 datetime"),
+                    ToolParam("end_time", "str", description="ISO 8601 datetime"),
+                    ToolParam("title", "str", required=False, default="Out of Office"),
+                    ToolParam("decline_message", "str", required=False, default="",
+                              description="Message sent to organizers of auto-declined invitations"),
+                ],
+            ),
+            ToolSpec(
+                name="calendar_set_working_location",
+                description=(
+                    "Set your working-location presence (office or home) for a single day on the "
+                    "primary calendar — the same picker Google Calendar's web UI exposes. "
+                    "Requires user approval."
+                ),
+                params=[
+                    ToolParam("date", "str", description="ISO 8601 date, e.g. 2026-07-10"),
+                    ToolParam("location", "str", description="\"office\" or \"home\""),
+                    ToolParam("building_id", "str", required=False, default="",
+                              description="Workspace building id (office only; see calendar_list_rooms)"),
+                    ToolParam("label", "str", required=False, default="",
+                              description="Office label shown on Calendar (office only)"),
+                ],
+            ),
         ]
 
     async def call(self, tool: str, args: dict[str, Any]) -> Any:
@@ -153,6 +184,10 @@ class CalendarConnector(Connector):
             return await self._create_event(**args)
         if tool == "calendar_update_event":
             return await self._update_event(**args)
+        if tool == "calendar_create_out_of_office":
+            return await self._create_out_of_office(**args)
+        if tool == "calendar_set_working_location":
+            return await self._set_working_location(**args)
         raise ValueError(f"Unknown Calendar tool: {tool!r}")
 
     # ------------------------------------------------------------------ #
@@ -444,6 +479,78 @@ class CalendarConnector(Connector):
         if updated.conference_link or updated.hangout_link:
             result["conference_link"] = updated.conference_link or updated.hangout_link
         return result
+
+    async def _create_out_of_office(
+        self,
+        start_time: str,
+        end_time: str,
+        title: str = "Out of Office",
+        decline_message: str = "",
+    ) -> Any:
+        preview = {
+            "Title": title,
+            "Time": f"{start_time} – {end_time}",
+            "Auto-decline": "New conflicting invitations only",
+        }
+        if decline_message:
+            preview["Decline message"] = decline_message
+        raw_data = {
+            "title": title, "start_time": start_time, "end_time": end_time,
+            "decline_message": decline_message,
+        }
+        await gated_call(
+            connector=self.name,
+            tool="calendar_create_out_of_office",
+            tool_name="Create Out of Office",
+            summary=f"Out of Office \"{title}\" {start_time} – {end_time}",
+            sender="primary",
+            raw_data=raw_data,
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text=decline_message or "(no custom decline message)",
+            my_email=self.my_email,
+            args={},
+        )
+        event = await self._fetch(
+            self._calendar.create_out_of_office, title, start_time, end_time, decline_message,
+        )
+        return {"id": event.id, "title": event.title, "start_time": event.start_time,
+                "end_time": event.end_time, "html_link": event.html_link}
+
+    async def _set_working_location(
+        self,
+        date: str,
+        location: str,
+        building_id: str = "",
+        label: str = "",
+    ) -> Any:
+        location_display = {"office": "Office", "home": "Home"}.get(location, location)
+        preview = {"Date": date, "Location": location_display}
+        if building_id:
+            preview["Building"] = building_id
+        if label:
+            preview["Label"] = label
+        raw_data = {"date": date, "location": location, "building_id": building_id, "label": label}
+        await gated_call(
+            connector=self.name,
+            tool="calendar_set_working_location",
+            tool_name="Set Working Location",
+            summary=f"Set {location_display} on {date}",
+            sender="primary",
+            raw_data=raw_data,
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text=f"Working location for {date}: {location_display}",
+            my_email=self.my_email,
+            args={},
+        )
+        event = await self._fetch(
+            self._calendar.set_working_location, date, location, building_id, label,
+        )
+        return {"id": event.id, "start_time": event.start_time, "end_time": event.end_time,
+                "html_link": event.html_link}
 
     # ------------------------------------------------------------------ #
     # Helpers

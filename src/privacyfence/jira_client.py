@@ -96,6 +96,13 @@ class JiraComment:
     updated: str = ""
 
 
+@dataclass
+class JiraTransition:
+    id: str
+    name: str
+    to_status: str
+
+
 class JiraClient:
     """Jira Cloud client backed by an Atlassian OAuth 2.0 bearer token.
 
@@ -111,6 +118,10 @@ class JiraClient:
     def __init__(self, config: dict[str, Any], token_file: str | None = None) -> None:
         self._config = dict(config)
         self._token_file = token_file
+        # Populated lazily by _get_field_descriptor: a site's field list
+        # (system + custom) rarely changes within a process lifetime, so one
+        # fetch covers every custom-field-by-name lookup for this client.
+        self._field_cache: list[dict[str, Any]] | None = None
         access_token = self._config.get("access_token", "")
         cloud_id = self._config.get("cloud_id", "")
         site_url = (self._config.get("site_url") or "").rstrip("/")
@@ -298,6 +309,86 @@ class JiraClient:
         except Exception as exc:
             raise JiraClientError(f"update_issue({issue_key!r}) failed: {exc}") from exc
         logger.info("update_issue %s: updated fields %s", issue_key, list(fields.keys()))
+        return self.get_issue(issue_key)
+
+    def resolve_custom_field(self, field_name: str, value: Any) -> tuple[str, Any]:
+        """Resolve a Jira Cloud field's display name to its API id and shape
+        ``value`` for that field's schema, so callers only ever deal in the
+        field's plain display name (as seen in the Jira UI) and a plain
+        Python value -- never the internal ``customfield_NNNNN`` id.
+
+        Select-list fields (single- and multi-option) need
+        ``{"value": ...}`` wrappers rather than a bare string/list; this is
+        a best-effort shaping covering those and generic array fields.
+        Fields needing a structured reference the caller can't supply by
+        name alone (e.g. a user-picker field, which needs an ``accountId``)
+        are passed through as-is and will surface Jira's own validation
+        error if the shape is wrong.
+        """
+        field = self._get_field_descriptor(field_name)
+        field_id = field.get("id", "")
+        schema = field.get("schema") or {}
+        field_type = schema.get("type", "")
+        items_type = schema.get("items", "")
+        if field_type == "option":
+            coerced: Any = {"value": value}
+        elif field_type == "array" and items_type == "option":
+            values = value if isinstance(value, list) else [value]
+            coerced = [{"value": v} for v in values]
+        elif field_type == "array" and not isinstance(value, list):
+            coerced = [value]
+        else:
+            coerced = value
+        return field_id, coerced
+
+    def _get_field_descriptor(self, field_name: str) -> dict[str, Any]:
+        if self._field_cache is None:
+            try:
+                raw = self._request(self._client.get_all_fields)
+            except Exception as exc:
+                raise JiraClientError(f"failed to list Jira fields: {exc}") from exc
+            self._field_cache = raw or []
+        matches = [f for f in self._field_cache if (f.get("name") or "").lower() == field_name.lower()]
+        if not matches:
+            raise JiraClientError(f"no Jira field named {field_name!r}")
+        if len(matches) > 1:
+            ids = ", ".join(m.get("id", "") for m in matches)
+            raise JiraClientError(
+                f"multiple Jira fields are named {field_name!r} ({ids}); rename one in Jira "
+                "or ask your Jira admin to disambiguate them"
+            )
+        return matches[0]
+
+    def get_transitions(self, issue_key: str) -> list[JiraTransition]:
+        if not issue_key:
+            raise JiraClientError("get_transitions requires an issue key")
+        try:
+            raw = self._request(self._client.get_issue_transitions, issue_key)
+        except Exception as exc:
+            raise JiraClientError(f"get_transitions({issue_key!r}) failed: {exc}") from exc
+        transitions = [
+            JiraTransition(id=str(t["id"]), name=t["name"], to_status=t["to"])
+            for t in (raw or [])
+        ]
+        logger.info("get_transitions %s returned %d transition(s)", issue_key, len(transitions))
+        return transitions
+
+    def transition_issue(self, issue_key: str, transition_name: str) -> JiraIssue:
+        if not issue_key or not transition_name:
+            raise JiraClientError("transition_issue requires issue_key and transition_name")
+        transitions = self.get_transitions(issue_key)
+        match = next((t for t in transitions if t.name.lower() == transition_name.lower()), None)
+        if match is None:
+            available = ", ".join(t.name for t in transitions) or "(none available)"
+            raise JiraClientError(
+                f"transition_issue({issue_key!r}): {transition_name!r} is not a valid transition "
+                f"from the issue's current status. Available: {available}"
+            )
+        try:
+            self._request(self._client.set_issue_status_by_transition_id, issue_key, match.id)
+        except Exception as exc:
+            raise JiraClientError(f"transition_issue({issue_key!r}) failed: {exc}") from exc
+        logger.info("transition_issue %s: %s -> %s", issue_key, transition_name, match.to_status)
         return self.get_issue(issue_key)
 
     # ------------------------------------------------------------------ #

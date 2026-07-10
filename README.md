@@ -210,6 +210,15 @@ string starting with `=` is evaluated as a formula, exactly like typing it into 
 | `calendar_get_event_details` | read | review | title, time, organizer, attendee count | Description, full attendee list, conferencing link, file attachments (e.g. Gemini meeting notes/transcript) |
 | `calendar_create_event` | write | popup | — | Title, time, attendees, description, location, Google Meet flag, room bookings |
 | `calendar_update_event` | write | popup | — | Title, time, fields changing (old → new), Google Meet flag, room bookings |
+| `calendar_create_out_of_office` | write | popup | — | Title, time, fixed "auto-decline new conflicts only" note, decline message |
+| `calendar_set_working_location` | write | popup | — | Date, location (office/home), building/label if given |
+
+`calendar_create_out_of_office` and `calendar_set_working_location` are only supported on the
+primary calendar (a Google Calendar API restriction) and always create the event there regardless
+of any `calendar_id` used elsewhere. The out-of-office auto-decline behavior is fixed to "decline
+new conflicting invitations only" — Calendar also supports declining all conflicts or none, but
+that isn't exposed here. Working-location presence only offers "office" or "home" (Calendar's third
+"custom location" option isn't exposed either).
 
 ### Google Contacts
 
@@ -269,9 +278,20 @@ search under this connector's OAuth scope.
 | `jira_list_projects` | read | auto | — | — |
 | `jira_search_issues` | read | auto | — | — |
 | `jira_get_issue` | read | review | project name, key, summary, status, assignee | Description, comments, all fields |
+| `jira_get_transitions` | read | auto | — | — |
 | `jira_create_issue` | write | popup | — | Project, type, summary, full description |
 | `jira_add_comment` | write | popup | — | Issue key + summary, full comment |
-| `jira_update_issue` | write | popup | — | Issue key + summary, fields (old → new) |
+| `jira_update_issue` | write | popup | — | Issue key + summary, fields (old → new), including custom fields |
+| `jira_transition_issue` | write | popup | — | Issue key + summary, status (old → new) |
+
+`jira_update_issue`'s `custom_fields` parameter takes a JSON object keyed by each custom field's
+**display name** exactly as shown in the Jira UI (e.g. `{"Story Points": 5}`) — never the internal
+`customfield_NNNNN` id. The connector resolves the name via Jira's field metadata and shapes the
+value for select-list (single- and multi-option) fields automatically; fields needing a structured
+reference the name alone can't supply (e.g. a user-picker field, which needs an `accountId`) are
+passed through as-is and surface Jira's own validation error if the shape is wrong.
+`jira_transition_issue` moves an issue by transition name (e.g. "Done") — call
+`jira_get_transitions` first to see which names are valid from the issue's current status.
 
 ### Confluence
 

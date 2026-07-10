@@ -16,7 +16,7 @@ import pytest
 from privacyfence.audit_log import current_week, init_audit_logger
 from privacyfence.connectors import jira as jira_module
 from privacyfence.connectors.jira import JiraConnector
-from privacyfence.jira_client import JiraClientError, JiraComment, JiraIssue, JiraProject
+from privacyfence.jira_client import JiraClientError, JiraComment, JiraIssue, JiraProject, JiraTransition
 
 from ...helpers import assert_all_tools_leave_an_audit_trail
 
@@ -86,6 +86,20 @@ class TestAutoTools:
 
         with pytest.raises(RuntimeError, match="unauthorized"):
             await connector.call("jira_list_projects", {})
+
+    async def test_get_transitions(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        client.get_transitions.return_value = [
+            JiraTransition(id="11", name="Start Progress", to_status="In Progress"),
+        ]
+
+        result = await connector.call("jira_get_transitions", {"issue_key": "ENG-42"})
+
+        assert result == [{"id": "11", "name": "Start Progress", "to_status": "In Progress"}]
+        client.get_transitions.assert_called_once_with("ENG-42")
+        entries = (tmp_path / f"{current_week()}.jsonl").read_text(encoding="utf-8").splitlines()
+        assert '"decision": "auto_accepted"' in entries[-1]
 
 
 class TestGetIssue:
@@ -299,19 +313,120 @@ class TestUpdateIssue:
         with pytest.raises(RuntimeError, match="not found"):
             await connector.call("jira_update_issue", {"issue_key": "ENG-1", "summary": "x"})
 
+    async def test_custom_fields_resolved_by_name_and_shown_in_preview(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_issue.return_value = make_issue()
+        client.update_issue.return_value = make_issue()
+        client.resolve_custom_field.return_value = ("customfield_10016", 5)
+
+        await connector.call("jira_update_issue", {
+            "issue_key": "ENG-42", "custom_fields": '{"Story Points": 5}',
+        })
+
+        client.resolve_custom_field.assert_called_once_with("Story Points", 5)
+        client.update_issue.assert_called_once_with("ENG-42", {"customfield_10016": 5})
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview"]["Story Points"] == "→ 5"
+        assert kwargs["details_text"] == "Story Points will be updated; description is unchanged."
+
+    async def test_custom_fields_combine_with_standard_fields(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_issue.return_value = make_issue(summary="Old summary")
+        client.update_issue.return_value = make_issue()
+        client.resolve_custom_field.return_value = ("customfield_10016", 5)
+
+        await connector.call("jira_update_issue", {
+            "issue_key": "ENG-42", "summary": "New summary", "custom_fields": '{"Story Points": 5}',
+        })
+
+        client.update_issue.assert_called_once_with(
+            "ENG-42", {"summary": "New summary", "customfield_10016": 5}
+        )
+        assert gated_call_spy[0]["details_text"] == (
+            "Summary, Story Points will be updated; description is unchanged."
+        )
+
+    async def test_invalid_custom_fields_json_raises(self):
+        connector, client = make_connector()
+        client.get_issue.return_value = make_issue()
+
+        with pytest.raises(ValueError, match="custom_fields must be a JSON object"):
+            await connector.call("jira_update_issue", {"issue_key": "ENG-42", "custom_fields": "not json"})
+
+    async def test_custom_fields_json_array_raises(self):
+        connector, client = make_connector()
+        client.get_issue.return_value = make_issue()
+
+        with pytest.raises(ValueError, match="custom_fields must be a JSON object"):
+            await connector.call("jira_update_issue", {"issue_key": "ENG-42", "custom_fields": "[1, 2]"})
+
+    async def test_unresolvable_custom_field_propagates_as_runtime_error(self):
+        connector, client = make_connector()
+        client.get_issue.return_value = make_issue()
+        client.resolve_custom_field.side_effect = JiraClientError("no Jira field named 'Nope'")
+
+        with pytest.raises(RuntimeError, match="no Jira field named"):
+            await connector.call("jira_update_issue", {
+                "issue_key": "ENG-42", "custom_fields": '{"Nope": 1}',
+            })
+
+
+class TestTransitionIssue:
+    async def test_preview_and_gate(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_issue.return_value = make_issue(status="In Progress")
+        client.transition_issue.return_value = make_issue(status="Done")
+
+        result = await connector.call(
+            "jira_transition_issue", {"issue_key": "ENG-42", "transition_name": "Done"}
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview"] == {
+            "Issue": "ENG-42 — Fix login bug", "Status": "In Progress → Done",
+        }
+        assert kwargs["gate"] == "popup"
+        assert result["status"] == "Done"
+        client.transition_issue.assert_called_once_with("ENG-42", "Done")
+
+    async def test_invalid_transition_propagates_as_runtime_error(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_issue.return_value = make_issue()
+        client.transition_issue.side_effect = JiraClientError(
+            "'Cancelled' is not a valid transition. Available: Done"
+        )
+
+        with pytest.raises(RuntimeError, match="not a valid transition"):
+            await connector.call(
+                "jira_transition_issue", {"issue_key": "ENG-42", "transition_name": "Cancelled"}
+            )
+
+    async def test_client_error_on_get_issue_becomes_runtime_error(self):
+        connector, client = make_connector()
+        client.get_issue.side_effect = JiraClientError("not found")
+
+        with pytest.raises(RuntimeError, match="not found"):
+            await connector.call(
+                "jira_transition_issue", {"issue_key": "ENG-1", "transition_name": "Done"}
+            )
+
 
 class TestEveryToolIsAudited:
     async def test_every_declared_tool_leaves_an_audit_trail(self, monkeypatch, tmp_path):
         connector, client = make_connector()
-        # get_issue/create_issue/add_comment/update_issue results are asdict()'d
-        # unconditionally, so they need real dataclass instances -- a bare
-        # MagicMock isn't a dataclass. jira_update_issue also validates that
+        # get_issue/create_issue/add_comment/update_issue/transition_issue results
+        # are asdict()'d unconditionally, so they need real dataclass instances --
+        # a bare MagicMock isn't a dataclass. jira_update_issue also validates that
         # at least one field is being changed before reaching the gate, so its
         # stub args need a non-empty field.
         client.get_issue.return_value = make_issue()
         client.create_issue.return_value = make_issue()
         client.add_comment.return_value = JiraComment(id="c1", author="me@example.com", body="ack")
         client.update_issue.return_value = make_issue()
+        client.get_transitions.return_value = [
+            JiraTransition(id="11", name="Start Progress", to_status="In Progress"),
+        ]
+        client.transition_issue.return_value = make_issue()
 
         await assert_all_tools_leave_an_audit_trail(
             connector, jira_module, monkeypatch, tmp_path,
