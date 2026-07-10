@@ -171,8 +171,8 @@ Ground rules:
   silent is still worth reporting) — and treat any *write* popup rendering
   tinted/PII-flagged as a bug in itself, since that gate should never fire
   there anymore.
-- Keep a running table as you go: `tool name | gate observed (silent / Cowork
-  review / native popup) | my decision | audit-log decision | notes`. Leave
+- Keep a running table as you go: `tool name | gate observed (silent / native
+  popup) | my decision | audit-log decision | notes`. Leave
   the `audit-log decision` column blank for now — don't guess it, don't ask me
   for it mid-run, and don't try to read the log file yourself during the run.
   Phase 12, the very last phase, is where that column gets filled in: I'll
@@ -651,7 +651,7 @@ other connector's writes, each independently configurable via the
    Confirm `{FIXTURES}.telegram_saved_messages_chat_id` is now present in the
    results.
 2. `telegram_get_messages` on `{FIXTURES}.telegram_approved_chat_id` — **watch
-   for a Cowork review popup and tell me explicitly whether you see one before I
+   for a native approval popup and tell me explicitly whether you see one before I
    respond**, don't infer it from the tool result; I'll Accept if it appears.
    Flag this row for Phase 12: the audit log's decision (`auto_accepted` vs
    `accepted`) is what settles it if my own observation of the popup was

@@ -43,13 +43,16 @@ PrivacyFence introduces a governance layer between AI assistants and enterprise 
 
 ## Review model
 
-Every tool call passes through one of three gate values:
+Every tool call passes through one of three gate values. `review` and `popup` are both native
+macOS popups PrivacyFence shows itself (via `osascript`) — there is no separate Claude
+Cowork-side approval step for either one. What differs between them is direction and button
+set (see below).
 
 | Gate | Behaviour |
 |------|-----------|
 | `auto` | Passed through immediately, logged as `auto_accepted` |
-| `review` | Approval requested in Claude Cowork (see below) |
-| `popup` | Approval requested via PrivacyFence native popup |
+| `review` | Native popup approval — read direction (tool → Claude) |
+| `popup` | Native popup approval — write direction (Claude → tool) |
 
 ### Two flows by direction
 
@@ -58,16 +61,26 @@ Every tool call passes through one of three gate values:
 > `destructiveHint = false`. This is intentional. See
 > [Why every tool is advertised as read-only](#why-every-tool-is-advertised-as-read-only) below.
 
-**Tool → Claude (reads)**
+Both flows below open the same kind of native popup — a summary box plus a scrollable pane with
+the full content. The only differences are the button set and, on the read side, the PII scan
+layered on top.
 
-When the gate is `review`, PrivacyFence opens a native popup with a summary box and a scrollable pane showing the full content (e.g. the email body) up front, offering:
+**Tool → Claude (reads) — gate `review`**
+
+PrivacyFence opens a native popup with a summary box and a scrollable pane showing the full
+content (e.g. the email body) up front, offering:
 
 - **Accept** — data is returned to Claude
 - **Deny** — request is blocked; Claude receives an error
+- **Accept All** — when a plausible rule can be derived from the item's attributes, proposes
+  (with a second confirmation dialog) a standing [auto-accept rule](#auto-accept-rules) for
+  similar future reads
 
-**Claude → Tool (writes / actions)**
+**Claude → Tool (writes / actions) — gate `popup`**
 
-Claude already describes the action it is about to take in the chat. When the gate is `popup`, PrivacyFence opens a native popup showing the full action details with **Accept** or **Deny**. There is no intermediate Cowork step.
+Claude already describes the action it is about to take in the chat. PrivacyFence opens a native
+popup showing the full action details with **Accept** or **Deny** only — no **Accept All**, since
+auto-accepting a write silently is a materially bigger blast radius than auto-accepting a read.
 
 For three write operations expected to be called repeatedly against the same file in
 quick succession — `drive_sheets_write_range`, `drive_sheets_format_range`, and `drive_add_comment`
@@ -132,7 +145,7 @@ silent auto-accept path exactly as before this gate existed.
 
 **Auth:** OAuth2
 
-| Tool | Dir | Gate | Cowork preview | Details popup |
+| Tool | Dir | Gate | Preview | Details popup |
 |------|-----|------|----------------|---------------|
 | `gmail_list_messages` | read | auto | — | — |
 | `gmail_list_threads` | read | auto | — | — |
@@ -156,7 +169,7 @@ silent auto-accept path exactly as before this gate existed.
 
 **Auth:** OAuth2
 
-| Tool | Dir | Gate | Cowork preview | Details popup |
+| Tool | Dir | Gate | Preview | Details popup |
 |------|-----|------|----------------|---------------|
 | `drive_list_files` | read | auto | — | — |
 | `drive_get_file_metadata` | read | auto | — | — |
@@ -164,7 +177,7 @@ silent auto-accept path exactly as before this gate existed.
 | `drive_list_shared_drives` | read | auto | — | — |
 | `drive_create_blank_file` | write | auto | — | — |
 | `drive_get_file_content` | read | review | file name, owner, size, modified date | First ~500 chars of content |
-| `drive_download_file` | read | popup | — | File name, owner, size, save path |
+| `drive_download_file` | read | review | file name, owner, size, save path | File name, owner, size, modified date, save path |
 | `drive_write_file_content` | write | popup | — | File name, owner, new content (plain text) |
 | `drive_upload_file` | write | popup | — | File name, size, destination folder |
 | `drive_write_doc_content` | write | popup | — | File name, owner, Markdown preview (headings, bold, italic, links, lists rendered as rich formatting in the Google Doc) |
@@ -189,7 +202,7 @@ string starting with `=` is evaluated as a formula, exactly like typing it into 
 
 **Auth:** OAuth2 (browser sign-in), user token scope. Sees exactly what you see — no bot to invite. See [docs/slack-setup.md](docs/slack-setup.md).
 
-| Tool | Dir | Gate | Cowork preview | Details popup |
+| Tool | Dir | Gate | Preview | Details popup |
 |------|-----|------|----------------|---------------|
 | `slack_list_channels` | read | auto | — | — |
 | `slack_get_channel_history` | read | review | channel name, message count, first message (80 chars) | All messages |
@@ -201,7 +214,7 @@ string starting with `=` is evaluated as a formula, exactly like typing it into 
 
 **Auth:** OAuth2
 
-| Tool | Dir | Gate | Cowork preview | Details popup |
+| Tool | Dir | Gate | Preview | Details popup |
 |------|-----|------|----------------|---------------|
 | `calendar_list_calendars` | read | auto | — | — |
 | `calendar_list_events` | read | auto | — | — |
@@ -224,7 +237,7 @@ that isn't exposed here. Working-location presence only offers "office" or "home
 
 **Auth:** OAuth2
 
-| Tool | Dir | Gate | Cowork preview | Details popup |
+| Tool | Dir | Gate | Preview | Details popup |
 |------|-----|------|----------------|---------------|
 | `contacts_list` | read | auto | — | — |
 | `contacts_search` | read | auto | — | — |
@@ -252,7 +265,7 @@ search under this connector's OAuth scope.
 
 **Auth:** Telethon (MTProto). Reads your chats as you, not as a bot.
 
-| Tool | Dir | Gate | Cowork preview | Details popup |
+| Tool | Dir | Gate | Preview | Details popup |
 |------|-----|------|----------------|---------------|
 | `telegram_list_chats` | read | auto | — | — |
 | `telegram_get_messages` | read | review | chat name, message count | All messages |
@@ -263,7 +276,7 @@ search under this connector's OAuth scope.
 
 **Auth:** OAuth2 (browser sign-in via a Connected App). See [docs/salesforce-setup.md](docs/salesforce-setup.md).
 
-| Tool | Dir | Gate | Cowork preview | Details popup |
+| Tool | Dir | Gate | Preview | Details popup |
 |------|-----|------|----------------|---------------|
 | `salesforce_list_reports` | read | auto | — | — |
 | `salesforce_get_record` | read | review | object type, record name, record ID | All field values |
@@ -273,7 +286,7 @@ search under this connector's OAuth scope.
 
 **Auth:** OAuth2 (browser sign-in, Atlassian 3LO). Shared with Confluence — one sign-in covers both. See [docs/atlassian-setup.md](docs/atlassian-setup.md).
 
-| Tool | Dir | Gate | Cowork preview | Details popup |
+| Tool | Dir | Gate | Preview | Details popup |
 |------|-----|------|----------------|---------------|
 | `jira_list_projects` | read | auto | — | — |
 | `jira_search_issues` | read | auto | — | — |
@@ -297,7 +310,7 @@ passed through as-is and surface Jira's own validation error if the shape is wro
 
 **Auth:** OAuth2 (browser sign-in, Atlassian 3LO), shared with Jira — one sign-in covers both.
 
-| Tool | Dir | Gate | Cowork preview | Details popup |
+| Tool | Dir | Gate | Preview | Details popup |
 |------|-----|------|----------------|---------------|
 | `confluence_list_spaces` | read | auto | — | — |
 | `confluence_search` | read | auto | — | — |
@@ -312,7 +325,7 @@ passed through as-is and surface Jira's own validation error if the shape is wro
 
 **Auth:** OAuth2
 
-| Tool | Dir | Gate | Cowork preview | Details popup |
+| Tool | Dir | Gate | Preview | Details popup |
 |------|-----|------|----------------|---------------|
 | `tasks_list_task_lists` | read | auto | — | — |
 | `tasks_list_tasks` | read | auto | — | — |

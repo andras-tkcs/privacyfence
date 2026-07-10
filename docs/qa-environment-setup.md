@@ -297,7 +297,7 @@ needs a second list, though:
    the "not approved, should still prompt" contrast case and for
    `telegram_search_messages` to have something to find.
 
-Whether a Cowork review popup actually appears for `telegram_get_messages` /
+Whether a native approval popup actually appears for `telegram_get_messages` /
 `telegram_search_messages` can be ambiguous from the tool result alone — the
 test prompt has Claude watch for the popup *and* cross-reference the audit
 log's `decision` field for these calls, so this doesn't require any special
