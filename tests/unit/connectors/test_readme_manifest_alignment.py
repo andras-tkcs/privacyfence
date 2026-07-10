@@ -1,12 +1,13 @@
-"""Drift detection between README.md's privacy matrix and the actual code.
+"""Drift detection between the docs privacy matrix and the actual code.
 
-The README documents, per tool, whether it's a read or a write and what
+The docs document, per tool, whether it's a read or a write and what
 gate it goes through -- this is PrivacyFence's public privacy promise.
 Nothing enforces that the table stays in sync with the connectors as they
-evolve, so this test parses the README tables and cross-checks them
+evolve, so this test parses the docs tables and cross-checks them
 against each connector's real ToolSpec.read_only flag. It caught two real
 gaps when written: gmail_reply_draft/gmail_reply_all_draft and
-drive_upload_file existed in code but were undocumented in README.md.
+drive_upload_file existed in code but were undocumented in the README (the
+privacy matrix has since moved to docs/TECHNICAL_REFERENCE.md).
 """
 from __future__ import annotations
 
@@ -33,7 +34,7 @@ CONNECTOR_CLASSES = [
     TasksConnector, TelegramConnector,
 ]
 
-README_PATH = Path(__file__).resolve().parents[3] / "README.md"
+README_PATH = Path(__file__).resolve().parents[3] / "docs" / "TECHNICAL_REFERENCE.md"
 
 # Matches only rows of the 5-column privacy-matrix tables
 # (`Tool | Dir | Gate | Cowork preview | Details popup`), not the 2-column
@@ -74,24 +75,24 @@ def code_tools():
 def test_every_code_tool_is_documented_in_readme(readme_matrix, code_tools):
     undocumented = sorted(set(code_tools) - set(readme_matrix))
     assert undocumented == [], (
-        f"Tools exist in connector code but are missing from README.md's privacy matrix: {undocumented}"
+        f"Tools exist in connector code but are missing from docs/TECHNICAL_REFERENCE.md's privacy matrix: {undocumented}"
     )
 
 
 def test_every_readme_tool_still_exists_in_code(readme_matrix, code_tools):
     stale = sorted(set(readme_matrix) - set(code_tools))
     assert stale == [], (
-        f"README.md documents tools that no longer exist in any connector: {stale}"
+        f"docs/TECHNICAL_REFERENCE.md documents tools that no longer exist in any connector: {stale}"
     )
 
 
 @pytest.mark.parametrize("tool", sorted(_all_code_tools()))
 def test_read_only_flag_matches_documented_direction(tool, readme_matrix, code_tools):
     if tool not in readme_matrix:
-        pytest.skip(f"{tool} undocumented in README (see test_every_code_tool_is_documented_in_readme)")
+        pytest.skip(f"{tool} undocumented in docs (see test_every_code_tool_is_documented_in_readme)")
     direction, _gate = readme_matrix[tool]
     expected_read_only = direction == "read"
     assert code_tools[tool] == expected_read_only, (
-        f"{tool}: README says dir={direction!r} (expects read_only={expected_read_only}) "
+        f"{tool}: docs say dir={direction!r} (expects read_only={expected_read_only}) "
         f"but ToolSpec.read_only={code_tools[tool]!r}"
     )
