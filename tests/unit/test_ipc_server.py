@@ -386,6 +386,48 @@ class TestDedupeRetries:
         finally:
             await client.close()
 
+    async def test_exempt_tool_always_reruns_after_completion(self, running_server):
+        """gmail_create_label: a second identical call is supposed to hit the
+        "already exists" error the tool itself raises, not silently replay
+        the first call's success -- so it must not be served from the
+        completed-result cache, even well inside the dedupe window."""
+        server, socket_path = running_server
+        connector = FakeConnector("gmail", result="label-created")
+        server.set_connectors([connector])
+        client = await _RawClient.connect(socket_path)
+        try:
+            params = {"connector": "gmail", "tool": "gmail_create_label", "args": {"label_name": "QA"}}
+            await client.send({"id": "1", "method": "call", "params": params})
+            await client.recv()
+
+            await client.send({"id": "2", "method": "call", "params": params})
+            await client.recv()
+
+            assert len(connector.calls) == 2  # not deduped, despite identical args
+        finally:
+            await client.close()
+
+    async def test_exempt_tool_still_coalesces_concurrent_in_flight_calls(self, running_server):
+        """The exemption only drops completed-result reuse -- two calls that
+        are genuinely concurrent (nothing has taken effect yet for either)
+        are still coalesced into one connector invocation."""
+        server, socket_path = running_server
+        connector = FakeConnector("gmail", result="label-created", delay=0.1)
+        server.set_connectors([connector])
+        client = await _RawClient.connect(socket_path)
+        try:
+            params = {"connector": "gmail", "tool": "gmail_create_label", "args": {"label_name": "QA"}}
+            await client.send({"id": "1", "method": "call", "params": params})
+            await client.send({"id": "2", "method": "call", "params": params})
+            first = await client.recv()
+            second = await client.recv()
+
+            assert first["result"] == "label-created"
+            assert second["result"] == "label-created"
+            assert len(connector.calls) == 1
+        finally:
+            await client.close()
+
 
 class TestLineLimit:
     """Regression coverage for the v0.4.10 fix: asyncio's default
