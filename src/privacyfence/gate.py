@@ -23,24 +23,32 @@ release gated data on its own.
     written to settings.yaml, gone on daemon restart) -- a much smaller
     commitment than a standing Accept All rule.
 
-PII gate: before any auto-accept check, the scan text (``pii_scan_text`` if
-the caller provided one, otherwise the same ``details`` shown in the popup)
-is scanned by pii_detector.py for likely Hungarian/English/German personal
-data. A match overrides a matching auto-accept rule — the call is routed to
-the normal interactive popup regardless — which is then tinted, and after
-the user clicks Accept (or Accept All), one more explicit "Are you sure?"
-dialog is required before the decision is finalized. Declining it is treated
-the same as denying the original request. Auto-accept rules are typically
-scoped to metadata (sender domain, folder, "I am the organizer") rather than
-content, so a rule that would silently pass through PII-bearing content
-still gets a human in the loop for that specific item.
+PII gate: read tools only (``gate="review"``). Before any auto-accept check,
+the scan text (``pii_scan_text`` if the caller provided one, otherwise the
+same ``details`` shown in the popup) is scanned by pii_detector.py for
+likely Hungarian/English/German personal data. A match overrides a matching
+auto-accept rule — the call is routed to the normal interactive popup
+regardless — which is then tinted, and after the user clicks Accept (or
+Accept All), one more explicit "Are you sure?" dialog is required before the
+decision is finalized. Declining it is treated the same as denying the
+original request. Auto-accept rules are typically scoped to metadata (sender
+domain, folder, "I am the organizer") rather than content, so a rule that
+would silently pass through PII-bearing content still gets a human in the
+loop for that specific item.
 
-Callers should pass ``pii_scan_text`` whenever ``details_text`` mixes
-structural envelope metadata (an email's From/To headers, a chat message's
-channel/sender, a page's author) with the actual content (body, message
-text, description) -- that metadata is present on every item regardless of
-what it says and will otherwise make the PII gate fire on essentially every
-read. ``pii_scan_text`` should carry only the actual content being read.
+Write tools (``gate="popup"``) never run this scan: the gate exists to catch
+personal data flowing from an external source into Claude's context, and a
+write is content Claude itself already generated going the other way, to a
+tool Claude already described in chat -- there's no external PII to
+intercept on that side.
+
+Callers should pass ``pii_scan_text`` whenever a review-gate ``details_text``
+mixes structural envelope metadata (an email's From/To headers, a chat
+message's channel/sender, a page's author) with the actual content (body,
+message text, description) -- that metadata is present on every item
+regardless of what it says and will otherwise make the PII gate fire on
+essentially every read. ``pii_scan_text`` should carry only the actual
+content being read.
 """
 from __future__ import annotations
 
@@ -106,7 +114,11 @@ async def gated_call(
     )
     details = details_text or _default_details(raw_data)
     popup_title = f"PrivacyFence — {tool_name}"
-    pii_categories = detect_pii_categories(details if pii_scan_text is None else pii_scan_text)
+    # Only the review (read) gate scans for PII -- see module docstring.
+    pii_categories = (
+        detect_pii_categories(details if pii_scan_text is None else pii_scan_text)
+        if gate == "review" else []
+    )
 
     # Every exit from this function -- including one triggered by an
     # exception nobody anticipated below (a native popup call raising, a
@@ -186,29 +198,28 @@ async def gated_call(
 
         else:
             # ── Popup gate: block and show native approval dialog for a write ───
+            # No PII scan here -- see module docstring: this gate covers
+            # content Claude itself generated for an outbound write, not
+            # personal data flowing in from an external source.
             file_key = temp_accept_key(operation_key, ctx)
             async with _popup_lock:
                 # Same race as above: a rule may have been created while queued.
-                # A PII match still overrides it either way.
                 auto_ok, matched_rule = evaluator.should_auto_accept(operation_key, ctx)
-                if auto_ok and not pii_categories:
+                if auto_ok:
                     audit(decision="auto_accepted", auto_accept_rule=matched_rule, pii_detected=False)
                     logger.info("Auto-accepted while queued: %s/%s rule=%r", connector, tool, matched_rule)
                     return filtered_data
 
                 decision = await asyncio.to_thread(
-                    show_popup, popup_title, preview or {}, details, pii_categories, file_key is not None
+                    show_popup, popup_title, preview or {}, details, file_key is not None
                 )
-
-                if decision in ("accept", "accept_temp") and pii_categories:
-                    decision = await _confirm_pii_or_deny(decision, pii_categories)
 
             if decision == "accept_temp":
                 if file_key is not None:
                     evaluator.register_temp_accept(operation_key, file_key)
                     audit(
                         decision="accepted_via_temp_session", auto_accept_rule="session_temp_accept",
-                        pii_detected=bool(pii_categories),
+                        pii_detected=False,
                     )
                     logger.info(
                         "Accept for 5 min: op=%s file=%s (%s, %s)", operation_key, file_key, connector, tool
@@ -220,10 +231,10 @@ async def gated_call(
                 decision = "accept"
 
             if decision == "accept":
-                audit(decision="approved", auto_accept_rule="", pii_detected=bool(pii_categories))
+                audit(decision="approved", auto_accept_rule="", pii_detected=False)
                 return filtered_data
 
-            audit(decision="rejected", auto_accept_rule="", pii_detected=bool(pii_categories))
+            audit(decision="rejected", auto_accept_rule="", pii_detected=False)
             raise RuntimeError("Request denied by user")
     finally:
         if not audited:

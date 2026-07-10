@@ -79,8 +79,15 @@ standing rule isn't offered at all.
 
 ### PII detection gate
 
+This gate only runs on the **`review` (read) direction — tool → Claude.** It exists to catch
+personal data flowing from an external source into Claude's context, before you approve
+handing it over. It does not run on the `popup` (write) direction — Claude → tool — since a
+write is content Claude itself already generated for an action it described in chat (e.g.
+`drive_write_file_content`, `gmail_create_draft`, `slack_send_message`), not external personal
+data being newly exposed to it.
+
 On top of the normal Accept/Deny popup, PrivacyFence can scan the message/document/spreadsheet
-content shown in every `review` and `popup` dialog for likely personal data — in **Hungarian,
+content shown in every `review` dialog for likely personal data — in **Hungarian,
 English, and German** — before you approve it: IBANs, credit card numbers, IP addresses, and
 national identifiers (Hungarian TAJ/adóazonosító jel/ID card number, German
 Steuer-ID/Sozialversicherungsnummer, US SSN, UK National Insurance number), plus common

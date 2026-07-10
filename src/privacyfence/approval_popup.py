@@ -81,10 +81,10 @@ def show_popup(
     title: str,
     preview: dict[str, str],
     details_text: str,
-    pii_categories: list[str] | None = None,
     allow_temp_accept: bool = False,
 ) -> str:
-    """Approval popup for write tools.
+    """Approval popup for write tools. No PII scan applies here -- see
+    gate.py's module docstring for why the PII gate is read-only.
 
     Returns 'accept', 'deny', or 'accept_temp' (only offered when
     allow_temp_accept is True -- see gate.py's TEMP_ACCEPT_ELIGIBLE_OPERATIONS
@@ -92,7 +92,7 @@ def show_popup(
     """
     return show_native_approval(
         title=title, preview=preview, details_text=details_text, allow_accept_all=False,
-        pii_categories=pii_categories, allow_temp_accept=allow_temp_accept,
+        allow_temp_accept=allow_temp_accept,
     )
 
 

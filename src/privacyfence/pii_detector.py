@@ -1,11 +1,15 @@
 """Local, regex-based PII detector for Hungarian, English, and German content.
 
-This is the extra confirmation gate: gate.py runs every gated call's
-``details_text`` (the message body / document / spreadsheet content shown in
-the approval popup) through here before the popup is displayed. When a
-category matches, the popup is tinted and the user must clear a second
-"Are you sure?" confirmation (see show_pii_confirmation_popup in
-approval_popup.py) on top of the normal Accept.
+This is the extra confirmation gate: gate.py runs a read tool's (``gate=
+"review"``) ``details_text`` (the message body / document / spreadsheet
+content shown in the approval popup) through here before the popup is
+displayed. When a category matches, the popup is tinted and the user must
+clear a second "Are you sure?" confirmation (see show_pii_confirmation_popup
+in approval_popup.py) on top of the normal Accept.
+
+Write tools (``gate="popup"``) are never scanned: this gate exists to catch
+personal data flowing from an external source into Claude's context, not
+content Claude itself generated for an outbound write.
 
 This is a best-effort heuristic, not a compliance-grade PII classifier: it
 runs entirely locally (no network calls, no third-party NLP) over plaintext
@@ -21,8 +25,8 @@ gets copied to.
 Deliberately NOT detected: email addresses and phone numbers. Nearly every
 message this gate scans is an email, and nearly every email signature
 contains the sender's own address and phone number, so matching on those
-formats flagged almost every `review`/`popup` dialog regardless of whether
-the content actually contained anything sensitive -- see README.md's "PII
+formats flagged almost every `review` dialog regardless of whether the
+content actually contained anything sensitive -- see README.md's "PII
 detection gate" section for the reasoning.
 """
 from __future__ import annotations
