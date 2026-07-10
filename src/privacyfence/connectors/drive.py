@@ -452,7 +452,6 @@ class DriveConnector(Connector):
             "Size": str(size) if size else "(unknown)",
             "Modified": str(modified) if modified else "(unknown)",
         }
-        details = f"File: {name}\nOwner: {', '.join(owners)}\nModified: {modified}\n\n{text[:2000]}"
         filtered = content.to_dict() if hasattr(content, "to_dict") else {"file_id": file_id, "content": text}
         return await gated_call(
             connector=self.name,
@@ -464,7 +463,7 @@ class DriveConnector(Connector):
             filtered_data=filtered,
             gate="review",
             preview=preview,
-            details_text=details,
+            details_text=text[:2000],
             pii_scan_text=text[:2000],
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
@@ -478,7 +477,6 @@ class DriveConnector(Connector):
         values = await self._fetch(self._drive.get_sheet_values, spreadsheet_id, range_a1)
         preview = {"Spreadsheet": name, "Owner": ", ".join(owners) or "(unknown)", "Range": range_a1}
         rows_preview = _format_sheet_rows(values)
-        details = f"Spreadsheet: {name}\nOwner: {', '.join(owners)}\nRange: {range_a1}\n\n{rows_preview}"
         return await gated_call(
             connector=self.name,
             tool="drive_sheets_get_values",
@@ -489,7 +487,7 @@ class DriveConnector(Connector):
             filtered_data=values,
             gate="review",
             preview=preview,
-            details_text=details,
+            details_text=rows_preview,
             pii_scan_text=rows_preview,
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
@@ -513,13 +511,10 @@ class DriveConnector(Connector):
             "File": name,
             "Owner": ", ".join(owners) if owners else "(unknown)",
             "Size": f"{size_bytes:,} bytes",
+            "Modified": str(modified) if modified else "(unknown)",
             "Saved to": path,
         }
-        details = (
-            f"File: {name}\nOwner: {', '.join(owners)}\n"
-            f"Size: {size_bytes:,} bytes\nModified: {modified}\n"
-            f"Saved to: {path}"
-        )
+        details = "The file above has been downloaded to the destination shown."
         return await gated_call(
             connector=self.name,
             tool="drive_download_file",
@@ -580,7 +575,7 @@ class DriveConnector(Connector):
             display_name = name.strip() or os.path.basename(local_path)
             expanded = os.path.expanduser(local_path)
             size_bytes = os.path.getsize(expanded) if os.path.isfile(expanded) else 0
-            source = f"From: {local_path}"
+            source = local_path
             sender = "(local file)"
         else:
             display_name = name.strip() or "(unnamed file)"
@@ -588,19 +583,16 @@ class DriveConnector(Connector):
                 size_bytes = len(base64.b64decode(content_base64, validate=True))
             except (base64.binascii.Error, ValueError):
                 size_bytes = 0
-            source = "From: inline content"
+            source = "inline content"
             sender = "(inline content)"
 
         preview = {
             "File": display_name,
+            "Source": source,
             "Size": f"{size_bytes:,} bytes",
             "Destination": parent_folder_id or "My Drive (root)",
         }
-        details = (
-            f"Upload \"{display_name}\" ({size_bytes:,} bytes)\n"
-            f"{source}\n"
-            f"To: {parent_folder_id or 'My Drive (root)'}"
-        )
+        details = "The file above will be uploaded to the destination shown."
         await gated_call(
             connector=self.name,
             tool="drive_upload_file",
@@ -723,7 +715,7 @@ class DriveConnector(Connector):
             filtered_data=None,
             gate="popup",
             preview=preview,
-            details_text=f"Spreadsheet: {name}\nRange: {range_a1}\n\n{_format_sheet_rows(parsed_values)}",
+            details_text=_format_sheet_rows(parsed_values),
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={"spreadsheet_id": spreadsheet_id, "range_a1": range_a1},
@@ -736,7 +728,10 @@ class DriveConnector(Connector):
         drive_file = await self._fetch(self._drive.get_file_metadata, spreadsheet_id)
         name = getattr(drive_file, "name", spreadsheet_id)
         owners = getattr(drive_file, "owners", [])
-        preview = {"Spreadsheet": name, "Owner": ", ".join(owners) or "(unknown)", "New tab": title}
+        preview = {
+            "Spreadsheet": name, "Owner": ", ".join(owners) or "(unknown)",
+            "New tab": title, "Size": f"{rows} rows x {cols} cols",
+        }
         await gated_call(
             connector=self.name,
             tool="drive_sheets_add_sheet",
@@ -747,7 +742,7 @@ class DriveConnector(Connector):
             filtered_data=None,
             gate="popup",
             preview=preview,
-            details_text=f"Add tab \"{title}\" ({rows} rows x {cols} cols) to \"{name}\"",
+            details_text="A new tab will be added with the settings shown above.",
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={"spreadsheet_id": spreadsheet_id, "title": title, "rows": rows, "cols": cols},
@@ -772,7 +767,7 @@ class DriveConnector(Connector):
             filtered_data=None,
             gate="popup",
             preview=preview,
-            details_text=f"Rename tab {sheet_id} to \"{new_title}\"",
+            details_text="The tab above will be renamed; its contents are unchanged.",
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={"spreadsheet_id": spreadsheet_id, "sheet_id": sheet_id, "new_title": new_title},
@@ -844,7 +839,7 @@ class DriveConnector(Connector):
             filtered_data=None,
             gate="popup",
             preview=preview,
-            details_text=f"Range: {range_a1}\nFormat: {summary_detail}",
+            details_text="The formatting above will be applied to the range; other formatting is unchanged.",
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={"spreadsheet_id": spreadsheet_id, "sheet_id": sheet_id, "range_a1": range_a1},

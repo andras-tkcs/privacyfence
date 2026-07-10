@@ -293,9 +293,6 @@ class CalendarConnector(Connector):
             for a in attachments
         ]
         details_lines = [
-            f"Title: {event.title}",
-            f"Time: {event.start_time} – {event.end_time}",
-            f"Organizer: {event.organizer_email}",
             f"Location: {event.location or '(none)'}",
             f"Conferencing: {event.conference_link or event.hangout_link or '(none)'}",
             "",
@@ -492,8 +489,6 @@ class CalendarConnector(Connector):
             "Time": f"{start_time} – {end_time}",
             "Auto-decline": "New conflicting invitations only",
         }
-        if decline_message:
-            preview["Decline message"] = decline_message
         raw_data = {
             "title": title, "start_time": start_time, "end_time": end_time,
             "decline_message": decline_message,
@@ -542,7 +537,7 @@ class CalendarConnector(Connector):
             filtered_data=None,
             gate="popup",
             preview=preview,
-            details_text=f"Working location for {date}: {location_display}",
+            details_text="Working location will be set as shown above; no other calendar changes.",
             my_email=self.my_email,
             args={},
         )

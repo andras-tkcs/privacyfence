@@ -75,17 +75,17 @@ def _format_report_rows(rows: list[dict], limit: int = 50) -> str:
     return text
 
 
-def _format_report_details(report_name: str, report_id: str, result_dict: dict) -> str:
+def _format_report_details(result_dict: dict) -> str:
     """Render a Salesforce report-run result as plain text tables instead of
     raw JSON. The envelope shape (factMap/groupingsDown/groupingsAcross) is
     Salesforce's documented Analytics REST API response format; if a
     particular report doesn't match these assumptions, falls back to a
-    short plain-language summary rather than a technical dump."""
-    header = f"Report: {report_name}\nID: {report_id}\n\n"
+    short plain-language summary rather than a technical dump. Report name/id
+    are shown in the preview, not repeated here."""
     try:
         fact_map = result_dict.get("factMap") if isinstance(result_dict, dict) else None
         if not isinstance(fact_map, dict) or not fact_map:
-            return header + "No data returned."
+            return "No data returned."
         columns = _report_column_labels(result_dict)
         sections = []
         for fact_key in sorted(fact_map.keys()):
@@ -99,11 +99,11 @@ def _format_report_details(report_name: str, report_id: str, result_dict: dict) 
                 body_lines.append("Total: " + " | ".join(str(a.get("label", "")) for a in aggregates))
             body = "\n".join(body_lines)
             sections.append(body if fact_key == "T!T" else f"{_report_group_label(result_dict, fact_key)}\n{body}")
-        return header + "\n\n".join(sections)
+        return "\n\n".join(sections)
     except Exception:
         group_count = len(result_dict.get("factMap") or {}) if isinstance(result_dict, dict) else 0
         return (
-            header + f"Report ran successfully — {group_count} data group(s). "
+            f"Report ran successfully — {group_count} data group(s). "
             "Structure too complex to preview here; open in Salesforce to view."
         )
 
@@ -183,7 +183,7 @@ class SalesforceConnector(Connector):
             "Name": str(name),
             "Record ID": record_id,
         }
-        details = f"Object: {object_type}\nRecord ID: {record_id}\n\nFields:\n{_format_flat_fields(record_fields)}"
+        details = f"Fields:\n{_format_flat_fields(record_fields)}"
         return await gated_call(
             connector=self.name,
             tool="salesforce_get_record",
@@ -218,7 +218,7 @@ class SalesforceConnector(Connector):
             "Report": str(report_name),
             "Report ID": report_id,
         }
-        details = _format_report_details(str(report_name), report_id, result_dict)
+        details = _format_report_details(result_dict)
         return await gated_call(
             connector=self.name,
             tool="salesforce_run_report",

@@ -181,7 +181,7 @@ class TestGetFileContentBugFix:
 
         kwargs = gated_call_spy[0]
         assert kwargs["pii_scan_text"] == "nothing sensitive"
-        assert "alice@example.com" in kwargs["details_text"]
+        assert kwargs["preview"]["Owner"] == "alice@example.com"  # still shown in the popup
         assert "alice@example.com" not in kwargs["pii_scan_text"]
 
 
@@ -438,7 +438,8 @@ class TestSheetsGatedTools:
         assert kwargs["preview"] == {"Spreadsheet": "Budget", "Owner": "alice@example.com", "Range": "A1:B2"}
         # Details show the parsed values formatted like the read path does
         # (comma-joined per row), not the raw unparsed JSON string argument.
-        assert kwargs["details_text"] == "Spreadsheet: Budget\nRange: A1:B2\n\na, b\n1, 2"
+        # Spreadsheet/Range are already in preview, not repeated here.
+        assert kwargs["details_text"] == "a, b\n1, 2"
         client.write_sheet_values.assert_called_once_with("sheet1", "A1:B2", [["a", "b"], ["1", "2"]])
         assert result == {"updated_cells": 4}
 

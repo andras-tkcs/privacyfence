@@ -150,10 +150,7 @@ class TestGetRecord:
         )
 
         details = gated_call_spy[0]["details_text"]
-        assert details == (
-            "Object: Account\nRecord ID: 001xx0000012345\n\n"
-            "Fields:\nIndustry: Technology\nName: Acme Corp"
-        )
+        assert details == "Fields:\nIndustry: Technology\nName: Acme Corp"
         # No unset field shows up, and this is plain text, not a JSON blob.
         assert "Website" not in details
         assert "Fax" not in details
@@ -226,7 +223,7 @@ class TestRunReport:
 
         await connector.call("salesforce_run_report", {"report_id": "00O1"})
 
-        assert gated_call_spy[0]["details_text"] == "Report: Empty Report\nID: 00O1\n\nNo data returned."
+        assert gated_call_spy[0]["details_text"] == "No data returned."
 
     async def test_tabular_report_renders_as_plain_text_table(self, gated_call_spy):
         connector, client = make_connector()
@@ -256,7 +253,6 @@ class TestRunReport:
 
         details = gated_call_spy[0]["details_text"]
         assert details == (
-            "Report: Open Opportunities\nID: 00O1\n\n"
             "Opportunity Name | Amount\n"
             "Acme Deal | $10,000\n"
             "Globex Deal | $5,000\n"
@@ -344,7 +340,6 @@ class TestRunReport:
 
         details = gated_call_spy[0]["details_text"]
         assert details == (
-            "Report: Weird Report\nID: 00O3\n\n"
             "Report ran successfully — 2 data group(s). "
             "Structure too complex to preview here; open in Salesforce to view."
         )

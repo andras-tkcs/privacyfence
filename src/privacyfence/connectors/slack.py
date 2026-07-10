@@ -147,7 +147,7 @@ class SlackConnector(Connector):
             f"[{m.id}] {m.user_name or m.user_id or 'unknown'}: {m.text}"
             for m in messages
         ]
-        details = f"Channel: {channel_display}\n\n" + "\n".join(lines)
+        details = "\n".join(lines)
         filtered = [_message_to_dict(m) for m in messages]
         return await gated_call(
             connector=self.name,
@@ -179,7 +179,7 @@ class SlackConnector(Connector):
             f"[{m.id}] {m.user_name or m.user_id or 'unknown'}: {m.text}"
             for m in messages
         ]
-        details = f"Channel: {channel_display}\nThread: {thread_ts}\n\n" + "\n".join(lines)
+        details = f"Thread: {thread_ts}\n\n" + "\n".join(lines)
         filtered = [_message_to_dict(m) for m in messages]
         return await gated_call(
             connector=self.name,
@@ -208,7 +208,7 @@ class SlackConnector(Connector):
             f"[{m.channel_name}] {m.user_name or m.user_id or 'unknown'}: {m.text}"
             for m in messages
         ]
-        details = f"Search: {query}\n\n" + "\n".join(lines)
+        details = "\n".join(lines)
         filtered = [_message_to_dict(m) for m in messages]
         return await gated_call(
             connector=self.name,
