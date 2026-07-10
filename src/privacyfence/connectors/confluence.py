@@ -208,7 +208,6 @@ class ConfluenceConnector(Connector):
             "Last modified": page.updated or "(unknown)",
         }
         body_text = getattr(page, "body", "") or getattr(page, "body_text", "") or ""
-        details = f"Title: {page.title}\nSpace: {page.space_key}\nAuthor: {page.author}\n\n{body_text}"
         return await gated_call(
             connector=self.name,
             tool="confluence_get_page",
@@ -219,7 +218,7 @@ class ConfluenceConnector(Connector):
             filtered_data=data,
             gate="review",
             preview=preview_fields,
-            details_text=details,
+            details_text=body_text,
             pii_scan_text=body_text,
             my_email=self.my_email,
             args={"page_id": page_id},
@@ -235,7 +234,6 @@ class ConfluenceConnector(Connector):
             "Last modified": page.updated or "(unknown)",
         }
         body_text = getattr(page, "body", "") or getattr(page, "body_text", "") or ""
-        details = f"Title: {page.title}\nSpace: {page.space_key}\nAuthor: {page.author}\n\n{body_text}"
         return await gated_call(
             connector=self.name,
             tool="confluence_get_page_by_title",
@@ -246,7 +244,7 @@ class ConfluenceConnector(Connector):
             filtered_data=data,
             gate="review",
             preview=preview_fields,
-            details_text=details,
+            details_text=body_text,
             pii_scan_text=body_text,
             my_email=self.my_email,
             args={"space_key": space_key, "title": title},

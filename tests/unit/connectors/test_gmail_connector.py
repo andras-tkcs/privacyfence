@@ -145,9 +145,9 @@ class TestGetMessagePreviewMinimization:
 
     async def test_pii_scan_text_is_body_only_not_the_envelope_headers(self, gated_call_spy):
         # Regression: From/To are addresses on every single message
-        # regardless of content, so scanning the full details_text (which
-        # includes them) flagged "Email address" PII on essentially every
-        # email read. The PII scan must only see the body.
+        # regardless of content, so scanning the envelope headers alongside
+        # the body flagged "Email address" PII on essentially every email
+        # read. The PII scan must only see the body.
         connector, client = make_connector()
         message = GmailMessage(
             id="m1", thread_id="t1", subject="s",
@@ -160,8 +160,54 @@ class TestGetMessagePreviewMinimization:
 
         kwargs = gated_call_spy[0]
         assert kwargs["pii_scan_text"] == "Nothing sensitive in here."
-        assert "alice@example.com" in kwargs["details_text"]  # still shown in the popup
+        assert kwargs["preview"]["From"] == "alice@example.com"  # still shown in the popup
         assert "alice@example.com" not in kwargs["pii_scan_text"]
+
+
+class TestGetMessageHtmlOnlyBody:
+    async def test_html_only_body_is_converted_to_plain_text(self, gated_call_spy):
+        # A message with no text/plain MIME part used to dump raw HTML into
+        # the popup's plain-text details pane, rendering as unreadable tag
+        # soup. body_html must be converted to plain text instead.
+        connector, client = make_connector()
+        message = GmailMessage(
+            id="m1", thread_id="t1", subject="s", sender="alice@example.com",
+            body_text="", body_html="<div>Hi Bob,</div><div>See you <b>Friday</b>.</div>",
+        )
+        client.get_message.return_value = message
+
+        await connector.call("gmail_get_message", {"message_id": "m1"})
+
+        kwargs = gated_call_spy[0]
+        assert "<div>" not in kwargs["details_text"]
+        assert "<b>" not in kwargs["details_text"]
+        assert "Hi Bob," in kwargs["details_text"]
+        assert "See you Friday." in kwargs["details_text"]
+        assert kwargs["pii_scan_text"] == kwargs["details_text"]
+
+    async def test_plain_text_body_preferred_over_html(self, gated_call_spy):
+        connector, client = make_connector()
+        message = GmailMessage(
+            id="m1", thread_id="t1", subject="s", sender="alice@example.com",
+            body_text="Plain text wins.", body_html="<p>HTML loses.</p>",
+        )
+        client.get_message.return_value = message
+
+        await connector.call("gmail_get_message", {"message_id": "m1"})
+
+        assert gated_call_spy[0]["details_text"] == "Plain text wins."
+
+    async def test_no_body_at_all_shows_placeholder(self, gated_call_spy):
+        connector, client = make_connector()
+        message = GmailMessage(
+            id="m1", thread_id="t1", subject="s", sender="alice@example.com",
+            body_text="", body_html="",
+        )
+        client.get_message.return_value = message
+
+        await connector.call("gmail_get_message", {"message_id": "m1"})
+
+        assert gated_call_spy[0]["details_text"] == "(no body)"
 
 
 class TestGetThread:
@@ -195,6 +241,22 @@ class TestGetThread:
         assert "body two secret" in kwargs["pii_scan_text"]
         assert "alice@example.com" not in kwargs["pii_scan_text"]
         assert "bob@example.com" not in kwargs["pii_scan_text"]
+
+    async def test_html_only_message_body_converted_to_plain_text(self, gated_call_spy):
+        connector, client = make_connector()
+        m1 = GmailMessage(
+            id="m1", thread_id="t1", subject="Re: budget", sender="alice@example.com",
+            date="d1", body_text="", body_html="<p>Plain <b>please</b>.</p>",
+        )
+        thread = GmailThread(id="t1", subject="Re: budget", messages=[m1])
+        client.get_thread.return_value = thread
+
+        await connector.call("gmail_get_thread", {"thread_id": "t1"})
+
+        details = gated_call_spy[0]["details_text"]
+        assert "<p>" not in details
+        assert "<b>" not in details
+        assert "Plain please." in details
 
 
 class TestListMessageAttachments:
@@ -253,8 +315,12 @@ class TestDownloadAttachment:
         kwargs = gated_call_spy[0]
         assert kwargs["gate"] == "review"
         assert kwargs["preview"]["Attachment"] == "report.pdf"
+        assert kwargs["preview"]["Type"] == "application/pdf"
         assert kwargs["preview"]["Size"] == "1,024 bytes"
         assert kwargs["preview"]["Will save to"] == "/tmp/report.pdf"
+        # MIME type used to only appear in details_text (duplicating the
+        # rest of the preview fields); it now lives in preview only.
+        assert kwargs["details_text"] == "The attachment above will be downloaded to the destination shown."
         assert kwargs["filtered_data"] is None
         assert kwargs["args"] == {"message_id": "m1", "attachment_name": "report.pdf"}
         assert result == {"path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024}

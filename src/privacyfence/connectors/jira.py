@@ -191,12 +191,12 @@ class JiraConnector(Connector):
             "Status": getattr(issue, "status", "") or "",
             "Assignee": getattr(issue, "assignee", "") or "(unassigned)",
         }
-        import json as _json
-        details = (
-            f"Key: {issue.key}\n"
-            f"Summary: {issue.summary}\n"
-            f"Status: {getattr(issue, 'status', '')}\n"
-            f"Assignee: {getattr(issue, 'assignee', '')}\n"
+        details_parts = []
+        if len(issue.summary) > 80:
+            # Preview truncates the summary at 80 chars -- the untruncated
+            # text is only reachable here.
+            details_parts.append(f"Summary: {issue.summary}\n")
+        details_parts.append(
             f"Reporter: {getattr(issue, 'reporter', '')}\n\n"
             f"Description:\n{getattr(issue, 'description', '') or '(none)'}\n\n"
             f"Comments ({len(comments)}):\n" +
@@ -205,6 +205,7 @@ class JiraConnector(Connector):
                 for c in comments
             )
         )
+        details = "".join(details_parts)
         pii_scan_text = (
             f"{getattr(issue, 'description', '') or ''}\n\n" +
             "\n".join(getattr(c, "body", "") or "" for c in comments)
@@ -352,7 +353,7 @@ class JiraConnector(Connector):
             filtered_data=None,
             gate="popup",
             preview=preview,
-            details_text=f"{issue_key} will move from \"{issue.status}\" to \"{transition_name}\".",
+            details_text="The status change above is the only change; no other fields are affected.",
             my_email=self.my_email,
             args={"issue_key": issue_key, "transition_name": transition_name},
         )

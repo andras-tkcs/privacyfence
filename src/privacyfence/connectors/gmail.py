@@ -11,6 +11,7 @@ from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
 from ..gate import gated_call
 from ..gmail_client import GmailClient, GmailClientError, resolve_attachment_destination
+from ..html_to_text import html_to_text
 
 logger = logging.getLogger(__name__)
 
@@ -337,8 +338,7 @@ class GmailConnector(Connector):
             "Date": message.date or "(unknown)",
             "Subject": message.subject or "(no subject)",
         }
-        body = message.body_text or message.body_html or "(no body)"
-        details = f"From: {message.sender}\nTo: {recipients}\nDate: {message.date}\nSubject: {message.subject}\n\n{body}"
+        body = message.body_text or html_to_text(message.body_html) or "(no body)"
         return await gated_call(
             connector=self.name,
             tool="gmail_get_message",
@@ -349,7 +349,7 @@ class GmailConnector(Connector):
             filtered_data=message.to_dict() if hasattr(message, "to_dict") else vars(message),
             gate="review",
             preview=preview,
-            details_text=details,
+            details_text=body,
             pii_scan_text=body,
             my_email=self.my_email,
             args={"message_id": message_id},
@@ -380,7 +380,7 @@ class GmailConnector(Connector):
             lines.append(f"--- Message {i} ---")
             lines.append(f"From: {getattr(m, 'sender', '')}")
             lines.append(f"Date: {getattr(m, 'date', '')}")
-            body = getattr(m, "body_text", "") or getattr(m, "body_html", "") or ""
+            body = getattr(m, "body_text", "") or html_to_text(getattr(m, "body_html", "") or "") or ""
             lines.append(body)
             bodies.append(body)
         details = "\n".join(lines)
@@ -417,14 +417,11 @@ class GmailConnector(Connector):
             "From": message.sender or "(unknown)",
             "Subject": message.subject or "(no subject)",
             "Attachment": attachment.name,
+            "Type": attachment.mime_type,
             "Size": f"{attachment.size:,} bytes",
             "Will save to": dest_path,
         }
-        details = (
-            f"From: {message.sender}\nSubject: {message.subject}\n\n"
-            f"Attachment: {attachment.name} ({attachment.mime_type}, "
-            f"{attachment.size:,} bytes)\nWill save to: {dest_path}"
-        )
+        details = "The attachment above will be downloaded to the destination shown."
         # Gate before touching disk: gated_call raises on denial, and only a
         # decision made here should ever cause the attachment to be written.
         await gated_call(

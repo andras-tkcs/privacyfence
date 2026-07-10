@@ -138,7 +138,7 @@ class TelegramConnector(Connector):
             filtered_data=result,
             gate="review",
             preview=preview,
-            details_text=f"Chat: {chat_name}\n\n" + "\n".join(lines),
+            details_text="\n".join(lines),
             pii_scan_text="\n".join(getattr(m, "text", "") or "" for m in messages),
             args={"chat_id": chat_id},
         )
@@ -174,7 +174,7 @@ class TelegramConnector(Connector):
             filtered_data=result,
             gate="review",
             preview=preview,
-            details_text=f"Search: {query}\n\n" + "\n".join(lines),
+            details_text="\n".join(lines),
             pii_scan_text="\n".join(getattr(m, "text", "") or "" for m in messages),
             args={"query": query},
         )

@@ -177,7 +177,7 @@ class TestGetEventDetails:
 
         kwargs = gated_call_spy[0]
         assert kwargs["pii_scan_text"] == "nothing sensitive"
-        assert "alice@example.com" in kwargs["details_text"]  # organizer, still shown in the popup
+        assert kwargs["preview"]["Organizer"] == "alice@example.com"  # still shown in the popup
         assert "alice@example.com" not in kwargs["pii_scan_text"]
         assert "bob@example.com" not in kwargs["pii_scan_text"]  # attendee
 
@@ -426,7 +426,9 @@ class TestCreateOutOfOffice:
         assert kwargs["gate"] == "popup"
         assert "Decline message" not in kwargs["preview"]
 
-    async def test_preview_includes_decline_message_when_given(self, gated_call_spy):
+    async def test_details_shows_decline_message_when_given(self, gated_call_spy):
+        # Decline message is content, not metadata -- it belongs only in
+        # details_text, never duplicated into the preview dict.
         connector, client = make_connector()
         client.create_out_of_office.return_value = make_event(id="ooo1")
 
@@ -434,7 +436,7 @@ class TestCreateOutOfOffice:
             "start_time": "t0", "end_time": "t1", "decline_message": "Back Monday",
         })
 
-        assert gated_call_spy[0]["preview"]["Decline message"] == "Back Monday"
+        assert "Decline message" not in gated_call_spy[0]["preview"]
         assert gated_call_spy[0]["details_text"] == "Back Monday"
 
     async def test_default_title_used_when_not_given(self, gated_call_spy):

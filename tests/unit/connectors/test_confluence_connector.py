@@ -174,7 +174,7 @@ class TestGetPage:
 
         kwargs = gated_call_spy[0]
         assert kwargs["pii_scan_text"] == "nothing sensitive here"
-        assert "alice@example.com" in kwargs["details_text"]
+        assert kwargs["preview"]["Author"] == "alice@example.com"  # still shown in the popup
         assert "alice@example.com" not in kwargs["pii_scan_text"]
 
     async def test_client_error_becomes_runtime_error(self):
