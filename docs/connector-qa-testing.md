@@ -34,7 +34,7 @@ combination only breaks for non-ASCII input.
   external API — unit tests mock the client, so they won't notice if the
   provider's API itself has moved out from under it.
 - Whenever you want to sanity-check that the *documented* gate for a tool
-  (README's connector tables) still matches its *actual* gate in source.
+  (the Technical Reference's connector tables) still matches its *actual* gate in source.
 
 ## Prerequisites
 
@@ -358,7 +358,7 @@ in step 3, if you configured it.
 4. `drive_write_file_content` on it, write a short test sentence — popup, Accept.
 5. `drive_add_comment` on it, any test comment. This is one of the three write
    ops with a temp-accept shortcut on its popup (the others are steps 13 and 16
-   below — see README's [Auto-accept rules](../README.md#auto-accept-rules)).
+   below — see the Technical Reference's [Auto-accept rules](TECHNICAL_REFERENCE.md#auto-accept-rules)).
    **Pause here**: tell me you're about to call it and that **I will click
    "Accept for 5 min"** this time, then wait for me to say go. Once I do, make
    the call, then immediately call `drive_add_comment` on the same file again
@@ -428,7 +428,7 @@ has configured.
 
 This check also demonstrates the write/read split directly: the PII gate
 only ever runs on the `review` (read) direction, never on `popup` (write) —
-see README's "PII detection gate" section. Step 18 (a write) and step 19 (a
+see the Technical Reference's "PII detection gate" section. Step 18 (a write) and step 19 (a
 read of that same write's content) exist specifically to contrast the two.
 
 17. Create a subfolder named `PrivacyFence QA PII test [{RUN_ID}]` inside the
@@ -474,7 +474,7 @@ read of that same write's content) exist specifically to contrast the two.
     you sure?"** dialog should appear — I'll click **Proceed** on that one.
     The Email/Phone lines are a deliberate **negative** check, not a typo —
     `pii_detector.py` intentionally never flags email addresses or phone
-    numbers (see README.md's "PII detection gate" section), so those two
+    numbers (see the Technical Reference's "PII detection gate" section), so those two
     lines must *not* contribute to the category banner. Wait for me to say
     go. Once I do, make the call and report back: did the tint/banner appear,
     which categories did it list (and did it correctly omit email/phone), did
