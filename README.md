@@ -210,6 +210,15 @@ string starting with `=` is evaluated as a formula, exactly like typing it into 
 | `calendar_get_event_details` | read | review | title, time, organizer, attendee count | Description, full attendee list, conferencing link, file attachments (e.g. Gemini meeting notes/transcript) |
 | `calendar_create_event` | write | popup | — | Title, time, attendees, description, location, Google Meet flag, room bookings |
 | `calendar_update_event` | write | popup | — | Title, time, fields changing (old → new), Google Meet flag, room bookings |
+| `calendar_create_out_of_office` | write | popup | — | Title, time, fixed "auto-decline new conflicts only" note, decline message |
+| `calendar_set_working_location` | write | popup | — | Date, location (office/home), building/label if given |
+
+`calendar_create_out_of_office` and `calendar_set_working_location` are only supported on the
+primary calendar (a Google Calendar API restriction) and always create the event there regardless
+of any `calendar_id` used elsewhere. The out-of-office auto-decline behavior is fixed to "decline
+new conflicting invitations only" — Calendar also supports declining all conflicts or none, but
+that isn't exposed here. Working-location presence only offers "office" or "home" (Calendar's third
+"custom location" option isn't exposed either).
 
 ### Google Contacts
 
@@ -269,9 +278,20 @@ search under this connector's OAuth scope.
 | `jira_list_projects` | read | auto | — | — |
 | `jira_search_issues` | read | auto | — | — |
 | `jira_get_issue` | read | review | project name, key, summary, status, assignee | Description, comments, all fields |
+| `jira_get_transitions` | read | auto | — | — |
 | `jira_create_issue` | write | popup | — | Project, type, summary, full description |
 | `jira_add_comment` | write | popup | — | Issue key + summary, full comment |
-| `jira_update_issue` | write | popup | — | Issue key + summary, fields (old → new) |
+| `jira_update_issue` | write | popup | — | Issue key + summary, fields (old → new), including custom fields |
+| `jira_transition_issue` | write | popup | — | Issue key + summary, status (old → new) |
+
+`jira_update_issue`'s `custom_fields` parameter takes a JSON object keyed by each custom field's
+**display name** exactly as shown in the Jira UI (e.g. `{"Story Points": 5}`) — never the internal
+`customfield_NNNNN` id. The connector resolves the name via Jira's field metadata and shapes the
+value for select-list (single- and multi-option) fields automatically; fields needing a structured
+reference the name alone can't supply (e.g. a user-picker field, which needs an `accountId`) are
+passed through as-is and surface Jira's own validation error if the shape is wrong.
+`jira_transition_issue` moves an issue by transition name (e.g. "Done") — call
+`jira_get_transitions` first to see which names are valid from the issue's current status.
 
 ### Confluence
 
@@ -422,6 +442,12 @@ standing rule (configured as above) is the only way to skip their popup.
 | `time_window_days` | Event starts within the next N days |
 | `no_conferencing_link` | Event has no video conferencing link |
 
+`calendar_create_out_of_office` (`calendar.out_of_office`) and `calendar_set_working_location`
+(`calendar.working_location`) each have their own operation key but no rule above applies to
+either — both always act on your own primary calendar with no organizer/attendee/other-calendar
+concept for these rules to check — so they remain `popup`-gated with no configurable auto-accept,
+unlike `calendar_create_event`/`calendar_update_event` above.
+
 **Salesforce**
 
 | Rule | Matches when… |
@@ -442,6 +468,10 @@ standing rule (configured as above) is the only way to skip their popup.
 | `i_am_reporter` | Authenticated account is the issue's reporter |
 | `i_am_assignee` | Authenticated account is the issue's assignee |
 | `approved_project_keys` | Issue's project key is in the allowlist |
+
+`jira_transition_issue` (`jira.transition_issue`) also accepts `approved_project_keys` — it derives
+the project from `issue_key` the same way `jira_get_issue`/`jira_update_issue` do. `i_am_reporter` /
+`i_am_assignee` don't apply to it, since a transition call doesn't carry the issue's reporter/assignee.
 
 **Confluence**
 
@@ -467,7 +497,7 @@ standing rule (configured as above) is the only way to skip their popup.
 `tasks.complete_task`, `tasks.uncomplete_task`, and `tasks.move_task`, so you can e.g. auto-accept
 edits within a personal list while still requiring review for creates.
 
-> **Google Contacts**: `contacts_list`, `contacts_search`, and `contacts_get` are unconditionally auto-accepted. `contacts_update`, `contacts_create`, `contacts_add_label`, and `contacts_remove_label` are all `popup`-gated; `no_contact_info_change` above is the only configurable auto-accept rule, and it applies only to `contacts_update`. Contact deletion is not supported. **Google Tasks**: all three read tools plus `tasks_list_task_lists` are unconditionally auto-accepted; the five write tools (`tasks_create_task`, `tasks_update_task`, `tasks_complete_task`, `tasks_uncomplete_task`, `tasks_move_task`) are `popup`-gated, each independently configurable via `approved_task_list` above. **Telegram**: `telegram_list_chats` is unconditionally auto-accepted; `telegram_get_messages` and `telegram_search_messages` are `review`-gated by default but configurable via the rules above; `telegram_send_message` is `popup`-gated with no configurable rule. **Jira and Confluence** read tools (`jira_get_issue`, `confluence_get_page`, `confluence_get_page_by_title`) are `review`-gated by default but configurable via the rules above; their write tools have no configurable auto-accept rules and remain `popup`-gated.
+> **Google Contacts**: `contacts_list`, `contacts_search`, and `contacts_get` are unconditionally auto-accepted. `contacts_update`, `contacts_create`, `contacts_add_label`, and `contacts_remove_label` are all `popup`-gated; `no_contact_info_change` above is the only configurable auto-accept rule, and it applies only to `contacts_update`. Contact deletion is not supported. **Google Tasks**: all three read tools plus `tasks_list_task_lists` are unconditionally auto-accepted; the five write tools (`tasks_create_task`, `tasks_update_task`, `tasks_complete_task`, `tasks_uncomplete_task`, `tasks_move_task`) are `popup`-gated, each independently configurable via `approved_task_list` above. **Telegram**: `telegram_list_chats` is unconditionally auto-accepted; `telegram_get_messages` and `telegram_search_messages` are `review`-gated by default but configurable via the rules above; `telegram_send_message` is `popup`-gated with no configurable rule. **Jira and Confluence** read tools (`jira_get_issue`, `confluence_get_page`, `confluence_get_page_by_title`) are `review`-gated by default but configurable via the rules above; their write tools remain `popup`-gated with no configurable rule, except `jira_transition_issue`, which accepts `approved_project_keys` as noted above.
 
 ---
 

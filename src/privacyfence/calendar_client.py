@@ -548,6 +548,95 @@ class CalendarClient:
         logger.info("update_event: %s", event.short_summary())
         return event
 
+    def create_out_of_office(
+        self,
+        title: str,
+        start_time: str,
+        end_time: str,
+        decline_message: str = "",
+    ) -> CalendarEvent:
+        """Create an out-of-office event that auto-declines new conflicting
+        meeting invitations only.
+
+        The Calendar API also offers "decline all conflicts" and "decline
+        none" (see ``outOfOfficeProperties.autoDeclineMode``), but this
+        method always uses ``declineOnlyNewConflictingInvitations`` — it
+        isn't exposed as a parameter, by design. Out-of-office events are
+        only supported on the primary calendar and can't be all-day events
+        (both Calendar API constraints, not this client's choice).
+        """
+        start_entry: dict[str, str] = {"dateTime": start_time}
+        end_entry: dict[str, str] = {"dateTime": end_time}
+        if not _has_timezone(start_time):
+            start_entry["timeZone"] = "UTC"
+        if not _has_timezone(end_time):
+            end_entry["timeZone"] = "UTC"
+        out_of_office_properties: dict[str, Any] = {
+            "autoDeclineMode": "declineOnlyNewConflictingInvitations",
+        }
+        if decline_message:
+            out_of_office_properties["declineMessage"] = decline_message
+        body: dict[str, Any] = {
+            "summary": title,
+            "start": start_entry,
+            "end": end_entry,
+            "eventType": "outOfOffice",
+            "transparency": "opaque",
+            "outOfOfficeProperties": out_of_office_properties,
+        }
+        try:
+            raw = self._get_service().events().insert(calendarId="primary", body=body).execute()
+        except HttpError as exc:
+            raise CalendarClientError(f"create_out_of_office failed: {exc}") from exc
+        event = self._parse_event(raw, "primary")
+        logger.info("create_out_of_office: %s", event.short_summary())
+        return event
+
+    def set_working_location(
+        self,
+        date: str,
+        location: str,
+        building_id: str = "",
+        label: str = "",
+    ) -> CalendarEvent:
+        """Set a working-location event for a single day — the same
+        "where are you working today" presence picker Google Calendar's web
+        UI exposes. Only ``"office"`` and ``"home"`` are supported (Calendar
+        also has a third ``customLocation`` type, not offered here).
+
+        Working location events are restricted to the primary calendar and
+        Calendar requires ``visibility="public"`` + ``transparency="transparent"``
+        on them (Calendar API constraints, not this client's choice).
+        """
+        location_key = {"office": "officeLocation", "home": "homeOffice"}.get(location)
+        if location_key is None:
+            raise CalendarClientError(
+                f"set_working_location: location must be 'office' or 'home', got {location!r}"
+            )
+        working_location_properties: dict[str, Any] = {"type": location_key}
+        if location_key == "officeLocation":
+            office: dict[str, Any] = {}
+            if building_id:
+                office["buildingId"] = building_id
+            if label:
+                office["label"] = label
+            working_location_properties["officeLocation"] = office
+        body: dict[str, Any] = {
+            "start": {"date": date},
+            "end": {"date": date},
+            "eventType": "workingLocation",
+            "visibility": "public",
+            "transparency": "transparent",
+            "workingLocationProperties": working_location_properties,
+        }
+        try:
+            raw = self._get_service().events().insert(calendarId="primary", body=body).execute()
+        except HttpError as exc:
+            raise CalendarClientError(f"set_working_location failed: {exc}") from exc
+        event = self._parse_event(raw, "primary")
+        logger.info("set_working_location: %s on %s", location, date)
+        return event
+
     # ------------------------------------------------------------------ #
     # Parsing helpers
     # ------------------------------------------------------------------ #

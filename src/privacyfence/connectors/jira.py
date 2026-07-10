@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import asdict
@@ -14,6 +15,17 @@ from ..gate import gated_call
 from ..jira_client import JiraClient, JiraClientError, _text_to_adf
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_json_object(value: str) -> dict[str, Any] | None:
+    """Parse a JSON object tool argument, or None if empty/invalid."""
+    if not value or not value.strip():
+        return None
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 class JiraConnector(Connector):
@@ -54,6 +66,16 @@ class JiraConnector(Connector):
                 read_only=True,
             ),
             ToolSpec(
+                name="jira_get_transitions",
+                description=(
+                    "List the status transitions available for a Jira issue right now (name and "
+                    "target status), given its current workflow state. Use before "
+                    "jira_transition_issue to see what transition names are valid. Auto-approved."
+                ),
+                params=[ToolParam("issue_key", "str", description="e.g. PROJ-123")],
+                read_only=True,
+            ),
+            ToolSpec(
                 name="jira_create_issue",
                 description="Create a new Jira issue. Requires user approval.",
                 params=[
@@ -77,14 +99,32 @@ class JiraConnector(Connector):
             ToolSpec(
                 name="jira_update_issue",
                 description=(
-                    "Update fields on an existing Jira issue "
-                    "(summary, description, priority). Requires user approval."
+                    "Update fields on an existing Jira issue (summary, description, priority, "
+                    "and/or custom fields). Requires user approval."
                 ),
                 params=[
                     ToolParam("issue_key", "str"),
                     ToolParam("summary", "str", required=False, default=""),
                     ToolParam("description", "str", required=False, default=""),
                     ToolParam("priority", "str", required=False, default=""),
+                    ToolParam("custom_fields", "str", required=False, default="",
+                              description=(
+                                  "JSON object mapping Jira Cloud custom field display names "
+                                  "(as seen in the Jira UI, not their customfield_NNNNN id) to "
+                                  "new values, e.g. {\"Story Points\": 5, \"Sprint\": \"Sprint 12\"}"
+                              )),
+                ],
+            ),
+            ToolSpec(
+                name="jira_transition_issue",
+                description=(
+                    "Move a Jira issue to a new status by transition name (e.g. \"Done\", "
+                    "\"In Progress\") — call jira_get_transitions first to see what's valid from "
+                    "the issue's current status. Requires user approval."
+                ),
+                params=[
+                    ToolParam("issue_key", "str", description="e.g. PROJ-123"),
+                    ToolParam("transition_name", "str", description="e.g. Done, In Progress"),
                 ],
             ),
         ]
@@ -96,12 +136,16 @@ class JiraConnector(Connector):
             return await self._search_issues(**args)
         if tool == "jira_get_issue":
             return await self._get_issue(**args)
+        if tool == "jira_get_transitions":
+            return await self._get_transitions(**args)
         if tool == "jira_create_issue":
             return await self._create_issue(**args)
         if tool == "jira_add_comment":
             return await self._add_comment(**args)
         if tool == "jira_update_issue":
             return await self._update_issue(**args)
+        if tool == "jira_transition_issue":
+            return await self._transition_issue(**args)
         raise ValueError(f"Unknown Jira tool: {tool!r}")
 
     # ------------------------------------------------------------------ #
@@ -122,6 +166,14 @@ class JiraConnector(Connector):
         data = [asdict(i) for i in issues]
         self._auto_audit("jira_search_issues", "Search Jira Issues",
                          f"Search: {jql[:80]}", f"{len(issues)} issue(s)", t0)
+        return data
+
+    async def _get_transitions(self, issue_key: str) -> Any:
+        t0 = time.time()
+        transitions = await self._fetch(self._jira.get_transitions, issue_key)
+        data = [asdict(t) for t in transitions]
+        self._auto_audit("jira_get_transitions", "List Jira Transitions",
+                         f"List transitions: {issue_key}", f"{len(transitions)} transition(s)", t0)
         return data
 
     # ------------------------------------------------------------------ #
@@ -237,6 +289,7 @@ class JiraConnector(Connector):
         summary: str = "",
         description: str = "",
         priority: str = "",
+        custom_fields: str = "",
     ) -> Any:
         issue = await self._fetch(self._jira.get_issue, issue_key)
         fields: dict[str, Any] = {}
@@ -250,6 +303,15 @@ class JiraConnector(Connector):
         if priority:
             fields["priority"] = {"name": priority}
             preview["Priority"] = f"→ {priority}"
+        custom_updates = _parse_json_object(custom_fields)
+        if custom_fields and custom_updates is None:
+            raise ValueError(
+                "update_issue: custom_fields must be a JSON object, e.g. {\"Story Points\": 5}"
+            )
+        for field_name, value in (custom_updates or {}).items():
+            field_id, coerced = await self._fetch(self._jira.resolve_custom_field, field_name, value)
+            fields[field_id] = coerced
+            preview[field_name] = f"→ {value}"
         if not fields:
             raise ValueError("update_issue: at least one field must be provided")
         if description:
@@ -261,7 +323,7 @@ class JiraConnector(Connector):
             connector=self.name,
             tool="jira_update_issue",
             tool_name="Update Jira Issue",
-            summary=f"Update {issue_key}: {', '.join(fields.keys())}",
+            summary=f"Update {issue_key}: {', '.join(k for k in preview if k != 'Issue')}",
             sender=f"issue={issue_key}",
             raw_data={"issue_key": issue_key, "fields": fields},
             filtered_data=None,
@@ -272,6 +334,29 @@ class JiraConnector(Connector):
             args={"issue_key": issue_key},
         )
         updated = await self._fetch(self._jira.update_issue, issue_key, fields)
+        return asdict(updated)
+
+    async def _transition_issue(self, issue_key: str, transition_name: str) -> Any:
+        issue = await self._fetch(self._jira.get_issue, issue_key)
+        preview = {
+            "Issue": f"{issue.key} — {issue.summary}",
+            "Status": f"{issue.status} → {transition_name}",
+        }
+        await gated_call(
+            connector=self.name,
+            tool="jira_transition_issue",
+            tool_name="Transition Jira Issue",
+            summary=f"Transition {issue_key}: {issue.status} → {transition_name}",
+            sender=f"issue={issue_key}",
+            raw_data={"issue_key": issue_key, "transition_name": transition_name},
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text=f"{issue_key} will move from \"{issue.status}\" to \"{transition_name}\".",
+            my_email=self.my_email,
+            args={"issue_key": issue_key, "transition_name": transition_name},
+        )
+        updated = await self._fetch(self._jira.transition_issue, issue_key, transition_name)
         return asdict(updated)
 
     # ------------------------------------------------------------------ #

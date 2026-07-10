@@ -16,6 +16,7 @@ from freezegun import freeze_time
 
 from privacyfence import auto_accept
 from privacyfence.auto_accept import (
+    TOOL_TO_OPERATION,
     AutoAcceptEvaluator,
     TEMP_ACCEPT_ELIGIBLE_OPERATIONS,
     add_auto_accept_rule,
@@ -30,6 +31,34 @@ from privacyfence.auto_accept import (
 )
 
 from ..helpers import make_ctx
+
+
+# --------------------------------------------------------------------------- #
+# TOOL_TO_OPERATION: every popup/review-gated write tool needs an entry here,
+# or a rule configured under its "natural" dotted name in settings.yaml
+# silently never matches -- gate.py falls back to the raw f"{connector}.{tool}"
+# key instead (see test_gate.py::test_operation_key_falls_back_to_connector_dot_tool).
+# --------------------------------------------------------------------------- #
+
+class TestToolToOperationMapping:
+    def test_jira_transition_issue_maps_to_clean_operation_key(self):
+        assert TOOL_TO_OPERATION["jira_transition_issue"] == "jira.transition_issue"
+
+    def test_calendar_create_out_of_office_maps_to_clean_operation_key(self):
+        assert TOOL_TO_OPERATION["calendar_create_out_of_office"] == "calendar.out_of_office"
+
+    def test_calendar_set_working_location_maps_to_clean_operation_key(self):
+        assert TOOL_TO_OPERATION["calendar_set_working_location"] == "calendar.working_location"
+
+    def test_jira_transition_issue_gets_approved_project_keys_via_issue_key(self):
+        # jira_transition_issue reuses the same generic rule jira_update_issue/
+        # jira_get_issue already rely on -- no new rule code needed, just the
+        # operation-key mapping above so a configured rule actually gets looked up.
+        ev = AutoAcceptEvaluator({"jira.transition_issue": [{"rule": "approved_project_keys", "value": ["ENG"]}]})
+        ctx = make_ctx(tool="jira_transition_issue", args={"issue_key": "ENG-42", "transition_name": "Done"})
+        ok, matched = ev.should_auto_accept(TOOL_TO_OPERATION["jira_transition_issue"], ctx)
+        assert ok is True
+        assert matched == "approved_project_keys"
 
 
 # --------------------------------------------------------------------------- #

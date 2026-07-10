@@ -23,6 +23,7 @@ from privacyfence.jira_client import (
     JiraComment,
     JiraIssue,
     JiraProject,
+    JiraTransition,
     _text_to_adf,
 )
 
@@ -475,3 +476,171 @@ class TestUpdateIssue:
         client._client.update_issue_field.side_effect = RuntimeError("boom")
         with pytest.raises(JiraClientError, match="update_issue"):
             client.update_issue("ENG-1", {"summary": "x"})
+
+
+# ---------------------------------------------------------------------------- #
+# resolve_custom_field / _get_field_descriptor: display-name -> id + value shaping
+# ---------------------------------------------------------------------------- #
+
+class TestResolveCustomField:
+    def test_resolves_id_and_passes_plain_value_through_for_non_option_schema(self):
+        client = make_client()
+        client._client.get_all_fields.return_value = [
+            {"id": "customfield_10016", "name": "Story Points", "schema": {"type": "number"}},
+        ]
+        field_id, value = client.resolve_custom_field("Story Points", 5)
+        assert field_id == "customfield_10016"
+        assert value == 5
+
+    def test_option_schema_wraps_value_in_value_dict(self):
+        client = make_client()
+        client._client.get_all_fields.return_value = [
+            {"id": "customfield_10020", "name": "Release Track", "schema": {"type": "option"}},
+        ]
+        field_id, value = client.resolve_custom_field("Release Track", "Beta")
+        assert field_id == "customfield_10020"
+        assert value == {"value": "Beta"}
+
+    def test_array_of_option_schema_wraps_each_value(self):
+        client = make_client()
+        client._client.get_all_fields.return_value = [
+            {"id": "customfield_10030", "name": "Components", "schema": {"type": "array", "items": "option"}},
+        ]
+        field_id, value = client.resolve_custom_field("Components", ["Backend", "Frontend"])
+        assert field_id == "customfield_10030"
+        assert value == [{"value": "Backend"}, {"value": "Frontend"}]
+
+    def test_array_of_option_schema_wraps_single_scalar_into_a_list(self):
+        client = make_client()
+        client._client.get_all_fields.return_value = [
+            {"id": "customfield_10030", "name": "Components", "schema": {"type": "array", "items": "option"}},
+        ]
+        _field_id, value = client.resolve_custom_field("Components", "Backend")
+        assert value == [{"value": "Backend"}]
+
+    def test_generic_array_schema_wraps_scalar_but_not_list(self):
+        client = make_client()
+        client._client.get_all_fields.return_value = [
+            {"id": "customfield_10040", "name": "Tags", "schema": {"type": "array", "items": "string"}},
+        ]
+        _field_id, scalar_value = client.resolve_custom_field("Tags", "one")
+        assert scalar_value == ["one"]
+        _field_id, list_value = client.resolve_custom_field("Tags", ["one", "two"])
+        assert list_value == ["one", "two"]
+
+    def test_lookup_is_case_insensitive(self):
+        client = make_client()
+        client._client.get_all_fields.return_value = [
+            {"id": "customfield_10016", "name": "Story Points", "schema": {"type": "number"}},
+        ]
+        field_id, _value = client.resolve_custom_field("story points", 3)
+        assert field_id == "customfield_10016"
+
+    def test_field_list_fetched_only_once_across_calls(self):
+        client = make_client()
+        client._client.get_all_fields.return_value = [
+            {"id": "customfield_10016", "name": "Story Points", "schema": {"type": "number"}},
+        ]
+        client.resolve_custom_field("Story Points", 1)
+        client.resolve_custom_field("Story Points", 2)
+        client._client.get_all_fields.assert_called_once()
+
+    def test_unknown_field_name_raises(self):
+        client = make_client()
+        client._client.get_all_fields.return_value = [
+            {"id": "customfield_10016", "name": "Story Points", "schema": {"type": "number"}},
+        ]
+        with pytest.raises(JiraClientError, match="no Jira field named"):
+            client.resolve_custom_field("Not A Real Field", 1)
+
+    def test_ambiguous_field_name_raises(self):
+        client = make_client()
+        client._client.get_all_fields.return_value = [
+            {"id": "customfield_10016", "name": "Team", "schema": {"type": "string"}},
+            {"id": "customfield_10099", "name": "Team", "schema": {"type": "string"}},
+        ]
+        with pytest.raises(JiraClientError, match="multiple Jira fields are named"):
+            client.resolve_custom_field("Team", "Platform")
+
+    def test_field_list_fetch_error_becomes_jira_client_error(self):
+        client = make_client()
+        client._client.get_all_fields.side_effect = RuntimeError("boom")
+        with pytest.raises(JiraClientError, match="failed to list Jira fields"):
+            client.resolve_custom_field("Story Points", 1)
+
+
+# ---------------------------------------------------------------------------- #
+# get_transitions / transition_issue
+# ---------------------------------------------------------------------------- #
+
+class TestGetTransitions:
+    def test_requires_issue_key(self):
+        client = make_client()
+        with pytest.raises(JiraClientError, match="requires an issue key"):
+            client.get_transitions("")
+
+    def test_maps_transitions(self):
+        client = make_client()
+        client._client.get_issue_transitions.return_value = [
+            {"id": 11, "name": "Start Progress", "to": "In Progress"},
+            {"id": 21, "name": "Done", "to": "Done"},
+        ]
+        transitions = client.get_transitions("ENG-1")
+        assert transitions == [
+            JiraTransition(id="11", name="Start Progress", to_status="In Progress"),
+            JiraTransition(id="21", name="Done", to_status="Done"),
+        ]
+
+    def test_http_error_becomes_jira_client_error(self):
+        client = make_client()
+        client._client.get_issue_transitions.side_effect = RuntimeError("boom")
+        with pytest.raises(JiraClientError, match="get_transitions\\(.*\\) failed"):
+            client.get_transitions("ENG-1")
+
+
+class TestTransitionIssue:
+    def test_requires_issue_key_and_transition_name(self):
+        client = make_client()
+        with pytest.raises(JiraClientError, match="requires issue_key and transition_name"):
+            client.transition_issue("", "Done")
+        with pytest.raises(JiraClientError, match="requires issue_key and transition_name"):
+            client.transition_issue("ENG-1", "")
+
+    def test_transitions_by_id_and_refetches(self):
+        client = make_client()
+        client._client.get_issue_transitions.return_value = [
+            {"id": 21, "name": "Done", "to": "Done"},
+        ]
+        client._client.issue.return_value = {"key": "ENG-1", "fields": {"summary": "x", "status": {"name": "Done"}}}
+
+        issue = client.transition_issue("ENG-1", "Done")
+
+        client._client.set_issue_status_by_transition_id.assert_called_once_with("ENG-1", "21")
+        assert issue.status == "Done"
+
+    def test_transition_name_lookup_is_case_insensitive(self):
+        client = make_client()
+        client._client.get_issue_transitions.return_value = [
+            {"id": 21, "name": "Done", "to": "Done"},
+        ]
+        client._client.issue.return_value = {"key": "ENG-1", "fields": {}}
+
+        client.transition_issue("ENG-1", "done")
+
+        client._client.set_issue_status_by_transition_id.assert_called_once_with("ENG-1", "21")
+
+    def test_invalid_transition_name_raises_with_available_list(self):
+        client = make_client()
+        client._client.get_issue_transitions.return_value = [
+            {"id": 11, "name": "Start Progress", "to": "In Progress"},
+            {"id": 21, "name": "Done", "to": "Done"},
+        ]
+        with pytest.raises(JiraClientError, match="Available: Start Progress, Done"):
+            client.transition_issue("ENG-1", "Cancelled")
+
+    def test_transition_api_error_becomes_jira_client_error(self):
+        client = make_client()
+        client._client.get_issue_transitions.return_value = [{"id": 21, "name": "Done", "to": "Done"}]
+        client._client.set_issue_status_by_transition_id.side_effect = RuntimeError("boom")
+        with pytest.raises(JiraClientError, match="transition_issue\\(.*\\) failed"):
+            client.transition_issue("ENG-1", "Done")
