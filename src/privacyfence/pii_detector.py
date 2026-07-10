@@ -26,8 +26,8 @@ Deliberately NOT detected: email addresses and phone numbers. Nearly every
 message this gate scans is an email, and nearly every email signature
 contains the sender's own address and phone number, so matching on those
 formats flagged almost every `review` dialog regardless of whether the
-content actually contained anything sensitive -- see README.md's "PII
-detection gate" section for the reasoning.
+content actually contained anything sensitive -- see docs/TECHNICAL_REFERENCE.md's
+"PII detection gate" section for the reasoning.
 """
 from __future__ import annotations
 
