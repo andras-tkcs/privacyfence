@@ -12,8 +12,9 @@ substitute `~/.privacyfence/config/settings.yaml` and
 
 PrivacyFence's real attack surface is the interaction between ten connectors,
 three gate types (`auto` / `review` / `popup`), a growing set of auto-accept
-rules, and the PII detection gate layered on top of the popup itself — none
-of which unit tests exercise end to end, since they mock the gate itself.
+rules, and the PII detection gate layered on top of the `review` (read)
+dialog specifically — none of which unit tests exercise end to end, since
+they mock the gate itself.
 The fastest way to catch drift between what the code does and what a user
 actually experiences is to drive every tool through a live Claude
 Cowork/Desktop session connected to the real `privacyfence` daemon, against
@@ -145,24 +146,31 @@ Ground rules:
   the call land in the same turn I may only see the popup, not what I was
   supposed to do with it, and default to clicking Accept out of habit. A step
   marked "pause here" below means: stop, wait for my go-ahead, then call it.
-- **The PII detection gate can fire on any popup, in any phase, not just the
-  dedicated steps in Phase 2** — it scans whatever content a popup is about to
-  show (message body, file content, page body...) for likely personal data in
-  Hungarian/English/German, and real accounts routinely contain real emails,
-  phone numbers, etc. If a popup renders tinted red with a category banner:
-  Accept it as the step normally instructs, then a second **"Are you sure?"**
-  dialog appears — click **Proceed** to continue as planned (or **Cancel** only
-  if the step's *own* instruction was to Deny). Note "PII gate fired" plus the
-  categories shown in that step's row of the running table; this is expected
-  behavior on real data, not a bug, unless a step explicitly says otherwise.
-  **This includes steps marked "should NOT prompt" for an auto-accept rule**
-  (e.g. Phase 1 step 6, Phase 4 step 5): the PII scan runs before the
+- **The PII detection gate can fire on any `review` (read) dialog, in any
+  phase, not just the dedicated steps in Phase 2** — it scans whatever
+  content a read popup is about to show (message body, file content, page
+  body...) for likely personal data in Hungarian/English/German, and real
+  accounts routinely contain real emails, phone numbers, etc. It never fires
+  on a native write popup (drafting an email, posting to Slack, writing a
+  file, etc.) — that content is something Claude itself just generated, not
+  external data newly reaching Claude, so there's nothing for this gate to
+  check on the write side. If a *read* popup renders tinted red with a
+  category banner: Accept it as the step normally instructs, then a second
+  **"Are you sure?"** dialog appears — click **Proceed** to continue as
+  planned (or **Cancel** only if the step's *own* instruction was to Deny).
+  Note "PII gate fired" plus the categories shown in that step's row of the
+  running table; this is expected behavior on real data, not a bug, unless a
+  step explicitly says otherwise.
+  **This includes read steps marked "should NOT prompt" for an auto-accept
+  rule** (e.g. Phase 1 step 6, Phase 4 step 5): the PII scan runs before the
   auto-accept check and overrides a matching rule, so a message/event/page
   whose *content* contains something PII-shaped will still show the tinted
   popup even though the rule matched — that's the gate doing its job, not a
-  rule-evaluation bug. Only flag it as a bug if the popup appears with no PII
-  category banner at all (a plain popup for a step that should've been silent
-  is still worth reporting).
+  rule-evaluation bug. Only flag it as a bug if the read popup appears with no
+  PII category banner at all (a plain popup for a step that should've been
+  silent is still worth reporting) — and treat any *write* popup rendering
+  tinted/PII-flagged as a bug in itself, since that gate should never fire
+  there anymore.
 - Keep a running table as you go: `tool name | gate observed (silent / Cowork
   review / native popup) | my decision | audit-log decision | notes`. Leave
   the `audit-log decision` column blank for now — don't guess it, don't ask me
@@ -418,6 +426,11 @@ ID, so the normal `review` gate — and the PII gate layered on top of it —
 is guaranteed to fire regardless of what auto-accept rules this environment
 has configured.
 
+This check also demonstrates the write/read split directly: the PII gate
+only ever runs on the `review` (read) direction, never on `popup` (write) —
+see README's "PII detection gate" section. Step 18 (a write) and step 19 (a
+read of that same write's content) exist specifically to contrast the two.
+
 17. Create a subfolder named `PrivacyFence QA PII test [{RUN_ID}]` inside the
     QA Sandbox folder (same pattern as step 9). Add it to the manifest.
 18. `drive_write_doc_content` — create a new Google Doc **inside that
@@ -440,56 +453,63 @@ has configured.
     UK NI number: AB123456C
     ```
 
+    This write is popup-gated regardless of any rule, and — because it's a
+    write, not a read — the PII gate never scans it. **Pause here**: tell me
+    you're about to call it and that, even though the body above contains
+    synthetic PII spanning all three supported languages, you expect a
+    **plain, untinted** popup with no category banner and no second "Are you
+    sure?" dialog, since writes are never scanned. I'll click **Accept**.
+    Wait for me to say go. Once I do, make the call and report back: confirm
+    the popup was plain (no tint, no banner, no second dialog). If it renders
+    tinted or shows a category banner, that's a bug — flag it. Add the doc to
+    the manifest.
+19. `drive_get_file_content` on the doc you just created — `review` gate, not
+    covered by any `approved_folder` rule per the note above, so this must
+    prompt every time regardless of environment config, and — unlike step
+    18 — this is a read, so the PII gate does apply. **Pause here**: tell me
+    you're about to call it and that, because the content contains synthetic
+    PII spanning all three supported languages, you expect the popup to
+    render tinted red with a category-listing banner covering the eight
+    non-email/phone lines, and that after I click **Accept** a second **"Are
+    you sure?"** dialog should appear — I'll click **Proceed** on that one.
     The Email/Phone lines are a deliberate **negative** check, not a typo —
     `pii_detector.py` intentionally never flags email addresses or phone
     numbers (see README.md's "PII detection gate" section), so those two
-    lines must *not* contribute to the category banner below; only the
-    remaining eight lines should.
-
-    This write is popup-gated regardless of any rule. **Pause here**: tell me
-    you're about to call it and that, because the body above contains
-    synthetic PII spanning all three supported languages, you expect the
-    popup to render tinted red with a category-listing banner covering the
-    eight non-email/phone lines, and that after I click **Accept** a second
-    **"Are you sure?"** dialog should appear — I'll click **Proceed** on that
-    one. Wait for me to say go. Once I do, make the call and report back: did
-    the tint/banner appear, which categories did it list (and did it
-    correctly omit email/phone), and did the second confirmation dialog
-    appear? Add the doc to the manifest.
-19. `drive_get_file_content` on the doc you just created — `review` gate, not
-    covered by any `approved_folder` rule per the note above, so this must
-    prompt every time regardless of environment config. Same expectation as
-    step 18: tinted popup with a category banner, then the second "Are you
-    sure?" confirmation after Accept. **Pause here** the same way, then make
-    the call and report the same details, plus confirm the returned content
+    lines must *not* contribute to the category banner. Wait for me to say
+    go. Once I do, make the call and report back: did the tint/banner appear,
+    which categories did it list (and did it correctly omit email/phone), did
+    the second confirmation dialog appear, and confirm the returned content
     matches what was written.
 20. Report the categories PrivacyFence actually detected (from the popup
-    banner in steps 18–19) against what `src/privacyfence/pii_detector.py`
+    banner in step 19) against what `src/privacyfence/pii_detector.py`
     documents as supported, and flag anything that should have matched but
     didn't (or vice versa) as a finding, not something to silently reconcile.
-    Flag both rows for Phase 12: confirming `"pii_detected": true` in the
-    audit log entries for steps 18 and 19 is the one field-level proof the
-    gate fired, independent of the popup banner — do it there, not now.
+    Flag both rows for Phase 12: confirming `"pii_detected": false` for
+    step 18's write and `"pii_detected": true` for step 19's read in the
+    audit log is the one field-level proof of the write/read split,
+    independent of the popup banner — do it there, not now.
 
 ### Auto-accept override check (steps 21–23)
 
-The PII scan runs *before* the auto-accept check and overrides a matching
-rule — a request that would otherwise pass through silently must still stop
-for the popup + second confirmation if its content contains PII. Steps
-17–20 above prove the gate fires with no rule in play at all; this section
-proves the more specific claim: it also fires when a rule *would* have
-matched. It reuses `{FIXTURES}.drive_qa_folder_id` itself as the parent this
-time — deliberately the opposite choice from step 18 — since that's exactly
-the folder `drive.read_file_contents` → `approved_folder` matches against,
-if you configured it per `qa-environment-setup.md`.
+On the `review` (read) direction, the PII scan runs *before* the auto-accept
+check and overrides a matching rule — a read that would otherwise pass
+through silently must still stop for the popup + second confirmation if its
+content contains PII. Steps 17–20 above prove the gate fires (on the read
+side) with no rule in play at all; this section proves the more specific
+claim: it also fires when a rule *would* have matched. It reuses
+`{FIXTURES}.drive_qa_folder_id` itself as the parent this time — deliberately
+the opposite choice from step 18 — since that's exactly the folder
+`drive.read_file_contents` → `approved_folder` matches against, if you
+configured it per `qa-environment-setup.md`.
 
 21. `drive_write_doc_content` — create a new Google Doc **directly inside
     `{FIXTURES}.drive_qa_folder_id`** (not the PII-test subfolder from step
     17), titled `PrivacyFence QA test PII-vs-rule doc [{RUN_ID}] — safe to
     delete`, with the same fake-PII body as step 18. This write is
     popup-gated regardless of any rule (writes never auto-accept via
-    `approved_folder`), so nothing to prove here — just Accept, then Accept
-    on the PII confirmation. Add the doc to the manifest.
+    `approved_folder`, and — same as step 18 — writes are never PII-scanned
+    either), so nothing to prove here — expect a plain, untinted popup with
+    no second confirmation, just Accept. Add the doc to the manifest.
 22. `drive_get_file_content` on that doc. This file's parent *is*
     `{FIXTURES}.drive_qa_folder_id` — if `drive.read_file_contents` →
     `approved_folder` is configured, this read would normally auto-accept
@@ -508,7 +528,10 @@ if you configured it per `qa-environment-setup.md`.
     entry showing `"decision": "approved"` (not `"auto_accepted"`),
     `"auto_accept_rule": ""`, and `"pii_detected": true` — contrasted against
     step 3's entry for the plain file (`"decision": "auto_accepted"` if the
-    rule is configured). Confirm both once the log is attached, not now.
+    rule is configured) and against step 21's write entry, which should show
+    `"pii_detected": false` regardless of the same fake-PII body, since
+    writes are never scanned. Confirm all three once the log is attached, not
+    now.
 
 ## Phase 3 — Slack
 1. `slack_list_channels` (expect: silent).
@@ -722,10 +745,13 @@ against a copy of the log I hand you directly.
 3. Resolve every item flagged earlier, specifically:
    - Phase 1 step 3: state definitively whether it was `denied` or a
      size-truncation error with a different underlying cause.
-   - Phase 2 steps 18–19: confirm both entries show `"pii_detected": true`.
+   - Phase 2 steps 18–19: confirm step 18's (write) entry shows
+     `"pii_detected": false` and step 19's (read) entry shows
+     `"pii_detected": true` — the write/read split, not identical results.
    - Phase 2 step 22: confirm `"decision": "approved"` (not
      `"auto_accepted"`), `"auto_accept_rule": ""`, and `"pii_detected": true`,
-     contrasted against step 3's entry for the plain file.
+     contrasted against step 3's entry for the plain file and against step
+     21's write entry (`"pii_detected": false`).
    - Phase 7 steps 2–4: state the actual logged decision (`auto_accepted` vs
      `accepted`) for each — this is what settles it even where your own
      popup observation was already unambiguous.
@@ -748,13 +774,15 @@ table split into "cleaned up in Phase 11" vs. "needs manual deletion." Then:
   don't let this collapse back into "I can't tell," since both your own
   observation and the log are available by this point.
 - Give the Phase 2 PII detection gate check (steps 17–20) its own explicit
-  answer: did the tint/banner render on both the write and the read, what
-  categories were listed each time, did the second "Are you sure?" dialog
-  appear both times, and did both audit-log entries show
-  `"pii_detected": true` (per Phase 12). If PrivacyFence's menu bar has **PII
-  Detection Gate** turned off, that changes the expected result to "no tint,
-  no second dialog, `pii_detected: false`" — state which case you're actually
-  in rather than assuming it's enabled.
+  answer: confirm the write in step 18 stayed plain (no tint, no banner, no
+  second dialog, `pii_detected: false`) and the read in step 19 got flagged
+  (tint, category banner, second "Are you sure?" dialog, `pii_detected: true`)
+  — per the audit-log entries from Phase 12. If PrivacyFence's menu bar has
+  **PII Detection Gate** turned off, that changes step 19's expected result
+  to "no tint, no second dialog, `pii_detected: false`" too (step 18 is
+  unaffected by the toggle either way, since writes are never scanned
+  regardless) — state which case you're actually in rather than assuming
+  it's enabled.
 - Give the auto-accept override check (steps 21–23) its own explicit answer
   too, separate from the above: was `approved_folder` actually configured
   for `drive.read_file_contents` in this environment (check what you read

@@ -8,10 +8,12 @@ live in approval_popup.py — those had no room for a real layout, an icon, or
 a genuinely scrollable body.
 
 When gate.py's PII detector (pii_detector.py) flags categories in the
-content, the window renders a light-red wash over the whole panel plus a
-warning banner naming what was found — the visual cue that a second,
-explicit "Are you sure?" confirmation (approval_popup.show_pii_confirmation_
-popup) is coming after Accept, not a decision by itself.
+content of a read (review-gate) popup, the window renders a light-red wash
+over the whole panel plus a warning banner naming what was found — the
+visual cue that a second, explicit "Are you sure?" confirmation (approval_
+popup.show_pii_confirmation_popup) is coming after Accept, not a decision by
+itself. Write (popup-gate) approvals never carry pii_categories, so this
+never renders for them.
 
 AppKit windows must be created and driven on the main thread, but gate.py
 calls in here from the IPC server thread (via asyncio.to_thread). show_native_

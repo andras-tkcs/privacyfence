@@ -20,8 +20,9 @@ regions, fed by three arguments every connector call site builds and passes into
 | **Summary box** (key/value rows) | `preview: dict[str, str]` | 2–6 scannable facts: who/what/where, no prose |
 | **Details pane** (scrollable body) | `details_text: str` | The actual content being read/sent/created, or a longer explanation |
 
-A PII warning banner is layered on top when the detector flags content — that part is generic
-and not per-connector, out of scope for this doc.
+A PII warning banner is layered on top when the detector flags content on a `review` (read)
+popup — writes are never scanned, so this never appears on a write's popup. The banner mechanic
+itself is generic and not per-connector, out of scope for this doc.
 
 **Important mechanic:** if a call site passes `details_text=""`, `gate.py` does **not** leave the
 details pane empty — it falls back to:

@@ -374,19 +374,27 @@ No fixture to create — this is the one part of the QA test that's genuinely
 self-contained. The dedicated check in
 [`connector-qa-testing.md`](connector-qa-testing.md) (Phase 2, steps 17–20)
 creates its own throwaway Drive subfolder and Google Doc seeded with
-synthetic, obviously-fake PII, reads it back, and tears both down in
-Phase 11 — nothing here to provision ahead of time, and nothing that
+synthetic, obviously-fake PII, writes it, reads it back, and tears both down
+in Phase 11 — nothing here to provision ahead of time, and nothing that
 persists between runs.
+
+The gate only ever runs on the `review` (read) direction, never on `popup`
+(write) — see README's "PII detection gate" section — so the write (step 18)
+and the read (step 19) are expected to produce *different* results even
+though they carry the same synthetic-PII body: the write always stays plain,
+the read gets flagged (when the gate is enabled; see point 1 below).
 
 The only thing worth confirming beforehand:
 
 1. **PII Detection Gate** is enabled in the PrivacyFence menu bar (it is by
    default — equivalently, `pii_detection.enabled` is `true` or absent in
-   `settings.yaml`). If you've turned it off, the
-   dedicated check still runs but correctly produces the *disabled* result
-   (no tint, no second confirmation, `pii_detected: false` in the audit log)
-   — that's expected behavior for that state, not a failure, but the test
-   prompt needs to know which state it's in rather than assume enabled.
+   `settings.yaml`). If you've turned it off, the dedicated check still runs
+   but the read step (19) now also produces the *disabled* result (no tint,
+   no second confirmation, `pii_detected: false` in the audit log) — the same
+   result the write step (18) always produces regardless of the toggle,
+   since writes are never scanned in either state. That's expected behavior
+   for the disabled case, not a failure, but the test prompt needs to know
+   which state it's in rather than assume enabled.
 2. The check deliberately writes to a **subfolder** of the Drive QA Sandbox
    folder, not the Sandbox folder's own top level. `approved_folder` (§2
    above) matches a file's *immediate* parent folder ID only, not folders
@@ -404,7 +412,9 @@ The only thing worth confirming beforehand:
    override if you actually configured the `drive.read_file_contents` →
    `approved_folder` rule from §2; without it there's no rule in play to
    override, and the test prompt is told to say so plainly rather than
-   claim the override was proven.
+   claim the override was proven. The write step in that check (step 21)
+   again stays plain regardless — only the read (step 22) can exercise the
+   override, since only reads are ever scanned.
 
 ---
 
