@@ -158,7 +158,7 @@ class TasksConnector(Connector):
             filtered_data=None,
             gate="popup",
             preview=preview,
-            details_text=notes,
+            details_text=notes or "No notes provided; see preview for task details.",
             args={"task_list_id": task_list_id, "title": title},
         )
         result = await self._fetch(self._tasks.create_task, task_list_id, title, notes, due)
@@ -173,6 +173,11 @@ class TasksConnector(Connector):
             preview["New title"] = title
         if due:
             preview["New due"] = due
+        if notes and notes != existing.notes:
+            details_text = notes
+        else:
+            changed_fields = ", ".join(k for k in preview if k not in ("Task list", "Task")) or "no fields"
+            details_text = f"{changed_fields} will be updated; notes unchanged."
         await gated_call(
             connector=self.name,
             tool="tasks_update_task",
@@ -183,7 +188,7 @@ class TasksConnector(Connector):
             filtered_data=None,
             gate="popup",
             preview=preview,
-            details_text=notes,
+            details_text=details_text,
             args={"task_list_id": task_list_id, "task_id": task_id},
         )
         result = await self._fetch(

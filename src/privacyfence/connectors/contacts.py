@@ -219,6 +219,11 @@ class ContactsConnector(Connector):
             "emails": emails, "phones": phones, "organization": organization,
             "job_title": job_title, "notes": notes,
         }
+        if notes:
+            details_text = notes
+        else:
+            changed_fields = ", ".join(k for k in preview if k != "Contact") or "no fields"
+            details_text = f"{changed_fields} will be updated; notes unchanged."
         await gated_call(
             connector=self.name,
             tool="contacts_update",
@@ -229,7 +234,7 @@ class ContactsConnector(Connector):
             filtered_data=None,
             gate="popup",
             preview=preview,
-            details_text=notes,
+            details_text=details_text,
             my_email=self.my_email,
             args=args,
         )
@@ -281,7 +286,7 @@ class ContactsConnector(Connector):
             filtered_data=None,
             gate="popup",
             preview=preview,
-            details_text=notes,
+            details_text=notes or "No notes provided; see preview for contact details.",
             my_email=self.my_email,
             args=args,
         )

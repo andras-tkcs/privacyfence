@@ -395,7 +395,7 @@ class CalendarConnector(Connector):
             filtered_data=None,
             gate="popup",
             preview=preview,
-            details_text=description,
+            details_text=description or "No description provided; see preview for event details.",
             my_email=self.my_email,
             args={"calendar_id": calendar_id, "attendees": attendees},
         )
