@@ -298,7 +298,7 @@ passed through as-is and surface Jira's own validation error if the shape is wro
 
 ### Confluence
 
-**Auth:** OAuth2 (browser sign-in, Atlassian 3LO), shared with Jira — one sign-in covers both.
+**Auth:** OAuth2 (browser sign-in, Atlassian 3LO), shared with Jira — one sign-in covers both. See [atlassian-setup.md](atlassian-setup.md).
 
 | Tool | Dir | Gate | Preview | Details popup |
 |------|-----|------|----------------|---------------|
