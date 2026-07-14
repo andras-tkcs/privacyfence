@@ -67,8 +67,8 @@ anything.
 | Concept feature | Feasibility | Why |
 |---|---|---|
 | Data-over-buttons visual hierarchy (WHAT→WHY→RISK→PREVIEW→decision) | **Feasible now** | Pure layout change to `approval_window.py`. No new data needed for WHAT/PREVIEW; RISK partially needs new signals (§below). |
-| "Claude wants to answer: '...'" stated purpose | **Not derivable as claimed** | MCP tool calls carry only `(tool name, args)` — see `bridge_main.py:221-234`. There is no channel from Claude's reasoning/prompt into a tool call. See §4. |
-| "Requested because Claude found a reference in board_minutes.docx" | **Not derivable, same reason** | Cross-file rationale is chain-of-thought, not tool-call data. Best available substitute: factual session history (§4). |
+| "Claude wants to answer: '...'" stated purpose | **Derivable via a new mandatory tool parameter — presence guaranteed, truthfulness is not** | MCP tool calls today carry only `(tool name, args)` — see `bridge_main.py:221-234`. But `args` is extensible: adding a required `reason: str` param to every gated `ToolSpec` gives PrivacyFence a real, protocol-enforced channel for this. It must ship labeled as Claude's self-report, never as verified fact. See §4. |
+| "Requested because Claude found a reference in board_minutes.docx" | **Same mechanism, same caveat** | A mandatory `reason` param can carry exactly this sentence — Claude is free to write it. What can't be added is any way to confirm it's true; treat it as reviewer context, not evidence. Best independently-verifiable substitute for cross-file rationale is factual session history (§4). |
 | Requested-resources checklist | **Feasible now** | Already the `preview` dict's job; just needs a list-shaped rendering instead of key/value rows when a call touches multiple items. |
 | Sensitivity badges (🟢 Internal / 🟠 Financial / 🔴 PII) | **Feasible, needs extension** | `pii_detector.py` already returns category labels. Needs: (a) new category groups for "financial" keywords (amounts, "salary", "payroll"), (b) a badge computed for the *popup-gate* (write) path too, where PII scanning is deliberately absent today by design (`gate.py` docstring) — badges there should read from Claude's own drafted content, not treated as an "external PII" gate. See §7 Phase 2. |
 | "🟢 Internal / 🟠 Confidential" **classification labels** | **Feasible only where the org has them** | Google Workspace Enterprise has native Drive data-classification labels, readable via `drive.labels.readonly` scope — PrivacyFence does not currently request this scope (`google-cloud-setup.md`). Real for orgs on that tier; must degrade to "no classification available" everywhere else, not a fabricated default. |
@@ -87,34 +87,47 @@ anything.
 | PR-style framing (Purpose / Files / Risk / Preview / Comments / Approve), single reviewer | **Feasible as an interaction metaphor** | Nothing about visual structure or button-order requires new infrastructure — it's the existing gate wearing a different layout. |
 | PR-style **multi-person** governance (a real second reviewer, comments visible to someone else, delegated/IT approval) | **Conflicts with current architecture** | Requires a channel for a second human to see and act on a request — i.e., some server or shared store. PrivacyFence's current trust story is explicitly "no PrivacyFence-operated infrastructure, no server in the request path" (`security-and-compliance.md` §2, §8, FAQ). Building this either breaks that claim or has to be pitched as a deliberately separate, opt-in product surface. See §8. |
 
-## 4. The central correction: self-reported vs. verified signals
+## 4. The central correction: mandatory closes the presence gap, not the trust gap
 
 The concept's mental-model shift — "do I allow this?" → "do I understand what the AI is about to
 see?" — is the right instinct, but "Claude wants to answer: ..." implies PrivacyFence can read
-Claude's intent. It can't, structurally: the MCP bridge sees a function call, not a conversation
-(`bridge_main.py`). Two honest paths forward, not mutually exclusive:
+Claude's intent directly. It can't, structurally: the MCP bridge sees a function call, not a
+conversation (`bridge_main.py`). The fix isn't to give up on a stated-purpose field — it's to be
+precise about what adding one to the protocol does and doesn't buy.
 
-1. **Show only what's verifiable — lean harder into "AI visibility."** The dialog's strongest,
-   most defensible headline is not "here's why Claude wants this" but **"here's exactly what
-   Claude will receive if you approve"** — which PrivacyFence can prove, because it already
-   computes `filtered_data` before the popup renders. This is the one part of the original pitch
-   that's more compliance-credible than the source concept realized, and should be promoted
-   from a "nice to have" (buried under "Emails deserve a dedicated layout") to the dialog's
-   second-most-prominent section, right under WHAT.
+**It is fully feasible to make this mandatory, not optional.** `ToolParam.required` already
+exists (`connector.py`), and MCP tool-call schemas enforce required fields at the protocol level:
+a call missing a required argument doesn't reach PrivacyFence at all, the same way Claude can't
+today omit `message_id` from `gmail_get_message`. Adding a required `reason: str` parameter to
+every gated tool's `ToolSpec`, with a tool description instructing Claude to explain why it's
+calling the tool, guarantees the field is never empty. This is a real upgrade over an optional
+field, which would predictably be omitted on the calls where a reviewer most wants it.
 
-2. **Optionally ask Claude to self-report a reason, and label it as self-reported.** Add an
-   optional `reason` string parameter to gated tool schemas (`ToolSpec.params` in
-   `connector.py`), with a tool description that asks Claude to explain why it's calling the
-   tool. This is a real, precedented pattern in other MCP approval UIs. But it must ship with an
-   explicit trust label in the UI — e.g. *"Claude says: ..."* in a visually distinct,
-   not-verified style — never rendered as fact. A model can omit it, or state something untrue;
-   PrivacyFence has no way to check it against the actual conversation. Treat it as a hint that
-   makes an unusual request more noticeable (a `reason` that doesn't match the file being
-   requested is itself a signal), not as the evidentiary basis for the badge system.
+**What mandatory does not do is make the content trustworthy.** Two separate properties are easy
+to conflate:
 
-Given that, "why was this file selected" and "found reference in X" should not ship as
-first-class trusted UI copy. They can ship as the *optional, clearly-labeled* self-reported
-`reason` field from point 2 — nothing stronger.
+- *Presence* — is a reason string always there? A required schema field settles this
+  completely, deterministically, at the protocol level.
+- *Fidelity* — does that string reflect why Claude actually issued the call? Nothing about a
+  required field touches this. Claude generates the reason text concurrently with deciding to
+  make the call; there is no mechanism — introspective or architectural — to check it against the
+  model's actual reasoning process, let alone against the user's real prompt, which PrivacyFence
+  never sees either way. The realistic failure mode isn't an empty field, it's a low-information
+  boilerplate one ("needed to complete the user's request" on every call), which defeats the
+  "slow thinking" goal about as effectively as no field at all. And in the specific scenario this
+  gate exists to catch — a request shaped by injected/manipulated content rather than genuine user
+  intent — a plausible, well-formed fabricated reason is exactly the failure mode to expect, not
+  an edge case that mandatory field would flush out.
+
+So: ship it mandatory (Phase 1, not Phase 2 — see §7), because presence is worth having
+unconditionally. But render it as a distinct, clearly-labeled **"Claude says (unverified)"**
+block, never merged into or styled like the verified WHAT/AI-VISIBILITY sections. Its actual value
+to a reviewer is as a *cross-check* — "the stated reason doesn't match the file being requested"
+is a real, catchable signal — not as the evidentiary basis for approval. The dialog's strongest,
+most defensible headline stays **"here's exactly what Claude will receive if you approve"** (the
+AI-visibility checklist from `filtered_data`, which PrivacyFence can actually prove), promoted to
+the dialog's second-most-prominent section, right under WHAT. "Claude says" sits below it, visibly
+a different kind of information.
 
 ## 5. Refined design principles
 
@@ -153,7 +166,7 @@ AI will receive                     [from privacy.categories / drive_privacy.cat
 Sensitivity                          [pii_detector.py + financial-keyword extension]
   🟠 Contains financial figures   🔴 Possible personal data: IBAN
 ──────────────────────────────────────────────
-Claude says (unverified)            [only if `reason` param present]
+Claude says (unverified)            [mandatory `reason` param, always present — see §4]
   "Needed to summarize Q3 pricing changes."
 ──────────────────────────────────────────────
 Preview                              [text / PDFKit / fallback per §5.3]
@@ -176,7 +189,7 @@ Sensitivity: 🟠 Financial terms
 
 ## 7. Phased roadmap
 
-**Phase 1 — layout only, zero new data (low risk, ship first)**
+**Phase 1a — layout only, zero new data (lowest risk, ship first)**
 - Restructure `approval_window.py`'s section order to WHAT → AI VISIBILITY → RISK (existing PII
   banner, relabeled) → PREVIEW → decision.
 - Render `privacy.categories`/`drive_privacy.categories`/`slack_privacy.categories` state as the
@@ -187,6 +200,23 @@ Sensitivity: 🟠 Financial terms
 - Add reading-time estimate from `details_text` length.
 - Gmail-specific layout for `gmail_get_message`/`gmail_get_thread`.
 
+**Phase 1b — mandatory `reason` parameter (bigger footprint than 1a, still no external calls)**
+Larger than a layout tweak: this touches every connector, not just the popup, so it's called out
+on its own rather than folded into "layout only."
+- Add a required `reason: str` param to every gated (`gate="review"`/`"popup"`) `ToolSpec` across
+  all connectors (`connectors/gmail.py`, `drive.py`, `slack.py`, `calendar.py`, `salesforce.py`,
+  `jira.py`, `confluence.py`, `telegram.py`, `tasks.py`, `contacts.py`) — each tool's description
+  should instruct Claude to state, in one sentence, why it's calling the tool.
+- Thread `reason` through each connector's `gated_call(...)` invocation into a new kwarg (e.g.
+  `claude_reason`) so `gate.py`/`approval_popup.py` can render it as its own labeled block,
+  distinct from `preview`/`details_text` — never merged with verified fields (§4).
+- Do **not** add this to `auto`-gated or `read_only=True` listing tools — no human ever sees those
+  calls, so a mandatory reason there only adds token/latency cost with no reviewer benefit; scope
+  it strictly to tools that already reach a popup.
+- Test impact per `coding-and-testing-guidelines.md` §2.5/§2.6: `tests/helpers.py::build_stub_args`
+  needs a default `reason` value for every gated tool's stub args, and the new-connector checklist
+  gains a line item ("gated tools carry a `reason` param, rendered as unverified").
+
 **Phase 2 — new local detectors, still zero external calls**
 - Extend `pii_detector.py`'s pattern set with a "financial data" category (currency amounts near
   salary/budget/revenue keywords) per its own documented extension model.
@@ -195,8 +225,6 @@ Sensitivity: 🟠 Financial terms
   that distinction is deliberate), but still worth flagging e.g. "this draft email contains what
   looks like a bank account number" before Claude sends it.
 - Request fingerprinting from `audit_log.py` history ("approved 3 times this week").
-- Optional `reason: str = ""` param on gated `ToolSpec`s, rendered as the clearly-labeled
-  "Claude says (unverified)" block from §4.
 
 **Phase 3 — real preview rendering (bigger UI investment)**
 - Move `approval_window.py`'s body from a plain `NSTextView` to an embedded local `WKWebView`
@@ -244,10 +272,18 @@ That's not a reason to drop the framing — it's a reason to be precise about wh
 
 ## 9. Concrete data-model additions this plan needs
 
-- `connector.py`: `ToolParam`/`ToolSpec` already support optional string params — add a
-  convention (not a new mechanism) for an optional `reason` param on tools that call
-  `gated_call(gate=...)`, surfaced through `bridge_main.py`'s existing dynamic registration
-  unchanged.
+- `connector.py`: no mechanism change needed — `ToolParam.required` already defaults to `True`.
+  Every gated tool's `ToolSpec.params` gets a new `ToolParam(name="reason", annotation="str",
+  required=True, description="One sentence: why are you calling this tool right now?")`, which
+  `bridge_main.py`'s existing dynamic registration (`_build_tool_fn`) picks up unchanged — it
+  already builds the function signature from `spec.params` generically.
+- Every connector: the `reason` value arrives as a normal kwarg alongside the tool's other args;
+  each connector passes it into `gated_call(...)` as a new required kwarg (e.g. `claude_reason:
+  str`), kept separate from `args`/`preview`/`details_text` so it can never be silently folded
+  into content that's rendered as verified.
+- `gate.py`: `gated_call()` gains the `claude_reason: str` parameter and forwards it to
+  `show_read_popup`/`show_popup` unchanged, the same pass-through pattern `pii_categories` already
+  uses.
 - `gate.py` / connectors: thread the resolved `privacy.categories`-style policy (already computed
   per connector before `gated_call`) into a new `visibility: dict[str, bool]` kwarg, alongside
   the existing `preview`/`details_text`, so the popup can render the "AI will receive" checklist
@@ -256,15 +292,19 @@ That's not a reason to drop the framing — it's a reason to be precise about wh
   matches its existing `_PATTERNS` extension model.
 - `audit_log.py`: add a lookup helper (`recent_matches(operation_key, preview) -> int`) for the
   request-fingerprint feature; no schema change to `AuditEntry` needed since existing fields
-  already carry what's needed.
-- `approval_window.py`: layout rewrite (Phase 1 pure-AppKit reorder; Phase 3 WKWebView migration).
-  `gate.py`'s call sites into `show_popup`/`show_read_popup` (`approval_popup.py`) stay
-  signature-compatible if `visibility`/`reason` are added as new optional kwargs with defaults.
+  already carry what's needed. Consider also recording `claude_reason` in `AuditEntry` itself —
+  it's cheap to store and lets a later audit review spot patterns of generic/boilerplate reasons
+  across many calls, which is itself a useful signal at the fleet level even though it isn't
+  verifiable per-call.
+- `approval_window.py`: layout rewrite (Phase 1a pure-AppKit reorder plus a new "Claude says"
+  block; Phase 3 WKWebView migration).
 
 ## 10. Open questions for the maintainer
 
-1. Is a `reason`-self-report field from Claude worth shipping at all, given it can't be verified?
-   (Recommendation: yes, but only ever labeled "Claude says," never presented as fact.)
+1. Confirmed direction: `reason` ships **mandatory**, not optional, enforced at the MCP schema
+   level (§4). Remaining question is scope — mandatory on every gated (`review`/`popup`) tool
+   only, as recommended in §7 Phase 1b, or should it also cover `auto`-gated tools that a human
+   never sees (recommendation: no — no reviewer benefit, pure overhead)?
 2. Is Drive classification-label support (needs a new OAuth scope, Enterprise-tier-only) worth
    the added consent-screen surface for the subset of orgs that have it?
 3. Does the WKWebView migration in Phase 3 conflict with any code-signing/notarization plans
