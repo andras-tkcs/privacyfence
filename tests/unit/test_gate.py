@@ -1062,6 +1062,122 @@ class TestAuditGapSafety:
         assert len(read_audit_entries(audit_dir)) == 1
 
 
+class TestUnattendedMode:
+    """gate.is_unattended()/unattended_scope() back the fail-fast path for
+    scheduled/unattended Cowork tasks: ipc_server.py wraps a request in
+    unattended_scope(True) when its connection called privacyfence_begin_
+    unattended_session(). See docs/cowork-scheduled-tasks-design.md.
+
+    The one invariant that matters more than any individual branch: this
+    must never change what auto-accepts -- only what happens when nothing
+    does (denies fast instead of opening a popup nobody will answer).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_unattended_flag(self):
+        # unattended_scope always resets on its own __exit__, but guard
+        # against a test raising before reaching that point and leaking the
+        # flag into a later, unrelated test.
+        token = gate._unattended_ctx.set(False)
+        yield
+        gate._unattended_ctx.reset(token)
+
+    def test_is_unattended_defaults_false(self):
+        assert gate.is_unattended() is False
+
+    def test_unattended_scope_sets_and_resets(self):
+        assert gate.is_unattended() is False
+        with gate.unattended_scope(True):
+            assert gate.is_unattended() is True
+        assert gate.is_unattended() is False
+
+    def test_unattended_scope_restores_prior_value_not_just_false(self):
+        with gate.unattended_scope(True):
+            with gate.unattended_scope(False):
+                assert gate.is_unattended() is False
+            assert gate.is_unattended() is True
+
+    async def test_review_gate_denies_without_popup_when_unattended(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        called = []
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: called.append(a) or "accept")
+
+        with gate.unattended_scope(True):
+            with pytest.raises(RuntimeError, match="unattended session"):
+                await gate.gated_call(**base_kwargs(gate="review"))
+
+        assert called == []  # popup never shown
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "denied_unattended"
+
+    async def test_popup_gate_denies_without_popup_when_unattended(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        called = []
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: called.append(a) or "accept")
+
+        with gate.unattended_scope(True):
+            with pytest.raises(RuntimeError, match="unattended session"):
+                await gate.gated_call(**base_kwargs(gate="popup"))
+
+        assert called == []
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "denied_unattended"
+
+    async def test_matching_rule_still_auto_accepts_silently_even_when_unattended(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "i_am_sender")))
+        called = []
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: called.append(a) or "deny")
+
+        with gate.unattended_scope(True):
+            result = await gate.gated_call(**base_kwargs(gate="review"))
+
+        assert result is FILTERED
+        assert called == []
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "auto_accepted"
+
+    async def test_matching_temp_accept_still_auto_accepts_on_writes_when_unattended(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "session_temp_accept")))
+        called = []
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: called.append(a) or "deny")
+
+        with gate.unattended_scope(True):
+            result = await gate.gated_call(**base_kwargs(gate="popup"))
+
+        assert result is FILTERED
+        assert called == []
+
+    async def test_rule_matched_but_pii_detected_still_denies_unattended(self, monkeypatch, audit_dir):
+        # A matching rule alone isn't enough once the PII gate fires -- see
+        # gate.py's module docstring on how PII overrides a matching rule.
+        # Unattended mode must deny this exactly like the no-match case.
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "trusted_sender_domain")))
+        called = []
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: called.append(a) or "accept")
+
+        pii_text = "Please wire the deposit to DE89370400440532013000, thanks."
+        with gate.unattended_scope(True):
+            with pytest.raises(RuntimeError, match="unattended session"):
+                await gate.gated_call(**base_kwargs(gate="review", details_text=pii_text))
+
+        assert called == []
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "denied_unattended"
+        assert entries[0]["pii_detected"] is True
+
+    async def test_not_unattended_still_shows_popup_as_before(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        called = []
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: called.append(a) or "accept")
+
+        result = await gate.gated_call(**base_kwargs(gate="review"))
+
+        assert result is FILTERED
+        assert len(called) == 1
+
+
 class TestDefaultDetails:
     def test_object_with_dict_is_json_dumped(self):
         class Obj:

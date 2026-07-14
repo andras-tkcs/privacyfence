@@ -9,6 +9,7 @@ For the product overview, governance model, screenshots, supported systems, and 
 - [Review model](#review-model)
 - [Connectors & privacy matrix](#connectors--privacy-matrix)
 - [Auto-accept rules](#auto-accept-rules)
+- [Scheduled / unattended Cowork tasks](#scheduled--unattended-cowork-tasks)
 - [Audit log](#audit-log)
 - [Security, privacy & compliance](#security-privacy--compliance)
 - [Installation](#installation)
@@ -567,9 +568,83 @@ edits within a personal list while still requiring review for creates.
 
 ---
 
+## Scheduled / unattended Cowork tasks
+
+A scheduled Claude Cowork Routine can run with nobody at the keyboard. If it calls a `review`- or
+`popup`-gated tool that no auto-accept rule covers, the normal behavior — open a native popup and
+wait — means the task hangs indefinitely, and since every popup shares one lock, it also blocks
+every other approval (including an unrelated interactive one) behind it until someone finds and
+answers the dialog. Two additions address this; design rationale and alternatives considered live
+in [`docs/cowork-scheduled-tasks-design.md`](cowork-scheduled-tasks-design.md).
+
+### `privacyfence_check_policy` — preflight
+
+A bridge meta-tool (not backed by any connector) Claude can call before actually calling a gated
+tool, to find out whether that specific call would need a human:
+
+```
+privacyfence_check_policy(connector, tool, args) -> {
+    "gate": "auto" | "review" | "popup",
+    "verdict": "auto_accept" | "requires_review" | "unknown",
+    "matched_rule": <str | null>,
+    "reason": "<str>",
+    "pii_gate_may_apply": <bool>,
+}
+```
+
+It never calls a connector, opens a popup, or has any side effect beyond a lightweight
+`policy_check` audit entry (see [Audit log](#audit-log)) — safe to call as often as needed while
+planning a task. The verdict is only ever as certain as the underlying rule allows:
+
+- `auto_accept` — a rule matched using only the call's arguments (or an active "Accept for 5 min"
+  window); the real call will auto-accept identically.
+- `requires_review` — every rule configured for this operation only needs arguments, and none
+  matched; fetching the real data cannot change that answer.
+- `unknown` — at least one configured rule needs the actual fetched item (e.g. `i_am_owner`,
+  `trusted_sender_domain`) to decide, which a preflight check can't see in advance.
+
+For `review`-gated (read) tools, `pii_gate_may_apply` is always `true`: the
+[PII detection gate](#pii-detection-gate) scans real content and can force a popup even when a
+rule matches, and that can never be predicted before the read happens.
+
+### Unattended sessions — fail fast instead of hang
+
+`privacyfence_begin_unattended_session()` / `privacyfence_end_unattended_session()` (also bridge
+meta-tools) let Claude mark the current connection as running a scheduled/unattended task, for as
+long as that connection stays open. While marked, any `review`/`popup` call on that connection
+that isn't already covered by a matching auto-accept rule is **denied immediately** — audited as
+`denied_unattended`, distinct from a human's own `rejected` — instead of opening a popup nobody
+will answer. This applies even when a rule matched but the [PII gate](#pii-detection-gate) still
+routed the call to a human. Nothing that would auto-accept today stops auto-accepting; this only
+changes the failure mode for calls that would otherwise open an unanswered dialog and hold up
+every other approval behind it.
+
+**Off by default.** Set in `config/settings.yaml`:
+
+```yaml
+unattended_sessions:
+  enabled: true
+```
+
+`privacyfence_begin_unattended_session` errors until an administrator opts in — a Claude session
+gaining the ability to switch its own connection into fail-fast mode is a deliberate
+per-organization choice. The unattended flag is connection-scoped (the bridge is one process per
+Cowork task) and clears automatically if the connection drops, so there's no persistent state to
+clean up. While one or more connections are in this state, the menu bar's top item shows a live
+count (e.g. "PrivacyFence is running — 1 unattended session active").
+
+---
+
 ## Audit log
 
 Every decision — accepted, denied, or auto-accepted — is appended to a JSON-lines file in `logs/audit/YYYY-WNN.jsonl`. At startup, any week that has a `.jsonl` file but no `.xlsx` is automatically exported to a formatted Excel workbook with a colour-coded **Decisions** sheet and a **Summary** tab. Each entry also records whether the [PII detection gate](#pii-detection-gate) flagged the content (category labels only — never the matched text itself).
+
+Two decision values relate to [scheduled/unattended tasks](#scheduled--unattended-cowork-tasks):
+`denied_unattended` (a call denied without ever prompting, because the connection was in an
+unattended session and no auto-accept rule matched — kept distinct from a human's own `rejected`)
+and `policy_check` (a `privacyfence_check_policy` preflight call — not a real decision, recorded
+for pattern-spotting only). Both get their own row on the Summary sheet and their own colour on
+the Decisions sheet.
 
 See [connector-qa-testing.md](connector-qa-testing.md) for a Claude Cowork prompt that drives every connector's tools end to end against real accounts — the fastest way to catch a gate, auto-accept rule, or connector client that's drifted from what's documented here.
 
