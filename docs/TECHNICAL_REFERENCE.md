@@ -72,13 +72,20 @@ Claude already describes the action it is about to take in the chat. PrivacyFenc
 popup showing the full action details with **Accept** or **Deny** only — no **Accept All**, since
 auto-accepting a write silently is a materially bigger blast radius than auto-accepting a read.
 
-For three write operations expected to be called repeatedly against the same file in
-quick succession — `drive_sheets_write_range`, `drive_sheets_format_range`, and `drive_add_comment`
-— the popup adds a third button, **Accept for 5 min**: it auto-accepts further calls of that same
-operation against that same file for 5 minutes, entirely in memory. Unlike a standing
+For write operations expected to be called repeatedly against the same file in quick succession —
+`drive_sheets_write_range`, `drive_sheets_format_range`, `drive_sheets_insert_dimensions`,
+`drive_add_comment`, `drive_docs_edit_content`, and `drive_docs_format_content` — the popup adds a
+third button, **Accept for 5 min**: it auto-accepts further calls of that same operation against
+that same file for 5 minutes, entirely in memory. Unlike a standing
 [auto-accept rule](#auto-accept-rules), it's never written to `settings.yaml` and disappears on
 daemon restart — a much smaller commitment than Accept All, appropriate for writes where a
 standing rule isn't offered at all.
+
+`drive_sheets_delete_dimensions` is deliberately excluded even though it's called in the same kind
+of burst `drive_sheets_insert_dimensions` is: unlike every operation above, it removes cell
+content (not just its appearance or position) with no undo path through PrivacyFence, so a
+5-minute silent-acceptance window is a bigger commitment than for the others. It only ever gets
+the standing-rule treatment described in [Auto-accept rules](#auto-accept-rules) below.
 
 ### PII detection gate
 
@@ -170,7 +177,9 @@ silent auto-accept path exactly as before this gate existed.
 | `drive_download_file` | read | review | file name, owner, size, save path | File name, owner, size, modified date, save path |
 | `drive_write_file_content` | write | popup | — | File name, owner, new content (plain text) |
 | `drive_upload_file` | write | popup | — | File name, size, destination folder |
-| `drive_write_doc_content` | write | popup | — | File name, owner, Markdown preview (headings, bold, italic, links, lists rendered as rich formatting in the Google Doc) |
+| `drive_write_doc_content` | write | popup | — | File name, owner, Markdown preview (headings, bold, italic, ==highlight==, links, lists rendered as rich formatting in the Google Doc) |
+| `drive_docs_edit_content` | write | popup | — | File name, owner; find/replace text goes in the details pane, not the preview |
+| `drive_docs_format_content` | write | popup | — | File name, owner, formatting summary; the located text goes in the details pane |
 | `drive_move_file` | write | popup | — | File name, from folder → to folder |
 | `drive_add_comment` | write | popup | — | File name, full comment text |
 | `drive_sheets_create` | write | auto | — | — |
@@ -180,6 +189,8 @@ silent auto-accept path exactly as before this gate existed.
 | `drive_sheets_add_sheet` | write | popup | — | Spreadsheet name, owner, new tab title/dimensions |
 | `drive_sheets_rename_sheet` | write | popup | — | Spreadsheet name, owner, tab id, new title |
 | `drive_sheets_format_range` | write | popup | — | Spreadsheet name, owner, range, formatting being applied |
+| `drive_sheets_insert_dimensions` | write | popup | — | Spreadsheet name, owner, tab id, rows/columns being inserted |
+| `drive_sheets_delete_dimensions` | write | popup | — | Spreadsheet name, owner, tab id, rows/columns being deleted (data-loss warning) |
 
 Google Sheets is not a separate connector — the `drive_sheets_*` tools live on the Drive
 connector and reuse its OAuth grant (the Sheets API accepts the same `drive` scope). There is
@@ -187,6 +198,15 @@ intentionally no delete-sheet tool: `drive_sheets_rename_sheet` is the sanctione
 tab for removal (e.g. rename it to `TO BE DELETED - <original title>`) — you delete it by hand
 in the Sheets UI. `drive_sheets_write_range` has no separate "set formula" tool either — a cell
 string starting with `=` is evaluated as a formula, exactly like typing it into the Sheets UI.
+
+`drive_docs_edit_content` and `drive_docs_format_content` locate existing text in a Google Doc by
+exact match against its plain text (the same representation `drive_get_file_content` returns) —
+`find_text` must match exactly one location unless `replace_all` is set, so an ambiguous match
+raises rather than guessing which occurrence was meant. Unlike `drive_write_doc_content`, they
+touch only the matched span, not the whole document. `drive_sheets_insert_dimensions`/
+`drive_sheets_delete_dimensions` insert or remove whole rows/columns (not just cell content) in a
+tab, shifting everything after the insertion/deletion point; there is no undo path through
+PrivacyFence for a delete.
 
 ### Slack
 
@@ -376,16 +396,17 @@ destination folder ID is in the allowlist).
 The same rules apply to the `drive_sheets_*` tools, under their own operation keys so they can be
 configured independently of plain-file Drive operations: `sheets.read_values` (`i_am_owner`,
 `created_by_me`, `approved_folder`, `created_this_session`, `shared_drive_exclusion`) and
-`sheets.write_range` / `sheets.add_sheet` / `sheets.rename_sheet` / `sheets.format_range`
+`sheets.write_range` / `sheets.add_sheet` / `sheets.rename_sheet` / `sheets.format_range` /
+`sheets.insert_dimensions` / `sheets.delete_dimensions`
 (`i_am_owner`, `approved_sandbox_folder`, `created_this_session`). A spreadsheet is a Drive file,
 so e.g. `created_this_session` fires for a spreadsheet `drive_sheets_create` made earlier in the
-same conversation — but note that **each of these five operation keys needs the same folder ID (or
+same conversation — but note that **each of these seven operation keys needs the same folder ID (or
 other rule value) added to it separately**; adding a folder to `drive.write_file`/`sheets.write_range`
 does not also cover `sheets.rename_sheet`, `sheets.format_range`, or any other Sheets/Drive
 operation key — there's no "apply to all" action, each is configured independently via its own menu
 entry (or its own key under `auto_accept_rules` in `settings.yaml`).
 
-All five `sheets.*` operations also accept `approved_spreadsheet`, which scopes a rule to one
+All seven `sheets.*` operations also accept `approved_spreadsheet`, which scopes a rule to one
 specific spreadsheet — optionally narrowed to one tab within it:
 
 ```yaml
@@ -402,7 +423,8 @@ auto_accept_rules:
 (`docs.google.com/spreadsheets/d/<spreadsheet_id>/edit`). `tab` is optional — omit it to approve
 every tab of that spreadsheet. When present, `tab` means the tab's **name** (e.g. `"Sheet1"`) for
 `sheets.read_values` / `sheets.write_range`, since that's all range_a1 carries (`"Sheet1!A1:C10"`);
-for `sheets.rename_sheet` / `sheets.format_range` it means the tab's **numeric** `sheet_id` (from
+for `sheets.rename_sheet` / `sheets.format_range` / `sheets.insert_dimensions` /
+`sheets.delete_dimensions` it means the tab's **numeric** `sheet_id` (from
 `drive_sheets_get_metadata`) as a string, since those tools address the tab that way instead.
 `sheets.add_sheet` has no existing tab to scope to, so only bare `spreadsheet_id` entries apply
 there.
@@ -412,17 +434,24 @@ spreadsheet and tab you just read — rather than a broader ownership- or folder
 
 `drive.comment_file` (`drive_add_comment` — also used for comments on Docs and Sheets, since those
 ride the Drive connector's OAuth grant) supports `i_am_owner` and `created_this_session` the same
-way plain Drive files do.
+way plain Drive files do. `docs.edit_content` and `docs.format_content` (`drive_docs_edit_content`/
+`drive_docs_format_content`) support the same rules `drive.write_doc` does — `i_am_owner`,
+`approved_sandbox_folder`, `created_this_session` — under their own operation keys.
 
-**Write ops have no Accept All, but three get "Accept for 5 min" instead.** All of the above
+**Write ops have no Accept All, but some get "Accept for 5 min" instead.** All of the above
 (including the writes) are `popup`-gated, and unlike `review`-gated reads, a write popup never
 offers to create a standing rule — see [PII detection gate](#pii-detection-gate) and the
-[review model](#review-model) above for why. `sheets.write_range`, `sheets.format_range`, and
-`drive.comment_file` are the exception: their popup additionally offers **Accept for 5 min**, an
-in-memory, non-persisted acceptance scoped to one spreadsheet/file for 5 minutes — see
+[review model](#review-model) above for why. `sheets.write_range`, `sheets.format_range`,
+`sheets.insert_dimensions`, `drive.comment_file`, `docs.edit_content`, and `docs.format_content`
+are the exception: their popup additionally offers **Accept for 5 min**, an in-memory,
+non-persisted acceptance scoped to one spreadsheet/file for 5 minutes — see
 [Two flows by direction](#two-flows-by-direction). `sheets.add_sheet` and `sheets.rename_sheet`
 get neither; they're one-shot per file rather than something called repeatedly in a burst, so a
-standing rule (configured as above) is the only way to skip their popup.
+standing rule (configured as above) is the only way to skip their popup. `sheets.delete_dimensions`
+also deliberately gets neither, despite being called in the same kind of burst
+`sheets.insert_dimensions` is: unlike insert/format, deleting rows or columns removes cell content
+with no undo path through PrivacyFence, so it only ever gets the standing-rule treatment — see
+[Two flows by direction](#two-flows-by-direction) for the reasoning.
 
 **Slack**
 

@@ -21,8 +21,15 @@ logger = logging.getLogger(__name__)
 TEMP_ACCEPT_ELIGIBLE_OPERATIONS: dict[str, str] = {
     "sheets.write_range": "spreadsheet_id",
     "sheets.format_range": "spreadsheet_id",
+    "sheets.insert_dimensions": "spreadsheet_id",
     "drive.comment_file": "file_id",
+    "docs.edit_content": "file_id",
+    "docs.format_content": "file_id",
 }
+# sheets.delete_dimensions is deliberately absent: unlike insert/format, it
+# removes cell content with no undo path through PrivacyFence, so it only
+# gets the standing-rule treatment below (like sheets.add_sheet /
+# sheets.rename_sheet), never the lighter-weight temp accept.
 
 TEMP_ACCEPT_TTL_SECONDS = 300
 
@@ -52,6 +59,10 @@ TOOL_TO_OPERATION: dict[str, str] = {
     "drive_sheets_add_sheet":         "sheets.add_sheet",
     "drive_sheets_rename_sheet":      "sheets.rename_sheet",
     "drive_sheets_format_range":      "sheets.format_range",
+    "drive_sheets_insert_dimensions": "sheets.insert_dimensions",
+    "drive_sheets_delete_dimensions": "sheets.delete_dimensions",
+    "drive_docs_edit_content":        "docs.edit_content",
+    "drive_docs_format_content":      "docs.format_content",
     "slack_get_channel_history":      "slack.read_messages",
     "slack_get_thread_replies":       "slack.read_messages",
     "slack_search_messages":          "slack.read_messages",

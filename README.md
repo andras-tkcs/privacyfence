@@ -147,8 +147,8 @@ Temporary approval is also available for selected repetitive write operations. T
 | Connector | Examples of governed capabilities |
 |---|---|
 | Gmail | Read messages and threads, download attachments, create drafts and replies, manage labels, archive messages, create and update filters |
-| Google Drive & Docs | Read, download, upload, move, and write files; write Google Docs; add comments |
-| Google Sheets | Read ranges, write and format ranges, add and rename tabs |
+| Google Drive & Docs | Read, download, upload, move, and write files; write, partially edit, and format (including highlight) Google Docs; add comments |
+| Google Sheets | Read ranges, write and format ranges, add and rename tabs, insert and delete rows/columns |
 | Google Calendar | Read event details, create and update events, create out-of-office entries, set working location |
 | Google Contacts | Read, create, update, and label contacts |
 | Slack | Read channels and threads, search messages, send messages |

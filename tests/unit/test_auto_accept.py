@@ -60,6 +60,14 @@ class TestToolToOperationMapping:
         assert ok is True
         assert matched == "approved_project_keys"
 
+    def test_sheets_dimension_tools_map_to_clean_operation_keys(self):
+        assert TOOL_TO_OPERATION["drive_sheets_insert_dimensions"] == "sheets.insert_dimensions"
+        assert TOOL_TO_OPERATION["drive_sheets_delete_dimensions"] == "sheets.delete_dimensions"
+
+    def test_docs_edit_and_format_tools_map_to_clean_operation_keys(self):
+        assert TOOL_TO_OPERATION["drive_docs_edit_content"] == "docs.edit_content"
+        assert TOOL_TO_OPERATION["drive_docs_format_content"] == "docs.format_content"
+
 
 # --------------------------------------------------------------------------- #
 # Gmail rules
@@ -536,6 +544,64 @@ class TestSheetsFolderScopedRules:
             raw_data={"file": SimpleNamespace(parent_ids=["folder9"]), "range_a1": "A1:B2", "format": "bold=true"},
         )
         assert ev.should_auto_accept("sheets.format_range", ctx) == (False, "")
+
+    def test_insert_dimensions_matches_folder_via_should_auto_accept(self):
+        # New operation key, same generic approved_sandbox_folder rule and
+        # raw_data shape as rename_sheet/format_range above -- no new rule
+        # code was needed to wire this up, just the TOOL_TO_OPERATION entry.
+        ev = AutoAcceptEvaluator({
+            "sheets.insert_dimensions": [{"rule": "approved_sandbox_folder", "value": ["folder1"]}],
+        })
+        ctx = make_ctx(
+            args={"spreadsheet_id": "sheet1", "sheet_id": 0, "dimension": "ROWS", "start_index": 0, "count": 1},
+            raw_data={"file": SimpleNamespace(parent_ids=["folder1"]), "dimension": "ROWS"},
+        )
+        assert ev.should_auto_accept("sheets.insert_dimensions", ctx) == (True, "approved_sandbox_folder")
+
+    def test_delete_dimensions_matches_folder_via_should_auto_accept(self):
+        ev = AutoAcceptEvaluator({
+            "sheets.delete_dimensions": [{"rule": "approved_sandbox_folder", "value": ["folder1"]}],
+        })
+        ctx = make_ctx(
+            args={"spreadsheet_id": "sheet1", "sheet_id": 0, "dimension": "ROWS", "start_index": 0, "count": 1},
+            raw_data={"file": SimpleNamespace(parent_ids=["folder1"]), "dimension": "ROWS"},
+        )
+        assert ev.should_auto_accept("sheets.delete_dimensions", ctx) == (True, "approved_sandbox_folder")
+
+    def test_insert_dimensions_scopes_approved_spreadsheet_to_sheet_id_tab(self):
+        # sheet_id is present in args, so _sheet_tab_of resolves it the same
+        # way rename_sheet/format_range do.
+        ev = AutoAcceptEvaluator({
+            "sheets.insert_dimensions": [
+                {"rule": "approved_spreadsheet", "value": [{"spreadsheet_id": "sheet1", "tab": "5"}]},
+            ],
+        })
+        matching_ctx = make_ctx(
+            args={"spreadsheet_id": "sheet1", "sheet_id": 5, "dimension": "ROWS", "start_index": 0, "count": 1},
+            raw_data={"file": SimpleNamespace(parent_ids=[])},
+        )
+        other_tab_ctx = make_ctx(
+            args={"spreadsheet_id": "sheet1", "sheet_id": 9, "dimension": "ROWS", "start_index": 0, "count": 1},
+            raw_data={"file": SimpleNamespace(parent_ids=[])},
+        )
+        assert ev.should_auto_accept("sheets.insert_dimensions", matching_ctx) == (True, "approved_spreadsheet")
+        assert ev.should_auto_accept("sheets.insert_dimensions", other_tab_ctx) == (False, "")
+
+    def test_docs_edit_and_format_content_match_owner_via_should_auto_accept(self):
+        # docs.* operations reuse the plain Drive-file rules (i_am_owner,
+        # approved_sandbox_folder, created_this_session) the same way
+        # drive.write_doc does -- no docs-specific rule code needed.
+        ev = AutoAcceptEvaluator({
+            "docs.edit_content": [{"rule": "i_am_owner"}],
+            "docs.format_content": [{"rule": "i_am_owner"}],
+        })
+        ctx = make_ctx(
+            my_email="me@example.com",
+            args={"file_id": "f1"},
+            raw_data={"file": SimpleNamespace(owners=["me@example.com"])},
+        )
+        assert ev.should_auto_accept("docs.edit_content", ctx) == (True, "i_am_owner")
+        assert ev.should_auto_accept("docs.format_content", ctx) == (True, "i_am_owner")
 
 
 # --------------------------------------------------------------------------- #
@@ -1143,6 +1209,24 @@ class TestTempAcceptKey:
         for op_key, arg_name in TEMP_ACCEPT_ELIGIBLE_OPERATIONS.items():
             ctx = make_ctx(args={arg_name: "some-id"})
             assert temp_accept_key(op_key, ctx) == "some-id"
+
+    def test_insert_dimensions_is_eligible_scoped_to_spreadsheet_id(self):
+        ctx = make_ctx(args={"spreadsheet_id": "sheet-1", "dimension": "ROWS"})
+        assert temp_accept_key("sheets.insert_dimensions", ctx) == "sheet-1"
+
+    def test_delete_dimensions_is_deliberately_not_eligible(self):
+        # Resolved design decision: unlike format_range/insert_dimensions,
+        # deleting rows/columns is destructive with no undo path through
+        # PrivacyFence, so it only ever gets the standing-rule treatment, not
+        # a lightweight "Accept for 5 min" button.
+        assert "sheets.delete_dimensions" not in TEMP_ACCEPT_ELIGIBLE_OPERATIONS
+        ctx = make_ctx(args={"spreadsheet_id": "sheet-1", "dimension": "ROWS"})
+        assert temp_accept_key("sheets.delete_dimensions", ctx) is None
+
+    def test_docs_edit_and_format_content_are_eligible_scoped_to_file_id(self):
+        ctx = make_ctx(args={"file_id": "f1"})
+        assert temp_accept_key("docs.edit_content", ctx) == "f1"
+        assert temp_accept_key("docs.format_content", ctx) == "f1"
 
 
 class TestEvaluatorTempAccept:
