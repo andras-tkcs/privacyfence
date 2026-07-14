@@ -1,7 +1,11 @@
 # Design: Preflight Policy Checks for Scheduled Cowork Tasks
 
-**Status: proposal — nothing in this document is implemented yet.** It exists to work out the
-approach before writing code against `gate.py` / `auto_accept.py` / `ipc.py`.
+**Status: implemented.** `privacyfence_check_policy`, `privacyfence_begin_unattended_session`,
+`privacyfence_end_unattended_session`, and the `unattended_sessions.enabled` config gate all exist
+in `gate.py` / `auto_accept.py` / `ipc.py` / `ipc_server.py` / `bridge_main.py` / `menu_bar.py` as
+described below. This document is kept as the design record — see
+[`docs/TECHNICAL_REFERENCE.md`](TECHNICAL_REFERENCE.md#scheduled--unattended-cowork-tasks) for the
+user-facing reference.
 
 ## Problem
 
@@ -285,17 +289,36 @@ the meantime.
 - The menu bar shows a live indicator while a connection is in unattended mode, not just
   after-the-fact audit-log entries.
 
+## Implementation notes (resolved during build)
+
+- `ARGS_ONLY_RULES`/`DATA_DEPENDENT_RULES` maintenance: `test_every_rule_is_classified` in
+  `tests/unit/test_auto_accept.py` asserts every `_rule_*` method on `AutoAcceptEvaluator` is
+  classified into exactly one of the two sets, so a newly added rule can't silently fall through
+  `preflight_from_args` untagged. Classifying them by hand (rather than reusing
+  `should_auto_accept` with `raw_data=None`) turned out to matter: several rules
+  (`no_attachments`, `shared_drive_exclusion`, `no_conferencing_link`, `no_file_attachments`,
+  `no_external_attendees`, `no_media_attachments`) are "absence" checks that would silently
+  evaluate to a false "matched" the moment `raw_data` is `None` — an empty/missing attribute reads
+  the same as a genuinely absent one. Those are classified data-dependent specifically so
+  `preflight_from_args` never speculates on them.
+- `unattended_scope`'s flag is connection-scoped via a `contextvars.ContextVar`, set by
+  `ipc_server.py` around each dispatched `call` request based on whether that connection is in
+  `IPCServer._unattended_connections`. No connector code changes at all — `gate.gated_call()` is
+  the only reader, via `is_unattended()`.
+- `IPCServer._handle_connection`'s `finally` block clears a connection's unattended flag on
+  disconnect, so `end_unattended_session` is a courtesy, not a requirement, for the normal case
+  (bridge is one process per Cowork task).
+- Live menu bar indicator: `IPCServer.set_unattended_changed_listener()` fires (on the IPC
+  server's own asyncio thread) whenever `unattended_session_count()` actually changes;
+  `PrivacyFenceMenuBar` marshals that through `AppHelper.callAfter` into a menu rebuild, the same
+  pattern `auto_accept.set_rules_changed_listener` already used for rule changes.
+
 ## Open questions
 
-- Exact shape of `ARGS_ONLY_RULES` maintenance: worth a unit test asserting every `_rule_*` method
-  in `AutoAcceptEvaluator` is classified as either args-only or data-dependent, so a newly added
-  rule can't silently fall through `would_auto_accept_from_args` untagged.
-- Whether `privacyfence_end_unattended_session()` should also fire automatically when the bridge
-  process exits (it should — bridge is ephemeral — but worth confirming there's no code path
-  where a connection outlives the "session" Claude thinks it's in), and whether unattended mode
-  should also auto-expire after some wall-clock ceiling (e.g. a few hours) as a backstop against a
-  `begin` call that's never matched by an `end` — bridge-exit cleanup should cover the normal
-  case, but a TTL is cheap insurance against a code path that doesn't.
+- Whether unattended mode should also auto-expire after some wall-clock ceiling (e.g. a few hours)
+  as a backstop against a `begin` call that's never matched by an `end` and outlives its intended
+  scope on a long-lived connection — bridge-exit cleanup covers the normal case, but a TTL would be
+  cheap insurance against a code path that doesn't.
 - Whether the settings.yaml opt-in should be a plain on/off, or should also support scoping it to
   specific operations/connectors (e.g. "unattended mode is fine for Jira but never for Gmail
   sends") rather than being all-or-nothing per install.

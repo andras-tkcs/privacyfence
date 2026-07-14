@@ -17,6 +17,8 @@ import uuid
 import pytest
 
 from privacyfence import ipc_server as ipc_server_module
+from privacyfence.audit_log import current_week, init_audit_logger
+from privacyfence.auto_accept import init_auto_accept_evaluator
 from privacyfence.connector import Connector, ToolSpec
 from privacyfence.ipc import LINE_LIMIT
 from privacyfence.ipc_server import IPCServer
@@ -42,11 +44,15 @@ def short_socket_path():
 
 
 class FakeConnector(Connector):
-    def __init__(self, name: str, *, result=None, error: Exception | None = None, delay: float = 0.0):
+    def __init__(
+        self, name: str, *, result=None, error: Exception | None = None, delay: float = 0.0,
+        my_email: str = "",
+    ):
         self._name = name
         self._result = result
         self._error = error
         self._delay = delay
+        self.my_email = my_email
         self.calls: list[tuple[str, dict]] = []
 
     @property
@@ -466,6 +472,385 @@ class TestLineLimit:
             assert connector.calls[0][1]["content"] == big_arg
         finally:
             await client.close()
+
+
+class TestCheckPolicyDispatch:
+    """privacyfence_check_policy's daemon-side handler: must never reach a
+    real connector call, never touch the network, and never open a popup --
+    it only reports what would happen."""
+
+    @pytest.fixture(autouse=True)
+    def _audit_dir(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        self._audit_dir = tmp_path
+
+    def _read_entries(self):
+        week_file = self._audit_dir / f"{current_week()}.jsonl"
+        if not week_file.exists():
+            return []
+        return [json.loads(line) for line in week_file.read_text(encoding="utf-8").splitlines()]
+
+    async def test_auto_gated_tool_is_always_auto_accept(self, running_server):
+        server, socket_path = running_server
+        server.set_connectors([FakeConnector("gmail")])
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "check_policy",
+                "params": {"connector": "gmail", "tool": "gmail_list_messages", "args": {}},
+            })
+            resp = await client.recv()
+            assert resp["result"] == {
+                "gate": "auto", "verdict": "auto_accept", "matched_rule": None,
+                "reason": "Unconditionally auto-accepted -- never reaches the review gate.",
+                "pii_gate_may_apply": False,
+            }
+        finally:
+            await client.close()
+
+    async def test_never_calls_the_connector(self, running_server):
+        server, socket_path = running_server
+        connector = FakeConnector("gmail")
+        server.set_connectors([connector])
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "check_policy",
+                "params": {"connector": "gmail", "tool": "gmail_get_message", "args": {}},
+            })
+            await client.recv()
+            assert connector.calls == []
+        finally:
+            await client.close()
+
+    async def test_popup_tool_matching_args_only_rule_is_auto_accept(self, running_server):
+        init_auto_accept_evaluator({
+            "gmail.create_draft": [{"rule": "to_is_myself"}],
+        })
+        server, socket_path = running_server
+        server.set_connectors([FakeConnector("gmail", my_email="me@example.com")])
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "check_policy",
+                "params": {
+                    "connector": "gmail", "tool": "gmail_create_draft",
+                    "args": {"to": "me@example.com", "subject": "x", "body": "y"},
+                },
+            })
+            resp = await client.recv()
+            assert resp["result"]["gate"] == "popup"
+            assert resp["result"]["verdict"] == "auto_accept"
+            assert resp["result"]["matched_rule"] == "to_is_myself"
+            assert resp["result"]["pii_gate_may_apply"] is False
+        finally:
+            await client.close()
+
+    async def test_review_tool_with_data_dependent_rule_is_unknown_and_flags_pii_gate(self, running_server):
+        init_auto_accept_evaluator({
+            "gmail.read_message": [{"rule": "i_am_sender"}],
+        })
+        server, socket_path = running_server
+        server.set_connectors([FakeConnector("gmail", my_email="me@example.com")])
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "check_policy",
+                "params": {"connector": "gmail", "tool": "gmail_get_message", "args": {"message_id": "m1"}},
+            })
+            resp = await client.recv()
+            assert resp["result"]["gate"] == "review"
+            assert resp["result"]["verdict"] == "unknown"
+            assert resp["result"]["pii_gate_may_apply"] is True
+        finally:
+            await client.close()
+
+    async def test_no_matching_rule_is_requires_review(self, running_server):
+        init_auto_accept_evaluator({})
+        server, socket_path = running_server
+        server.set_connectors([FakeConnector("gmail")])
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "check_policy",
+                "params": {"connector": "gmail", "tool": "gmail_get_message", "args": {}},
+            })
+            resp = await client.recv()
+            assert resp["result"]["verdict"] == "requires_review"
+        finally:
+            await client.close()
+
+    async def test_unknown_tool_returns_error(self, running_server):
+        server, socket_path = running_server
+        server.set_connectors([FakeConnector("gmail")])
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "check_policy",
+                "params": {"connector": "gmail", "tool": "not_a_real_tool", "args": {}},
+            })
+            resp = await client.recv()
+            assert "Unknown tool" in resp["error"]
+        finally:
+            await client.close()
+
+    async def test_unknown_connector_returns_error(self, running_server):
+        server, socket_path = running_server
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "check_policy",
+                "params": {"connector": "nope", "tool": "gmail_get_message", "args": {}},
+            })
+            resp = await client.recv()
+            assert "Unknown connector" in resp["error"]
+        finally:
+            await client.close()
+
+    async def test_records_a_policy_check_audit_entry_not_a_real_decision(self, running_server):
+        server, socket_path = running_server
+        server.set_connectors([FakeConnector("gmail")])
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "check_policy",
+                "params": {"connector": "gmail", "tool": "gmail_list_messages", "args": {}},
+            })
+            await client.recv()
+        finally:
+            await client.close()
+        entries = self._read_entries()
+        assert len(entries) == 1
+        assert entries[0]["decision"] == "policy_check"
+        assert entries[0]["connector"] == "gmail"
+        assert entries[0]["tool"] == "gmail_list_messages"
+
+
+class UnattendedAwareConnector(Connector):
+    """Records gate.is_unattended() at the moment call() runs, so tests can
+    confirm the daemon actually flips the flag for the right connection and
+    the right duration -- not just that the IPC methods return the right
+    JSON."""
+
+    def __init__(self, name: str):
+        self._name = name
+        self.observed_unattended: list[bool] = []
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def tool_specs(self) -> list[ToolSpec]:
+        return [ToolSpec(name=f"{self._name}_tool", description="t", read_only=True)]
+
+    async def call(self, tool: str, args: dict) -> object:
+        from privacyfence.gate import is_unattended
+        self.observed_unattended.append(is_unattended())
+        return "ok"
+
+
+class TestUnattendedSessionDispatch:
+    """privacyfence_begin/end_unattended_session -- see
+    docs/cowork-scheduled-tasks-design.md. Opt-in (unattended_sessions_enabled),
+    connection-scoped, and cleared on disconnect.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _audit_dir(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        self._audit_dir = tmp_path
+
+    def _read_entries(self):
+        week_file = self._audit_dir / f"{current_week()}.jsonl"
+        if not week_file.exists():
+            return []
+        return [json.loads(line) for line in week_file.read_text(encoding="utf-8").splitlines()]
+
+    async def _server(self, socket_path, monkeypatch, *, enabled: bool):
+        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", socket_path)
+        server = IPCServer([], unattended_sessions_enabled=enabled)
+        await server.start()
+        return server
+
+    async def test_begin_fails_when_not_enabled_by_config(self, short_socket_path, monkeypatch):
+        server = await self._server(short_socket_path, monkeypatch, enabled=False)
+        client = await _RawClient.connect(short_socket_path)
+        try:
+            await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
+            resp = await client.recv()
+            assert "disabled" in resp["error"]
+            assert server.unattended_session_count() == 0
+            assert self._read_entries() == []  # rejected before anything worth auditing happened
+        finally:
+            await client.close()
+            await server.stop()
+
+    async def test_begin_succeeds_when_enabled(self, short_socket_path, monkeypatch):
+        server = await self._server(short_socket_path, monkeypatch, enabled=True)
+        client = await _RawClient.connect(short_socket_path)
+        try:
+            await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
+            resp = await client.recv()
+            assert resp["result"] == {"unattended": True}
+            assert server.unattended_session_count() == 1
+        finally:
+            await client.close()
+            await server.stop()
+
+    async def test_begin_and_end_leave_an_audit_trail(self, short_socket_path, monkeypatch):
+        server = await self._server(short_socket_path, monkeypatch, enabled=True)
+        client = await _RawClient.connect(short_socket_path)
+        try:
+            await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
+            await client.recv()
+            await client.send({"id": "2", "method": "end_unattended_session", "params": {}})
+            await client.recv()
+        finally:
+            await client.close()
+            await server.stop()
+
+        entries = self._read_entries()
+        assert [e["decision"] for e in entries] == [
+            "unattended_session_started", "unattended_session_ended",
+        ]
+
+    async def test_disconnect_while_unattended_is_audited_as_ended(self, short_socket_path, monkeypatch):
+        server = await self._server(short_socket_path, monkeypatch, enabled=True)
+        client = await _RawClient.connect(short_socket_path)
+        await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
+        await client.recv()
+
+        client.writer.close()
+        await asyncio.sleep(0.05)
+
+        try:
+            entries = self._read_entries()
+            assert [e["decision"] for e in entries] == [
+                "unattended_session_started", "unattended_session_ended",
+            ]
+        finally:
+            await server.stop()
+
+    async def test_end_without_begin_does_not_audit_a_phantom_end(self, short_socket_path, monkeypatch):
+        server = await self._server(short_socket_path, monkeypatch, enabled=True)
+        client = await _RawClient.connect(short_socket_path)
+        try:
+            await client.send({"id": "1", "method": "end_unattended_session", "params": {}})
+            await client.recv()
+        finally:
+            await client.close()
+            await server.stop()
+
+        assert self._read_entries() == []
+
+    async def test_call_after_begin_runs_with_unattended_flag_set(self, short_socket_path, monkeypatch):
+        server = await self._server(short_socket_path, monkeypatch, enabled=True)
+        connector = UnattendedAwareConnector("gmail")
+        server.set_connectors([connector])
+        client = await _RawClient.connect(short_socket_path)
+        try:
+            await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
+            await client.recv()
+
+            await client.send({
+                "id": "2", "method": "call",
+                "params": {"connector": "gmail", "tool": "x", "args": {}},
+            })
+            await client.recv()
+
+            assert connector.observed_unattended == [True]
+        finally:
+            await client.close()
+            await server.stop()
+
+    async def test_call_without_begin_is_not_unattended(self, short_socket_path, monkeypatch):
+        server = await self._server(short_socket_path, monkeypatch, enabled=True)
+        connector = UnattendedAwareConnector("gmail")
+        server.set_connectors([connector])
+        client = await _RawClient.connect(short_socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "call",
+                "params": {"connector": "gmail", "tool": "x", "args": {}},
+            })
+            await client.recv()
+
+            assert connector.observed_unattended == [False]
+        finally:
+            await client.close()
+            await server.stop()
+
+    async def test_end_unattended_session_restores_normal_mode(self, short_socket_path, monkeypatch):
+        server = await self._server(short_socket_path, monkeypatch, enabled=True)
+        connector = UnattendedAwareConnector("gmail")
+        server.set_connectors([connector])
+        client = await _RawClient.connect(short_socket_path)
+        try:
+            await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
+            await client.recv()
+            await client.send({"id": "2", "method": "end_unattended_session", "params": {}})
+            resp = await client.recv()
+            assert resp["result"] == {"unattended": False}
+            assert server.unattended_session_count() == 0
+
+            await client.send({
+                "id": "3", "method": "call",
+                "params": {"connector": "gmail", "tool": "x", "args": {}},
+            })
+            await client.recv()
+            assert connector.observed_unattended == [False]
+        finally:
+            await client.close()
+            await server.stop()
+
+    async def test_unattended_state_is_scoped_to_one_connection(self, short_socket_path, monkeypatch):
+        server = await self._server(short_socket_path, monkeypatch, enabled=True)
+        connector = UnattendedAwareConnector("gmail")
+        server.set_connectors([connector])
+        marked_client = await _RawClient.connect(short_socket_path)
+        plain_client = await _RawClient.connect(short_socket_path)
+        try:
+            await marked_client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
+            await marked_client.recv()
+
+            await plain_client.send({
+                "id": "1", "method": "call",
+                "params": {"connector": "gmail", "tool": "x", "args": {}},
+            })
+            await plain_client.recv()
+
+            assert connector.observed_unattended == [False]
+            assert server.unattended_session_count() == 1
+        finally:
+            await marked_client.close()
+            await plain_client.close()
+            await server.stop()
+
+    async def test_disconnect_clears_unattended_state(self, short_socket_path, monkeypatch):
+        server = await self._server(short_socket_path, monkeypatch, enabled=True)
+        client = await _RawClient.connect(short_socket_path)
+        await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
+        await client.recv()
+        assert server.unattended_session_count() == 1
+
+        client.writer.close()
+        await asyncio.sleep(0.05)  # give the server a beat to observe the disconnect
+
+        try:
+            assert server.unattended_session_count() == 0
+        finally:
+            await server.stop()
+
+    async def test_end_unattended_session_is_a_no_op_when_never_begun(self, short_socket_path, monkeypatch):
+        server = await self._server(short_socket_path, monkeypatch, enabled=True)
+        client = await _RawClient.connect(short_socket_path)
+        try:
+            await client.send({"id": "1", "method": "end_unattended_session", "params": {}})
+            resp = await client.recv()
+            assert resp["result"] == {"unattended": False}
+        finally:
+            await client.close()
+            await server.stop()
 
 
 class TestConnectionHandling:

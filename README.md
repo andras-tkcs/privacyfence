@@ -140,6 +140,11 @@ PII detection takes precedence over read auto-accept rules. A request that would
 
 Temporary approval is also available for selected repetitive write operations. These approvals are scoped to the same operation and file, held only in memory, and expire automatically.
 
+Scheduled Claude Cowork tasks can run unattended: a `privacyfence_check_policy` tool lets Claude
+check ahead of time whether a call would auto-accept or need a human, and an opt-in unattended-session
+mode denies unmatched requests immediately instead of leaving a popup open for nobody to answer. See
+[Technical Reference](docs/TECHNICAL_REFERENCE.md#scheduled--unattended-cowork-tasks).
+
 ---
 
 ## Supported connectors
@@ -254,6 +259,7 @@ Continue with the organization configuration and connector authentication steps 
 ## Documentation
 
 - [Technical Reference](docs/TECHNICAL_REFERENCE.md) — review model, connectors, policies, installation, configuration, and implementation notes
+- [Scheduled Cowork tasks design](docs/cowork-scheduled-tasks-design.md) — design rationale for the preflight tool and unattended-session mode
 - [Security, Privacy & Compliance](docs/security-and-compliance.md) — deployment model, data handling, organizational controls, GDPR, and EU AI Act positioning
 - [Google setup](docs/google-cloud-setup.md)
 - [Slack setup](docs/slack-setup.md)

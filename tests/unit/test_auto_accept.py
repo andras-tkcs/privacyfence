@@ -16,6 +16,9 @@ from freezegun import freeze_time
 
 from privacyfence import auto_accept
 from privacyfence.auto_accept import (
+    ARGS_ONLY_RULES,
+    DATA_DEPENDENT_RULES,
+    TOOL_TO_GATE,
     TOOL_TO_OPERATION,
     AutoAcceptEvaluator,
     TEMP_ACCEPT_ELIGIBLE_OPERATIONS,
@@ -1216,3 +1219,123 @@ class TestEvaluatorTempAccept:
         ev = AutoAcceptEvaluator({})
         ctx = make_ctx(args={})
         assert ev.should_auto_accept("sheets.write_range", ctx) == (False, "")
+
+
+# --------------------------------------------------------------------------- #
+# ARGS_ONLY_RULES / DATA_DEPENDENT_RULES / preflight_from_args: the preflight
+# check behind privacyfence_check_policy. Nothing here should reach a real
+# connector or the network -- these predict should_auto_accept()'s answer
+# from args alone, before anything is fetched.
+# --------------------------------------------------------------------------- #
+
+class TestRuleClassificationCompleteness:
+    """Guards against a newly added _rule_* method being left unclassified,
+    which would silently make preflight_from_args() treat it as permanently
+    "undetermined" without anyone deciding that on purpose."""
+
+    def _all_rule_names(self) -> set[str]:
+        return {
+            name[len("_rule_"):]
+            for name in vars(AutoAcceptEvaluator)
+            if name.startswith("_rule_") and callable(getattr(AutoAcceptEvaluator, name))
+        }
+
+    def test_every_rule_is_classified(self):
+        classified = ARGS_ONLY_RULES | DATA_DEPENDENT_RULES
+        unclassified = self._all_rule_names() - classified
+        assert unclassified == set(), (
+            f"_rule_* methods not classified into ARGS_ONLY_RULES or DATA_DEPENDENT_RULES: {unclassified}"
+        )
+
+    def test_no_rule_is_in_both_sets(self):
+        assert ARGS_ONLY_RULES & DATA_DEPENDENT_RULES == set()
+
+    def test_no_stale_entries_for_removed_rules(self):
+        stale = (ARGS_ONLY_RULES | DATA_DEPENDENT_RULES) - self._all_rule_names()
+        assert stale == set(), f"Classified rule names with no matching _rule_* method: {stale}"
+
+
+class TestPreflightFromArgs:
+    def test_temp_accept_match_wins_first(self):
+        ev = AutoAcceptEvaluator({})
+        ev.register_temp_accept("sheets.write_range", "sheet-1")
+        verdict, rule, _reason = ev.preflight_from_args("sheets.write_range", {"spreadsheet_id": "sheet-1"})
+        assert (verdict, rule) == ("auto_accept", "session_temp_accept")
+
+    def test_args_only_rule_match(self):
+        ev = AutoAcceptEvaluator({"slack.read_messages": [{"rule": "approved_channel", "value": ["C123"]}]})
+        verdict, rule, _reason = ev.preflight_from_args("slack.read_messages", {"channel_id": "C123"})
+        assert (verdict, rule) == ("auto_accept", "approved_channel")
+
+    def test_args_only_rule_no_match_is_requires_review(self):
+        ev = AutoAcceptEvaluator({"slack.read_messages": [{"rule": "approved_channel", "value": ["C999"]}]})
+        verdict, rule, _reason = ev.preflight_from_args("slack.read_messages", {"channel_id": "C123"})
+        assert verdict == "requires_review"
+        assert rule == ""
+
+    def test_no_configured_rules_is_requires_review(self):
+        ev = AutoAcceptEvaluator({})
+        verdict, _rule, _reason = ev.preflight_from_args("gmail.read_message", {})
+        assert verdict == "requires_review"
+
+    def test_data_dependent_rule_configured_is_unknown(self):
+        ev = AutoAcceptEvaluator({"gmail.read_message": [{"rule": "i_am_sender"}]})
+        verdict, rule, reason = ev.preflight_from_args("gmail.read_message", {})
+        assert verdict == "unknown"
+        assert rule == ""
+        assert "i_am_sender" in reason
+
+    def test_undetermined_data_dependent_rule_does_not_produce_a_false_match(self):
+        ev = AutoAcceptEvaluator({
+            "gmail.read_message": [
+                {"rule": "i_am_sender"},
+                {"rule": "trusted_sender_domain", "value": ["trusted.com"]},
+            ]
+        })
+        verdict, _rule, _reason = ev.preflight_from_args("gmail.read_message", {})
+        assert verdict == "unknown"
+
+    def test_args_only_match_wins_even_behind_an_undetermined_rule(self):
+        ev = AutoAcceptEvaluator({
+            "jira.read_issue": [
+                {"rule": "i_am_reporter"},  # data-dependent, can't be decided from args
+                {"rule": "approved_project_keys", "value": ["OPS"]},  # args-only, matches
+            ]
+        })
+        verdict, rule, _reason = ev.preflight_from_args("jira.read_issue", {"issue_key": "OPS-1"})
+        assert (verdict, rule) == ("auto_accept", "approved_project_keys")
+
+    def test_absence_rule_never_evaluated_speculatively(self):
+        # shared_drive_exclusion (and the other "absence" rules) would
+        # falsely report a match if evaluated with raw_data=None -- see the
+        # ARGS_ONLY_RULES docstring. Confirms it's routed to "unknown"
+        # instead of a false "auto_accept".
+        ev = AutoAcceptEvaluator({"drive.read_file_contents": [{"rule": "shared_drive_exclusion"}]})
+        verdict, rule, _reason = ev.preflight_from_args("drive.read_file_contents", {})
+        assert verdict == "unknown"
+        assert rule == ""
+
+    def test_never_calls_the_network_or_touches_raw_data(self):
+        # preflight_from_args builds its own ReviewContext with raw_data=None
+        # regardless of what's passed in -- there's no argument for raw_data
+        # at all, so this is really just documenting the contract.
+        ev = AutoAcceptEvaluator({"slack.read_messages": [{"rule": "approved_channel", "value": ["C1"]}]})
+        verdict, rule, _reason = ev.preflight_from_args("slack.read_messages", {"channel_id": "C1"})
+        assert (verdict, rule) == ("auto_accept", "approved_channel")
+
+
+# --------------------------------------------------------------------------- #
+# TOOL_TO_GATE: exhaustively cross-checked against docs and connector source
+# in tests/unit/connectors/test_readme_manifest_alignment.py. This is just a
+# couple of direct spot checks for the dict itself.
+# --------------------------------------------------------------------------- #
+
+class TestToolToGate:
+    def test_auto_tool(self):
+        assert TOOL_TO_GATE["gmail_list_messages"] == "auto"
+
+    def test_review_tool(self):
+        assert TOOL_TO_GATE["gmail_get_message"] == "review"
+
+    def test_popup_tool(self):
+        assert TOOL_TO_GATE["gmail_create_draft"] == "popup"

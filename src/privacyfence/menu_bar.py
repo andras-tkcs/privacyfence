@@ -260,11 +260,26 @@ class PrivacyFenceMenuBar(rumps.App):
         )
         self._rebuild()
         set_rules_changed_listener(self._on_rules_changed)
+        self._ipc_server.set_unattended_changed_listener(self._on_unattended_changed)
 
     def _on_rules_changed(self) -> None:
         """Fired by auto_accept.reload_rules(), possibly from the IPC
         server's thread — marshal the menu rebuild onto the main thread."""
         AppHelper.callAfter(self._rebuild)
+
+    def _on_unattended_changed(self) -> None:
+        """Fired by ipc_server.py's IPCServer, on its own asyncio thread,
+        whenever a connection starts or stops an unattended session --
+        marshal the live-indicator refresh onto the main thread, same
+        pattern as _on_rules_changed."""
+        AppHelper.callAfter(self._rebuild)
+
+    def _status_label(self) -> str:
+        count = self._ipc_server.unattended_session_count()
+        if not count:
+            return "PrivacyFence is running"
+        plural = "s" if count != 1 else ""
+        return f"PrivacyFence is running — {count} unattended session{plural} active"
 
     # ------------------------------------------------------------------ #
     # Menu building
@@ -287,7 +302,7 @@ class PrivacyFenceMenuBar(rumps.App):
 
         self.menu.clear()
         self.menu = [
-            rumps.MenuItem("PrivacyFence is running"),
+            rumps.MenuItem(self._status_label()),
             rumps.separator,
             pii_item,
             rumps.separator,
