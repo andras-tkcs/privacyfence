@@ -240,6 +240,77 @@ No step in this plan requires provisioning any credential to GitHub, CI, or any 
 
 ---
 
+## Local checks before opening a PR
+
+This is the day-to-day answer to "what do I run before creating a PR" once this system exists —
+folded into [`coding-and-testing-guidelines.md` §2.7](coding-and-testing-guidelines.md#27-definition-of-done-for-a-pr-touching-this-repo)'s
+Definition of Done as the authoritative checklist; this section is the worked example behind that
+one bullet.
+
+**Worked example**: you fixed a parsing bug in `confluence_client.py`.
+
+1. Run the normal suite first — unchanged by any of this:
+   ```bash
+   pytest -v --cov=src/privacyfence --cov-report=term-missing
+   ```
+2. Because this PR touches a `*_client.py` file, also run the recorder in `--check` mode, scoped to
+   the connector you touched (fast — a handful of targeted calls against the `PFQA`-tagged seed
+   artifacts from `qa-environment-setup.md`, not a full re-record):
+   ```bash
+   python3 scripts/qa_fixture_recorder.py --check confluence
+   ```
+   This is the exact class of check that would have caught both bugs in the [Problem](#problem)
+   section before they shipped — it calls the real API and confirms every field the popup path
+   needs (`title`, `author`, `updated`, `space_key`, ...) actually comes back non-empty.
+3. Two outcomes:
+   - **Passes, and the live shape hasn't changed**: nothing else to do. `--check` never writes a
+     file, so there's nothing new to commit from this step.
+   - **Fails, or your fix was specifically in response to the provider's shape changing**: run
+     `python3 scripts/qa_fixture_recorder.py --record confluence`, inspect the diff under
+     `tests/fixtures/live/confluence/*.json` — it should be a small, meaningful shape change, with
+     identity fields already redacted to placeholders (if anything in the diff looks like a real
+     email or name, the redaction list needs a fix *before* you commit, not after) — then commit
+     the updated fixtures alongside your code fix, in the same PR.
+4. Paste the check's report (below) into the PR description.
+
+### When to run this
+
+Only when the PR touches `src/privacyfence/*_client.py` or `src/privacyfence/connectors/**` — not
+every PR. A docs change, a `gate.py` change, a `menu_bar.py` change has no reason to make a live
+call. `--check` with no argument runs every connector; `--check <connector>` scopes it to just the
+one(s) you touched, which is both faster and keeps the report focused on what's actually relevant
+for a reviewer to look at.
+
+### The report
+
+`--check` and `--record` both print the same small, deterministic Markdown table to stdout, and
+accept `--report-file <path>` to also save it — structural results only (pass/fail per method,
+which fields were present, fixture age), never message/page/issue *content*, for the same reason a
+recorded fixture never carries it:
+
+```markdown
+## PrivacyFence local QA check — 2026-07-14T10:32Z
+
+Command: `qa_fixture_recorder.py --check confluence`
+
+| Connector  | Method     | Seed artifact      | Result  | Notes                                        |
+|------------|------------|---------------------|---------|-----------------------------------------------|
+| confluence | list_spaces| —                   | ✅ pass | 4 spaces returned                             |
+| confluence | get_page   | `PFQA` seed page    | ✅ pass | title, author, updated, space_key all present |
+| confluence | search     | `[QATEST]` tag      | ✅ pass | 1 matching result                             |
+
+Fixture freshness: tests/fixtures/live/confluence/*.json last recorded 2026-06-02 (42 days ago).
+```
+
+Paste this directly into the PR description under a `## Local QA check` heading (wrap it in a
+`<details>` block if you'd rather keep it collapsed by default) — that's the "attach to the PR"
+mechanism. No new GitHub infrastructure, no CI job holding credentials, just a copy-paste block a
+reviewer can read without re-running anything themselves or needing access to the QA accounts at
+all. Don't commit the report file itself to the repo — it's a point-in-time artifact of your local
+run, not a durable asset the way the fixtures it's reporting on are.
+
+---
+
 ## Evaluation
 
 ### Cybersecurity — credentials and real accounts

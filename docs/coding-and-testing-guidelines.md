@@ -210,3 +210,9 @@ A new connector's test module should include, at minimum:
       re-raises as `RuntimeError`.
 - [ ] New module-level singletons have a reset added to `tests/conftest.py`.
 - [ ] Comments only where the *why* is non-obvious; no restated-*what* comments.
+- [ ] If this PR touches a `src/privacyfence/*_client.py` or `src/privacyfence/connectors/**` file:
+      run `scripts/qa_fixture_recorder.py --check <connector>` locally against a real account per
+      [`qa-environment-setup.md`](qa-environment-setup.md), and paste its report into the PR
+      description. If the live API's shape actually changed, also run `--record <connector>`,
+      review the redacted diff, and commit the updated fixture alongside the code change — see
+      [`external-api-contract-testing.md`'s pre-PR checklist](external-api-contract-testing.md#local-checks-before-opening-a-pr).
