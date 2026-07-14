@@ -1,12 +1,13 @@
 # External API Contract Testing (Design Proposal — Local-First)
 
-**Status: proposed, not yet implemented.** This revises an earlier version of this design that
-ran live API calls from GitHub Actions using stored service credentials. That approach is
-retired in favor of the one below: **no live third-party credential ever touches GitHub Actions,
-any cloud CI, or any file that could be `git add`-ed by accident.** Only a developer's own machine
-ever holds them, and the only thing that leaves that machine is already-recorded, already-synthetic
-fixture data pulled from the fully isolated accounts in
-[`qa-environment-setup.md`](qa-environment-setup.md).
+**Status: proposed, not yet implemented.** No live third-party credential is ever provisioned to
+GitHub Actions, any other cloud CI, or any secret store this repo doesn't fully control on a
+developer's own machine — that part is unchanged from the previous revision. What changed: this
+runs against your **real, already-authenticated accounts** (per
+[`qa-environment-setup.md`](qa-environment-setup.md)), not dedicated throwaway ones. The isolation
+that matters here is at the *content* level, not the account level — the recorder only ever reads
+the specific synthetic artifacts that doc has you create, never a blanket "whatever's there," and
+redacts real account-identity metadata before anything is written to disk.
 
 ## Problem
 
@@ -47,19 +48,24 @@ Drift is only discovered whenever someone next runs a full QA pass.
 ## Design principles
 
 1. **No live third-party credential is ever provisioned to GitHub Actions, any other cloud CI, or
-   any secret store this repo doesn't fully control on a developer's own machine.** The recorder
-   tool below runs locally, using the exact same OAuth token files `privacyfence-app --gmail-oauth`
-   (etc.) already writes to a git-ignored `credentials/` directory — nothing new to invent, store,
-   or rotate in the cloud.
-2. **Every account the recorder touches is a dedicated, disposable QA identity**
-   (`qa-environment-setup.md`), never your real accounts. This is a second, independent line of
-   defense on top of principle 1 — even a mistake in how the recorder is run can only ever touch
-   synthetic data.
-3. **CI stays exactly as it is today**: fast, deterministic, secret-free, running on every PR
+   anywhere but a developer's own machine.** The recorder tool below runs locally, using the exact
+   same OAuth token files `privacyfence-app --gmail-oauth` (etc.) already write to a git-ignored
+   `credentials/` directory — nothing new to invent, store, or rotate in the cloud.
+2. **The recorder only ever touches content created specifically for QA** — the seed
+   email/contact/issue/page/message from [`qa-environment-setup.md`](qa-environment-setup.md), found
+   by its `[QATEST]`/`PFQA` tag, never a blanket "list everything and grab the first result." This
+   is the actual isolation boundary now that real accounts are in play: not which account holds the
+   data, but which specific, pre-labeled-synthetic item the recorder is allowed to read.
+3. **Real account-identity metadata is redacted before anything touches disk.** Even a page/issue/
+   email you create yourself carries your real account's identity in structural fields the API
+   returns regardless of how synthetic the content is — author email, display name, account ID,
+   organizer address. These get replaced with placeholder values before a fixture is written, every
+   time, not just reviewed for after the fact.
+4. **CI stays exactly as it is today**: fast, deterministic, secret-free, running on every PR
    including forks. It only ever *replays* fixture files already committed to the repo — it never
    makes a live call to anything.
-4. **The recorded fixture is a durable regression-test asset**, not a throwaway debugging artifact
-   — committed to git, reviewed like code, and reused by every future test run until someone
+5. **The recorded fixture is a durable regression-test asset**, not a throwaway debugging artifact —
+   committed to git, reviewed like code, and reused by every future test run until someone
    deliberately re-records it.
 
 ## Part A — The local fixture recorder
@@ -69,45 +75,17 @@ Drift is only discovered whenever someone next runs a full QA pass.
 `daemon_main.py` already resolves every connector's OAuth token to a fixed, git-ignored path —
 `TOKEN_FILES` (`credentials/token.json`, `credentials/atlassian_token.json`, etc.), resolved against
 `paths.data_dir()`, which in a from-source checkout is the repo root itself (`.gitignore` already
-excludes `credentials/*`). This is the existing local-credential mechanism the whole app uses for
-every developer running from source — the recorder reuses it as-is rather than inventing a second
-credential format.
-
-To keep QA credentials fully separate from whatever your normal dev checkout is authenticated
-against, run the recorder from its **own dedicated git worktree**, per this repo's existing worktree
-convention (`CLAUDE.md`):
-
-```bash
-git worktree add ~/Coding/worktrees/privacyfence-qa-recorder main
-cd ~/Coding/worktrees/privacyfence-qa-recorder
-```
-
-That worktree's `credentials/` and `org/` directories are now used for nothing except the QA
-identities from `qa-environment-setup.md`. Install `org_config_qa.json` there (built via
-`scripts/build_org_bundle.py`, as described in that doc) and authenticate every connector headlessly
-with the existing CLI flags:
-
-```bash
-privacyfence-app --gmail-oauth
-privacyfence-app --drive-oauth
-privacyfence-app --calendar-oauth
-privacyfence-app --contacts-oauth
-privacyfence-app --tasks-oauth
-privacyfence-app --slack-oauth
-privacyfence-app --salesforce-oauth
-privacyfence-app --atlassian-oauth
-privacyfence-app --telegram-setup
-```
-
-signing in as the corresponding QA identity in each browser/prompt. This step is entirely manual,
-by design — it's the one point a human deliberately confirms which account is being authenticated.
+excludes `credentials/*`). This is the existing local-credential mechanism the app already uses for
+every developer running from source — the recorder reuses it as-is: whatever accounts you've already
+authenticated from the menu bar per `qa-environment-setup.md` are what it uses. No separate
+credential store, no separate accounts.
 
 ### The tool
 
 A new script, `scripts/qa_fixture_recorder.py`, reuses the same per-connector client-construction
-logic `daemon_main.build_connectors()` already has (org config + token file → a real `*_client.py`
-instance) rather than duplicating it, and calls a small, curated set of **read-only** methods per
-connector against the `PFQA1`/`PFQA2`-style fixtures from `qa-environment-setup.md`:
+logic `daemon_main.build_connectors()` already has, and calls a small, curated set of **targeted,
+read-only** methods per connector — always by the specific ID/key of a `qa-environment-setup.md`
+seed artifact, never a blanket list/search call kept for its own sake:
 
 ```bash
 python3 scripts/qa_fixture_recorder.py --check              # smoke test only, no files written
@@ -115,48 +93,51 @@ python3 scripts/qa_fixture_recorder.py --record confluence  # re-record one conn
 python3 scripts/qa_fixture_recorder.py --record all         # re-record everything
 ```
 
-- `--check`: calls each connector's read methods, asserts non-empty results and no exceptions,
-  prints a pass/fail summary. This is the local-only replacement for needing to spin up the full
-  app + a Cowork session + click through popups just to know whether the client layer still talks
-  to the provider correctly — a fast thing to run whenever you touch a `*_client.py`.
-- `--record <connector>`: does the same calls, and additionally dumps the **raw** response (before
-  `_parse_*` touches it) to `tests/fixtures/live/<connector>/<method>.json` in the worktree's own
-  checkout — since the recorder runs inside a git worktree of this same repo, "record" and "commit"
-  are the same ordinary git workflow as any other change; nothing needs to be copied between
-  machines or repos.
+- `--check`: calls each connector's read methods against its seed artifact, asserts non-empty
+  results and no exceptions, prints a pass/fail summary. This is the local-only replacement for
+  needing to spin up the full app + a Cowork session + click through popups just to know whether the
+  client layer still talks to the provider correctly.
+- `--record <connector>`: does the same targeted calls, redacts identity fields (below), and dumps
+  the result to `tests/fixtures/live/<connector>/<method>.json`, ready to review and commit like any
+  other change.
 
-### Guardrail against pointing at the wrong account
+For the handful of *list*-shaped calls worth recording too (proving the list-envelope shape parses,
+not just a single-item get), the recorder filters the raw response down to **only the entries whose
+tag matches the seed artifact** before writing anything to disk — e.g. for
+`gmail_list_messages`/`jira_search_issues`/`confluence_search`, keep only the result(s) whose
+subject/summary/title contains `[QATEST]`, drop everything else from the recorded file. A real
+inbox/site returning real results as part of proving the tool *works* is fine and unavoidable; a
+real inbox/site's results ending up *committed to git* is not, and this filter is what keeps the two
+separate.
 
-Because the whole design depends on these credentials always resolving to a QA-only identity, the
-recorder refuses to run unless the live identity it just authenticated against matches a small,
-**non-secret** manifest checked into the repo:
+### Identity-field redaction
 
-```yaml
-# tests/fixtures/qa_environment.yaml — not secret, safe to commit; site/workspace
-# names aren't credentials, and this is what keeps a mistake from being silent.
-confluence_site: privacyfence-qa.atlassian.net
-jira_site: privacyfence-qa.atlassian.net
-slack_workspace: "PrivacyFence QA"
-salesforce_instance_name_contains: "PrivacyFence QA"
-google_account_hint: "<the QA Gmail address, so a human can eyeball it>"
-```
+Before any fixture is written, the recorder replaces known identity-carrying fields with fixed
+placeholders, connector by connector — e.g. Confluence/Jira's `authorId`/`accountId` →
+`"qa-placeholder-account-id"`, an email-shaped field anywhere in the payload →
+`qa-placeholder@example.com`, a display name → `"QA Placeholder"`. This runs unconditionally, not as
+an optional review step, because it has to hold even when a human forgets to check: the whole point
+is that a fixture destined for a public git history never carries the real account owner's real
+email or name, even though the *content* around it (the page title, the issue summary) was already
+synthetic to begin with.
 
-Before the first call for a connector, the tool checks the client's own `check_connection()` result
-(site URL, workspace name, instance URL, authorized email — all things the clients already return)
-against this manifest and aborts loudly on a mismatch, rather than silently recording (or, worse,
-in `--record` mode, silently overwriting a committed fixture with) a response from the wrong
-account. This is a real safety check, not documentation — it's the thing that stops "I forgot which
-worktree/checkout I had open" from becoming "I just recorded my real Confluence data into a
-fixture file."
+This is a genuinely different, and larger, concern than it looks: content-level synthetic data
+(covered by `qa-environment-setup.md`) and identity-level metadata redaction (covered here) are two
+separate problems, and only content being synthetic does **not** imply identity metadata is safe —
+an API response for a page you wrote yourself still says *you* wrote it, in your real name and real
+email, regardless of what the page says.
 
-### Sanitization
+### Guardrail against recording the wrong thing
 
-Because every account behind these credentials is QA-only by construction
-(`qa-environment-setup.md`), there's no real personal or organizational data to strip from a
-recording in the first place — the guardrail above is what prevents that data from ever entering
-the pipeline, which is a stronger property than "scrub it after the fact." Still worth one human
-skim of the first recorded fixture per connector, mostly to confirm nothing unexpected (an
-account-linkage hint, an internal id format) is in there, not because sensitive data is expected.
+Before writing a fixture, the recorder confirms the object it just fetched actually matches the
+expected seed artifact — its ID/key came from a small, checked-in manifest
+(`tests/fixtures/qa_environment.yaml`, not secret, just IDs/keys/tags) and its title/summary
+contains the `[QATEST]` tag `qa-environment-setup.md` has you put there. If either check fails
+(wrong ID resolved, tag missing — e.g. because the seed artifact was renamed or deleted), the
+recorder aborts loudly instead of silently recording whatever it happened to fetch. Combined with
+the redaction step above, this is what makes "real accounts, not dedicated ones" a safe design:
+every write to disk is gated on "is this the specific synthetic thing I expected" before it's gated
+on "did I strip the identity fields," not relying on either check alone.
 
 ## Part B — Regression tests built on recorded fixtures
 
@@ -166,9 +147,10 @@ class alongside the current hand-authored-fixture tests — load the committed J
 
 ```python
 class TestLiveFixtureParsing:
-    """Fixtures recorded from the isolated QA site by scripts/qa_fixture_recorder.py --
-    real API shape, not hand-authored. Re-record via that script if this ever
-    starts failing after a genuine Confluence API change."""
+    """Fixtures recorded from a real, tagged QA seed artifact by
+    scripts/qa_fixture_recorder.py -- real API shape, not hand-authored, with
+    identity fields redacted. Re-record via that script if this ever starts
+    failing after a genuine Confluence API change."""
 
     def test_get_page_fixture_still_parses(self, client):
         raw = json.loads((FIXTURES_DIR / "confluence" / "get_page.json").read_text())
@@ -183,8 +165,8 @@ cadence they choose) updates the fixture in an ordinary commit with an ordinary 
 doesn't handle the new shape, this test fails immediately in that same PR, with the JSON diff right
 there to explain why.
 
-**Layer 3, folded in here rather than treated separately**: extend `tests/helpers.py` with a small
-helper —
+**Field-completeness, folded in here rather than treated separately**: extend `tests/helpers.py`
+with a small helper —
 
 ```python
 def assert_no_placeholder_fields(preview: dict, placeholders=("", "(unknown)", None)) -> None:
@@ -200,20 +182,20 @@ def assert_no_placeholder_fields(preview: dict, placeholders=("", "(unknown)", N
 — and, for each connector, run the **recorded** fixture (not a hand-authored one) through the real
 `_parse_*` method, then through the real connector method that builds the popup preview, then check
 it with `assert_no_placeholder_fields`. Using the real recorded fixture here instead of a
-hand-authored "full" one is strictly better than the original version of this idea: it proves the
-mapping is complete against the *actual* shape the provider returns, not against whatever shape a
-human assumed when writing the fixture by hand.
+hand-authored "full" one is strictly better: it proves the mapping is complete against the *actual*
+shape the provider returns, not against whatever shape a human assumed when writing the fixture by
+hand — and since identity fields were already redacted to fixed, non-empty placeholders (not blank
+strings), this check still works correctly on a redacted fixture without a false "field is empty"
+result.
 
 ## Optional: a credential-free staleness reminder
 
-The one thing this design trades away, relative to the earlier live-CI version, is automatic
-detection of drift between recordings — now bounded by how often a human remembers to run the
-recorder, not by a weekly scheduled job. A cheap, **fully credential-free** mitigation: a scheduled
-GitHub Actions workflow that holds no secrets at all and just checks how old the newest commit
-touching `tests/fixtures/live/**` is, opening/updating a reminder issue if it's past some threshold
-(e.g. 90 days). This adds zero credential-custody risk (it never talks to any external API) while
-partially offsetting the latency trade-off — worth doing, but explicitly optional and separable from
-everything above.
+The one thing this design trades away, relative to a hypothetical always-on live check, is automatic
+detection of drift between recordings — bounded by how often a human remembers to re-run the
+recorder. A cheap, **fully credential-free** mitigation: a scheduled GitHub Actions workflow that
+holds no secrets at all and just checks how old the newest commit touching `tests/fixtures/live/**`
+is, opening/updating a reminder issue past some threshold (e.g. 90 days). Zero credential-custody
+risk (it never talks to any external API), optional and separable from everything above.
 
 ## File layout
 
@@ -221,11 +203,11 @@ everything above.
 tests/
   unit/                          # unchanged, gains TestLiveFixtureParsing per connector
   fixtures/
-    qa_environment.yaml          # new — non-secret identity manifest, the recorder's guardrail
+    qa_environment.yaml          # new — non-secret manifest of seed-artifact IDs/keys/tags
     live/                        # new — checked into git, the regression baseline
       confluence/
         get_page.json
-        list_spaces.json
+        search.json              # list-shaped, filtered to [QATEST]-tagged results only
       jira/
         ...
 scripts/
@@ -235,27 +217,26 @@ scripts/
   tests.yml                      # unchanged
 ```
 
-Notably absent, compared to the earlier version of this design: any new GitHub Actions workflow
-that holds service credentials, any `contract` pytest marker, any `tests/contract/` directory. All
-of that lived in Layer 1 of the previous design, which is removed entirely.
-
 ## Rollout plan
 
-1. **Layer 3 helper** (`assert_no_placeholder_fields`) — ship immediately, no dependency on
-   anything else here; wire into Confluence's connector tests first.
-2. **`qa-environment-setup.md`** — build the isolated accounts (separate doc, already rewritten).
+1. **Field-completeness helper** (`assert_no_placeholder_fields`) — ship immediately, no dependency
+   on anything else here; wire into Confluence's connector tests first.
+2. **`qa-environment-setup.md` seed artifacts** — create the tagged synthetic content per connector
+   (already a standalone doc).
 3. **`scripts/qa_fixture_recorder.py`** (`--check` mode only, to start) — prove the tool can
-   authenticate against the QA worktree and call every connector's read methods successfully,
-   before it ever writes a fixture file.
-4. **`--record` mode + the guardrail manifest** — start recording real fixtures, one connector at a
-   time, each as its own reviewable PR.
-5. **`TestLiveFixtureParsing` + Layer 3 wired to real fixtures** — as each connector's fixtures land,
-   add its replay tests.
+   authenticate and call every connector's targeted read methods successfully, before it ever writes
+   a fixture file.
+4. **Redaction + guardrail + `--record` mode** — these three ship together, not separately; recording
+   without them defeats the design. Start recording real fixtures, one connector at a time, each as
+   its own reviewable PR — review the redacted output specifically for anything identity-shaped that
+   the redaction list missed, since that list is necessarily connector-specific and easy to
+   under-cover on the first pass.
+5. **`TestLiveFixtureParsing` + field-completeness wired to real fixtures** — as each connector's
+   fixtures land, add its replay tests.
 6. **Optional staleness reminder workflow** — whenever convenient; it's decoupled from everything
    else and adds no risk.
 
-No step in this plan requires provisioning any credential to GitHub, CI, or any cloud service —
-that's the entire point of the redesign.
+No step in this plan requires provisioning any credential to GitHub, CI, or any cloud service.
 
 ---
 
@@ -263,57 +244,43 @@ that's the entire point of the redesign.
 
 ### Cybersecurity — credentials and real accounts
 
-**What changed from the previous version of this design, and why it matters:**
+**What's unchanged from the credential-custody question, regardless of which accounts are used:**
+no live third-party credential is ever provisioned to GitHub Actions, any other cloud CI, or any
+secret store outside a developer's own machine. That removes the supply-chain exposure a
+live-CI design would have (this project's full dependency tree — `atlassian-python-api`,
+`simple-salesforce`, `telethon`, etc. — running in the same environment as a live credential, on
+every scheduled or PR-triggered run) and the "did we configure the fork-PR protection correctly"
+question entirely, by never having a secret in that environment to begin with.
 
-The earlier design stored QA-account refresh tokens as GitHub Actions secrets and ran live API
-calls from two new workflows (a scheduled one, and one triggered on connector-touching PRs). Even
-with the fork-PR protections that design documented (secrets withheld from `pull_request` runs
-originating from forks, avoiding `pull_request_target`), it still had a residual attack surface that
-this local-only redesign removes entirely:
+**What changed by using real accounts instead of dedicated throwaway ones, and what that actually
+costs:** the account-level blast-radius argument from the earlier revision of this doc (a leaked QA
+credential can only expose synthetic data because the *account* is disposable) no longer applies —
+a leaked credential for your real Gmail/Jira/Slack/Salesforce/Telegram account is exactly as
+sensitive as it always was, recorder or not. Three things carry the actual weight instead:
 
-- **Supply-chain exposure during the live run itself.** The workflow installed this project's full
-  dependency set (`atlassian-python-api`, `simple-salesforce`, `telethon`, `slack-sdk`,
-  `google-api-python-client`, ...) into the *same* environment holding live QA credentials. A
-  compromised transitive dependency, or a compromised third-party GitHub Action used anywhere in
-  that workflow, would have had a live credential sitting right next to it — a real, if
-  low-probability, exfiltration path that has nothing to do with getting the fork-PR trigger
-  configuration right. Local-only credential custody eliminates this: the recorder's dependencies
-  are the same ones already trusted to run on a developer's machine for every other purpose (the
-  daemon itself, the test suite), and there is no cloud execution environment holding a live
-  credential at all, ever.
-- **A single point of cloud-side custody.** Even encrypted, GitHub Actions secrets are a shared
-  resource governed by repo/org permission settings this project doesn't fully control end-to-end
-  (GitHub's own infrastructure, anyone with admin access to the repo's secret settings). Removing
-  them removes a whole category of "did we configure this correctly" risk — architectural absence
-  of a secret is more robust than correctly-configured presence of one.
-- **This wasn't the only mitigation, though — dedicated QA accounts (`qa-environment-setup.md`)
-  independently bound the blast radius of any of the above**, and that design decision is unchanged
-  and still load-bearing here: even in the worst case (a developer's own machine or worktree is
-  compromised), only synthetic data in disposable, easily-revoked accounts is exposed — never a real
-  mailbox, real Jira/Confluence site, real Slack workspace, or real Salesforce org.
+- **Content-level isolation** (`qa-environment-setup.md`): every artifact the recorder or the manual
+  QA process touches is one you deliberately created with synthetic content, found by an explicit
+  `[QATEST]`/`PFQA` tag — never "whatever's there." This bounds what *could* leak through this
+  system specifically to content that was never sensitive in the first place, without needing the
+  account itself to be disposable.
+- **Identity-field redaction**: content being synthetic does not make an API response's structural
+  identity fields (author email, account ID, display name) synthetic — those are still your real
+  identity, on a real account, in every recording. This is a genuinely separate control from content
+  isolation and the design above treats it as mandatory, not optional, specifically because a
+  fixture file is headed for a git history that (per `CONTRIBUTING.md`'s fork-based contribution
+  model) is effectively public.
+- **The recorder's own credential exposure is now identical to the app's normal exposure** — the
+  same token files, the same local machine, the same trust boundary as running PrivacyFence itself
+  day to day. No new credential-custody surface was introduced; the recorder is just another local
+  process reading the same files the daemon already reads.
 
-**What still needs care under this design:**
-
-- **Local machine hygiene** becomes the entire security boundary for these credentials — standard
-  practice (disk encryption, screen lock, not a shared machine) is now doing real work, though this
-  was already true for every real credential the app itself holds during normal development.
-- **The guardrail manifest is the mechanism that turns "wrong worktree" into a loud failure instead
-  of a silent bad recording** — it's a small piece of logic, but it's the one thing standing between
-  a mistake and a fixture file (or, in the worst case if the discipline of "QA-only accounts" is ever
-  relaxed later, real data) landing in git history. Worth treating its correctness as seriously as
-  the gate itself, proportionally.
-- **Telegram's phone-number binding remains the one place identity can't be fully synthetic** —
-  covered in `qa-environment-setup.md` §7 with the recommendation to use a number you actually own
-  long-term rather than a disposable one, specifically because a recycled number is a realistic
-  account-takeover vector for a persistent, repeatedly-used session (unlike a one-time OTP).
-- **This design says nothing new about `connector-qa-testing.md`'s own credential handling** — that
-  process still runs against whatever accounts a human has authenticated in the PrivacyFence menu
-  bar on their normal dev machine. Migrating it fully onto the same isolated QA identities this doc
-  establishes is a natural follow-up, not something this proposal does on its own.
-
-**Net assessment**: for a project whose entire purpose is guarding personal data, not putting a
-live third-party credential in any cloud service — full stop, not "correctly scoped and monitored"
-— is the more defensible default. The latency cost (below) is a reasonable trade for it.
+**Net assessment**: this is a smaller, more targeted set of guarantees than the previous
+dedicated-account revision offered, and correctly so — it protects the actual thing at risk (real
+account credentials staying only ever local, and specific real content never leaking through this
+particular pipeline) without asking you to maintain a second identity per connector for a benefit
+you didn't need. The redaction step is the one piece that's new *because* real accounts are in
+play, and it's worth treating as load-bearing, not an afterthought — it's the difference between
+"this fixture is safe to commit" and "this fixture has my name and email in it."
 
 ### Test coverage
 
@@ -329,29 +296,30 @@ live third-party credential in any cloud service — full stop, not "correctly s
 - Costs nothing in CI speed, determinism, or fork-PR compatibility — every PR still runs the exact
   same fast, network-free, 100%-pass-required suite it does today.
 
-**What this deliberately does *not* cover — stated plainly, not glossed over:**
+**What this deliberately does *not* cover:**
 
-- **Coverage is bounded by what the QA fixtures happen to contain.** A Confluence page with every
-  field populated, a Jira issue with one specific custom field. Edge cases — permission-denied
-  records, pagination boundaries, deleted/archived content, unusual unicode, rate-limit/5xx
-  responses — aren't exercised unless someone deliberately seeds them into the QA environment too.
-  The two-project/two-space setup in `qa-environment-setup.md` gives a contrast case, not edge-case
-  breadth.
+- **Coverage is bounded by the seed artifacts, deliberately narrow ones.** A single Confluence page,
+  a single Jira issue, one Gmail thread. Edge cases — permission-denied records, pagination
+  boundaries, deleted/archived content, unusual unicode, rate-limit/5xx responses — aren't exercised
+  unless someone deliberately creates a seed artifact for that case too. This was true under the
+  dedicated-account design as well; it doesn't change here.
 - **Nothing here exercises the gate, the popup UI, or the audit log.** `connector-qa-testing.md`
-  remains the only thing that does, and remains necessary before releases — this proposal is
-  explicitly scoped to the `*_client.py` layer only (see Non-goals, preserved from the earlier
-  version of this doc).
-- **Drift-detection latency is now "however often a human runs the recorder,"** worse than the
-  previous design's weekly scheduled check. The optional staleness-reminder workflow above partially
-  offsets this without reintroducing any credential risk, but it's an honest trade-off, not a wash —
-  faster detection was the one real thing given up to get to zero cloud credential custody.
-- **Telegram likely stays out of this system entirely** unless a long-term-owned secondary number is
-  available (`qa-environment-setup.md` §7), meaning that connector keeps relying solely on
-  `connector-qa-testing.md`'s manual process for the foreseeable future.
+  remains the only thing that does, and remains necessary before releases.
+- **Targeting reads at a single tagged artifact, instead of grabbing "the first result of a list
+  call," is deliberately narrower than what a live-CI or dedicated-account design could have
+  recorded** (e.g. a full, real `list_pages_in_space` response) — that's the direct cost of the
+  content-isolation principle above: broader recording would mean broader real-data exposure in the
+  committed fixture. The list-shaped recordings described in Part A (filtered to `[QATEST]`-tagged
+  entries only) are the compromise — they prove the envelope shape parses without capturing anything
+  beyond the one artifact that's already safe to record.
+- **Drift-detection latency is "however often a human runs the recorder,"** not automatic. The
+  optional staleness-reminder workflow partially offsets this without any credential risk.
+- **Telegram and the `trusted_sender_domain` Gmail rule are the two places a real, unlabeled
+  artifact's existence (not content) still matters** — covered explicitly in
+  `qa-environment-setup.md` §1 and §7, with the same rule applied there: confirm behavior/shape,
+  never persist content.
 
-**Net assessment**: this is a real, durable improvement over today's mocked-only suite for the eight
-connectors where a QA identity is practical, at the cost of slower (human-paced rather than
-weekly-automatic) drift detection and continued reliance on the manual process for gate/UI coverage
-and for Telegram specifically. Given the security trade-off above, that's the right call for this
-project's risk profile — the previous design's faster detection wasn't worth the credential-custody
-surface it required.
+**Net assessment**: a real, durable improvement over today's mocked-only suite, narrower in what it
+records than a dedicated-account design would allow, in exchange for not requiring a second identity
+per connector. That trade is the right one given the actual goal — keep testing your real accounts
+safely — rather than solving an account-isolation problem that wasn't the one being asked for.
