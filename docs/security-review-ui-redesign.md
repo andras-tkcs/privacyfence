@@ -250,7 +250,11 @@ every connector, plus the audit schema:
   badges, a Gmail-style header, progressive disclosure (`<details>`), and a wider/taller window
   without hand-building each new layout in raw AppKit constraints. Keep it `file://`/`data:`-only,
   no network — this preserves the "no telemetry, no network calls out of the popup" property from
-  `security-and-compliance.md`.
+  `security-and-compliance.md`. Render via `loadHTMLString(_:baseURL:)` with a single
+  self-contained string (inlined `<style>`, no separate resource files) rather than
+  `loadFileURL(...)` — WKWebView's `file://` loading model is stricter than the legacy `WebView`
+  class and this sidesteps it entirely, at no cost since the template is generated in-process
+  anyway.
 - Native `PDFView` (PDFKit) embed for genuinely binary PDF content already fetched as
   `content_bytes` in `drive_client.py`.
 - Drive classification-label lookup (`drive.labels.readonly` scope): **deferred** per the
@@ -258,9 +262,35 @@ every connector, plus the audit schema:
   added consent-screen surface and scope request. Revisit if a specific org asks for it; until
   then the sensitivity section is driven entirely by the local PII/financial detectors (Phase 2),
   with no "Classification: Internal/Confidential" row at all rather than a fabricated one.
-- **Prerequisite before this phase starts**: confirm the `WKWebView` migration doesn't complicate
-  code-signing/notarization (§10 Q3 — flagged for investigation, not yet resolved). Notarization
-  is already an open item in `security-and-compliance.md` §8; check WebKit-embedding entitlement
+- **Signing/notarization investigation (§10 Q3) — resolved, no blocker found**: checked against
+  the actual build config (`scripts/entitlements.plist`, `PrivacyFenceApp.spec`,
+  `scripts/build_dmg.sh`, `.github/workflows/build.yml`):
+  - The app is **not sandboxed** (`entitlements.plist` has no `com.apple.security.app-sandbox`
+    key) — it's Developer-ID/DMG distribution, not Mac App Store, which removes most of the
+    App-Sandbox-specific WKWebView restrictions that show up in generic guidance online.
+  - Signing already uses Hardened Runtime (`codesign --options runtime`, `build_dmg.sh:117-120`).
+    The one entitlement WKWebView needs under Hardened Runtime is
+    `com.apple.security.cs.allow-jit`, so JavaScriptCore can JIT-compile JS — a standard,
+    Apple-documented entitlement (same one Safari/Xcode/every Electron app ships with) that does
+    **not** trip notarization review. Add it to `entitlements.plist` proactively; it's only
+    load-bearing if the popup ever runs JavaScript at all (the `<details>`/`<summary>`-based
+    progressive disclosure this plan calls for needs none).
+  - WKWebView's own XPC helper processes (`com.apple.WebKit.WebContent`, etc.) are
+    system-provided and Apple-sandboxed independently of the host app — no extra entitlements
+    needed to use them from a non-sandboxed host.
+  - Build footprint: add `pyobjc-framework-WebKit` alongside the existing
+    `pyobjc-framework-Cocoa>=10.0` in `pyproject.toml`. `PrivacyFenceApp.spec` doesn't list
+    `AppKit`/`Foundation`/`objc` in `hidden_imports` at all today — PyInstaller already discovers
+    PyObjC bridge modules from the plain `import AppKit` in `approval_window.py`; a static `from
+    WebKit import WKWebView` should be discovered the same way.
+  - **What's still genuinely unverified, and not WebKit-specific**: notarization is currently
+    commented out in `build_dmg.sh` §8 and code-signing itself is optional/unexercised in CI
+    today (`SIGN_IDENTITY` secret and the cert-import step in `.github/workflows/build.yml` are
+    both optional/commented out) — so *no* signing path in this repo has been run end-to-end yet,
+    independent of WebKit. The actual gate before shipping Phase 3 is running one real signed
+    build (and, once notarization is turned on, one real notarization submission) with the
+    WebKit dependency included, on the existing `macos-latest` CI runner — not a design decision,
+    an empirical check.
   requirements against the actual signing pipeline before committing engineering time to the
   WKWebView rewrite specifically.
 - Three-level progressive disclosure (summary → expanded metadata → full inspect), all within one
@@ -322,7 +352,9 @@ whatever new infrastructure it would require — rather than revisited inside th
   or auto-accepted, per the decided scope) and a lookup helper (`recent_matches(operation_key,
   preview) -> int`) for the request-fingerprint feature.
 - `approval_window.py`: layout rewrite (Phase 1a pure-AppKit reorder plus a new "Claude says"
-  block; Phase 3 WKWebView migration, pending the notarization check in §10 Q3).
+  block; Phase 3 WKWebView migration — see resolved signing/notarization investigation in §7
+  Phase 3 and §10 Q3). Also add `com.apple.security.cs.allow-jit` to `scripts/entitlements.plist`
+  and `pyobjc-framework-WebKit` to `pyproject.toml`'s dependencies.
 
 ## 10. Open questions for the maintainer — decisions recorded
 
@@ -335,11 +367,18 @@ whatever new infrastructure it would require — rather than revisited inside th
 2. **Decided**: Drive classification-label support is **deferred** (§7 Phase 3) — narrow benefit
    relative to the new OAuth scope and consent-screen surface it requires. Revisit only if a
    specific org asks for it.
-3. **Still open, flagged for investigation**: whether the WKWebView migration in Phase 3 conflicts
-   with code-signing/notarization plans. Recommendation was to investigate before starting Phase
-   3 rather than decide blind now — `security-and-compliance.md` §8 already flags notarization as
-   an open item, so confirm WebKit-embedding entitlement requirements against the actual signing
-   pipeline before committing to WKWebView as the Phase 3 approach. This is now a prerequisite
-   listed directly in §7 Phase 3, not just a question sitting here.
+3. **Investigated, no blocker found — see §7 Phase 3 for the full write-up.** Checked against the
+   actual `entitlements.plist`/`PrivacyFenceApp.spec`/`build_dmg.sh`/CI config rather than generic
+   guidance: the app is unsandboxed Developer-ID/DMG distribution (not App Store), which removes
+   most of the WKWebView friction that shows up in sandboxed-app discussions. The one entitlement
+   WKWebView needs under the app's existing Hardened Runtime signing
+   (`com.apple.security.cs.allow-jit`, for JavaScriptCore JIT) is standard, Apple-documented, and
+   does not trip notarization — the same entitlement Safari/Xcode/Electron apps ship with. What
+   remains genuinely unverified is not WebKit-specific: no signing path in this repo has been
+   exercised end-to-end yet (notarization is commented out in `build_dmg.sh`, signing is optional
+   in CI) — that's a pre-existing gap, not something WKWebView introduces. Action items: add
+   `com.apple.security.cs.allow-jit` to `entitlements.plist`, add `pyobjc-framework-WebKit` to
+   `pyproject.toml`, and run one real signed build with it on the existing `macos-latest` CI
+   runner before shipping Phase 3.
 4. **Decided**: multi-reviewer governance is not being scoped. The single-reviewer "PR grammar, no
    PR infrastructure" version (Phases 1–3) is the intended ceiling — see §8.
