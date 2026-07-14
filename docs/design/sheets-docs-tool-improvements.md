@@ -276,17 +276,18 @@ Design choices, and why:
 - **Standing auto-accept rules:** both get the rule set `drive_write_doc_content` already implies
   via `drive.write_doc` — `i_am_owner`, `approved_sandbox_folder`, `created_this_session` — no new
   rule types.
-- **"Accept for 5 min":** only `docs.format_content` is proposed for
-  `TEMP_ACCEPT_ELIGIBLE_OPERATIONS` (keyed by `file_id`), on the same reasoning already applied to
-  Sheets in §1.4: a formatting-only op that doesn't alter document content is the lower-risk half of
-  the pair, directly parallel to `sheets.format_range` being temp-accept-eligible while
-  `sheets.write_range` (which changes cell values) also happens to be eligible today — so on strict
-  parallel this suggests `docs.edit_content` could be included too. Flagging as the same open
-  decision as the Sheets delete case: `sheets.write_range` already sets the precedent that a
-  content-changing write can be temp-accept-eligible when it's expected to be called repeatedly in
-  a burst (which incremental doc editing plausibly is), so excluding `docs.edit_content` here is a
-  conservative default, not a hard requirement — worth revisiting with real usage data once this
-  exists rather than deciding definitively in this document.
+- **"Accept for 5 min" — decided:** both `docs.edit_content` and `docs.format_content` are added to
+  `TEMP_ACCEPT_ELIGIBLE_OPERATIONS`, keyed by `file_id`. `docs.format_content` is the
+  non-destructive, direct parallel to `sheets.format_range`. `docs.edit_content` follows
+  `sheets.write_range`'s precedent instead: that operation already gets temp-accept treatment today
+  despite changing cell content, because it's the kind of write expected to be called repeatedly
+  against the same file in a burst (an agent filling in a sheet cell-by-cell) — incremental Doc
+  editing (fixing one paragraph, then the next) is the same shape of workload, and a replace is
+  scoped to a matched span rather than the whole document the way `sheets.write_range` is scoped to
+  one range rather than the whole sheet. This is a different case from `sheets.delete_dimensions`
+  in §1.4: that one is irreversible data loss with no PrivacyFence undo path, while a text
+  replacement, even a wrong one, leaves recoverable content behind (it can be found and replaced
+  back), so the write_range parallel applies here without the same reservation.
 
 ### 2.5 Preview / popup content
 
@@ -330,7 +331,7 @@ document.
 |---|---|---|---|---|
 | `drive_sheets_insert_dimensions` | `sheets.insert_dimensions` | popup | `i_am_owner`, `approved_sandbox_folder`, `created_this_session`, `approved_spreadsheet` | yes (by `spreadsheet_id`) |
 | `drive_sheets_delete_dimensions` | `sheets.delete_dimensions` | popup | same as above | **no** — destructive, standing rules only (§1.4) |
-| `drive_docs_edit_content` | `docs.edit_content` | popup | `i_am_owner`, `approved_sandbox_folder`, `created_this_session` | not by default — open question (§2.4) |
+| `drive_docs_edit_content` | `docs.edit_content` | popup | `i_am_owner`, `approved_sandbox_folder`, `created_this_session` | yes (by `file_id`) |
 | `drive_docs_format_content` | `docs.format_content` | popup | same as above | yes (by `file_id`) |
 
 ## 4. Explicitly out of scope for this design
