@@ -113,18 +113,23 @@ without doing the thing it's supposed to predict.
 So `check_policy` evaluates a new function, `auto_accept.would_auto_accept_from_args(operation_key,
 args, my_email) -> tuple[bool | None, str]`, that:
 
-1. Looks up the configured rules for that operation key.
-2. Evaluates every rule tagged as args-only (a companion `ARGS_ONLY_RULES: set[str]` next to
+1. Checks the existing in-memory temp-accept state first — `evaluator._is_temp_accepted(operation_key,
+   temp_accept_key(operation_key, ctx))` in `auto_accept.py` already only needs `ctx.args` (via
+   `TEMP_ACCEPT_ELIGIBLE_OPERATIONS`' arg-name lookup), so a live "Accept for 5 min" window is
+   just as knowable ahead of time as a standing rule. A hit → `verdict="auto_accept"`,
+   `matched_rule="session_temp_accept"`.
+2. Looks up the configured standing rules for that operation key.
+3. Evaluates every rule tagged as args-only (a companion `ARGS_ONLY_RULES: set[str]` next to
    `TEMP_ACCEPT_ELIGIBLE_OPERATIONS`) against a `ReviewContext` built from `args` alone
    (`raw_data=None`). A match → `verdict="auto_accept"`, `matched_rule` set.
-3. If nothing matched and every configured rule for that operation was args-only → the answer is
+4. If nothing matched and every configured rule for that operation was args-only → the answer is
    final: `verdict="requires_review"`. There is nothing left that fetching the real data could
    change.
-4. If nothing matched but at least one configured rule needs `raw_data` → `verdict="unknown"`,
+5. If nothing matched but at least one configured rule needs `raw_data` → `verdict="unknown"`,
    with `reason` naming which rule(s) are undetermined (e.g. `"i_am_owner not yet
    determinable — depends on the file's owner"`), so Claude knows the real call might still
    auto-accept, or might not.
-5. For `review`-gated tools specifically, add one more caveat regardless of the above: the
+6. For `review`-gated tools specifically, add one more caveat regardless of the above: the
    [PII detection gate](../docs/TECHNICAL_REFERENCE.md#pii-detection-gate) scans actual content
    and can force a popup even when a rule matches. `check_policy` cannot predict this — content
    doesn't exist yet at preflight time — so its response for any `review`-gated tool always
@@ -153,6 +158,34 @@ stdio transport tells the daemon *why* the bridge process was spawned. This sets
 daemon side, scoped to that one IPC connection (the bridge is a fresh process per Cowork task
 already, per `bridge_main.py`'s docstring — "safe for Claude to kill and restart it at any
 time" — so connection-scoped state maps cleanly onto "one scheduled task run").
+
+**Opt-in, off by default.** Unlike `check_policy` (pure read of existing policy, safe to expose
+unconditionally), `begin_unattended_session` changes *behavior* — it lets a Claude session
+unilaterally switch its own connection from "block on a popup" to "deny without asking." That's
+a decision an org should make deliberately, not something every install gets for free the moment
+it upgrades. A new settings.yaml key, alongside `pii_detection.enabled`:
+
+```yaml
+unattended_sessions:
+  enabled: false   # default: off
+```
+
+When `false`, the daemon still registers the meta-tool (so Claude gets a clear, actionable error
+rather than "unknown tool") but `begin_unattended_session` returns an error explaining that an
+admin needs to enable `unattended_sessions.enabled` in `settings.yaml` first. Turning it on is a
+config-file edit, so it shows up the same way any other policy change does — in version control
+for an org-distributed config, or as a deliberate local edit otherwise.
+
+**Visible while it's running, not just after the fact.** The menu bar already lists live,
+at-a-glance state (PII Detection Gate on/off, connector status). This gets the same treatment: a
+menu bar item showing the count of connections currently in unattended mode (e.g. "1 unattended
+session active"), sourced from the same per-connection flag `gated_call` checks — not a new
+tracking structure, just surfacing what the daemon already knows. Clicking it can jump to the
+audit log filtered to `denied_unattended` entries. This matters because unattended mode is the
+one addition here that changes behavior invisibly from the human's point of view until they
+happen to open the audit log — everything else in this proposal is either read-only
+(`check_policy`) or scoped to a documented settings.yaml rule a human already wrote
+(Part 4). A live indicator keeps that one exception from being a silent one.
 
 With the flag set, `gated_call` (`gate.py`) changes exactly one thing: whenever it would
 otherwise call `show_read_popup` / `show_popup` / `show_pii_confirmation_popup` and block, it
@@ -245,6 +278,13 @@ the meantime.
   after the task already finished, which doesn't compose with "the task's Cowork run reports a
   result now." Worth reconsidering later as a separate design if there's real demand for it.
 
+## Decisions made
+
+- `begin_unattended_session` is opt-in via `unattended_sessions.enabled` in `settings.yaml`,
+  default `false`.
+- The menu bar shows a live indicator while a connection is in unattended mode, not just
+  after-the-fact audit-log entries.
+
 ## Open questions
 
 - Exact shape of `ARGS_ONLY_RULES` maintenance: worth a unit test asserting every `_rule_*` method
@@ -252,7 +292,10 @@ the meantime.
   rule can't silently fall through `would_auto_accept_from_args` untagged.
 - Whether `privacyfence_end_unattended_session()` should also fire automatically when the bridge
   process exits (it should — bridge is ephemeral — but worth confirming there's no code path
-  where a connection outlives the "session" Claude thinks it's in).
-- Whether the menu bar should surface a passive notification ("scheduled task ran, N steps denied
-  unattended") pointing at the audit log, versus leaving discovery entirely to the existing weekly
-  Excel export.
+  where a connection outlives the "session" Claude thinks it's in), and whether unattended mode
+  should also auto-expire after some wall-clock ceiling (e.g. a few hours) as a backstop against a
+  `begin` call that's never matched by an `end` — bridge-exit cleanup should cover the normal
+  case, but a TTL is cheap insurance against a code path that doesn't.
+- Whether the settings.yaml opt-in should be a plain on/off, or should also support scoping it to
+  specific operations/connectors (e.g. "unattended mode is fine for Jira but never for Gmail
+  sends") rather than being all-or-nothing per install.
