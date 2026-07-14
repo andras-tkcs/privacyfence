@@ -1,8 +1,12 @@
-# External API Contract Testing (Design Proposal)
+# External API Contract Testing (Design Proposal — Local-First)
 
-**Status: proposed, not yet implemented.** This document designs a testing layer this repo
-doesn't have yet. See [Rollout plan](#rollout-plan) for what could ship first without any new
-infrastructure.
+**Status: proposed, not yet implemented.** This revises an earlier version of this design that
+ran live API calls from GitHub Actions using stored service credentials. That approach is
+retired in favor of the one below: **no live third-party credential ever touches GitHub Actions,
+any cloud CI, or any file that could be `git add`-ed by accident.** Only a developer's own machine
+ever holds them, and the only thing that leaves that machine is already-recorded, already-synthetic
+fixture data pulled from the fully isolated accounts in
+[`qa-environment-setup.md`](qa-environment-setup.md).
 
 ## Problem
 
@@ -30,251 +34,324 @@ This isn't hypothetical for this repo. Two examples already on record:
   only `updated` — so the field was always empty even though the README documented it as part of
   the popup. See the docstring at
   [`tests/unit/connectors/test_confluence_connector.py:1-11`](../tests/unit/connectors/test_confluence_connector.py#L1-L11).
-  The regression test that now guards this (`test_last_modified_placeholder_when_missing`,
-  same file) constructs `ConfluencePage` directly via a `make_page()` helper — it never goes
-  through `ConfluenceClient._parse_page_v2`, so it proves the connector handles a missing field
-  gracefully, not that the field mapping from the *real* API is complete.
+  The regression test that now guards this constructs `ConfluencePage` directly via a `make_page()`
+  helper — it never goes through `ConfluenceClient._parse_page_v2`, so it proves the connector
+  handles a missing field gracefully, not that the field mapping from the *real* API is complete.
 
 Both bugs are instances of the same gap: nothing in the suite exercises the path
-**real API response → `_parse_*` → dataclass → popup `preview`/`details_text`** end to end. Every
-`*_client.py` has this same shape (a thin wrapper around `atlassian-python-api` / `simple-salesforce`
-/ `google-api-python-client` / `slack-sdk` / `telethon`, with hand-rolled `_parse_*` methods turning
-raw dicts into dataclasses), so the risk isn't Confluence-specific — it's structural to how every
-connector is built.
+**real API response → `_parse_*` → dataclass → popup `preview`/`details_text`** end to end.
+`connector-qa-testing.md` already catches this class of bug — its own "Example findings" section is
+where both were actually found — but it's a manual, human-in-the-loop process run before releases.
+Drift is only discovered whenever someone next runs a full QA pass.
 
-`connector-qa-testing.md` already exists to catch exactly this class of bug, and it works — its own
-"Example findings" section is where both bugs above were actually found. But it's a manual,
-human-in-the-loop process run before releases: a person pastes a prompt into Claude Cowork, watches
-dozens of native popups, and clicks through them one at a time. That's the right tool for exercising
-the *gate* and the end-user experience, but it means API drift is only discovered whenever someone
-next runs a full QA pass — potentially long after a provider shipped the breaking change.
+## Design principles
 
-## Goals
+1. **No live third-party credential is ever provisioned to GitHub Actions, any other cloud CI, or
+   any secret store this repo doesn't fully control on a developer's own machine.** The recorder
+   tool below runs locally, using the exact same OAuth token files `privacyfence-app --gmail-oauth`
+   (etc.) already writes to a git-ignored `credentials/` directory — nothing new to invent, store,
+   or rotate in the cloud.
+2. **Every account the recorder touches is a dedicated, disposable QA identity**
+   (`qa-environment-setup.md`), never your real accounts. This is a second, independent line of
+   defense on top of principle 1 — even a mistake in how the recorder is run can only ever touch
+   synthetic data.
+3. **CI stays exactly as it is today**: fast, deterministic, secret-free, running on every PR
+   including forks. It only ever *replays* fixture files already committed to the repo — it never
+   makes a live call to anything.
+4. **The recorded fixture is a durable regression-test asset**, not a throwaway debugging artifact
+   — committed to git, reviewed like code, and reused by every future test run until someone
+   deliberately re-records it.
 
-- Catch "the provider's API moved out from under us" and "a field the popup needs came back empty"
-  automatically, closer to when the drift actually happens, without requiring a human QA pass.
-- Keep the existing unit suite exactly as fast, deterministic, and secret-free as it is today —
-  none of this should touch `pytest -v --cov=...`'s current 100%-pass-required PR gate.
-- Reuse the `PFQA`-prefixed QA sandbox fixtures already documented in
-  [`qa-environment-setup.md`](qa-environment-setup.md) rather than inventing a second set.
-- Make drift *reviewable*: when a provider's response shape changes, a human should see a diff in a
-  PR, not just a red build.
+## Part A — The local fixture recorder
 
-## Non-goals
+### Where credentials live
 
-- Replacing `connector-qa-testing.md`. That doc exercises the gate, auto-accept rules, the audit
-  log, and the actual native popup UI — none of which this proposal touches. This is narrowly about
-  the `*_client.py` layer: does the real API still return what the parsing code assumes.
-- Testing write operations against live accounts on a schedule. `create_page`, `send_message`, etc.
-  create real artifacts in real (albeit QA) accounts; running those unattended on a cron is a
-  cleanup and rate-limit headache disproportionate to the value here. Layer 1 below is read-only.
-- 100% field/endpoint coverage on day one. Start with the connectors most exposed to unofficial or
-  actively-changing APIs (Confluence and Jira via `atlassian-python-api`, Salesforce via
-  `simple-salesforce` — both already have a real breakage on record) before extending to the
-  Google APIs, which are more heavily versioned and have historically drifted less.
+`daemon_main.py` already resolves every connector's OAuth token to a fixed, git-ignored path —
+`TOKEN_FILES` (`credentials/token.json`, `credentials/atlassian_token.json`, etc.), resolved against
+`paths.data_dir()`, which in a from-source checkout is the repo root itself (`.gitignore` already
+excludes `credentials/*`). This is the existing local-credential mechanism the whole app uses for
+every developer running from source — the recorder reuses it as-is rather than inventing a second
+credential format.
 
-## Test accounts & isolation
+To keep QA credentials fully separate from whatever your normal dev checkout is authenticated
+against, run the recorder from its **own dedicated git worktree**, per this repo's existing worktree
+convention (`CLAUDE.md`):
 
-The right answer differs per connector, because "sandbox" means something different depending on
-whether the provider's OAuth grant is naturally scoped or account-wide:
-
-| Connector | Sandbox available? | Recommendation |
-|---|---|---|
-| Salesforce | Yes — a Developer Edition org is a real, free, permanent sandbox, isolated from any production org by construction. | Use it directly, as already planned. |
-| Jira / Confluence | Partial — the `PFQA` project/space convention (`qa-environment-setup.md`) scopes *where the tests act*, but Atlassian OAuth grants are site-wide, not project-scoped — a bug in a test could technically still read/touch something outside `PFQA` on the same site. | Acceptable to reuse the existing real-site-with-scoped-project pattern for now, since it's already the accepted design elsewhere in this repo and the blast radius in practice is low (tests only ever pass `PFQA`-prefixed keys). Worth revisiting if this site is ever shared with unrelated real work. |
-| Slack | No natural sandbox — a bot/user token's read scopes (`conversations.list`, etc.) apply workspace-wide even if a test only *intends* to touch one channel. | Recommend a **dedicated Slack workspace** (free tier) for unattended contract runs, not a channel inside a real workspace. `connector-qa-testing.md`'s human-supervised channel-in-real-workspace approach is fine when a person is watching every popup; it's a bigger blast radius once nothing is supervising the run. |
-| Google (Gmail/Drive/Calendar/Contacts/Tasks) | No natural sandbox — OAuth scopes are account-wide. | Recommend a **dedicated Google account** created solely for this. Cheap (free), and isolates any bug's blast radius from your real mailbox/Drive/calendar entirely. |
-| Telegram | Hardest to isolate — `telethon` authenticates a real user session tied to a phone number, not a bot token, and "Saved Messages" is inherently personal. | Recommend a **second Telegram account on a spare/secondary number** dedicated to QA, if you have one available (e.g. a Google Voice number or a spare SIM). If that's not practical, treat Telegram as the one connector that stays in the manual `connector-qa-testing.md` process rather than being automated — the cost of getting this wrong (an automated job doing something to your real personal chat history) is disproportionate to the value of automating this one connector. |
-
-The general principle: reuse a real account only where the provider itself gives you a scoping
-boundary a bug can't easily cross (Salesforce's separate org, Jira/Confluence's project/space keys
-being the only IDs the tests ever pass). Anywhere the OAuth grant is account-wide, an unattended
-job (no human watching a popup, unlike `connector-qa-testing.md`) should run against a throwaway
-account, not your real one.
-
-## Where this runs, and credential storage
-
-- **Runner**: GitHub Actions. The existing `tests.yml` job uses `macos-latest` because it needs
-  real AppKit/PyObjC (`osascript` popups, the menu bar). None of that applies here — these tests
-  only exercise the `*_client.py` HTTP/SDK layer — so both new workflows below can run on the
-  cheaper, faster `ubuntu-latest`.
-- **Credential storage**: GitHub Actions **encrypted secrets** (or an **Environment** with
-  secrets scoped to it, which additionally supports requiring manual approval before a job that
-  uses them runs). Secrets are encrypted at rest, injected only into the job's environment at
-  runtime, and GitHub automatically masks any matching substring in logs. Store only long-lived
-  **refresh tokens** (or, for Slack/Telegram, whatever their long-lived credential form is) plus
-  `client_id`/`client_secret` where applicable — never a short-lived access token — and let each
-  client's existing refresh logic (`ConfluenceClient._try_refresh` and the equivalent in
-  `jira_client.py`) mint a fresh access token per run, exactly like the app does in normal use.
-- **Fork-PR safety**: `CONTRIBUTING.md` explicitly invites fork-based PRs. GitHub's default
-  behavior already protects against a malicious fork PR exfiltrating these secrets: a plain
-  `pull_request`-triggered workflow run gets **no repo secrets and no write-scoped `GITHUB_TOKEN`**
-  when the PR comes from a fork. This design relies on that default — every workflow below must
-  use the plain `pull_request` trigger (never `pull_request_target`, which *does* grant secrets to
-  fork PRs and is the well-known way this class of protection gets accidentally defeated). A
-  fork-originated PR simply won't have the credentials available and the live-refresh job (Layer 2
-  below) should no-op/skip rather than fail when it detects that, so external contributions still
-  pass the network-free parts of CI normally.
-- Because these are dedicated test accounts (see above), not your real identity, revocation is
-  cheap and low-stakes if a token ever needs to be rotated — another reason to prefer throwaway
-  accounts over scoping your real Slack/Google/Telegram credentials down.
-
-## Design: three layers
-
-### Layer 1 — Live contract tests (scheduled, not PR-gated)
-
-A new `tests/contract/` directory, one module per connector (`test_confluence_contract.py`, etc.),
-marked with a new `@pytest.mark.contract` marker registered in `pyproject.toml`. These construct
-the real `*_client.py` classes — no mocking — using credentials for the same QA sandbox accounts
-`qa-environment-setup.md` already sets up, and call real read-only methods against the known
-`PFQA`-prefixed fixtures:
-
-```python
-@pytest.mark.contract
-class TestConfluenceLiveContract:
-    def test_get_page_returns_all_popup_fields(self, confluence_qa_client, pfqa_space_key):
-        pages = confluence_qa_client.list_pages_in_space(pfqa_space_key, max_results=1)
-        assert pages, "PFQA space has no pages — QA fixture is missing, not a code bug"
-        page = confluence_qa_client.get_page(pages[0].id)
-        assert page.title
-        assert page.author        # feeds preview["Author"]
-        assert page.updated       # feeds preview["Last modified"] — see the bug this would catch
-        assert page.space_key
+```bash
+git worktree add ~/Coding/worktrees/privacyfence-qa-recorder main
+cd ~/Coding/worktrees/privacyfence-qa-recorder
 ```
 
-Because `testpaths = ["tests"]` in `pyproject.toml` would otherwise pick these up in the normal
-run, the existing `tests.yml` job needs one change: `pytest -v --cov=... -m "not contract"`. A new
-workflow (`external-api-contract.yml`) runs `pytest -m contract` on a weekly `schedule` plus
-`workflow_dispatch`, using GitHub Actions secrets for the QA sandbox's stored **refresh tokens**
-(not access tokens — those expire in hours). Every OAuth-backed client here already has its own
-refresh-and-retry logic (`ConfluenceClient._try_refresh`, and the equivalent in `jira_client.py`),
-so the workflow only needs to seed `client_id`/`client_secret`/`refresh_token` once; each run
-mints its own short-lived access token the same way the app does in normal use.
+That worktree's `credentials/` and `org/` directories are now used for nothing except the QA
+identities from `qa-environment-setup.md`. Install `org_config_qa.json` there (built via
+`scripts/build_org_bundle.py`, as described in that doc) and authenticate every connector headlessly
+with the existing CLI flags:
 
-A failure here doesn't block any PR — it's a scheduled job, and GitHub already emails
-watchers/`CODEOWNERS` when a scheduled workflow run fails, which is enough signal to start with. A
-dedicated "auto-file an issue on failure" step can be added later if that turns out to be too easy
-to miss (see [Open questions](#open-questions)).
+```bash
+privacyfence-app --gmail-oauth
+privacyfence-app --drive-oauth
+privacyfence-app --calendar-oauth
+privacyfence-app --contacts-oauth
+privacyfence-app --tasks-oauth
+privacyfence-app --slack-oauth
+privacyfence-app --salesforce-oauth
+privacyfence-app --atlassian-oauth
+privacyfence-app --telegram-setup
+```
 
-### Layer 2 — Golden fixture capture, recorded on PRs that touch connector code
+signing in as the corresponding QA identity in each browser/prompt. This step is entirely manual,
+by design — it's the one point a human deliberately confirms which account is being authenticated.
 
-Layer 2 makes the *shape* of a real API response a checked-in, versioned artifact — the regression
-baseline every future PR gets replayed against — and, per your adjustment, recording it is part of
-PR CI itself rather than a separate weekly-only job. Recording it at the point a connector actually
-changes (instead of on an unrelated weekly cadence) means the fixture update lands in the same PR
-that's likely the reason the shape needed to change, with a reviewable diff right there.
+### The tool
 
-A new script, `scripts/refresh_api_fixtures.py`, uses QA sandbox credentials to call each client's
-read methods and dump the **raw** response (before `_parse_*` touches it) to
-`tests/fixtures/live/<connector>/<method>.json` — e.g. `tests/fixtures/live/confluence/get_page.json`.
-A new workflow, `external-api-fixture-refresh.yml`, runs it on `pull_request`, **path-filtered** to
-only fire when a PR touches `src/privacyfence/*_client.py` or `src/privacyfence/connectors/**` —
-untouched connectors, and PRs that don't touch connector code at all, never trigger a live call. Per
-the fork-PR note above, this workflow gets no secrets on a fork PR and should detect that and skip
-cleanly rather than fail.
+A new script, `scripts/qa_fixture_recorder.py`, reuses the same per-connector client-construction
+logic `daemon_main.build_connectors()` already has (org config + token file → a real `*_client.py`
+instance) rather than duplicating it, and calls a small, curated set of **read-only** methods per
+connector against the `PFQA1`/`PFQA2`-style fixtures from `qa-environment-setup.md`:
 
-The job re-runs the capture, diffs the result against the committed `tests/fixtures/live/` files,
-and:
-- if identical, passes silently — the live API still matches the checked-in baseline;
-- if different, fails the check and pushes the refreshed fixture as a commit onto the PR branch (or,
-  more conservatively to start, just posts the diff and lets the PR author commit it deliberately —
-  see the sequencing question below) so the reviewer sees exactly what changed on the provider's
-  side, in the same PR, right when it's relevant.
+```bash
+python3 scripts/qa_fixture_recorder.py --check              # smoke test only, no files written
+python3 scripts/qa_fixture_recorder.py --record confluence  # re-record one connector's fixtures
+python3 scripts/qa_fixture_recorder.py --record all         # re-record everything
+```
 
-New unit tests (in the existing `tests/unit/test_<connector>_client.py` modules, alongside the
-current hand-authored-fixture tests, e.g. a `TestLiveFixtureParsing` class) load the committed JSON
-fixtures and feed them through the real `_parse_*` methods — exactly like today's tests, except the
-fixture is real recorded data instead of one shaped by hand to match the code's assumptions. These
-themselves stay in the normal, network-free, secret-free `pytest` job (`tests.yml`), so every PR —
-including fork PRs with no credentials — still gets regression coverage against whatever the
-fixture currently says, even though only non-fork, connector-touching PRs can refresh it.
+- `--check`: calls each connector's read methods, asserts non-empty results and no exceptions,
+  prints a pass/fail summary. This is the local-only replacement for needing to spin up the full
+  app + a Cowork session + click through popups just to know whether the client layer still talks
+  to the provider correctly — a fast thing to run whenever you touch a `*_client.py`.
+- `--record <connector>`: does the same calls, and additionally dumps the **raw** response (before
+  `_parse_*` touches it) to `tests/fixtures/live/<connector>/<method>.json` in the worktree's own
+  checkout — since the recorder runs inside a git worktree of this same repo, "record" and "commit"
+  are the same ordinary git workflow as any other change; nothing needs to be copied between
+  machines or repos.
 
-This is deliberately a thin, dependency-free JSON capture/replay script rather than something like
-`vcrpy`: it keeps the fixture format as plain, reviewable JSON (matching this repo's existing
-`dict`-shaped fixtures), and avoids taking on a new dependency (even test-only) for something a
-~20-line-per-connector capture shim covers — `vcrpy` can be revisited if that shim grows unwieldy in
-practice.
+### Guardrail against pointing at the wrong account
 
-### Layer 3 — Field-completeness structural check (no infrastructure needed — ship this first)
+Because the whole design depends on these credentials always resolving to a QA-only identity, the
+recorder refuses to run unless the live identity it just authenticated against matches a small,
+**non-secret** manifest checked into the repo:
 
-Independent of Layers 1–2, and requiring no secrets, schedule, or new CI job, is a narrower fix for
-the *specific* class of bug the `last_modified` regression was: a `_parse_*` method (or the
-connector code building `preview`/`details_text` from its output) silently falling back to an
-empty/placeholder value because of a wrong attribute or key path.
+```yaml
+# tests/fixtures/qa_environment.yaml — not secret, safe to commit; site/workspace
+# names aren't credentials, and this is what keeps a mistake from being silent.
+confluence_site: privacyfence-qa.atlassian.net
+jira_site: privacyfence-qa.atlassian.net
+slack_workspace: "PrivacyFence QA"
+salesforce_instance_name_contains: "PrivacyFence QA"
+google_account_hint: "<the QA Gmail address, so a human can eyeball it>"
+```
 
-Add a shared helper to `tests/helpers.py`:
+Before the first call for a connector, the tool checks the client's own `check_connection()` result
+(site URL, workspace name, instance URL, authorized email — all things the clients already return)
+against this manifest and aborts loudly on a mismatch, rather than silently recording (or, worse,
+in `--record` mode, silently overwriting a committed fixture with) a response from the wrong
+account. This is a real safety check, not documentation — it's the thing that stops "I forgot which
+worktree/checkout I had open" from becoming "I just recorded my real Confluence data into a
+fixture file."
+
+### Sanitization
+
+Because every account behind these credentials is QA-only by construction
+(`qa-environment-setup.md`), there's no real personal or organizational data to strip from a
+recording in the first place — the guardrail above is what prevents that data from ever entering
+the pipeline, which is a stronger property than "scrub it after the fact." Still worth one human
+skim of the first recorded fixture per connector, mostly to confirm nothing unexpected (an
+account-linkage hint, an internal id format) is in there, not because sensitive data is expected.
+
+## Part B — Regression tests built on recorded fixtures
+
+New tests in the existing `tests/unit/test_<connector>_client.py` modules — a `TestLiveFixtureParsing`
+class alongside the current hand-authored-fixture tests — load the committed JSON files from
+`tests/fixtures/live/<connector>/` and feed them through the real `_parse_*` methods:
+
+```python
+class TestLiveFixtureParsing:
+    """Fixtures recorded from the isolated QA site by scripts/qa_fixture_recorder.py --
+    real API shape, not hand-authored. Re-record via that script if this ever
+    starts failing after a genuine Confluence API change."""
+
+    def test_get_page_fixture_still_parses(self, client):
+        raw = json.loads((FIXTURES_DIR / "confluence" / "get_page.json").read_text())
+        page = client._parse_page_v2(raw, include_body=True)
+        assert page.title and page.author and page.updated and page.space_key
+```
+
+These run in the normal, network-free, secret-free `pytest` job — every PR, including PRs from
+forks with no credentials at all, gets regression coverage against whatever the fixture currently
+says. When a provider changes something, re-recording (Part A, run locally, by a human, at whatever
+cadence they choose) updates the fixture in an ordinary commit with an ordinary diff; if the parser
+doesn't handle the new shape, this test fails immediately in that same PR, with the JSON diff right
+there to explain why.
+
+**Layer 3, folded in here rather than treated separately**: extend `tests/helpers.py` with a small
+helper —
 
 ```python
 def assert_no_placeholder_fields(preview: dict, placeholders=("", "(unknown)", None)) -> None:
-    """Assert a gated_call preview dict has no fallback/placeholder value, for a
-    fixture that's supposed to be fully populated. Catches a `_parse_*` field
-    mapping silently degrading to a default (see the confluence `last_modified`
-    bug in tests/unit/connectors/test_confluence_connector.py) without needing
-    to already know the bug exists.
+    """Assert a gated_call preview dict has no fallback/placeholder value.
+    Catches a _parse_* field mapping silently degrading to a default (see the
+    confluence last_modified bug in test_confluence_connector.py) without
+    needing to already know the bug exists.
     """
     blank = {k: v for k, v in preview.items() if v in placeholders}
     assert not blank, f"Preview fields fell back to a placeholder: {blank}"
 ```
 
-Then, for each connector, extend the existing "full page"/"full record" fixture already present in
-each `test_<connector>_client.py` (e.g. `TestParsePageV2::test_full_page_without_body` in
-`test_confluence_client.py`) so the **same raw dict** is reused end to end: parsed by the real
-`_parse_*` method, then run through the real connector method that builds the popup preview
-(instead of the connector test's current pattern of constructing the dataclass directly via a
-`make_page()`-style helper, which bypasses parsing entirely), then checked with
-`assert_no_placeholder_fields`. This is the piece that would have failed on the `last_modified` bug
-immediately, without a human needing to notice the popup was missing a field first.
+— and, for each connector, run the **recorded** fixture (not a hand-authored one) through the real
+`_parse_*` method, then through the real connector method that builds the popup preview, then check
+it with `assert_no_placeholder_fields`. Using the real recorded fixture here instead of a
+hand-authored "full" one is strictly better than the original version of this idea: it proves the
+mapping is complete against the *actual* shape the provider returns, not against whatever shape a
+human assumed when writing the fixture by hand.
 
-This layer is cheap enough to fold into the existing connector-test checklist in
-[`coding-and-testing-guidelines.md` §2.6](coding-and-testing-guidelines.md#26-new-connector-checklist)
-as a fifth bullet once written, rather than treated as a separate opt-in system.
+## Optional: a credential-free staleness reminder
+
+The one thing this design trades away, relative to the earlier live-CI version, is automatic
+detection of drift between recordings — now bounded by how often a human remembers to run the
+recorder, not by a weekly scheduled job. A cheap, **fully credential-free** mitigation: a scheduled
+GitHub Actions workflow that holds no secrets at all and just checks how old the newest commit
+touching `tests/fixtures/live/**` is, opening/updating a reminder issue if it's past some threshold
+(e.g. 90 days). This adds zero credential-custody risk (it never talks to any external API) while
+partially offsetting the latency trade-off — worth doing, but explicitly optional and separable from
+everything above.
 
 ## File layout
 
 ```
 tests/
-  unit/                          # unchanged
-  contract/                      # new — Layer 1, marked @pytest.mark.contract
-    conftest.py                  # QA sandbox client fixtures, credential loading
-    test_confluence_contract.py
-    test_jira_contract.py
-    test_salesforce_contract.py
-    ...
+  unit/                          # unchanged, gains TestLiveFixtureParsing per connector
   fixtures/
-    live/                        # new — Layer 2, checked into git
+    qa_environment.yaml          # new — non-secret identity manifest, the recorder's guardrail
+    live/                        # new — checked into git, the regression baseline
       confluence/
         get_page.json
         list_spaces.json
       jira/
         ...
 scripts/
-  refresh_api_fixtures.py        # new — regenerates tests/fixtures/live/
+  qa_fixture_recorder.py         # new — run locally only, never in CI
 .github/workflows/
-  external-api-contract.yml      # new — weekly + workflow_dispatch, runs Layer 1
-  external-api-fixture-refresh.yml  # new — pull_request, path-filtered to connector code, runs Layer 2
-  tests.yml                      # existing — one-line change: add -m "not contract"
+  fixture-staleness-reminder.yml # new, optional — credential-free, just checks file age
+  tests.yml                      # unchanged
 ```
+
+Notably absent, compared to the earlier version of this design: any new GitHub Actions workflow
+that holds service credentials, any `contract` pytest marker, any `tests/contract/` directory. All
+of that lived in Layer 1 of the previous design, which is removed entirely.
 
 ## Rollout plan
 
-Layer 3 has no dependency on the other two and finds a real, already-documented bug class on its
-own — start there:
+1. **Layer 3 helper** (`assert_no_placeholder_fields`) — ship immediately, no dependency on
+   anything else here; wire into Confluence's connector tests first.
+2. **`qa-environment-setup.md`** — build the isolated accounts (separate doc, already rewritten).
+3. **`scripts/qa_fixture_recorder.py`** (`--check` mode only, to start) — prove the tool can
+   authenticate against the QA worktree and call every connector's read methods successfully,
+   before it ever writes a fixture file.
+4. **`--record` mode + the guardrail manifest** — start recording real fixtures, one connector at a
+   time, each as its own reviewable PR.
+5. **`TestLiveFixtureParsing` + Layer 3 wired to real fixtures** — as each connector's fixtures land,
+   add its replay tests.
+6. **Optional staleness reminder workflow** — whenever convenient; it's decoupled from everything
+   else and adds no risk.
 
-1. **Layer 3** — add `assert_no_placeholder_fields` to `tests/helpers.py`, wire it into
-   Confluence's connector tests first (the connector with the on-record bug), then the
-   new-connector checklist for everyone else. No CI or credential changes.
-2. **Layer 2 skeleton** — add the `tests/fixtures/live/` directory and one hand-seeded fixture per
-   connector (captured once, manually, from a real QA sandbox call) plus its replay test, to prove
-   the mechanism before automating capture. Still no CI/credential changes yet — this step just
-   proves the replay half works against real recorded data.
-3. **Test accounts** — set up the dedicated Google account and Slack workspace, and decide on
-   Telegram (see [Test accounts & isolation](#test-accounts--isolation)). Provision the resulting
-   credentials as GitHub Actions secrets/Environment.
-4. **`scripts/refresh_api_fixtures.py` + `external-api-fixture-refresh.yml`** — automate capture and
-   wire it to run on connector-touching PRs, per Layer 2's design above.
-5. **Layer 1 + `external-api-contract.yml`** — add `tests/contract/`, the `contract` marker, and the
-   scheduled workflow, reusing the same credentials step 3 provisioned.
+No step in this plan requires provisioning any credential to GitHub, CI, or any cloud service —
+that's the entire point of the redesign.
 
-Each step ships independent value and can land as its own PR. Steps 1–2 need nothing beyond what's
-in this repo already; step 3 is the one that needs your input on account setup before step 4 can be
-built.
+---
+
+## Evaluation
+
+### Cybersecurity — credentials and real accounts
+
+**What changed from the previous version of this design, and why it matters:**
+
+The earlier design stored QA-account refresh tokens as GitHub Actions secrets and ran live API
+calls from two new workflows (a scheduled one, and one triggered on connector-touching PRs). Even
+with the fork-PR protections that design documented (secrets withheld from `pull_request` runs
+originating from forks, avoiding `pull_request_target`), it still had a residual attack surface that
+this local-only redesign removes entirely:
+
+- **Supply-chain exposure during the live run itself.** The workflow installed this project's full
+  dependency set (`atlassian-python-api`, `simple-salesforce`, `telethon`, `slack-sdk`,
+  `google-api-python-client`, ...) into the *same* environment holding live QA credentials. A
+  compromised transitive dependency, or a compromised third-party GitHub Action used anywhere in
+  that workflow, would have had a live credential sitting right next to it — a real, if
+  low-probability, exfiltration path that has nothing to do with getting the fork-PR trigger
+  configuration right. Local-only credential custody eliminates this: the recorder's dependencies
+  are the same ones already trusted to run on a developer's machine for every other purpose (the
+  daemon itself, the test suite), and there is no cloud execution environment holding a live
+  credential at all, ever.
+- **A single point of cloud-side custody.** Even encrypted, GitHub Actions secrets are a shared
+  resource governed by repo/org permission settings this project doesn't fully control end-to-end
+  (GitHub's own infrastructure, anyone with admin access to the repo's secret settings). Removing
+  them removes a whole category of "did we configure this correctly" risk — architectural absence
+  of a secret is more robust than correctly-configured presence of one.
+- **This wasn't the only mitigation, though — dedicated QA accounts (`qa-environment-setup.md`)
+  independently bound the blast radius of any of the above**, and that design decision is unchanged
+  and still load-bearing here: even in the worst case (a developer's own machine or worktree is
+  compromised), only synthetic data in disposable, easily-revoked accounts is exposed — never a real
+  mailbox, real Jira/Confluence site, real Slack workspace, or real Salesforce org.
+
+**What still needs care under this design:**
+
+- **Local machine hygiene** becomes the entire security boundary for these credentials — standard
+  practice (disk encryption, screen lock, not a shared machine) is now doing real work, though this
+  was already true for every real credential the app itself holds during normal development.
+- **The guardrail manifest is the mechanism that turns "wrong worktree" into a loud failure instead
+  of a silent bad recording** — it's a small piece of logic, but it's the one thing standing between
+  a mistake and a fixture file (or, in the worst case if the discipline of "QA-only accounts" is ever
+  relaxed later, real data) landing in git history. Worth treating its correctness as seriously as
+  the gate itself, proportionally.
+- **Telegram's phone-number binding remains the one place identity can't be fully synthetic** —
+  covered in `qa-environment-setup.md` §7 with the recommendation to use a number you actually own
+  long-term rather than a disposable one, specifically because a recycled number is a realistic
+  account-takeover vector for a persistent, repeatedly-used session (unlike a one-time OTP).
+- **This design says nothing new about `connector-qa-testing.md`'s own credential handling** — that
+  process still runs against whatever accounts a human has authenticated in the PrivacyFence menu
+  bar on their normal dev machine. Migrating it fully onto the same isolated QA identities this doc
+  establishes is a natural follow-up, not something this proposal does on its own.
+
+**Net assessment**: for a project whose entire purpose is guarding personal data, not putting a
+live third-party credential in any cloud service — full stop, not "correctly scoped and monitored"
+— is the more defensible default. The latency cost (below) is a reasonable trade for it.
+
+### Test coverage
+
+**What this buys, concretely:**
+
+- Closes the exact gap `connector-qa-testing.md`'s own findings document: a real API response shape
+  (Confluence's v1→v2 migration) or a real field-mapping mistake (`last_modified`) now has an
+  automated, git-diffable check, instead of depending entirely on a human noticing during a manual
+  QA pass.
+- Fixtures become a durable, versioned regression asset — once Confluence's actual v2 shape is
+  recorded, `TestLiveFixtureParsing` protects that shape from silent regressions in `_parse_page_v2`
+  forever after, independent of whether anyone re-records again soon.
+- Costs nothing in CI speed, determinism, or fork-PR compatibility — every PR still runs the exact
+  same fast, network-free, 100%-pass-required suite it does today.
+
+**What this deliberately does *not* cover — stated plainly, not glossed over:**
+
+- **Coverage is bounded by what the QA fixtures happen to contain.** A Confluence page with every
+  field populated, a Jira issue with one specific custom field. Edge cases — permission-denied
+  records, pagination boundaries, deleted/archived content, unusual unicode, rate-limit/5xx
+  responses — aren't exercised unless someone deliberately seeds them into the QA environment too.
+  The two-project/two-space setup in `qa-environment-setup.md` gives a contrast case, not edge-case
+  breadth.
+- **Nothing here exercises the gate, the popup UI, or the audit log.** `connector-qa-testing.md`
+  remains the only thing that does, and remains necessary before releases — this proposal is
+  explicitly scoped to the `*_client.py` layer only (see Non-goals, preserved from the earlier
+  version of this doc).
+- **Drift-detection latency is now "however often a human runs the recorder,"** worse than the
+  previous design's weekly scheduled check. The optional staleness-reminder workflow above partially
+  offsets this without reintroducing any credential risk, but it's an honest trade-off, not a wash —
+  faster detection was the one real thing given up to get to zero cloud credential custody.
+- **Telegram likely stays out of this system entirely** unless a long-term-owned secondary number is
+  available (`qa-environment-setup.md` §7), meaning that connector keeps relying solely on
+  `connector-qa-testing.md`'s manual process for the foreseeable future.
+
+**Net assessment**: this is a real, durable improvement over today's mocked-only suite for the eight
+connectors where a QA identity is practical, at the cost of slower (human-paced rather than
+weekly-automatic) drift detection and continued reliance on the manual process for gate/UI coverage
+and for Telegram specifically. Given the security trade-off above, that's the right call for this
+project's risk profile — the previous design's faster detection wasn't worth the credential-custody
+surface it required.
