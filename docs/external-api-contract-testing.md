@@ -73,6 +73,52 @@ next runs a full QA pass — potentially long after a provider shipped the break
   `simple-salesforce` — both already have a real breakage on record) before extending to the
   Google APIs, which are more heavily versioned and have historically drifted less.
 
+## Test accounts & isolation
+
+The right answer differs per connector, because "sandbox" means something different depending on
+whether the provider's OAuth grant is naturally scoped or account-wide:
+
+| Connector | Sandbox available? | Recommendation |
+|---|---|---|
+| Salesforce | Yes — a Developer Edition org is a real, free, permanent sandbox, isolated from any production org by construction. | Use it directly, as already planned. |
+| Jira / Confluence | Partial — the `PFQA` project/space convention (`qa-environment-setup.md`) scopes *where the tests act*, but Atlassian OAuth grants are site-wide, not project-scoped — a bug in a test could technically still read/touch something outside `PFQA` on the same site. | Acceptable to reuse the existing real-site-with-scoped-project pattern for now, since it's already the accepted design elsewhere in this repo and the blast radius in practice is low (tests only ever pass `PFQA`-prefixed keys). Worth revisiting if this site is ever shared with unrelated real work. |
+| Slack | No natural sandbox — a bot/user token's read scopes (`conversations.list`, etc.) apply workspace-wide even if a test only *intends* to touch one channel. | Recommend a **dedicated Slack workspace** (free tier) for unattended contract runs, not a channel inside a real workspace. `connector-qa-testing.md`'s human-supervised channel-in-real-workspace approach is fine when a person is watching every popup; it's a bigger blast radius once nothing is supervising the run. |
+| Google (Gmail/Drive/Calendar/Contacts/Tasks) | No natural sandbox — OAuth scopes are account-wide. | Recommend a **dedicated Google account** created solely for this. Cheap (free), and isolates any bug's blast radius from your real mailbox/Drive/calendar entirely. |
+| Telegram | Hardest to isolate — `telethon` authenticates a real user session tied to a phone number, not a bot token, and "Saved Messages" is inherently personal. | Recommend a **second Telegram account on a spare/secondary number** dedicated to QA, if you have one available (e.g. a Google Voice number or a spare SIM). If that's not practical, treat Telegram as the one connector that stays in the manual `connector-qa-testing.md` process rather than being automated — the cost of getting this wrong (an automated job doing something to your real personal chat history) is disproportionate to the value of automating this one connector. |
+
+The general principle: reuse a real account only where the provider itself gives you a scoping
+boundary a bug can't easily cross (Salesforce's separate org, Jira/Confluence's project/space keys
+being the only IDs the tests ever pass). Anywhere the OAuth grant is account-wide, an unattended
+job (no human watching a popup, unlike `connector-qa-testing.md`) should run against a throwaway
+account, not your real one.
+
+## Where this runs, and credential storage
+
+- **Runner**: GitHub Actions. The existing `tests.yml` job uses `macos-latest` because it needs
+  real AppKit/PyObjC (`osascript` popups, the menu bar). None of that applies here — these tests
+  only exercise the `*_client.py` HTTP/SDK layer — so both new workflows below can run on the
+  cheaper, faster `ubuntu-latest`.
+- **Credential storage**: GitHub Actions **encrypted secrets** (or an **Environment** with
+  secrets scoped to it, which additionally supports requiring manual approval before a job that
+  uses them runs). Secrets are encrypted at rest, injected only into the job's environment at
+  runtime, and GitHub automatically masks any matching substring in logs. Store only long-lived
+  **refresh tokens** (or, for Slack/Telegram, whatever their long-lived credential form is) plus
+  `client_id`/`client_secret` where applicable — never a short-lived access token — and let each
+  client's existing refresh logic (`ConfluenceClient._try_refresh` and the equivalent in
+  `jira_client.py`) mint a fresh access token per run, exactly like the app does in normal use.
+- **Fork-PR safety**: `CONTRIBUTING.md` explicitly invites fork-based PRs. GitHub's default
+  behavior already protects against a malicious fork PR exfiltrating these secrets: a plain
+  `pull_request`-triggered workflow run gets **no repo secrets and no write-scoped `GITHUB_TOKEN`**
+  when the PR comes from a fork. This design relies on that default — every workflow below must
+  use the plain `pull_request` trigger (never `pull_request_target`, which *does* grant secrets to
+  fork PRs and is the well-known way this class of protection gets accidentally defeated). A
+  fork-originated PR simply won't have the credentials available and the live-refresh job (Layer 2
+  below) should no-op/skip rather than fail when it detects that, so external contributions still
+  pass the network-free parts of CI normally.
+- Because these are dedicated test accounts (see above), not your real identity, revocation is
+  cheap and low-stakes if a token ever needs to be rotated — another reason to prefer throwaway
+  accounts over scoping your real Slack/Google/Telegram credentials down.
+
 ## Design: three layers
 
 ### Layer 1 — Live contract tests (scheduled, not PR-gated)
@@ -110,36 +156,44 @@ watchers/`CODEOWNERS` when a scheduled workflow run fails, which is enough signa
 dedicated "auto-file an issue on failure" step can be added later if that turns out to be too easy
 to miss (see [Open questions](#open-questions)).
 
-### Layer 2 — Golden fixture replay (runs in normal PR CI, no live network)
+### Layer 2 — Golden fixture capture, recorded on PRs that touch connector code
 
-Layer 1 catches drift, but only weekly, and only for a human to notice. Layer 2 makes the *shape*
-of a real API response a checked-in, versioned artifact, so drift shows up as an ordinary,
-reviewable file diff instead of something someone has to go looking for.
+Layer 2 makes the *shape* of a real API response a checked-in, versioned artifact — the regression
+baseline every future PR gets replayed against — and, per your adjustment, recording it is part of
+PR CI itself rather than a separate weekly-only job. Recording it at the point a connector actually
+changes (instead of on an unrelated weekly cadence) means the fixture update lands in the same PR
+that's likely the reason the shape needed to change, with a reviewable diff right there.
 
-A new script, `scripts/refresh_api_fixtures.py`, uses the same QA sandbox credentials as Layer 1 to
-call each client's read methods and dump the **raw** response (before `_parse_*` touches it) to
-`tests/fixtures/live/<connector>/<method>.json` — e.g.
-`tests/fixtures/live/confluence/get_page.json`. This is a manual/scheduled operation (run by the
-same weekly workflow, or by hand), not something every test run does. Since the raw response for
-these read-only QA fixtures already contains nothing more sensitive than `PFQA` test content, no
-separate scrubbing pass should be needed beyond confirming that by hand once per connector when the
-script is written — call this out explicitly in review rather than assuming it.
+A new script, `scripts/refresh_api_fixtures.py`, uses QA sandbox credentials to call each client's
+read methods and dump the **raw** response (before `_parse_*` touches it) to
+`tests/fixtures/live/<connector>/<method>.json` — e.g. `tests/fixtures/live/confluence/get_page.json`.
+A new workflow, `external-api-fixture-refresh.yml`, runs it on `pull_request`, **path-filtered** to
+only fire when a PR touches `src/privacyfence/*_client.py` or `src/privacyfence/connectors/**` —
+untouched connectors, and PRs that don't touch connector code at all, never trigger a live call. Per
+the fork-PR note above, this workflow gets no secrets on a fork PR and should detect that and skip
+cleanly rather than fail.
+
+The job re-runs the capture, diffs the result against the committed `tests/fixtures/live/` files,
+and:
+- if identical, passes silently — the live API still matches the checked-in baseline;
+- if different, fails the check and pushes the refreshed fixture as a commit onto the PR branch (or,
+  more conservatively to start, just posts the diff and lets the PR author commit it deliberately —
+  see the sequencing question below) so the reviewer sees exactly what changed on the provider's
+  side, in the same PR, right when it's relevant.
 
 New unit tests (in the existing `tests/unit/test_<connector>_client.py` modules, alongside the
-current hand-authored-fixture tests, e.g. a `TestLiveFixtureParsing` class) load these recorded
-JSON blobs and feed them through the real `_parse_*` methods — exactly like today's tests, except
-the fixture is real recorded data instead of a fixture shaped by hand to match the code's
-assumptions. These run in the normal, network-free, secret-free `pytest` job, so they gate PRs like
-everything else and don't add flakiness or latency to CI.
+current hand-authored-fixture tests, e.g. a `TestLiveFixtureParsing` class) load the committed JSON
+fixtures and feed them through the real `_parse_*` methods — exactly like today's tests, except the
+fixture is real recorded data instead of one shaped by hand to match the code's assumptions. These
+themselves stay in the normal, network-free, secret-free `pytest` job (`tests.yml`), so every PR —
+including fork PRs with no credentials — still gets regression coverage against whatever the
+fixture currently says, even though only non-fork, connector-touching PRs can refresh it.
 
-When a provider changes something, the next scheduled fixture refresh captures the new shape; if
-the parser doesn't handle it, this layer's replay test fails immediately in the PR that updates the
-fixture — with a plain JSON diff showing exactly what changed, not just a live-API failure someone
-has to go reproduce by hand. This is deliberately a thin, dependency-free JSON capture/replay
-script rather than something like `vcrpy`: it keeps the fixture format as plain, reviewable JSON
-(matching this repo's existing `dict`-shaped fixtures), and avoids taking on a new dependency (even
-test-only) for something a ~20-line-per-connector capture shim covers — `vcrpy` can be revisited if
-that shim grows unwieldy in practice.
+This is deliberately a thin, dependency-free JSON capture/replay script rather than something like
+`vcrpy`: it keeps the fixture format as plain, reviewable JSON (matching this repo's existing
+`dict`-shaped fixtures), and avoids taking on a new dependency (even test-only) for something a
+~20-line-per-connector capture shim covers — `vcrpy` can be revisited if that shim grows unwieldy in
+practice.
 
 ### Layer 3 — Field-completeness structural check (no infrastructure needed — ship this first)
 
@@ -196,7 +250,8 @@ tests/
 scripts/
   refresh_api_fixtures.py        # new — regenerates tests/fixtures/live/
 .github/workflows/
-  external-api-contract.yml      # new — weekly + workflow_dispatch, runs Layer 1 (and Layer 2 refresh)
+  external-api-contract.yml      # new — weekly + workflow_dispatch, runs Layer 1
+  external-api-fixture-refresh.yml  # new — pull_request, path-filtered to connector code, runs Layer 2
   tests.yml                      # existing — one-line change: add -m "not contract"
 ```
 
@@ -210,29 +265,16 @@ own — start there:
    new-connector checklist for everyone else. No CI or credential changes.
 2. **Layer 2 skeleton** — add the `tests/fixtures/live/` directory and one hand-seeded fixture per
    connector (captured once, manually, from a real QA sandbox call) plus its replay test, to prove
-   the mechanism before automating capture.
-3. **`scripts/refresh_api_fixtures.py`** — automate what step 2 did by hand, for all connectors.
-4. **Layer 1 + the scheduled workflow** — add `tests/contract/`, the `contract` marker, and
-   `external-api-contract.yml`, wired to call `refresh_api_fixtures.py` as part of the same run so
-   fixture refresh and live-contract-check stay in lockstep.
+   the mechanism before automating capture. Still no CI/credential changes yet — this step just
+   proves the replay half works against real recorded data.
+3. **Test accounts** — set up the dedicated Google account and Slack workspace, and decide on
+   Telegram (see [Test accounts & isolation](#test-accounts--isolation)). Provision the resulting
+   credentials as GitHub Actions secrets/Environment.
+4. **`scripts/refresh_api_fixtures.py` + `external-api-fixture-refresh.yml`** — automate capture and
+   wire it to run on connector-touching PRs, per Layer 2's design above.
+5. **Layer 1 + `external-api-contract.yml`** — add `tests/contract/`, the `contract` marker, and the
+   scheduled workflow, reusing the same credentials step 3 provisioned.
 
-Each step ships independent value and can land as its own PR; nothing in steps 1–3 requires
-provisioning CI secrets.
-
-## Open questions
-
-- **Credential provisioning**: who owns the QA sandbox's stored refresh tokens as GitHub Actions
-  secrets, and what's the rotation/revocation story if this repo is forked (`CONTRIBUTING.md`
-  already anticipates forks)? Needs an answer before step 4, not before step 1.
-- **Failure signal**: is a scheduled-workflow-failure email enough, or does this need an
-  auto-filed/updated tracking issue (as `connector-qa-testing.md`'s own findings section suggests
-  manual QA runs already produce)? Start with the plain email; revisit if drift goes unnoticed in
-  practice.
-- **Fixture sanitization**: Layer 2's raw JSON dumps come from QA-only, already-fake data, but this
-  should still get one explicit human review pass per connector when its capture shim is first
-  written, rather than assumed safe by default.
-- **Google connectors' priority**: `google-api-python-client` is officially versioned and has not
-  produced a breakage like Confluence's, so it's reasonable to sequence Gmail/Drive/Calendar/
-  Contacts/Tasks after Confluence/Jira/Salesforce rather than in parallel — but this is a judgment
-  call worth revisiting once Layers 1–2 exist for the higher-risk connectors and the marginal cost
-  of extending them is clearer.
+Each step ships independent value and can land as its own PR. Steps 1–2 need nothing beyond what's
+in this repo already; step 3 is the one that needs your input on account setup before step 4 can be
+built.
