@@ -104,26 +104,23 @@ This is the specific behavior requested, made concrete against the existing mech
   `created_this_session`, and `approved_spreadsheet` (optionally scoped to one tab via the numeric
   `sheet_id`, same convention as `sheets.rename_sheet`/`sheets.format_range` in
   `TECHNICAL_REFERENCE.md:401-408`). Reuses `_sheet_tab_of`-style scoping already in
-  `auto_accept.py`, no new rule types needed.
-- **"Accept for 5 min":** add both new keys to `TEMP_ACCEPT_ELIGIBLE_OPERATIONS`
-  (`auto_accept.py:21-25`), keyed by `spreadsheet_id` — identical treatment to
-  `sheets.format_range` today. This is the concrete meaning of "behaves like formatting": an agent
-  reshaping a sheet (insert a header row, delete three scratch columns, insert again) gets one
-  popup per spreadsheet per 5 minutes instead of one per call, same as it already does when
-  building up formatting range-by-range.
-
-**Open question worth flagging explicitly rather than deciding silently:** unlike
-`sheets.format_range`, `sheets.delete_dimensions` is genuinely destructive — it removes cell
-content, not just its appearance, and there's no undo path through PrivacyFence (only whatever
-Sheets' own native version history offers). Recommending the same "Accept for 5 min" treatment as
-requested, but the popup's `details_text` for delete must say so plainly ("Rows/columns and any
-values, formulas, or formatting they contain will be removed — not recoverable through
-PrivacyFence") so a user granting the 5-minute window is doing so with that risk stated, not
-because the copy reads identically to the non-destructive format-range popup. If that reads as too
-permissive once this is scoped for real, the fallback is to give `sheets.delete_dimensions` the
-standing-rule treatment only (like `sheets.add_sheet`/`sheets.rename_sheet`) and reserve
-"Accept for 5 min" for `sheets.insert_dimensions` alone — a decision worth making at
-implementation/review time with the actual popup copy in front of you, not preemptively here.
+  `auto_accept.py`, no new rule types needed. Both operation keys get this regardless of the
+  "Accept for 5 min" split below.
+- **"Accept for 5 min" — split by destructiveness, decided:**
+  - `sheets.insert_dimensions` is added to `TEMP_ACCEPT_ELIGIBLE_OPERATIONS`
+    (`auto_accept.py:21-25`), keyed by `spreadsheet_id` — identical treatment to
+    `sheets.format_range` today. Inserting blank rows/columns doesn't touch existing content, so it
+    carries the same non-destructive risk profile as formatting, and an agent building out a
+    sheet's shape (insert a header row, insert a column, insert again) gets one popup per
+    spreadsheet per 5 minutes instead of one per call.
+  - `sheets.delete_dimensions` is **not** added to `TEMP_ACCEPT_ELIGIBLE_OPERATIONS`. Unlike
+    `format_range`, it's genuinely destructive — it removes cell content, not just its appearance,
+    and there's no undo path through PrivacyFence (only whatever Sheets' own native version history
+    offers). It gets the standing-rule treatment only, same as `sheets.add_sheet` /
+    `sheets.rename_sheet`: every call prompts unless a standing `approved_spreadsheet`/ownership
+    rule is configured for it. So the two new tools intentionally diverge here —
+    `sheets.insert_dimensions` behaves like formatting end-to-end; `sheets.delete_dimensions`
+    behaves like formatting only for the standing-rule dimension, not the temp-accept one.
 
 ### 1.5 Preview / popup content
 
@@ -332,7 +329,7 @@ document.
 | Tool | Operation key | Gate | Standing rules | Accept for 5 min |
 |---|---|---|---|---|
 | `drive_sheets_insert_dimensions` | `sheets.insert_dimensions` | popup | `i_am_owner`, `approved_sandbox_folder`, `created_this_session`, `approved_spreadsheet` | yes (by `spreadsheet_id`) |
-| `drive_sheets_delete_dimensions` | `sheets.delete_dimensions` | popup | same as above | yes, with explicit data-loss copy — reconsider at implementation time (§1.4) |
+| `drive_sheets_delete_dimensions` | `sheets.delete_dimensions` | popup | same as above | **no** — destructive, standing rules only (§1.4) |
 | `drive_docs_edit_content` | `docs.edit_content` | popup | `i_am_owner`, `approved_sandbox_folder`, `created_this_session` | not by default — open question (§2.4) |
 | `drive_docs_format_content` | `docs.format_content` | popup | same as above | yes (by `file_id`) |
 
