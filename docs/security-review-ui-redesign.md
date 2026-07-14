@@ -71,7 +71,7 @@ anything.
 | "Requested because Claude found a reference in board_minutes.docx" | **Same mechanism, same caveat** | A mandatory `reason` param can carry exactly this sentence — Claude is free to write it. What can't be added is any way to confirm it's true; treat it as reviewer context, not evidence. Best independently-verifiable substitute for cross-file rationale is factual session history (§4). |
 | Requested-resources checklist | **Feasible now** | Already the `preview` dict's job; just needs a list-shaped rendering instead of key/value rows when a call touches multiple items. |
 | Sensitivity badges (🟢 Internal / 🟠 Financial / 🔴 PII) | **Feasible, needs extension** | `pii_detector.py` already returns category labels. Needs: (a) new category groups for "financial" keywords (amounts, "salary", "payroll"), (b) a badge computed for the *popup-gate* (write) path too, where PII scanning is deliberately absent today by design (`gate.py` docstring) — badges there should read from Claude's own drafted content, not treated as an "external PII" gate. See §7 Phase 2. |
-| "🟢 Internal / 🟠 Confidential" **classification labels** | **Feasible only where the org has them** | Google Workspace Enterprise has native Drive data-classification labels, readable via `drive.labels.readonly` scope — PrivacyFence does not currently request this scope (`google-cloud-setup.md`). Real for orgs on that tier; must degrade to "no classification available" everywhere else, not a fabricated default. |
+| "🟢 Internal / 🟠 Confidential" **classification labels** | **Feasible only where the org has them — deferred, see §10 Q2** | Google Workspace Enterprise has native Drive data-classification labels, readable via `drive.labels.readonly` scope — PrivacyFence does not currently request this scope (`google-cloud-setup.md`). Real for orgs on that tier, but the maintainer has deferred it: narrow benefit relative to the new scope/consent surface. Sensitivity badges ship from local detectors only (Phase 2) until revisited. |
 | Large (60–70%) preview / "document reader" | **Feasible for text and Google-native docs; not for arbitrary binary files** | `drive.py:437-449` truncates extracted text to 2000 chars for `details_text`; genuinely binary content (real .docx, images) currently renders as a placeholder string (`drive_client.py`'s `"[binary content — N bytes; use drive_download_file to save it]"`), not a preview. True page-faithful preview needs new work per file type — see §7 Phase 3. |
 | PDF preview specifically | **Feasible** | macOS `PDFKit` (`PDFView`) is a standard AppKit control; PrivacyFence already fetches `content_bytes` for binary Drive files, just doesn't render them. |
 | Arbitrary .docx/.xlsx page-faithful preview | **Not reliably feasible** | No first-party macOS text/layout extraction without Office's own QuickLook generator being installed, which isn't guaranteed on every Mac. Fall back to extracted-text preview (already computed) rather than promising a "first page" render for every format. |
@@ -200,22 +200,40 @@ Sensitivity: 🟠 Financial terms
 - Add reading-time estimate from `details_text` length.
 - Gmail-specific layout for `gmail_get_message`/`gmail_get_thread`.
 
-**Phase 1b — mandatory `reason` parameter (bigger footprint than 1a, still no external calls)**
-Larger than a layout tweak: this touches every connector, not just the popup, so it's called out
-on its own rather than folded into "layout only."
-- Add a required `reason: str` param to every gated (`gate="review"`/`"popup"`) `ToolSpec` across
-  all connectors (`connectors/gmail.py`, `drive.py`, `slack.py`, `calendar.py`, `salesforce.py`,
-  `jira.py`, `confluence.py`, `telegram.py`, `tasks.py`, `contacts.py`) — each tool's description
-  should instruct Claude to state, in one sentence, why it's calling the tool.
-- Thread `reason` through each connector's `gated_call(...)` invocation into a new kwarg (e.g.
-  `claude_reason`) so `gate.py`/`approval_popup.py` can render it as its own labeled block,
-  distinct from `preview`/`details_text` — never merged with verified fields (§4).
-- Do **not** add this to `auto`-gated or `read_only=True` listing tools — no human ever sees those
-  calls, so a mandatory reason there only adds token/latency cost with no reviewer benefit; scope
-  it strictly to tools that already reach a popup.
+**Phase 1b — mandatory `reason` parameter, on every tool including auto-gated (largest-footprint
+item in this whole plan — decided scope, see §10)**
+The maintainer's decision (§10 Q1) is to capture `reason` universally, not just on tools a human
+reviews, so it's available for later audit-log pattern analysis even where there's no popup to
+show it in. That's a materially bigger change than a layout tweak or even a gated-tools-only
+version would have been — it touches literally every tool declaration and every tool call site in
+every connector, plus the audit schema:
+- Add a required `reason: str` param to **every** `ToolSpec` in **every** connector
+  (`connectors/gmail.py`, `drive.py`, `slack.py`, `calendar.py`, `salesforce.py`, `jira.py`,
+  `confluence.py`, `telegram.py`, `tasks.py`, `contacts.py`) — gated and auto/`read_only` tools
+  alike. Each tool's description should instruct Claude to state, in one sentence, why it's
+  calling the tool right now.
+- Gated tools (`gate="review"`/`"popup"`): thread `reason` through `gated_call(...)` as a new
+  `claude_reason` kwarg so `gate.py`/`approval_popup.py` can render it in the popup as its own
+  labeled block, distinct from `preview`/`details_text` — never merged with verified fields (§4).
+- Auto-accepted / `read_only=True` tools: there is no popup to render it in — every connector
+  currently has its own `_auto_audit(tool, tool_name, summary, sender, created_at)` helper (one
+  copy per connector, same shape, e.g. `gmail.py:783`, `drive.py:864`, `slack.py:292`,
+  `calendar.py:575`, `salesforce.py:241`, `confluence.py:316`, `contacts.py:356`, `jira.py:374`,
+  `telegram.py:212`, `tasks.py:300` — `tasks.py`'s and `telegram.py`'s already differ slightly in
+  signature from the rest, worth normalizing while touching all ten anyway). Each needs a
+  `reason: str` parameter, recorded straight to the audit log — not reviewed in real time, but
+  available for later pattern analysis (e.g. spotting when Claude gives the same boilerplate
+  reason across hundreds of auto-accepted calls).
+- `audit_log.py`: add `claude_reason: str = ""` to `AuditEntry`, and pass it through `_audit()` in
+  `gate.py` (currently `_audit(...)` doesn't take one — add it there too) so both the gated and
+  auto paths write to the same field.
 - Test impact per `coding-and-testing-guidelines.md` §2.5/§2.6: `tests/helpers.py::build_stub_args`
-  needs a default `reason` value for every gated tool's stub args, and the new-connector checklist
-  gains a line item ("gated tools carry a `reason` param, rendered as unverified").
+  needs a default `reason` value for every tool's stub args (not just gated ones), and
+  `assert_all_tools_leave_an_audit_trail` / the new-connector checklist gain a line item ("every
+  tool — gated or auto — carries a `reason` param and records it in the audit entry").
+- Trade-off accepted deliberately: this adds a small token/latency cost to high-frequency,
+  low-risk calls (e.g. `list_messages`) that no human ever reviews, in exchange for uniform
+  coverage in the audit log. Worth revisiting if that overhead turns out to matter in practice.
 
 **Phase 2 — new local detectors, still zero external calls**
 - Extend `pii_detector.py`'s pattern set with a "financial data" category (currency amounts near
@@ -235,18 +253,26 @@ on its own rather than folded into "layout only."
   `security-and-compliance.md`.
 - Native `PDFView` (PDFKit) embed for genuinely binary PDF content already fetched as
   `content_bytes` in `drive_client.py`.
-- Optional Drive classification-label lookup (`drive.labels.readonly` scope) for orgs that have
-  it configured — must render "no classification available" rather than a default badge when
-  absent.
+- Drive classification-label lookup (`drive.labels.readonly` scope): **deferred** per the
+  maintainer's decision (§10 Q2) — narrow benefit (Workspace Enterprise-tier only) relative to the
+  added consent-screen surface and scope request. Revisit if a specific org asks for it; until
+  then the sensitivity section is driven entirely by the local PII/financial detectors (Phase 2),
+  with no "Classification: Internal/Confidential" row at all rather than a fabricated one.
+- **Prerequisite before this phase starts**: confirm the `WKWebView` migration doesn't complicate
+  code-signing/notarization (§10 Q3 — flagged for investigation, not yet resolved). Notarization
+  is already an open item in `security-and-compliance.md` §8; check WebKit-embedding entitlement
+  requirements against the actual signing pipeline before committing engineering time to the
+  WKWebView rewrite specifically.
 - Three-level progressive disclosure (summary → expanded metadata → full inspect), all within one
   modal session.
 
-**Phase 4 — explicitly out of scope for this plan**
-- Multi-person PR-style governance (a second reviewer, comments visible to someone other than the
-  approving user, delegated/IT approval workflows). This needs a real design decision from the
-  maintainer before any code: see §8.
+**Phase 4 — decided: not being scoped**
+Per the maintainer's decision (§10 Q4), the single-reviewer "PR grammar, no PR infrastructure"
+version (Phases 1–3) is the intended ceiling for this product. Real multi-person PR-style
+governance (a second reviewer, a comment thread visible to someone other than the approver, a
+delegated/IT approval queue) is not being scoped — see §8 for why.
 
-## 8. The one strategic tension: "PR-style governance" vs. "no server, ever"
+## 8. The one strategic tension: "PR-style governance" vs. "no server, ever" — resolved
 
 The long-term vision — "the user becomes a reviewer... AI should gain access because a human
 reviewed and approved the request" — is already true today, locally, per-request. What it can't
@@ -258,56 +284,62 @@ employee's approvals... not currently" (§10 FAQ) into explicit, load-bearing tr
 enterprise buyers. Building real multi-reviewer PR-style governance means introducing exactly the
 kind of shared/central component that document currently promises doesn't exist.
 
-That's not a reason to drop the framing — it's a reason to be precise about which version ships:
-
-- **Ships now, no architecture change**: the *visual grammar* of PR review (Purpose / Files /
-  Risk / Preview / decision, reviewer mental model, structured sections) applied to the existing
-  single-user, single-device, synchronous approval. This is everything in Phases 1–3.
-- **A real product decision, not a code change**: whether PrivacyFence ever adds a genuine
-  second-reviewer/delegated-approval mode, and if so, whether that's an opt-in enterprise feature
-  built on new infrastructure (with all the GDPR/data-residency claims in
-  `security-and-compliance.md` re-evaluated for it), or a deliberately separate product. Recommend
-  raising this as its own ADR/discussion before Phase 4 is ever scoped, rather than folding it
-  into this UI redesign.
+**Decided (§10 Q4): the single-reviewer version is the intended ceiling.** The *visual grammar* of
+PR review (Purpose / Files / Risk / Preview / decision, reviewer mental model, structured
+sections) ships, applied to the existing single-user, single-device, synchronous approval — that's
+everything in Phases 1–3. Genuine second-reviewer/delegated-approval infrastructure is explicitly
+not being pursued, which keeps `security-and-compliance.md`'s current trust claims intact without
+needing to re-litigate them. If that ever changes, it should be re-opened as its own ADR/product
+discussion — with the GDPR/data-residency claims in `security-and-compliance.md` re-evaluated for
+whatever new infrastructure it would require — rather than revisited inside this redesign.
 
 ## 9. Concrete data-model additions this plan needs
 
 - `connector.py`: no mechanism change needed — `ToolParam.required` already defaults to `True`.
-  Every gated tool's `ToolSpec.params` gets a new `ToolParam(name="reason", annotation="str",
-  required=True, description="One sentence: why are you calling this tool right now?")`, which
-  `bridge_main.py`'s existing dynamic registration (`_build_tool_fn`) picks up unchanged — it
-  already builds the function signature from `spec.params` generically.
-- Every connector: the `reason` value arrives as a normal kwarg alongside the tool's other args;
-  each connector passes it into `gated_call(...)` as a new required kwarg (e.g. `claude_reason:
-  str`), kept separate from `args`/`preview`/`details_text` so it can never be silently folded
-  into content that's rendered as verified.
-- `gate.py`: `gated_call()` gains the `claude_reason: str` parameter and forwards it to
-  `show_read_popup`/`show_popup` unchanged, the same pass-through pattern `pii_categories` already
-  uses.
+  **Every** `ToolSpec.params` — gated and auto/`read_only` alike, per the decided scope (§10 Q1) —
+  gets a new `ToolParam(name="reason", annotation="str", required=True, description="One
+  sentence: why are you calling this tool right now?")`, which `bridge_main.py`'s existing dynamic
+  registration (`_build_tool_fn`) picks up unchanged — it already builds the function signature
+  from `spec.params` generically.
+- Every connector: the `reason` value arrives as a normal kwarg alongside the tool's other args.
+  Gated tools pass it into `gated_call(...)` as a new required `claude_reason: str` kwarg, kept
+  separate from `args`/`preview`/`details_text` so it can never be silently folded into content
+  that's rendered as verified. Auto/`read_only` tools pass it into their connector's `_auto_audit`
+  helper instead (ten near-duplicate implementations, one per connector — see §7 Phase 1b for the
+  file/line list).
+- `gate.py`: `gated_call()` gains the `claude_reason: str` parameter, forwards it to
+  `show_read_popup`/`show_popup` (the same pass-through pattern `pii_categories` already uses),
+  and passes it into `_audit()` — which also needs a new parameter, since it's the single audit
+  entry point both the gated and (indirectly, via each connector's own `_auto_audit`) auto paths
+  ultimately mirror the shape of.
 - `gate.py` / connectors: thread the resolved `privacy.categories`-style policy (already computed
   per connector before `gated_call`) into a new `visibility: dict[str, bool]` kwarg, alongside
   the existing `preview`/`details_text`, so the popup can render the "AI will receive" checklist
   without re-deriving policy state itself.
 - `pii_detector.py`: additive category patterns only (financial keywords) — no interface change,
   matches its existing `_PATTERNS` extension model.
-- `audit_log.py`: add a lookup helper (`recent_matches(operation_key, preview) -> int`) for the
-  request-fingerprint feature; no schema change to `AuditEntry` needed since existing fields
-  already carry what's needed. Consider also recording `claude_reason` in `AuditEntry` itself —
-  it's cheap to store and lets a later audit review spot patterns of generic/boilerplate reasons
-  across many calls, which is itself a useful signal at the fleet level even though it isn't
-  verifiable per-call.
+- `audit_log.py`: add `claude_reason: str = ""` to `AuditEntry` (populated on every entry, gated
+  or auto-accepted, per the decided scope) and a lookup helper (`recent_matches(operation_key,
+  preview) -> int`) for the request-fingerprint feature.
 - `approval_window.py`: layout rewrite (Phase 1a pure-AppKit reorder plus a new "Claude says"
-  block; Phase 3 WKWebView migration).
+  block; Phase 3 WKWebView migration, pending the notarization check in §10 Q3).
 
-## 10. Open questions for the maintainer
+## 10. Open questions for the maintainer — decisions recorded
 
-1. Confirmed direction: `reason` ships **mandatory**, not optional, enforced at the MCP schema
-   level (§4). Remaining question is scope — mandatory on every gated (`review`/`popup`) tool
-   only, as recommended in §7 Phase 1b, or should it also cover `auto`-gated tools that a human
-   never sees (recommendation: no — no reviewer benefit, pure overhead)?
-2. Is Drive classification-label support (needs a new OAuth scope, Enterprise-tier-only) worth
-   the added consent-screen surface for the subset of orgs that have it?
-3. Does the WKWebView migration in Phase 3 conflict with any code-signing/notarization plans
-   (`security-and-compliance.md` §8 already flags notarization as an open item)?
-4. Should Phase 4 (multi-reviewer governance) be scoped at all, or is the single-reviewer "PR
-   grammar, no PR infrastructure" version the intended ceiling for this product?
+1. **Decided**: `reason` ships mandatory (§4) on **every** tool, gated and auto-accepted alike —
+   not scoped to just the tools a human reviews. Accepted trade-off: larger implementation
+   footprint (touches all ten connectors' `ToolSpec`s, `_auto_audit` helpers, and the audit
+   schema — see §7 Phase 1b) and a small token/latency cost on high-frequency auto calls, in
+   exchange for `reason` being available for pattern analysis across 100% of the audit log rather
+   than only the popup-reviewed subset.
+2. **Decided**: Drive classification-label support is **deferred** (§7 Phase 3) — narrow benefit
+   relative to the new OAuth scope and consent-screen surface it requires. Revisit only if a
+   specific org asks for it.
+3. **Still open, flagged for investigation**: whether the WKWebView migration in Phase 3 conflicts
+   with code-signing/notarization plans. Recommendation was to investigate before starting Phase
+   3 rather than decide blind now — `security-and-compliance.md` §8 already flags notarization as
+   an open item, so confirm WebKit-embedding entitlement requirements against the actual signing
+   pipeline before committing to WKWebView as the Phase 3 approach. This is now a prerequisite
+   listed directly in §7 Phase 3, not just a question sitting here.
+4. **Decided**: multi-reviewer governance is not being scoped. The single-reviewer "PR grammar, no
+   PR infrastructure" version (Phases 1–3) is the intended ceiling — see §8.
