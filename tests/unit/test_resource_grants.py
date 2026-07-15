@@ -81,6 +81,21 @@ class TestExpandGrants:
         for op in expected_ops:
             assert compiled[op] == [{"rule": "approved_sandbox_folder", "value": ["F1"], "_grant": True}]
 
+    def test_sandbox_folder_write_also_covers_dimensions_and_docs_ops(self):
+        # sheets.insert_dimensions/delete_dimensions and docs.edit_content/
+        # docs.format_content all use approved_sandbox_folder too -- a grant
+        # should cover them alongside the original six write operations.
+        grants = {"drive": {"sandbox_folders": [{"id": "F1", "write": True}]}}
+        compiled = rg.expand_grants(grants)
+        for op in ("sheets.insert_dimensions", "sheets.delete_dimensions", "docs.edit_content", "docs.format_content"):
+            assert compiled[op] == [{"rule": "approved_sandbox_folder", "value": ["F1"], "_grant": True}]
+
+    def test_spreadsheet_write_also_covers_dimensions_ops(self):
+        grants = {"drive": {"spreadsheets": [{"id": "S1", "write": True}]}}
+        compiled = rg.expand_grants(grants)
+        for op in ("sheets.insert_dimensions", "sheets.delete_dimensions"):
+            assert compiled[op] == [{"rule": "approved_spreadsheet", "value": [{"spreadsheet_id": "S1"}], "_grant": True}]
+
     def test_multiple_entries_aggregate_into_one_rule_value(self):
         grants = {"drive": {"folders": [{"id": "F1", "read": True}, {"id": "F2", "read": True}]}}
         compiled = rg.expand_grants(grants)

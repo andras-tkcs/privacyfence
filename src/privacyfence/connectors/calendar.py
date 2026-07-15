@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..audit_log import AuditEntry, current_week, get_audit_logger
-from ..calendar_client import CalendarClient, CalendarClientError
+from ..calendar_client import VALID_VISIBILITIES, CalendarClient, CalendarClientError
 from ..connector import Connector, ToolParam, ToolSpec
 from ..gate import gated_call
 
@@ -90,6 +90,35 @@ class CalendarConnector(Connector):
                     ToolParam("event_id", "str"),
                 ],
                 read_only=True,
+            ),
+            ToolSpec(
+                name="calendar_get_event_visibility",
+                description=(
+                    "Get a calendar event's visibility setting (default, public, private, "
+                    "or confidential) without fetching its full details (attendees, "
+                    "description, etc.) the way calendar_get_event_details does. Auto-approved."
+                ),
+                params=[
+                    ToolParam("calendar_id", "str"),
+                    ToolParam("event_id", "str"),
+                ],
+                read_only=True,
+            ),
+            ToolSpec(
+                name="calendar_set_event_visibility",
+                description=(
+                    "Set a calendar event's visibility. 'default' follows the calendar's own "
+                    "sharing settings; 'public' makes it visible to anyone who can see the "
+                    "calendar; 'private' hides its details from viewers who aren't invited; "
+                    "'confidential' is a legacy synonym the Calendar API still accepts for "
+                    "'private'. Only visibility changes — no other fields are affected. "
+                    "Requires user approval."
+                ),
+                params=[
+                    ToolParam("calendar_id", "str"),
+                    ToolParam("event_id", "str"),
+                    ToolParam("visibility", "str", description="'default', 'public', 'private', or 'confidential'"),
+                ],
             ),
             ToolSpec(
                 name="calendar_list_rooms",
@@ -182,6 +211,10 @@ class CalendarConnector(Connector):
             return await self._get_free_busy(**args)
         if tool == "calendar_get_event_details":
             return await self._get_event_details(**args)
+        if tool == "calendar_get_event_visibility":
+            return await self._get_event_visibility(**args)
+        if tool == "calendar_set_event_visibility":
+            return await self._set_event_visibility(**args)
         if tool == "calendar_list_rooms":
             return await self._list_rooms(**args)
         if tool == "calendar_create_event":
@@ -253,6 +286,13 @@ class CalendarConnector(Connector):
         self._auto_audit("calendar_get_free_busy", "Get Schedule",
                          f"Schedule: {emails}", summary_note, t0)
         return data
+
+    async def _get_event_visibility(self, calendar_id: str, event_id: str) -> Any:
+        t0 = time.time()
+        event = await self._fetch(self._calendar.get_event, calendar_id, event_id)
+        self._auto_audit("calendar_get_event_visibility", "Get Event Visibility",
+                         f"Get visibility: {event.title or event_id}", event.visibility, t0)
+        return {"visibility": event.visibility}
 
     async def _list_rooms(self, query: str = "") -> Any:
         t0 = time.time()
@@ -550,6 +590,43 @@ class CalendarConnector(Connector):
         )
         return {"id": event.id, "start_time": event.start_time, "end_time": event.end_time,
                 "html_link": event.html_link}
+
+    async def _set_event_visibility(self, calendar_id: str, event_id: str, visibility: str) -> Any:
+        # Validate before gating, not after -- same reasoning as
+        # drive_sheets_insert_dimensions's early dimension check: a doomed
+        # call shouldn't cost the user an unnecessary approval decision.
+        visibility = visibility.strip().lower()
+        if visibility not in VALID_VISIBILITIES:
+            raise ValueError(
+                f"calendar_set_event_visibility: visibility must be one of "
+                f"{sorted(VALID_VISIBILITIES)}, got {visibility!r}"
+            )
+        event = await self._fetch(self._calendar.get_event, calendar_id, event_id)
+        preview = {
+            "Event": event.title or "(untitled)",
+            "Calendar": await self._calendar_name_for(calendar_id),
+            "Visibility": f"{event.visibility} → {visibility}",
+        }
+        raw_data = {
+            "calendar_id": calendar_id, "event_id": event_id, "visibility": visibility,
+            "organizer_email": event.organizer_email,
+        }
+        await gated_call(
+            connector=self.name,
+            tool="calendar_set_event_visibility",
+            tool_name="Set Event Visibility",
+            summary=f"Set visibility of \"{event.title}\" to {visibility}",
+            sender=event.organizer_email or calendar_id,
+            raw_data=raw_data,
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text="Only the event's visibility will change; no other fields are affected.",
+            my_email=self.my_email,
+            args={"calendar_id": calendar_id, "event_id": event_id, "visibility": visibility},
+        )
+        updated = await self._fetch(self._calendar.set_event_visibility, calendar_id, event_id, visibility)
+        return {"id": updated.id, "title": updated.title, "visibility": updated.visibility}
 
     # ------------------------------------------------------------------ #
     # Helpers

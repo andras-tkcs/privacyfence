@@ -62,6 +62,17 @@ class IPCClient:
             "call", {"connector": connector, "tool": tool, "args": args}
         )
 
+    async def check_policy(self, connector: str, tool: str, args: dict[str, Any]) -> dict:
+        return await self._request(
+            "check_policy", {"connector": connector, "tool": tool, "args": args}
+        )
+
+    async def begin_unattended_session(self) -> dict:
+        return await self._request("begin_unattended_session", {})
+
+    async def end_unattended_session(self) -> dict:
+        return await self._request("end_unattended_session", {})
+
     # ------------------------------------------------------------------ #
     # Internals
     # ------------------------------------------------------------------ #

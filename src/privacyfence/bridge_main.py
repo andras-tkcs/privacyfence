@@ -234,6 +234,99 @@ def _build_tool_fn(
     return _handler
 
 
+async def _check_policy_handler(connector: str, tool: str, args: dict[str, Any] | None = None) -> dict:
+    global _ipc
+    if _ipc is None:
+        raise ToolError("IPC client not initialized")
+    try:
+        return await _ipc.check_policy(connector, tool, args or {})
+    except IPCError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+async def _begin_unattended_session_handler() -> dict:
+    global _ipc
+    if _ipc is None:
+        raise ToolError("IPC client not initialized")
+    try:
+        return await _ipc.begin_unattended_session()
+    except IPCError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+async def _end_unattended_session_handler() -> dict:
+    global _ipc
+    if _ipc is None:
+        raise ToolError("IPC client not initialized")
+    try:
+        return await _ipc.end_unattended_session()
+    except IPCError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+def _register_meta_tools(mcp: FastMCP) -> None:
+    """Register PrivacyFence's own tools -- not sourced from a connector
+    manifest, since they aren't backed by a real connector. See
+    docs/TECHNICAL_REFERENCE.md's "Scheduled / unattended Cowork tasks"
+    section.
+    """
+    from mcp.types import ToolAnnotations
+
+    mcp.tool(
+        name="privacyfence_check_policy",
+        description=(
+            "Ask PrivacyFence, before calling a gated tool, whether that specific call would "
+            "auto-accept or need a human. Pass the same connector, tool, and args you're about "
+            "to call. Returns {gate, verdict, matched_rule, reason, pii_gate_may_apply}, where "
+            "verdict is one of: 'auto_accept' (the real call will pass through identically), "
+            "'requires_review' (no configured rule can match these arguments, with or without "
+            "fetching anything), or 'unknown' (whether it auto-accepts depends on the actual "
+            "fetched content, which this can't see in advance). For 'review'-gated (read) tools, "
+            "pii_gate_may_apply is always true: PrivacyFence's PII detection gate scans real "
+            "content and can force a popup even when a rule matches, and that can never be "
+            "predicted ahead of time. This makes no external API call, opens no popup, and has "
+            "no side effects -- call it as often as you want while planning a task. Most useful "
+            "before and during a scheduled/unattended Cowork run, to plan around steps that would "
+            "otherwise need a human who isn't there."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True),
+    )(_check_policy_handler)
+
+    mcp.tool(
+        name="privacyfence_begin_unattended_session",
+        description=(
+            "Tell PrivacyFence this conversation is an unattended/scheduled Cowork run (e.g. a "
+            "Routine firing on a schedule) with no human necessarily watching, for the rest of "
+            "this connection. From then on, any gated tool call that isn't already covered by a "
+            "configured auto-accept rule is denied immediately with a clear error, instead of "
+            "PrivacyFence opening a native approval dialog that nobody will answer. Call this once "
+            "at the start of a scheduled run, and pair it with privacyfence_check_policy to plan "
+            "which steps are safe to attempt. Never changes what auto-accepts, only what happens "
+            "when nothing does. Errors if an administrator hasn't enabled unattended sessions for "
+            "this install. Do not call this during a normal interactive conversation -- it makes "
+            "denials immediate instead of prompting."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
+    )(_begin_unattended_session_handler)
+
+    mcp.tool(
+        name="privacyfence_end_unattended_session",
+        description=(
+            "Clear the unattended-session flag set by privacyfence_begin_unattended_session for "
+            "this connection, restoring normal interactive approval behavior. Call this when a "
+            "scheduled run finishes. Not strictly required -- the flag also clears automatically "
+            "when the connection closes -- but call it if this connection might be reused "
+            "afterward for something interactive."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
+    )(_end_unattended_session_handler)
+
+    logger.info(
+        "Registered meta-tools: privacyfence_check_policy, privacyfence_begin_unattended_session, "
+        "privacyfence_end_unattended_session"
+    )
+
+
 def _register_tools(mcp: FastMCP, manifest: dict) -> None:
     total = 0
     for connector_info in manifest.get("connectors", []):
@@ -315,6 +408,7 @@ def main(argv: list[str] | None = None) -> int:
 
     mcp = FastMCP(name="privacyfence", version=VERSION)
     _register_tools(mcp, manifest)
+    _register_meta_tools(mcp)
 
     try:
         asyncio.run(_run_bridge(mcp))

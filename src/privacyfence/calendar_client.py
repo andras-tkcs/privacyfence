@@ -33,6 +33,10 @@ SCOPES = [
     "https://www.googleapis.com/auth/admin.directory.resource.calendar.readonly",
 ]
 
+# Values the Calendar API accepts for Event.visibility. "confidential" is a
+# legacy synonym for "private" that the API still accepts on write.
+VALID_VISIBILITIES = {"default", "public", "private", "confidential"}
+
 
 class CalendarClientError(Exception):
     """Raised for unrecoverable Calendar client problems (auth, config, API)."""
@@ -87,6 +91,7 @@ class CalendarEvent:
     status: str       # "confirmed" | "tentative" | "cancelled"
     html_link: str
     attachments: list[CalendarAttachment] = field(default_factory=list)
+    visibility: str = "default"  # "default" | "public" | "private" | "confidential"
 
     def short_summary(self) -> str:
         return f"{self.title} ({self.start_time})"
@@ -549,6 +554,43 @@ class CalendarClient:
         logger.info("update_event: %s", event.short_summary())
         return event
 
+    def set_event_visibility(self, calendar_id: str, event_id: str, visibility: str) -> CalendarEvent:
+        """Set an event's visibility, leaving every other field untouched.
+
+        ``visibility`` is one of VALID_VISIBILITIES ("default", "public",
+        "private", "confidential"). Fetches the event's current full body
+        first (same fetch-modify-update shape as update_event) so only the
+        visibility field actually changes in the update request.
+        """
+        visibility = visibility.strip().lower()
+        if visibility not in VALID_VISIBILITIES:
+            raise CalendarClientError(
+                f"set_event_visibility: visibility must be one of "
+                f"{sorted(VALID_VISIBILITIES)}, got {visibility!r}"
+            )
+        try:
+            raw = (
+                self._get_service()
+                .events()
+                .get(calendarId=calendar_id, eventId=event_id)
+                .execute()
+            )
+        except HttpError as exc:
+            raise CalendarClientError(f"set_event_visibility get({event_id}) failed: {exc}") from exc
+        raw["visibility"] = visibility
+        try:
+            updated = (
+                self._get_service()
+                .events()
+                .update(calendarId=calendar_id, eventId=event_id, body=raw)
+                .execute()
+            )
+        except HttpError as exc:
+            raise CalendarClientError(f"set_event_visibility update({event_id}) failed: {exc}") from exc
+        event = self._parse_event(updated, calendar_id)
+        logger.info("set_event_visibility: %s -> %s", event.short_summary(), visibility)
+        return event
+
     def create_out_of_office(
         self,
         title: str,
@@ -701,4 +743,5 @@ class CalendarClient:
             status=raw.get("status", "confirmed"),
             html_link=raw.get("htmlLink", ""),
             attachments=attachments,
+            visibility=raw.get("visibility", "default"),
         )

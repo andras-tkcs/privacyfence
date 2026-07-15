@@ -618,7 +618,8 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
     if not connectors:
         logger.warning("No connectors could be initialized; daemon still starting for IPC.")
 
-    ipc_server = IPCServer(connectors)
+    unattended_enabled = bool((config.get("unattended_sessions", {}) or {}).get("enabled", False))
+    ipc_server = IPCServer(connectors, unattended_sessions_enabled=unattended_enabled)
     ipc_thread = IPCServerThread(ipc_server)
     ipc_thread.start()
     ipc_thread._ready.wait(timeout=5)

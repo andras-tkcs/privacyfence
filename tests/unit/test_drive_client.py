@@ -21,8 +21,11 @@ from privacyfence.drive_client import (
     DriveClientError,
     DriveFile,
     _col_letters_to_index,
+    _docs_plain_text_with_index_map,
+    _find_text_matches,
     _hex_to_rgb_dict,
     _markdown_to_docs_requests,
+    _offset_to_docs_index,
     _parse_a1_range,
     _parse_inline_runs,
 )
@@ -39,6 +42,35 @@ def make_client_with_sheets(sheets_service: MagicMock) -> DriveClient:
     client = DriveClient(client_config={}, token_file="/tmp/unused-token.json")
     client._local.sheets_service = sheets_service
     return client
+
+
+def make_client_with_docs(docs_service: MagicMock) -> DriveClient:
+    client = DriveClient(client_config={}, token_file="/tmp/unused-token.json")
+    client._local.docs_service = docs_service
+    return client
+
+
+def make_doc(*paragraphs: str) -> dict:
+    """Build a minimal Docs API document body from plain paragraph strings,
+    each paragraph becoming one textRun (no bold/italic/etc structure) with
+    correctly contiguous Docs indices, mirroring what documents.get() returns."""
+    content = []
+    index = 1
+    for text in paragraphs:
+        run_text = text + "\n"
+        start = index
+        end = start + len(run_text)
+        content.append({
+            "startIndex": start,
+            "endIndex": end,
+            "paragraph": {
+                "elements": [
+                    {"startIndex": start, "endIndex": end, "textRun": {"content": run_text}}
+                ]
+            },
+        })
+        index = end
+    return {"body": {"content": content}}
 
 
 def http_error(status: int = 404, body: bytes = b'{"error": "nope"}') -> HttpError:
@@ -493,33 +525,36 @@ class TestCreateBlankFile:
 
 class TestParseInlineRuns:
     def test_plain_text_single_run(self):
-        assert _parse_inline_runs("hello world") == [("hello world", False, False, "")]
+        assert _parse_inline_runs("hello world") == [("hello world", False, False, "", False)]
 
     def test_bold(self):
-        assert _parse_inline_runs("**bold**") == [("bold", True, False, "")]
+        assert _parse_inline_runs("**bold**") == [("bold", True, False, "", False)]
 
     def test_italic(self):
-        assert _parse_inline_runs("*italic*") == [("italic", False, True, "")]
+        assert _parse_inline_runs("*italic*") == [("italic", False, True, "", False)]
 
     def test_bold_italic(self):
-        assert _parse_inline_runs("***both***") == [("both", True, True, "")]
+        assert _parse_inline_runs("***both***") == [("both", True, True, "", False)]
+
+    def test_highlight(self):
+        assert _parse_inline_runs("==flagged==") == [("flagged", False, False, "", True)]
 
     def test_code_has_no_style(self):
-        assert _parse_inline_runs("`code`") == [("code", False, False, "")]
+        assert _parse_inline_runs("`code`") == [("code", False, False, "", False)]
 
     def test_link(self):
-        assert _parse_inline_runs("[text](http://x.com)") == [("text", False, False, "http://x.com")]
+        assert _parse_inline_runs("[text](http://x.com)") == [("text", False, False, "http://x.com", False)]
 
     def test_mixed_runs_preserve_order_and_plain_gaps(self):
         runs = _parse_inline_runs("hello **bold** world")
         assert runs == [
-            ("hello ", False, False, ""),
-            ("bold", True, False, ""),
-            (" world", False, False, ""),
+            ("hello ", False, False, "", False),
+            ("bold", True, False, "", False),
+            (" world", False, False, "", False),
         ]
 
     def test_empty_string_yields_single_empty_run(self):
-        assert _parse_inline_runs("") == [("", False, False, "")]
+        assert _parse_inline_runs("") == [("", False, False, "", False)]
 
 
 class TestMarkdownToDocsRequests:
@@ -567,6 +602,22 @@ class TestMarkdownToDocsRequests:
         style_reqs = [r for r in requests if "updateTextStyle" in r]
         assert style_reqs[0]["updateTextStyle"]["textStyle"] == {"link": {"url": "http://x.com"}}
         assert style_reqs[0]["updateTextStyle"]["fields"] == "link"
+
+    def test_highlight_run_produces_background_color_field(self):
+        requests = _markdown_to_docs_requests("==flagged==")
+        style_reqs = [r for r in requests if "updateTextStyle" in r]
+        assert len(style_reqs) == 1
+        style = style_reqs[0]["updateTextStyle"]
+        assert style["fields"] == "backgroundColor"
+        assert style["textStyle"]["backgroundColor"]["color"]["rgbColor"] == _hex_to_rgb_dict(
+            drive_client_module._DEFAULT_HIGHLIGHT_COLOR
+        )
+
+    def test_start_index_offsets_every_range(self):
+        requests = _markdown_to_docs_requests("**bold**", start_index=10)
+        assert requests[0]["insertText"]["location"]["index"] == 10
+        style_reqs = [r for r in requests if "updateTextStyle" in r]
+        assert style_reqs[0]["updateTextStyle"]["range"] == {"startIndex": 10, "endIndex": 14}
 
     def test_multiple_lines_accumulate_correct_positions(self):
         requests = _markdown_to_docs_requests("# Title\nplain line")
@@ -1203,6 +1254,333 @@ class TestFormatSheetRange:
         client = make_client_with_sheets(sheets_service)
         with pytest.raises(DriveClientError, match="format_sheet_range"):
             client.format_sheet_range("sheet1", 0, "A1:B2", bold="true")
+
+
+# ---------------------------------------------------------------------------- #
+# insert_dimensions / delete_dimensions
+# ---------------------------------------------------------------------------- #
+
+class TestInsertDimensions:
+    def test_requires_spreadsheet_id(self):
+        client = make_client_with_sheets(MagicMock())
+        with pytest.raises(DriveClientError, match="non-empty spreadsheet_id"):
+            client.insert_dimensions("", 0, "ROWS", 0, 1)
+
+    def test_invalid_dimension_raises(self):
+        client = make_client_with_sheets(MagicMock())
+        with pytest.raises(DriveClientError, match="ROWS.*COLUMNS"):
+            client.insert_dimensions("sheet1", 0, "CELLS", 0, 1)
+
+    def test_count_below_one_raises(self):
+        client = make_client_with_sheets(MagicMock())
+        with pytest.raises(DriveClientError, match="count >= 1"):
+            client.insert_dimensions("sheet1", 0, "ROWS", 0, 0)
+
+    def test_inserts_via_batch_update(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_sheets(sheets_service)
+
+        result = client.insert_dimensions("sheet1", 5, "ROWS", 2, 3, inherit_from_before=False)
+
+        request = sheets_service.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]["requests"][0]
+        assert request == {
+            "insertDimension": {
+                "range": {"sheetId": 5, "dimension": "ROWS", "startIndex": 2, "endIndex": 5},
+                "inheritFromBefore": False,
+            }
+        }
+        assert result == {"spreadsheet_id": "sheet1", "sheet_id": 5, "dimension": "ROWS", "inserted": 3}
+
+    def test_inherit_from_before_defaults_true(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_sheets(sheets_service)
+
+        client.insert_dimensions("sheet1", 0, "COLUMNS", 0, 1)
+
+        request = sheets_service.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]["requests"][0]
+        assert request["insertDimension"]["inheritFromBefore"] is True
+
+    def test_http_error_becomes_drive_client_error(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.batchUpdate.return_value.execute.side_effect = http_error(400)
+        client = make_client_with_sheets(sheets_service)
+        with pytest.raises(DriveClientError, match="insert_dimensions"):
+            client.insert_dimensions("sheet1", 0, "ROWS", 0, 1)
+
+
+class TestDeleteDimensions:
+    def test_requires_spreadsheet_id(self):
+        client = make_client_with_sheets(MagicMock())
+        with pytest.raises(DriveClientError, match="non-empty spreadsheet_id"):
+            client.delete_dimensions("", 0, "ROWS", 0, 1)
+
+    def test_invalid_dimension_raises(self):
+        client = make_client_with_sheets(MagicMock())
+        with pytest.raises(DriveClientError, match="ROWS.*COLUMNS"):
+            client.delete_dimensions("sheet1", 0, "CELLS", 0, 1)
+
+    def test_count_below_one_raises(self):
+        client = make_client_with_sheets(MagicMock())
+        with pytest.raises(DriveClientError, match="count >= 1"):
+            client.delete_dimensions("sheet1", 0, "COLUMNS", 0, 0)
+
+    def test_deletes_via_batch_update(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_sheets(sheets_service)
+
+        result = client.delete_dimensions("sheet1", 5, "COLUMNS", 1, 2)
+
+        request = sheets_service.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]["requests"][0]
+        assert request == {
+            "deleteDimension": {
+                "range": {"sheetId": 5, "dimension": "COLUMNS", "startIndex": 1, "endIndex": 3},
+            }
+        }
+        assert result == {"spreadsheet_id": "sheet1", "sheet_id": 5, "dimension": "COLUMNS", "deleted": 2}
+
+    def test_http_error_becomes_drive_client_error(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.batchUpdate.return_value.execute.side_effect = http_error(400)
+        client = make_client_with_sheets(sheets_service)
+        with pytest.raises(DriveClientError, match="delete_dimensions"):
+            client.delete_dimensions("sheet1", 0, "ROWS", 0, 1)
+
+
+# ---------------------------------------------------------------------------- #
+# _docs_plain_text_with_index_map / _offset_to_docs_index / _find_text_matches
+# ---------------------------------------------------------------------------- #
+
+class TestDocsPlainTextIndexMap:
+    def test_single_paragraph_maps_contiguously(self):
+        doc = make_doc("hello world")
+        plain_text, runs = _docs_plain_text_with_index_map(doc)
+
+        assert plain_text == "hello world\n"
+        assert runs == [(0, 12, 1)]
+
+    def test_multiple_paragraphs_offsets_accumulate(self):
+        doc = make_doc("first", "second")
+        plain_text, runs = _docs_plain_text_with_index_map(doc)
+
+        assert plain_text == "first\nsecond\n"
+        # "first\n" is 6 chars at docs index 1; "second\n" starts right after
+        assert runs == [(0, 6, 1), (6, 13, 7)]
+
+    def test_elements_without_text_run_are_skipped(self):
+        doc = {"body": {"content": [{"startIndex": 1, "endIndex": 5, "table": {}}]}}
+        plain_text, runs = _docs_plain_text_with_index_map(doc)
+        assert plain_text == ""
+        assert runs == []
+
+
+class TestOffsetToDocsIndex:
+    def test_maps_offset_within_a_run(self):
+        runs = [(0, 6, 1), (6, 13, 7)]
+        assert _offset_to_docs_index(0, runs) == 1
+        assert _offset_to_docs_index(3, runs) == 4
+        assert _offset_to_docs_index(6, runs) == 7  # boundary: start of next run
+        assert _offset_to_docs_index(13, runs) == 14  # end of last run
+
+    def test_unmappable_offset_raises(self):
+        with pytest.raises(DriveClientError, match="Could not map text offset"):
+            _offset_to_docs_index(99, [(0, 6, 1)])
+
+
+class TestFindTextMatches:
+    def test_no_match_returns_empty(self):
+        assert _find_text_matches("hello world", "xyz") == []
+
+    def test_single_match(self):
+        assert _find_text_matches("hello world", "world") == [(6, 11)]
+
+    def test_multiple_non_overlapping_matches(self):
+        assert _find_text_matches("aXaXa", "aX") == [(0, 2), (2, 4)]
+
+    def test_overlapping_pattern_only_matches_non_overlapping(self):
+        # "aaa" contains "aa" at [0,2) and then continues searching from
+        # index 2, so the overlapping match at [1,3) is never reported --
+        # same behavior as str.find in a loop, not a lookahead regex.
+        assert _find_text_matches("aaa", "aa") == [(0, 2)]
+
+
+# ---------------------------------------------------------------------------- #
+# edit_doc_content: find/replace with uniqueness-or-replace_all semantics
+# ---------------------------------------------------------------------------- #
+
+class TestEditDocContent:
+    def test_requires_file_id(self):
+        client = make_client_with_docs(MagicMock())
+        with pytest.raises(DriveClientError, match="non-empty file_id"):
+            client.edit_doc_content("", "x", "y")
+
+    def test_requires_find_text(self):
+        client = make_client_with_docs(MagicMock())
+        with pytest.raises(DriveClientError, match="non-empty find_text"):
+            client.edit_doc_content("f1", "", "y")
+
+    def test_not_found_raises(self):
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.return_value = make_doc("hello world")
+        client = make_client_with_docs(docs_service)
+
+        with pytest.raises(DriveClientError, match="not found"):
+            client.edit_doc_content("f1", "missing", "new")
+
+    def test_ambiguous_match_without_replace_all_raises(self):
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.return_value = make_doc("cat cat cat")
+        client = make_client_with_docs(docs_service)
+
+        with pytest.raises(DriveClientError, match="matches 3 locations"):
+            client.edit_doc_content("f1", "cat", "dog")
+
+    def test_unique_match_replaces_span_only(self):
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.return_value = make_doc("hello world")
+        docs_service.documents.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_docs(docs_service)
+
+        result = client.edit_doc_content("f1", "world", "there")
+
+        requests = docs_service.documents.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+        # "hello world\n" -> "world" spans docs indices [7, 12)
+        assert requests[0] == {"deleteContentRange": {"range": {"startIndex": 7, "endIndex": 12}}}
+        assert requests[1]["insertText"]["location"]["index"] == 7
+        assert requests[1]["insertText"]["text"] == "there\n"
+        assert result == {"file_id": "f1", "occurrences_replaced": 1}
+
+    def test_replace_all_processes_matches_from_last_to_first(self):
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.return_value = make_doc("cat cat")
+        docs_service.documents.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_docs(docs_service)
+
+        result = client.edit_doc_content("f1", "cat", "dog", replace_all=True)
+
+        requests = docs_service.documents.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+        delete_starts = [r["deleteContentRange"]["range"]["startIndex"] for r in requests if "deleteContentRange" in r]
+        # Second occurrence ("cat" at offset 4, docs index 5) is deleted
+        # before the first ("cat" at offset 0, docs index 1) -- otherwise the
+        # first edit would shift the second match's precomputed indices.
+        assert delete_starts == [5, 1]
+        assert result == {"file_id": "f1", "occurrences_replaced": 2}
+
+    def test_get_http_error_becomes_drive_client_error(self):
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.side_effect = http_error(404)
+        client = make_client_with_docs(docs_service)
+
+        with pytest.raises(DriveClientError, match="edit_doc_content get"):
+            client.edit_doc_content("f1", "x", "y")
+
+    def test_batch_update_http_error_becomes_drive_client_error(self):
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.return_value = make_doc("hello world")
+        docs_service.documents.return_value.batchUpdate.return_value.execute.side_effect = http_error(400)
+        client = make_client_with_docs(docs_service)
+
+        with pytest.raises(DriveClientError, match="edit_doc_content batchUpdate"):
+            client.edit_doc_content("f1", "world", "there")
+
+
+# ---------------------------------------------------------------------------- #
+# format_doc_content: opt-in styling located by find_text
+# ---------------------------------------------------------------------------- #
+
+class TestFormatDocContent:
+    def test_requires_file_id(self):
+        client = make_client_with_docs(MagicMock())
+        with pytest.raises(DriveClientError, match="non-empty file_id"):
+            client.format_doc_content("", "x")
+
+    def test_requires_find_text(self):
+        client = make_client_with_docs(MagicMock())
+        with pytest.raises(DriveClientError, match="non-empty find_text"):
+            client.format_doc_content("f1", "")
+
+    def test_no_options_given_skips_document_fetch(self):
+        docs_service = MagicMock()
+        client = make_client_with_docs(docs_service)
+
+        result = client.format_doc_content("f1", "world")
+
+        docs_service.documents.return_value.get.assert_not_called()
+        assert result == {"file_id": "f1", "occurrences_formatted": 0}
+
+    def test_not_found_raises(self):
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.return_value = make_doc("hello world")
+        client = make_client_with_docs(docs_service)
+
+        with pytest.raises(DriveClientError, match="not found"):
+            client.format_doc_content("f1", "missing", bold="true")
+
+    def test_ambiguous_match_without_replace_all_raises(self):
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.return_value = make_doc("cat cat cat")
+        client = make_client_with_docs(docs_service)
+
+        with pytest.raises(DriveClientError, match="matches 3 locations"):
+            client.format_doc_content("f1", "cat", bold="true")
+
+    def test_bold_and_italic_only_touch_text_style_fields(self):
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.return_value = make_doc("hello world")
+        docs_service.documents.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_docs(docs_service)
+
+        client.format_doc_content("f1", "world", bold="true", italic="false")
+
+        requests = docs_service.documents.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+        style = requests[0]["updateTextStyle"]
+        assert style["textStyle"] == {"bold": True, "italic": False}
+        assert set(style["fields"].split(",")) == {"bold", "italic"}
+        assert style["range"] == {"startIndex": 7, "endIndex": 12}
+
+    def test_highlight_color_and_text_color_converted_to_rgb(self):
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.return_value = make_doc("hello world")
+        docs_service.documents.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_docs(docs_service)
+
+        client.format_doc_content("f1", "world", highlight_color="#fff59d", text_color="#000000")
+
+        requests = docs_service.documents.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+        text_style = requests[0]["updateTextStyle"]["textStyle"]
+        assert text_style["backgroundColor"]["color"]["rgbColor"] == _hex_to_rgb_dict("#fff59d")
+        assert text_style["foregroundColor"]["color"]["rgbColor"] == _hex_to_rgb_dict("#000000")
+
+    def test_replace_all_formats_every_occurrence(self):
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.return_value = make_doc("cat cat")
+        docs_service.documents.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_docs(docs_service)
+
+        result = client.format_doc_content("f1", "cat", bold="true", replace_all=True)
+
+        requests = docs_service.documents.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+        assert len(requests) == 2
+        assert result == {"file_id": "f1", "occurrences_formatted": 2}
+
+    def test_get_http_error_becomes_drive_client_error(self):
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.side_effect = http_error(404)
+        client = make_client_with_docs(docs_service)
+
+        with pytest.raises(DriveClientError, match="format_doc_content get"):
+            client.format_doc_content("f1", "x", bold="true")
+
+    def test_batch_update_http_error_becomes_drive_client_error(self):
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.return_value = make_doc("hello world")
+        docs_service.documents.return_value.batchUpdate.return_value.execute.side_effect = http_error(400)
+        client = make_client_with_docs(docs_service)
+
+        with pytest.raises(DriveClientError, match="format_doc_content batchUpdate"):
+            client.format_doc_content("f1", "world", bold="true")
 
 
 # ---------------------------------------------------------------------------- #

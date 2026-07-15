@@ -69,6 +69,27 @@ pii_detection:
   # "PII Detection Gate" in the menu bar.
   enabled: true
 
+unattended_sessions:
+  # Lets Claude Cowork declare a connection "unattended" (privacyfence_
+  # begin_unattended_session, see docs/TECHNICAL_REFERENCE.md's "Scheduled /
+  # unattended Cowork tasks" section) — meant for scheduled/triggered runs
+  # with no human present. While a
+  # connection is in that state, any review/popup call that isn't already
+  # covered by an auto-accept rule below is DENIED immediately instead of
+  # opening a native approval dialog, so a scheduled task fails one step
+  # fast instead of hanging on a popup nobody will ever click (and, since
+  # every dialog shares one lock, blocking every other approval behind it
+  # too). It never approves anything an auto-accept rule wouldn't already
+  # approve on its own — this only changes what happens when nothing does.
+  #
+  # Off by default: a Claude session gaining the ability to switch its own
+  # connection into fail-fast mode is a deliberate per-organization choice,
+  # not something every install should get for free. Denied-while-unattended
+  # calls are logged with decision "denied_unattended" (distinct from a
+  # human's "rejected") and the menu bar shows a live count of connections
+  # currently in this state while they're active.
+  enabled: false
+
 # Trust a specific resource once — a folder, a task list, a channel, ... —
 # instead of adding the same ID to several operation keys under
 # auto_accept_rules below. Each entry is grouped by connector and resource
@@ -85,8 +106,10 @@ pii_detection:
 #   drive:
 #     sandbox_folders:
 #       # A folder Claude can write into without a popup each time (e.g. a
-#       # scratch space you created for it) — also covers Sheets writes
-#       # (write_range/add_sheet/rename_sheet/format_range) in that folder.
+#       # scratch space you created for it) — also covers Sheets/Docs writes
+#       # (write_range/add_sheet/rename_sheet/format_range/insert_dimensions/
+#       # delete_dimensions/docs.edit_content/docs.format_content) in that
+#       # folder.
 #       - id: "<drive folder id>"
 #         name: "Claude scratch space"
 #         write: true

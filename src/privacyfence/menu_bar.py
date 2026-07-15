@@ -325,6 +325,7 @@ class PrivacyFenceMenuBar(rumps.App):
         )
         self._rebuild()
         set_rules_changed_listener(self._on_rules_changed)
+        self._ipc_server.set_unattended_changed_listener(self._on_unattended_changed)
 
     def _on_rules_changed(self) -> None:
         """Fired by auto_accept.reload_rules(), possibly from the IPC
@@ -336,6 +337,20 @@ class PrivacyFenceMenuBar(rumps.App):
         resources), or None if that connector isn't currently connected."""
         conn = self._connector_objs.get(connector)
         return getattr(conn, "client", None) if conn is not None else None
+
+    def _on_unattended_changed(self) -> None:
+        """Fired by ipc_server.py's IPCServer, on its own asyncio thread,
+        whenever a connection starts or stops an unattended session --
+        marshal the live-indicator refresh onto the main thread, same
+        pattern as _on_rules_changed."""
+        AppHelper.callAfter(self._rebuild)
+
+    def _status_label(self) -> str:
+        count = self._ipc_server.unattended_session_count()
+        if not count:
+            return "PrivacyFence is running"
+        plural = "s" if count != 1 else ""
+        return f"PrivacyFence is running — {count} unattended session{plural} active"
 
     # ------------------------------------------------------------------ #
     # Menu building
@@ -357,7 +372,7 @@ class PrivacyFenceMenuBar(rumps.App):
 
         self.menu.clear()
         self.menu = [
-            rumps.MenuItem("PrivacyFence is running"),
+            rumps.MenuItem(self._status_label()),
             rumps.separator,
             pii_item,
             rumps.separator,
@@ -633,12 +648,15 @@ class PrivacyFenceMenuBar(rumps.App):
             new_rule["value"] = []
         elif rule_name in RULES_INT_VALUE:
             hint = RULE_HINTS.get(rule_name, "")
+            message = "Enter an integer value:"
+            if hint:
+                message += f"\nExample: {hint}"
             w = rumps.Window(
                 title=f"Configure: {rule_name}",
-                message="Enter an integer value:",
-                default_text=hint,
+                message=message,
+                default_text="",
                 ok="Add", cancel="Cancel",
-                dimensions=(280, 24),
+                dimensions=(320, 80),
             )
             resp = w.run()
             if not resp.clicked or not resp.text.strip():
@@ -664,14 +682,19 @@ class PrivacyFenceMenuBar(rumps.App):
         is_pair = rule_name in RULES_PAIR_VALUE
         hint = (RULE_HINTS.get(rule_name, "") or "").splitlines()[0] if RULE_HINTS.get(rule_name) else ""
 
+        # Hint goes in the message, not pre-filled into the editable field --
+        # a pre-filled example reads as garbage data the user has to delete
+        # before typing their real value (see TestAddRule's regression test
+        # for the same fix on _add_rule's int-value prompt).
+        message = "Enter one 'spreadsheet_id' or 'spreadsheet_id:tab':" if is_pair else "Enter a value:"
+        if hint:
+            message += f"\nExample: {hint}"
         w = rumps.Window(
             title=f"Add value: {rule_name}",
-            message=(
-                "Enter one 'spreadsheet_id' or 'spreadsheet_id:tab':" if is_pair else "Enter a value:"
-            ),
-            default_text=hint,
+            message=message,
+            default_text="",
             ok="Add", cancel="Cancel",
-            dimensions=(280, 24),
+            dimensions=(320, 80),
         )
         resp = w.run()
         if not resp.clicked or not resp.text.strip():

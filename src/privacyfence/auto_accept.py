@@ -23,8 +23,15 @@ logger = logging.getLogger(__name__)
 TEMP_ACCEPT_ELIGIBLE_OPERATIONS: dict[str, str] = {
     "sheets.write_range": "spreadsheet_id",
     "sheets.format_range": "spreadsheet_id",
+    "sheets.insert_dimensions": "spreadsheet_id",
     "drive.comment_file": "file_id",
+    "docs.edit_content": "file_id",
+    "docs.format_content": "file_id",
 }
+# sheets.delete_dimensions is deliberately absent: unlike insert/format, it
+# removes cell content with no undo path through PrivacyFence, so it only
+# gets the standing-rule treatment below (like sheets.add_sheet /
+# sheets.rename_sheet), never the lighter-weight temp accept.
 
 TEMP_ACCEPT_TTL_SECONDS = 300
 
@@ -54,6 +61,10 @@ TOOL_TO_OPERATION: dict[str, str] = {
     "drive_sheets_add_sheet":         "sheets.add_sheet",
     "drive_sheets_rename_sheet":      "sheets.rename_sheet",
     "drive_sheets_format_range":      "sheets.format_range",
+    "drive_sheets_insert_dimensions": "sheets.insert_dimensions",
+    "drive_sheets_delete_dimensions": "sheets.delete_dimensions",
+    "drive_docs_edit_content":        "docs.edit_content",
+    "drive_docs_format_content":      "docs.format_content",
     "slack_get_channel_history":      "slack.read_messages",
     "slack_get_thread_replies":       "slack.read_messages",
     "slack_search_messages":          "slack.read_messages",
@@ -63,8 +74,10 @@ TOOL_TO_OPERATION: dict[str, str] = {
     "calendar_update_event":          "calendar.create_modify_event",
     "calendar_create_out_of_office":  "calendar.out_of_office",
     "calendar_set_working_location":  "calendar.working_location",
+    "calendar_set_event_visibility":  "calendar.set_visibility",
     "salesforce_get_record":          "salesforce.read_record",
     "salesforce_run_report":          "salesforce.run_report",
+    "salesforce_search":              "salesforce.search",
     "contacts_update":                "contacts.edit",
     "contacts_create":                "contacts.create",
     "contacts_add_label":             "contacts.add_label",
@@ -87,6 +100,207 @@ TOOL_TO_OPERATION: dict[str, str] = {
     "tasks_uncomplete_task":          "tasks.uncomplete_task",
     "tasks_move_task":                "tasks.move_task",
 }
+
+# Maps tool name -> the gate it goes through: "auto" (never reaches gated_call
+# at all), "review" (gated_call gate="review", the read direction), or
+# "popup" (gated_call gate="popup", the write direction). Unlike
+# TOOL_TO_OPERATION, this covers every tool, including the unconditionally
+# auto-accepted ones, since a preflight check needs a definitive answer for
+# those too.
+#
+# This is the single source of truth the connector tables in
+# docs/TECHNICAL_REFERENCE.md are checked against (see
+# tests/unit/connectors/test_readme_manifest_alignment.py) -- keep it in sync
+# with the gate= argument each connectors/*.py call site actually passes to
+# gated_call(), not just with the docs.
+TOOL_TO_GATE: dict[str, str] = {
+    # Gmail
+    "gmail_list_messages":             "auto",
+    "gmail_list_threads":              "auto",
+    "gmail_get_message":               "review",
+    "gmail_get_thread":                "review",
+    "gmail_list_message_attachments":  "auto",
+    "gmail_download_attachment":       "review",
+    "gmail_create_draft":              "popup",
+    "gmail_reply_draft":               "popup",
+    "gmail_reply_all_draft":           "popup",
+    "gmail_add_label":                 "popup",
+    "gmail_remove_label":              "popup",
+    "gmail_archive_message":           "popup",
+    "gmail_list_filters":              "auto",
+    "gmail_list_labels":               "auto",
+    "gmail_create_filter":             "popup",
+    "gmail_update_filter":             "popup",
+    "gmail_create_label":              "popup",
+    # Google Drive (incl. Sheets)
+    "drive_list_files":                "auto",
+    "drive_get_file_metadata":         "auto",
+    "drive_list_folder":               "auto",
+    "drive_list_shared_drives":        "auto",
+    "drive_create_blank_file":         "auto",
+    "drive_get_file_content":          "review",
+    "drive_download_file":             "review",
+    "drive_write_file_content":        "popup",
+    "drive_upload_file":               "popup",
+    "drive_write_doc_content":         "popup",
+    "drive_move_file":                 "popup",
+    "drive_add_comment":               "popup",
+    "drive_sheets_create":             "auto",
+    "drive_sheets_get_metadata":       "auto",
+    "drive_sheets_get_values":         "review",
+    "drive_sheets_write_range":        "popup",
+    "drive_sheets_add_sheet":          "popup",
+    "drive_sheets_rename_sheet":       "popup",
+    "drive_sheets_format_range":       "popup",
+    "drive_sheets_insert_dimensions":  "popup",
+    "drive_sheets_delete_dimensions":  "popup",
+    "drive_docs_edit_content":         "popup",
+    "drive_docs_format_content":       "popup",
+    # Slack
+    "slack_list_channels":             "auto",
+    "slack_get_channel_history":       "review",
+    "slack_get_thread_replies":        "review",
+    "slack_search_messages":           "review",
+    "slack_send_message":              "popup",
+    # Google Calendar
+    "calendar_list_calendars":         "auto",
+    "calendar_list_events":            "auto",
+    "calendar_get_free_busy":          "auto",
+    "calendar_list_rooms":             "auto",
+    "calendar_get_event_visibility":   "auto",
+    "calendar_get_event_details":      "review",
+    "calendar_create_event":           "popup",
+    "calendar_update_event":           "popup",
+    "calendar_create_out_of_office":   "popup",
+    "calendar_set_working_location":   "popup",
+    "calendar_set_event_visibility":   "popup",
+    # Google Contacts
+    "contacts_list":                   "auto",
+    "contacts_search":                 "auto",
+    "contacts_get":                    "auto",
+    "contacts_update":                 "popup",
+    "contacts_create":                 "popup",
+    "contacts_add_label":              "popup",
+    "contacts_remove_label":           "popup",
+    # Telegram
+    "telegram_list_chats":             "auto",
+    "telegram_get_messages":           "review",
+    "telegram_search_messages":        "review",
+    "telegram_send_message":           "popup",
+    # Salesforce
+    "salesforce_list_reports":         "auto",
+    "salesforce_get_record":           "review",
+    "salesforce_run_report":           "review",
+    "salesforce_search":               "review",
+    # Jira
+    "jira_list_projects":              "auto",
+    "jira_search_issues":              "auto",
+    "jira_get_transitions":            "auto",
+    "jira_get_issue":                  "review",
+    "jira_create_issue":               "popup",
+    "jira_add_comment":                "popup",
+    "jira_update_issue":               "popup",
+    "jira_transition_issue":           "popup",
+    # Confluence
+    "confluence_list_spaces":          "auto",
+    "confluence_search":               "auto",
+    "confluence_cql_search":           "auto",
+    "confluence_list_pages":           "auto",
+    "confluence_get_page":             "review",
+    "confluence_get_page_by_title":    "review",
+    "confluence_create_page":          "popup",
+    "confluence_update_page":          "popup",
+    # Google Tasks
+    "tasks_list_task_lists":           "auto",
+    "tasks_list_tasks":                "auto",
+    "tasks_get_task":                  "auto",
+    "tasks_create_task":               "popup",
+    "tasks_update_task":               "popup",
+    "tasks_complete_task":             "popup",
+    "tasks_uncomplete_task":           "popup",
+    "tasks_move_task":                 "popup",
+}
+
+# Every _rule_* method on AutoAcceptEvaluator classified into exactly one of
+# these two sets -- see test_auto_accept.py::test_every_rule_is_classified,
+# which enforces that a newly added rule can't be left unclassified.
+#
+# ARGS_ONLY_RULES only ever reads ctx.args, never ctx.raw_data, so it can be
+# evaluated correctly before anything is fetched -- this is what
+# AutoAcceptEvaluator.preflight_from_args() (used by privacyfence_check_policy)
+# is allowed to run ahead of time.
+#
+# DATA_DEPENDENT_RULES read ctx.raw_data, i.e. the actual fetched object (a
+# message, a file, an event...). A rule belongs here even if it *looks* like
+# it could degenerately return a verdict with raw_data missing -- several of
+# these are "absence" checks (no_attachments, shared_drive_exclusion,
+# no_conferencing_link, no_file_attachments, no_external_attendees) that
+# would silently evaluate to a false "matched" the moment raw_data is None,
+# since an empty/missing attribute reads the same as a genuinely absent one.
+# Preflighting these would produce a confidently wrong "auto_accept" verdict,
+# which is worse than admitting "unknown" -- so they stay data-dependent.
+ARGS_ONLY_RULES: frozenset[str] = frozenset({
+    "approved_spreadsheet",
+    "dm_with_myself",
+    "send_to_myself",
+    "approved_channel",
+    "approved_recipient",
+    "reply_in_existing_thread",
+    "personal_calendar",
+    "approved_object_types",
+    "approved_report_ids",
+    "to_is_myself",
+    "approved_recipient_domain",
+    "label_name_allowlist",
+    "parent_folder_allowlist",
+    "no_contact_info_change",
+    "approved_project_keys",
+    "approved_chats",
+    "approved_task_list",
+    "approved_space_keys",  # checks ctx.args first; falls back to raw_data
+                             # only when args lacks space_key, and that
+                             # fallback degrades safely (empty, not a false
+                             # match) when raw_data is unavailable.
+})
+
+DATA_DEPENDENT_RULES: frozenset[str] = frozenset({
+    "i_am_sender",
+    "i_am_sole_recipient",
+    "trusted_sender_domain",
+    "label_match",
+    "age_threshold_days",
+    "no_attachments",
+    "i_am_owner",
+    "created_by_me",
+    "approved_folder",
+    "approved_sandbox_folder",
+    "move_within_approved_folders",
+    "file_type_allowlist",
+    "created_this_session",
+    "shared_drive_exclusion",
+    "public_channels_only",
+    "no_file_attachments",
+    "i_am_organizer",
+    "no_external_attendees",
+    "past_event",
+    "time_window_days",
+    "no_conferencing_link",
+    "i_am_reporter",
+    "i_am_assignee",
+    "i_am_author",
+    "no_media_attachments",
+    # non_private_event is *args-derivable for one of its two operations*
+    # (calendar.set_visibility, whose args always carry "visibility") but
+    # not the other (calendar.read_event_details, which has no such arg and
+    # falls back to ctx.raw_data.visibility) -- with raw_data=None that
+    # fallback silently defaults to "default" (not private), a false
+    # "matched" for a read whose real visibility is unknown. Classification
+    # here is per rule name, not per (operation, rule), so this stays
+    # data-dependent globally: calendar.set_visibility gets a conservative
+    # "unknown" from preflight rather than risk read_event_details getting a
+    # false "auto_accept".
+    "non_private_event",
+})
 
 @dataclass
 class ReviewContext:
@@ -125,6 +339,66 @@ class AutoAcceptEvaluator:
             logger.info("Auto-accept: op=%r matched rule=%r", operation_key, "session_temp_accept")
             return True, "session_temp_accept"
         return False, ""
+
+    def preflight_from_args(
+        self, operation_key: str, args: dict, my_email: str = ""
+    ) -> tuple[str, str, str]:
+        """Predict should_auto_accept()'s outcome without fetching anything.
+
+        Backs privacyfence_check_policy: Claude calls this before making a
+        gated call, to find out whether it would need a human. Returns
+        (verdict, matched_rule, reason):
+
+          verdict="auto_accept"     -- a temp-accept or an ARGS_ONLY_RULES
+                                        match already decides this; the real
+                                        call will auto-accept identically.
+          verdict="requires_review" -- every configured rule for this
+                                        operation is in ARGS_ONLY_RULES and
+                                        none matched, so fetching the real
+                                        data cannot change the answer.
+          verdict="unknown"         -- at least one configured rule needs
+                                        ctx.raw_data (see DATA_DEPENDENT_RULES)
+                                        and none of the args-only rules
+                                        matched first; the real call might
+                                        still auto-accept once the item is
+                                        fetched, or might not.
+
+        Never touches an external API, opens a popup, or mutates state --
+        ctx.raw_data is always None here, which is why only ARGS_ONLY_RULES
+        members are safe to evaluate (see that set's docstring for why the
+        rest can't be, even speculatively).
+        """
+        ctx = ReviewContext(connector="", tool="", args=args or {}, raw_data=None, my_email=my_email)
+
+        file_key = temp_accept_key(operation_key, ctx)
+        if self._is_temp_accepted(operation_key, file_key):
+            return "auto_accept", "session_temp_accept", "Matched an active \"Accept for 5 min\" window."
+
+        configured = self._rules.get(operation_key) or []
+        if not configured:
+            return "requires_review", "", "No auto-accept rule is configured for this operation."
+
+        undetermined: list[str] = []
+        for rule_cfg in configured:
+            rule_name = rule_cfg.get("rule", "")
+            if rule_name not in ARGS_ONLY_RULES:
+                undetermined.append(rule_name)
+                continue
+            value = rule_cfg.get("value")
+            try:
+                if self._evaluate(rule_name, value, ctx):
+                    return "auto_accept", rule_name, f"Matched args-only rule {rule_name!r}."
+            except Exception as exc:
+                logger.warning("Preflight rule %r evaluation error: %s", rule_name, exc)
+
+        if undetermined:
+            return (
+                "unknown",
+                "",
+                "Depends on the fetched item's data, not just this call's arguments "
+                "(rule(s): " + ", ".join(sorted(set(undetermined))) + ").",
+            )
+        return "requires_review", "", "No configured rule matches these arguments."
 
     def register_temp_accept(
         self, operation_key: str, file_key: str, ttl_seconds: float = TEMP_ACCEPT_TTL_SECONDS
@@ -357,12 +631,35 @@ class AutoAcceptEvaluator:
         raw = ctx.raw_data
         return not bool(getattr(raw, "conference_link", "") or getattr(raw, "hangout_link", ""))
 
+    def _rule_non_private_event(self, _v, ctx):
+        """Auto-accept when the event involved is not marked private.
+
+        calendar_set_event_visibility's args always carry the visibility
+        being requested -- that's the state being approved, not whatever the
+        event's prior visibility was. Every other calendar operation this
+        applies to (currently calendar_get_event_details) has no
+        "visibility" arg, so it falls back to the event's current
+        visibility on ctx.raw_data.
+        """
+        visibility = ctx.args.get("visibility")
+        if visibility is None:
+            visibility = getattr(ctx.raw_data, "visibility", None)
+        return (visibility or "default") != "private"
+
     # ── Salesforce ────────────────────────────────────────────────────────
 
     def _rule_approved_object_types(self, value, ctx):
+        """Match a single approved object_type (salesforce.read_record) or,
+        for salesforce.search's comma-separated object_types, only when
+        every object type the search actually touches is on the allowlist —
+        a partial match would auto-accept a search that also reaches an
+        unapproved object type."""
         if not value:
             return False
         allowed = {v.lower() for v in (value if isinstance(value, list) else [value])}
+        if "object_types" in ctx.args:
+            requested = [t.strip().lower() for t in (ctx.args.get("object_types") or "").split(",") if t.strip()]
+            return bool(requested) and all(t in allowed for t in requested)
         return ctx.args.get("object_type", "").lower() in allowed
 
     def _rule_approved_report_ids(self, value, ctx):
@@ -588,11 +885,21 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
             all_internal = all(ctx.my_domain in _attendee_email(a) for a in attendees)
             if all_internal:
                 return ("no_external_attendees", None)
+        visibility = getattr(ctx.raw_data, "visibility", "default") or "default"
+        if visibility != "private":
+            return ("non_private_event", None)
         return None
 
     if operation_key == "salesforce.read_record":
         object_type = ctx.args.get("object_type", "")
         return ("approved_object_types", [object_type]) if object_type else None
+
+    if operation_key == "salesforce.search":
+        object_types = [t.strip() for t in (ctx.args.get("object_types") or "").split(",") if t.strip()]
+        # An unscoped search reaches Salesforce's whole default set of
+        # globally-searchable objects -- too broad to derive a narrow rule
+        # from, the same reasoning gmail_create_filter has no rule at all.
+        return ("approved_object_types", object_types) if object_types else None
 
     if operation_key == "jira.read_issue":
         raw = ctx.raw_data
@@ -633,6 +940,7 @@ _RULE_DESCRIPTIONS: dict[str, str] = {
     "approved_channel":      "Slack reads in channel(s): {value}",
     "i_am_organizer":        "Calendar event reads for events you organize",
     "no_external_attendees": "Calendar event reads with no external attendees",
+    "non_private_event":     "Calendar event reads/writes where the event is not marked private",
     "approved_object_types": "Salesforce record reads for object type(s): {value}",
     "i_am_reporter":         "Jira issue reads where you are the reporter",
     "i_am_assignee":         "Jira issue reads where you are the assignee",

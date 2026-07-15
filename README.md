@@ -140,6 +140,11 @@ PII detection takes precedence over read auto-accept rules. A request that would
 
 Temporary approval is also available for selected repetitive write operations. These approvals are scoped to the same operation and file, held only in memory, and expire automatically.
 
+Scheduled Claude Cowork tasks can run unattended: a `privacyfence_check_policy` tool lets Claude
+check ahead of time whether a call would auto-accept or need a human, and an opt-in unattended-session
+mode denies unmatched requests immediately instead of leaving a popup open for nobody to answer. See
+[Technical Reference](docs/TECHNICAL_REFERENCE.md#scheduled--unattended-cowork-tasks).
+
 ---
 
 ## Supported connectors
@@ -147,12 +152,12 @@ Temporary approval is also available for selected repetitive write operations. T
 | Connector | Examples of governed capabilities |
 |---|---|
 | Gmail | Read messages and threads, download attachments, create drafts and replies, manage labels, archive messages, create and update filters |
-| Google Drive & Docs | Read, download, upload, move, and write files; write Google Docs; add comments |
-| Google Sheets | Read ranges, write and format ranges, add and rename tabs |
-| Google Calendar | Read event details, create and update events, create out-of-office entries, set working location |
+| Google Drive & Docs | Read, download, upload, move, and write files; write, partially edit, and format (including highlight) Google Docs; add comments |
+| Google Sheets | Read ranges, write and format ranges, add and rename tabs, insert and delete rows/columns |
+| Google Calendar | Read event details, get/set event visibility, create and update events, create out-of-office entries, set working location |
 | Google Contacts | Read, create, update, and label contacts |
 | Slack | Read channels and threads, search messages, send messages |
-| Salesforce | Read records and run reports |
+| Salesforce | Read records, search by name or id, and run reports |
 | Jira | Read, create, update, comment on, and transition issues |
 | Confluence | Read, create, and update pages |
 | Google Tasks | Read, create, update, complete, uncomplete, and move tasks |
