@@ -1,9 +1,10 @@
 # Automated Gate, Popup-UI, and Audit-Log Testing (Design Proposal)
 
-**Status: Parts A and B implemented** (`tests/unit/test_gate_real_evaluator.py`,
-`tests/unit/test_approval_window.py`, and the `approval_window.py` build/run split below). **Part C
-remains proposed, not implemented** — see that section for why it's kept optional. This closes the
-gap
+**Status: Parts A, B, and C implemented** (`tests/unit/test_gate_real_evaluator.py`,
+`tests/unit/test_approval_window.py`, the `approval_window.py` build/run split, and
+`scripts/qa_popup_smoke.py`) — see each section for what "implemented" means for that part; Part C
+in particular is local-only and hasn't been run on real macOS as part of this change (see that
+section). This closes the gap
 [`external-api-contract-testing.md`](external-api-contract-testing.md) names explicitly in its own
 "Test coverage" evaluation:
 
@@ -223,23 +224,29 @@ be visible. Those are exactly the things a human glancing at the popup during
 brittle substitute for — this part targets *content and structure* (right buttons, right text,
 right tint), not visual fidelity.
 
-## Part C — Optional: scripted full-modal smoke test (local only, never CI)
+## Part C — Optional: scripted full-modal smoke test (local only, never CI) — implemented
 
 The one thing Parts A and B still don't touch: does `runModalForWindow_` actually block until a
-real click, and does a real click on the real "Accept All" button actually resolve
-`show_native_approval()` to `"accept_all"`? This is the AppKit equivalent of
+real click, and does a real click on a real button actually resolve `show_native_approval()` to
+the value its docstring promises? This is the AppKit equivalent of
 `external-api-contract-testing.md`'s live-fixture recorder — a tool a developer runs locally,
 never wired into CI, never required for a PR.
 
-- A new script, `scripts/qa_popup_smoke.py`, run manually (`python3 scripts/qa_popup_smoke.py`):
-  calls `show_native_approval` with a representative set of arguments (plain popup, PII-tinted
-  popup, `allow_accept_all=True`, `allow_temp_accept=True`), and for each one, instead of waiting
-  for a human, drives a real click via `System Events` (`osascript -e 'tell application "System
-  Events" to click button "Accept All" of window 1 of process "Python"'`) fired from a short
-  delayed background thread started just before `runApproval_` is invoked — the same "real
-  `osascript`, no human" pattern `test_approval_popup_escaping.py` already established, just now
-  clicking a real button on a real window instead of round-tripping a string through a headless
-  `-e` expression.
+- `scripts/qa_popup_smoke.py`, run manually (`python3 scripts/qa_popup_smoke.py`): calls
+  `show_native_approval` across five scenarios (plain popup Accept, plain popup Deny, a
+  PII-tinted popup, `allow_accept_all=True`, `allow_temp_accept=True`), and for each one, instead
+  of waiting for a human, drives a real click from a short-delayed background thread via
+  `System Events`, targeted at *this process's own pid* (`first process whose unix id is
+  {pid}` — more robust than matching on a process name, which varies with how Python itself was
+  installed) rather than a fixed sleep — it polls for the window to exist (up to an 8-second
+  timeout) before clicking, and reports `TIMEOUT_NO_WINDOW` / `BUTTON_NOT_FOUND` distinctly from a
+  genuine result mismatch. This is the same "real `osascript`, no human" pattern
+  `test_approval_popup_escaping.py` already established, just now clicking a real button on a real
+  window instead of round-tripping a string through a headless `-e` expression. The main thread
+  runs `PyObjCTools.AppHelper.runEventLoop()` (not a full `rumps.App()` — this script has no menu
+  bar UI of its own) so `show_native_approval`'s `performSelectorOnMainThread_withObject_
+  waitUntilDone_` dispatch has a run loop to land on, exactly mirroring how `daemon_main.py` keeps
+  the real main thread pumping while `gate.py` calls in from a worker thread.
 - Requires Accessibility permission granted to the terminal/IDE running it, same as any
   `System Events`-driven automation — this is exactly why it's a local opt-in script and not a CI
   job: granting Accessibility access to a CI runner (which GitHub's hosted macOS runners don't do
@@ -248,12 +255,16 @@ never wired into CI, never required for a PR.
   doesn't justify that cost. A developer changing `approval_window.py`'s modal-loop plumbing
   (rare — Part B already covers everything about window *contents*) runs this once, locally,
   the same way the fixture recorder's `--check` mode is run before a `*_client.py` PR.
-- Prints a pass/fail table, one row per scenario, to stdout — same "paste into the PR description"
-  convention `external-api-contract-testing.md`'s local-check report already establishes, reused
-  rather than inventing a second format.
+- Prints a pass/fail markdown table, one row per scenario, to stdout (and optionally to
+  `--report-file`) — same "paste into the PR description" convention
+  `external-api-contract-testing.md`'s local-check report already establishes, reused rather than
+  inventing a second format. Exits non-zero if any scenario failed or didn't run, so it's usable
+  as a manual gate even though it's never an automated one.
 
-This part is explicitly optional and decoupled from Parts A/B — nothing in the rollout plan blocks
-on it.
+This part is explicitly optional and decoupled from Parts A/B — nothing in the rollout plan
+blocked on it. Not exercised on real macOS as part of this change (this session's environment is
+Linux); verified by direct code review plus isolated logic checks (report rendering, pass/fail
+determination) against synthetic data. Run it once on a real Mac to confirm before relying on it.
 
 ## File layout
 
@@ -270,7 +281,7 @@ tests/
 src/privacyfence/
   approval_window.py                 # done — build_panel() split out of runApproval_
 scripts/
-  qa_popup_smoke.py                  # new, optional — Part C, run locally only, never in CI
+  qa_popup_smoke.py                  # done, optional — Part C, run locally only, never in CI
 ```
 
 ## Rollout plan
@@ -289,9 +300,10 @@ scripts/
    at each covered phase's start (not a deletion of the phase — see below) pointing at the new
    automated test, so a human running the manual prompt knows which parts of what they're about to
    click through already have a deterministic guardrail behind them.
-5. **Part C script** — not implemented; still optional and decoupled per the design principles
-   above (Accessibility-permission requirement, narrow additional coverage). Pick up whenever
-   convenient; nothing here blocks on it.
+5. **Part C script** — done, `scripts/qa_popup_smoke.py`. Still optional and decoupled per the
+   design principles above (Accessibility-permission requirement, narrow additional coverage) —
+   nothing else here depends on it. Run it once on a real Mac before relying on it; it hasn't been
+   exercised against real AppKit as part of landing this change.
 
 No step here removes a phase from `connector-qa-testing.md` — see below for why.
 
