@@ -453,10 +453,13 @@ class PrivacyFenceMenuBar(rumps.App):
                 kind = "one 'spreadsheet_id' or 'spreadsheet_id:tab' per line"
             else:
                 kind = "one value per line"
+            message = f"Enter value ({kind}):"
+            if hint:
+                message += f"\nExample: {hint}"
             w = rumps.Window(
                 title=f"Configure: {rule_name}",
-                message=f"Enter value ({kind}):",
-                default_text=hint,
+                message=message,
+                default_text="",
                 ok="Add",
                 cancel="Cancel",
                 dimensions=(320, 80),
