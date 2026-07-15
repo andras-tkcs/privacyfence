@@ -1016,7 +1016,7 @@ class TestBuildGrantResourceMenu:
         group_item = app._build_grant_resource_menu(rt, grants_cfg)
 
         folder_row = group_item.values()[0]
-        assert any("☑" in c.title for c in folder_row) is False
+        assert any("☑" in c.title for c in folder_row.values()) is False
 
     def test_resolved_name_is_shown_instead_of_raw_id(self, app):
         rt = menu_bar.grant_resource_type("drive", "sandbox_folders")
