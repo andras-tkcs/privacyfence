@@ -54,6 +54,10 @@ class DriveConnector(Connector):
     def name(self) -> str:
         return "drive"
 
+    @property
+    def client(self) -> DriveClient:
+        return self._drive
+
     def tool_specs(self) -> list[ToolSpec]:
         return [
             ToolSpec(

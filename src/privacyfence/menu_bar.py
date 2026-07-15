@@ -1,7 +1,10 @@
 """macOS menu bar app (rumps).
 
 Main thread only, except where noted. Provides:
-  - Auto-accept rule management: add / toggle / edit values per operation
+  - Auto-accept rule management: "Trusted <Resource>" grants (folders, task
+    lists, channels, ...) — see resource_grants.py for the connector/
+    resource-scoped model this compiles from — plus the lower-level
+    per-operation "Filters" menus for attribute rules that aren't grants
   - Organization config bundle install/update (the IT-admin-facing side of
     connector setup — see the module docstring in daemon_main.py)
   - Per-connector Authenticate…: runs each service's browser OAuth flow (or,
@@ -21,6 +24,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 from pathlib import Path
@@ -42,6 +46,16 @@ from .calendar_client import CalendarClient
 from .contacts_client import ContactsClient
 from .drive_client import DriveClient
 from .gmail_client import GmailClient
+from .resource_grants import (
+    GRANT_RESOURCE_TYPES,
+    GrantResourceType,
+    build_effective_rules,
+    get_grant_entries,
+    resource_type as grant_resource_type,
+    resource_types_for_connector,
+    set_grant_entries,
+)
+from .resource_names import get_resolver
 from .salesforce_client import authorize_interactive as salesforce_authorize_interactive
 from .slack_client import authorize_interactive as slack_authorize_interactive
 from .tasks_client import TasksClient
@@ -230,6 +244,45 @@ RULE_HINTS: dict[str, str] = {
     "approved_task_list":    "MDAwMDAwMDAwMDAwMDAwMDAwMDA6MDow\nMTExMTExMTExMTExMTExMTExMTE6MDow",
 }
 
+# Rule names now configured through a Trusted-resource grant (see
+# resource_grants.py) instead of by hand. Hidden from "+ Add rule…" so there
+# isn't a second, more tedious way to do the same thing — existing entries
+# under these names (hand-authored, or left behind by a partial migration —
+# see resource_grants.migrate_rules_to_grants) still display and can still be
+# removed, just not created fresh from here.
+GRANT_COVERED_RULE_NAMES: set[str] = {
+    rule_name
+    for rt in GRANT_RESOURCE_TYPES
+    for capability in rt.capabilities.values()
+    for _op_key, rule_name in capability.targets
+}
+
+# Drive/Sheets URLs paste-able into "+ Add folder…" / "+ Add spreadsheet…",
+# so the user can copy the browser address bar instead of hand-extracting
+# the ID segment. Order matters: a spreadsheet URL also contains "/d/" so
+# the folder pattern is tried first.
+_DRIVE_FOLDER_URL_RE = re.compile(r"/folders/([a-zA-Z0-9_-]+)")
+_DRIVE_FILE_URL_RE = re.compile(r"/d/([a-zA-Z0-9_-]+)")
+
+
+def _extract_drive_id(text: str) -> str:
+    """Pull a Drive/Sheets file or folder ID out of a pasted URL, or accept
+    a bare ID as-is. Returns "" if nothing usable was found."""
+    text = text.strip()
+    for pattern in (_DRIVE_FOLDER_URL_RE, _DRIVE_FILE_URL_RE):
+        m = pattern.search(text)
+        if m:
+            return m.group(1)
+    if text and "/" not in text and " " not in text:
+        return text
+    return ""
+
+
+def _short_id(resource_id: str, head: int = 8, tail: int = 6) -> str:
+    if len(resource_id) <= head + tail + 1:
+        return resource_id
+    return f"{resource_id[:head]}…{resource_id[-tail:]}"
+
 
 class _AuthFlowCancelled(Exception):
     """Raised internally when the user cancels a native prompt mid-flow."""
@@ -247,10 +300,22 @@ def _google_client_config(org_config: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------- #
 
 class PrivacyFenceMenuBar(rumps.App):
-    def __init__(self, config_path: str, connectors: list[str], ipc_server: "IPCServer") -> None:
+    def __init__(
+        self,
+        config_path: str,
+        connectors: list[str],
+        ipc_server: "IPCServer",
+        connector_objs: list[Any] | None = None,
+    ) -> None:
         self._config_path = config_path
         self._connectors = connectors
         self._ipc_server = ipc_server
+        # name -> live Connector wrapper (exposes .client for resolving grant
+        # resource names — see resource_names.py). Populated at startup from
+        # daemon_main.py's already-built connectors, and refreshed whenever
+        # _refresh_connectors() re-authenticates/toggles one.
+        self._connector_objs: dict[str, Any] = {c.name: c for c in (connector_objs or [])}
+        self._resolver = get_resolver()
         icon_path = _find_icon()
         super().__init__(
             name="PrivacyFence",
@@ -266,6 +331,12 @@ class PrivacyFenceMenuBar(rumps.App):
         server's thread — marshal the menu rebuild onto the main thread."""
         AppHelper.callAfter(self._rebuild)
 
+    def _client_for(self, connector: str) -> Any | None:
+        """Live client for a connected connector (for resolving/listing grant
+        resources), or None if that connector isn't currently connected."""
+        conn = self._connector_objs.get(connector)
+        return getattr(conn, "client", None) if conn is not None else None
+
     # ------------------------------------------------------------------ #
     # Menu building
     # ------------------------------------------------------------------ #
@@ -273,11 +344,10 @@ class PrivacyFenceMenuBar(rumps.App):
     def _rebuild(self) -> None:
         cfg = self._load_config()
         org_config = load_org_config()
-        rules_cfg: dict[str, list[dict]] = cfg.get("auto_accept_rules", {}) or {}
         connectors_cfg: dict[str, dict] = cfg.get("connectors", {}) or {}
         pii_enabled: bool = (cfg.get("pii_detection", {}) or {}).get("enabled", True)
 
-        rules_parent = self._build_rules_menu(rules_cfg)
+        rules_parent = self._build_rules_menu(cfg)
 
         org_parent = self._build_org_menu(org_config)
         connectors_parent = self._build_connectors_menu(org_config, connectors_cfg)
@@ -301,8 +371,10 @@ class PrivacyFenceMenuBar(rumps.App):
             rumps.MenuItem("Quit PrivacyFence", callback=self.quit_app),
         ]
 
-    def _build_rules_menu(self, rules_cfg: dict[str, list[dict]]) -> rumps.MenuItem:
+    def _build_rules_menu(self, cfg: dict[str, Any]) -> rumps.MenuItem:
         rules_parent = rumps.MenuItem("Auto-accept Rules")
+        rules_cfg: dict[str, list[dict]] = cfg.get("auto_accept_rules", {}) or {}
+        grants_cfg: dict[str, Any] = cfg.get("auto_accept_grants", {}) or {}
 
         ops_by_connector: dict[str, list[str]] = {}
         for op_key in OPERATION_LABELS:
@@ -310,25 +382,105 @@ class PrivacyFenceMenuBar(rumps.App):
 
         for cname in RULES_MENU_GROUPS:
             op_keys = ops_by_connector.get(cname)
+            resource_types = resource_types_for_connector(cname)
             connector_item = rumps.MenuItem(cname.capitalize())
-            if not op_keys:
+
+            if not op_keys and not resource_types:
                 connector_item.add(rumps.MenuItem("  All operations always auto-approved — no rules needed"))
                 rules_parent.add(connector_item)
                 continue
 
-            for op_key in op_keys:
-                label = OPERATION_LABELS[op_key]
-                short_label = label.split(" – ", 1)[1] if " – " in label else label
-                connector_item.add(self._build_operation_menu(op_key, short_label, rules_cfg.get(op_key) or []))
+            for rt in resource_types:
+                connector_item.add(self._build_grant_resource_menu(rt, grants_cfg))
+
+            if op_keys:
+                filters_item = rumps.MenuItem("Filters")
+                for op_key in op_keys:
+                    label = OPERATION_LABELS[op_key]
+                    short_label = label.split(" – ", 1)[1] if " – " in label else label
+                    filters_item.add(self._build_operation_menu(op_key, short_label, rules_cfg.get(op_key) or []))
+                connector_item.add(filters_item)
 
             rules_parent.add(connector_item)
 
         return rules_parent
 
+    def _build_grant_resource_menu(self, rt: GrantResourceType, grants_cfg: dict[str, Any]) -> rumps.MenuItem:
+        """One "Trusted <Resource>" submenu: every currently-granted resource
+        as its own named row (capability checkboxes, Copy ID, Remove), plus a
+        single "+ Add …" action — see resource_grants.py for what a
+        capability toggle actually compiles to."""
+        group_item = rumps.MenuItem(rt.label)
+        entries = get_grant_entries(grants_cfg, rt)
+        client = self._client_for(rt.connector)
+
+        for idx, entry in enumerate(entries):
+            group_item.add(self._build_grant_entry_menu(rt, idx, entry, client))
+
+        if entries:
+            group_item.add(rumps.MenuItem("  ─────────────────"))
+        add_item = rumps.MenuItem(f"  + Add {rt.singular}…")
+        add_item.set_callback(_bind(self._add_grant, rt.connector, rt.config_key))
+        group_item.add(add_item)
+
+        self._resolve_grant_names_async(rt, entries, client)
+        return group_item
+
+    def _build_grant_entry_menu(
+        self, rt: GrantResourceType, idx: int, entry: dict[str, Any], client: Any | None
+    ) -> rumps.MenuItem:
+        resource_id = rt.id_of(entry)
+        name = entry.get("name") or self._resolver.cached_name(rt, resource_id)
+        label = name or _short_id(resource_id)
+        if entry.get("tab"):
+            label += f" — {entry['tab']}"
+        if name is None:
+            label += "  (resolving…)" if client is not None else f"  (connect {rt.connector.capitalize()} to see its name)"
+
+        row = rumps.MenuItem(f"  {label}")
+        for cap_key, capability in rt.capabilities.items():
+            mark = "☑" if entry.get(cap_key) else "☐"
+            toggle = rumps.MenuItem(f"    {mark} {capability.label}")
+            toggle.set_callback(_bind(self._toggle_grant_capability, rt.connector, rt.config_key, idx, cap_key))
+            row.add(toggle)
+        copy_item = rumps.MenuItem(f"    Copy ID ({_short_id(resource_id)})")
+        copy_item.set_callback(_bind(self._copy_to_clipboard, resource_id))
+        row.add(copy_item)
+        remove_item = rumps.MenuItem("    ✕ Remove")
+        remove_item.set_callback(_bind(self._remove_grant, rt.connector, rt.config_key, idx))
+        row.add(remove_item)
+        return row
+
+    def _resolve_grant_names_async(
+        self, rt: GrantResourceType, entries: list[dict[str, Any]], client: Any | None
+    ) -> None:
+        """Kick off a background name lookup for any entry with no cached
+        name yet, then rebuild the menu once done. No-ops (and doesn't loop)
+        once every entry has a cached name — see resource_names.py's TTL."""
+        if client is None:
+            return
+        missing = [rt.id_of(e) for e in entries if self._resolver.cached_name(rt, rt.id_of(e)) is None]
+        if not missing:
+            return
+
+        def work() -> bool:
+            # Only report back "something changed" if resolution actually
+            # found a name for at least one entry — an entry that keeps
+            # failing to resolve (deleted resource, transient error, ...)
+            # would otherwise still be "missing" on the next rebuild, and
+            # unconditionally rebuilding here would re-trigger this same
+            # lookup forever.
+            return any(self._resolver.resolve(rt, resource_id, client) for resource_id in missing)
+
+        def done(ok: bool, resolved_something: Any) -> None:
+            if ok and resolved_something:
+                self._rebuild()
+
+        self._run_async(work, done)
+
     def _build_operation_menu(self, op_key: str, label: str, op_rules: list[dict]) -> rumps.MenuItem:
         op_item = rumps.MenuItem(label)
 
-        # "Add rule…" at the top
         add_item = rumps.MenuItem("  + Add rule…")
         add_item.set_callback(_bind(self._add_rule, op_key))
         op_item.add(add_item)
@@ -337,28 +489,53 @@ class PrivacyFenceMenuBar(rumps.App):
             op_item.add(rumps.MenuItem("  ─────────────────"))
 
         for idx, rule_cfg in enumerate(op_rules):
-            rule_name = rule_cfg.get("rule", "")
-            value = rule_cfg.get("value")
-            has_value = rule_name in RULES_LIST_VALUE or rule_name in RULES_INT_VALUE or rule_name in RULES_PAIR_VALUE
-
-            # Toggle item
-            toggle = rumps.MenuItem(f"  ✓ {rule_name}")
-            toggle.set_callback(_bind(self._toggle_rule, op_key, idx))
-            op_item.add(toggle)
-
-            # Edit value item (only if rule takes a value)
-            if has_value:
-                value_preview = _format_value(value)
-                edit = rumps.MenuItem(f"      ↳ {value_preview}  Edit…")
-                edit.set_callback(_bind(self._edit_rule_value, op_key, idx))
-                op_item.add(edit)
-
-            # Remove item
-            remove = rumps.MenuItem(f"      ✕ Remove")
-            remove.set_callback(_bind(self._remove_rule, op_key, idx))
-            op_item.add(remove)
+            op_item.add(self._build_rule_row(op_key, idx, rule_cfg))
 
         return op_item
+
+    def _build_rule_row(self, op_key: str, idx: int, rule_cfg: dict[str, Any]) -> rumps.MenuItem:
+        rule_name = rule_cfg.get("rule", "")
+        value = rule_cfg.get("value")
+
+        if rule_cfg.get("_grant"):
+            # Compiled from a Trusted-resource grant, not a hand-authored
+            # rule — nothing to edit here, only where it actually lives.
+            row = rumps.MenuItem(f"  {rule_name}  (via grant — edit above)")
+            return row
+
+        if rule_name in RULES_LIST_VALUE or rule_name in RULES_PAIR_VALUE:
+            is_pair = rule_name in RULES_PAIR_VALUE
+            row = rumps.MenuItem(f"  {rule_name}")
+            values = value if isinstance(value, list) else ([value] if value else [])
+            for v_idx, v in enumerate(values):
+                v_label = _format_pair_line(v) if is_pair else str(v)
+                entry_item = rumps.MenuItem(f"    {v_label}")
+                remove = rumps.MenuItem("      ✕ Remove")
+                remove.set_callback(_bind(self._remove_rule_value, op_key, idx, v_idx))
+                entry_item.add(remove)
+                row.add(entry_item)
+            if values:
+                row.add(rumps.MenuItem("    ─────────────────"))
+            add_value = rumps.MenuItem("    + Add value…")
+            add_value.set_callback(_bind(self._add_rule_value, op_key, idx))
+            row.add(add_value)
+            return row
+
+        if rule_name in RULES_INT_VALUE:
+            row = rumps.MenuItem(f"  {rule_name}: {value}")
+            edit = rumps.MenuItem("    Edit…")
+            edit.set_callback(_bind(self._edit_rule_value, op_key, idx))
+            row.add(edit)
+            remove = rumps.MenuItem("    ✕ Remove")
+            remove.set_callback(_bind(self._remove_rule, op_key, idx))
+            row.add(remove)
+            return row
+
+        # Boolean rule (no value) — one click removes it; there's nothing
+        # else to configure, so there's no separate toggle-vs-remove split.
+        row = rumps.MenuItem(f"  ✓ {rule_name}")
+        row.set_callback(_bind(self._remove_rule, op_key, idx))
+        return row
 
     def _build_org_menu(self, org_config: dict[str, Any]) -> rumps.MenuItem:
         org_parent = rumps.MenuItem("Organization Config")
@@ -430,9 +607,14 @@ class PrivacyFenceMenuBar(rumps.App):
     # ------------------------------------------------------------------ #
 
     def _add_rule(self, op_key: str, _sender: Any = None) -> None:
-        available = RULES_BY_OPERATION.get(op_key, [])
+        available = [r for r in RULES_BY_OPERATION.get(op_key, []) if r not in GRANT_COVERED_RULE_NAMES]
         if not available:
-            rumps.alert("Add Rule", f"No configurable rules available for\n{op_key}.")
+            rumps.alert(
+                "Add Rule",
+                f"No configurable filter rules for\n{OPERATION_LABELS.get(op_key, op_key)}.\n\n"
+                "Resource-scoped trust (folders, task lists, channels, spaces, …) is configured "
+                "under this connector's Trusted-resource menus above, not here.",
+            )
             return
 
         rule_name = _osascript_pick(
@@ -445,62 +627,93 @@ class PrivacyFenceMenuBar(rumps.App):
 
         new_rule: dict[str, Any] = {"rule": rule_name}
 
-        if rule_name in RULES_LIST_VALUE or rule_name in RULES_INT_VALUE or rule_name in RULES_PAIR_VALUE:
+        if rule_name in RULES_LIST_VALUE or rule_name in RULES_PAIR_VALUE:
+            # Start empty — populated one value at a time via "+ Add value…"
+            # on the new row, not a shared multi-line box.
+            new_rule["value"] = []
+        elif rule_name in RULES_INT_VALUE:
             hint = RULE_HINTS.get(rule_name, "")
-            if rule_name in RULES_INT_VALUE:
-                kind = "integer"
-            elif rule_name in RULES_PAIR_VALUE:
-                kind = "one 'spreadsheet_id' or 'spreadsheet_id:tab' per line"
-            else:
-                kind = "one value per line"
             w = rumps.Window(
                 title=f"Configure: {rule_name}",
-                message=f"Enter value ({kind}):",
+                message="Enter an integer value:",
                 default_text=hint,
-                ok="Add",
-                cancel="Cancel",
-                dimensions=(320, 80),
+                ok="Add", cancel="Cancel",
+                dimensions=(280, 24),
             )
             resp = w.run()
-            if not resp.clicked:
+            if not resp.clicked or not resp.text.strip():
                 return
-            text = resp.text.strip()
-            if not text:
+            try:
+                new_rule["value"] = int(resp.text.strip())
+            except ValueError:
+                rumps.alert("Invalid value", f"Expected an integer, got: {resp.text.strip()!r}")
                 return
-            if rule_name in RULES_INT_VALUE:
-                try:
-                    new_rule["value"] = int(text)
-                except ValueError:
-                    rumps.alert("Invalid value", f"Expected an integer, got: {text!r}")
-                    return
-            elif rule_name in RULES_PAIR_VALUE:
-                new_rule["value"] = _parse_pair_lines(text)
-            else:
-                new_rule["value"] = [v.strip() for v in text.splitlines() if v.strip()]
 
         cfg = self._load_config()
         op_rules = cfg.setdefault("auto_accept_rules", {}).setdefault(op_key, [])
         op_rules.append(new_rule)
         self._save_and_reload(cfg)
 
-    def _toggle_rule(self, op_key: str, idx: int, _sender: Any = None) -> None:
+    def _add_rule_value(self, op_key: str, idx: int, _sender: Any = None) -> None:
         cfg = self._load_config()
         rules = cfg.get("auto_accept_rules", {}).get(op_key, [])
         if idx >= len(rules):
             return
         rule = rules[idx]
-        # Toggle by removing/re-adding a disabled marker — simplest: just remove
-        # the rule entirely (re-add from scratch to re-enable). For now just
-        # remove it so the user can re-add if needed. A cleaner model would be
-        # an `enabled` flag but the evaluator doesn't support that.
-        rules.pop(idx)
-        if not rules:
-            cfg.get("auto_accept_rules", {}).pop(op_key, None)
+        rule_name = rule.get("rule", "")
+        is_pair = rule_name in RULES_PAIR_VALUE
+        hint = (RULE_HINTS.get(rule_name, "") or "").splitlines()[0] if RULE_HINTS.get(rule_name) else ""
+
+        w = rumps.Window(
+            title=f"Add value: {rule_name}",
+            message=(
+                "Enter one 'spreadsheet_id' or 'spreadsheet_id:tab':" if is_pair else "Enter a value:"
+            ),
+            default_text=hint,
+            ok="Add", cancel="Cancel",
+            dimensions=(280, 24),
+        )
+        resp = w.run()
+        if not resp.clicked or not resp.text.strip():
+            return
+        text = resp.text.strip()
+
+        values = rule.get("value")
+        values = values if isinstance(values, list) else ([values] if values else [])
+        if is_pair:
+            for entry in _parse_pair_lines(text):
+                if entry not in values:
+                    values.append(entry)
+        elif text not in values:
+            values.append(text)
+        rule["value"] = values
+        cfg["auto_accept_rules"][op_key][idx] = rule
+        self._save_and_reload(cfg)
+
+    def _remove_rule_value(self, op_key: str, idx: int, value_idx: int, _sender: Any = None) -> None:
+        cfg = self._load_config()
+        rules = cfg.get("auto_accept_rules", {}).get(op_key, [])
+        if idx >= len(rules):
+            return
+        rule = rules[idx]
+        values = rule.get("value")
+        if not isinstance(values, list) or value_idx >= len(values):
+            return
+        values.pop(value_idx)
+        if values:
+            rule["value"] = values
+            cfg["auto_accept_rules"][op_key][idx] = rule
         else:
-            cfg["auto_accept_rules"][op_key] = rules
+            rules.pop(idx)
+            if rules:
+                cfg["auto_accept_rules"][op_key] = rules
+            else:
+                cfg.get("auto_accept_rules", {}).pop(op_key, None)
         self._save_and_reload(cfg)
 
     def _edit_rule_value(self, op_key: str, idx: int, _sender: Any = None) -> None:
+        """Only reachable for RULES_INT_VALUE rows — list/pair values are
+        edited one at a time via _add_rule_value/_remove_rule_value."""
         cfg = self._load_config()
         rules = cfg.get("auto_accept_rules", {}).get(op_key, [])
         if idx >= len(rules):
@@ -509,43 +722,21 @@ class PrivacyFenceMenuBar(rumps.App):
         rule_name = rule.get("rule", "")
         current = rule.get("value")
 
-        if rule_name in RULES_INT_VALUE:
-            default_text = str(current) if current is not None else ""
-            kind = "integer"
-        elif rule_name in RULES_PAIR_VALUE:
-            entries = current if isinstance(current, list) else []
-            default_text = "\n".join(_format_pair_line(e) for e in entries)
-            kind = "one 'spreadsheet_id' or 'spreadsheet_id:tab' per line"
-        else:
-            vals = current if isinstance(current, list) else ([current] if current else [])
-            default_text = "\n".join(str(v) for v in vals)
-            kind = "one value per line"
-
         w = rumps.Window(
             title=f"Edit: {rule_name}",
-            message=f"Edit value ({kind}):",
-            default_text=default_text,
-            ok="Save",
-            cancel="Cancel",
-            dimensions=(320, 80),
+            message="Enter an integer value:",
+            default_text=str(current) if current is not None else "",
+            ok="Save", cancel="Cancel",
+            dimensions=(280, 24),
         )
         resp = w.run()
-        if not resp.clicked:
+        if not resp.clicked or not resp.text.strip():
             return
-        text = resp.text.strip()
-        if not text:
+        try:
+            rule["value"] = int(resp.text.strip())
+        except ValueError:
+            rumps.alert("Invalid value", f"Expected an integer, got: {resp.text.strip()!r}")
             return
-
-        if rule_name in RULES_INT_VALUE:
-            try:
-                rule["value"] = int(text)
-            except ValueError:
-                rumps.alert("Invalid value", f"Expected an integer, got: {text!r}")
-                return
-        elif rule_name in RULES_PAIR_VALUE:
-            rule["value"] = _parse_pair_lines(text)
-        else:
-            rule["value"] = [v.strip() for v in text.splitlines() if v.strip()]
 
         cfg["auto_accept_rules"][op_key][idx] = rule
         self._save_and_reload(cfg)
@@ -569,6 +760,161 @@ class PrivacyFenceMenuBar(rumps.App):
             cfg.get("auto_accept_rules", {}).pop(op_key, None)
         else:
             cfg["auto_accept_rules"][op_key] = rules
+        self._save_and_reload(cfg)
+
+    # ------------------------------------------------------------------ #
+    # Grant actions (Trusted <Resource> menus — see resource_grants.py)
+    # ------------------------------------------------------------------ #
+
+    def _toggle_grant_capability(
+        self, connector: str, config_key: str, idx: int, capability_key: str, _sender: Any = None
+    ) -> None:
+        rt = grant_resource_type(connector, config_key)
+        if rt is None:
+            return
+        cfg = self._load_config()
+        grants_cfg = cfg.setdefault("auto_accept_grants", {})
+        entries = get_grant_entries(grants_cfg, rt)
+        if idx >= len(entries):
+            return
+        entries[idx][capability_key] = not entries[idx].get(capability_key, False)
+        set_grant_entries(grants_cfg, rt, entries)
+        self._save_and_reload(cfg)
+
+    def _remove_grant(self, connector: str, config_key: str, idx: int, _sender: Any = None) -> None:
+        rt = grant_resource_type(connector, config_key)
+        if rt is None:
+            return
+        cfg = self._load_config()
+        grants_cfg = cfg.setdefault("auto_accept_grants", {})
+        entries = get_grant_entries(grants_cfg, rt)
+        if idx >= len(entries):
+            return
+        entry = entries[idx]
+        label = entry.get("name") or rt.id_of(entry)
+        resp = rumps.alert(
+            title=f"Remove {rt.singular}",
+            message=f"Remove '{label}' from {rt.label}?",
+            ok="Remove",
+            cancel="Cancel",
+        )
+        if resp != 1:
+            return
+        entries.pop(idx)
+        set_grant_entries(grants_cfg, rt, entries)
+        self._save_and_reload(cfg)
+
+    def _copy_to_clipboard(self, text: str, _sender: Any = None) -> None:
+        try:
+            subprocess.run(["pbcopy"], input=text, text=True, check=False)
+        except OSError:
+            pass
+
+    def _add_grant(self, connector: str, config_key: str, _sender: Any = None) -> None:
+        rt = grant_resource_type(connector, config_key)
+        if rt is None:
+            return
+        client = self._client_for(connector)
+
+        if rt.list_candidates is not None:
+            if client is None:
+                rumps.alert(
+                    "PrivacyFence",
+                    f"{connector.capitalize()} isn't connected — authenticate it from Connectors first.",
+                )
+                return
+
+            def work() -> list[tuple[str, str]]:
+                return rt.list_candidates(client)  # type: ignore[misc]
+
+            def done(ok: bool, result: Any) -> None:
+                if not ok:
+                    rumps.alert("PrivacyFence", f"Could not list {rt.label.lower()}:\n{result}")
+                    return
+                self._on_candidates_listed(rt, result)
+
+            self._run_async(work, done)
+            return
+
+        # No cheap enumeration for this resource type (e.g. Drive folders/
+        # spreadsheets) — accept a pasted ID or full Drive/Sheets URL instead.
+        w = rumps.Window(
+            title=f"Add {rt.singular}",
+            message=f"Paste the {rt.singular} ID, or its full Drive/Sheets URL:",
+            ok="Next", cancel="Cancel",
+            dimensions=(320, 24),
+        )
+        resp = w.run()
+        if not resp.clicked or not resp.text.strip():
+            return
+        resource_id = _extract_drive_id(resp.text.strip())
+        if not resource_id:
+            rumps.alert("PrivacyFence", "Could not find an ID in that text.")
+            return
+
+        tab = ""
+        if rt.config_key == "spreadsheets":
+            tab_resp = rumps.Window(
+                title="Add spreadsheet",
+                message="Tab name to restrict to (optional — leave blank for the whole spreadsheet):",
+                ok="Continue", cancel="Continue",
+                dimensions=(320, 24),
+            ).run()
+            tab = tab_resp.text.strip()
+
+        if client is None:
+            self._confirm_and_save_grant(rt, resource_id, None, tab)
+            return
+
+        def work() -> str | None:
+            return rt.resolver(client, resource_id)
+
+        def done(ok: bool, result: Any) -> None:
+            self._confirm_and_save_grant(rt, resource_id, result if ok else None, tab)
+
+        self._run_async(work, done)
+
+    def _on_candidates_listed(self, rt: GrantResourceType, candidates: list[tuple[str, str]]) -> None:
+        if not candidates:
+            rumps.alert("PrivacyFence", f"No {rt.label.lower()} found.")
+            return
+        options = [f"{name} ({_short_id(resource_id)})" for resource_id, name in candidates]
+        choice = _osascript_pick(
+            title=f"Add {rt.singular}", prompt=f"Select a {rt.singular} to trust:", options=options
+        )
+        if not choice:
+            return
+        chosen_idx = options.index(choice)
+        resource_id, name = candidates[chosen_idx]
+        self._confirm_and_save_grant(rt, resource_id, name, "")
+
+    def _confirm_and_save_grant(
+        self, rt: GrantResourceType, resource_id: str, name: str | None, tab: str
+    ) -> None:
+        label = name or resource_id
+        message = (
+            f"Add '{label}' as a trusted {rt.singular}?"
+            if name
+            else f"Could not resolve a name for {resource_id} — add it by ID anyway?"
+        )
+        resp = rumps.alert(title=f"Add {rt.singular}", message=message, ok="Add", cancel="Cancel")
+        if resp != 1:
+            return
+
+        cfg = self._load_config()
+        grants_cfg = cfg.setdefault("auto_accept_grants", {})
+        entries = get_grant_entries(grants_cfg, rt)
+        if any(rt.id_of(e) == resource_id and e.get("tab") == (tab or None) for e in entries):
+            rumps.alert("PrivacyFence", f"That {rt.singular} is already trusted.")
+            return
+
+        entry: dict[str, Any] = {rt.id_field: resource_id}
+        if name:
+            entry["name"] = name
+        if tab:
+            entry["tab"] = tab
+        entries.append(entry)
+        set_grant_entries(grants_cfg, rt, entries)
         self._save_and_reload(cfg)
 
     # ------------------------------------------------------------------ #
@@ -659,6 +1005,7 @@ class PrivacyFenceMenuBar(rumps.App):
         def done(ok: bool, result: Any) -> None:
             if ok:
                 self._connectors = [c.name for c in result]
+                self._connector_objs = {c.name: c for c in result}
                 self._ipc_server.set_connectors(result)
             self._rebuild()
 
@@ -968,7 +1315,7 @@ class PrivacyFenceMenuBar(rumps.App):
         try:
             # Triggers _on_rules_changed() -> _rebuild(), so the menu picks
             # up the change without a separate explicit rebuild here.
-            reload_rules(cfg.get("auto_accept_rules", {}))
+            reload_rules(build_effective_rules(cfg))
         except Exception as exc:
             logger.warning("Rule hot-reload failed: %s", exc)
             self._rebuild()
@@ -1009,18 +1356,6 @@ def _parse_pair_lines(text: str) -> list[dict[str, str]]:
     return entries
 
 
-def _format_value(value: Any) -> str:
-    if value is None:
-        return "(none)"
-    if isinstance(value, list):
-        if not value:
-            return "(empty)"
-        items = [_format_pair_line(v) if isinstance(v, dict) else str(v) for v in value[:3]]
-        preview = ", ".join(items)
-        return preview + (f" +{len(value) - 3} more" if len(value) > 3 else "")
-    return str(value)
-
-
 def _osascript_pick(title: str, prompt: str, options: list[str]) -> str | None:
     """Show a native macOS list-picker and return the chosen item or None."""
     opts_as = "{" + ", ".join(f'"{o}"' for o in options) + "}"
@@ -1046,6 +1381,16 @@ def _find_icon() -> str | None:
     return None
 
 
-def run_menu_bar(config_path: str, connectors: list[str], ipc_server: "IPCServer") -> None:
-    app = PrivacyFenceMenuBar(config_path=config_path, connectors=connectors, ipc_server=ipc_server)
+def run_menu_bar(
+    config_path: str,
+    connectors: list[str],
+    ipc_server: "IPCServer",
+    connector_objs: list[Any] | None = None,
+) -> None:
+    app = PrivacyFenceMenuBar(
+        config_path=config_path,
+        connectors=connectors,
+        ipc_server=ipc_server,
+        connector_objs=connector_objs,
+    )
     app.run()

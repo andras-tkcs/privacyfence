@@ -44,6 +44,7 @@ from .app_credentials import telegram_app_credentials
 from .audit_log import init_audit_logger
 from .auto_accept import init_config_path, reload_rules
 from .pii_detector import init_pii_detection
+from .resource_grants import build_effective_rules, migrate_rules_to_grants
 from .connectors.calendar import CalendarConnector
 from .connectors.confluence import ConfluenceConnector
 from .connectors.contacts import ContactsConnector
@@ -593,7 +594,20 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
         return 1
 
     init_config_path(_resolve_path(config_path))
-    reload_rules(config.get("auto_accept_rules", {}) or {})
+
+    config, migration_summary = migrate_rules_to_grants(config)
+    if migration_summary:
+        try:
+            with open(_resolve_path(config_path), "w", encoding="utf-8") as fh:
+                yaml.dump(config, fh, default_flow_style=False, allow_unicode=True)
+            logger.info(
+                "Auto-accept config migrated to connector-scoped grants:\n  %s",
+                "\n  ".join(migration_summary),
+            )
+        except OSError as exc:
+            logger.warning("Could not persist auto-accept grants migration: %s", exc)
+
+    reload_rules(build_effective_rules(config))
     init_pii_detection((config.get("pii_detection", {}) or {}).get("enabled", True))
 
     audit_logger = init_audit_logger(str(Path(data_dir()) / "logs" / "audit"))
@@ -613,7 +627,12 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
     from .menu_bar import run_menu_bar
     connector_names = [c.name for c in connectors]
     try:
-        run_menu_bar(config_path=config_path, connectors=connector_names, ipc_server=ipc_server)
+        run_menu_bar(
+            config_path=config_path,
+            connectors=connector_names,
+            ipc_server=ipc_server,
+            connector_objs=connectors,
+        )
     except KeyboardInterrupt:
         logger.info("Interrupted; shutting down")
     finally:

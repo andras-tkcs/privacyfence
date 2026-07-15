@@ -31,6 +31,10 @@ class TasksConnector(Connector):
         self._list_name_cache: dict[str, str] = {}
 
     @property
+    def client(self) -> TasksClient:
+        return self._tasks
+
+    @property
     def name(self) -> str:
         return "tasks"
 

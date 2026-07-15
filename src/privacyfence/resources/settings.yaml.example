@@ -69,6 +69,42 @@ pii_detection:
   # "PII Detection Gate" in the menu bar.
   enabled: true
 
+# Trust a specific resource once — a folder, a task list, a channel, ... —
+# instead of adding the same ID to several operation keys under
+# auto_accept_rules below. Each entry is grouped by connector and resource
+# type, with a small set of capability booleans (read / write / create /
+# ...) that decide which operations it actually auto-accepts; every new
+# grant starts with every capability off, so adding one does nothing until
+# you explicitly flip a capability on. This is also the section the menu
+# bar's "Auto-accept Rules → <Connector> → Trusted <Resource>" submenus
+# read and write — editing it here or from the menu are equivalent, and
+# ``name`` is a cosmetic label (last resolved from the connector, shown in
+# the menu) that the evaluator itself never reads. See "Auto-accept grants"
+# in docs/TECHNICAL_REFERENCE.md for the full per-connector reference.
+# auto_accept_grants:
+#   drive:
+#     sandbox_folders:
+#       # A folder Claude can write into without a popup each time (e.g. a
+#       # scratch space you created for it) — also covers Sheets writes
+#       # (write_range/add_sheet/rename_sheet/format_range) in that folder.
+#       - id: "<drive folder id>"
+#         name: "Claude scratch space"
+#         write: true
+#     folders:
+#       # A folder Claude can read from without a popup (does NOT also grant
+#       # write — that's the separate "sandbox_folders" list above).
+#       - id: "<drive folder id>"
+#         name: "Shared Reports"
+#         read: true
+#   tasks:
+#     task_lists:
+#       - id: "<task list id>"
+#         name: "Personal"
+#         create: true
+#         edit: true
+#         complete: true
+#         move: true
+
 auto_accept_rules:
   contacts.edit:
     # Auto-accept contact edits that don't touch emails/phones (name,
@@ -83,13 +119,11 @@ auto_accept_rules:
     # names match on the full "Parent/Child" string)
     # - rule: label_name_allowlist
     #   value: ["Receipts", "Travel/Bookings"]
-  # tasks.create_task:
-    # Auto-accept task edits scoped to specific Google Tasks list(s) — the
-    # same rule/value applies to tasks.update_task, tasks.complete_task,
-    # tasks.uncomplete_task, and tasks.move_task (a move only auto-accepts
-    # when BOTH the source and destination list are in this list).
-    # - rule: approved_task_list
-    #   value: ["<task list id>"]
+  # Trusting a specific folder, task list, channel, project, space, chat,
+  # spreadsheet, calendar, or Salesforce report? Use auto_accept_grants
+  # above instead — it's the same underlying mechanism (this is what it
+  # compiles down to) but configured once per resource instead of once per
+  # operation key.
 
 logging:
   # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL

@@ -12,6 +12,7 @@ scripts/dev_env.sh
 # User configuration (keep only the .example)
 config/settings.yaml
 config/settings.local.yaml
+resource_name_cache.json
 
 # Claude Code
 .claude/
