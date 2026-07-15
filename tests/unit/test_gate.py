@@ -1066,7 +1066,8 @@ class TestUnattendedMode:
     """gate.is_unattended()/unattended_scope() back the fail-fast path for
     scheduled/unattended Cowork tasks: ipc_server.py wraps a request in
     unattended_scope(True) when its connection called privacyfence_begin_
-    unattended_session(). See docs/cowork-scheduled-tasks-design.md.
+    unattended_session(). See docs/TECHNICAL_REFERENCE.md's "Scheduled /
+    unattended Cowork tasks" section.
 
     The one invariant that matters more than any individual branch: this
     must never change what auto-accepts -- only what happens when nothing

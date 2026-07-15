@@ -87,8 +87,9 @@ _popup_lock = asyncio.Lock()  # only one native dialog on screen at a time
 # of that request only, when the request came in on a connection that
 # called privacyfence_begin_unattended_session() and hasn't since called
 # privacyfence_end_unattended_session() -- see unattended_scope() below and
-# docs/cowork-scheduled-tasks-design.md. Deliberately NOT a module-level
-# bool: a plain bool would be shared across every concurrent request on
+# docs/TECHNICAL_REFERENCE.md's "Scheduled / unattended Cowork tasks"
+# section. Deliberately NOT a module-level bool: a plain bool would be
+# shared across every concurrent request on
 # every connection, but unattended mode is a per-connection state (the
 # bridge is one process per Cowork task, so "per connection" already means
 # "per scheduled run").
@@ -300,7 +301,8 @@ async def gated_call(
 def _deny_unattended(audit, connector: str, tool: str, *, pii_categories: list[str]) -> None:
     """Fail-fast path for unattended sessions: same outcome as a human
     clicking Deny, minus the popup nobody's there to answer -- see
-    unattended_scope() above and docs/cowork-scheduled-tasks-design.md.
+    unattended_scope() above and docs/TECHNICAL_REFERENCE.md's
+    "Scheduled / unattended Cowork tasks" section.
 
     Always raises; the "-> None" return type documents that this never
     returns a decision to act on, only ever exits via exception.

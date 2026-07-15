@@ -651,8 +651,9 @@ class UnattendedAwareConnector(Connector):
 
 class TestUnattendedSessionDispatch:
     """privacyfence_begin/end_unattended_session -- see
-    docs/cowork-scheduled-tasks-design.md. Opt-in (unattended_sessions_enabled),
-    connection-scoped, and cleared on disconnect.
+    docs/TECHNICAL_REFERENCE.md's "Scheduled / unattended Cowork tasks"
+    section. Opt-in (unattended_sessions_enabled), connection-scoped, and
+    cleared on disconnect.
     """
 
     @pytest.fixture(autouse=True)

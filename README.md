@@ -259,7 +259,6 @@ Continue with the organization configuration and connector authentication steps 
 ## Documentation
 
 - [Technical Reference](docs/TECHNICAL_REFERENCE.md) — review model, connectors, policies, installation, configuration, and implementation notes
-- [Scheduled Cowork tasks design](docs/cowork-scheduled-tasks-design.md) — design rationale for the preflight tool and unattended-session mode
 - [Security, Privacy & Compliance](docs/security-and-compliance.md) — deployment model, data handling, organizational controls, GDPR, and EU AI Act positioning
 - [Google setup](docs/google-cloud-setup.md)
 - [Slack setup](docs/slack-setup.md)

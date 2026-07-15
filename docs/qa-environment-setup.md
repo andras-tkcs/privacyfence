@@ -509,6 +509,21 @@ The only thing worth confirming beforehand:
    again stays plain regardless — only the read (step 22) can exercise the
    override, since only reads are ever scanned.
 
+## 12. Scheduled / unattended Cowork tasks
+
+No fixture to create — Phase 11 of `connector-qa-testing.md` reuses the Slack channels from §3
+above (an approved one, a control one) rather than needing anything new. The only environment
+state this check touches is `unattended_sessions.enabled` in `settings.yaml`, which is off by
+default and toggled (with a daemon restart) as part of the phase itself, not something to
+pre-configure here. See
+[`TECHNICAL_REFERENCE.md`](TECHNICAL_REFERENCE.md#scheduled--unattended-cowork-tasks) for what this
+mode does and why.
+
+The one thing worth confirming beforehand: know how to restart your daemon (`privacyfence-app`, or
+`scripts/dev_start.sh` if running from source — see [dev-vs-live-setup.md](dev-vs-live-setup.md)).
+Unlike `pii_detection.enabled`, `unattended_sessions.enabled` has no menu-bar toggle and isn't
+hot-reloaded — the phase requires an actual restart partway through, twice.
+
 ---
 
 ## Consolidated `auto_accept_rules` block
