@@ -515,6 +515,26 @@ data:
    `confluence_get_page`/`create_page`/`update_page` are completely broken
    without it (a 410 "Gone" error from Atlassian's removed v1 endpoint), and
    that failure has nothing to do with this environment setup.
+6. **For `scripts/qa_fixture_recorder.py`** (the local fixture recorder — see
+   [`external-api-contract-testing.md`](external-api-contract-testing.md)),
+   as opposed to the manual `connector-qa-testing.md` process above: create
+   one dedicated seed page in `PFQA`, with synthetic content, tagged so the
+   recorder can find it and confirm it's the right one before recording
+   anything from it:
+   ```
+   Title: PrivacyFence QA seed page [QATEST]
+   Body:  Synthetic PrivacyFence QA test page. No real information. Safe to
+          read, comment on, or edit by any automated test.
+   ```
+   Fill in its page ID (or leave blank to resolve by title — one extra API
+   call per run) under `confluence.seed_page_id` in
+   `tests/fixtures/qa_environment.yaml`. This is a narrower requirement than
+   steps 1–5 above: the recorder only ever reads this one page, by ID/title
+   and the `[QATEST]` tag, never "any page in `PFQA`" — see
+   `external-api-contract-testing.md`'s "Guardrail against recording the
+   wrong thing" for why. Only Confluence has recorder support today
+   (`scripts/qa_fixture_recorder.py`'s `CONNECTOR_CHECKS`); other connectors
+   will need the same kind of tagged seed artifact once they're wired in.
 
 ## 11. PII Detection Gate
 

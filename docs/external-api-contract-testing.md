@@ -1,6 +1,7 @@
 # External API Contract Testing (Design Proposal — Local-First)
 
-**Status: proposed, not yet implemented.** No live third-party credential is ever provisioned to
+**Status: partially implemented** — see the [Rollout plan](#rollout-plan)'s status note for exactly
+what's shipped vs. still design. No live third-party credential is ever provisioned to
 GitHub Actions, any other cloud CI, or any secret store this repo doesn't fully control on a
 developer's own machine — that part is unchanged from the previous revision. What changed: this
 runs against your **real, already-authenticated accounts** (per
@@ -232,8 +233,9 @@ scripts/
 
 1. **Field-completeness helper** (`assert_no_placeholder_fields`) — ship immediately, no dependency
    on anything else here; wire into Confluence's connector tests first.
-2. **`qa-environment-setup.md` seed artifacts** — create the tagged synthetic content per connector
-   (already a standalone doc).
+2. **`qa-environment-setup.md` seed artifacts** — create the tagged synthetic content per connector,
+   added as a step alongside that connector's existing fixtures (e.g. Confluence §10 step 6) rather
+   than as a separate doc — only Confluence has this today.
 3. **`scripts/qa_fixture_recorder.py`** (`--check` mode only, to start) — prove the tool can
    authenticate and call every connector's targeted read methods successfully, before it ever writes
    a fixture file.
@@ -408,9 +410,12 @@ play, and it's worth treating as load-bearing, not an afterthought — it's the 
 - **Drift-detection latency is "however often a human runs the recorder,"** not automatic. The
   optional staleness-reminder workflow partially offsets this without any credential risk.
 - **Telegram and the `trusted_sender_domain` Gmail rule are the two places a real, unlabeled
-  artifact's existence (not content) still matters** — covered explicitly in
-  `qa-environment-setup.md` §1 and §7, with the same rule applied there: confirm behavior/shape,
-  never persist content.
+  artifact's existence (not content) will still matter once those connectors get recorder
+  support** — `qa-environment-setup.md` §1 already notes there's no synthetic substitute for "a
+  domain you actually receive mail from"; the same constraint applies to Telegram (§7), since
+  `telethon` has no bot-token equivalent for reading a real chat's own history. The rule for the
+  recorder is the same one this doc uses everywhere else: confirm behavior/shape, never persist
+  content.
 
 **Net assessment**: a real, durable improvement over today's mocked-only suite, narrower in what it
 records than a dedicated-account design would allow, in exchange for not requiring a second identity
