@@ -113,8 +113,8 @@ class TestButtonSet:
     def test_accept_defaults_to_enter_and_deny_to_escape(self):
         views = build_views(make_controller())
         titles = buttons_by_title(views)
-        assert titles["Accept"].key_equivalent == "\r"
-        assert titles["Deny"].key_equivalent == "\x1b"
+        assert titles["Accept"].keyEquivalent() == "\r"
+        assert titles["Deny"].keyEquivalent() == "\x1b"
 
 
 class TestPiiTintAndBanner:
@@ -123,23 +123,34 @@ class TestPiiTintAndBanner:
     popup (including every write, per gate.py's module docstring) must not.
     """
 
-    def _pii_boxes(self, views):
-        return [
-            v for v in views
-            if isinstance(v, NSBox) and getattr(v, "fill_color", None) is not None
-            and getattr(v.fill_color, "tag", None) == "systemRed"
-        ]
+    def _boxes_with_alpha(self, views, alpha, tolerance=1e-6):
+        # Matches on the box's own fillColor() alpha -- the one property
+        # gate.py/approval_window.py's PII wash and banner actually control
+        # (_PII_BACKGROUND_ALPHA / _PII_BANNER_FILL_ALPHA). Not matching on
+        # RGB components: systemRedColor() is a dynamic, appearance-aware
+        # color, so its resolved components can vary by light/dark mode and
+        # accessibility settings -- alpha is the stable, code-controlled
+        # signal to assert on.
+        matches = []
+        for v in views:
+            if not isinstance(v, NSBox):
+                continue
+            color = v.fillColor()
+            if color is None:
+                continue
+            if abs(color.alphaComponent() - alpha) < tolerance:
+                matches.append(v)
+        return matches
 
     def test_no_pii_categories_renders_no_red_tint_anywhere(self):
         views = build_views(make_controller(pii_categories=[]))
-        assert self._pii_boxes(views) == []
+        assert self._boxes_with_alpha(views, _PII_BACKGROUND_ALPHA) == []
+        assert self._boxes_with_alpha(views, _PII_BANNER_FILL_ALPHA) == []
 
     def test_pii_categories_render_a_full_window_wash_and_a_banner_box(self):
         views = build_views(make_controller(pii_categories=["US Social Security Number"]))
-        red_boxes = self._pii_boxes(views)
-        alphas = sorted(round(b.fill_color.a, 4) for b in red_boxes)
-        assert round(_PII_BACKGROUND_ALPHA, 4) in alphas
-        assert round(_PII_BANNER_FILL_ALPHA, 4) in alphas
+        assert len(self._boxes_with_alpha(views, _PII_BACKGROUND_ALPHA)) >= 1
+        assert len(self._boxes_with_alpha(views, _PII_BANNER_FILL_ALPHA)) >= 1
 
     def test_banner_text_names_every_detected_category(self):
         controller = make_controller(pii_categories=["US Social Security Number", "IBAN (bank account number)"])
@@ -158,7 +169,8 @@ class TestPiiTintAndBanner:
         views = build_views(make_controller(
             details_text="His SSN is 123-45-6789 on file.", pii_categories=[],
         ))
-        assert self._pii_boxes(views) == []
+        assert self._boxes_with_alpha(views, _PII_BACKGROUND_ALPHA) == []
+        assert self._boxes_with_alpha(views, _PII_BANNER_FILL_ALPHA) == []
 
 
 class TestSummaryBox:
