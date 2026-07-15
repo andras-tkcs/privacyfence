@@ -6,6 +6,8 @@ pattern.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -19,6 +21,8 @@ from privacyfence.confluence_client import (
     ConfluenceSearchResult,
     ConfluenceSpace,
 )
+
+LIVE_FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "live" / "confluence"
 
 
 def make_client(config: dict | None = None, token_file: str | None = None) -> ConfluenceClient:
@@ -557,3 +561,41 @@ class TestUpdatePage:
         client._client.get.side_effect = RuntimeError("boom")
         with pytest.raises(ConfluenceClientError, match="update_page"):
             client.update_page("1", "Title", "body")
+
+
+class TestLiveFixtureParsing:
+    """Replays fixtures recorded from a real, [QATEST]-tagged seed page by
+    scripts/qa_fixture_recorder.py --record confluence -- real API shape,
+    not hand-authored, with identity fields already redacted. Skipped
+    (not failed) until that fixture exists; see
+    tests/fixtures/live/README.md and
+    docs/external-api-contract-testing.md's Part A/B. Re-record via that
+    script if this ever starts failing after a genuine Confluence API
+    change.
+    """
+
+    def _load(self, name: str) -> dict:
+        path = LIVE_FIXTURES_DIR / name
+        if not path.exists():
+            pytest.skip(
+                f"{path} not recorded yet -- run "
+                "`python3 scripts/qa_fixture_recorder.py --record confluence` locally first"
+            )
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def test_get_page_fixture_still_parses(self):
+        client = make_client()
+        raw = self._load("get_page.json")
+        # get_page.json is the {"results": [...]} envelope from
+        # get_page_by_title when the manifest has no seed_page_id yet --
+        # unwrap the same way ConfluenceClient.get_page_by_title does.
+        page_raw = raw["results"][0] if "results" in raw else raw
+        page = client._parse_page_v2(page_raw, include_body=True)
+        assert page.title and page.author and page.updated and page.space_key
+
+    def test_list_spaces_fixture_still_parses(self):
+        client = make_client()
+        raw = self._load("list_spaces.json")
+        spaces = [client._parse_space(s) for s in raw.get("results", [])]
+        assert spaces, "recorded list_spaces.json has no results"
+        assert all(s.key and s.name for s in spaces)

@@ -1,0 +1,24 @@
+# Non-secret manifest of QA seed-artifact identifiers, read by
+# scripts/qa_fixture_recorder.py. Safe to commit -- these are IDs and
+# keys, not credentials, the same way a Jira project key or a Drive
+# folder id isn't a secret on its own.
+#
+# Fill in each connector's section after working through the matching
+# checklist in docs/qa-environment-setup.md. The recorder refuses to
+# record anything whose title/summary doesn't carry the [QATEST] tag
+# that checklist has you put on every seed artifact, so an out-of-date
+# or wrong value here fails loudly rather than silently recording the
+# wrong thing.
+
+confluence:
+  # docs/qa-environment-setup.md §10
+  space_key: PFQA
+  # Leave blank to resolve by title instead (one extra API call per run).
+  # Fill in once known, to make --record faster and more precise.
+  seed_page_id: ""
+  seed_page_title: "PrivacyFence QA seed page [QATEST]"
+
+# Other connectors follow the same shape once
+# scripts/qa_fixture_recorder.py grows a check_<connector>() for them --
+# see that script's CONNECTOR_CHECKS registry and
+# docs/external-api-contract-testing.md's Part A.

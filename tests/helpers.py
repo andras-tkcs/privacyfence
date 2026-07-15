@@ -95,3 +95,17 @@ async def assert_all_tools_leave_an_audit_trail(
             unaudited.append(spec.name)
 
     assert unaudited == [], f"Tools with no audit trail: {unaudited}"
+
+
+def assert_no_placeholder_fields(
+    preview: dict, placeholders: tuple = ("", "(unknown)", None)
+) -> None:
+    """Assert a gated_call preview dict has no fallback/placeholder value, for
+    a fixture that's supposed to be fully populated. Catches a _parse_*
+    field mapping (or the connector code reading its output) silently
+    degrading to a default -- see the confluence last_modified bug
+    documented in tests/unit/connectors/test_confluence_connector.py --
+    without needing to already know the bug exists.
+    """
+    blank = {k: v for k, v in preview.items() if v in placeholders}
+    assert not blank, f"Preview fields fell back to a placeholder: {blank}"

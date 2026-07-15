@@ -82,24 +82,30 @@ credential store, no separate accounts.
 
 ### The tool
 
-A new script, `scripts/qa_fixture_recorder.py`, reuses the same per-connector client-construction
-logic `daemon_main.build_connectors()` already has, and calls a small, curated set of **targeted,
-read-only** methods per connector — always by the specific ID/key of a `qa-environment-setup.md`
-seed artifact, never a blanket list/search call kept for its own sake:
+`scripts/qa_fixture_recorder.py` builds each connector's real `*_client.py` the same way
+`daemon_main.py` does — `load_org_config()` + `TOKEN_FILES` — but constructs the bare client
+directly rather than a full gated `Connector`, since it only ever calls a small, curated set of
+**targeted, read-only** methods per connector: always by the specific ID/key of a
+`qa-environment-setup.md` seed artifact (read from the non-secret manifest below), never a blanket
+list/search call kept for its own sake. Implemented today: **Confluence**, as the reference
+connector (see `CONNECTOR_CHECKS` in the script for the pattern — the others follow the same shape
+but aren't wired up yet):
 
 ```bash
-python3 scripts/qa_fixture_recorder.py --check              # smoke test only, no files written
-python3 scripts/qa_fixture_recorder.py --record confluence  # re-record one connector's fixtures
-python3 scripts/qa_fixture_recorder.py --record all         # re-record everything
+python3 scripts/qa_fixture_recorder.py --check                    # every implemented connector
+python3 scripts/qa_fixture_recorder.py --check confluence         # just this one
+python3 scripts/qa_fixture_recorder.py --record confluence        # re-record its fixtures
+python3 scripts/qa_fixture_recorder.py --check --report-file r.md # also save the report to a file
 ```
 
 - `--check`: calls each connector's read methods against its seed artifact, asserts non-empty
   results and no exceptions, prints a pass/fail summary. This is the local-only replacement for
   needing to spin up the full app + a Cowork session + click through popups just to know whether the
   client layer still talks to the provider correctly.
-- `--record <connector>`: does the same targeted calls, redacts identity fields (below), and dumps
-  the result to `tests/fixtures/live/<connector>/<method>.json`, ready to review and commit like any
-  other change.
+- `--record [connector ...]`: does the same targeted calls, redacts identity fields (below), and
+  dumps the result to `tests/fixtures/live/<connector>/<method>.json`, ready to review and commit
+  like any other change. With no connector names given, both modes run every connector
+  `CONNECTOR_CHECKS` currently implements — there's no separate `all` keyword.
 
 For the handful of *list*-shaped calls worth recording too (proving the list-envelope shape parses,
 not just a single-item get), the recorder filters the raw response down to **only the entries whose
@@ -112,14 +118,17 @@ separate.
 
 ### Identity-field redaction
 
-Before any fixture is written, the recorder replaces known identity-carrying fields with fixed
-placeholders, connector by connector — e.g. Confluence/Jira's `authorId`/`accountId` →
-`"qa-placeholder-account-id"`, an email-shaped field anywhere in the payload →
-`qa-placeholder@example.com`, a display name → `"QA Placeholder"`. This runs unconditionally, not as
-an optional review step, because it has to hold even when a human forgets to check: the whole point
-is that a fixture destined for a public git history never carries the real account owner's real
-email or name, even though the *content* around it (the page title, the issue summary) was already
-synthetic to begin with.
+Before any fixture is written, the recorder replaces the *value* of known identity-carrying field
+**names** with fixed placeholders, recursively through the whole response — `authorId`/`accountId`/
+`createdBy`/`updatedBy`/`ownerId` → `"qa-placeholder-account-id"`, `email`/`emailAddress`/... →
+`qa-placeholder@example.com`, `displayName`/`publicName`/... → `"QA Placeholder"`. Deliberately
+**key**-based, not a pattern match against values: a bare `name` key is left alone, since it's just
+as often a space's or a record's legitimate display name as it is a person's — matching on value
+shape (anything email-*shaped*) would have false-positived on that and other ordinary content. This
+runs unconditionally, not as an optional review step, because it has to hold even when a human
+forgets to check: the whole point is that a fixture destined for a public git history never carries
+the real account owner's real email or name, even though the *content* around it (the page title,
+the issue summary) was already synthetic to begin with.
 
 This is a genuinely different, and larger, concern than it looks: content-level synthetic data
 (covered by `qa-environment-setup.md`) and identity-level metadata redaction (covered here) are two
@@ -133,8 +142,10 @@ Before writing a fixture, the recorder confirms the object it just fetched actua
 expected seed artifact — its ID/key came from a small, checked-in manifest
 (`tests/fixtures/qa_environment.yaml`, not secret, just IDs/keys/tags) and its title/summary
 contains the `[QATEST]` tag `qa-environment-setup.md` has you put there. If either check fails
-(wrong ID resolved, tag missing — e.g. because the seed artifact was renamed or deleted), the
-recorder aborts loudly instead of silently recording whatever it happened to fetch. Combined with
+(wrong ID resolved, tag missing — e.g. because the seed artifact was renamed or deleted), that one
+fixture is refused and reported as a failing row (with a note naming what didn't match) — the run
+keeps going for every other connector/method, but nothing gets written to disk for the one that
+failed the check, instead of silently recording whatever it happened to fetch. Combined with
 the redaction step above, this is what makes "real accounts, not dedicated ones" a safe design:
 every write to disk is gated on "is this the specific synthetic thing I expected" before it's gated
 on "did I strip the identity fields," not relying on either check alone.
@@ -235,6 +246,17 @@ scripts/
    fixtures land, add its replay tests.
 6. **Optional staleness reminder workflow** — whenever convenient; it's decoupled from everything
    else and adds no risk.
+
+**Status**: 1, 2, and 5 are done for Confluence (`assert_no_placeholder_fields` in
+`tests/helpers.py`, `TestFieldCompleteness` in `test_confluence_connector.py`,
+`TestLiveFixtureParsing` in `test_confluence_client.py`, skipped until a real fixture exists). 3
+and 4 shipped together rather than staged, since the guardrail and redaction logic weren't
+separable in practice from the recording code path itself — `scripts/qa_fixture_recorder.py`
+implements `--check`/`--record` for Confluence now, with `CONNECTOR_CHECKS` as the extension point
+for the rest. No real fixture has been recorded yet (requires a real, authenticated account and a
+seed page per `qa-environment-setup.md` §10 — something this can't be done from a sandboxed
+environment); `tests/fixtures/qa_environment.yaml` ships with `qa-environment-setup.md`'s
+placeholder values, ready to fill in. Step 6 hasn't started.
 
 No step in this plan requires provisioning any credential to GitHub, CI, or any cloud service.
 

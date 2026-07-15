@@ -198,6 +198,12 @@ A new connector's test module should include, at minimum:
    minimization) — never full body/content.
 4. A call to `assert_all_tools_leave_an_audit_trail` covering every tool the connector declares,
    with `arg_overrides` for any tool that validates its args before reaching the client/gate.
+5. For at least one gated read tool, an end-to-end test that runs a fully-populated raw API
+   response through the real `_parse_*` method and the real connector method that builds the popup
+   preview (not a hand-built dataclass, unlike the rest of this checklist), checked with
+   `assert_no_placeholder_fields` — see `TestFieldCompleteness` in
+   `tests/unit/connectors/test_confluence_connector.py` for the pattern this catches (a `_parse_*`
+   field mapping silently degrading to a fallback value).
 
 ### 2.7 Definition of done for a PR touching this repo
 
