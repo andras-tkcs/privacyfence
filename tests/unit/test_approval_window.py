@@ -2,7 +2,7 @@
 AppKit window every gated_call() review/popup decision ultimately renders
 through (approval_popup.show_native_approval).
 
-Design background: docs/gate-popup-audit-testing.md Part B. Before this
+Before this
 module, approval_window.py had zero test coverage: every other test that
 touches the popup layer (test_approval_popup.py, test_gate.py,
 test_menu_bar.py) mocks show_native_approval itself, by design, so no test
@@ -236,7 +236,7 @@ class TestComputeLayout:
     """_compute_layout is a pure function of title/pii_categories/preview --
     cheap regression coverage for the details pane quietly clipping content,
     which a human eyeballing the popup would only notice if the clip were
-    obvious (see docs/gate-popup-audit-testing.md Part B)."""
+    obvious."""
 
     def test_pii_banner_adds_height_relative_to_no_banner(self):
         base = make_controller()._compute_layout(560.0)[0]

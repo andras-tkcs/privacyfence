@@ -2,15 +2,15 @@
 """Local-only smoke test for approval_window.py's real modal loop: does a
 real click on a real, on-screen "Accept" / "Deny" / "Accept All" / "Accept
 for 5 min" button actually resolve show_native_approval() to the value its
-docstring promises? See docs/gate-popup-audit-testing.md Part C.
+docstring promises?
 
-tests/unit/test_approval_window.py (Part B) already builds the real AppKit
-view tree for every popup shape and asserts on its content -- buttons,
-PII tint/banner, summary rows, details text -- without ever calling
+tests/unit/test_approval_window.py already builds the real AppKit view tree
+for every popup shape and asserts on its content -- buttons, PII
+tint/banner, summary rows, details text -- without ever calling
 runApproval_() or NSApplication.runModalForWindow_(). This script is the
 one thing that coverage deliberately leaves untested: the modal loop itself
 actually blocking, and a real click actually reaching it. That's exactly
-the class of failure Part B's construction-only tests can't catch (e.g. the
+the class of failure those construction-only tests can't catch (e.g. the
 modal loop wired to the wrong window, or a button whose target/action never
 actually fires).
 
@@ -19,17 +19,17 @@ This is NOT a pytest test and NEVER runs in CI:
     implementation) and Accessibility permission granted to whatever
     process runs it (Terminal, an IDE, ...), since it drives a real click
     via `System Events`. Granting that to a hosted CI runner isn't
-    something this project's tests.yml does, and per the design doc isn't
-    worth doing for a failure mode this narrow.
+    something this project's tests.yml does, and isn't worth doing for a
+    failure mode this narrow.
   - It pops real, visible windows on your screen for a couple of seconds
     each while it runs — run it locally, not headless.
 
-Run it whenever approval_window.py's modal-loop plumbing changes (build_panel()
-itself, i.e. everything about window *content*, is already covered by
-Part B on every PR and doesn't need this). Paste the printed report into the
-PR description under a "## Popup smoke check" heading, the same convention
-docs/external-api-contract-testing.md's local `--check` report already
-establishes.
+Run it whenever approval_window.py's modal-loop plumbing changes
+(build_panel() itself, i.e. everything about window *content*, is already
+covered by test_approval_window.py on every PR and doesn't need this).
+Paste the printed report into the PR description under a "## Popup smoke
+check" heading, the same convention docs/external-api-contract-testing.md's
+local `--check` report already establishes.
 
 Usage:
     python3 scripts/qa_popup_smoke.py

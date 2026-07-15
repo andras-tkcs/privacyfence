@@ -2,7 +2,7 @@
 AutoAcceptEvaluator (auto_accept.py), not the FakeEvaluator test_gate.py
 uses for its state-machine coverage.
 
-Design background: docs/gate-popup-audit-testing.md Part A. FakeEvaluator
+FakeEvaluator
 returns a canned (bool, str) with no rule-matching logic of its own, so
 test_gate.py's ~50 tests prove gated_call's state machine is correct given
 *some* auto-accept verdict, but not that any specific auto_accept_rules
@@ -19,7 +19,7 @@ The native popup layer (approval_popup.show_read_popup / show_popup / etc.)
 is still monkeypatched to a scripted answer, same as test_gate.py -- that
 mock boundary is correct and unchanged; only the auto-accept side moves
 from fake to real. approval_window.py's actual window construction has its
-own coverage in test_approval_window.py (Part B).
+own coverage in test_approval_window.py.
 
 salesforce.read_record's approved_object_types rule already has a
 real-evaluator regression test in test_gate.py::TestApprovedObjectTypesNeverPopsUp
