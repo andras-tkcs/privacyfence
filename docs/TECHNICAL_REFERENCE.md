@@ -101,8 +101,9 @@ content shown in every `review` dialog for likely personal data — in **Hungari
 English, and German** — before you approve it: IBANs, credit card numbers, IP addresses, and
 national identifiers (Hungarian TAJ/adóazonosító jel/ID card number, German
 Steuer-ID/Sozialversicherungsnummer, US SSN, UK National Insurance number), plus common
-labels like "date of birth" / "születési dátum" / "Geburtsdatum" that flag a nearby value even
-when its own format is too ambiguous to match structurally.
+labels like "date of birth" / "születési dátum" / "Geburtsdatum" and salary/compensation
+references ("salary" / "fizetés" / "Gehalt") that flag a nearby value even when its own format
+is too ambiguous to match structurally.
 
 **Email addresses and phone numbers are deliberately not detected.** Nearly everything this
 gate scans is email content, and nearly every email signature carries the sender's own address

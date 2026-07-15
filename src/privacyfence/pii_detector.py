@@ -113,6 +113,10 @@ _PATTERNS: list[_PIIPattern] = [
         r"sz[uü]let[eé]si\s+(?:d[aá]tum|hely|id[oő])\w*|anyja\s+nev\w*|"
         r"[uú]tlev[eé]l\s*sz[aá]m\w*)",
     ),
+    _p(
+        "Salary/compensation information",
+        r"\b(fizet[eé]s\w*|j[oö]vedel\w*|brutt[oó]\s+b[eé]r\w*|nett[oó]\s+b[eé]r\w*)\b",
+    ),
 
     # -- German -----------------------------------------------------------------
     _p(
@@ -132,6 +136,14 @@ _PATTERNS: list[_PIIPattern] = [
         r"Geburtsort\w*|Wohnanschrift\w*|Anschrift\w*|Reisepassnummer\w*|"
         r"Steueridentifikationsnummer\w*)",
     ),
+    _p(
+        # Bare "Lohn" is a common word fragment ("lohnend" = worthwhile), so
+        # it's only matched as a whole word or with a known salary-related
+        # compound suffix, never via an open-ended \w*.
+        "Salary/compensation information",
+        r"\b(Gehalt\w*|Verg[uü]tung\w*|"
+        r"(?:Brutto|Netto|Monats|Jahres)?Lohn(?:abrechnung\w*|steuer\w*|zettel\w*|erh[oö]hung\w*)?\b)",
+    ),
 
     # -- English ------------------------------------------------------------
     _p("US Social Security Number", r"\b\d{3}-\d{2}-\d{4}\b"),
@@ -140,6 +152,10 @@ _PATTERNS: list[_PIIPattern] = [
         "English personal data reference",
         r"\b(social security number|date of birth|passport number|"
         r"national insurance number|home address|driver'?s licen[cs]e number)\b",
+    ),
+    _p(
+        "Salary/compensation information",
+        r"\b(salar\w*|payslip|pay slip|take-home pay)\b",
     ),
 ]
 
