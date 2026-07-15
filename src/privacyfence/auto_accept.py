@@ -150,6 +150,10 @@ TOOL_TO_GATE: dict[str, str] = {
     "drive_sheets_add_sheet":          "popup",
     "drive_sheets_rename_sheet":       "popup",
     "drive_sheets_format_range":       "popup",
+    "drive_sheets_insert_dimensions":  "popup",
+    "drive_sheets_delete_dimensions":  "popup",
+    "drive_docs_edit_content":         "popup",
+    "drive_docs_format_content":       "popup",
     # Slack
     "slack_list_channels":             "auto",
     "slack_get_channel_history":       "review",
@@ -161,11 +165,13 @@ TOOL_TO_GATE: dict[str, str] = {
     "calendar_list_events":            "auto",
     "calendar_get_free_busy":          "auto",
     "calendar_list_rooms":             "auto",
+    "calendar_get_event_visibility":   "auto",
     "calendar_get_event_details":      "review",
     "calendar_create_event":           "popup",
     "calendar_update_event":           "popup",
     "calendar_create_out_of_office":   "popup",
     "calendar_set_working_location":   "popup",
+    "calendar_set_event_visibility":   "popup",
     # Google Contacts
     "contacts_list":                   "auto",
     "contacts_search":                 "auto",
@@ -183,6 +189,7 @@ TOOL_TO_GATE: dict[str, str] = {
     "salesforce_list_reports":         "auto",
     "salesforce_get_record":           "review",
     "salesforce_run_report":           "review",
+    "salesforce_search":               "review",
     # Jira
     "jira_list_projects":              "auto",
     "jira_search_issues":              "auto",
@@ -280,6 +287,17 @@ DATA_DEPENDENT_RULES: frozenset[str] = frozenset({
     "i_am_assignee",
     "i_am_author",
     "no_media_attachments",
+    # non_private_event is *args-derivable for one of its two operations*
+    # (calendar.set_visibility, whose args always carry "visibility") but
+    # not the other (calendar.read_event_details, which has no such arg and
+    # falls back to ctx.raw_data.visibility) -- with raw_data=None that
+    # fallback silently defaults to "default" (not private), a false
+    # "matched" for a read whose real visibility is unknown. Classification
+    # here is per rule name, not per (operation, rule), so this stays
+    # data-dependent globally: calendar.set_visibility gets a conservative
+    # "unknown" from preflight rather than risk read_event_details getting a
+    # false "auto_accept".
+    "non_private_event",
 })
 
 @dataclass
