@@ -1,6 +1,9 @@
 # Automated Gate, Popup-UI, and Audit-Log Testing (Design Proposal)
 
-**Status: proposed, not yet implemented.** This closes the gap
+**Status: Parts A and B implemented** (`tests/unit/test_gate_real_evaluator.py`,
+`tests/unit/test_approval_window.py`, and the `approval_window.py` build/run split below). **Part C
+remains proposed, not implemented** — see that section for why it's kept optional. This closes the
+gap
 [`external-api-contract-testing.md`](external-api-contract-testing.md) names explicitly in its own
 "Test coverage" evaluation:
 
@@ -148,31 +151,32 @@ session to observe.
 
 ## Part B — Popup-UI construction tests
 
-### The refactor this needs
+### The refactor this needed — done
 
-`ApprovalWindowController.runApproval_` currently builds the entire window **and** drives the modal
+`ApprovalWindowController.runApproval_` used to build the entire window **and** drive the modal
 loop in one method. Testing the construction half without ever blocking on `runModalForWindow_`
-needs that split made explicit — a small, mechanical refactor (no behavior change):
+needed that split made explicit — a small, mechanical refactor, no behavior change, now shipped:
 
-- New method `build_content_view() -> NSView`: everything `runApproval_` currently does up to and
-  including `panel.setContentView_(content)` and populating `content` with the kicker, icon, title,
-  PII wash/banner, summary box, details scroll view, and button row — returns `content` (or, if
-  tests need the `panel` too for frame/size assertions, returns `(panel, content)`).
-- `runApproval_` itself shrinks to: call `build_content_view()`, then do exactly the
-  window-driving part it does today (`makeKeyAndOrderFront_`, `setLevel_`,
+- New method `build_panel() -> NSPanel`: everything `runApproval_` used to do up to and including
+  `panel.setContentView_(content)` and populating `content` with the kicker, icon, title, PII
+  wash/banner, summary box, details scroll view, and button row — returns the fully-populated
+  `panel` (its `contentView()` carries the whole subview tree tests walk).
+- `runApproval_` itself shrunk to: activation-policy handling, call `build_panel()`, then exactly
+  the window-driving part it always did (`makeKeyAndOrderFront_`, `setLevel_`,
   `activateIgnoringOtherApps_`, `runModalForWindow_`, `orderOut_`).
 
 This is the same shape of change `external-api-contract-testing.md`'s recorder makes to
 `daemon_main.build_connectors()` (reusing existing construction logic rather than duplicating it) —
-here it's splitting "build" from "run" inside a single class that already keeps them logically
-separate, just not yet callable separately.
+here it's splitting "build" from "run" inside a single class that already kept them logically
+separate, just not yet callable separately. `tests/unit/test_approval_popup.py` (mocked) passed
+unchanged after the split, confirming `show_native_approval`'s external contract didn't move.
 
-### New tests: `tests/unit/test_approval_window.py`
+### New tests: `tests/unit/test_approval_window.py` — implemented
 
 Marked `skipif sys.platform != "darwin"`, matching `test_approval_popup_escaping.py`'s existing
 precedent for tests that touch real macOS frameworks rather than mocking them. No test in this
-module calls `runApproval_` or `runModalForWindow_` — every assertion works against the `NSView`
-tree `build_content_view()` returns, walked via `subviews()`.
+module calls `runApproval_` or `runModalForWindow_` — every assertion works against the real
+`NSView` tree `build_panel().contentView()` holds, walked via `subviews()`.
 
 Coverage, each traceable to a `connector-qa-testing.md` step or ground rule that currently asks a
 human to eyeball the popup:
@@ -257,37 +261,37 @@ on it.
 tests/
   unit/
     test_gate.py                    # unchanged — FakeEvaluator state-machine tests stay as-is
-    test_gate_real_evaluator.py      # new — Part A, real AutoAcceptEvaluator + real gated_call
-    test_approval_window.py          # new — Part B, build_content_view() structure assertions
+    test_gate_real_evaluator.py      # done — Part A, real AutoAcceptEvaluator + real gated_call
+    test_approval_window.py          # done — Part B, build_panel() structure assertions
     test_approval_popup.py          # unchanged
     test_approval_popup_escaping.py # unchanged
     test_audit_log.py               # unchanged
     test_auto_accept.py             # unchanged
 src/privacyfence/
-  approval_window.py                 # small refactor — build_content_view() split out of runApproval_
+  approval_window.py                 # done — build_panel() split out of runApproval_
 scripts/
   qa_popup_smoke.py                  # new, optional — Part C, run locally only, never in CI
 ```
 
 ## Rollout plan
 
-1. **`approval_window.py`'s build/run split** — mechanical, no behavior change; ship first since
-   Part B depends on it. Confirm the existing (mocked) `test_approval_popup.py` and
-   `test_menu_bar.py` suites still pass unchanged, proving the split didn't alter
+1. **`approval_window.py`'s build/run split** — done. Mechanical, no behavior change. Confirmed the
+   existing (mocked) `test_approval_popup.py`, `test_gate.py`, and the new
+   `test_gate_real_evaluator.py` suites all still pass unchanged, proving the split didn't alter
    `show_native_approval`'s external contract.
-2. **Part B tests** — land per the coverage list above; each new test should name, in a comment or
-   docstring, which `connector-qa-testing.md` step it narrows (matching the traceability table in
-   Part A), so a future reader can tell why a given assertion exists without re-deriving it.
-3. **Part A tests** — one scenario at a time, in the order `connector-qa-testing.md`'s own phases
-   run (Gmail's `trusted_sender_domain` first, PII-override last), each directly citing the phase/
-   step it replaces judgment for. `TestApprovedObjectTypesNeverPopsUp` already sets the pattern;
-   this step is mostly "do that again, systematically, for every row in the table above."
-4. **`docs/connector-qa-testing.md` cross-references** — once a phase's checks are covered by
-   Parts A/B, add a short note at that phase's start (not a deletion of the phase — see below)
-   pointing at the new automated test, so a human running the manual prompt knows which parts of
-   what they're about to click through already have a deterministic guardrail behind them.
-5. **Part C script** — whenever convenient; fully decoupled, adds no CI risk, ships independent of
-   everything else.
+2. **Part B tests** — done, in `tests/unit/test_approval_window.py`, per the coverage list above;
+   each test class docstring names which `connector-qa-testing.md` phase/ground-rule it narrows.
+3. **Part A tests** — done, in `tests/unit/test_gate_real_evaluator.py`, one class per scenario in
+   the table above, each directly citing the phase/step it replaces judgment for.
+   `TestApprovedObjectTypesNeverPopsUp` (in `test_gate.py`) already set the pattern; salesforce's
+   `approved_object_types` isn't duplicated here for that reason — everything else in the table is.
+4. **`docs/connector-qa-testing.md` cross-references** — not yet done. Once picked up: a short note
+   at each covered phase's start (not a deletion of the phase — see below) pointing at the new
+   automated test, so a human running the manual prompt knows which parts of what they're about to
+   click through already have a deterministic guardrail behind them.
+5. **Part C script** — not implemented; still optional and decoupled per the design principles
+   above (Accessibility-permission requirement, narrow additional coverage). Pick up whenever
+   convenient; nothing here blocks on it.
 
 No step here removes a phase from `connector-qa-testing.md` — see below for why.
 

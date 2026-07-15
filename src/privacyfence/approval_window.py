@@ -288,20 +288,22 @@ class ApprovalWindowController(NSObject):
         return y, title_h
 
     # ------------------------------------------------------------------ #
-    # Entry point (must run on the main thread)
+    # Window construction (safe to call off the main thread, and without
+    # ever showing or activating anything -- see build_panel()'s docstring)
     # ------------------------------------------------------------------ #
 
-    def runApproval_(self, _sender) -> None:
-        app = NSApplication.sharedApplication()
-        # A raw, unbundled process defaults to NSApplicationActivationPolicy
-        # Prohibited, which silently blocks activateIgnoringOtherApps_ below
-        # and leaves whatever app the user last clicked as "active" — at
-        # which point NSPanel's default hidesOnDeactivate makes this window
-        # vanish behind it. Accessory matches how the menu bar app already
-        # runs (no Dock icon) and is enough to let it become key and stay up.
-        if app.activationPolicy() == NSApplicationActivationPolicyProhibited:
-            app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+    def build_panel(self):
+        """Build the panel and every subview it contains, with nothing shown,
+        activated, or key yet -- pure construction, no side effect on window
+        server state. Split out of runApproval_() specifically so tests can
+        assert on the resulting view hierarchy (button set, PII tint/banner,
+        summary rows, details content) without ever calling runModalForWindow_
+        or needing a real interactive session -- see test_approval_window.py.
 
+        runApproval_() is the only caller in production code; it does
+        nothing but this, then the actual show/activate/modal-block/hide
+        sequence.
+        """
         content_width = _WINDOW_WIDTH - 2 * _MARGIN
         content_height, title_h = self._compute_layout(content_width)
         window_height = content_height + _BUTTON_ROW_HEIGHT
@@ -416,10 +418,29 @@ class ApprovalWindowController(NSObject):
             temp_accept_btn.setFrameOrigin_((right_x, button_y))
             content.addSubview_(temp_accept_btn)
 
+        return panel
+
+    # ------------------------------------------------------------------ #
+    # Entry point (must run on the main thread)
+    # ------------------------------------------------------------------ #
+
+    def runApproval_(self, _sender) -> None:
+        app = NSApplication.sharedApplication()
+        # A raw, unbundled process defaults to NSApplicationActivationPolicy
+        # Prohibited, which silently blocks activateIgnoringOtherApps_ below
+        # and leaves whatever app the user last clicked as "active" — at
+        # which point NSPanel's default hidesOnDeactivate makes this window
+        # vanish behind it. Accessory matches how the menu bar app already
+        # runs (no Dock icon) and is enough to let it become key and stay up.
+        if app.activationPolicy() == NSApplicationActivationPolicyProhibited:
+            app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+
+        panel = self.build_panel()
+
         panel.makeKeyAndOrderFront_(None)
         panel.setLevel_(NSFloatingWindowLevel)
-        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
-        NSApplication.sharedApplication().runModalForWindow_(panel)
+        app.activateIgnoringOtherApps_(True)
+        app.runModalForWindow_(panel)
         panel.orderOut_(None)
 
     def buttonClicked_(self, sender) -> None:
