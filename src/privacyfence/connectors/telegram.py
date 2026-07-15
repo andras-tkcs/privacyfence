@@ -19,6 +19,10 @@ class TelegramConnector(Connector):
         self._telegram = client
 
     @property
+    def client(self) -> TelegramPrivacyFenceClient:
+        return self._telegram
+
+    @property
     def name(self) -> str:
         return "telegram"
 

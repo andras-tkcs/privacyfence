@@ -90,8 +90,8 @@ combination only breaks for non-ASCII input.
 
 Paste this as a single message into the Cowork conversation. It walks every
 connector in dependency order (list/search before get, get before write),
-deliberately hits every auto-accept rule you have configured (see the
-environment doc's consolidated rules block) back-to-back with a contrasting
+deliberately hits every auto-accept grant/rule you have configured (see the
+environment doc's consolidated grants/rules blocks) back-to-back with a contrasting
 call that should still prompt, and ends with a dedicated reconciliation phase:
 Claude asks you to attach the current week's audit log to the conversation
 (repo root, per the assumption at the top of this doc, or `~/.privacyfence/`
@@ -107,7 +107,7 @@ everything it can. Phase 0 has Claude look up every fixture itself — by exact
 name (the Drive Sandbox folder, the Slack control channel, the Salesforce
 report), by literal key (the `PFQA` Jira project/Confluence space), by a flag
 the connector already exposes (Telegram's `is_self` for Saved Messages), or
-straight out of `settings.yaml`'s own `auto_accept_rules` — instead of you
+straight out of `settings.yaml`'s own `auto_accept_grants`/`auto_accept_rules` — instead of you
 pasting IDs into a `<QA_FIXTURES>` block by hand. That only works if your
 environment setup used the exact names [`qa-environment-setup.md`](qa-environment-setup.md)
 specifies; if a fixture doesn't resolve, Phase 0 reports exactly which one is
@@ -121,6 +121,14 @@ go connector by connector, in the order below, and actually call the tools rathe
 than describing what you'd do.
 
 Ground rules:
+- Wherever a step below says "if `X.operation` has an `approved_Y` rule
+  configured" (or similar), read that as "if the equivalent is configured
+  either way" — as a resource-scoped grant under `auto_accept_grants` (the
+  primary path — see
+  [Auto-accept grants](TECHNICAL_REFERENCE.md#auto-accept-grants)) or as the
+  raw rule under `auto_accept_rules` (the older, still-supported advanced
+  form). Phase 0 already resolved which one (if either) applies per fixture;
+  don't re-derive it per step.
 - Any content you write, send, or create anywhere must be obviously a test artifact:
   prefix titles/subjects/messages with `PrivacyFence QA test [{RUN_ID}] —` and add
   "safe to ignore/delete" somewhere in the body. Never edit or send anything real.
@@ -210,31 +218,45 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
 2. Read `settings.yaml` yourself — `config/settings.yaml` in the repo root
    (this run assumes PrivacyFence was started from source via
    `scripts/dev_start.sh`, in the same repo checkout you have filesystem
-   access to; see [dev-vs-live-setup.md](dev-vs-live-setup.md)) — and keep the
-   full `auto_accept_rules` block in mind for the rest of the run — several
-   fixtures below come directly from it rather than a separate lookup.
+   access to; see [dev-vs-live-setup.md](dev-vs-live-setup.md)) — and keep
+   **both** the `auto_accept_grants` and `auto_accept_rules` blocks in mind
+   for the rest of the run. Several fixtures below come directly from one or
+   the other rather than a separate lookup: resource-identity fixtures
+   (Drive folder, Slack channel, Telegram chat, Salesforce report, Jira
+   project, Confluence space, Tasks list) are primarily configured under
+   `auto_accept_grants` now (see
+   [Auto-accept grants](TECHNICAL_REFERENCE.md#auto-accept-grants)), but an
+   environment set up before that existed — or one using the still-supported
+   advanced/manual path — may have the equivalent under `auto_accept_rules`
+   instead. Check the grant first, fall back to the legacy rule, and treat
+   either as "configured" for the rest of this run.
 3. `drive_list_files` (or equivalent search) for a folder named exactly
    `PrivacyFence QA Sandbox` → `drive_qa_folder_id`. If more than one file
    matches, prefer the one whose `mime_type` is a folder.
 4. `slack_list_channels` →
    - `slack_approved_channel`: the channel ID(s) already listed under
-     `slack.read_messages` → `approved_channel` in the config you just read.
-     If that rule isn't configured, tell me and skip Phase 3 step 2.
+     `auto_accept_grants.slack.channels` with `read: true`, or (legacy)
+     `slack.read_messages` → `approved_channel`, in the config you just read.
+     If neither is configured, tell me and skip Phase 3 step 2.
    - `slack_control_channel`: the channel named exactly
      `privacyfence-qa-control`.
 5. `telegram_list_chats` →
    - `telegram_saved_messages_chat_id`: the chat with `is_self: true`.
-   - `telegram_approved_chat_id`: the chat ID from `telegram.read_chat_messages`
-     → `approved_chats` in settings.yaml, if configured; otherwise the same
-     value as `telegram_saved_messages_chat_id`.
+   - `telegram_approved_chat_id`: the chat ID from
+     `auto_accept_grants.telegram.chats` with `read: true`, or (legacy)
+     `telegram.read_chat_messages` → `approved_chats`, if either is
+     configured; otherwise the same value as `telegram_saved_messages_chat_id`.
    - `telegram_control_chat_id`: any other chat in the list that isn't either
      of the two above, for the "not approved" contrast case.
-6. `salesforce_list_reports` and `salesforce.run_report` → `approved_report_ids`
+6. `salesforce_list_reports` and `auto_accept_grants.salesforce.reports` with
+   `run: true` (or, legacy, `salesforce.run_report` → `approved_report_ids`)
    in settings.yaml →
-   - `salesforce_qa_report_id`: the ID from the config rule if set; otherwise
+   - `salesforce_qa_report_id`: the ID from the grant/rule if set; otherwise
      the report named exactly `PrivacyFence QA Report`.
    - `salesforce_qa_object_type`: the value from `salesforce.read_record` →
-     `approved_object_types` in settings.yaml if set; otherwise `Account`.
+     `approved_object_types` in settings.yaml if set (this one has no grant
+     form — see [Auto-accept grants](TECHNICAL_REFERENCE.md#auto-accept-grants));
+     otherwise `Account`.
 7. `jira_list_projects` →
    - `jira_qa_project_key`: confirm `PFQA` exists in the list.
    - `jira_contrast_project_key`: any other project key in the list.
@@ -242,8 +264,9 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
    - `confluence_qa_space_key`: confirm `PFQA` exists in the list.
    - `confluence_contrast_space_key`: any other space key in the list.
 9. `tasks_list_task_lists` →
-   - `tasks_qa_list_id`: the list ID from `tasks.update_task` (or
-     `tasks.complete_task`/`tasks.uncomplete_task`) → `approved_task_list` in
+   - `tasks_qa_list_id`: the list ID from `auto_accept_grants.tasks.task_lists`
+     with `edit: true` (or, legacy, `tasks.update_task` /
+     `tasks.complete_task`/`tasks.uncomplete_task` → `approved_task_list`) in
      settings.yaml, if configured; otherwise the default list (usually named
      "My Tasks").
    - `tasks_contrast_list_id`: the list named exactly

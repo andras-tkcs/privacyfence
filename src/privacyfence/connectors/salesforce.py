@@ -114,6 +114,10 @@ class SalesforceConnector(Connector):
         self.my_email: str = ""
 
     @property
+    def client(self) -> SalesforceClient:
+        return self._sf
+
+    @property
     def name(self) -> str:
         return "salesforce"
 

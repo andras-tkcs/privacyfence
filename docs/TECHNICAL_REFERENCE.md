@@ -8,6 +8,7 @@ For the product overview, governance model, screenshots, supported systems, and 
 
 - [Review model](#review-model)
 - [Connectors & privacy matrix](#connectors--privacy-matrix)
+- [Auto-accept grants](#auto-accept-grants)
 - [Auto-accept rules](#auto-accept-rules)
 - [Scheduled / unattended Cowork tasks](#scheduled--unattended-cowork-tasks)
 - [Audit log](#audit-log)
@@ -368,9 +369,123 @@ passed through as-is and surface Jira's own validation error if the shape is wro
 
 ---
 
+## Auto-accept grants
+
+Trusting a specific resource — a Drive folder, a Google Tasks list, a Slack channel, a Jira
+project, ... — is configured **once per resource**, under `auto_accept_grants` in
+`config/settings.yaml`, rather than by adding the same ID to every operation key that resource
+happens to touch (see [Auto-accept rules](#auto-accept-rules) below for what that used to require).
+This is also what the menu bar's **Auto-accept Rules → \<Connector\> → Trusted \<Resource\>**
+submenus read and write — editing the YAML directly and editing from the menu are equivalent.
+
+```yaml
+auto_accept_grants:
+  drive:
+    sandbox_folders:
+      - id: "1CdeFghIJKLmnoPQRstuVWxyz0123456789AbCdEfGh"
+        name: "Claude scratch space"   # cosmetic — see below
+        write: true
+    folders:
+      - id: "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms"
+        name: "Shared Reports"
+        read: true
+  tasks:
+    task_lists:
+      - id: "MDAwMDAwMDAwMDAwMDAwMDAwMDA6MDow"
+        name: "Personal"
+        create: true
+        edit: true
+        complete: true
+        move: true
+```
+
+Each grant entry is keyed by `id` (or `key` for Jira/Confluence, which already address resources
+that way) plus a small set of capability booleans. A freshly added grant starts with every
+capability `false` — adding a resource does nothing until a capability is explicitly turned on,
+from the menu or by hand. `name` is a cosmetic cache of the resource's last-resolved display name;
+the evaluator never reads it, only `id`/`key` and the capability booleans decide what auto-accepts.
+
+### What each resource type covers
+
+| Connector | Resource type (`config_key`) | Capabilities → what they auto-accept |
+|---|---|---|
+| `drive` | `folders` | `read` → reading file contents/downloads in that folder, and `sheets.read_values` for spreadsheets in it |
+| `drive` | `sandbox_folders` | `write` → writing files/Docs in that folder (including `docs.edit_content`/`docs.format_content`), and every `sheets.*` write operation for spreadsheets in it |
+| `drive` | `spreadsheets` (optionally scoped to one `tab`) | `read` → `sheets.read_values`; `write` → every `sheets.*` write operation (`write_range`/`add_sheet`/`rename_sheet`/`format_range`/`insert_dimensions`/`delete_dimensions`) |
+| `tasks` | `task_lists` | `create`, `edit`, `complete` (covers complete + uncomplete), `move` — one per Tasks write tool |
+| `slack` | `channels` | `read` → reading channel/thread history and search results in that channel; `send` → sending messages there |
+| `telegram` | `chats` | `read` → reading/searching that chat; `send` → sending messages there |
+| `jira` | `projects` (by `key`) | `read`, `create`, `comment`, `update`, `transition` — one per Jira tool |
+| `confluence` | `spaces` (by `key`) | `read`, `create`, `update` — one per Confluence tool |
+| `calendar` | `calendars` | `read` → reading event details on that calendar; `write` → creating/updating events there |
+| `salesforce` | `reports` | `run` → running that specific report |
+
+`drive.upload_file`'s destination-folder allowlist (`parent_folder_allowlist`) and
+`drive.move_file`'s move-approval (`move_within_approved_folders`) are deliberately **not** part of
+the `folders`/`sandbox_folders` grants above — upload-destination and move-both-ends are different
+enough semantics from "read this folder" / "write into this sandbox" that folding them in would
+misrepresent what a capability checkbox grants. They stay configured under `auto_accept_rules`
+(see below), in the connector's **Filters** submenu.
+
+### Menu bar UX
+
+Under **Auto-accept Rules → \<Connector\>**, each resource type above gets its own **Trusted
+\<Resource\>** submenu: every currently-granted resource is its own row, labeled with its
+**resolved name** (not the raw ID — see below), with one checkbox per capability, a **Copy ID**
+action, and its own **✕ Remove**. Adding one is a single **+ Add …** action:
+
+- For connectors with a cheap listing call (Tasks, Slack, Telegram, Jira, Confluence, Calendar,
+  Salesforce reports), **+ Add …** opens a native picker of everything visible to that connector,
+  by name — no ID entry needed at all.
+- For Drive folders and spreadsheets (no "list every folder I can see" API short of the heavier
+  Google Picker integration), **+ Add …** accepts a pasted ID **or** a full Drive/Sheets URL (the
+  ID is extracted automatically), resolves and shows the name back for confirmation before saving.
+
+Every existing rule under `auto_accept_rules` that isn't a resource grant (domain trust, label
+matching, file-type allowlists, and similar — see [Auto-accept rules](#auto-accept-rules)) lives
+in that same connector's **Filters** submenu, with the same one-value-at-a-time **+ Add value…** /
+**✕ Remove** treatment — there's no shared multi-line text box to paste several IDs into anywhere
+in this menu.
+
+### Name resolution
+
+Grant rows show the resource's real name, resolved via the same connector API calls used
+elsewhere in the daemon (e.g. `drive_get_file_metadata`, `tasks_list_task_lists`), cached
+in-memory (short TTL) and on disk (`resource_name_cache.json` next to the rest of PrivacyFence's
+data) so a name is available immediately even before a connector has reconnected this session.
+Resolution never blocks or changes an auto-accept decision — a row falls back to the ID itself,
+annotated "(resolving…)" or "(connect \<Connector\> to see its name)", if a name isn't available
+yet or the connector isn't currently authenticated.
+
+### Relationship to `auto_accept_rules`
+
+`auto_accept_grants` and `auto_accept_rules` are both read every time rules are (re)loaded — a
+grant's enabled capabilities compile into the exact same `{rule, value}` shape a hand-written entry
+under `auto_accept_rules` already used, so the evaluator itself has no separate code path for
+grants. Existing hand-written `auto_accept_rules` entries keep working unmodified.
+
+On first startup after upgrading to a version with this feature, PrivacyFence looks for
+`auto_accept_rules` entries that exactly match what a grant's capability would already produce —
+i.e. the same rule value repeated identically across *every* operation key that capability covers
+— and folds those into `auto_accept_grants` automatically, removing the now-redundant
+`auto_accept_rules` entries. This runs once (tracked by a `migrated_to_grants_v1` marker) and is
+logged at `INFO` level. A **partial** match (the value present on some but not all of a
+capability's operation keys) is deliberately left alone rather than migrated, since folding it in
+would silently widen auto-accept to operation keys never explicitly configured — those stay under
+`auto_accept_rules`, visible and removable from the connector's Filters submenu, but no longer
+offered as something "+ Add rule…" creates fresh (steering new configuration toward the grants
+model without breaking what's already there).
+
+---
+
 ## Auto-accept rules
 
-Routine, low-risk requests can be approved automatically without a prompt. Rules are configured per operation in `config/settings.yaml` under `auto_accept_rules`. When a rule matches, the gate is bypassed and the request is logged as `auto_accepted`.
+Beyond the connector/resource-scoped [grants](#auto-accept-grants) above, routine, low-risk
+requests can also be approved automatically based on an *attribute* of the request rather than a
+specific resource's identity — sender domain, label, file type, and similar, where there's no
+single resource ID to grant trust to once. These stay configured per operation in
+`config/settings.yaml` under `auto_accept_rules`. When a rule matches, the gate is bypassed and the
+request is logged as `auto_accepted`.
 
 ### Available rules
 
@@ -413,6 +528,14 @@ filter's criteria/action combination is too open-ended for a simple allowlist ma
 `drive_upload_file` additionally supports `parent_folder_allowlist` (matches when the upload's
 destination folder ID is in the allowlist).
 
+> **`approved_folder` and `approved_sandbox_folder` are grant-managed** — see
+> [Auto-accept grants](#auto-accept-grants) → `drive.folders` / `drive.sandbox_folders`. Add the
+> folder there once (from the menu bar's **Trusted Folders** / **Sandbox Folders** submenus, or by
+> hand under `auto_accept_grants`) and it applies across every operation key below automatically,
+> instead of needing the same folder ID added to each one separately. `parent_folder_allowlist` and
+> `move_within_approved_folders` remain configured directly under `auto_accept_rules` (see
+> [Auto-accept grants](#auto-accept-grants) for why they're not folded into the same grant).
+
 The same rules apply to the `drive_sheets_*` tools, under their own operation keys so they can be
 configured independently of plain-file Drive operations: `sheets.read_values` (`i_am_owner`,
 `created_by_me`, `approved_folder`, `created_this_session`, `shared_drive_exclusion`) and
@@ -420,14 +543,16 @@ configured independently of plain-file Drive operations: `sheets.read_values` (`
 `sheets.insert_dimensions` / `sheets.delete_dimensions`
 (`i_am_owner`, `approved_sandbox_folder`, `created_this_session`). A spreadsheet is a Drive file,
 so e.g. `created_this_session` fires for a spreadsheet `drive_sheets_create` made earlier in the
-same conversation — but note that **each of these seven operation keys needs the same folder ID (or
-other rule value) added to it separately**; adding a folder to `drive.write_file`/`sheets.write_range`
-does not also cover `sheets.rename_sheet`, `sheets.format_range`, or any other Sheets/Drive
-operation key — there's no "apply to all" action, each is configured independently via its own menu
-entry (or its own key under `auto_accept_rules` in `settings.yaml`).
+same conversation. `approved_folder`/`approved_sandbox_folder` on these seven operation keys
+(`sheets.read_values` plus the six `sheets.*` writes) are the same grant-managed rules as above —
+one `drive.folders`/`drive.sandbox_folders` grant covers all of plain Drive reads/writes and every
+one of these `sheets.*` operations at once, instead of needing the same folder ID added to each one
+separately (the old, still-fully-supported way — configure each rule independently under
+`auto_accept_rules`, as before grants existed).
 
 All seven `sheets.*` operations also accept `approved_spreadsheet`, which scopes a rule to one
-specific spreadsheet — optionally narrowed to one tab within it:
+specific spreadsheet — optionally narrowed to one tab within it. This is also grant-managed (see
+[Auto-accept grants](#auto-accept-grants) → `drive.spreadsheets`); the underlying rule shape is:
 
 ```yaml
 auto_accept_rules:
@@ -457,6 +582,9 @@ ride the Drive connector's OAuth grant) supports `i_am_owner` and `created_this_
 way plain Drive files do. `docs.edit_content` and `docs.format_content` (`drive_docs_edit_content`/
 `drive_docs_format_content`) support the same rules `drive.write_doc` does — `i_am_owner`,
 `approved_sandbox_folder`, `created_this_session` — under their own operation keys.
+`approved_sandbox_folder` here is the same `drive.sandbox_folders` grant covered above — enabling
+its `write` capability auto-accepts `docs.edit_content`/`docs.format_content` too, alongside
+`drive.write_file`/`drive.write_doc` and every `sheets.*` write.
 
 **Write ops have no Accept All, but some get "Accept for 5 min" instead.** All of the above
 (including the writes) are `popup`-gated, and unlike `review`-gated reads, a write popup never
@@ -483,6 +611,10 @@ with no undo path through PrivacyFence, so it only ever gets the standing-rule t
 | `no_file_attachments` | Messages have no file attachments |
 | `reply_in_existing_thread` | Message is a reply (has `thread_ts`) |
 
+> **`approved_channel`/`approved_recipient` are grant-managed** — see
+> [Auto-accept grants](#auto-accept-grants) → `slack.channels`. One channel grant's `read`/`send`
+> capabilities cover both rules above.
+
 **Google Calendar**
 
 | Rule | Matches when… |
@@ -494,6 +626,10 @@ with no undo path through PrivacyFence, so it only ever gets the standing-rule t
 | `time_window_days` | Event starts within the next N days |
 | `no_conferencing_link` | Event has no video conferencing link |
 | `non_private_event` | The event's visibility is not `private` |
+
+> **`personal_calendar` is grant-managed** — see [Auto-accept grants](#auto-accept-grants) →
+> `calendar.calendars`. One calendar grant's `read`/`write` capabilities cover both
+> `calendar.read_event_details` and `calendar.create_modify_event`.
 
 `calendar_create_out_of_office` (`calendar.out_of_office`) and `calendar_set_working_location`
 (`calendar.working_location`) each have their own operation key but no rule above applies to
@@ -518,6 +654,10 @@ since there's no "requested" value to check. Clicking **Accept All** on a
 | `approved_object_types` | Object type (Account, Contact, …) is in the allowlist — for `salesforce_search` (`salesforce.search`), every object type in its comma-separated `object_types` must be on the allowlist, not just one |
 | `approved_report_ids` | Report ID is in the approved list |
 
+> **`approved_report_ids` is grant-managed** — see [Auto-accept grants](#auto-accept-grants) →
+> `salesforce.reports`. `approved_object_types` is a small fixed vocabulary (not a resource
+> identity) and stays a plain rule.
+
 `salesforce_search` with no `object_types` given reaches Salesforce's whole default set of
 globally-searchable objects — too broad for `approved_object_types` to ever match, so an unscoped
 search always prompts (or needs a differently-shaped rule, none of which exist yet).
@@ -540,6 +680,12 @@ search always prompts (or needs a differently-shaped rule, none of which exist y
 the project from `issue_key` the same way `jira_get_issue`/`jira_update_issue` do. `i_am_reporter` /
 `i_am_assignee` don't apply to it, since a transition call doesn't carry the issue's reporter/assignee.
 
+> **`approved_project_keys` is grant-managed** — see [Auto-accept grants](#auto-accept-grants) →
+> `jira.projects`. One project grant's `read`/`create`/`comment`/`update`/`transition`
+> capabilities cover all five rules above at once, instead of adding the same project key
+> separately to `jira.read_issue`, `jira.create_issue`, `jira.add_comment`, `jira.update_issue`,
+> and `jira.transition_issue`.
+
 **Confluence**
 
 | Rule | Matches when… |
@@ -547,12 +693,20 @@ the project from `issue_key` the same way `jira_get_issue`/`jira_update_issue` d
 | `i_am_author` | Authenticated account is the page's author |
 | `approved_space_keys` | Page's space key is in the allowlist |
 
+> **`approved_space_keys` is grant-managed** — see [Auto-accept grants](#auto-accept-grants) →
+> `confluence.spaces`. One space grant's `read`/`create`/`update` capabilities cover
+> `confluence.read_page`, `confluence.create_page`, and `confluence.update_page` at once.
+
 **Telegram**
 
 | Rule | Matches when… |
 |------|--------------|
 | `approved_chats` | Chat ID is in the allowlist |
 | `no_media_attachments` | Messages have no media attachments |
+
+> **`approved_chats` is grant-managed** — see [Auto-accept grants](#auto-accept-grants) →
+> `telegram.chats`. One chat grant's `read`/`send` capabilities cover both
+> `telegram.read_chat_messages` and `telegram.send_message`.
 
 **Google Tasks**
 
@@ -563,6 +717,10 @@ the project from `issue_key` the same way `jira_get_issue`/`jira_update_issue` d
 `approved_task_list` applies independently to each of `tasks.create_task`, `tasks.update_task`,
 `tasks.complete_task`, `tasks.uncomplete_task`, and `tasks.move_task`, so you can e.g. auto-accept
 edits within a personal list while still requiring review for creates.
+
+> **`approved_task_list` is grant-managed** — see [Auto-accept grants](#auto-accept-grants) →
+> `tasks.task_lists`. One task-list grant's `create`/`edit`/`complete`/`move` capabilities cover
+> all five task-write operations at once (`complete` covers both complete and uncomplete).
 
 > **Google Contacts**: `contacts_list`, `contacts_search`, and `contacts_get` are unconditionally auto-accepted. `contacts_update`, `contacts_create`, `contacts_add_label`, and `contacts_remove_label` are all `popup`-gated; `no_contact_info_change` above is the only configurable auto-accept rule, and it applies only to `contacts_update`. Contact deletion is not supported. **Google Tasks**: all three read tools plus `tasks_list_task_lists` are unconditionally auto-accepted; the five write tools (`tasks_create_task`, `tasks_update_task`, `tasks_complete_task`, `tasks_uncomplete_task`, `tasks_move_task`) are `popup`-gated, each independently configurable via `approved_task_list` above. **Telegram**: `telegram_list_chats` is unconditionally auto-accepted; `telegram_get_messages` and `telegram_search_messages` are `review`-gated by default but configurable via the rules above; `telegram_send_message` is `popup`-gated with no configurable rule. **Jira and Confluence** read tools (`jira_get_issue`, `confluence_get_page`, `confluence_get_page_by_title`) are `review`-gated by default but configurable via the rules above; their write tools remain `popup`-gated with no configurable rule, except `jira_transition_issue`, which accepts `approved_project_keys` as noted above.
 

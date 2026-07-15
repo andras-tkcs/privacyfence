@@ -34,6 +34,10 @@ class SlackConnector(Connector):
         self.my_email: str = ""
 
     @property
+    def client(self) -> SlackClient:
+        return self._slack
+
+    @property
     def name(self) -> str:
         return "slack"
 
