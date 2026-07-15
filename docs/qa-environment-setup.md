@@ -94,13 +94,21 @@ starting state by the end, so there's nothing to provision or clean up here.
    for step 2 below; the test prompt itself finds the folder by name, not by
    ID.
 2. Add an auto-accept fixture so `drive.read_file_contents` /
-   `drive.download_file` have something to match against:
+   `drive.download_file` have something to match against — a `drive.folders`
+   grant (see [Auto-accept grants](TECHNICAL_REFERENCE.md#auto-accept-grants))
+   with `read: true` covers both, plus `sheets.read_values`:
    ```yaml
-   auto_accept_rules:
-     drive.read_file_contents:
-       - rule: approved_folder
-         value: ["<QA Sandbox folder id>"]
+   auto_accept_grants:
+     drive:
+       folders:
+         - id: "<QA Sandbox folder id>"
+           name: "PrivacyFence QA Sandbox"
+           read: true
    ```
+   Equivalently, from the menu bar: **Auto-accept Rules → Drive → Trusted
+   Folders → + Add folder…**, then check **Read auto-accept**. The older,
+   still-supported form is a raw `approved_folder` rule under
+   `auto_accept_rules` — see [Auto-accept rules](TECHNICAL_REFERENCE.md#auto-accept-rules).
 3. Every Drive/Sheets artifact the test prompt creates goes **inside this
    folder** (as `parent_folder_id`), including uploads, Docs, and moves — so
    nothing it does ever touches a real file or a real folder elsewhere in
@@ -116,7 +124,19 @@ starting state by the end, so there's nothing to provision or clean up here.
    want Phase 2's rename/format steps to keep exercising the plain popup and
    "Accept for 5 min" flow instead — the two are mutually exclusive for the
    same spreadsheet, since a matching rule auto-accepts before any popup
-   would appear:
+   would appear.
+
+   **Note:** a `drive.sandbox_folders` grant's `write` capability (§2 step 2's
+   sibling — see the consolidated block below) auto-accepts **every** Drive/
+   Sheets/Docs write operation for that folder at once — `drive.write_file`,
+   `drive.write_doc`, all six `sheets.*` writes (including
+   `rename_sheet`/`format_range` and, per step 6, `insert_dimensions`/
+   `delete_dimensions`), and `docs.edit_content`/`docs.format_content` from
+   step 7 — that's the point of a grant (one toggle, every operation it
+   covers). If you specifically want *only* `sheets.rename_sheet`/
+   `format_range` auto-accepted while the rest keep prompting (the narrower
+   thing this step used to demonstrate), that per-operation split isn't
+   expressible as a grant — use the raw rules directly instead:
    ```yaml
    auto_accept_rules:
      sheets.rename_sheet:
@@ -167,15 +187,21 @@ and one it isn't (to prove the review gate still fires for anything not on
 the allowlist).
 
 1. Pick (or create) a channel to be the **approved** one and join it. Add its
-   channel ID to `settings.yaml`:
+   channel ID to `settings.yaml` as a `slack.channels` grant with `read: true`
+   (see [Auto-accept grants](TECHNICAL_REFERENCE.md#auto-accept-grants)):
    ```yaml
-   auto_accept_rules:
-     slack.read_messages:
-       - rule: approved_channel
-         value: ["<channel id>"]
+   auto_accept_grants:
+     slack:
+       channels:
+         - id: "<channel id>"
+           read: true
    ```
-   The test prompt reads this ID straight out of the config — there's no
-   naming requirement on this channel.
+   Equivalently, from the menu bar: **Auto-accept Rules → Slack → Trusted
+   Channels → + Add channel…** — this connector supports the live picker (by
+   channel name), so you don't need to look up the ID by hand at all. The
+   test prompt itself still reads the ID straight out of the config — there's
+   no naming requirement on this channel. The older, still-supported form is
+   a raw `approved_channel` rule under `auto_accept_rules`.
 2. Create a second channel named **exactly `privacyfence-qa-control`** and
    join it. **Do not** add it to `approved_channel` — it exists specifically
    to *not* match, and the test prompt finds it by this exact name via
@@ -284,37 +310,36 @@ needs a second list, though:
 1. Your default list (usually named **My Tasks**) works fine as the
    **approved** one — get its ID from `tasks_list_task_lists` (via a live
    Claude session) or headlessly with `scripts/qa_list_ids.py tasks`, and add
-   it to `settings.yaml`:
+   it to `settings.yaml` as a `tasks.task_lists` grant (see
+   [Auto-accept grants](TECHNICAL_REFERENCE.md#auto-accept-grants)) with
+   `edit`, `complete`, and (optionally, see step 3) `create`/`move`:
    ```yaml
-   auto_accept_rules:
-     tasks.update_task:
-       - rule: approved_task_list
-         value: ["<default list id>"]
-     tasks.complete_task:
-       - rule: approved_task_list
-         value: ["<default list id>"]
-     tasks.uncomplete_task:
-       - rule: approved_task_list
-         value: ["<default list id>"]
+   auto_accept_grants:
+     tasks:
+       task_lists:
+         - id: "<default list id>"
+           name: "My Tasks"
+           edit: true
+           complete: true
    ```
-   (`tasks.create_task` and `tasks.move_task` are left out here deliberately —
-   see step 3.)
+   Equivalently, from the menu bar: **Auto-accept Rules → Tasks → Trusted
+   Task Lists → + Add task list…** (live picker by list name), then check
+   **Auto-accept edits** and **Auto-accept complete/uncomplete**. The
+   `complete` capability covers both `tasks.complete_task` and
+   `tasks.uncomplete_task` at once — that's one difference from the older,
+   still-supported `auto_accept_rules` form, which configured them
+   separately (`create`/`move` are left off here deliberately — see step 3).
 2. In Google Tasks (web or mobile), create a second list named **exactly
    `PrivacyFence QA Contrast List`**. There's no tool to create a task list
    through PrivacyFence itself, so this has to be done outside it. **Do not**
-   add it to `approved_task_list` — it exists specifically to *not* match, and
-   the test prompt finds it by this exact name via `tasks_list_task_lists`.
-3. Optional: add `tasks.create_task` the same way as step 1, and/or add
-   `tasks.move_task` pointing at *both* list IDs (a move only auto-accepts
-   when both the source and destination list are approved):
-   ```yaml
-   auto_accept_rules:
-     tasks.move_task:
-       - rule: approved_task_list
-         value: ["<default list id>", "<contrast list id>"]
-   ```
-   Skip any of these you'd rather leave always-prompting — the test prompt
-   handles "not configured" gracefully for each one independently.
+   grant it any capability — it exists specifically to *not* match, and the
+   test prompt finds it by this exact name via `tasks_list_task_lists`.
+3. Optional: add `create: true` to the same grant entry from step 1, and/or
+   `move: true` to **both** the default list's grant entry and a new grant
+   entry for the contrast list (a move only auto-accepts when both the
+   source and destination list have `move: true` set). Skip any capability
+   you'd rather leave always-prompting — the test prompt handles "not
+   configured" gracefully for each one independently.
 
 ## 7. Telegram
 
@@ -334,15 +359,19 @@ needs a second list, though:
    - Create/repurpose a second low-stakes chat (a private group with just
      you, or a throwaway test contact) and use its `chat_id` instead.
    ```yaml
-   auto_accept_rules:
-     telegram.read_chat_messages:
-       - rule: approved_chats
-         value: ["<chat_id>"]
+   auto_accept_grants:
+     telegram:
+       chats:
+         - id: "<chat_id>"
+           read: true
    ```
-   The test prompt reads this ID from `settings.yaml` directly — no naming
-   requirement on the chat either way. Skip this rule entirely if you'd
-   rather leave Telegram reads always review-gated; the test prompt handles
-   "not configured" gracefully.
+   Equivalently, from the menu bar: **Auto-accept Rules → Telegram → Trusted
+   Chats → + Add chat…** (live picker by chat name). The test prompt reads
+   this ID from `settings.yaml` directly either way — no naming requirement
+   on the chat. Skip this grant entirely if you'd rather leave Telegram reads
+   always review-gated; the test prompt handles "not configured" gracefully.
+   The older, still-supported form is a raw `approved_chats` rule under
+   `auto_accept_rules`.
 3. Make sure at least one *other* chat beyond your approved one has some
    message history — the test prompt picks any such chat dynamically for
    the "not approved, should still prompt" contrast case and for
@@ -366,20 +395,30 @@ data:
    using) → create 2–3 sample records prefixed `PrivacyFence QA — `.
 2. **Reports → New Report**, base it on that object, name it **exactly**
    `PrivacyFence QA Report`.
-3. Add auto-accept fixtures (recommended — this is also how you get
-   `approved_report_ids`/`approved_object_types` rule coverage):
+3. Add auto-accept fixtures (recommended — this is also how you get rule
+   coverage for both the report and the object type). The report ID is
+   grant-managed (see
+   [Auto-accept grants](TECHNICAL_REFERENCE.md#auto-accept-grants) →
+   `salesforce.reports`); the object type is a small fixed vocabulary, not a
+   resource identity, so it stays a plain `auto_accept_rules` entry:
    ```yaml
+   auto_accept_grants:
+     salesforce:
+       reports:
+         - id: "<PrivacyFence QA Report id>"
+           name: "PrivacyFence QA Report"
+           run: true
    auto_accept_rules:
-     salesforce.run_report:
-       - rule: approved_report_ids
-         value: ["<PrivacyFence QA Report id>"]
      salesforce.read_record:
        - rule: approved_object_types
          value: [Account]
    ```
-   If you skip this rule, the test prompt falls back to finding the report
-   by its exact name via `salesforce_list_reports` — either path works, the
-   name is just the fallback when there's no rule to read the ID from.
+   Equivalently, from the menu bar: **Auto-accept Rules → Salesforce →
+   Trusted Reports → + Add report…** (live picker by report name), then
+   check **Read auto-accept**. If you skip the report grant, the test prompt
+   falls back to finding the report by its exact name via
+   `salesforce_list_reports` — either path works, the name is just the
+   fallback when there's no grant/rule to read the ID from.
 4. Keep at least one report/object type you *don't* add here (or that you
    genuinely can't access) as the "should still prompt" contrast case — any
    report other than the QA one satisfies this, nothing extra to create.
@@ -410,13 +449,21 @@ data:
 1. Create a Jira project with key **exactly `PFQA`**, any template (Kanban is
    fine). The key has to match exactly — the test prompt uses it as a
    literal string, not a fuzzy lookup.
-2. Add the fixture:
+2. Add the fixture as a `jira.projects` grant (see
+   [Auto-accept grants](TECHNICAL_REFERENCE.md#auto-accept-grants)) with
+   `read: true`:
    ```yaml
-   auto_accept_rules:
-     jira.read_issue:
-       - rule: approved_project_keys
-         value: [PFQA]
+   auto_accept_grants:
+     jira:
+       projects:
+         - key: PFQA
+           name: "PrivacyFence QA"
+           read: true
    ```
+   Equivalently, from the menu bar: **Auto-accept Rules → Jira → Trusted
+   Projects → + Add project…** (live picker by project name), then check
+   **Read auto-accept**. The older, still-supported form is a raw
+   `approved_project_keys` rule under `auto_accept_rules`.
 3. That's the only project you need to create. Whatever other Jira
    project(s) already exist in your site serve as the "different project,
    should still prompt" contrast automatically — the test prompt picks
@@ -442,13 +489,21 @@ data:
 ## 10. Confluence
 
 1. Create a Confluence space with key **exactly `PFQA`**.
-2. Add the fixture:
+2. Add the fixture as a `confluence.spaces` grant (see
+   [Auto-accept grants](TECHNICAL_REFERENCE.md#auto-accept-grants)) with
+   `read: true`:
    ```yaml
-   auto_accept_rules:
-     confluence.read_page:
-       - rule: approved_space_keys
-         value: [PFQA]
+   auto_accept_grants:
+     confluence:
+       spaces:
+         - key: PFQA
+           name: "PrivacyFence QA"
+           read: true
    ```
+   Equivalently, from the menu bar: **Auto-accept Rules → Confluence →
+   Trusted Spaces → + Add space…** (live picker by space name), then check
+   **Read auto-accept**. The older, still-supported form is a raw
+   `approved_space_keys` rule under `auto_accept_rules`.
 3. Same as Jira: whatever other space(s) already exist serve as the contrast
    case automatically (the test prompt picks whichever space isn't `PFQA`
    from `confluence_list_spaces`). Create one throwaway second space only if
@@ -489,22 +544,23 @@ The only thing worth confirming beforehand:
    for the disabled case, not a failure, but the test prompt needs to know
    which state it's in rather than assume enabled.
 2. The check deliberately writes to a **subfolder** of the Drive QA Sandbox
-   folder, not the Sandbox folder's own top level. `approved_folder` (§2
-   above) matches a file's *immediate* parent folder ID only, not folders
-   nested inside it — so even if you configured that rule, it does not
-   cover the subfolder, and the read step is guaranteed to hit the normal
-   `review` gate (and the PII gate layered on top of it) instead of being
-   silently auto-accepted. No action needed here beyond knowing why the
-   check is structured that way, in case you ever restructure the Sandbox
-   folder yourself.
+   folder, not the Sandbox folder's own top level. The `drive.folders` grant
+   (or the legacy `approved_folder` rule) from §2 above matches a file's
+   *immediate* parent folder ID only, not folders nested inside it — so even
+   if you configured it, it does not cover the subfolder, and the read step
+   is guaranteed to hit the normal `review` gate (and the PII gate layered on
+   top of it) instead of being silently auto-accepted. No action needed here
+   beyond knowing why the check is structured that way, in case you ever
+   restructure the Sandbox folder yourself.
 3. A second, related check (`connector-qa-testing.md` steps 21–23) proves
    the stronger claim that PII detection *overrides* a matching auto-accept
    rule, rather than just running independently of one — it deliberately
    writes the same synthetic PII directly into `drive_qa_folder_id` itself,
-   the folder `approved_folder` *does* cover. This one only exercises the
-   override if you actually configured the `drive.read_file_contents` →
-   `approved_folder` rule from §2; without it there's no rule in play to
-   override, and the test prompt is told to say so plainly rather than
+   the folder the §2 grant/rule *does* cover. This one only exercises the
+   override if you actually configured `drive.folders`
+   (`auto_accept_grants`) or the legacy `drive.read_file_contents` →
+   `approved_folder` rule from §2; without either, there's no rule in play
+   to override, and the test prompt is told to say so plainly rather than
    claim the override was proven. The write step in that check (step 21)
    again stays plain regardless — only the read (step 22) can exercise the
    override, since only reads are ever scanned.
@@ -526,65 +582,86 @@ hot-reloaded — the phase requires an actual restart partway through, twice.
 
 ---
 
-## Consolidated `auto_accept_rules` block
+## Consolidated `auto_accept_grants` / `auto_accept_rules` blocks
 
-Everything from the sections above, in one place. Merge this into
-`settings.yaml` under the `auto_accept_rules:` key,
-replacing every `<placeholder>` with your actual value:
+Everything from the sections above, in one place. Merge both into
+`settings.yaml` (they're separate top-level keys, both shown here),
+replacing every `<placeholder>` with your actual value. Most of the
+per-connector fixtures are grant-managed as of
+[Auto-accept grants](TECHNICAL_REFERENCE.md#auto-accept-grants) — the four
+that aren't (sender-domain trust, calendar organizer, contact-edit scope,
+Salesforce object type) stay under `auto_accept_rules`, same as before:
 
 ```yaml
+auto_accept_grants:
+  drive:
+    folders:
+      - id: "<QA Sandbox folder id>"
+        name: "PrivacyFence QA Sandbox"
+        read: true
+  slack:
+    channels:
+      - id: "<approved channel id>"
+        read: true
+  telegram:
+    chats:
+      - id: "<chat_id>"
+        read: true
+  salesforce:
+    reports:
+      - id: "<PrivacyFence QA Report id>"
+        name: "PrivacyFence QA Report"
+        run: true
+  jira:
+    projects:
+      - key: PFQA
+        name: "PrivacyFence QA"
+        read: true
+  confluence:
+    spaces:
+      - key: PFQA
+        name: "PrivacyFence QA"
+        read: true
+  tasks:
+    task_lists:
+      - id: "<default task list id>"
+        name: "My Tasks"
+        edit: true
+        complete: true
+
 auto_accept_rules:
   gmail.read_message:
     - rule: trusted_sender_domain
       value: [example.com]              # a domain you actually receive mail from
-  drive.read_file_contents:
-    - rule: approved_folder
-      value: ["<QA Sandbox folder id>"]
-  slack.read_messages:
-    - rule: approved_channel
-      value: ["<approved channel id>"]
   calendar.read_event_details:
     - rule: i_am_organizer
   contacts.edit:
     - rule: no_contact_info_change
-  telegram.read_chat_messages:
-    - rule: approved_chats
-      value: ["<chat_id>"]
-  salesforce.run_report:
-    - rule: approved_report_ids
-      value: ["<PrivacyFence QA Report id>"]
   salesforce.read_record:
     - rule: approved_object_types
       value: [Account]
-  jira.read_issue:
-    - rule: approved_project_keys
-      value: [PFQA]
-  confluence.read_page:
-    - rule: approved_space_keys
-      value: [PFQA]
-  tasks.update_task:
-    - rule: approved_task_list
-      value: ["<default task list id>"]
-  tasks.complete_task:
-    - rule: approved_task_list
-      value: ["<default task list id>"]
-  tasks.uncomplete_task:
-    - rule: approved_task_list
-      value: ["<default task list id>"]
 ```
 
-`sheets.read_values` → `approved_spreadsheet` isn't included here because it
-gets created automatically the first time you click **"Accept All"** on a
+The menu bar builds/edits exactly this `auto_accept_grants` shape from
+**Auto-accept Rules → \<Connector\> → Trusted \<Resource\>** — editing it by
+hand here and editing it from the menu are equivalent; use whichever's more
+convenient per fixture.
+
+`sheets.read_values` → `approved_spreadsheet` (also grant-managed, under
+`drive.spreadsheets`) isn't included here because it gets created
+automatically the first time you click **"Accept All"** on a
 `drive_sheets_get_values` call during a test run — nothing to pre-configure.
 
-`sheets.rename_sheet` / `sheets.format_range` → `approved_sandbox_folder` (§2, step 5), the same
-rule for `sheets.insert_dimensions` / `sheets.delete_dimensions` (§2, step 6) and
-`docs.edit_content` / `docs.format_content` (§2, step 7), `calendar.read_event_details` /
-`calendar.set_visibility` → `non_private_event` (§4), and `salesforce.search` →
-`approved_object_types` (§8, step 6) are also deliberately left out of this block — each is
-optional and, unlike everything above, actively changes what Phase 2 exercises for those tools
-(silent auto-accept instead of the popup / review-gate flow), so they're opt-in rather than
-assumed.
+`sheets.rename_sheet` / `sheets.format_range` / `sheets.insert_dimensions` /
+`sheets.delete_dimensions` / `docs.edit_content` / `docs.format_content` → `approved_sandbox_folder`
+(§2, steps 5–7) — also grant-managed as part of `drive.sandbox_folders`' `write` capability, same as
+`drive.write_file`/`drive.write_doc`/`sheets.write_range`/`sheets.add_sheet` — is deliberately left
+out of this block's `drive.sandbox_folders` entry, since enabling `write` there would make Phase 2
+silently auto-accept all ten of these operations at once instead of exercising their popup /
+"Accept for 5 min" flow. `calendar.read_event_details` / `calendar.set_visibility` →
+`non_private_event` (§4) and `salesforce.search` → `approved_object_types` (§8, step 6) are left out
+for the same reason (each has no grant form — see the note on those sections). Add whichever of
+these you specifically want Phase 2 to exercise as silent auto-accept instead, individually.
 
 Restart the daemon after editing this file by hand (or use the "Accept All"
 popup once, which hot-reloads rules for you via `reload_rules()`).
@@ -602,18 +679,18 @@ headlessly, without needing a live Claude session first.
 | Fixture | How it's found | Source |
 |---|---|---|
 | Drive QA folder | Exact name `PrivacyFence QA Sandbox` | `drive_list_files` |
-| Slack approved channel | `slack.read_messages` → `approved_channel` | `settings.yaml` |
+| Slack approved channel | `auto_accept_grants.slack.channels` (`read: true`), or the legacy `slack.read_messages` → `approved_channel` rule | `settings.yaml` |
 | Slack control channel | Exact name `privacyfence-qa-control` | `slack_list_channels` |
 | Telegram Saved Messages | `is_self: true` flag | `telegram_list_chats` |
-| Telegram approved chat | `telegram.read_chat_messages` → `approved_chats` (falls back to Saved Messages) | `settings.yaml` |
+| Telegram approved chat | `auto_accept_grants.telegram.chats` (`read: true`), or the legacy `telegram.read_chat_messages` → `approved_chats` rule (falls back to Saved Messages) | `settings.yaml` |
 | Telegram control chat | Any chat that isn't the above two | `telegram_list_chats` |
-| Salesforce QA report | `salesforce.run_report` → `approved_report_ids` (falls back to exact name `PrivacyFence QA Report`) | `settings.yaml` / `salesforce_list_reports` |
+| Salesforce QA report | `auto_accept_grants.salesforce.reports` (`run: true`), or the legacy `salesforce.run_report` → `approved_report_ids` rule (falls back to exact name `PrivacyFence QA Report`) | `settings.yaml` / `salesforce_list_reports` |
 | Salesforce QA object type | `salesforce.read_record` → `approved_object_types` (falls back to `Account`) | `settings.yaml` |
 | Jira QA project | Literal key `PFQA` | — |
 | Jira contrast project | Any project key that isn't `PFQA` | `jira_list_projects` |
 | Confluence QA space | Literal key `PFQA` | — |
 | Confluence contrast space | Any space key that isn't `PFQA` | `confluence_list_spaces` |
-| Tasks approved list | `tasks.update_task` → `approved_task_list` (falls back to the default list) | `settings.yaml` / `tasks_list_task_lists` |
+| Tasks approved list | `auto_accept_grants.tasks.task_lists` (`edit: true`), or the legacy `tasks.update_task` → `approved_task_list` rule (falls back to the default list) | `settings.yaml` / `tasks_list_task_lists` |
 | Tasks contrast list | Exact name `PrivacyFence QA Contrast List` | `tasks_list_task_lists` |
 
 ---

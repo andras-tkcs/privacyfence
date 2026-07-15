@@ -30,6 +30,10 @@ class CalendarConnector(Connector):
         self._calendar_name_cache: dict[str, str] = {}
 
     @property
+    def client(self) -> CalendarClient:
+        return self._calendar
+
+    @property
     def name(self) -> str:
         return "calendar"
 
