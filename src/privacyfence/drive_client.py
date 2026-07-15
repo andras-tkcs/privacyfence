@@ -65,10 +65,15 @@ _HEADING_PREFIXES = [
     ("# ", "HEADING_1"),
 ]
 
+# Fixed highlight color for ==text== spans (Docs UI's default highlighter
+# yellow swatch) -- v1 has no per-span color argument, see design doc.
+_DEFAULT_HIGHLIGHT_COLOR = "#FFF59D"
+
 _INLINE_RE = _re.compile(
     r"\*\*\*(.+?)\*\*\*"         # bold + italic
     r"|\*\*(.+?)\*\*"            # bold
     r"|\*(.+?)\*"                # italic
+    r"|==(.+?)=="                # highlight
     r"|`(.+?)`"                  # code (no extra style, just plain text)
     r"|\[([^\]]+)\]\(([^)]+)\)"  # link [text](url)
 )
@@ -76,34 +81,40 @@ _INLINE_RE = _re.compile(
 
 def _parse_inline_runs(
     text: str,
-) -> list[tuple[str, bool, bool, str]]:
-    """Return a list of (text, bold, italic, url) from an inline Markdown string."""
-    runs: list[tuple[str, bool, bool, str]] = []
+) -> list[tuple[str, bool, bool, str, bool]]:
+    """Return a list of (text, bold, italic, url, highlight) from an inline Markdown string."""
+    runs: list[tuple[str, bool, bool, str, bool]] = []
     last = 0
     for m in _INLINE_RE.finditer(text):
         if m.start() > last:
-            runs.append((text[last : m.start()], False, False, ""))
+            runs.append((text[last : m.start()], False, False, "", False))
         if m.group(1):  # bold+italic
-            runs.append((m.group(1), True, True, ""))
+            runs.append((m.group(1), True, True, "", False))
         elif m.group(2):  # bold
-            runs.append((m.group(2), True, False, ""))
+            runs.append((m.group(2), True, False, "", False))
         elif m.group(3):  # italic
-            runs.append((m.group(3), False, True, ""))
-        elif m.group(4):  # code → plain
-            runs.append((m.group(4), False, False, ""))
-        elif m.group(5):  # link
-            runs.append((m.group(5), False, False, m.group(6)))
+            runs.append((m.group(3), False, True, "", False))
+        elif m.group(4):  # highlight
+            runs.append((m.group(4), False, False, "", True))
+        elif m.group(5):  # code → plain
+            runs.append((m.group(5), False, False, "", False))
+        elif m.group(6):  # link
+            runs.append((m.group(6), False, False, m.group(7), False))
         last = m.end()
     if last < len(text):
-        runs.append((text[last:], False, False, ""))
-    return runs or [("", False, False, "")]
+        runs.append((text[last:], False, False, "", False))
+    return runs or [("", False, False, "", False)]
 
 
-def _markdown_to_docs_requests(markdown: str) -> list[dict]:
+def _markdown_to_docs_requests(markdown: str, start_index: int = 1) -> list[dict]:
     """Convert simple Markdown to a list of Google Docs batchUpdate requests.
 
-    Text is inserted in a single ``insertText`` call at index 1; subsequent
-    requests apply paragraph and inline styles by character range.
+    Text is inserted in a single ``insertText`` call at ``start_index``
+    (1-based, like every Docs API index); subsequent requests apply
+    paragraph and inline styles by character range relative to it.
+    ``start_index`` defaults to 1 (the start of a fresh/cleared document);
+    callers replacing one matched span mid-document pass the Docs index
+    where that span begins instead.
     """
     lines = markdown.rstrip("\n").split("\n")
 
@@ -126,22 +137,22 @@ def _markdown_to_docs_requests(markdown: str) -> list[dict]:
                 list_preset = "NUMBERED_DECIMAL_ALPHA_ROMAN"
         parsed.append((_parse_inline_runs(line), para_style, list_preset))
 
-    # Build full plain text and record per-line doc positions (1-based)
+    # Build full plain text and record per-line doc positions
     full_text = ""
     line_spans: list[tuple[int, int, str, list, str]] = []
     for runs, para_style, list_preset in parsed:
-        line_start = len(full_text) + 1
-        for run_text, _, _, _ in runs:
+        line_start = len(full_text) + start_index
+        for run_text, _, _, _, _ in runs:
             full_text += run_text
         full_text += "\n"
-        line_end = len(full_text) + 1
+        line_end = len(full_text) + start_index
         line_spans.append((line_start, line_end, para_style, runs, list_preset))
 
     if not full_text.strip("\n"):
         return []
 
     requests: list[dict] = [
-        {"insertText": {"location": {"index": 1}, "text": full_text}}
+        {"insertText": {"location": {"index": start_index}, "text": full_text}}
     ]
 
     for line_start, line_end, para_style, runs, list_preset in line_spans:
@@ -172,7 +183,7 @@ def _markdown_to_docs_requests(markdown: str) -> list[dict]:
             )
         # Inline styles
         pos = line_start
-        for run_text, bold, italic, url in runs:
+        for run_text, bold, italic, url, highlight in runs:
             if not run_text:
                 continue
             run_end = pos + len(run_text)
@@ -184,6 +195,11 @@ def _markdown_to_docs_requests(markdown: str) -> list[dict]:
             if italic:
                 text_style["italic"] = True
                 fields.append("italic")
+            if highlight:
+                text_style["backgroundColor"] = {
+                    "color": {"rgbColor": _hex_to_rgb_dict(_DEFAULT_HIGHLIGHT_COLOR)}
+                }
+                fields.append("backgroundColor")
             if url:
                 text_style["link"] = {"url": url}
                 fields.append("link")
@@ -203,6 +219,58 @@ def _markdown_to_docs_requests(markdown: str) -> list[dict]:
             pos = run_end
 
     return requests
+
+
+def _docs_plain_text_with_index_map(doc: dict) -> tuple[str, list[tuple[int, int, int]]]:
+    """Concatenate a Doc's body text runs into plain text, alongside a map
+    back to Docs API indices.
+
+    Returns ``(plain_text, runs)`` where each entry in ``runs`` is
+    ``(plain_start, plain_end, docs_start)`` — the interval
+    ``[plain_start, plain_end)`` in ``plain_text`` came from a single text run
+    whose first character sits at Docs index ``docs_start``, so any offset
+    ``o`` in that interval maps to Docs index ``docs_start + (o - plain_start)``.
+    Runs tile ``plain_text`` contiguously with no gaps, even though the
+    underlying Docs indices can have gaps between runs (e.g. around a table
+    or image) — those simply don't appear in ``plain_text`` at all, the same
+    way they're absent from the tools' Markdown-only formatting model.
+    """
+    plain_text = ""
+    runs: list[tuple[int, int, int]] = []
+    for element in doc.get("body", {}).get("content", []):
+        for para_element in element.get("paragraph", {}).get("elements", []):
+            text_run = para_element.get("textRun")
+            docs_start = para_element.get("startIndex")
+            content = text_run.get("content", "") if text_run else ""
+            if not content or docs_start is None:
+                continue
+            plain_start = len(plain_text)
+            plain_text += content
+            runs.append((plain_start, plain_start + len(content), docs_start))
+    return plain_text, runs
+
+
+def _offset_to_docs_index(offset: int, runs: list[tuple[int, int, int]]) -> int:
+    """Map a plain-text offset (from _docs_plain_text_with_index_map) to a
+    Docs API index. Accepts the boundary offset one past the last run too,
+    so both the start and the (exclusive) end of a matched span resolve."""
+    for plain_start, plain_end, docs_start in runs:
+        if plain_start <= offset <= plain_end:
+            return docs_start + (offset - plain_start)
+    raise DriveClientError(f"Could not map text offset {offset} into the document")
+
+
+def _find_text_matches(plain_text: str, find_text: str) -> list[tuple[int, int]]:
+    """Return every non-overlapping (start, end) span where find_text occurs."""
+    matches: list[tuple[int, int]] = []
+    start = 0
+    while True:
+        idx = plain_text.find(find_text, start)
+        if idx == -1:
+            break
+        matches.append((idx, idx + len(find_text)))
+        start = idx + len(find_text)
+    return matches
 
 
 # ------------------------------------------------------------------ #
@@ -406,6 +474,22 @@ class DriveClient:
         """Expose the cached OAuth credentials for sibling API clients (Sheets)
         that reuse the Drive OAuth grant instead of requesting their own scope."""
         return self._load_credentials()
+
+    def _get_docs_service(self):
+        """Build (or reuse) the Docs API service resource for this thread.
+
+        Reuses the Drive OAuth grant (the Docs API v1 accepts the ``drive``
+        scope) the same way ``_get_sheets_service`` does for Sheets.
+        """
+        service = getattr(self._local, "docs_service", None)
+        if service is None:
+            creds = self._load_credentials()
+            service = build(
+                "docs", "v1", credentials=creds, cache_discovery=False
+            )
+            self._local.docs_service = service
+            logger.debug("Docs API service initialized for thread %s", threading.current_thread().name)
+        return service
 
     def check_connection(self) -> str:
         """Verify the credentials work. Returns the authorized email address."""
@@ -743,10 +827,7 @@ class DriveClient:
             raise DriveClientError(
                 "write_doc_rich_content requires a non-empty file_id"
             )
-        creds = self._load_credentials()
-        docs_service = build(
-            "docs", "v1", credentials=creds, cache_discovery=False
-        )
+        docs_service = self._get_docs_service()
         try:
             doc = docs_service.documents().get(documentId=file_id).execute()
         except HttpError as exc:
@@ -783,6 +864,148 @@ class DriveClient:
 
         logger.info("write_doc_rich_content: file_id=%s", file_id)
         return {"file_id": file_id}
+
+    def edit_doc_content(
+        self, file_id: str, find_text: str, replace_markdown: str, replace_all: bool = False
+    ) -> dict:
+        """Replace one (or, with ``replace_all``, every) occurrence of
+        ``find_text`` in a Google Doc with newly rendered Markdown, touching
+        only the matched span(s) rather than the whole document.
+
+        ``find_text`` is matched against the document's plain text (the same
+        representation ``get_file_content``'s Docs export returns) and must
+        match exactly once unless ``replace_all`` is set — an ambiguous match
+        raises rather than guessing which occurrence was meant, the same
+        contract a unique-match text editor enforces.
+        """
+        if not file_id:
+            raise DriveClientError("edit_doc_content requires a non-empty file_id")
+        if not find_text:
+            raise DriveClientError("edit_doc_content requires a non-empty find_text")
+
+        docs_service = self._get_docs_service()
+        try:
+            doc = docs_service.documents().get(documentId=file_id).execute()
+        except HttpError as exc:
+            raise DriveClientError(f"edit_doc_content get({file_id}) failed: {exc}") from exc
+
+        plain_text, runs = _docs_plain_text_with_index_map(doc)
+        matches = _find_text_matches(plain_text, find_text)
+        if not matches:
+            raise DriveClientError(f"edit_doc_content: find_text {find_text!r} not found in the document")
+        if len(matches) > 1 and not replace_all:
+            raise DriveClientError(
+                f"edit_doc_content: find_text {find_text!r} matches {len(matches)} locations; "
+                "add more surrounding context to make it unique, or set replace_all=true"
+            )
+
+        # Apply from the last match to the first so an earlier edit's index
+        # shift (deleting/inserting text changes every index after it) never
+        # invalidates an already-computed later range.
+        requests: list[dict] = []
+        for plain_start, plain_end in reversed(matches):
+            docs_start = _offset_to_docs_index(plain_start, runs)
+            docs_end = _offset_to_docs_index(plain_end, runs)
+            requests.append(
+                {"deleteContentRange": {"range": {"startIndex": docs_start, "endIndex": docs_end}}}
+            )
+            requests.extend(_markdown_to_docs_requests(replace_markdown, start_index=docs_start))
+
+        try:
+            docs_service.documents().batchUpdate(
+                documentId=file_id, body={"requests": requests}
+            ).execute()
+        except HttpError as exc:
+            raise DriveClientError(f"edit_doc_content batchUpdate({file_id}) failed: {exc}") from exc
+
+        logger.info(
+            "edit_doc_content: file_id=%s matches=%d replace_all=%s", file_id, len(matches), replace_all
+        )
+        return {"file_id": file_id, "occurrences_replaced": len(matches)}
+
+    def format_doc_content(
+        self,
+        file_id: str,
+        find_text: str,
+        bold: str = "",
+        italic: str = "",
+        highlight_color: str = "",
+        text_color: str = "",
+        replace_all: bool = False,
+    ) -> dict:
+        """Apply text styling to existing text in a Google Doc, located the
+        same way as ``edit_doc_content``, without changing the text itself.
+
+        Every styling parameter is opt-in like ``format_sheet_range``: its
+        default (empty string) means "leave that aspect unchanged", so a call
+        that only sets ``highlight_color`` never touches bold/italic already
+        on the matched text.
+        """
+        if not file_id:
+            raise DriveClientError("format_doc_content requires a non-empty file_id")
+        if not find_text:
+            raise DriveClientError("format_doc_content requires a non-empty find_text")
+
+        text_style: dict = {}
+        fields: list[str] = []
+        if bold:
+            text_style["bold"] = bold.strip().lower() == "true"
+            fields.append("bold")
+        if italic:
+            text_style["italic"] = italic.strip().lower() == "true"
+            fields.append("italic")
+        if highlight_color:
+            text_style["backgroundColor"] = {"color": {"rgbColor": _hex_to_rgb_dict(highlight_color)}}
+            fields.append("backgroundColor")
+        if text_color:
+            text_style["foregroundColor"] = {"color": {"rgbColor": _hex_to_rgb_dict(text_color)}}
+            fields.append("foregroundColor")
+        if not fields:
+            return {"file_id": file_id, "occurrences_formatted": 0}
+
+        docs_service = self._get_docs_service()
+        try:
+            doc = docs_service.documents().get(documentId=file_id).execute()
+        except HttpError as exc:
+            raise DriveClientError(f"format_doc_content get({file_id}) failed: {exc}") from exc
+
+        plain_text, runs = _docs_plain_text_with_index_map(doc)
+        matches = _find_text_matches(plain_text, find_text)
+        if not matches:
+            raise DriveClientError(f"format_doc_content: find_text {find_text!r} not found in the document")
+        if len(matches) > 1 and not replace_all:
+            raise DriveClientError(
+                f"format_doc_content: find_text {find_text!r} matches {len(matches)} locations; "
+                "add more surrounding context to make it unique, or set replace_all=true"
+            )
+
+        # Styling doesn't change text length, so match order doesn't matter
+        # the way it does in edit_doc_content.
+        requests = [
+            {
+                "updateTextStyle": {
+                    "range": {
+                        "startIndex": _offset_to_docs_index(plain_start, runs),
+                        "endIndex": _offset_to_docs_index(plain_end, runs),
+                    },
+                    "textStyle": text_style,
+                    "fields": ",".join(fields),
+                }
+            }
+            for plain_start, plain_end in matches
+        ]
+
+        try:
+            docs_service.documents().batchUpdate(
+                documentId=file_id, body={"requests": requests}
+            ).execute()
+        except HttpError as exc:
+            raise DriveClientError(f"format_doc_content batchUpdate({file_id}) failed: {exc}") from exc
+
+        logger.info(
+            "format_doc_content: file_id=%s matches=%d replace_all=%s", file_id, len(matches), replace_all
+        )
+        return {"file_id": file_id, "occurrences_formatted": len(matches)}
 
     def move_file(self, file_id: str, destination_folder_id: str) -> dict:
         """Move a file to a different folder."""
@@ -1017,6 +1240,95 @@ class DriveClient:
             ) from exc
         logger.info("rename_sheet: spreadsheet=%s sheet_id=%s new_title=%s", spreadsheet_id, sheet_id, new_title)
         return {"spreadsheet_id": spreadsheet_id, "sheet_id": sheet_id, "title": new_title}
+
+    def insert_dimensions(
+        self,
+        spreadsheet_id: str,
+        sheet_id: int,
+        dimension: str,
+        start_index: int,
+        count: int,
+        inherit_from_before: bool = True,
+    ) -> dict:
+        """Insert blank rows or columns, shifting existing content after the
+        insertion point. Values/formulas are untouched, only their position
+        shifts; the Sheets API adjusts formula references automatically.
+
+        ``dimension`` is 'ROWS' or 'COLUMNS'. ``start_index`` is 0-based, the
+        index the new rows/columns are inserted before. ``inherit_from_before``
+        matches the Sheets UI default: the inserted rows/columns copy the
+        formatting of the row/column immediately before the insertion point.
+        """
+        if not spreadsheet_id:
+            raise DriveClientError("insert_dimensions requires a non-empty spreadsheet_id")
+        if dimension not in ("ROWS", "COLUMNS"):
+            raise DriveClientError(f"insert_dimensions: dimension must be 'ROWS' or 'COLUMNS', got {dimension!r}")
+        if count < 1:
+            raise DriveClientError("insert_dimensions requires count >= 1")
+        request = {
+            "insertDimension": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "dimension": dimension,
+                    "startIndex": start_index,
+                    "endIndex": start_index + count,
+                },
+                "inheritFromBefore": inherit_from_before,
+            }
+        }
+        service = self._get_sheets_service()
+        try:
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id, body={"requests": [request]}
+            ).execute()
+        except HttpError as exc:
+            raise DriveClientError(
+                f"insert_dimensions({spreadsheet_id}, {sheet_id}) failed: {exc}"
+            ) from exc
+        logger.info(
+            "insert_dimensions: spreadsheet=%s sheet_id=%s dimension=%s start=%d count=%d",
+            spreadsheet_id, sheet_id, dimension, start_index, count,
+        )
+        return {"spreadsheet_id": spreadsheet_id, "sheet_id": sheet_id, "dimension": dimension, "inserted": count}
+
+    def delete_dimensions(
+        self, spreadsheet_id: str, sheet_id: int, dimension: str, start_index: int, count: int
+    ) -> dict:
+        """Delete rows or columns, including any values, formulas, and
+        formatting they contain. Remaining rows/columns shift to close the
+        gap. ``dimension`` is 'ROWS' or 'COLUMNS'; ``start_index`` is 0-based
+        and inclusive of the first row/column removed.
+        """
+        if not spreadsheet_id:
+            raise DriveClientError("delete_dimensions requires a non-empty spreadsheet_id")
+        if dimension not in ("ROWS", "COLUMNS"):
+            raise DriveClientError(f"delete_dimensions: dimension must be 'ROWS' or 'COLUMNS', got {dimension!r}")
+        if count < 1:
+            raise DriveClientError("delete_dimensions requires count >= 1")
+        request = {
+            "deleteDimension": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "dimension": dimension,
+                    "startIndex": start_index,
+                    "endIndex": start_index + count,
+                },
+            }
+        }
+        service = self._get_sheets_service()
+        try:
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id, body={"requests": [request]}
+            ).execute()
+        except HttpError as exc:
+            raise DriveClientError(
+                f"delete_dimensions({spreadsheet_id}, {sheet_id}) failed: {exc}"
+            ) from exc
+        logger.info(
+            "delete_dimensions: spreadsheet=%s sheet_id=%s dimension=%s start=%d count=%d",
+            spreadsheet_id, sheet_id, dimension, start_index, count,
+        )
+        return {"spreadsheet_id": spreadsheet_id, "sheet_id": sheet_id, "dimension": dimension, "deleted": count}
 
     def format_sheet_range(
         self,

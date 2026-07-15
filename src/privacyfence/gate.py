@@ -53,6 +53,7 @@ content being read.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import time
@@ -81,6 +82,46 @@ from .pii_detector import detect_pii_categories
 logger = logging.getLogger(__name__)
 
 _popup_lock = asyncio.Lock()  # only one native dialog on screen at a time
+
+# Set by ipc_server.py around a single dispatched request, for the duration
+# of that request only, when the request came in on a connection that
+# called privacyfence_begin_unattended_session() and hasn't since called
+# privacyfence_end_unattended_session() -- see unattended_scope() below and
+# docs/TECHNICAL_REFERENCE.md's "Scheduled / unattended Cowork tasks"
+# section. Deliberately NOT a module-level bool: a plain bool would be
+# shared across every concurrent request on
+# every connection, but unattended mode is a per-connection state (the
+# bridge is one process per Cowork task, so "per connection" already means
+# "per scheduled run").
+_unattended_ctx: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "privacyfence_unattended", default=False
+)
+
+
+def is_unattended() -> bool:
+    return _unattended_ctx.get()
+
+
+class unattended_scope:  # noqa: N801 (context-manager-style name, like `freeze_time`)
+    """Run the wrapped code with the unattended-session flag set to `enabled`.
+
+    ipc_server.py wraps each dispatched ``call`` request in this, based on
+    whether the request's connection is currently in an unattended session.
+    gated_call() below is the only reader (via is_unattended()) -- no
+    connector code needs to know this exists.
+    """
+
+    def __init__(self, enabled: bool) -> None:
+        self._enabled = enabled
+        self._token: contextvars.Token | None = None
+
+    def __enter__(self) -> "unattended_scope":
+        self._token = _unattended_ctx.set(self._enabled)
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        if self._token is not None:
+            _unattended_ctx.reset(self._token)
 
 
 async def gated_call(
@@ -167,6 +208,14 @@ async def gated_call(
                     logger.info("Auto-accepted while queued: %s/%s rule=%r", connector, tool, matched_rule)
                     return filtered_data
 
+                if is_unattended():
+                    # No rule matched, or one did but the PII gate still
+                    # routed this to a human (see module docstring) -- either
+                    # way, nobody's here to answer a popup. Fail this one
+                    # step now instead of hanging on _popup_lock forever and
+                    # blocking every other approval behind it.
+                    _deny_unattended(audit, connector, tool, pii_categories=pii_categories)
+
                 decision = await asyncio.to_thread(
                     show_read_popup, popup_title, preview or {}, details, suggestion is not None, pii_categories
                 )
@@ -210,6 +259,9 @@ async def gated_call(
                     logger.info("Auto-accepted while queued: %s/%s rule=%r", connector, tool, matched_rule)
                     return filtered_data
 
+                if is_unattended():
+                    _deny_unattended(audit, connector, tool, pii_categories=[])
+
                 decision = await asyncio.to_thread(
                     show_popup, popup_title, preview or {}, details, file_key is not None
                 )
@@ -244,6 +296,26 @@ async def gated_call(
                 connector, tool, request_id,
             )
             audit(decision="error", auto_accept_rule="", pii_detected=bool(pii_categories))
+
+
+def _deny_unattended(audit, connector: str, tool: str, *, pii_categories: list[str]) -> None:
+    """Fail-fast path for unattended sessions: same outcome as a human
+    clicking Deny, minus the popup nobody's there to answer -- see
+    unattended_scope() above and docs/TECHNICAL_REFERENCE.md's
+    "Scheduled / unattended Cowork tasks" section.
+
+    Always raises; the "-> None" return type documents that this never
+    returns a decision to act on, only ever exits via exception.
+    """
+    audit(decision="denied_unattended", auto_accept_rule="", pii_detected=bool(pii_categories))
+    logger.warning(
+        "Unattended session: denying %s/%s without prompting -- no auto-accept rule matched%s",
+        connector, tool, " (or the PII gate overrode one that did)" if pii_categories else "",
+    )
+    raise RuntimeError(
+        "Request denied: this connection is in an unattended session and no auto-accept rule "
+        "matches this call, so it can't be approved without a human present."
+    )
 
 
 async def _confirm_pii_or_deny(decision: str, pii_categories: list[str]) -> str:

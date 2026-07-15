@@ -572,6 +572,162 @@ class TestSheetsGatedTools:
         client.format_sheet_range.assert_not_called()
 
 
+class TestSheetsDimensionTools:
+    async def test_insert_dimensions_gate_popup(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file(name="Budget")
+        client.insert_dimensions.return_value = {"inserted": 2}
+
+        result = await connector.call(
+            "drive_sheets_insert_dimensions",
+            {"spreadsheet_id": "sheet1", "sheet_id": 0, "dimension": "rows", "start_index": 5, "count": 2},
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["gate"] == "popup"
+        assert kwargs["preview"]["Action"] == "Insert 2 ROWS before index 5"
+        assert kwargs["args"] == {
+            "spreadsheet_id": "sheet1", "sheet_id": 0, "dimension": "ROWS", "start_index": 5, "count": 2,
+        }
+        client.insert_dimensions.assert_called_once_with("sheet1", 0, "ROWS", 5, 2, True)
+        assert result == {"inserted": 2}
+
+    async def test_insert_dimensions_normalizes_dimension_case(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file()
+        client.insert_dimensions.return_value = {"inserted": 1}
+
+        await connector.call(
+            "drive_sheets_insert_dimensions",
+            {"spreadsheet_id": "sheet1", "sheet_id": 0, "dimension": "columns", "start_index": 0},
+        )
+
+        client.insert_dimensions.assert_called_once_with("sheet1", 0, "COLUMNS", 0, 1, True)
+
+    async def test_insert_dimensions_invalid_dimension_rejected_before_gate(self, gated_call_spy):
+        connector, client = make_connector()
+
+        with pytest.raises(ValueError, match="ROWS.*COLUMNS"):
+            await connector.call(
+                "drive_sheets_insert_dimensions",
+                {"spreadsheet_id": "sheet1", "sheet_id": 0, "dimension": "cells", "start_index": 0},
+            )
+
+        assert gated_call_spy == []
+        client.get_file_metadata.assert_not_called()
+        client.insert_dimensions.assert_not_called()
+
+    async def test_delete_dimensions_gate_popup_and_warns_of_data_loss(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file(name="Budget")
+        client.delete_dimensions.return_value = {"deleted": 3}
+
+        result = await connector.call(
+            "drive_sheets_delete_dimensions",
+            {"spreadsheet_id": "sheet1", "sheet_id": 0, "dimension": "COLUMNS", "start_index": 1, "count": 3},
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["gate"] == "popup"
+        assert kwargs["preview"]["Action"] == "Delete 3 COLUMNS starting at index 1"
+        assert "not recoverable" in kwargs["details_text"]
+        client.delete_dimensions.assert_called_once_with("sheet1", 0, "COLUMNS", 1, 3)
+        assert result == {"deleted": 3}
+
+    async def test_delete_dimensions_invalid_dimension_rejected_before_gate(self, gated_call_spy):
+        connector, client = make_connector()
+
+        with pytest.raises(ValueError, match="ROWS.*COLUMNS"):
+            await connector.call(
+                "drive_sheets_delete_dimensions",
+                {"spreadsheet_id": "sheet1", "sheet_id": 0, "dimension": "cells", "start_index": 0},
+            )
+
+        assert gated_call_spy == []
+        client.get_file_metadata.assert_not_called()
+
+
+class TestDocsEditAndFormatContent:
+    async def test_edit_content_gate_popup_and_preview_is_metadata_only(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file(name="Notes")
+        client.edit_doc_content.return_value = {"occurrences_replaced": 1}
+
+        result = await connector.call(
+            "drive_docs_edit_content",
+            {"file_id": "f1", "find_text": "old sentence", "replace_markdown": "new sentence"},
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["gate"] == "popup"
+        assert kwargs["preview"] == {
+            "File": "Notes", "Owner": "alice@example.com", "Match": "the one matching occurrence",
+        }
+        assert "old sentence" not in str(kwargs["preview"])
+        assert "old sentence" in kwargs["details_text"]
+        assert "new sentence" in kwargs["details_text"]
+        assert kwargs["args"] == {"file_id": "f1"}
+        client.edit_doc_content.assert_called_once_with("f1", "old sentence", "new sentence", False)
+        assert result == {"occurrences_replaced": 1}
+
+    async def test_edit_content_replace_all_reflected_in_preview_and_call(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file()
+        client.edit_doc_content.return_value = {"occurrences_replaced": 3}
+
+        await connector.call(
+            "drive_docs_edit_content",
+            {"file_id": "f1", "find_text": "cat", "replace_markdown": "dog", "replace_all": True},
+        )
+
+        assert gated_call_spy[0]["preview"]["Match"] == "every occurrence"
+        client.edit_doc_content.assert_called_once_with("f1", "cat", "dog", True)
+
+    async def test_format_content_gate_popup_summarizes_applied_changes(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file(name="Notes")
+        client.format_doc_content.return_value = {"occurrences_formatted": 1}
+
+        result = await connector.call(
+            "drive_docs_format_content",
+            {"file_id": "f1", "find_text": "important", "bold": "true", "highlight_color": "#fff59d"},
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["gate"] == "popup"
+        assert "bold=true" in kwargs["preview"]["Format"]
+        assert "highlight=#fff59d" in kwargs["preview"]["Format"]
+        assert "important" not in str(kwargs["preview"])
+        assert "important" in kwargs["details_text"]
+        client.format_doc_content.assert_called_once_with(
+            "f1", "important", "true", "", "#fff59d", "", False
+        )
+        assert result == {"occurrences_formatted": 1}
+
+    async def test_format_content_summary_covers_every_remaining_option(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file()
+        client.format_doc_content.return_value = {"occurrences_formatted": 1}
+
+        await connector.call(
+            "drive_docs_format_content",
+            {"file_id": "f1", "find_text": "x", "italic": "true", "text_color": "#000000"},
+        )
+
+        summary = gated_call_spy[0]["preview"]["Format"]
+        assert "italic=true" in summary
+        assert "text_color=#000000" in summary
+
+    async def test_format_content_no_changes_shows_placeholder(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file()
+        client.format_doc_content.return_value = {"occurrences_formatted": 0}
+
+        await connector.call("drive_docs_format_content", {"file_id": "f1", "find_text": "x"})
+
+        assert gated_call_spy[0]["preview"]["Format"] == "(no changes)"
+
+
 class TestEveryToolIsAudited:
     async def test_every_declared_tool_leaves_an_audit_trail(self, monkeypatch, tmp_path):
         connector, client = make_connector()
@@ -590,5 +746,8 @@ class TestEveryToolIsAudited:
                 # range_a1 must be a fully-bounded A1 range for _parse_a1_range
                 # to accept -- it's now validated before gating.
                 "drive_sheets_format_range": {"range_a1": "A1:B2"},
+                # dimension must be 'ROWS' or 'COLUMNS' -- validated before gating.
+                "drive_sheets_insert_dimensions": {"dimension": "ROWS"},
+                "drive_sheets_delete_dimensions": {"dimension": "ROWS"},
             },
         )

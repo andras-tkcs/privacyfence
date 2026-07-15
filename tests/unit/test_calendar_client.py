@@ -128,6 +128,16 @@ class TestParseEvent:
         event = client._parse_event({"id": "e1"}, "primary")
         assert event.status == "confirmed"
 
+    def test_missing_visibility_defaults_to_default(self):
+        client = make_client(MagicMock())
+        event = client._parse_event({"id": "e1"}, "primary")
+        assert event.visibility == "default"
+
+    def test_visibility_parsed_from_raw_event(self):
+        client = make_client(MagicMock())
+        event = client._parse_event({"id": "e1", "visibility": "private"}, "primary")
+        assert event.visibility == "private"
+
     def test_calendar_id_is_carried_from_caller_not_the_payload(self):
         client = make_client(MagicMock())
         event = client._parse_event({"id": "e1"}, "someone@x.com")
@@ -650,6 +660,74 @@ class TestUpdateEvent:
         client = make_client(service)
         with pytest.raises(CalendarClientError, match="update_event\\(e1\\)"):
             client.update_event("primary", "e1", title="x")
+
+
+# ---------------------------------------------------------------------------- #
+# set_event_visibility: only the visibility field changes
+# ---------------------------------------------------------------------------- #
+
+class TestSetEventVisibility:
+    def test_invalid_visibility_raises_before_any_api_call(self):
+        service = MagicMock()
+        client = make_client(service)
+        with pytest.raises(CalendarClientError, match="visibility must be one of"):
+            client.set_event_visibility("primary", "e1", "hidden")
+        service.events.return_value.get.assert_not_called()
+
+    def test_value_is_normalized_case_and_whitespace(self):
+        service = MagicMock()
+        service.events.return_value.get.return_value.execute.return_value = {"id": "e1", "summary": "Standup"}
+        service.events.return_value.update.return_value.execute.return_value = {"id": "e1", "visibility": "private"}
+        client = make_client(service)
+
+        client.set_event_visibility("primary", "e1", "  PRIVATE  ")
+
+        body = service.events.return_value.update.call_args.kwargs["body"]
+        assert body["visibility"] == "private"
+
+    def test_only_visibility_field_changes_other_fields_preserved(self):
+        service = MagicMock()
+        service.events.return_value.get.return_value.execute.return_value = {
+            "id": "e1", "summary": "Standup", "description": "daily sync", "location": "Room 1",
+        }
+        service.events.return_value.update.return_value.execute.return_value = {"id": "e1"}
+        client = make_client(service)
+
+        client.set_event_visibility("primary", "e1", "public")
+
+        body = service.events.return_value.update.call_args.kwargs["body"]
+        assert body["visibility"] == "public"
+        assert body["summary"] == "Standup"
+        assert body["description"] == "daily sync"
+        assert body["location"] == "Room 1"
+
+    def test_returns_parsed_updated_event(self):
+        service = MagicMock()
+        service.events.return_value.get.return_value.execute.return_value = {"id": "e1"}
+        service.events.return_value.update.return_value.execute.return_value = {
+            "id": "e1", "summary": "Standup", "visibility": "confidential",
+        }
+        client = make_client(service)
+
+        event = client.set_event_visibility("primary", "e1", "confidential")
+
+        assert event.visibility == "confidential"
+        assert event.title == "Standup"
+
+    def test_get_http_error_becomes_calendar_client_error(self):
+        service = MagicMock()
+        service.events.return_value.get.return_value.execute.side_effect = http_error(404)
+        client = make_client(service)
+        with pytest.raises(CalendarClientError, match="set_event_visibility get"):
+            client.set_event_visibility("primary", "e1", "private")
+
+    def test_update_http_error_becomes_calendar_client_error(self):
+        service = MagicMock()
+        service.events.return_value.get.return_value.execute.return_value = {"id": "e1"}
+        service.events.return_value.update.return_value.execute.side_effect = http_error(400)
+        client = make_client(service)
+        with pytest.raises(CalendarClientError, match="set_event_visibility update"):
+            client.set_event_visibility("primary", "e1", "private")
 
 
 # ---------------------------------------------------------------------------- #

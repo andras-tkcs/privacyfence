@@ -131,6 +131,44 @@ fixture recorder).
 - [ ] Confirm every Drive/Sheets test artifact is created fresh, **inside this folder**, with
       synthetic content from scratch — `connector-qa-testing.md` already does this correctly (e.g.
       its PII-gate check writes an entirely fabricated body)
+- [ ] (Optional) Extend `approved_sandbox_folder` to `sheets.rename_sheet` / `sheets.format_range`
+  - [ ] Only add this if you want Phase 2 to demonstrate these two auto-accepting by folder,
+        instead of exercising the popup / "Accept for 5 min" flow — the two are mutually exclusive
+        for the same spreadsheet
+        ```yaml
+        auto_accept_rules:
+          sheets.rename_sheet:
+            - rule: approved_sandbox_folder
+              value: ["<QA Sandbox folder id>"]
+          sheets.format_range:
+            - rule: approved_sandbox_folder
+              value: ["<QA Sandbox folder id>"]
+        ```
+- [ ] (Optional) Extend the same rule to `sheets.insert_dimensions` / `sheets.delete_dimensions`
+  - [ ] Add both:
+        ```yaml
+        auto_accept_rules:
+          sheets.insert_dimensions:
+            - rule: approved_sandbox_folder
+              value: ["<QA Sandbox folder id>"]
+          sheets.delete_dimensions:
+            - rule: approved_sandbox_folder
+              value: ["<QA Sandbox folder id>"]
+        ```
+  - Note: `sheets.insert_dimensions` still offers "Accept for 5 min" on its plain popup
+    (non-destructive, like `format_range`); `sheets.delete_dimensions` never does (removes cell
+    content, no undo path) — that asymmetry stays visible whenever this rule doesn't match.
+- [ ] (Optional) Extend the same rule to `docs.edit_content` / `docs.format_content`
+  - [ ] Add both:
+        ```yaml
+        auto_accept_rules:
+          docs.edit_content:
+            - rule: approved_sandbox_folder
+              value: ["<QA Sandbox folder id>"]
+          docs.format_content:
+            - rule: approved_sandbox_folder
+              value: ["<QA Sandbox folder id>"]
+        ```
 - [ ] (Maintenance, periodic) Empty Drive trash by hand — there's no bulk-empty-trash tool; trashed
       items auto-purge after 30 days regardless
 
@@ -180,6 +218,22 @@ fixture recorder).
   - [ ] Workspace admin access available → enable the **Admin SDK API** in the same Google Cloud
         project ([`google-cloud-setup.md`](google-cloud-setup.md)), then reconnect Calendar from
         the menu bar to pick up the new scope
+- [ ] (Optional) Add the `non_private_event` rule
+  - [ ] Only add this if you want Phase 2 to demonstrate `calendar_get_event_details` and
+        `calendar_set_event_visibility` auto-accepting for a non-private event:
+        ```yaml
+        auto_accept_rules:
+          calendar.read_event_details:
+            - rule: non_private_event
+          calendar.set_visibility:
+            - rule: non_private_event
+        ```
+  - Note: no fixture needed for the contrast case either way — any event set to `private` via
+    `calendar_set_event_visibility` still prompts regardless of this rule, since it checks the
+    visibility being requested, not the event's prior state. Combine with `i_am_organizer` above
+    under `calendar.read_event_details` if you want both — a matching rule short-circuits the
+    list, so order doesn't change what auto-accepts, just which rule name shows up in the audit
+    log.
 
 > **Note** — `calendar_list_events`/`calendar_list_calendars` (silent) show real events as part of
 > proving the tool works. Confirm shape only.
@@ -277,6 +331,25 @@ fixture recorder).
       ```
 - [ ] Confirm a contrast case exists — any report/object type you don't add above already serves
       as the "should still prompt" contrast; no extra setup needed
+- [ ] Confirm `salesforce_search` needs no separate fixture — the sample Account records from
+      above (prefixed `PrivacyFence QA — `) are exactly what a search for `PrivacyFence QA` should
+      find
+  - Note: **known quirk, not a bug** — Salesforce's SOSL search index can take a minute or two to
+    pick up freshly created records. If a search run immediately after seeding comes back empty,
+    wait briefly and retry before treating it as a regression.
+- [ ] (Optional) Add `approved_object_types` to `salesforce.search`
+  - [ ] Same rule `salesforce.read_record` uses, generalized to check *every* object type in the
+        search's comma-separated `object_types`:
+        ```yaml
+        auto_accept_rules:
+          salesforce.search:
+            - rule: approved_object_types
+              value: [Account]
+        ```
+  - Note: with this configured, a search scoped to `object_types="Account"` auto-accepts; a
+    search that also touches any other object type, or one left unscoped entirely (Salesforce's
+    default globally-searchable set), still prompts — that asymmetry is worth confirming too, not
+    just the auto-accept path.
 
 ## 9. Jira
 
@@ -334,6 +407,19 @@ fixture recorder).
 > self-contained: it creates its own throwaway Drive subfolder and Google Doc, seeds it with
 > obviously-fake synthetic PII, writes it, reads it back, and tears both down.
 
+## 12. Scheduled / unattended Cowork tasks
+
+- [ ] Confirm no new fixture is needed — Phase 11 of `connector-qa-testing.md` reuses the Slack
+      channels from §3 (an approved one, a control one)
+- [ ] Know how to restart your daemon (`privacyfence-app`, or `scripts/dev_start.sh` if running
+      from source — see [`dev-vs-live-setup.md`](dev-vs-live-setup.md))
+  - Note: `unattended_sessions.enabled` in `settings.yaml` is off by default and toggled (with a
+    daemon restart) as part of the phase itself, not something to pre-configure here. Unlike
+    `pii_detection.enabled`, it has no menu-bar toggle and isn't hot-reloaded — the phase requires
+    an actual restart partway through, twice. See
+    [`TECHNICAL_REFERENCE.md`](TECHNICAL_REFERENCE.md#scheduled--unattended-cowork-tasks) for what
+    this mode does and why.
+
 ---
 
 ## Consolidated `auto_accept_rules` block
@@ -380,6 +466,14 @@ fixture recorder).
             value: ["<default task list id>"]
       ```
 - [ ] Restart the daemon (or click "Accept All" once, to hot-reload)
+
+> **Note** — deliberately left out of this block: `sheets.rename_sheet` / `sheets.format_range`,
+> `sheets.insert_dimensions` / `sheets.delete_dimensions`, and `docs.edit_content` /
+> `docs.format_content` → `approved_sandbox_folder` (§2); `calendar.read_event_details` /
+> `calendar.set_visibility` → `non_private_event` (§4); `salesforce.search` →
+> `approved_object_types` (§8). Each is optional and, unlike everything above, actively changes
+> what Phase 2 exercises for those tools (silent auto-accept instead of the popup/review-gate
+> flow), so they're opt-in rather than assumed.
 
 ---
 

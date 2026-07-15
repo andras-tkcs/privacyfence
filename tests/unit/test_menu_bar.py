@@ -52,7 +52,11 @@ def app(tmp_path, monkeypatch):
     config_path.write_text("auto_accept_rules: {}\nconnectors: {}\n", encoding="utf-8")
 
     ipc_calls = []
-    ipc_server = SimpleNamespace(set_connectors=lambda conns: ipc_calls.append(conns))
+    ipc_server = SimpleNamespace(
+        set_connectors=lambda conns: ipc_calls.append(conns),
+        unattended_session_count=lambda: 0,
+        set_unattended_changed_listener=lambda callback: None,
+    )
 
     instance = menu_bar.PrivacyFenceMenuBar(str(config_path), connectors=[], ipc_server=ipc_server)
     instance._ipc_calls = ipc_calls  # test-only hook
@@ -753,6 +757,26 @@ class TestAddRule:
 
         assert "spreadsheet_id" in captured["message"]
 
+    def test_add_rule_prompt_starts_empty_not_prefilled_with_hint(self, app, monkeypatch):
+        # Regression: the "Add rule" dialog used to pre-fill the text field with
+        # the RULE_HINTS example value (e.g. a fake sandbox folder ID), so the
+        # first line looked like garbage data the user had to delete before
+        # typing their real value. The example belongs in the message text, not
+        # in the editable field's initial content.
+        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: "approved_sandbox_folder")
+        captured = {}
+        class _CapturingWindow:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+            def run(self):
+                return _FakeWindowResponse(clicked=False)
+        monkeypatch.setattr(menu_bar.rumps, "Window", _CapturingWindow)
+
+        app._add_rule("sheets.rename_sheet")
+
+        assert captured["default_text"] == ""
+        assert "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms" in captured["message"]
+
     def test_rename_sheet_offers_approved_sandbox_folder(self, app, monkeypatch):
         # Regression: rename_sheet/format_range used to have no folder-scoped
         # rule at all, so a folder approved for write_range/add_sheet had no
@@ -1322,6 +1346,58 @@ class TestPrompt:
 
         assert clicked is False
         assert text == ""
+
+
+class TestUnattendedIndicator:
+    """The top menu item's live count of connections currently in an
+    unattended session (see docs/TECHNICAL_REFERENCE.md's "Scheduled /
+    unattended Cowork tasks" section) -- ipc_server.py fires
+    set_unattended_changed_listener from its own
+    asyncio thread, so this must marshal through AppHelper.callAfter the
+    same way _on_rules_changed does (see TestRunAsyncMarshaling's module
+    docstring for why that matters)."""
+
+    def test_status_label_no_unattended_sessions(self, app):
+        app._ipc_server.unattended_session_count = lambda: 0
+        assert app._status_label() == "PrivacyFence is running"
+
+    def test_status_label_singular(self, app):
+        app._ipc_server.unattended_session_count = lambda: 1
+        assert app._status_label() == "PrivacyFence is running — 1 unattended session active"
+
+    def test_status_label_plural(self, app):
+        app._ipc_server.unattended_session_count = lambda: 3
+        assert app._status_label() == "PrivacyFence is running — 3 unattended sessions active"
+
+    def test_registers_a_listener_with_the_ipc_server_on_init(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(menu_bar, "_find_icon", lambda: None)
+        monkeypatch.setattr(menu_bar, "load_org_config", lambda: {})
+        config_path = tmp_path / "settings.yaml"
+        config_path.write_text("auto_accept_rules: {}\nconnectors: {}\n", encoding="utf-8")
+
+        registered = []
+        ipc_server = SimpleNamespace(
+            set_connectors=lambda conns: None,
+            unattended_session_count=lambda: 0,
+            set_unattended_changed_listener=lambda callback: registered.append(callback),
+        )
+
+        instance = menu_bar.PrivacyFenceMenuBar(str(config_path), connectors=[], ipc_server=ipc_server)
+
+        assert registered == [instance._on_unattended_changed]
+
+    def test_on_unattended_changed_marshals_rebuild_through_app_helper(self, app, monkeypatch):
+        # Rather than asserting on the rendered menu (rumps has no headless
+        # render target worth inspecting -- see this module's docstring),
+        # confirm the rebuild is handed to AppHelper.callAfter rather than
+        # invoked directly, which is what protects the main thread from a
+        # callback fired off ipc_server.py's own asyncio thread.
+        recorded = []
+        monkeypatch.setattr(menu_bar.AppHelper, "callAfter", lambda f, *a, **k: recorded.append(f))
+
+        app._on_unattended_changed()
+
+        assert recorded == [app._rebuild]
 
 
 class TestMiscActions:

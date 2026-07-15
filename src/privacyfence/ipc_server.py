@@ -33,9 +33,14 @@ import json
 import logging
 import os
 import time
-from typing import Any
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Callable
 
+from .audit_log import AuditEntry, current_week, get_audit_logger
+from .auto_accept import TOOL_TO_GATE, TOOL_TO_OPERATION, get_auto_accept_evaluator
 from .connector import Connector, ToolSpec
+from .gate import unattended_scope
 from .ipc import LINE_LIMIT, SOCKET_PATH, VERSION
 
 logger = logging.getLogger(__name__)
@@ -54,10 +59,27 @@ class IPCServer:
     # Tools exempt from completed-result reuse -- see module docstring.
     _DEDUPE_EXEMPT_TOOLS = frozenset({"gmail_create_label"})
 
-    def __init__(self, connectors: list[Connector]) -> None:
+    def __init__(self, connectors: list[Connector], *, unattended_sessions_enabled: bool = False) -> None:
         self._connectors: dict[str, Connector] = {c.name: c for c in connectors}
         self._server: asyncio.AbstractServer | None = None
         self._inflight: dict[str, tuple[asyncio.Future, float]] = {}
+        # Opt-in gate for privacyfence_begin_unattended_session -- see
+        # settings.yaml.example's unattended_sessions.enabled. Off by
+        # default: a Claude session gaining the ability to switch its own
+        # connection into fail-fast mode is a deliberate per-organization
+        # choice.
+        self._unattended_sessions_enabled = unattended_sessions_enabled
+        # id(writer) -> currently in an unattended session. Connection-scoped
+        # (not global) since the bridge is one process per Cowork task, so
+        # "per connection" already means "per scheduled run"; cleaned up on
+        # disconnect in _handle_connection's finally so a dropped connection
+        # can never leave a stale entry behind.
+        self._unattended_connections: set[int] = set()
+        # Fired (on this asyncio thread -- the listener is responsible for
+        # marshaling onto rumps' main thread) whenever membership of
+        # _unattended_connections actually changes, so the menu bar's live
+        # indicator can stay current without polling.
+        self._unattended_changed_listener: Callable[[], None] | None = None
 
     def set_connectors(self, connectors: list[Connector]) -> None:
         """Swap in a freshly built connector set (e.g. after the menu bar
@@ -66,6 +88,15 @@ class IPCServer:
         reference swap so no lock is needed against the IPC asyncio thread.
         """
         self._connectors = {c.name: c for c in connectors}
+
+    def set_unattended_changed_listener(self, callback: Callable[[], None] | None) -> None:
+        """Register a callback fired whenever unattended_session_count()
+        changes. Called from the IPC server's own asyncio thread -- the
+        menu bar uses this to marshal a menu rebuild onto its main thread
+        via AppHelper.callAfter, the same pattern auto_accept.py's
+        set_rules_changed_listener uses for rule changes.
+        """
+        self._unattended_changed_listener = callback
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -111,6 +142,14 @@ class IPCServer:
             logger.warning("Bridge connection %s terminated: %s", peer, exc)
         finally:
             logger.debug("Bridge disconnected: %s", peer)
+            # Whatever unattended-session state this connection carried dies
+            # with it -- there's no path where a dropped connection should
+            # leave a stale "in an unattended session" entry behind.
+            had_unattended = id(writer) in self._unattended_connections
+            self._unattended_connections.discard(id(writer))
+            if had_unattended:
+                self._audit_unattended_session_event("unattended_session_ended")
+                self._fire_unattended_changed()
             writer.close()
 
     async def _dispatch(self, raw: bytes, writer: asyncio.StreamWriter) -> None:
@@ -126,7 +165,14 @@ class IPCServer:
             elif method == "manifest":
                 result = self._build_manifest()
             elif method == "call":
-                result = await self._call_connector(params)
+                with unattended_scope(id(writer) in self._unattended_connections):
+                    result = await self._call_connector(params)
+            elif method == "check_policy":
+                result = self._check_policy(params)
+            elif method == "begin_unattended_session":
+                result = self._begin_unattended_session(writer)
+            elif method == "end_unattended_session":
+                result = self._end_unattended_session(writer)
             else:
                 raise ValueError(f"Unknown method: {method!r}")
 
@@ -168,6 +214,136 @@ class IPCServer:
             raise
         fut.set_result(result)
         return result
+
+    def _check_policy(self, params: dict) -> dict:
+        """Preflight for privacyfence_check_policy -- see ipc.py's module docstring.
+
+        Deliberately bypasses Connector.call() entirely: no external API
+        call, no popup, no mutation of anything. Records a lightweight
+        "policy_check" audit entry (not a real decision) so a scheduled
+        task repeatedly probing something it's never allowed to do shows up
+        in the log, same as any other pattern worth noticing.
+        """
+        connector_name = params["connector"]
+        tool = params["tool"]
+        args = params.get("args", {})
+        connector = self._connectors.get(connector_name)
+        if connector is None:
+            raise ValueError(f"Unknown connector: {connector_name!r}")
+
+        gate = TOOL_TO_GATE.get(tool)
+        if gate is None:
+            raise ValueError(f"Unknown tool: {tool!r}")
+
+        if gate == "auto":
+            result = {
+                "gate": "auto", "verdict": "auto_accept", "matched_rule": None,
+                "reason": "Unconditionally auto-accepted -- never reaches the review gate.",
+                "pii_gate_may_apply": False,
+            }
+        else:
+            operation_key = TOOL_TO_OPERATION.get(tool, f"{connector_name}.{tool}")
+            my_email = getattr(connector, "my_email", "")
+            verdict, matched_rule, reason = get_auto_accept_evaluator().preflight_from_args(
+                operation_key, args, my_email
+            )
+            if gate == "review":
+                reason += (
+                    " Read calls also pass through the PII detection gate, which scans actual "
+                    "content and can force a popup even when a rule matches -- this can't be "
+                    "predicted before the read happens."
+                )
+            result = {
+                "gate": gate, "verdict": verdict, "matched_rule": matched_rule or None,
+                "reason": reason, "pii_gate_may_apply": gate == "review",
+            }
+
+        self._audit_policy_check(connector_name, tool, result)
+        return result
+
+    @staticmethod
+    def _audit_policy_check(connector_name: str, tool: str, result: dict) -> None:
+        try:
+            get_audit_logger().record(AuditEntry(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                week=current_week(),
+                request_id=uuid.uuid4().hex[:12],
+                connector=connector_name,
+                tool=tool,
+                tool_name="",
+                summary=f"Preflight check: verdict={result['verdict']!r}",
+                sender="",
+                decision="policy_check",
+                auto_accept_rule=result.get("matched_rule") or "",
+                latency_seconds=0.0,
+                pii_detected=False,
+            ))
+        except Exception as exc:
+            logger.warning("Audit log write failed for policy check: %s", exc)
+
+    @staticmethod
+    def _audit_unattended_session_event(decision: str) -> None:
+        """Session-level audit entry for begin/end_unattended_session --
+        this connection's gate posture just changed, which is a governance
+        decision in its own right, not just a bookkeeping detail."""
+        try:
+            get_audit_logger().record(AuditEntry(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                week=current_week(),
+                request_id=uuid.uuid4().hex[:12],
+                connector="",
+                tool="",
+                tool_name="",
+                summary="This connection's unattended-session state changed",
+                sender="",
+                decision=decision,
+                auto_accept_rule="",
+                latency_seconds=0.0,
+                pii_detected=False,
+            ))
+        except Exception as exc:
+            logger.warning("Audit log write failed for unattended-session event: %s", exc)
+
+    def _begin_unattended_session(self, writer: asyncio.StreamWriter) -> dict:
+        """privacyfence_begin_unattended_session -- see settings.yaml.example's
+        unattended_sessions.enabled and docs/TECHNICAL_REFERENCE.md's
+        "Scheduled / unattended Cowork tasks" section.
+        """
+        if not self._unattended_sessions_enabled:
+            raise ValueError(
+                "Unattended sessions are disabled. An administrator must set "
+                "unattended_sessions.enabled: true in settings.yaml before this connection "
+                "can be marked unattended."
+            )
+        self._unattended_connections.add(id(writer))
+        logger.warning(
+            "Unattended session started on connection %s -- unmatched review/popup calls on this "
+            "connection will now be denied immediately instead of prompting",
+            writer.get_extra_info("peername") or "<unknown>",
+        )
+        self._audit_unattended_session_event("unattended_session_started")
+        self._fire_unattended_changed()
+        return {"unattended": True}
+
+    def _end_unattended_session(self, writer: asyncio.StreamWriter) -> dict:
+        changed = id(writer) in self._unattended_connections
+        self._unattended_connections.discard(id(writer))
+        logger.info(
+            "Unattended session ended on connection %s", writer.get_extra_info("peername") or "<unknown>"
+        )
+        if changed:
+            self._audit_unattended_session_event("unattended_session_ended")
+            self._fire_unattended_changed()
+        return {"unattended": False}
+
+    def unattended_session_count(self) -> int:
+        """Number of connections currently in an unattended session -- read
+        by the menu bar for its live indicator (see menu_bar.py)."""
+        return len(self._unattended_connections)
+
+    def _fire_unattended_changed(self) -> None:
+        if self._unattended_changed_listener is not None:
+            self._unattended_changed_listener()
 
     def _prune_stale(self, now: float) -> None:
         stale = [

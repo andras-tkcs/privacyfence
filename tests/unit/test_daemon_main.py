@@ -909,7 +909,10 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "init_audit_logger", lambda path: fake_audit_logger)
         monkeypatch.setattr(daemon_main, "load_org_config", lambda: {})
         monkeypatch.setattr(daemon_main, "build_connectors", lambda cfg, org: connectors)
-        monkeypatch.setattr(daemon_main, "IPCServer", lambda conns: SimpleNamespace(connectors=conns))
+        monkeypatch.setattr(
+            daemon_main, "IPCServer",
+            lambda conns, **kw: SimpleNamespace(connectors=conns, unattended_sessions_enabled=kw.get("unattended_sessions_enabled")),
+        )
         _FakeIPCServerThread.instances = []
         monkeypatch.setattr(daemon_main, "IPCServerThread", _FakeIPCServerThread)
         return fake_audit_logger
@@ -990,6 +993,26 @@ class TestRunApp:
             daemon_main.run_app({}, "config.yaml")
 
         assert release_calls == [1]
+
+    def test_unattended_sessions_disabled_by_default(self, monkeypatch):
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        self._patch_common(monkeypatch)
+        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
+
+        daemon_main.run_app({}, "config.yaml")
+
+        assert _FakeIPCServerThread.instances[0].server.unattended_sessions_enabled is False
+
+    def test_unattended_sessions_enabled_flag_passed_through_from_config(self, monkeypatch):
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        self._patch_common(monkeypatch)
+        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
+
+        daemon_main.run_app({"unattended_sessions": {"enabled": True}}, "config.yaml")
+
+        assert _FakeIPCServerThread.instances[0].server.unattended_sessions_enabled is True
 
     def test_exports_pending_audit_entries_on_startup(self, monkeypatch):
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)

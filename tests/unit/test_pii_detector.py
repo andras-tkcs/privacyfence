@@ -131,6 +131,49 @@ class TestHungarianPatterns:
         ]
 
 
+class TestSalaryPatterns:
+    def test_english_salary(self):
+        assert detect_categories("My salary this year increased.") == [
+            "Salary/compensation information"
+        ]
+
+    def test_english_payslip_and_take_home_pay(self):
+        assert detect_categories("Please attach your payslip.") == [
+            "Salary/compensation information"
+        ]
+        assert detect_categories("Take-home pay was low this month.") == [
+            "Salary/compensation information"
+        ]
+
+    def test_hungarian_fizetes_with_suffix(self):
+        assert detect_categories("Kérem közölje a fizetését.") == [
+            "Salary/compensation information"
+        ]
+
+    def test_hungarian_jovedelem_with_suffix(self):
+        assert detect_categories("A jövedelme magas volt.") == [
+            "Salary/compensation information"
+        ]
+
+    def test_german_gehalt(self):
+        assert detect_categories("Bitte teilen Sie mir Ihr Gehalt mit.") == [
+            "Salary/compensation information"
+        ]
+
+    def test_german_lohn_compound(self):
+        assert detect_categories("Die Lohnabrechnung liegt bei.") == [
+            "Salary/compensation information"
+        ]
+        assert detect_categories("Er hat ein Nettolohn von 3000 Euro.") == [
+            "Salary/compensation information"
+        ]
+
+    def test_german_lohnend_is_not_flagged(self):
+        # "lohnend" (worthwhile) shares the "Lohn" prefix but isn't a salary
+        # compound -- the pattern only matches known suffixes, not \w*.
+        assert detect_categories("Das war wirklich lohnend.") == []
+
+
 class TestGermanPatterns:
     def test_tax_id_with_label(self):
         assert detect_categories("Steuer-IdNr. 65 929 970 489") == ["German tax ID (Steuer-IdNr.)"]
