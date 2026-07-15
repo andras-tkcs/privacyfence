@@ -18,6 +18,15 @@ confluence:
   seed_page_id: ""
   seed_page_title: "PrivacyFence QA seed page [QATEST]"
 
+jira:
+  # docs/qa-environment-setup.md §9
+  project_key: PFQA
+  # Leave blank to resolve by a JQL summary search instead (one extra API
+  # call per run). Fill in once known, to make --record faster and more
+  # precise.
+  seed_issue_key: ""
+  seed_issue_summary: "PrivacyFence QA seed issue [QATEST]"
+
 # Other connectors follow the same shape once
 # scripts/qa_fixture_recorder.py grows a check_<connector>() for them --
 # see that script's CONNECTOR_CHECKS registry and

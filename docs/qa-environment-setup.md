@@ -444,6 +444,20 @@ also means the *success* path never gets exercised unless you seed some data:
       and you want this exercised, add any custom field (e.g. a number field called "Story
       Points"); otherwise the test prompt skips that step as a fixture-availability limitation, not
       a regression
+- [ ] **For `scripts/qa_fixture_recorder.py`** (the local fixture recorder — see
+      [`external-api-contract-testing.md`](external-api-contract-testing.md)), as opposed to the
+      manual `connector-qa-testing.md` process above: create one dedicated seed issue in `PFQA`,
+      with synthetic content, tagged so the recorder can find it and confirm it's the right one
+      before recording anything from it:
+      ```
+      Summary:     PrivacyFence QA seed issue [QATEST]
+      Description: Synthetic PrivacyFence QA test issue. No real information. Safe to comment on,
+                   update, or transition by any automated test.
+      ```
+  - [ ] Fill in its issue key (or leave blank to resolve by a JQL summary search — one extra API
+        call per run) under `jira.seed_issue_key` in `tests/fixtures/qa_environment.yaml`
+  - Note: same narrower requirement as Confluence's equivalent step — the recorder only ever reads
+    this one issue, by key/summary and the `[QATEST]` tag, never "any issue in `PFQA`."
 
 ## 10. Confluence
 
@@ -484,7 +498,7 @@ also means the *success* path never gets exercised unless you seed some data:
   - Note: this is a narrower requirement than the steps above — the recorder only ever reads this
     one page, by ID/title and the `[QATEST]` tag, never "any page in `PFQA`" — see
     `external-api-contract-testing.md`'s "Guardrail against recording the wrong thing" for why.
-    Only Confluence has recorder support today (`scripts/qa_fixture_recorder.py`'s
+    Only Confluence and Jira have recorder support today (`scripts/qa_fixture_recorder.py`'s
     `CONNECTOR_CHECKS`); other connectors will need the same kind of tagged seed artifact once
     they're wired in — this section is the pattern to follow when that happens, not a one-off.
 
@@ -638,6 +652,7 @@ would find, headlessly, without needing a live Claude session first.
 | Salesforce QA object type | `salesforce.read_record` → `approved_object_types` (falls back to `Account`) | `settings.yaml` |
 | Jira QA project | Literal key `PFQA` | — |
 | Jira contrast project | Any project key that isn't `PFQA` | `jira_list_projects` |
+| Jira recorder seed issue | Summary tag `[QATEST]` in `PFQA` (only used by `scripts/qa_fixture_recorder.py`) | `tests/fixtures/qa_environment.yaml` |
 | Confluence QA space | Literal key `PFQA` | — |
 | Confluence contrast space | Any space key that isn't `PFQA` | `confluence_list_spaces` |
 | Confluence recorder seed page | Title tag `[QATEST]` in `PFQA` (only used by `scripts/qa_fixture_recorder.py`) | `tests/fixtures/qa_environment.yaml` |

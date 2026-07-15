@@ -50,6 +50,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from privacyfence import daemon_main  # noqa: E402
 from privacyfence.confluence_client import ConfluenceClient, ConfluenceClientError  # noqa: E402
+from privacyfence.jira_client import JiraClient, JiraClientError  # noqa: E402
 
 FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures" / "live"
 MANIFEST_PATH = REPO_ROOT / "tests" / "fixtures" / "qa_environment.yaml"
@@ -196,21 +197,32 @@ class RawCapture:
 
 
 # ---------------------------------------------------------------------------- #
-# Confluence -- the reference implementation. Other connectors follow the
-# same shape (build the real *_client.py from TOKEN_FILES, call its
-# targeted read methods against a manifest-declared seed artifact, redact,
-# record) but aren't wired up yet -- see connector_check() below.
+# Atlassian (Jira + Confluence) -- one OAuth grant, one token file, shared by
+# both clients exactly as daemon_main.py shares it. Both funnel every call
+# through a single self._request(fn, *a, **kw) choke point, which is what
+# RawCapture relies on -- a connector without that shape (most of the rest;
+# see CONNECTOR_CHECKS below) needs its own capture mechanism, not just a
+# new check_<connector>() function.
 # ---------------------------------------------------------------------------- #
 
-def _build_confluence_client() -> ConfluenceClient:
+def _load_atlassian_config() -> tuple[dict[str, Any], str]:
     org_config = daemon_main.load_org_config()
     atlassian_org = org_config.get("atlassian") or {}
     if not atlassian_org.get("client_id"):
         raise SystemExit("Atlassian organization config not installed -- run Authenticate… in the menu bar first.")
     token_path = daemon_main._resolve_path(daemon_main.TOKEN_FILES["atlassian"])
     token = daemon_main.load_atlassian_token(token_path)
-    config = {**atlassian_org, **(token or {})}
+    return {**atlassian_org, **(token or {})}, token_path
+
+
+def _build_confluence_client() -> ConfluenceClient:
+    config, token_path = _load_atlassian_config()
     return ConfluenceClient(config=config, token_file=token_path)
+
+
+def _build_jira_client() -> JiraClient:
+    config, token_path = _load_atlassian_config()
+    return JiraClient(config=config, token_file=token_path)
 
 
 def check_confluence(record: bool, manifest: dict[str, Any]) -> list[CheckResult]:
@@ -261,8 +273,70 @@ def check_confluence(record: bool, manifest: dict[str, Any]) -> list[CheckResult
     return results
 
 
+def check_jira(record: bool, manifest: dict[str, Any]) -> list[CheckResult]:
+    cfg = manifest.get("jira") or {}
+    project_key = cfg.get("project_key", "PFQA")
+    seed_issue_key = cfg.get("seed_issue_key", "")
+    seed_issue_summary = cfg.get("seed_issue_summary", f"PrivacyFence QA seed issue {QATEST_TAG}")
+
+    results: list[CheckResult] = []
+    client = _build_jira_client()
+
+    # list_projects -- JiraClient.list_projects() returns a plain list, not
+    # Confluence's {"results": [...]} envelope; only ever recorded filtered
+    # to the one QA project, never every real project on the site.
+    try:
+        with RawCapture(client) as cap:
+            projects = client.list_projects(max_results=250)
+        match = next((p for p in projects if p.key == project_key), None)
+        ok = match is not None
+        note = "found" if ok else f"project key {project_key!r} not in list_projects() result"
+        raw = None
+        if record and ok and isinstance(cap.captured, list):
+            raw = redact([p for p in cap.captured if p.get("key") == project_key])
+        results.append(CheckResult("jira", "list_projects", project_key, ok, note, raw, "list_projects.json"))
+    except JiraClientError as exc:
+        results.append(CheckResult("jira", "list_projects", project_key, False, str(exc)))
+
+    # get_issue -- targeted at the seed issue's key if the manifest has it,
+    # otherwise resolved once via a JQL search scoped to project + summary.
+    try:
+        if seed_issue_key:
+            with RawCapture(client) as cap:
+                issue = client.get_issue(seed_issue_key)
+        else:
+            found = client.search_issues(
+                f'project = {project_key} AND summary ~ "{seed_issue_summary}"', max_results=1,
+            )
+            if not found:
+                raise JiraClientError(
+                    f"no issue found matching summary {seed_issue_summary!r} in {project_key!r}"
+                )
+            with RawCapture(client) as cap:
+                issue = client.get_issue(found[0].key)
+        tagged = QATEST_TAG in issue.summary
+        # assignee is legitimately "(unassigned)"/empty on a fresh seed issue
+        # -- not part of the completeness check, unlike Confluence's author,
+        # which the client always populates from a real accountId.
+        complete = bool(issue.key and issue.summary and issue.status)
+        ok = tagged and complete
+        if not tagged:
+            note = f"fetched issue summary {issue.summary!r} does not carry {QATEST_TAG} -- refusing to record"
+        elif not complete:
+            note = "missing popup field(s) -- key/summary/status not all present"
+        else:
+            note = "key, summary, status all present"
+        raw = redact(cap.captured) if (record and ok and isinstance(cap.captured, dict)) else None
+        results.append(CheckResult("jira", "get_issue", seed_issue_summary, ok, note, raw, "get_issue.json"))
+    except JiraClientError as exc:
+        results.append(CheckResult("jira", "get_issue", seed_issue_summary, False, str(exc)))
+
+    return results
+
+
 CONNECTOR_CHECKS: dict[str, Callable[[bool, dict[str, Any]], list[CheckResult]]] = {
     "confluence": check_confluence,
+    "jira": check_jira,
 }
 
 

@@ -88,14 +88,20 @@ credential store, no separate accounts.
 directly rather than a full gated `Connector`, since it only ever calls a small, curated set of
 **targeted, read-only** methods per connector: always by the specific ID/key of a
 `qa-environment-setup.md` seed artifact (read from the non-secret manifest below), never a blanket
-list/search call kept for its own sake. Implemented today: **Confluence**, as the reference
-connector (see `CONNECTOR_CHECKS` in the script for the pattern — the others follow the same shape
-but aren't wired up yet):
+list/search call kept for its own sake. Implemented today: **Confluence and Jira** — both funnel
+every client call through the same `self._request(fn, *a, **kw)` choke point (same author, same
+Atlassian OAuth grant, same `RawCapture` mechanism unmodified). The rest don't share that shape —
+Salesforce has an analogous single choke point (`_call`) but with a different signature; Gmail,
+Drive, Calendar, Contacts, and Tasks each call `googleapiclient`'s `.execute()` inline per method
+with no shared wrapper at all; Slack does its own per-method pagination inline; Telegram's client is
+fully `async`, which the recorder (currently synchronous end to end) can't drive without also
+becoming async. Each needs its own capture mechanism, not just a new `check_<connector>()` — see the
+comment above `CONNECTOR_CHECKS` in the script:
 
 ```bash
 python3 scripts/qa_fixture_recorder.py --check                    # every implemented connector
-python3 scripts/qa_fixture_recorder.py --check confluence         # just this one
-python3 scripts/qa_fixture_recorder.py --record confluence        # re-record its fixtures
+python3 scripts/qa_fixture_recorder.py --check confluence jira    # just these two
+python3 scripts/qa_fixture_recorder.py --record jira              # re-record its fixtures
 python3 scripts/qa_fixture_recorder.py --check --report-file r.md # also save the report to a file
 ```
 
@@ -234,8 +240,8 @@ scripts/
 1. **Field-completeness helper** (`assert_no_placeholder_fields`) — ship immediately, no dependency
    on anything else here; wire into Confluence's connector tests first.
 2. **`qa-environment-setup.md` seed artifacts** — create the tagged synthetic content per connector,
-   added as a step alongside that connector's existing fixtures (e.g. Confluence §10 step 6) rather
-   than as a separate doc — only Confluence has this today.
+   added as a step alongside that connector's existing fixtures (e.g. Confluence §10, Jira §9)
+   rather than as a separate doc — only Confluence and Jira have this today.
 3. **`scripts/qa_fixture_recorder.py`** (`--check` mode only, to start) — prove the tool can
    authenticate and call every connector's targeted read methods successfully, before it ever writes
    a fixture file.
@@ -249,16 +255,22 @@ scripts/
 6. **Optional staleness reminder workflow** — whenever convenient; it's decoupled from everything
    else and adds no risk.
 
-**Status**: 1, 2, and 5 are done for Confluence (`assert_no_placeholder_fields` in
-`tests/helpers.py`, `TestFieldCompleteness` in `test_confluence_connector.py`,
-`TestLiveFixtureParsing` in `test_confluence_client.py`, skipped until a real fixture exists). 3
-and 4 shipped together rather than staged, since the guardrail and redaction logic weren't
-separable in practice from the recording code path itself — `scripts/qa_fixture_recorder.py`
-implements `--check`/`--record` for Confluence now, with `CONNECTOR_CHECKS` as the extension point
-for the rest. No real fixture has been recorded yet (requires a real, authenticated account and a
-seed page per `qa-environment-setup.md` §10 — something this can't be done from a sandboxed
-environment); `tests/fixtures/qa_environment.yaml` ships with `qa-environment-setup.md`'s
-placeholder values, ready to fill in. Step 6 hasn't started.
+**Status**: 1, 2, and 5 are done for **Confluence and Jira** (`assert_no_placeholder_fields` in
+`tests/helpers.py`; `TestFieldCompleteness` in `test_confluence_connector.py` and
+`test_jira_connector.py`; `TestLiveFixtureParsing` in `test_confluence_client.py` and
+`test_jira_client.py`, skipped until a real fixture exists for each). 3 and 4 shipped together
+rather than staged, since the guardrail and redaction logic weren't separable in practice from the
+recording code path itself — `scripts/qa_fixture_recorder.py` implements `--check`/`--record` for
+both now, with `CONNECTOR_CHECKS` as the extension point for the rest (verified against mocked
+Atlassian responses, including the guardrail correctly refusing an untagged/stale-ID fetch for
+each — see the script's own comments for what was actually exercised). No real fixture has been
+recorded for either yet (requires a real, authenticated account and a seed artifact per
+`qa-environment-setup.md` §9/§10 — something this can't be done from a sandboxed environment);
+`tests/fixtures/qa_environment.yaml` ships with both connectors' placeholder values, ready to fill
+in. Salesforce is the next candidate — it has a single choke point (`_call`) analogous to
+`_request`, just a different signature, so `RawCapture` needs a small variant rather than a new
+mechanism; the Google connectors, Slack, and Telegram each need real, connector-specific work (see
+above). Step 6 hasn't started.
 
 No step in this plan requires provisioning any credential to GitHub, CI, or any cloud service.
 
