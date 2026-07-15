@@ -145,6 +145,20 @@ class TestAutoTools:
             "building_id": "HQ", "floor_name": "3", "capacity": 10, "description": "Big room",
         }]
 
+    async def test_get_event_visibility_auto_accepts_and_returns_only_visibility(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        client.get_event.return_value = make_event(visibility="private")
+
+        result = await connector.call(
+            "calendar_get_event_visibility", {"calendar_id": "primary", "event_id": "e1"}
+        )
+
+        assert result == {"visibility": "private"}
+        entries = (tmp_path / f"{current_week()}.jsonl").read_text(encoding="utf-8").splitlines()
+        assert '"decision": "auto_accepted"' in entries[0]
+        client.get_event.assert_called_once_with("primary", "e1")
+
 
 class TestGetEventDetails:
     async def test_preview_excludes_description_and_full_attendees(self, gated_call_spy):
@@ -493,6 +507,77 @@ class TestSetWorkingLocation:
         assert "title" not in result
 
 
+class TestSetEventVisibility:
+    async def test_preview_shows_visibility_transition(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_event.return_value = make_event(visibility="default")
+        client.set_event_visibility.return_value = make_event(visibility="private")
+
+        await connector.call(
+            "calendar_set_event_visibility",
+            {"calendar_id": "primary", "event_id": "e1", "visibility": "private"},
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["gate"] == "popup"
+        assert kwargs["preview"]["Visibility"] == "default → private"
+        assert kwargs["preview"]["Event"] == "Q3 Planning"
+        client.set_event_visibility.assert_called_once_with("primary", "e1", "private")
+
+    async def test_value_normalized_before_gating(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_event.return_value = make_event()
+        client.set_event_visibility.return_value = make_event(visibility="public")
+
+        await connector.call(
+            "calendar_set_event_visibility",
+            {"calendar_id": "primary", "event_id": "e1", "visibility": "  PUBLIC  "},
+        )
+
+        assert gated_call_spy[0]["args"]["visibility"] == "public"
+        client.set_event_visibility.assert_called_once_with("primary", "e1", "public")
+
+    async def test_invalid_visibility_rejected_before_gate(self, gated_call_spy):
+        connector, client = make_connector()
+
+        with pytest.raises(ValueError, match="visibility must be one of"):
+            await connector.call(
+                "calendar_set_event_visibility",
+                {"calendar_id": "primary", "event_id": "e1", "visibility": "hidden"},
+            )
+
+        assert gated_call_spy == []
+        client.get_event.assert_not_called()
+        client.set_event_visibility.assert_not_called()
+
+    async def test_result_shape(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_event.return_value = make_event()
+        client.set_event_visibility.return_value = make_event(id="e1", visibility="private")
+
+        result = await connector.call(
+            "calendar_set_event_visibility",
+            {"calendar_id": "primary", "event_id": "e1", "visibility": "private"},
+        )
+
+        assert result == {"id": "e1", "title": "Q3 Planning", "visibility": "private"}
+
+    async def test_raw_data_carries_organizer_for_auto_accept_rules(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_event.return_value = make_event(organizer_email="alice@example.com")
+        client.set_event_visibility.return_value = make_event()
+
+        await connector.call(
+            "calendar_set_event_visibility",
+            {"calendar_id": "primary", "event_id": "e1", "visibility": "private"},
+        )
+
+        assert gated_call_spy[0]["raw_data"]["organizer_email"] == "alice@example.com"
+        assert gated_call_spy[0]["args"] == {
+            "calendar_id": "primary", "event_id": "e1", "visibility": "private",
+        }
+
+
 class TestFetchErrorMapping:
     async def test_calendar_client_error_becomes_runtime_error(self):
         connector, client = make_connector()
@@ -505,4 +590,16 @@ class TestFetchErrorMapping:
 class TestEveryToolIsAudited:
     async def test_every_declared_tool_leaves_an_audit_trail(self, monkeypatch, tmp_path):
         connector, client = make_connector()
-        await assert_all_tools_leave_an_audit_trail(connector, calendar_module, monkeypatch, tmp_path)
+        # calendar_get_event_visibility is auto-audited (real JSON
+        # serialization, unlike the gated_call stub) and reads event.visibility
+        # into the audit "sender" field -- a bare MagicMock isn't serializable.
+        client.get_event.return_value = make_event()
+
+        await assert_all_tools_leave_an_audit_trail(
+            connector, calendar_module, monkeypatch, tmp_path,
+            arg_overrides={
+                # visibility must be one of VALID_VISIBILITIES -- validated
+                # before gating.
+                "calendar_set_event_visibility": {"visibility": "private"},
+            },
+        )

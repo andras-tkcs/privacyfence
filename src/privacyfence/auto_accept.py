@@ -21,8 +21,15 @@ logger = logging.getLogger(__name__)
 TEMP_ACCEPT_ELIGIBLE_OPERATIONS: dict[str, str] = {
     "sheets.write_range": "spreadsheet_id",
     "sheets.format_range": "spreadsheet_id",
+    "sheets.insert_dimensions": "spreadsheet_id",
     "drive.comment_file": "file_id",
+    "docs.edit_content": "file_id",
+    "docs.format_content": "file_id",
 }
+# sheets.delete_dimensions is deliberately absent: unlike insert/format, it
+# removes cell content with no undo path through PrivacyFence, so it only
+# gets the standing-rule treatment below (like sheets.add_sheet /
+# sheets.rename_sheet), never the lighter-weight temp accept.
 
 TEMP_ACCEPT_TTL_SECONDS = 300
 
@@ -52,6 +59,10 @@ TOOL_TO_OPERATION: dict[str, str] = {
     "drive_sheets_add_sheet":         "sheets.add_sheet",
     "drive_sheets_rename_sheet":      "sheets.rename_sheet",
     "drive_sheets_format_range":      "sheets.format_range",
+    "drive_sheets_insert_dimensions": "sheets.insert_dimensions",
+    "drive_sheets_delete_dimensions": "sheets.delete_dimensions",
+    "drive_docs_edit_content":        "docs.edit_content",
+    "drive_docs_format_content":      "docs.format_content",
     "slack_get_channel_history":      "slack.read_messages",
     "slack_get_thread_replies":       "slack.read_messages",
     "slack_search_messages":          "slack.read_messages",
@@ -61,8 +72,10 @@ TOOL_TO_OPERATION: dict[str, str] = {
     "calendar_update_event":          "calendar.create_modify_event",
     "calendar_create_out_of_office":  "calendar.out_of_office",
     "calendar_set_working_location":  "calendar.working_location",
+    "calendar_set_event_visibility":  "calendar.set_visibility",
     "salesforce_get_record":          "salesforce.read_record",
     "salesforce_run_report":          "salesforce.run_report",
+    "salesforce_search":              "salesforce.search",
     "contacts_update":                "contacts.edit",
     "contacts_create":                "contacts.create",
     "contacts_add_label":             "contacts.add_label",
@@ -355,12 +368,35 @@ class AutoAcceptEvaluator:
         raw = ctx.raw_data
         return not bool(getattr(raw, "conference_link", "") or getattr(raw, "hangout_link", ""))
 
+    def _rule_non_private_event(self, _v, ctx):
+        """Auto-accept when the event involved is not marked private.
+
+        calendar_set_event_visibility's args always carry the visibility
+        being requested -- that's the state being approved, not whatever the
+        event's prior visibility was. Every other calendar operation this
+        applies to (currently calendar_get_event_details) has no
+        "visibility" arg, so it falls back to the event's current
+        visibility on ctx.raw_data.
+        """
+        visibility = ctx.args.get("visibility")
+        if visibility is None:
+            visibility = getattr(ctx.raw_data, "visibility", None)
+        return (visibility or "default") != "private"
+
     # ── Salesforce ────────────────────────────────────────────────────────
 
     def _rule_approved_object_types(self, value, ctx):
+        """Match a single approved object_type (salesforce.read_record) or,
+        for salesforce.search's comma-separated object_types, only when
+        every object type the search actually touches is on the allowlist —
+        a partial match would auto-accept a search that also reaches an
+        unapproved object type."""
         if not value:
             return False
         allowed = {v.lower() for v in (value if isinstance(value, list) else [value])}
+        if "object_types" in ctx.args:
+            requested = [t.strip().lower() for t in (ctx.args.get("object_types") or "").split(",") if t.strip()]
+            return bool(requested) and all(t in allowed for t in requested)
         return ctx.args.get("object_type", "").lower() in allowed
 
     def _rule_approved_report_ids(self, value, ctx):
@@ -586,11 +622,21 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
             all_internal = all(ctx.my_domain in _attendee_email(a) for a in attendees)
             if all_internal:
                 return ("no_external_attendees", None)
+        visibility = getattr(ctx.raw_data, "visibility", "default") or "default"
+        if visibility != "private":
+            return ("non_private_event", None)
         return None
 
     if operation_key == "salesforce.read_record":
         object_type = ctx.args.get("object_type", "")
         return ("approved_object_types", [object_type]) if object_type else None
+
+    if operation_key == "salesforce.search":
+        object_types = [t.strip() for t in (ctx.args.get("object_types") or "").split(",") if t.strip()]
+        # An unscoped search reaches Salesforce's whole default set of
+        # globally-searchable objects -- too broad to derive a narrow rule
+        # from, the same reasoning gmail_create_filter has no rule at all.
+        return ("approved_object_types", object_types) if object_types else None
 
     if operation_key == "jira.read_issue":
         raw = ctx.raw_data
@@ -631,6 +677,7 @@ _RULE_DESCRIPTIONS: dict[str, str] = {
     "approved_channel":      "Slack reads in channel(s): {value}",
     "i_am_organizer":        "Calendar event reads for events you organize",
     "no_external_attendees": "Calendar event reads with no external attendees",
+    "non_private_event":     "Calendar event reads/writes where the event is not marked private",
     "approved_object_types": "Salesforce record reads for object type(s): {value}",
     "i_am_reporter":         "Jira issue reads where you are the reporter",
     "i_am_assignee":         "Jira issue reads where you are the assignee",
