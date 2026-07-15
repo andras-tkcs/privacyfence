@@ -345,11 +345,93 @@ class TestRunReport:
         )
 
 
+class TestSearch:
+    async def test_preview_and_gate(self, gated_call_spy):
+        connector, client = make_connector()
+        client.search.return_value = [
+            SalesforceRecord(object_type="Opportunity", id="006x", fields={"Id": "006x", "Name": "Big Deal"}),
+        ]
+
+        result = await connector.call("salesforce_search", {"search_term": "Big Deal"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["gate"] == "review"
+        assert kwargs["preview"] == {
+            "Search term": "Big Deal", "Object types": "(default)", "Results": "1",
+        }
+        assert "Account ID" not in kwargs["preview"]
+        assert kwargs["args"] == {"search_term": "Big Deal", "object_types": "", "account_id": ""}
+        client.search.assert_called_once_with("Big Deal", "", "", 20)
+        assert result == [{"object_type": "Opportunity", "id": "006x", "fields": {"Id": "006x", "Name": "Big Deal"}}]
+
+    async def test_details_list_one_match_per_line(self, gated_call_spy):
+        connector, client = make_connector()
+        client.search.return_value = [
+            SalesforceRecord(object_type="Opportunity", id="006x", fields={"Name": "Big Deal"}),
+            SalesforceRecord(object_type="Contact", id="003y", fields={"Name": "Jane Doe"}),
+        ]
+
+        await connector.call("salesforce_search", {"search_term": "a"})
+
+        details = gated_call_spy[0]["details_text"]
+        assert "Opportunity — Big Deal (id=006x)" in details
+        assert "Contact — Jane Doe (id=003y)" in details
+
+    async def test_no_matches_shows_placeholder(self, gated_call_spy):
+        connector, client = make_connector()
+        client.search.return_value = []
+
+        await connector.call("salesforce_search", {"search_term": "nothing"})
+
+        assert gated_call_spy[0]["details_text"] == "(no matches)"
+
+    async def test_missing_name_field_falls_back_to_placeholder(self, gated_call_spy):
+        connector, client = make_connector()
+        client.search.return_value = [SalesforceRecord(object_type="Task", id="00T1", fields={})]
+
+        await connector.call("salesforce_search", {"search_term": "x"})
+
+        assert "(no name)" in gated_call_spy[0]["details_text"]
+
+    async def test_account_id_shown_in_preview_and_passed_to_client(self, gated_call_spy):
+        connector, client = make_connector()
+        client.search.return_value = []
+
+        await connector.call(
+            "salesforce_search",
+            {"search_term": "Acme", "object_types": "Opportunity", "account_id": "001xx0000012345"},
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview"]["Account ID"] == "001xx0000012345"
+        client.search.assert_called_once_with("Acme", "Opportunity", "001xx0000012345", 20)
+
+    async def test_account_id_without_object_types_rejected_before_gate(self, gated_call_spy):
+        connector, client = make_connector()
+
+        with pytest.raises(ValueError, match="account_id requires object_types"):
+            await connector.call(
+                "salesforce_search", {"search_term": "Acme", "account_id": "001xx0000012345"}
+            )
+
+        assert gated_call_spy == []
+        client.search.assert_not_called()
+
+    async def test_client_error_becomes_runtime_error(self):
+        connector, client = make_connector()
+        client.search.side_effect = SalesforceClientError("MALFORMED_QUERY")
+
+        with pytest.raises(RuntimeError, match="MALFORMED_QUERY"):
+            await connector.call("salesforce_search", {"search_term": "x"})
+
+
 class TestEveryToolIsAudited:
     async def test_every_declared_tool_leaves_an_audit_trail(self, monkeypatch, tmp_path):
         connector, client = make_connector()
-        # get_record's result is asdict()'d unconditionally, so it needs a
-        # real SalesforceRecord -- a bare MagicMock isn't a dataclass instance.
+        # get_record's/search's results are asdict()'d unconditionally, so
+        # they need real SalesforceRecord instances -- a bare MagicMock
+        # isn't a dataclass instance.
         client.get_record.return_value = SalesforceRecord(object_type="Account", id="001", fields={})
+        client.search.return_value = [SalesforceRecord(object_type="Account", id="001", fields={})]
 
         await assert_all_tools_leave_an_audit_trail(connector, salesforce_module, monkeypatch, tmp_path)

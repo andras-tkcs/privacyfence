@@ -35,6 +35,9 @@ combination only breaks for non-ASCII input.
   provider's API itself has moved out from under it.
 - Whenever you want to sanity-check that the *documented* gate for a tool
   (the Technical Reference's connector tables) still matches its *actual* gate in source.
+- After any change to `privacyfence_check_policy` or unattended-session mode (Phase 11) — these
+  bypass connector clients entirely, so a connector-client mock can't catch a regression there
+  either; only a live daemon actually proves a call denies without ever opening a popup.
 
 ## Prerequisites
 
@@ -123,7 +126,7 @@ Ground rules:
   "safe to ignore/delete" somewhere in the body. Never edit or send anything real.
 - Everything durable this run creates (drafts, files, events, issues, pages,
   contacts, tasks…) must go in the running manifest table described below, tagged
-  with `{RUN_ID}` — Phase 11 (teardown) depends on that manifest to find and remove
+  with `{RUN_ID}` — Phase 12 (teardown) depends on that manifest to find and remove
   them, and future runs depend on it to tell "this run's" artifacts apart from a
   previous run's leftovers.
 - Prefer QA-owned destinations over guessing at real ones: the Drive "PrivacyFence
@@ -175,23 +178,23 @@ Ground rules:
   popup) | my decision | audit-log decision | notes`. Leave
   the `audit-log decision` column blank for now — don't guess it, don't ask me
   for it mid-run, and don't try to read the log file yourself during the run.
-  Phase 12, the very last phase, is where that column gets filled in: I'll
+  Phase 13, the very last phase, is where that column gets filled in: I'll
   attach the current week's audit log to the conversation at that point, and
   you'll go back through this table and fill in every row's actual logged
   `accepted` / `denied` / `auto_accepted` value from the attached file, matching
   entries by timestamp and tool/operation name. Print the full table (still
   with the column blank) at the end of each phase as normal; the populated
-  version only appears once, in the Phase 12 / final report.
+  version only appears once, in the Phase 13 / final report.
 - Keep a second running table, the manifest: `connector | artifact | id | {RUN_ID}
   tag | deletable via tool? (yes/no)`. Print it at the very end too, split into
-  "cleaned up in Phase 11" vs. "needs manual deletion."
+  "cleaned up in Phase 12" vs. "needs manual deletion."
 
 I (the human) will be watching for the approval prompts as they appear. Most
 steps expect a plain Accept and you can just make the call. The ones marked
 **"pause here"** expect something else (Deny / Accept All) —
 for those, stop and wait for my go-ahead as the ground rules above describe,
 *then* call the tool, then report back what actually happened in the tool
-result and write it into the table as provisional — Phase 12's audit-log
+result and write it into the table as provisional — Phase 13's audit-log
 reconciliation, not this step, is what turns it from "reported" into
 "settled."
 
@@ -264,7 +267,7 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
    click Deny this time**, then wait for me to say go. Once I do, make the
    call and confirm you get an error, not data — and don't fabricate a
    fallback answer. Record the raw error in the table and flag this row for
-   Phase 12: whether it was actually `denied` versus a size-truncation error
+   Phase 13: whether it was actually `denied` versus a size-truncation error
    with a different underlying cause isn't decidable from the tool result
    alone, so don't guess it now.
 4. Pick a message that has a thread with 2+ messages. Call `gmail_get_thread`
@@ -307,7 +310,7 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
     `gmail_list_messages` (silent) with query `label:"PrivacyFence QA {RUN_ID}"`
     and confirm zero results. After this step the label-test message is back
     exactly where it started — still in the inbox, with no leftover label —
-    so there's nothing to add to the manifest or clean up for it in Phase 11.
+    so there's nothing to add to the manifest or clean up for it in Phase 12.
 13. `gmail_list_labels` (expect: silent, no prompt). Confirm the response
     includes both system labels (e.g. `INBOX`) and any user labels, each with
     an `id`/`name`/`type`.
@@ -317,7 +320,7 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
     `PrivacyFence QA {RUN_ID}` parent segment first, then the child — call
     `gmail_list_labels` again (silent) and confirm **both** segments now
     exist as separate labels. Add the parent label name to the manifest
-    (no delete tool — see Phase 11).
+    (no delete tool — see Phase 12).
 15. `gmail_create_label` again with the **exact same** nested name from step
     14. This should fail with a "label already exists" error rather than
     prompting a popup — `create_label` raises before ever reaching the gate,
@@ -328,7 +331,7 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
     action `add_label_names="PrivacyFence QA {RUN_ID}/Nested"` (reusing the
     label from step 14) plus `archive=true`. Popup, I'll Accept. Record the
     returned filter `id` and add it to the manifest (no delete tool — see
-    Phase 11).
+    Phase 12).
 18. `gmail_list_filters` (silent) and confirm the new filter appears with the
     `id` from step 17 and the criteria/action you set.
 19. `gmail_update_filter` on that `id`, changing `archive` to `false` and
@@ -356,9 +359,10 @@ in step 3, if you configured it.
    tell me either way. If no such rule exists, expect the normal review gate,
    Accept.
 4. `drive_write_file_content` on it, write a short test sentence — popup, Accept.
-5. `drive_add_comment` on it, any test comment. This is one of the three write
-   ops with a temp-accept shortcut on its popup (the others are steps 13 and 16
-   below — see the Technical Reference's [Auto-accept rules](TECHNICAL_REFERENCE.md#auto-accept-rules)).
+5. `drive_add_comment` on it, any test comment. This is one of six write ops
+   with a temp-accept shortcut on its popup (the others are steps 13, 16, 24,
+   27, and 28 below — see the Technical Reference's
+   [Auto-accept rules](TECHNICAL_REFERENCE.md#auto-accept-rules)).
    **Pause here**: tell me you're about to call it and that **I will click
    "Accept for 5 min"** this time, then wait for me to say go. Once I do, make
    the call, then immediately call `drive_add_comment` on the same file again
@@ -416,7 +420,7 @@ in step 3, if you configured it.
 
 Self-contained: this doesn't depend on any fixture from Phase 0 or
 `qa-environment-setup.md` — it creates its own throwaway subfolder and Google
-Doc, and Phase 11 tears both down. It deliberately does **not** reuse
+Doc, and Phase 12 tears both down. It deliberately does **not** reuse
 `{FIXTURES}.drive_qa_folder_id` as the doc's direct parent: that folder is
 what `drive.read_file_contents` → `approved_folder` (if you configured it)
 matches against, and an auto-accepted read never shows a popup at all — which
@@ -484,7 +488,7 @@ read of that same write's content) exist specifically to contrast the two.
     banner in step 19) against what `src/privacyfence/pii_detector.py`
     documents as supported, and flag anything that should have matched but
     didn't (or vice versa) as a finding, not something to silently reconcile.
-    Flag both rows for Phase 12: confirming `"pii_detected": false` for
+    Flag both rows for Phase 13: confirming `"pii_detected": false` for
     step 18's write and `"pii_detected": true` for step 19's read in the
     audit log is the one field-level proof of the write/read split,
     independent of the popup banner — do it there, not now.
@@ -523,7 +527,7 @@ configured it per `qa-environment-setup.md`.
     configured in this environment, say so plainly — this step can't
     distinguish "the override worked" from "there was no rule to override"
     in that case, so don't claim the override was proven either way.
-23. Flag step 22 for Phase 12: the field-level proof that the override fired,
+23. Flag step 22 for Phase 13: the field-level proof that the override fired,
     independent of whether the popup was visually confirmed, is its audit
     entry showing `"decision": "approved"` (not `"auto_accepted"`),
     `"auto_accept_rule": ""`, and `"pii_detected": true` — contrasted against
@@ -532,6 +536,64 @@ configured it per `qa-environment-setup.md`.
     `"pii_detected": false` regardless of the same fake-PII body, since
     writes are never scanned. Confirm all three once the log is attached, not
     now.
+
+### Sheets rows/columns and Docs partial edits (steps 24–31)
+
+Reuses the spreadsheet from step 10 and the Doc from step 7 — no new
+manifest entries needed, both are already tracked.
+
+24. `drive_sheets_insert_dimensions` — insert 1 row before index 0 in the
+    sheet from step 10. This is one of the temp-accept-eligible write ops
+    (see the Technical Reference's [Auto-accept rules](TECHNICAL_REFERENCE.md#auto-accept-rules)).
+    **Pause here**: tell me you're about to call it and that **I will click
+    "Accept for 5 min"** this time, then wait for me to say go. Once I do,
+    make the call, then immediately call `drive_sheets_insert_dimensions`
+    again on the same spreadsheet, this time inserting 1 column — this
+    second call should NOT prompt (silent, logged `auto_accepted` with rule
+    `session_temp_accept`). Tell me whether the second call prompted or not.
+25. `drive_sheets_delete_dimensions` — delete the row inserted in step 24.
+    Unlike step 24, this one has **no** temp-accept shortcut at all —
+    deleting rows/columns removes cell content with no undo path through
+    PrivacyFence, so it only ever gets a plain popup or a standing rule, not
+    "Accept for 5 min". Plain popup, Accept.
+26. Invalid-dimension check: call `drive_sheets_insert_dimensions` with
+    `dimension="sideways"` — expect a clear error naming `ROWS`/`COLUMNS` as
+    the valid values, raised **before** any popup appears. Confirm no popup
+    showed.
+27. `drive_docs_edit_content` on the Doc from step 7 — find a short, unique
+    phrase already in its body and replace it with new text tagged
+    `{RUN_ID}`. Also temp-accept-eligible. **Pause here**: tell me you're
+    about to call it and that **I will click "Accept for 5 min"**, then wait
+    for go. Once I do, make the call, then immediately call
+    `drive_docs_edit_content` again on the **same Doc**, replacing a
+    different short phrase — this second call should NOT prompt (silent,
+    `auto_accepted`, `session_temp_accept`). Tell me whether it prompted.
+28. `drive_docs_format_content` on the same Doc — apply `highlight_color`
+    (e.g. `#fff59d`) to a short existing phrase. Same temp-accept pattern,
+    and its own separate 5-minute window (temp-accept is scoped per
+    operation, not per file — accepting it for `docs_edit_content` in step
+    27 does **not** cover this call): **pause here**, tell me you're about
+    to call it and that **I will click "Accept for 5 min"**, wait for go,
+    call it, then immediately call it again on the same Doc with `bold`
+    instead — should NOT prompt the second time. Open the Doc in Google
+    Docs and confirm the highlighted span actually renders highlighted.
+29. Ambiguous-match check: call `drive_docs_edit_content` (or
+    `drive_docs_format_content`) on the same Doc with `find_text` set to
+    something that now matches more than one location (e.g. a short common
+    word already repeated in the body) and `replace_all` left at its
+    default `false` — expect a clear error stating how many locations
+    matched and instructing to add more context or set `replace_all=true`,
+    not a silent guess at which occurrence was meant. Then retry the same
+    call with `replace_all=true` and confirm every occurrence changed.
+30. `drive_write_doc_content` on the same Doc, writing entirely fresh
+    content (plain text is fine). Confirm everything from steps 27–29 is
+    now gone — this proves the full-rewrite tool is unchanged, and that
+    steps 27–28's partial edits really were additive, not a new default
+    behavior for `drive_write_doc_content` itself.
+31. Highlight-syntax check: `drive_write_doc_content` again on the same
+    Doc, with a body containing `==highlighted text==` somewhere. Popup,
+    Accept. Open the Doc in Google Docs and confirm that span renders with
+    a highlight background, the same as step 28's did.
 
 ## Phase 3 — Slack
 1. `slack_list_channels` (expect: silent).
@@ -592,6 +654,33 @@ configured it per `qa-environment-setup.md`.
 10. `calendar_set_working_location` again for the same date with
     `location="home"` — confirm it overwrites the office entry from step 9
     rather than adding a second one.
+11. `calendar_get_event_visibility` on the event from step 3 (expect: silent,
+    auto — no popup at all, cheaper than the full `calendar_get_event_details`
+    fetch). Confirm the returned `visibility` is `"default"`.
+12. `calendar_set_event_visibility` on the same event, set to `"private"`.
+    Popup-gated, and — unlike Phase 2's Sheets/Docs write tools — this one
+    never gets a temp-accept shortcut either. If you configured
+    `calendar.set_visibility` → `non_private_event` per
+    `qa-environment-setup.md` §4, this call must **still** prompt regardless:
+    the rule checks the visibility being *requested*, and `"private"` never
+    matches it. Confirm that's what happened. Popup, Accept.
+13. `calendar_get_event_visibility` again on the same event (silent). Confirm
+    it now returns `"private"`.
+14. `calendar_set_event_visibility` again, this time to `"public"`. If
+    `calendar.set_visibility` → `non_private_event` is configured, this
+    should NOT prompt (the requested value isn't private) — tell me either
+    way.
+15. `calendar_get_event_details` on the same event, now that it's back to
+    `"public"`. You're still its organizer (from step 3), so `i_am_organizer`
+    may already short-circuit this if configured; if not, and
+    `calendar.read_event_details` → `non_private_event` is configured, it
+    should still auto-accept via that rule instead. Tell me which rule (if
+    any) actually matched — check the audit log in Phase 13 if it's not
+    obvious from the popup (or lack of one) alone.
+16. Invalid-visibility check: call `calendar_set_event_visibility` with
+    `visibility="hidden"` — expect a clear error naming the valid values
+    (`default`/`public`/`private`/`confidential`), raised **before** any
+    popup appears. Confirm no popup showed.
 
 ## Phase 5 — Contacts
 1. `contacts_list`, `contacts_search`, `contacts_get` (expect: all silent).
@@ -653,14 +742,14 @@ other connector's writes, each independently configurable via the
 2. `telegram_get_messages` on `{FIXTURES}.telegram_approved_chat_id` — **watch
    for a native approval popup and tell me explicitly whether you see one before I
    respond**, don't infer it from the tool result; I'll Accept if it appears.
-   Flag this row for Phase 12: the audit log's decision (`auto_accepted` vs
+   Flag this row for Phase 13: the audit log's decision (`auto_accepted` vs
    `accepted`) is what settles it if my own observation of the popup was
    ambiguous — check that once the log is attached, not now.
 3. `telegram_get_messages` on `{FIXTURES}.telegram_control_chat_id` (not in
    `approved_chats`) — same explicit "did a popup appear?" question, same
-   Phase 12 flag. I'll Accept.
+   Phase 13 flag. I'll Accept.
 4. `telegram_search_messages` with a query that matches the seed message from
-   setup — same explicit popup check, same Phase 12 flag.
+   setup — same explicit popup check, same Phase 13 flag.
 5. `telegram_send_message` to "Saved Messages"
    (`telegram_saved_messages_chat_id`), test text tagged `{RUN_ID}`. Popup,
    Accept.
@@ -680,6 +769,29 @@ other connector's writes, each independently configurable via the
    not `NOT_FOUND`.
 5. `salesforce_get_record` on a record of a *different* object type — should
    still prompt. Accept. (No write tools exist for Salesforce in this build.)
+6. `salesforce_search` — search for `PrivacyFence QA` scoped to
+   `object_types="Account"` (or `{FIXTURES}.salesforce_qa_object_type` if
+   that's `Account`). If you configured `salesforce.search` →
+   `approved_object_types` per `qa-environment-setup.md` §8 step 6, this
+   should NOT prompt — tell me either way. Confirm the sample records from
+   setup show up in the results. **Known quirk, not a bug:** if this comes
+   back empty and the sample records were created very recently, Salesforce's
+   SOSL search index may not have caught up yet — wait a minute and retry
+   before treating it as a finding.
+7. `salesforce_search` again, same query, but leave `object_types` empty
+   (unscoped — searches Salesforce's default globally-searchable objects).
+   This must still prompt regardless of the rule above: `approved_object_types`
+   only matches when every requested object type is on the allowlist, and an
+   unscoped search requests none in particular, so it never matches. Accept.
+8. Validation check: call `salesforce_search` with `account_id` set to any
+   valid-looking Salesforce ID but `object_types` left empty — expect a
+   clear error (`account_id requires object_types to be specified`), raised
+   **before** any popup appears. Confirm no popup showed.
+9. `salesforce_search` with `object_types="Opportunity"` (or another object
+   type that has an `AccountId` field) and `account_id` set to an Account ID
+   from step 6's results — confirm the results are limited to records
+   related to that account specifically (an empty list is a valid, expected
+   result if that account has no such related records — not a bug).
 
 ## Phase 9 — Jira
 1. `jira_list_projects`, `jira_search_issues` (expect: both silent).
@@ -730,7 +842,77 @@ other connector's writes, each independently configurable via the
    prompt, independent of the space rule. Tell me which rule (if any) matched.
 6. `confluence_update_page` on it, minor edit. Popup, Accept.
 
-## Phase 11 — Teardown
+## Phase 11 — Scheduled / unattended Cowork tasks
+
+Not a connector — this exercises `privacyfence_check_policy` and the unattended-session mode
+(`privacyfence_begin_unattended_session` / `privacyfence_end_unattended_session`), added for
+scheduled Cowork Routines that may run with nobody watching. See
+[`TECHNICAL_REFERENCE.md`](TECHNICAL_REFERENCE.md#scheduled--unattended-cowork-tasks). Unlike
+every phase above, this one needs a **daemon restart partway through**: `unattended_sessions.enabled` is read once at
+`run_app()` startup, not hot-reloaded like `auto_accept_rules`/`pii_detection.enabled` — there is
+no menu-bar toggle for it (deliberately: enabling it is meant to be a config-file edit an
+administrator makes, not a live daemon toggle).
+
+1. Confirm `unattended_sessions.enabled` is **absent or `false`** in `settings.yaml` right now (the
+   default). `privacyfence_check_policy` needs no such flag and works regardless — start there:
+2. `privacyfence_check_policy` on a tool you know is unconditionally `auto` (e.g.
+   `connector="gmail", tool="gmail_list_messages", args={}`). Expect `{"gate": "auto", "verdict":
+   "auto_accept", "matched_rule": null, ...}` with **no popup and no tool actually called**.
+3. `privacyfence_check_policy` on `connector="slack", tool="slack_get_channel_history"` with
+   `args={"channel_id": "<{FIXTURES}.slack_approved_channel>"}` (reuse Phase 3's fixture). If
+   `slack.read_messages` → `approved_channel` is configured, expect `{"gate": "review", "verdict":
+   "auto_accept", "matched_rule": "approved_channel", ...}`.
+4. Same call, but with `channel_id` set to `{FIXTURES}.slack_control_channel` instead (not on the
+   allowlist). Expect `{"verdict": "requires_review", "matched_rule": null, ...}` — the args-only
+   rule is fully evaluable and it doesn't match, so preflight can say so with certainty, not just
+   "unknown".
+5. `privacyfence_check_policy` on `connector="gmail", tool="gmail_get_message"` with any
+   `message_id`. This tool's rules (`i_am_sender`, `trusted_sender_domain`, etc.) all need the
+   actual fetched message to evaluate — expect `{"verdict": "unknown", ...}` with a `reason`
+   naming the undetermined rule(s), regardless of what's configured in `settings.yaml`.
+6. Confirm none of steps 2–5 produced a popup, called a connector, or changed anything — they're
+   pure preflight. If you want to double-check, note the current audit log line count before step
+   2 and after step 5: it should have grown by exactly 4 (one `policy_check` entry per call).
+7. `privacyfence_begin_unattended_session` — since `unattended_sessions.enabled` is still `false`/
+   absent, expect a clear error mentioning `unattended_sessions.enabled` in `settings.yaml`, **not**
+   a popup and **not** a partial success. Confirm the menu bar's top item still reads plain
+   "PrivacyFence is running" (no session count).
+8. Set `unattended_sessions.enabled: true` in `settings.yaml` and **restart the daemon** (not just
+   an "Accept All" hot-reload — see the note above). Reconnect the Cowork/Desktop session so its
+   bridge process talks to the freshly restarted daemon.
+9. `privacyfence_begin_unattended_session` again — expect `{"unattended": true}`, no popup. Check
+   the PrivacyFence menu bar now: the top item should read "PrivacyFence is running — 1 unattended
+   session active". **Pause here**: tell me you're about to call the next step's tool and that,
+   even though it's normally review/popup-gated, **you expect no popup to appear at all this
+   time** — instead the tool call itself should come back as an error. Wait for me to say go.
+10. Once I say go, call `slack_get_channel_history` for real on `{FIXTURES}.slack_control_channel`
+    (not on the allowlist — same fixture as step 4). Confirm: no native popup appeared, and the
+    call returned an error mentioning "unattended session" rather than data. This is the core
+    behavior this phase exists to prove — flag it as a bug if a popup appeared instead, or if the
+    call silently succeeded.
+11. Now call `slack_get_channel_history` on `{FIXTURES}.slack_approved_channel` (on the allowlist)
+    — this should succeed silently with **no popup and no error**, exactly as it would outside an
+    unattended session. Confirms the flag only changes the *deny* path, never what auto-accepts.
+12. `privacyfence_end_unattended_session` — expect `{"unattended": false}`, no popup. Confirm the
+    menu bar's top item goes back to plain "PrivacyFence is running" (no count).
+13. Call `slack_get_channel_history` on `{FIXTURES}.slack_control_channel` once more (same as step
+    10). **Pause here**: tell me you now expect a normal native popup, same as any other
+    non-matching review call — the session is no longer unattended. Wait for me to say go, then
+    make the call and confirm the popup actually appeared this time. I'll Deny it (it's not data
+    this run needs to keep).
+14. Set `unattended_sessions.enabled` back to `false` (or leave it — your call, but note in the
+    final report which state you left it in) and restart the daemon once more so later runs of
+    this whole prompt start from the documented default.
+
+No manifest entries from this phase — nothing persistent gets created (Slack reads, preflight
+checks, and session toggles leave no artifact behind), so Phase 12 (Teardown) has nothing to do for
+it. Flag these rows for Phase 13 (Audit Log Reconciliation) instead of guessing them now:
+steps 2–5's `policy_check` entries (`decision: "policy_check"`, `auto_accept_rule` matching each
+step's `matched_rule`), step 10's entry (`decision: "denied_unattended"`), and steps 9/12's session
+entries (`decision: "unattended_session_started"` / `"unattended_session_ended"`, both with empty
+`connector`/`tool` fields since they're not tied to a specific tool call).
+
+## Phase 12 — Teardown
 Go through the manifest table and, for every artifact tagged `{RUN_ID}` that has
 a delete/remove/archive/close tool available, call it now:
 1. Delete/trash the Drive file, Doc, sheet, and the throwaway moved file from
@@ -761,7 +943,7 @@ a delete/remove/archive/close tool available, call it now:
    manual cleanup happens in Gmail's web UI (Settings → Filters and Blocked
    Addresses / Settings → Labels), not via any PrivacyFence tool.
 
-## Phase 12 — Audit Log Reconciliation
+## Phase 13 — Audit Log Reconciliation
 Everything above ran with the `audit-log decision` column blank and every
 audit-dependent question (Phase 1 step 3, Phase 2 steps 20/23, Phase 7 steps
 2–4) flagged rather than answered, on purpose — a live mid-run read from a
@@ -792,6 +974,17 @@ against a copy of the log I hand you directly.
    - Phase 7 steps 2–4: state the actual logged decision (`auto_accepted` vs
      `accepted`) for each — this is what settles it even where your own
      popup observation was already unambiguous.
+   - Phase 11 steps 2–5: confirm one `"decision": "policy_check"` entry per
+     `privacyfence_check_policy` call, each `"auto_accept_rule"` matching that
+     step's `matched_rule` (empty string for steps where it was `null`).
+   - Phase 11 step 10: confirm `"decision": "denied_unattended"` — distinct
+     from `"rejected"`, since no human was ever asked. Contrast this against
+     step 13's entry for the identical call made outside an unattended
+     session, which should show a normal `"rejected"` or `"approved"`
+     depending on what you clicked.
+   - Phase 11 steps 9/12: confirm one `"decision": "unattended_session_started"`
+     entry and one `"unattended_session_ended"` entry, both with empty
+     `"connector"`/`"tool"` fields (these aren't tied to a specific tool call).
 4. Note any call in the table you couldn't find a matching audit-log entry
    for at all (clock skew, wrong week's file, a log write that never
    happened) — that's itself worth reporting, not something to silently paper
@@ -801,20 +994,20 @@ against a copy of the log I hand you directly.
 
 ## Final report
 Print the full running table (tool | gate observed | my decision | audit-log
-decision | notes), now fully reconciled from Phase 12, then the full manifest
-table split into "cleaned up in Phase 11" vs. "needs manual deletion." Then:
+decision | notes), now fully reconciled from Phase 13, then the full manifest
+table split into "cleaned up in Phase 12" vs. "needs manual deletion." Then:
 - Call out any tool whose observed gate, or whose audit-log decision, didn't
   match what I told you to expect — these are two independent checks now, so
   flag it even if only one of them disagrees.
 - Give the Phase 7 (Telegram) popup-visibility answers from steps 2–4
-  explicitly, each one backed by the matching audit-log entry from Phase 12 —
+  explicitly, each one backed by the matching audit-log entry from Phase 13 —
   don't let this collapse back into "I can't tell," since both your own
   observation and the log are available by this point.
 - Give the Phase 2 PII detection gate check (steps 17–20) its own explicit
   answer: confirm the write in step 18 stayed plain (no tint, no banner, no
   second dialog, `pii_detected: false`) and the read in step 19 got flagged
   (tint, category banner, second "Are you sure?" dialog, `pii_detected: true`)
-  — per the audit-log entries from Phase 12. If PrivacyFence's menu bar has
+  — per the audit-log entries from Phase 13. If PrivacyFence's menu bar has
   **PII Detection Gate** turned off, that changes step 19's expected result
   to "no tint, no second dialog, `pii_detected: false`" too (step 18 is
   unaffected by the toggle either way, since writes are never scanned
@@ -824,7 +1017,7 @@ table split into "cleaned up in Phase 11" vs. "needs manual deletion." Then:
   too, separate from the above: was `approved_folder` actually configured
   for `drive.read_file_contents` in this environment (check what you read
   from `settings.yaml` in Phase 0)? If yes, did step 22 still prompt despite
-  the rule matching, and did step 22's audit entry (per Phase 12) show
+  the rule matching, and did step 22's audit entry (per Phase 13) show
   `"decision": "approved"` rather than `"auto_accepted"`? If the rule wasn't
   configured, say explicitly that this check only re-confirmed the plain
   PII-gate behavior and didn't exercise the override itself — don't report it
@@ -838,16 +1031,23 @@ table split into "cleaned up in Phase 11" vs. "needs manual deletion." Then:
   carry a **different** `{RUN_ID}` (or no `{RUN_ID}` at all, from before this
   version of the prompt existed) — flag them as leftovers from a previous run,
   don't touch them, and don't count them as part of this run's manifest.
+- Give Phase 11 (scheduled/unattended tasks) its own explicit answer: did every
+  `privacyfence_check_policy` verdict in steps 2–5 match what was expected
+  (`auto_accept`/`requires_review`/`unknown`)? Did step 10 actually deny
+  without a popup, and step 13 actually prompt normally once the session
+  ended? State plainly which `unattended_sessions.enabled` value you left
+  `settings.yaml` in at step 14, so a later run (or a human reading this
+  report) isn't surprised by its current state.
 ````
 
 ## Reading the results
 
-Phase 12 is what fills in the `audit-log decision` column, once you've
+Phase 13 is what fills in the `audit-log decision` column, once you've
 attached the log file — the prompt no longer has Claude read it live during
 the run, since a Cowork/Desktop session reading the file mid-run isn't
 reliable (recently written entries can appear to lag or go missing depending
 on how the session reaches the file; attaching a fixed copy at the end avoids
-that entirely). Once Phase 12 has run, that column *is* ground truth, not a
+that entirely). Once Phase 13 has run, that column *is* ground truth, not a
 hypothesis, and you shouldn't need to reconcile `accepted` / `denied` /
 `auto_accepted` by hand afterward. What Claude still can't do is independently
 confirm the popup UI rendered correctly on your screen; it can only confirm
@@ -858,7 +1058,7 @@ investigating — it means the popup and the logged decision disagreed, which
 the tool result and the log alone can't explain by themselves.
 
 Spot-check a handful of entries yourself against the attached file if you
-want an independent check on Claude's Phase 12 reconciliation, but treat a
+want an independent check on Claude's Phase 13 reconciliation, but treat a
 fully-populated `audit-log decision` column as the run having done its job,
 not as something to redo from scratch.
 

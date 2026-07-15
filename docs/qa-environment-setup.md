@@ -126,6 +126,39 @@ starting state by the end, so there's nothing to provision or clean up here.
        - rule: approved_sandbox_folder
          value: ["<QA Sandbox folder id>"]
    ```
+6. **Optional**, same reasoning as step 5 — `sheets.insert_dimensions` and
+   `sheets.delete_dimensions` (row/column insert and delete) also accept
+   `approved_sandbox_folder`. Note the asymmetry this is meant to
+   demonstrate: `sheets.insert_dimensions` additionally offers "Accept for 5
+   min" on its plain popup (non-destructive, like `format_range`), while
+   `sheets.delete_dimensions` never does (removes cell content, no undo path
+   through PrivacyFence) — configuring both the same way here still leaves
+   that difference visible whenever this rule *doesn't* match (e.g. against
+   a spreadsheet outside the Sandbox folder):
+   ```yaml
+   auto_accept_rules:
+     sheets.insert_dimensions:
+       - rule: approved_sandbox_folder
+         value: ["<QA Sandbox folder id>"]
+     sheets.delete_dimensions:
+       - rule: approved_sandbox_folder
+         value: ["<QA Sandbox folder id>"]
+   ```
+7. **Optional** — `docs.edit_content` and `docs.format_content`
+   (`drive_docs_edit_content`/`drive_docs_format_content`) accept the same
+   rules `drive.write_doc` does. Both are also "Accept for 5 min"-eligible on
+   their plain popup, so configuring this rule mainly matters if you want
+   Phase 2 to demonstrate the standing-rule path instead of the temp-accept
+   one for a Doc inside the Sandbox folder:
+   ```yaml
+   auto_accept_rules:
+     docs.edit_content:
+       - rule: approved_sandbox_folder
+         value: ["<QA Sandbox folder id>"]
+     docs.format_content:
+       - rule: approved_sandbox_folder
+         value: ["<QA Sandbox folder id>"]
+   ```
 
 ## 3. Slack
 
@@ -194,6 +227,24 @@ can't be created via `calendar_create_event`), so it's opportunistic: if this
 account's calendar history already has a past meeting like that, the test
 prompt will find and use it; otherwise that step is skipped as a known
 limitation, not a regression.
+
+**Optional, for `non_private_event`:** add the rule below if you want Phase 2
+to demonstrate `calendar_get_event_details` and `calendar_set_event_visibility`
+auto-accepting for a non-private event. No fixture is needed for the contrast
+case either way — any event the test prompt sets to `private` (via
+`calendar_set_event_visibility`) still prompts regardless of this rule, since
+`non_private_event` checks the visibility being requested for that specific
+tool, not the event's prior state:
+```yaml
+auto_accept_rules:
+  calendar.read_event_details:
+    - rule: non_private_event
+  calendar.set_visibility:
+    - rule: non_private_event
+```
+(Combine with `i_am_organizer` above under `calendar.read_event_details` if
+you want both — a matching rule short-circuits the list, so order doesn't
+change what auto-accepts, just which rule name shows up in the audit log.)
 
 No fixture is needed for `calendar_create_out_of_office` or
 `calendar_set_working_location` either: both always operate on the
@@ -332,6 +383,27 @@ data:
 4. Keep at least one report/object type you *don't* add here (or that you
    genuinely can't access) as the "should still prompt" contrast case — any
    report other than the QA one satisfies this, nothing extra to create.
+5. `salesforce_search` needs no separate fixture — the sample Account records
+   from step 1 (prefixed `PrivacyFence QA — `) are exactly what a search for
+   e.g. `PrivacyFence QA` should find. **Known quirk, not a bug:** Salesforce's
+   SOSL search index can take a minute or two to pick up freshly created
+   records — if a search run immediately after step 1 comes back empty, wait
+   briefly and retry before treating it as a regression.
+6. **Optional** — `salesforce.search` also accepts `approved_object_types`,
+   the same rule `salesforce.read_record` uses, generalized to check *every*
+   object type in the search's comma-separated `object_types` (not just one):
+   ```yaml
+   auto_accept_rules:
+     salesforce.search:
+       - rule: approved_object_types
+         value: [Account]
+   ```
+   With this configured, a search scoped to `object_types="Account"` (or left
+   matching the allowlist exactly) auto-accepts; a search that also touches
+   any other object type, or one left unscoped entirely (empty
+   `object_types`, Salesforce's default globally-searchable set), still
+   prompts — that asymmetry is itself worth confirming in Phase 2, not just
+   the auto-accept path.
 
 ## 9. Jira
 
@@ -437,6 +509,21 @@ The only thing worth confirming beforehand:
    again stays plain regardless — only the read (step 22) can exercise the
    override, since only reads are ever scanned.
 
+## 12. Scheduled / unattended Cowork tasks
+
+No fixture to create — Phase 11 of `connector-qa-testing.md` reuses the Slack channels from §3
+above (an approved one, a control one) rather than needing anything new. The only environment
+state this check touches is `unattended_sessions.enabled` in `settings.yaml`, which is off by
+default and toggled (with a daemon restart) as part of the phase itself, not something to
+pre-configure here. See
+[`TECHNICAL_REFERENCE.md`](TECHNICAL_REFERENCE.md#scheduled--unattended-cowork-tasks) for what this
+mode does and why.
+
+The one thing worth confirming beforehand: know how to restart your daemon (`privacyfence-app`, or
+`scripts/dev_start.sh` if running from source — see [dev-vs-live-setup.md](dev-vs-live-setup.md)).
+Unlike `pii_detection.enabled`, `unattended_sessions.enabled` has no menu-bar toggle and isn't
+hot-reloaded — the phase requires an actual restart partway through, twice.
+
 ---
 
 ## Consolidated `auto_accept_rules` block
@@ -490,10 +577,14 @@ auto_accept_rules:
 gets created automatically the first time you click **"Accept All"** on a
 `drive_sheets_get_values` call during a test run — nothing to pre-configure.
 
-`sheets.rename_sheet` / `sheets.format_range` → `approved_sandbox_folder` (§2, step 5) is also
-deliberately left out of this block — it's optional and, unlike everything above, actively changes
-what Phase 2 exercises for those two tools (silent auto-accept instead of the popup / "Accept for 5
-min" flow), so it's opt-in rather than assumed.
+`sheets.rename_sheet` / `sheets.format_range` → `approved_sandbox_folder` (§2, step 5), the same
+rule for `sheets.insert_dimensions` / `sheets.delete_dimensions` (§2, step 6) and
+`docs.edit_content` / `docs.format_content` (§2, step 7), `calendar.read_event_details` /
+`calendar.set_visibility` → `non_private_event` (§4), and `salesforce.search` →
+`approved_object_types` (§8, step 6) are also deliberately left out of this block — each is
+optional and, unlike everything above, actively changes what Phase 2 exercises for those tools
+(silent auto-accept instead of the popup / review-gate flow), so they're opt-in rather than
+assumed.
 
 Restart the daemon after editing this file by hand (or use the "Accept All"
 popup once, which hot-reloads rules for you via `reload_rules()`).

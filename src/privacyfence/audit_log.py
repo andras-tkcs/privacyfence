@@ -28,9 +28,20 @@ class AuditEntry:
     tool_name: str
     summary: str
     sender: str
-    decision: str           # "approved" | "rejected" | "auto_accepted" | "accepted_via_accept_all" | "error"
+    decision: str           # "approved" | "rejected" | "auto_accepted" | "accepted_via_accept_all" |
+                            # "accepted_via_temp_session" | "denied_unattended" | "policy_check" |
+                            # "unattended_session_started" | "unattended_session_ended" | "error"
                             # ("error": gate.py's gated_call exited without reaching a normal decision
                             #  branch -- a fallback so an unanticipated failure still leaves a trail)
+                            # ("denied_unattended": gate.py denied the call without ever prompting,
+                            #  because the connection was in an unattended session and no auto-accept
+                            #  rule matched -- distinct from "rejected", which is a human's own Deny)
+                            # ("policy_check": ipc_server.py's check_policy handler -- a preflight
+                            #  question, not a real decision; recorded for pattern-spotting only)
+                            # ("unattended_session_started"/"_ended": ipc_server.py's begin/end_
+                            #  unattended_session handlers, and the same on disconnect cleanup --
+                            #  this connection's gate posture changed, which is worth a record of
+                            #  its own even though no specific tool call was involved)
     auto_accept_rule: str   # rule name if auto_accepted, else ""
     latency_seconds: float
     pii_detected: bool = False  # True if pii_detector.py flagged the content before this decision
@@ -102,7 +113,10 @@ class AuditLogger:
             "approved":              PatternFill("solid", fgColor="E8F5E9"),
             "auto_accepted":         PatternFill("solid", fgColor="E3F2FD"),
             "accepted_via_accept_all": PatternFill("solid", fgColor="FFF3CD"),
+            "accepted_via_temp_session": PatternFill("solid", fgColor="FFF3CD"),
             "rejected":              PatternFill("solid", fgColor="FFEBEE"),
+            "denied_unattended":     PatternFill("solid", fgColor="FFD8A8"),
+            "policy_check":          PatternFill("solid", fgColor="F1F3F5"),
             "error":                 PatternFill("solid", fgColor="FF6B6B"),
         }
 
@@ -139,7 +153,10 @@ class AuditLogger:
         ws2.append(["Approved (manual)", counts.get("approved", 0)])
         ws2.append(["Auto-accepted", counts.get("auto_accepted", 0)])
         ws2.append(["Accepted via Accept All (new rule)", counts.get("accepted_via_accept_all", 0)])
+        ws2.append(["Accepted via \"Accept for 5 min\"", counts.get("accepted_via_temp_session", 0)])
         ws2.append(["Rejected", counts.get("rejected", 0)])
+        ws2.append(["Denied unattended (no human asked)", counts.get("denied_unattended", 0)])
+        ws2.append(["Preflight checks (privacyfence_check_policy)", counts.get("policy_check", 0)])
         ws2.append(["PII flagged (any decision)", sum(1 for e in entries if e.pii_detected)])
         ws2.append([])
         ws2.append(["By connector", ""])
