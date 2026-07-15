@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re as _re
 from dataclasses import dataclass
 from typing import Any, Callable, TypeVar
 from urllib.parse import urlencode
@@ -49,6 +50,46 @@ class SalesforceRecord:
     object_type: str
     id: str
     fields: dict
+
+
+# ------------------------------------------------------------------ #
+# SOSL query building — search() below assembles a query string from
+# caller-supplied text, so every interpolated piece is validated or escaped
+# first. Object/field names aren't quoted in SOSL, so they need identifier-
+# level validation rather than string escaping; account_id is inserted as a
+# quoted WHERE-clause literal, so it's validated against Salesforce's own ID
+# format instead of just escaping quotes.
+# ------------------------------------------------------------------ #
+
+_OBJECT_TYPE_NAME_RE = _re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SALESFORCE_ID_RE = _re.compile(r"^[A-Za-z0-9]{15}([A-Za-z0-9]{3})?$")
+_SOSL_RESERVED_CHARS = '?&|!{}[]()^~*:"\'+-'
+
+
+def _validate_object_type_name(name: str) -> str:
+    name = name.strip()
+    if not _OBJECT_TYPE_NAME_RE.match(name):
+        raise SalesforceClientError(f"Invalid Salesforce object type name: {name!r}")
+    return name
+
+
+def _validate_salesforce_id(value: str, field_name: str = "id") -> str:
+    value = value.strip()
+    if not _SALESFORCE_ID_RE.match(value):
+        raise SalesforceClientError(
+            f"{field_name} must be a 15- or 18-character Salesforce ID, got {value!r}"
+        )
+    return value
+
+
+def _escape_sosl_term(term: str) -> str:
+    """Escape SOSL FIND-clause reserved characters so a search term can't
+    break out of the FIND{...} clause or be misread as a SOSL operator —
+    this is user/agent-supplied text going straight into a query string."""
+    escaped = term.replace("\\", "\\\\")
+    for ch in _SOSL_RESERVED_CHARS:
+        escaped = escaped.replace(ch, "\\" + ch)
+    return escaped
 
 
 def authorize_interactive(
@@ -291,6 +332,62 @@ class SalesforceClient:
         raw = self._call(_run)
         fields = {k: v for k, v in raw.items() if not k.startswith("attributes")}
         return SalesforceRecord(object_type=object_type, id=record_id, fields=fields)
+
+    def search(
+        self, search_term: str, object_types: str = "", account_id: str = "", max_results: int = 20,
+    ) -> list[SalesforceRecord]:
+        """Search Salesforce by name or id, the same mechanism (SOSL) behind
+        the search bar at the top of the Salesforce UI.
+
+        Returns lightweight Id/Name matches per requested object type — call
+        get_record for full field details on a match, the same
+        search-then-drill-in split ``jira_search_issues``/``jira_get_issue``
+        already use.
+
+        ``object_types`` is a comma-separated list of Salesforce object API
+        names (e.g. "Opportunity,Contact"); leave empty to search
+        Salesforce's default set of globally-searchable objects.
+        ``account_id`` scopes results to one Account's related records
+        (``WHERE AccountId = ...``) and requires ``object_types`` to be
+        given, since not every Salesforce object has an AccountId field —
+        there's no single scoping clause that's valid for an unspecified
+        object.
+        """
+        if not search_term or not search_term.strip():
+            raise SalesforceClientError("search requires a non-empty search_term")
+        types = [_validate_object_type_name(t) for t in object_types.split(",") if t.strip()]
+        if account_id and not types:
+            raise SalesforceClientError("search: account_id requires object_types to be specified")
+        max_results = max(1, min(int(max_results), 200))
+        escaped_term = _escape_sosl_term(search_term.strip())
+
+        if types:
+            account_id_valid = _validate_salesforce_id(account_id, "account_id") if account_id else ""
+            clauses = []
+            for obj in types:
+                clause = f"{obj}(Id, Name"
+                if account_id_valid:
+                    clause += f" WHERE AccountId = '{account_id_valid}'"
+                clause += f" LIMIT {max_results})"
+                clauses.append(clause)
+            sosl = f"FIND {{{escaped_term}}} IN ALL FIELDS RETURNING {', '.join(clauses)}"
+        else:
+            sosl = f"FIND {{{escaped_term}}} IN ALL FIELDS"
+
+        def _run(sf):
+            return sf.search(sosl)
+
+        raw = self._call(_run)
+        result_records = raw.get("searchRecords", []) if isinstance(raw, dict) else []
+        records = []
+        for r in result_records:
+            attrs = r.get("attributes") or {}
+            fields = {k: v for k, v in r.items() if k != "attributes"}
+            records.append(
+                SalesforceRecord(object_type=attrs.get("type", ""), id=r.get("Id", ""), fields=fields)
+            )
+        logger.info("search %r returned %d record(s)", search_term, len(records))
+        return records
 
     def run_report(self, report_id: str) -> dict:
         """Run a Salesforce report and return its result as a dict."""

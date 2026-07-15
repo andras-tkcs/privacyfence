@@ -231,8 +231,10 @@ PrivacyFence for a delete.
 | `calendar_get_free_busy` | read | auto | — | — (returns full events when calendar access is available; falls back to busy-slot list otherwise) |
 | `calendar_list_rooms` | read | auto | — | — (lists Google Workspace meeting rooms with name, email, building, floor, capacity; requires Workspace admin directory access) |
 | `calendar_get_event_details` | read | review | title, time, organizer, attendee count | Description, full attendee list, conferencing link, file attachments (e.g. Gemini meeting notes/transcript) |
+| `calendar_get_event_visibility` | read | auto | — | — |
 | `calendar_create_event` | write | popup | — | Title, time, attendees, description, location, Google Meet flag, room bookings |
 | `calendar_update_event` | write | popup | — | Title, time, fields changing (old → new), Google Meet flag, room bookings |
+| `calendar_set_event_visibility` | write | popup | — | Event title, calendar, visibility change (old → new) |
 | `calendar_create_out_of_office` | write | popup | — | Title, time, fixed "auto-decline new conflicts only" note, decline message |
 | `calendar_set_working_location` | write | popup | — | Date, location (office/home), building/label if given |
 
@@ -242,6 +244,14 @@ of any `calendar_id` used elsewhere. The out-of-office auto-decline behavior is 
 new conflicting invitations only" — Calendar also supports declining all conflicts or none, but
 that isn't exposed here. Working-location presence only offers "office" or "home" (Calendar's third
 "custom location" option isn't exposed either).
+
+`calendar_get_event_visibility` returns just the `visibility` field ("default", "public",
+"private", or "confidential") without the full attendee/description/attachment fetch
+`calendar_get_event_details` does — cheap enough to be auto-approved on its own, the same way
+`calendar_list_events` is. `calendar_set_event_visibility` changes only that one field; every other
+property of the event is left untouched. There's no separate `calendar_create_event`/
+`calendar_update_event` visibility parameter — set it via `calendar_set_event_visibility` after
+creating or alongside updating the event.
 
 ### Google Contacts
 
@@ -291,6 +301,14 @@ search under this connector's OAuth scope.
 | `salesforce_list_reports` | read | auto | — | — |
 | `salesforce_get_record` | read | review | object type, record name, record ID | All field values |
 | `salesforce_run_report` | read | review | report name, report ID | All report rows |
+| `salesforce_search` | read | review | search term, object types, result count | One line per match: object type, name, id |
+
+`salesforce_search` is the same mechanism (SOSL) behind the search bar at the top of the
+Salesforce UI — search by name or id across one or more object types, optionally scoped to one
+Account's related records (`account_id`, requires `object_types` to be set). Results are
+lightweight Id/Name matches, not full records — call `salesforce_get_record` for full field
+details on a match, the same search-then-drill-in split `jira_search_issues`/`jira_get_issue`
+already use.
 
 ### Jira
 
@@ -473,6 +491,7 @@ with no undo path through PrivacyFence, so it only ever gets the standing-rule t
 | `past_event` | Event end time is in the past |
 | `time_window_days` | Event starts within the next N days |
 | `no_conferencing_link` | Event has no video conferencing link |
+| `non_private_event` | The event's visibility is not `private` |
 
 `calendar_create_out_of_office` (`calendar.out_of_office`) and `calendar_set_working_location`
 (`calendar.working_location`) each have their own operation key but no rule above applies to
@@ -480,12 +499,26 @@ either — both always act on your own primary calendar with no organizer/attend
 concept for these rules to check — so they remain `popup`-gated with no configurable auto-accept,
 unlike `calendar_create_event`/`calendar_update_event` above.
 
+`non_private_event` also applies to `calendar_set_event_visibility` (`calendar.set_visibility`),
+its own operation key — there, it checks the visibility being *requested* (the popup's `args`),
+not the event's prior visibility, since that's the state actually being approved: a call that sets
+visibility to `public` or `default` can auto-accept, one that sets it to `private` cannot, even if
+the event happened to already be private beforehand. For every other operation this rule applies to
+(currently `calendar.read_event_details`), it falls back to the event's current visibility instead,
+since there's no "requested" value to check. Clicking **Accept All** on a
+"Read Calendar Event" prompt proposes this rule when the event isn't private and neither
+`i_am_organizer` nor `no_external_attendees` apply.
+
 **Salesforce**
 
 | Rule | Matches when… |
 |------|--------------|
-| `approved_object_types` | Object type (Account, Contact, …) is in the allowlist |
+| `approved_object_types` | Object type (Account, Contact, …) is in the allowlist — for `salesforce_search` (`salesforce.search`), every object type in its comma-separated `object_types` must be on the allowlist, not just one |
 | `approved_report_ids` | Report ID is in the approved list |
+
+`salesforce_search` with no `object_types` given reaches Salesforce's whole default set of
+globally-searchable objects — too broad for `approved_object_types` to ever match, so an unscoped
+search always prompts (or needs a differently-shaped rule, none of which exist yet).
 
 **Google Contacts**
 

@@ -68,6 +68,12 @@ class TestToolToOperationMapping:
         assert TOOL_TO_OPERATION["drive_docs_edit_content"] == "docs.edit_content"
         assert TOOL_TO_OPERATION["drive_docs_format_content"] == "docs.format_content"
 
+    def test_salesforce_search_maps_to_clean_operation_key(self):
+        assert TOOL_TO_OPERATION["salesforce_search"] == "salesforce.search"
+
+    def test_calendar_set_event_visibility_maps_to_its_own_operation_key(self):
+        assert TOOL_TO_OPERATION["calendar_set_event_visibility"] == "calendar.set_visibility"
+
 
 # --------------------------------------------------------------------------- #
 # Gmail rules
@@ -323,6 +329,37 @@ class TestCalendarRules:
         assert ev._rule_no_conferencing_link(None, make_ctx(raw_data=SimpleNamespace(conference_link=""))) is True
         assert ev._rule_no_conferencing_link(None, make_ctx(raw_data=SimpleNamespace(hangout_link="https://x"))) is False
 
+    def test_non_private_event_reads_current_visibility_from_raw_data(self):
+        # calendar_get_event_details (and any other read) has no "visibility"
+        # arg -- falls back to the event's current visibility.
+        ev = AutoAcceptEvaluator({})
+        private = make_ctx(args={}, raw_data=SimpleNamespace(visibility="private"))
+        public = make_ctx(args={}, raw_data=SimpleNamespace(visibility="public"))
+        default = make_ctx(args={}, raw_data=SimpleNamespace(visibility="default"))
+        assert ev._rule_non_private_event(None, private) is False
+        assert ev._rule_non_private_event(None, public) is True
+        assert ev._rule_non_private_event(None, default) is True
+
+    def test_non_private_event_missing_visibility_attribute_defaults_non_private(self):
+        ev = AutoAcceptEvaluator({})
+        ctx = make_ctx(args={}, raw_data=SimpleNamespace())
+        assert ev._rule_non_private_event(None, ctx) is True
+
+    def test_non_private_event_prefers_requested_visibility_from_args(self):
+        # calendar_set_event_visibility's args always carry the visibility
+        # being requested -- that's the state being approved, not the
+        # event's prior visibility (which could differ and would be the
+        # wrong signal for "is the action about to make this private").
+        ev = AutoAcceptEvaluator({})
+        setting_private = make_ctx(
+            args={"visibility": "private"}, raw_data=SimpleNamespace(visibility="default"),
+        )
+        setting_public = make_ctx(
+            args={"visibility": "public"}, raw_data=SimpleNamespace(visibility="private"),
+        )
+        assert ev._rule_non_private_event(None, setting_private) is False
+        assert ev._rule_non_private_event(None, setting_public) is True
+
 
 # --------------------------------------------------------------------------- #
 # Salesforce rules
@@ -335,6 +372,25 @@ class TestSalesforceRules:
         assert ev._rule_approved_object_types(["account"], ctx) is True
         assert ev._rule_approved_object_types(["contact"], ctx) is False
         assert ev._rule_approved_object_types([], ctx) is False
+
+    def test_approved_object_types_for_search_requires_every_requested_type_approved(self):
+        # salesforce.search carries a comma-separated object_types arg
+        # instead of get_record's singular object_type -- a partial match
+        # (some but not all requested types approved) must not auto-accept,
+        # since that would silently leak an unapproved object type's results.
+        ev = AutoAcceptEvaluator({})
+        ctx = make_ctx(args={"object_types": "Opportunity,Contact"})
+        assert ev._rule_approved_object_types(["opportunity", "contact"], ctx) is True
+        assert ev._rule_approved_object_types(["opportunity"], ctx) is False
+        assert ev._rule_approved_object_types([], ctx) is False
+
+    def test_approved_object_types_for_search_empty_object_types_never_matches(self):
+        # An unscoped search (no object_types given) reaches Salesforce's
+        # whole default set of globally-searchable objects -- never
+        # auto-accepted by an object-type allowlist.
+        ev = AutoAcceptEvaluator({})
+        ctx = make_ctx(args={"object_types": ""})
+        assert ev._rule_approved_object_types(["opportunity"], ctx) is False
 
     def test_approved_report_ids(self):
         ev = AutoAcceptEvaluator({})
@@ -873,15 +929,37 @@ class TestSuggestRule:
         )
         assert suggest_rule("calendar.read_event_details", internal) == ("no_external_attendees", None)
 
+    def test_calendar_falls_back_to_non_private_event_when_external_but_not_private(self):
+        # Neither i_am_organizer nor no_external_attendees apply, but the
+        # event isn't private either -- still a plausible suggestion rather
+        # than no suggestion at all.
         external = make_ctx(
             my_email="me@example.com",
-            raw_data=SimpleNamespace(organizer_email="other@example.com", attendees=[{"email": "x@external.com"}]),
+            raw_data=SimpleNamespace(
+                organizer_email="other@example.com", attendees=[{"email": "x@external.com"}], visibility="public",
+            ),
         )
-        assert suggest_rule("calendar.read_event_details", external) is None
+        assert suggest_rule("calendar.read_event_details", external) == ("non_private_event", None)
+
+    def test_calendar_suggests_nothing_for_a_private_event_with_external_attendees(self):
+        private_external = make_ctx(
+            my_email="me@example.com",
+            raw_data=SimpleNamespace(
+                organizer_email="other@example.com", attendees=[{"email": "x@external.com"}], visibility="private",
+            ),
+        )
+        assert suggest_rule("calendar.read_event_details", private_external) is None
 
     def test_salesforce_suggests_object_type(self):
         ctx = make_ctx(args={"object_type": "Account"})
         assert suggest_rule("salesforce.read_record", ctx) == ("approved_object_types", ["Account"])
+
+    def test_salesforce_search_suggests_scoped_object_types(self):
+        ctx = make_ctx(args={"object_types": "Opportunity,Contact"})
+        assert suggest_rule("salesforce.search", ctx) == ("approved_object_types", ["Opportunity", "Contact"])
+
+    def test_salesforce_search_suggests_nothing_when_unscoped(self):
+        assert suggest_rule("salesforce.search", make_ctx(args={"object_types": ""})) is None
 
     def test_unrecognized_operation_suggests_nothing(self):
         assert suggest_rule("some.unmapped.operation", make_ctx()) is None

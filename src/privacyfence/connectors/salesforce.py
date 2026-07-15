@@ -140,6 +140,37 @@ class SalesforceConnector(Connector):
                 params=[ToolParam("report_id", "str")],
                 read_only=True,
             ),
+            ToolSpec(
+                name="salesforce_search",
+                description=(
+                    "Search Salesforce by name or id across one or more object types — "
+                    "the same mechanism as the search bar at the top of the Salesforce "
+                    "UI. Returns lightweight Id/Name matches per object type; call "
+                    "salesforce_get_record for full field details on a match. "
+                    "Requires user approval."
+                ),
+                params=[
+                    ToolParam("search_term", "str", description="Name, partial name, or id to search for"),
+                    ToolParam(
+                        "object_types", "str", required=False, default="",
+                        description=(
+                            "Comma-separated Salesforce object API names to restrict the "
+                            "search to, e.g. 'Opportunity,Contact'. Leave empty to search "
+                            "Salesforce's default globally-searchable objects."
+                        ),
+                    ),
+                    ToolParam(
+                        "account_id", "str", required=False, default="",
+                        description=(
+                            "Scope results to this Account's related records (e.g. its "
+                            "Opportunities). Requires object_types to be set, since not "
+                            "every object has an AccountId field."
+                        ),
+                    ),
+                    ToolParam("max_results", "int", required=False, default=20),
+                ],
+                read_only=True,
+            ),
         ]
 
     async def call(self, tool: str, args: dict[str, Any]) -> Any:
@@ -149,6 +180,8 @@ class SalesforceConnector(Connector):
             return await self._get_record(**args)
         if tool == "salesforce_run_report":
             return await self._run_report(**args)
+        if tool == "salesforce_search":
+            return await self._search(**args)
         raise ValueError(f"Unknown Salesforce tool: {tool!r}")
 
     # ------------------------------------------------------------------ #
@@ -232,6 +265,46 @@ class SalesforceConnector(Connector):
             details_text=details,
             my_email=self.my_email,
             args={"report_id": report_id},
+        )
+
+    async def _search(
+        self, search_term: str, object_types: str = "", account_id: str = "", max_results: int = 20,
+    ) -> Any:
+        # Validate before gating, not after -- same reasoning as
+        # drive_sheets_insert_dimensions's early dimension check: a doomed
+        # call shouldn't cost the user an unnecessary approval decision.
+        if account_id and not object_types.strip():
+            raise ValueError("salesforce_search: account_id requires object_types to be specified")
+        try:
+            records = await asyncio.to_thread(
+                self._sf.search, search_term, object_types, account_id, max_results
+            )
+        except SalesforceClientError as exc:
+            raise RuntimeError(str(exc)) from exc
+        result = [asdict(r) for r in records]
+        preview = {
+            "Search term": search_term,
+            "Object types": object_types or "(default)",
+            "Results": str(len(records)),
+        }
+        if account_id:
+            preview["Account ID"] = account_id
+        details = "\n".join(
+            f"{r.object_type} — {r.fields.get('Name', '(no name)')} (id={r.id})" for r in records
+        ) or "(no matches)"
+        return await gated_call(
+            connector=self.name,
+            tool="salesforce_search",
+            tool_name="Search Salesforce",
+            summary=f"Search: {search_term[:80]}",
+            sender="Salesforce",
+            raw_data=records,
+            filtered_data=result,
+            gate="review",
+            preview=preview,
+            details_text=details,
+            my_email=self.my_email,
+            args={"search_term": search_term, "object_types": object_types, "account_id": account_id},
         )
 
     # ------------------------------------------------------------------ #

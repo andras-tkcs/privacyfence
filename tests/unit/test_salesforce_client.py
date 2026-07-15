@@ -15,7 +15,10 @@ from privacyfence.salesforce_client import (
     SalesforceClientError,
     SalesforceRecord,
     SalesforceReport,
+    _escape_sosl_term,
     _is_expired_session_error,
+    _validate_object_type_name,
+    _validate_salesforce_id,
     load_token_file,
 )
 
@@ -308,3 +311,165 @@ class TestRunReport:
         sf.restful.assert_called_once_with(
             "analytics/reports/report-1", method="POST", json={"reportMetadata": {}},
         )
+
+
+# ---------------------------------------------------------------------------- #
+# SOSL query-building validation/escaping helpers
+# ---------------------------------------------------------------------------- #
+
+VALID_ID_15 = "001000000000001"
+VALID_ID_18 = "001000000000001AAA"
+
+
+class TestValidateObjectTypeName:
+    @pytest.mark.parametrize("name", ["Account", "Opportunity", "My_Custom_Object__c", "_Leading"])
+    def test_valid_names_pass_through(self, name):
+        assert _validate_object_type_name(name) == name
+
+    def test_strips_surrounding_whitespace(self):
+        assert _validate_object_type_name("  Account  ") == "Account"
+
+    @pytest.mark.parametrize("name", ["Account)", "Ac count", "1Account", "Account;DROP", ""])
+    def test_invalid_names_raise(self, name):
+        with pytest.raises(SalesforceClientError, match="Invalid Salesforce object type name"):
+            _validate_object_type_name(name)
+
+
+class TestValidateSalesforceId:
+    def test_15_char_id_accepted(self):
+        assert _validate_salesforce_id(VALID_ID_15) == VALID_ID_15
+
+    def test_18_char_id_accepted(self):
+        assert _validate_salesforce_id(VALID_ID_18) == VALID_ID_18
+
+    def test_strips_surrounding_whitespace(self):
+        assert _validate_salesforce_id(f"  {VALID_ID_15}  ") == VALID_ID_15
+
+    @pytest.mark.parametrize("value", ["", "short", "001' OR '1'='1", "0" * 20])
+    def test_invalid_ids_raise(self, value):
+        with pytest.raises(SalesforceClientError, match="must be a 15- or 18-character Salesforce ID"):
+            _validate_salesforce_id(value)
+
+    def test_error_includes_custom_field_name(self):
+        with pytest.raises(SalesforceClientError, match="account_id must be"):
+            _validate_salesforce_id("bad", "account_id")
+
+
+class TestEscapeSoslTerm:
+    def test_plain_text_unchanged(self):
+        assert _escape_sosl_term("Acme Corp") == "Acme Corp"
+
+    def test_curly_braces_escaped(self):
+        # Prevents breaking out of the FIND{...} clause.
+        assert _escape_sosl_term("}} IN ALL FIELDS RETURNING User") == r"\}\} IN ALL FIELDS RETURNING User"
+
+    def test_backslash_escaped_first_so_later_escapes_are_not_doubled(self):
+        assert _escape_sosl_term("a\\b") == r"a\\b"
+
+    def test_all_reserved_characters_escaped(self):
+        term = '?&|!{}[]()^~*:"\'+-'
+        escaped = _escape_sosl_term(term)
+        assert escaped == "".join(f"\\{ch}" for ch in term)
+
+
+# ---------------------------------------------------------------------------- #
+# search: SOSL building, scoping, and result normalization
+# ---------------------------------------------------------------------------- #
+
+class TestSearch:
+    def test_requires_non_empty_search_term(self):
+        client = make_client()
+        with pytest.raises(SalesforceClientError, match="non-empty search_term"):
+            client.search("")
+        with pytest.raises(SalesforceClientError, match="non-empty search_term"):
+            client.search("   ")
+
+    def test_account_id_without_object_types_raises(self):
+        client = make_client()
+        with pytest.raises(SalesforceClientError, match="account_id requires object_types"):
+            client.search("Acme", account_id=VALID_ID_15)
+
+    def test_invalid_object_type_raises(self):
+        client = make_client()
+        with pytest.raises(SalesforceClientError, match="Invalid Salesforce object type name"):
+            client.search("Acme", object_types="Account, Bad Name")
+
+    def test_invalid_account_id_raises(self):
+        client = make_client()
+        with pytest.raises(SalesforceClientError, match="account_id must be"):
+            client.search("Acme", object_types="Opportunity", account_id="not-an-id")
+
+    def test_unscoped_search_builds_plain_find_query(self):
+        sf = MagicMock()
+        sf.search.return_value = {"searchRecords": []}
+        client = with_fake_sf(make_client(), sf)
+
+        client.search("Acme Corp")
+
+        sf.search.assert_called_once_with("FIND {Acme Corp} IN ALL FIELDS")
+
+    def test_scoped_search_builds_returning_clause_with_limit(self):
+        sf = MagicMock()
+        sf.search.return_value = {"searchRecords": []}
+        client = with_fake_sf(make_client(), sf)
+
+        client.search("Acme", object_types="Opportunity,Contact", max_results=5)
+
+        sf.search.assert_called_once_with(
+            "FIND {Acme} IN ALL FIELDS RETURNING "
+            "Opportunity(Id, Name LIMIT 5), Contact(Id, Name LIMIT 5)"
+        )
+
+    def test_account_id_scoping_adds_where_clause_to_every_object(self):
+        sf = MagicMock()
+        sf.search.return_value = {"searchRecords": []}
+        client = with_fake_sf(make_client(), sf)
+
+        client.search("Acme", object_types="Opportunity", account_id=VALID_ID_15, max_results=10)
+
+        sf.search.assert_called_once_with(
+            f"FIND {{Acme}} IN ALL FIELDS RETURNING "
+            f"Opportunity(Id, Name WHERE AccountId = '{VALID_ID_15}' LIMIT 10)"
+        )
+
+    def test_search_term_is_escaped_in_query(self):
+        sf = MagicMock()
+        sf.search.return_value = {"searchRecords": []}
+        client = with_fake_sf(make_client(), sf)
+
+        client.search("Acme (West)")
+
+        sf.search.assert_called_once_with(r"FIND {Acme \(West\)} IN ALL FIELDS")
+
+    def test_max_results_clamped_to_reasonable_bounds(self):
+        sf = MagicMock()
+        sf.search.return_value = {"searchRecords": []}
+        client = with_fake_sf(make_client(), sf)
+
+        client.search("Acme", object_types="Opportunity", max_results=10000)
+
+        assert "LIMIT 200)" in sf.search.call_args.args[0]
+
+    def test_maps_search_records_including_type_from_attributes(self):
+        sf = MagicMock()
+        sf.search.return_value = {
+            "searchRecords": [
+                {"attributes": {"type": "Opportunity", "url": "/x"}, "Id": "006x", "Name": "Big Deal"},
+                {"attributes": {"type": "Contact", "url": "/y"}, "Id": "003y", "Name": "Jane Doe"},
+            ]
+        }
+        client = with_fake_sf(make_client(), sf)
+
+        records = client.search("Acme")
+
+        assert records == [
+            SalesforceRecord(object_type="Opportunity", id="006x", fields={"Id": "006x", "Name": "Big Deal"}),
+            SalesforceRecord(object_type="Contact", id="003y", fields={"Id": "003y", "Name": "Jane Doe"}),
+        ]
+
+    def test_missing_search_records_key_yields_empty_list(self):
+        sf = MagicMock()
+        sf.search.return_value = {}
+        client = with_fake_sf(make_client(), sf)
+
+        assert client.search("Acme") == []
