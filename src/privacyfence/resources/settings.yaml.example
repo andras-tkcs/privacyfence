@@ -71,8 +71,9 @@ pii_detection:
 
 unattended_sessions:
   # Lets Claude Cowork declare a connection "unattended" (privacyfence_
-  # begin_unattended_session, see docs/cowork-scheduled-tasks-design.md) —
-  # meant for scheduled/triggered runs with no human present. While a
+  # begin_unattended_session, see docs/TECHNICAL_REFERENCE.md's "Scheduled /
+  # unattended Cowork tasks" section) — meant for scheduled/triggered runs
+  # with no human present. While a
   # connection is in that state, any review/popup call that isn't already
   # covered by an auto-accept rule below is DENIED immediately instead of
   # opening a native approval dialog, so a scheduled task fails one step

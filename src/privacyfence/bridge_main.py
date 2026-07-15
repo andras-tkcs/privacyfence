@@ -267,7 +267,8 @@ async def _end_unattended_session_handler() -> dict:
 def _register_meta_tools(mcp: FastMCP) -> None:
     """Register PrivacyFence's own tools -- not sourced from a connector
     manifest, since they aren't backed by a real connector. See
-    docs/cowork-scheduled-tasks-design.md.
+    docs/TECHNICAL_REFERENCE.md's "Scheduled / unattended Cowork tasks"
+    section.
     """
     from mcp.types import ToolAnnotations
 

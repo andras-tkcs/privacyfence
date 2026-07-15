@@ -64,10 +64,10 @@ class IPCServer:
         self._server: asyncio.AbstractServer | None = None
         self._inflight: dict[str, tuple[asyncio.Future, float]] = {}
         # Opt-in gate for privacyfence_begin_unattended_session -- see
-        # settings.yaml.example's unattended_sessions.enabled and
-        # docs/cowork-scheduled-tasks-design.md. Off by default: a Claude
-        # session gaining the ability to switch its own connection into
-        # fail-fast mode is a deliberate per-organization choice.
+        # settings.yaml.example's unattended_sessions.enabled. Off by
+        # default: a Claude session gaining the ability to switch its own
+        # connection into fail-fast mode is a deliberate per-organization
+        # choice.
         self._unattended_sessions_enabled = unattended_sessions_enabled
         # id(writer) -> currently in an unattended session. Connection-scoped
         # (not global) since the bridge is one process per Cowork task, so
@@ -306,7 +306,8 @@ class IPCServer:
 
     def _begin_unattended_session(self, writer: asyncio.StreamWriter) -> dict:
         """privacyfence_begin_unattended_session -- see settings.yaml.example's
-        unattended_sessions.enabled and docs/cowork-scheduled-tasks-design.md.
+        unattended_sessions.enabled and docs/TECHNICAL_REFERENCE.md's
+        "Scheduled / unattended Cowork tasks" section.
         """
         if not self._unattended_sessions_enabled:
             raise ValueError(

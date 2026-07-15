@@ -1350,8 +1350,9 @@ class TestPrompt:
 
 class TestUnattendedIndicator:
     """The top menu item's live count of connections currently in an
-    unattended session (see docs/cowork-scheduled-tasks-design.md) --
-    ipc_server.py fires set_unattended_changed_listener from its own
+    unattended session (see docs/TECHNICAL_REFERENCE.md's "Scheduled /
+    unattended Cowork tasks" section) -- ipc_server.py fires
+    set_unattended_changed_listener from its own
     asyncio thread, so this must marshal through AppHelper.callAfter the
     same way _on_rules_changed does (see TestRunAsyncMarshaling's module
     docstring for why that matters)."""

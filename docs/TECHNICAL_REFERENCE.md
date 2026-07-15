@@ -574,8 +574,11 @@ A scheduled Claude Cowork Routine can run with nobody at the keyboard. If it cal
 `popup`-gated tool that no auto-accept rule covers, the normal behavior — open a native popup and
 wait — means the task hangs indefinitely, and since every popup shares one lock, it also blocks
 every other approval (including an unrelated interactive one) behind it until someone finds and
-answers the dialog. Two additions address this; design rationale and alternatives considered live
-in [`docs/cowork-scheduled-tasks-design.md`](cowork-scheduled-tasks-design.md).
+answers the dialog. Two additions address this. Design rationale (why a `contextvars`-scoped flag
+rather than a connector-level change, why args-only rules are classified by hand rather than
+inferred, alternatives considered) lives in code comments at the relevant call sites —
+`gate.py`'s `unattended_scope`/`is_unattended`, `auto_accept.py`'s `ARGS_ONLY_RULES`/
+`DATA_DEPENDENT_RULES`, and `ipc_server.py`'s `_begin_unattended_session`.
 
 ### `privacyfence_check_policy` — preflight
 
