@@ -356,9 +356,10 @@ in step 3, if you configured it.
    tell me either way. If no such rule exists, expect the normal review gate,
    Accept.
 4. `drive_write_file_content` on it, write a short test sentence — popup, Accept.
-5. `drive_add_comment` on it, any test comment. This is one of the three write
-   ops with a temp-accept shortcut on its popup (the others are steps 13 and 16
-   below — see the Technical Reference's [Auto-accept rules](TECHNICAL_REFERENCE.md#auto-accept-rules)).
+5. `drive_add_comment` on it, any test comment. This is one of six write ops
+   with a temp-accept shortcut on its popup (the others are steps 13, 16, 24,
+   27, and 28 below — see the Technical Reference's
+   [Auto-accept rules](TECHNICAL_REFERENCE.md#auto-accept-rules)).
    **Pause here**: tell me you're about to call it and that **I will click
    "Accept for 5 min"** this time, then wait for me to say go. Once I do, make
    the call, then immediately call `drive_add_comment` on the same file again
@@ -533,6 +534,64 @@ configured it per `qa-environment-setup.md`.
     writes are never scanned. Confirm all three once the log is attached, not
     now.
 
+### Sheets rows/columns and Docs partial edits (steps 24–31)
+
+Reuses the spreadsheet from step 10 and the Doc from step 7 — no new
+manifest entries needed, both are already tracked.
+
+24. `drive_sheets_insert_dimensions` — insert 1 row before index 0 in the
+    sheet from step 10. This is one of the temp-accept-eligible write ops
+    (see the Technical Reference's [Auto-accept rules](TECHNICAL_REFERENCE.md#auto-accept-rules)).
+    **Pause here**: tell me you're about to call it and that **I will click
+    "Accept for 5 min"** this time, then wait for me to say go. Once I do,
+    make the call, then immediately call `drive_sheets_insert_dimensions`
+    again on the same spreadsheet, this time inserting 1 column — this
+    second call should NOT prompt (silent, logged `auto_accepted` with rule
+    `session_temp_accept`). Tell me whether the second call prompted or not.
+25. `drive_sheets_delete_dimensions` — delete the row inserted in step 24.
+    Unlike step 24, this one has **no** temp-accept shortcut at all —
+    deleting rows/columns removes cell content with no undo path through
+    PrivacyFence, so it only ever gets a plain popup or a standing rule, not
+    "Accept for 5 min". Plain popup, Accept.
+26. Invalid-dimension check: call `drive_sheets_insert_dimensions` with
+    `dimension="sideways"` — expect a clear error naming `ROWS`/`COLUMNS` as
+    the valid values, raised **before** any popup appears. Confirm no popup
+    showed.
+27. `drive_docs_edit_content` on the Doc from step 7 — find a short, unique
+    phrase already in its body and replace it with new text tagged
+    `{RUN_ID}`. Also temp-accept-eligible. **Pause here**: tell me you're
+    about to call it and that **I will click "Accept for 5 min"**, then wait
+    for go. Once I do, make the call, then immediately call
+    `drive_docs_edit_content` again on the **same Doc**, replacing a
+    different short phrase — this second call should NOT prompt (silent,
+    `auto_accepted`, `session_temp_accept`). Tell me whether it prompted.
+28. `drive_docs_format_content` on the same Doc — apply `highlight_color`
+    (e.g. `#fff59d`) to a short existing phrase. Same temp-accept pattern,
+    and its own separate 5-minute window (temp-accept is scoped per
+    operation, not per file — accepting it for `docs_edit_content` in step
+    27 does **not** cover this call): **pause here**, tell me you're about
+    to call it and that **I will click "Accept for 5 min"**, wait for go,
+    call it, then immediately call it again on the same Doc with `bold`
+    instead — should NOT prompt the second time. Open the Doc in Google
+    Docs and confirm the highlighted span actually renders highlighted.
+29. Ambiguous-match check: call `drive_docs_edit_content` (or
+    `drive_docs_format_content`) on the same Doc with `find_text` set to
+    something that now matches more than one location (e.g. a short common
+    word already repeated in the body) and `replace_all` left at its
+    default `false` — expect a clear error stating how many locations
+    matched and instructing to add more context or set `replace_all=true`,
+    not a silent guess at which occurrence was meant. Then retry the same
+    call with `replace_all=true` and confirm every occurrence changed.
+30. `drive_write_doc_content` on the same Doc, writing entirely fresh
+    content (plain text is fine). Confirm everything from steps 27–29 is
+    now gone — this proves the full-rewrite tool is unchanged, and that
+    steps 27–28's partial edits really were additive, not a new default
+    behavior for `drive_write_doc_content` itself.
+31. Highlight-syntax check: `drive_write_doc_content` again on the same
+    Doc, with a body containing `==highlighted text==` somewhere. Popup,
+    Accept. Open the Doc in Google Docs and confirm that span renders with
+    a highlight background, the same as step 28's did.
+
 ## Phase 3 — Slack
 1. `slack_list_channels` (expect: silent).
 2. Auto-accept rule check: `slack_get_channel_history` on
@@ -592,6 +651,33 @@ configured it per `qa-environment-setup.md`.
 10. `calendar_set_working_location` again for the same date with
     `location="home"` — confirm it overwrites the office entry from step 9
     rather than adding a second one.
+11. `calendar_get_event_visibility` on the event from step 3 (expect: silent,
+    auto — no popup at all, cheaper than the full `calendar_get_event_details`
+    fetch). Confirm the returned `visibility` is `"default"`.
+12. `calendar_set_event_visibility` on the same event, set to `"private"`.
+    Popup-gated, and — unlike Phase 2's Sheets/Docs write tools — this one
+    never gets a temp-accept shortcut either. If you configured
+    `calendar.set_visibility` → `non_private_event` per
+    `qa-environment-setup.md` §4, this call must **still** prompt regardless:
+    the rule checks the visibility being *requested*, and `"private"` never
+    matches it. Confirm that's what happened. Popup, Accept.
+13. `calendar_get_event_visibility` again on the same event (silent). Confirm
+    it now returns `"private"`.
+14. `calendar_set_event_visibility` again, this time to `"public"`. If
+    `calendar.set_visibility` → `non_private_event` is configured, this
+    should NOT prompt (the requested value isn't private) — tell me either
+    way.
+15. `calendar_get_event_details` on the same event, now that it's back to
+    `"public"`. You're still its organizer (from step 3), so `i_am_organizer`
+    may already short-circuit this if configured; if not, and
+    `calendar.read_event_details` → `non_private_event` is configured, it
+    should still auto-accept via that rule instead. Tell me which rule (if
+    any) actually matched — check the audit log in Phase 12 if it's not
+    obvious from the popup (or lack of one) alone.
+16. Invalid-visibility check: call `calendar_set_event_visibility` with
+    `visibility="hidden"` — expect a clear error naming the valid values
+    (`default`/`public`/`private`/`confidential`), raised **before** any
+    popup appears. Confirm no popup showed.
 
 ## Phase 5 — Contacts
 1. `contacts_list`, `contacts_search`, `contacts_get` (expect: all silent).
@@ -680,6 +766,29 @@ other connector's writes, each independently configurable via the
    not `NOT_FOUND`.
 5. `salesforce_get_record` on a record of a *different* object type — should
    still prompt. Accept. (No write tools exist for Salesforce in this build.)
+6. `salesforce_search` — search for `PrivacyFence QA` scoped to
+   `object_types="Account"` (or `{FIXTURES}.salesforce_qa_object_type` if
+   that's `Account`). If you configured `salesforce.search` →
+   `approved_object_types` per `qa-environment-setup.md` §8 step 6, this
+   should NOT prompt — tell me either way. Confirm the sample records from
+   setup show up in the results. **Known quirk, not a bug:** if this comes
+   back empty and the sample records were created very recently, Salesforce's
+   SOSL search index may not have caught up yet — wait a minute and retry
+   before treating it as a finding.
+7. `salesforce_search` again, same query, but leave `object_types` empty
+   (unscoped — searches Salesforce's default globally-searchable objects).
+   This must still prompt regardless of the rule above: `approved_object_types`
+   only matches when every requested object type is on the allowlist, and an
+   unscoped search requests none in particular, so it never matches. Accept.
+8. Validation check: call `salesforce_search` with `account_id` set to any
+   valid-looking Salesforce ID but `object_types` left empty — expect a
+   clear error (`account_id requires object_types to be specified`), raised
+   **before** any popup appears. Confirm no popup showed.
+9. `salesforce_search` with `object_types="Opportunity"` (or another object
+   type that has an `AccountId` field) and `account_id` set to an Account ID
+   from step 6's results — confirm the results are limited to records
+   related to that account specifically (an empty list is a valid, expected
+   result if that account has no such related records — not a bug).
 
 ## Phase 9 — Jira
 1. `jira_list_projects`, `jira_search_issues` (expect: both silent).

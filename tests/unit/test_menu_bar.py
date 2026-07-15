@@ -757,6 +757,26 @@ class TestAddRule:
 
         assert "spreadsheet_id" in captured["message"]
 
+    def test_add_rule_prompt_starts_empty_not_prefilled_with_hint(self, app, monkeypatch):
+        # Regression: the "Add rule" dialog used to pre-fill the text field with
+        # the RULE_HINTS example value (e.g. a fake sandbox folder ID), so the
+        # first line looked like garbage data the user had to delete before
+        # typing their real value. The example belongs in the message text, not
+        # in the editable field's initial content.
+        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: "approved_sandbox_folder")
+        captured = {}
+        class _CapturingWindow:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+            def run(self):
+                return _FakeWindowResponse(clicked=False)
+        monkeypatch.setattr(menu_bar.rumps, "Window", _CapturingWindow)
+
+        app._add_rule("sheets.rename_sheet")
+
+        assert captured["default_text"] == ""
+        assert "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms" in captured["message"]
+
     def test_rename_sheet_offers_approved_sandbox_folder(self, app, monkeypatch):
         # Regression: rename_sheet/format_range used to have no folder-scoped
         # rule at all, so a folder approved for write_range/add_sheet had no
