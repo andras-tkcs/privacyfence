@@ -8,15 +8,18 @@ already writes to the git-ignored ``credentials/`` directory
 (``daemon_main.TOKEN_FILES``), and talks to your real, already-authenticated
 accounts -- the same ones set up per ``docs/qa-environment-setup.md``.
 
-Two modes:
+Run with the project's own venv, not whatever ``python3`` is first on PATH --
+this imports the same ``privacyfence`` package and third-party clients
+(``google-api-python-client``, ``atlassian-python-api``, ``simple-salesforce``,
+``telethon``, ...) the daemon does, none of which a bare system interpreter has:
 
-    qa_fixture_recorder.py --check [connector ...]
+    .venv/bin/python scripts/qa_fixture_recorder.py --check [connector ...]
         Calls each connector's read methods against its tagged seed
         artifact, asserts non-empty/expected results, prints a report.
         Never writes a fixture file. Safe to run any time, as often as
         you like.
 
-    qa_fixture_recorder.py --record [connector ...]
+    .venv/bin/python scripts/qa_fixture_recorder.py --record [connector ...]
         Does the same targeted calls, redacts real account-identity
         fields (author email, account id, display name -- see redact()
         below) and structural resource ids/URLs (deidentify_structural_

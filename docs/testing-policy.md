@@ -73,10 +73,11 @@ Two modes:
   `tests/fixtures/live/<connector>/<method>.json`.
 
 **When to run this**: only when a PR touches `src/privacyfence/*_client.py` or
-`src/privacyfence/connectors/**` — not every PR. Scope it to the connector(s) touched:
+`src/privacyfence/connectors/**` — not every PR. Scope it to the connector(s) touched, using the
+project's own venv (a bare system `python3` won't have the third-party clients this imports):
 
 ```bash
-python3 scripts/qa_fixture_recorder.py --check confluence
+.venv/bin/python scripts/qa_fixture_recorder.py --check confluence
 ```
 
 - **Passes, live shape unchanged**: nothing else to do. `--check` never writes a file.
@@ -101,10 +102,11 @@ whatever process runs it (it drives a real click via `System Events`), and pops 
 windows on-screen for a couple of seconds each — run it locally, not headless.
 
 **When to run this**: whenever `approval_window.py`'s modal-loop plumbing changes (not every popup
-content change — those are covered by `test_approval_window.py` on every PR).
+content change — those are covered by `test_approval_window.py` on every PR). Same venv requirement
+as §2.1 — this needs the same pyobjc/AppKit packages the app depends on:
 
 ```bash
-python3 scripts/qa_popup_smoke.py
+.venv/bin/python scripts/qa_popup_smoke.py
 ```
 
 Paste the printed report into the PR description under a `## Popup smoke check` heading, same
