@@ -146,7 +146,7 @@ class TestShowPopupAndShowReadPopup:
 
         assert captured == {
             "title": "Title", "preview": {"Field": "Value"}, "details_text": "details", "allow_accept_all": False,
-            "allow_temp_accept": False,
+            "allow_temp_accept": False, "claude_reason": "", "write_content_flags": None, "seen_count": 0,
         }
         assert result == "accept"
 
@@ -225,6 +225,52 @@ class TestShowPopupAndShowReadPopup:
         approval_popup.show_popup("Title", {"Field": "Value"}, "details")
 
         assert "visibility" not in captured
+
+    def test_show_popup_forwards_write_content_flags(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(approval_popup, "show_native_approval", lambda **kw: captured.update(kw) or "accept")
+
+        approval_popup.show_popup(
+            "Title", {"Field": "Value"}, "details", write_content_flags=["IBAN (bank account number)"]
+        )
+
+        assert captured["write_content_flags"] == ["IBAN (bank account number)"]
+
+    def test_show_popup_defaults_write_content_flags_to_none(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(approval_popup, "show_native_approval", lambda **kw: captured.update(kw) or "accept")
+
+        approval_popup.show_popup("Title", {"Field": "Value"}, "details")
+
+        assert captured["write_content_flags"] is None
+
+    def test_show_read_popup_never_carries_write_content_flags(self, monkeypatch):
+        # The read side has its own, differently-behaved signal
+        # (pii_categories, which does gate a second confirmation) -- see
+        # gate.py's write_content_flags comment for why these are kept
+        # separate rather than reusing one field for both directions.
+        captured = {}
+        monkeypatch.setattr(approval_popup, "show_native_approval", lambda **kw: captured.update(kw) or "deny")
+
+        approval_popup.show_read_popup("Title", {}, "details", allow_accept_all=False)
+
+        assert "write_content_flags" not in captured
+
+    def test_show_popup_forwards_seen_count(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(approval_popup, "show_native_approval", lambda **kw: captured.update(kw) or "accept")
+
+        approval_popup.show_popup("Title", {"Field": "Value"}, "details", seen_count=3)
+
+        assert captured["seen_count"] == 3
+
+    def test_show_read_popup_forwards_seen_count(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(approval_popup, "show_native_approval", lambda **kw: captured.update(kw) or "deny")
+
+        approval_popup.show_read_popup("Title", {}, "details", allow_accept_all=False, seen_count=5)
+
+        assert captured["seen_count"] == 5
 
 
 class TestShowPiiConfirmationPopup:

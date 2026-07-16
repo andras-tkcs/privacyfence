@@ -411,16 +411,49 @@ every connector still require macOS/AppKit to actually import or run — that ve
 unchanged from Phase 0/1a and still needs a real `pytest` run before this is trustworthy end to
 end, not just internally consistent.
 
-**Phase 2 — new local detectors, still zero external calls**
-- Extend `pii_detector.py`'s pattern set with a broader "financial data" category (currency
-  amounts near budget/revenue/invoice keywords), per its own documented extension model. Narrower
-  in scope than originally planned: a dedicated "Salary/compensation information" category
-  (HU/DE/EN) shipped since this plan's first draft — that part of Phase 2 is already done.
-- Compute badges for the popup (write) gate from Claude's *own drafted content* — explicitly not
-  routed through the PII-detection "is this external data" framing (`gate.py` docstring is clear
-  that distinction is deliberate), but still worth flagging e.g. "this draft email contains what
-  looks like a bank account number" before Claude sends it.
-- Request fingerprinting from `audit_log.py` history ("approved 3 times this week").
+**Phase 2 — new local detectors, still zero external calls — implemented, see status below**
+
+- **Done**: `pii_detector.py` gained a "Financial figures (currency amounts)" category, distinct
+  from the salary/compensation category that had already shipped before this plan's first draft.
+  Anchored on a currency symbol (`$`/`€`/`£`) or ISO code (USD/EUR/GBP/HUF/CHF/Ft) adjacent to a
+  number — never a bare number alone, matching the module's own stated discipline for avoiding
+  the near-universal false positives email/phone patterns would cause. 10 new tests, **actually
+  run and passing** (this module has no AppKit dependency) — including confirming a spelled-out
+  currency word ("3000 Euro") does *not* match the ISO-code-anchored pattern, and that a bare
+  number/date/section-reference doesn't either.
+- **Done**: a separate, deliberately weaker `write_content_flags` signal for the popup (write)
+  gate, computed in `gated_call()` from Claude's own drafted content via the same
+  `detect_pii_categories()` entry point. Explicitly **not** routed through the existing
+  `pii_categories`/`_confirm_pii_or_deny` machinery (`gate.py`'s module docstring is clear that
+  distinction — read-gate-only PII confirmation — is deliberate) and never folded into
+  `AuditEntry.pii_detected`, whose established meaning is specifically about the read-gate scan.
+  Rendered in `approval_window.py` as its own amber-tinted, non-alarming banner (`_CONTENT_FLAG_AMBER`,
+  distinct alpha from the PII banner's red) with no confirmation gate and no full-window wash —
+  informational only, e.g. "This message appears to contain: IBAN (bank account number)" before
+  Claude sends it. Forwarded to both `show_read_popup`-adjacent code paths as a genuinely new
+  `write_content_flags` kwarg on `show_popup`.
+- **Done**: request fingerprinting. `AuditLogger.recent_matches(connector, tool, summary, week=...)`
+  (new method, `audit_log.py`) counts prior approved-like decisions for the same
+  `(connector, tool, summary)` in one week's log — a practical proxy for "the same request" given
+  `AuditEntry` carries neither an `operation_key` nor the full `preview` dict. Computed once in
+  `gated_call()` (`seen_count`), forwarded to **both** `show_read_popup` and `show_popup` (applies
+  to writes as much as reads, like `claude_reason`), rendered as a small "Seen N times this week"
+  caption right under the title — silent when zero, so a first-time request adds no noise. 9 new
+  `recent_matches` tests, **actually run and passing**.
+- While extending `gate.py`'s popup-call threading for this phase, found and fixed a latent bug
+  from Phase 1b: five `fake_show_popup` test doubles in `test_gate.py` were never updated when
+  `claude_reason` was added to that call site, meaning those tests would have failed the moment a
+  real `pytest` ran on macOS. Caught only because adding `seen_count` required touching the same
+  call sites again — a concrete illustration of why the verification note below matters.
+
+**Verification honesty note**: `pii_detector.py` and `audit_log.py` have no AppKit dependency —
+their test suites (108 tests total across every runnable file so far) actually ran and passed in
+this environment. `gate.py`, `approval_popup.py`, and `approval_window.py`'s wiring (the
+`write_content_flags`/`seen_count` threading, the new amber banner, the fingerprint caption) could
+not be executed here for the same reason as every prior phase's AppKit-touching work — checked by
+hand against every existing test assertion and the layout-height "must mirror" invariant, with a
+real bug (the `fake_show_popup` gap above) already found this way once. Still needs a real
+`pytest` run on macOS before this is trustworthy end to end.
 
 **Phase 3 — real preview rendering (bigger UI investment)**
 - Move `approval_window.py`'s body from a plain `NSTextView` to an embedded local `WKWebView`

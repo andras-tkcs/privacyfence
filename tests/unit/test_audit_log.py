@@ -189,6 +189,70 @@ class TestExportWeekToExcel:
         assert logger.export_week_to_excel("2026-W28") is None
 
 
+class TestRecentMatches:
+    """The request-fingerprint feature: (connector, tool, summary) counted
+    against one week's approved-like decisions."""
+
+    def test_counts_matching_approved_entries(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        for _ in range(3):
+            logger.record(make_entry(week="2026-W28", decision="approved"))
+
+        assert logger.recent_matches("gmail", "gmail_get_message", "Message from alice@example.com", week="2026-W28") == 3
+
+    def test_different_summary_does_not_match(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry(week="2026-W28", summary="Message from alice@example.com"))
+        logger.record(make_entry(week="2026-W28", summary="Message from bob@example.com"))
+
+        assert logger.recent_matches("gmail", "gmail_get_message", "Message from alice@example.com", week="2026-W28") == 1
+
+    def test_different_tool_does_not_match(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry(week="2026-W28", tool="gmail_get_message"))
+        logger.record(make_entry(week="2026-W28", tool="gmail_get_thread"))
+
+        assert logger.recent_matches("gmail", "gmail_get_message", "Message from alice@example.com", week="2026-W28") == 1
+
+    def test_rejected_decision_does_not_count(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry(week="2026-W28", decision="rejected"))
+
+        assert logger.recent_matches("gmail", "gmail_get_message", "Message from alice@example.com", week="2026-W28") == 0
+
+    def test_auto_accepted_and_accept_all_and_temp_session_all_count(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        for decision in ("approved", "auto_accepted", "accepted_via_accept_all", "accepted_via_temp_session"):
+            logger.record(make_entry(week="2026-W28", decision=decision))
+
+        assert logger.recent_matches("gmail", "gmail_get_message", "Message from alice@example.com", week="2026-W28") == 4
+
+    def test_policy_check_and_error_do_not_count(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry(week="2026-W28", decision="policy_check"))
+        logger.record(make_entry(week="2026-W28", decision="error"))
+
+        assert logger.recent_matches("gmail", "gmail_get_message", "Message from alice@example.com", week="2026-W28") == 0
+
+    def test_no_matching_file_returns_zero(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        assert logger.recent_matches("gmail", "gmail_get_message", "anything", week="2026-W99") == 0
+
+    def test_defaults_to_current_week(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry(week=current_week(), decision="approved"))
+
+        assert logger.recent_matches("gmail", "gmail_get_message", "Message from alice@example.com") == 1
+
+    def test_malformed_line_is_skipped_not_fatal(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry(week="2026-W28", decision="approved"))
+        with open(tmp_path / "2026-W28.jsonl", "a", encoding="utf-8") as fh:
+            fh.write("not valid json\n")
+
+        assert logger.recent_matches("gmail", "gmail_get_message", "Message from alice@example.com", week="2026-W28") == 1
+
+
 class TestExportAllPending:
     def test_exports_only_weeks_missing_xlsx(self, tmp_path):
         pytest.importorskip("openpyxl")

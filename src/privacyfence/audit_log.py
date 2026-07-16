@@ -17,6 +17,13 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# Decisions where the AI actually received the data or the write went
+# through -- used by AuditLogger.recent_matches() below to count how many
+# times a request has already been let through, not merely asked about.
+_APPROVED_LIKE_DECISIONS = frozenset({
+    "approved", "auto_accepted", "accepted_via_accept_all", "accepted_via_temp_session",
+})
+
 
 @dataclass
 class AuditEntry:
@@ -181,6 +188,43 @@ class AuditLogger:
             xlsx = self._log_dir / f"{week}.xlsx"
             if not xlsx.exists():
                 self.export_week_to_excel(week)
+
+    def recent_matches(self, connector: str, tool: str, summary: str, *, week: str | None = None) -> int:
+        """Count prior approved-like decisions (see _APPROVED_LIKE_DECISIONS)
+        for the same (connector, tool, summary) in one week's log --
+        defaults to the current week. The request-fingerprint feature
+        (docs/security-review-ui-redesign.md §7 Phase 2): "you've approved
+        this exact request N times this week," so a reviewer can spot an
+        unusually novel request versus a routine repeat at a glance.
+
+        (connector, tool, summary) is a practical proxy for "the same
+        request" -- AuditEntry carries neither an operation_key nor the
+        full preview dict, and summary already names the specific resource
+        for most tools (e.g. "Read email: Confidential Q3 numbers", 'Read
+        "Budget.xlsx"'). A coarser or finer fingerprint can replace this
+        later without changing the caller-facing count semantics.
+        """
+        week_file = self._log_dir / f"{week or current_week()}.jsonl"
+        if not week_file.exists():
+            return 0
+        count = 0
+        with open(week_file, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    data.get("connector") == connector
+                    and data.get("tool") == tool
+                    and data.get("summary") == summary
+                    and data.get("decision") in _APPROVED_LIKE_DECISIONS
+                ):
+                    count += 1
+        return count
 
 
 def current_week() -> str:

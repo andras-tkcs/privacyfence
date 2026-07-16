@@ -96,6 +96,19 @@ _PATTERNS: list[_PIIPattern] = [
         "IP address",
         r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b",
     ),
+    _p(
+        # Distinct from "Salary/compensation information" below -- this is
+        # about currency-figure content generally (budgets, invoices,
+        # quotes, revenue), not personal pay. Anchored on a currency
+        # symbol or ISO code adjacent to a number, never a bare number
+        # alone -- same reasoning the module docstring gives for leaving
+        # out email/phone patterns: an unanchored "any number" match would
+        # flag almost every business document regardless of content.
+        "Financial figures (currency amounts)",
+        r"[$€£]\s?\d[\d,.\s]{0,15}\d"
+        r"|\b\d[\d,.\s]{0,15}\d\s?(?:USD|EUR|GBP|HUF|CHF|Ft)\b"
+        r"|\b(?:USD|EUR|GBP|HUF|CHF)\s?\d[\d,.\s]{0,15}\d\b",
+    ),
 
     # -- Hungarian ------------------------------------------------------------
     _p(

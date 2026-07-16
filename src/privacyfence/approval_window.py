@@ -99,6 +99,15 @@ _PII_RED = NSColor.systemRedColor()
 _PII_BACKGROUND_ALPHA = 0.10
 _PII_BANNER_FILL_ALPHA = 0.16
 
+# Write-gate content-flag banner: deliberately NOT the PII red -- this is
+# an informational signal (Claude's own drafted content, no second
+# confirmation gate attached), not the "possible PII flowed in from an
+# external source, confirm before proceeding" signal the red tint means.
+# No full-window wash either, only this banner's own fill -- see gate.py's
+# write_content_flags comment and approval_popup.show_popup's docstring.
+_CONTENT_FLAG_AMBER = NSColor.systemOrangeColor()
+_CONTENT_FLAG_FILL_ALPHA = 0.16
+
 # "AI will receive" checklist symbols -- allow/redact/block from
 # privacy_filter.category_policy(). No per-row color coding (deliberately):
 # the symbol alone is legible without relying on systemGreen/systemRed's
@@ -194,10 +203,20 @@ class ApprovalWindowController(NSObject):
         self.pii_categories: list[str] = []
         self.visibility: dict[str, str] = {}
         self.claude_reason: str = ""
+        self.write_content_flags: list[str] = []
+        self.seen_count: int = 0
         self.result = "deny"
         self.panel = None
         self._details_text_view = None
         return self
+
+    # ------------------------------------------------------------------ #
+    # Request fingerprint caption ("Seen N times this week")
+    # ------------------------------------------------------------------ #
+
+    def _seen_count_text(self) -> str:
+        n = self.seen_count
+        return f"Seen {n} time{'s' if n != 1 else ''} this week"
 
     # ------------------------------------------------------------------ #
     # Summary box
@@ -303,6 +322,24 @@ class ApprovalWindowController(NSObject):
         return max(20.0, text_h) + _SUMMARY_PAD
 
     # ------------------------------------------------------------------ #
+    # Write-gate content-flag banner -- informational, no confirmation
+    # gate attached (unlike the PII banner above). See gate.py's
+    # write_content_flags comment and docs/security-review-ui-redesign.md
+    # §7 Phase 2 for why this is a separate signal from pii_categories.
+    # ------------------------------------------------------------------ #
+
+    def _content_flag_banner_text(self) -> str:
+        return "ⓘ This message appears to contain: " + ", ".join(self.write_content_flags)
+
+    def _content_flag_banner_height(self, width: float) -> float:
+        if not self.write_content_flags:
+            return 0.0
+        text_h = _text_height(
+            self._content_flag_banner_text(), width - 2 * _SUMMARY_PAD, NSFont.boldSystemFontOfSize_(13)
+        )
+        return max(20.0, text_h) + _SUMMARY_PAD
+
+    # ------------------------------------------------------------------ #
     # "Claude says" -- self-reported, unverified. See gate.py's
     # reason_scope docstring and docs/security-review-ui-redesign.md §4:
     # this is Claude's own stated reason for the call, never checked
@@ -404,6 +441,8 @@ class ApprovalWindowController(NSObject):
         y += _KICKER_HEIGHT + 4.0
         title_h = max(24.0, _text_height(self.title, content_width - _TITLE_RIGHT_RESERVE, NSFont.boldSystemFontOfSize_(21)))
         y += title_h + 18.0
+        if self.seen_count > 0:
+            y += 18.0  # request-fingerprint caption row ("Seen N times this week")
         if self.preview:
             y += self._summary_height(content_width) + 18.0
         if self.visibility:
@@ -411,6 +450,8 @@ class ApprovalWindowController(NSObject):
             y += self._visibility_height(content_width) + 18.0
         if self.pii_categories:
             y += self._pii_banner_height(content_width) + 18.0
+        if self.write_content_flags:
+            y += self._content_flag_banner_height(content_width) + 18.0
         if self.claude_reason:
             y += 20.0  # "Claude says (unverified)" label row
             y += self._claude_reason_height(content_width) + 18.0
@@ -491,6 +532,17 @@ class ApprovalWindowController(NSObject):
         content.addSubview_(title_field)
         y += title_h + 18.0
 
+        # Request fingerprint (docs/security-review-ui-redesign.md §7
+        # Phase 2): how many times this exact (connector, tool, summary)
+        # was already approved this week, from AuditLogger.recent_matches
+        # -- helps a reviewer spot a routine repeat versus something novel.
+        # Silent when zero (a first-time request needs no such caption).
+        if self.seen_count > 0:
+            seen_label = _make_label(self._seen_count_text(), size=12, color=NSColor.secondaryLabelColor())
+            seen_label.setFrame_(NSMakeRect(_MARGIN, y, content_width, 16.0))
+            content.addSubview_(seen_label)
+            y += 18.0
+
         # WHAT: resources/summary box, first -- the data, not the decision,
         # is the visual lead (docs/security-review-ui-redesign.md §5.1).
         if self.preview:
@@ -533,6 +585,28 @@ class ApprovalWindowController(NSObject):
             ))
             content.addSubview_(banner_label)
             y += banner_h + 18.0
+
+        # RISK (write side): content-flag banner -- informational only, no
+        # confirmation gate, deliberately amber not red (see class-level
+        # comment above _content_flag_banner_height). In practice never
+        # renders alongside the PII banner above (gate.py only populates
+        # one or the other depending on gate direction), but coded
+        # independently rather than as an if/elif -- nothing here assumes
+        # they're mutually exclusive.
+        if self.write_content_flags:
+            flag_h = self._content_flag_banner_height(content_width)
+            flag_bg = _background_box(
+                NSMakeRect(_MARGIN, y, content_width, flag_h),
+                fill=_CONTENT_FLAG_AMBER.colorWithAlphaComponent_(_CONTENT_FLAG_FILL_ALPHA),
+            )
+            content.addSubview_(flag_bg)
+            flag_label = _make_label(self._content_flag_banner_text(), size=13, bold=True, color=_CONTENT_FLAG_AMBER)
+            flag_label.setFrame_(NSMakeRect(
+                _MARGIN + _SUMMARY_PAD, y + _SUMMARY_PAD / 2,
+                content_width - 2 * _SUMMARY_PAD, flag_h - _SUMMARY_PAD,
+            ))
+            content.addSubview_(flag_label)
+            y += flag_h + 18.0
 
         # "Claude says" -- self-reported, unverified (see class-level
         # comment above _claude_reason_height). Its own label, its own
@@ -642,6 +716,8 @@ def show_native_approval(
     allow_temp_accept: bool = False,
     visibility: dict[str, str] | None = None,
     claude_reason: str = "",
+    write_content_flags: list[str] | None = None,
+    seen_count: int = 0,
 ) -> str:
     """Show the approval window and block until the user picks a button.
 
@@ -660,6 +736,8 @@ def show_native_approval(
         controller.pii_categories = pii_categories or []
         controller.visibility = visibility or {}
         controller.claude_reason = claude_reason or ""
+        controller.write_content_flags = write_content_flags or []
+        controller.seen_count = seen_count or 0
 
         controller.performSelectorOnMainThread_withObject_waitUntilDone_(
             "runApproval:", None, True

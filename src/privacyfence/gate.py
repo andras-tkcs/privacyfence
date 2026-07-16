@@ -209,6 +209,26 @@ async def gated_call(
         detect_pii_categories(details if pii_scan_text is None else pii_scan_text)
         if gate == "review" else []
     )
+    # A separate, deliberately weaker signal for the popup (write) gate:
+    # the same local detector, run over Claude's own drafted content, but
+    # informational only -- unlike pii_categories above, this never routes
+    # through _confirm_pii_or_deny (there is no "possible PII flowed in
+    # from an external source" here, so no second confirmation is owed),
+    # is never folded into the audit log's pii_detected field (that field's
+    # established meaning is specifically about the read-gate scan -- see
+    # its docstring in audit_log.py), and renders in the popup with a
+    # neutral/informational style, not the red tint+banner that implies a
+    # confirmation is coming. See docs/security-review-ui-redesign.md §7
+    # Phase 2 for why this exists as its own signal rather than reusing
+    # pii_categories's machinery.
+    write_content_flags = detect_pii_categories(details) if gate == "popup" else []
+    # Request fingerprint (docs/security-review-ui-redesign.md §7 Phase 2):
+    # "you've approved this exact (connector, tool, summary) N times this
+    # week" -- read directly from the audit log, same synchronous-call
+    # pattern _audit()/AuditLogger.record() already use elsewhere in this
+    # function rather than asyncio.to_thread (this file's own established
+    # precedent for small local JSONL reads/writes on the request path).
+    seen_count = get_audit_logger().recent_matches(connector, tool, summary)
 
     # Every exit from this function -- including one triggered by an
     # exception nobody anticipated below (a native popup call raising, a
@@ -268,7 +288,7 @@ async def gated_call(
 
                 decision = await asyncio.to_thread(
                     show_read_popup, popup_title, preview or {}, details, suggestion is not None,
-                    pii_categories, visibility, claude_reason,
+                    pii_categories, visibility, claude_reason, seen_count,
                 )
 
                 if decision in ("accept", "accept_all") and pii_categories:
@@ -314,7 +334,8 @@ async def gated_call(
                     _deny_unattended(audit, connector, tool, pii_categories=[])
 
                 decision = await asyncio.to_thread(
-                    show_popup, popup_title, preview or {}, details, file_key is not None, claude_reason
+                    show_popup, popup_title, preview or {}, details, file_key is not None,
+                    claude_reason, write_content_flags, seen_count,
                 )
 
             if decision == "accept_temp":

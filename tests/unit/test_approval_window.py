@@ -30,6 +30,7 @@ import pytest
 from AppKit import NSBox, NSButton, NSScrollView, NSTextField
 
 from privacyfence.approval_window import (
+    _CONTENT_FLAG_FILL_ALPHA,
     _PII_BACKGROUND_ALPHA,
     _PII_BANNER_FILL_ALPHA,
     ApprovalWindowController,
@@ -49,6 +50,9 @@ def make_controller(
     allow_temp_accept=False,
     pii_categories=None,
     visibility=None,
+    claude_reason="",
+    write_content_flags=None,
+    seen_count=0,
 ):
     c = ApprovalWindowController.alloc().init()
     c.title = title
@@ -58,6 +62,9 @@ def make_controller(
     c.allow_temp_accept = allow_temp_accept
     c.pii_categories = pii_categories or []
     c.visibility = visibility or {}
+    c.claude_reason = claude_reason
+    c.write_content_flags = write_content_flags or []
+    c.seen_count = seen_count
     return c
 
 
@@ -185,6 +192,88 @@ class TestPiiTintAndBanner:
         ))
         assert self._boxes_with_alpha(views, _PII_BACKGROUND_ALPHA) == []
         assert self._boxes_with_alpha(views, _PII_BANNER_FILL_ALPHA) == []
+
+
+class TestContentFlagBanner:
+    """The write-gate "content flags" banner -- informational only, no
+    confirmation gate, deliberately distinct from the PII banner's
+    alpha/color. See gate.py's write_content_flags comment."""
+
+    def _boxes_with_alpha(self, views, alpha, tolerance=1e-6):
+        matches = []
+        for v in views:
+            if not isinstance(v, NSBox):
+                continue
+            color = v.fillColor()
+            if color is None:
+                continue
+            if abs(color.alphaComponent() - alpha) < tolerance:
+                matches.append(v)
+        return matches
+
+    def test_no_flags_renders_no_amber_banner(self):
+        views = build_views(make_controller(write_content_flags=[]))
+        assert self._boxes_with_alpha(views, _CONTENT_FLAG_FILL_ALPHA) == []
+
+    def test_flags_render_a_banner_box_but_no_full_window_wash(self):
+        # Unlike the PII banner, this never gets the full-window red wash
+        # (_PII_BACKGROUND_ALPHA) -- it's informational, not "confirm this
+        # before proceeding".
+        views = build_views(make_controller(write_content_flags=["IBAN (bank account number)"]))
+        assert len(self._boxes_with_alpha(views, _CONTENT_FLAG_FILL_ALPHA)) >= 1
+        assert self._boxes_with_alpha(views, _PII_BACKGROUND_ALPHA) == []
+
+    def test_banner_text_names_every_flagged_category(self):
+        controller = make_controller(write_content_flags=["IBAN (bank account number)", "Salary/compensation information"])
+        views = build_views(controller)
+        values = text_field_values(views)
+        assert controller._content_flag_banner_text() in values
+        assert "IBAN (bank account number)" in controller._content_flag_banner_text()
+        assert "Salary/compensation information" in controller._content_flag_banner_text()
+
+    def test_flags_and_pii_categories_use_visually_distinct_alphas(self):
+        # Not the same banner styling reused for both directions -- a
+        # reviewer must be able to tell "informational, write-side" apart
+        # from "confirmation-gated, read-side" at a glance.
+        assert _CONTENT_FLAG_FILL_ALPHA != _PII_BANNER_FILL_ALPHA
+
+
+class TestClaudeSaysBlock:
+    """Claude's self-reported, unverified reason for the call -- see
+    gate.py's reason_scope docstring. Present for both read and write
+    gates, unlike the visibility checklist."""
+
+    def test_no_reason_renders_no_claude_says_label(self):
+        views = build_views(make_controller(claude_reason=""))
+        values = text_field_values(views)
+        assert "Claude says (unverified)" not in values
+
+    def test_reason_present_renders_the_label_and_text(self):
+        views = build_views(make_controller(claude_reason="Summarizing the Q3 budget for the user."))
+        values = text_field_values(views)
+        assert "Claude says (unverified)" in values
+        assert "Summarizing the Q3 budget for the user." in values
+
+
+class TestRequestFingerprint:
+    """The "Seen N times this week" caption -- AuditLogger.recent_matches
+    surfaced. Silent on a first-time request, present for both read and
+    write gates."""
+
+    def test_zero_renders_no_caption(self):
+        views = build_views(make_controller(seen_count=0))
+        values = text_field_values(views)
+        assert not any("this week" in v for v in values)
+
+    def test_positive_count_renders_the_caption(self):
+        views = build_views(make_controller(seen_count=3))
+        values = text_field_values(views)
+        assert "Seen 3 times this week" in values
+
+    def test_singular_count_uses_singular_wording(self):
+        views = build_views(make_controller(seen_count=1))
+        values = text_field_values(views)
+        assert "Seen 1 time this week" in values
 
 
 class TestSummaryBox:
@@ -329,6 +418,21 @@ class TestComputeLayout:
         base = make_controller()._compute_layout(560.0)[0]
         with_visibility = make_controller(visibility={"Body": "allow"})._compute_layout(560.0)[0]
         assert with_visibility > base
+
+    def test_content_flag_banner_adds_height_relative_to_none(self):
+        base = make_controller()._compute_layout(560.0)[0]
+        with_flags = make_controller(write_content_flags=["IBAN (bank account number)"])._compute_layout(560.0)[0]
+        assert with_flags > base
+
+    def test_claude_reason_adds_height_relative_to_none(self):
+        base = make_controller()._compute_layout(560.0)[0]
+        with_reason = make_controller(claude_reason="Summarizing for the user.")._compute_layout(560.0)[0]
+        assert with_reason > base
+
+    def test_seen_count_adds_height_relative_to_zero(self):
+        base = make_controller()._compute_layout(560.0)[0]
+        with_seen = make_controller(seen_count=3)._compute_layout(560.0)[0]
+        assert with_seen > base
 
     def test_a_longer_wrapping_title_never_shrinks_the_computed_height(self):
         short = make_controller(title="Short")._compute_layout(560.0)[0]
