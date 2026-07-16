@@ -96,6 +96,17 @@ slack:
   # message instead (one extra API call per run).
   seed_thread_ts: ""
 
+telegram:
+  # docs/qa-environment-setup.md §7 -- no separate seed artifact here: the
+  # one durable [QATEST] message you send yourself in Saved Messages is
+  # what the recorder targets. Saved Messages has no fixed name to match
+  # on, so it's always found via the is_self flag, never by chat_id here --
+  # this override exists only for the rare case where is_self resolution
+  # itself is what you're trying to debug.
+  chat_id: ""
+  # How many recent Saved Messages to scan for the [QATEST] tag.
+  history_limit: 100
+
 # Other connectors follow the same shape once
 # scripts/qa_fixture_recorder.py grows a check_<connector>() for them --
 # see that script's CONNECTOR_CHECKS registry and

@@ -391,6 +391,9 @@ prove the review gate still fires for anything not on the allowlist).
         Messages" is no exception; once sent, it stays in the list forever. No naming needed
         afterward — the test prompt finds it every run via the `is_self` flag, not by matching a
         name.)
+  - [ ] **For `scripts/qa_fixture_recorder.py`**: no new fixture needed — same message, same
+        resolve-by-`is_self` logic; it scans Saved Messages' recent history for the `[QATEST]` tag
+        the same way Slack's recorder scans the control-channel thread (§3)
 - [ ] Decide `approved_chats`
   - [ ] Point it at Saved Messages itself (get its numeric `chat_id` from `telegram_list_chats`
         after the step above, or headlessly with `scripts/qa_list_ids.py telegram` — look for
@@ -570,10 +573,8 @@ also means the *success* path never gets exercised unless you seed some data:
   - Note: this is a narrower requirement than the steps above — the recorder only ever reads this
     one page, by ID/title and the `[QATEST]` tag, never "any page in `PFQA`" — see
     `external-api-contract-testing.md`'s "Guardrail against recording the wrong thing" for why.
-    Only Confluence, Jira, Salesforce, Gmail, Drive, Calendar, Contacts, Tasks, and Slack have
-    recorder support today (`scripts/qa_fixture_recorder.py`'s
-    `CONNECTOR_CHECKS`); Telegram will need the same kind of tagged seed artifact once it's wired
-    in — this section is the pattern to follow when that happens, not a one-off.
+    Every connector has recorder support today (`scripts/qa_fixture_recorder.py`'s
+    `CONNECTOR_CHECKS`) — this section is the pattern every one of them follows.
 
 ## 11. PII Detection Gate
 
@@ -724,6 +725,7 @@ would find, headlessly, without needing a live Claude session first.
 | Telegram Saved Messages | `is_self: true` flag | `telegram_list_chats` |
 | Telegram approved chat | `auto_accept_grants.telegram.chats` (`read: true`), or the legacy `telegram.read_chat_messages` → `approved_chats` rule (falls back to Saved Messages) | `settings.yaml` |
 | Telegram control chat | Any chat that isn't the above two | `telegram_list_chats` |
+| Telegram recorder seed message | Same Saved Messages `[QATEST]` message (or `telegram.chat_id`) | `tests/fixtures/qa_environment.yaml` |
 | Salesforce QA report | `auto_accept_grants.salesforce.reports` (`run: true`), or the legacy `salesforce.run_report` → `approved_report_ids` rule (falls back to exact name `PrivacyFence QA Report`) | `settings.yaml` / `salesforce_list_reports` |
 | Salesforce QA object type | `salesforce.read_record` → `approved_object_types` (falls back to `Account`) | `settings.yaml` |
 | Salesforce recorder seed record | Name tag `[QATEST]`, same record as the seeded Account (only used by `scripts/qa_fixture_recorder.py`) | `tests/fixtures/qa_environment.yaml` |

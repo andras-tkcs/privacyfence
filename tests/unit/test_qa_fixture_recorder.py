@@ -27,8 +27,10 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -46,6 +48,7 @@ from privacyfence.calendar_client import CalendarClient  # noqa: E402
 from privacyfence.contacts_client import ContactsClient  # noqa: E402
 from privacyfence.tasks_client import TasksClient  # noqa: E402
 from privacyfence.slack_client import SlackClient  # noqa: E402
+from privacyfence.telegram_client import TelegramPrivacyFenceClient  # noqa: E402
 
 
 def _offline_google_service(api: str, version: str, raw_response):
@@ -93,6 +96,37 @@ def _fake_slack_web_client(responses: dict[str, dict]):
 
     web_client.api_call = fake_api_call
     return web_client
+
+
+class _FakeTelethonMessage:
+    """Minimal stand-in for a Telethon Message: has the attributes
+    _parse_message() reads (id/sender/date/text/message/out/media) *and* a
+    real ``to_dict()`` -- not a MagicMock's auto-generated one, which would
+    return another MagicMock rather than a real dict -- so
+    _telethon_to_jsonable's recursion is genuinely exercised, the same
+    reasoning RawCaptureExecute's tests use a real offline HttpRequest
+    instead of a MagicMock service double.
+    """
+
+    def __init__(self, id: int, text: str, date, user_id: int = 111222333):
+        self.id = id
+        self.text = text
+        self.message = text
+        self.date = date
+        self.out = False
+        self.media = None
+        self.sender = SimpleNamespace(id=user_id, username="qauser", first_name="", last_name="") if user_id else None
+        self._user_id = user_id
+
+    def to_dict(self) -> dict:
+        return {
+            "_": "Message",
+            "id": self.id,
+            "date": self.date,
+            "message": self.text,
+            "peer_id": {"_": "PeerUser", "user_id": self._user_id},
+            "from_id": {"_": "PeerUser", "user_id": self._user_id},
+        }
 
 
 # ---------------------------------------------------------------------------- #
@@ -219,6 +253,79 @@ class TestRedactSlackMessages:
 
     def test_missing_messages_does_not_raise(self):
         assert recorder.redact_slack_messages({}) == {}
+
+
+class TestTelethonToJsonable:
+    """Telethon returns typed TL objects, not JSON dicts -- this is the
+    function that bridges the two before anything gets written to a
+    fixture file.
+    """
+
+    def test_converts_object_via_to_dict(self):
+        msg = _FakeTelethonMessage(id=1, text="hi", date=datetime(2026, 7, 16, 10, 0, tzinfo=timezone.utc))
+        out = recorder._telethon_to_jsonable(msg)
+        assert out["id"] == 1
+        assert out["message"] == "hi"
+        assert out["date"] == "2026-07-16T10:00:00+00:00"  # datetime -> isoformat string
+
+    def test_recurses_into_a_list_of_objects(self):
+        msgs = [
+            _FakeTelethonMessage(id=1, text="a", date=None),
+            _FakeTelethonMessage(id=2, text="b", date=None),
+        ]
+        out = recorder._telethon_to_jsonable(msgs)
+        assert [m["id"] for m in out] == [1, 2]
+
+    def test_converts_bytes_to_hex(self):
+        assert recorder._telethon_to_jsonable(b"\x01\x02") == "0102"
+
+    def test_recurses_into_nested_objects_with_their_own_to_dict(self):
+        # Telethon's own custom.Dialog.to_dict() doesn't recursively resolve
+        # nested TL objects the way generated to_dict()s do -- this is the
+        # case that matters most: a dict value that is itself still a raw
+        # object, not yet a dict.
+        class _Nested:
+            def to_dict(self):
+                return {"user_id": 5}
+
+        out = recorder._telethon_to_jsonable({"peer": _Nested()})
+        assert out == {"peer": {"user_id": 5}}
+
+    def test_leaves_plain_values_alone(self):
+        assert recorder._telethon_to_jsonable({"a": 1, "b": "x", "c": None}) == {"a": 1, "b": "x", "c": None}
+
+
+class TestRedactTelegramMessages:
+    """Telegram identifies chat/sender through numeric Peer sub-objects
+    ({"user_id": 123...}) nested under peer_id/from_id/saved_peer_id, not a
+    distinctively-named top-level field -- the same kind of gap as Slack's
+    generic "user" key, found the same way: building a realistic response
+    and checking the redacted output before shipping.
+    """
+
+    def test_peer_and_from_user_ids_redacted(self):
+        raw = [{
+            "id": 1, "message": "hi",
+            "peer_id": {"_": "PeerUser", "user_id": 111222333},
+            "from_id": {"_": "PeerUser", "user_id": 111222333},
+        }]
+        out = recorder.redact_telegram_messages(raw)
+        assert out[0]["peer_id"]["user_id"] == recorder._REDACTED_TELEGRAM_USER_ID
+        assert out[0]["from_id"]["user_id"] == recorder._REDACTED_TELEGRAM_USER_ID
+
+    def test_message_text_and_id_are_left_alone(self):
+        raw = [{"id": 1, "peer_id": {"user_id": 111}, "message": "PrivacyFence QA seed message [QATEST]"}]
+        out = recorder.redact_telegram_messages(raw)
+        assert out[0]["message"] == "PrivacyFence QA seed message [QATEST]"
+        assert out[0]["id"] == 1
+
+    def test_does_not_mutate_input(self):
+        raw = [{"id": 1, "peer_id": {"user_id": 111}}]
+        recorder.redact_telegram_messages(raw)
+        assert raw[0]["peer_id"]["user_id"] == 111
+
+    def test_missing_peer_fields_do_not_raise(self):
+        assert recorder.redact_telegram_messages([{"id": 1}]) == [{"id": 1}]
 
 
 # ---------------------------------------------------------------------------- #
@@ -397,6 +504,45 @@ class TestRawCaptureApiCall:
             pass
 
         assert client._client.api_call is original
+
+
+class TestRawCaptureTelethon:
+    """TelegramPrivacyFenceClient's choke point is a single bound async
+    method on the underlying telethon.TelegramClient instance -- tested
+    against a MagicMock-backed fake Telethon client (async methods
+    explicitly set to AsyncMock), the same pattern test_telegram_client.py
+    already uses for this client.
+    """
+
+    def _client_with(self, fake_telethon_client: MagicMock) -> TelegramPrivacyFenceClient:
+        client = TelegramPrivacyFenceClient(api_id=1, api_hash="h", session_file="/tmp/unused.session")
+        client._client = fake_telethon_client
+        client._connected = True
+        return client
+
+    async def test_captures_and_converts_the_result(self):
+        msg = _FakeTelethonMessage(id=1, text="hi", date=datetime(2026, 7, 16, tzinfo=timezone.utc))
+        fake = MagicMock()
+        fake.get_messages = AsyncMock(return_value=[msg])
+        client = self._client_with(fake)
+
+        with recorder.RawCaptureTelethon(client, "get_messages") as cap:
+            result = await client.get_messages(5, 10)
+
+        assert cap.captured[0]["id"] == 1
+        assert cap.captured[0]["message"] == "hi"
+        assert result[0].text == "hi"  # the real TelegramMessage, unaffected by the capture
+
+    async def test_restores_original_method_on_exit(self):
+        fake = MagicMock()
+        original = AsyncMock(return_value=[])
+        fake.get_messages = original
+        client = self._client_with(fake)
+
+        with recorder.RawCaptureTelethon(client, "get_messages"):
+            pass
+
+        assert fake.get_messages is original
 
 
 # ---------------------------------------------------------------------------- #
@@ -835,6 +981,101 @@ class TestCheckSlack:
         assert not get_thread.ok
         assert get_thread.raw is None
         assert "[QATEST]" in get_thread.note
+
+
+class TestCheckTelegram:
+    """check_telegram() is a sync wrapper around asyncio.run() -- called
+    from plain (non-async) test functions here, the same way the script's
+    own run() calls it, since asyncio.run() can't be nested inside an
+    already-running event loop (which pytest-asyncio's auto mode would
+    otherwise put an `async def` test inside).
+    """
+
+    SEED_TEXT = "PrivacyFence QA seed message [QATEST]. No real information."
+
+    def _connected_client(self, fake_telethon_client: MagicMock) -> TelegramPrivacyFenceClient:
+        fake_telethon_client.disconnect = AsyncMock()
+        client = TelegramPrivacyFenceClient(api_id=1, api_hash="h", session_file="/tmp/unused.session")
+        client._client = fake_telethon_client
+        client._connected = True
+        return client
+
+    def test_resolves_saved_messages_via_is_self_and_records_with_redaction(self, monkeypatch):
+        from telethon.tl.types import User
+
+        entity = MagicMock(spec=User)
+        entity.id = 999
+        entity.username = ""
+        entity.bot = False
+        entity.is_self = True
+        dialog = SimpleNamespace(name="Saved Messages", entity=entity, unread_count=0)
+        tagged_msg = _FakeTelethonMessage(
+            id=1, text=self.SEED_TEXT, date=datetime(2026, 7, 16, tzinfo=timezone.utc), user_id=555,
+        )
+
+        fake = MagicMock()
+        fake.get_dialogs = AsyncMock(return_value=[dialog])
+        fake.get_messages = AsyncMock(return_value=[tagged_msg])
+        client = self._connected_client(fake)
+        monkeypatch.setattr(recorder, "_build_telegram_client", lambda: client)
+
+        results = recorder.check_telegram(record=True, manifest={})
+
+        get_messages = next(r for r in results if r.method == "get_messages")
+        assert get_messages.ok
+        assert get_messages.raw[0]["message"] == self.SEED_TEXT
+        assert get_messages.raw[0]["peer_id"]["user_id"] == recorder._REDACTED_TELEGRAM_USER_ID
+        assert get_messages.raw[0]["from_id"]["user_id"] == recorder._REDACTED_TELEGRAM_USER_ID
+        fake.disconnect.assert_awaited_once()
+
+    def test_targets_configured_chat_id_directly(self, monkeypatch):
+        # chat_id configured -- no get_dialogs resolve call needed.
+        tagged_msg = _FakeTelethonMessage(
+            id=2, text=self.SEED_TEXT, date=datetime(2026, 7, 16, tzinfo=timezone.utc), user_id=555,
+        )
+        fake = MagicMock()
+        fake.get_messages = AsyncMock(return_value=[tagged_msg])
+        client = self._connected_client(fake)
+        monkeypatch.setattr(recorder, "_build_telegram_client", lambda: client)
+
+        results = recorder.check_telegram(record=True, manifest={"telegram": {"chat_id": "999"}})
+
+        get_messages = next(r for r in results if r.method == "get_messages")
+        assert get_messages.ok
+        fake.get_dialogs.assert_not_called()
+
+    def test_no_tagged_message_in_history_is_refused(self, monkeypatch):
+        untagged_msg = _FakeTelethonMessage(
+            id=9, text="Some real unrelated note", date=datetime(2026, 7, 16, tzinfo=timezone.utc), user_id=555,
+        )
+        fake = MagicMock()
+        fake.get_messages = AsyncMock(return_value=[untagged_msg])
+        client = self._connected_client(fake)
+        monkeypatch.setattr(recorder, "_build_telegram_client", lambda: client)
+
+        results = recorder.check_telegram(record=True, manifest={"telegram": {"chat_id": "999"}})
+
+        get_messages = next(r for r in results if r.method == "get_messages")
+        assert not get_messages.ok
+        assert get_messages.raw is None
+        assert "[QATEST]" in get_messages.note
+
+    def test_no_saved_messages_chat_found_is_refused(self, monkeypatch):
+        entity = MagicMock()
+        entity.id = 111
+        entity.is_self = False
+        entity.username = ""
+        dialog = SimpleNamespace(name="Some Other Chat", entity=entity, unread_count=0)
+        fake = MagicMock()
+        fake.get_dialogs = AsyncMock(return_value=[dialog])
+        client = self._connected_client(fake)
+        monkeypatch.setattr(recorder, "_build_telegram_client", lambda: client)
+
+        results = recorder.check_telegram(record=True, manifest={})
+
+        get_messages = next(r for r in results if r.method == "get_messages")
+        assert not get_messages.ok
+        assert "Saved Messages" in get_messages.note
 
 
 # ---------------------------------------------------------------------------- #

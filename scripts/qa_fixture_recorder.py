@@ -36,9 +36,11 @@ that item rather than silently capturing whatever was fetched.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import copy
 import datetime
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Callable
@@ -49,6 +51,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from privacyfence import daemon_main  # noqa: E402
+from privacyfence.app_credentials import telegram_app_credentials  # noqa: E402
 from privacyfence.confluence_client import ConfluenceClient, ConfluenceClientError  # noqa: E402
 from privacyfence.jira_client import JiraClient, JiraClientError  # noqa: E402
 from privacyfence.salesforce_client import SalesforceClient, SalesforceClientError  # noqa: E402
@@ -59,6 +62,7 @@ from privacyfence.contacts_client import ContactsClient, ContactsClientError  # 
 from privacyfence.tasks_client import TasksClient, TasksClientError  # noqa: E402
 from privacyfence.slack_client import SlackClient, SlackClientError  # noqa: E402
 from privacyfence.slack_client import load_token_file as load_slack_token  # noqa: E402
+from privacyfence.telegram_client import TelegramClientError, TelegramPrivacyFenceClient  # noqa: E402
 
 FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures" / "live"
 MANIFEST_PATH = REPO_ROOT / "tests" / "fixtures" / "qa_environment.yaml"
@@ -174,6 +178,54 @@ def redact_slack_messages(raw: dict[str, Any]) -> dict[str, Any]:
             if isinstance(slack_file, dict) and slack_file.get("user"):
                 slack_file["user"] = _REDACTED_SLACK_USER_ID
     return raw
+
+
+# Telegram's raw Message shape (after TLObject.to_dict()) identifies the
+# author/chat through numeric Peer sub-objects -- {"_": "PeerUser",
+# "user_id": 123456789} nested under "peer_id"/"from_id"/"saved_peer_id" --
+# not a distinctively-named top-level field like Confluence's authorId, so
+# it needs the same kind of connector-specific pass as Gmail's headers and
+# Slack's user/bot_id. Especially relevant here since the only chat this
+# recorder ever targets is Saved Messages, where peer_id is always your own
+# real numeric account id.
+_REDACTED_TELEGRAM_USER_ID = 700000000
+
+
+def redact_telegram_messages(raw: list[Any]) -> list[Any]:
+    raw = copy.deepcopy(raw)
+    for message in raw:
+        if not isinstance(message, dict):
+            continue
+        for peer_key in ("peer_id", "from_id", "saved_peer_id"):
+            peer = message.get(peer_key)
+            if isinstance(peer, dict):
+                for id_key in ("user_id", "chat_id", "channel_id"):
+                    if peer.get(id_key):
+                        peer[id_key] = _REDACTED_TELEGRAM_USER_ID
+    return raw
+
+
+def _telethon_to_jsonable(value: Any) -> Any:
+    """Recursively convert a Telethon return value into plain,
+    JSON-serializable Python values. TLObject.to_dict() (generated code)
+    already resolves most nested TL objects, but leaves datetimes as real
+    ``datetime`` objects and bytes as raw ``bytes`` -- neither of which
+    ``json.dumps()`` can handle -- and Telethon's own non-generated wrapper
+    classes (e.g. ``custom.Dialog``) don't recursively resolve nested TL
+    objects at all. This handles both by recursing itself rather than
+    trusting any single ``to_dict()`` call to have gone all the way down.
+    """
+    if hasattr(value, "to_dict") and callable(getattr(value, "to_dict", None)):
+        return _telethon_to_jsonable(value.to_dict())
+    if isinstance(value, dict):
+        return {k: _telethon_to_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_telethon_to_jsonable(v) for v in value]
+    if isinstance(value, datetime.datetime):
+        return value.isoformat()
+    if isinstance(value, bytes):
+        return value.hex()
+    return value
 
 
 # ---------------------------------------------------------------------------- #
@@ -385,6 +437,40 @@ class RawCaptureApiCall:
 
     def __exit__(self, *exc: Any) -> None:
         self._web_client.api_call = self._original
+
+
+class RawCaptureTelethon:
+    """Variant for TelegramPrivacyFenceClient, whose underlying Telethon
+    client returns typed TL objects (Message/Dialog/User/...), not JSON
+    dicts the way every REST-backed connector here does. Wraps a single
+    bound async method on the raw ``telethon.TelegramClient`` instance
+    (e.g. ``"get_messages"``) -- instance-level, like RawCapture/
+    RawCaptureCall, not class-level like RawCaptureExecute, since Telethon's
+    own client methods are already a stable, single per-call choke point
+    the way ``HttpRequest.execute`` isn't. The captured TL object is
+    converted to a JSON-serializable form at capture time via
+    ``_telethon_to_jsonable``, since a TLObject can't be written to a
+    fixture file directly.
+    """
+
+    def __init__(self, telegram_client: "TelegramPrivacyFenceClient", method_name: str) -> None:
+        self._client = telegram_client._client
+        self._method_name = method_name
+        self.captured: Any = None
+
+    def __enter__(self) -> "RawCaptureTelethon":
+        self._original = getattr(self._client, self._method_name)
+
+        async def wrapped(*args: Any, **kwargs: Any) -> Any:
+            result = await self._original(*args, **kwargs)
+            self.captured = _telethon_to_jsonable(result)
+            return result
+
+        setattr(self._client, self._method_name, wrapped)
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        setattr(self._client, self._method_name, self._original)
 
 
 # ---------------------------------------------------------------------------- #
@@ -940,6 +1026,86 @@ def check_slack(record: bool, manifest: dict[str, Any]) -> list[CheckResult]:
     return results
 
 
+def _build_telegram_client() -> TelegramPrivacyFenceClient:
+    creds = telegram_app_credentials()
+    if not creds:
+        raise SystemExit("Telegram app credentials not available in this build.")
+    api_id, api_hash = creds
+    session_file = daemon_main._resolve_path(daemon_main.TOKEN_FILES["telegram"])
+    if not os.path.exists(session_file) and not os.path.exists(session_file + ".session"):
+        raise SystemExit(
+            "Telegram is not authenticated -- run `privacyfence-app --telegram-setup` first."
+        )
+    return TelegramPrivacyFenceClient(api_id=api_id, api_hash=api_hash, session_file=session_file)
+
+
+def check_telegram(record: bool, manifest: dict[str, Any]) -> list[CheckResult]:
+    """Sync entry point required by CONNECTOR_CHECKS -- Telegram is the one
+    connector whose client is fully async (Telethon), unlike every other
+    connector's synchronous *_client.py, so the actual work happens in
+    _check_telegram_async() and this just drives it with asyncio.run().
+    """
+    return asyncio.run(_check_telegram_async(record, manifest))
+
+
+async def _check_telegram_async(record: bool, manifest: dict[str, Any]) -> list[CheckResult]:
+    # No separate seed artifact here -- qa-environment-setup.md §7 already
+    # has you send yourself one durable, [QATEST]-tagged message in Saved
+    # Messages. The recorder finds that chat via the is_self flag, the same
+    # way the test prompt itself does (Saved Messages has no fixed name to
+    # match on), then scans its recent history for the tagged message --
+    # the same resolve-by-scanning shape as Slack's control-channel thread.
+    cfg = manifest.get("telegram") or {}
+    chat_id_cfg = cfg.get("chat_id", "")
+    history_limit = int(cfg.get("history_limit", 100) or 100)
+
+    results: list[CheckResult] = []
+    client = _build_telegram_client()
+
+    try:
+        await client.connect()
+
+        if chat_id_cfg:
+            chat_id = int(chat_id_cfg)
+        else:
+            chats = await client.list_chats(limit=200)
+            saved = next((c for c in chats if c.is_self), None)
+            if saved is None:
+                raise TelegramClientError("no Saved Messages chat found (is_self=True) in list_chats() result")
+            chat_id = saved.id
+
+        with RawCaptureTelethon(client, "get_messages") as cap:
+            messages = await client.get_messages(chat_id, history_limit)
+        tagged = next((m for m in messages if QATEST_TAG in (m.text or "")), None)
+        # sender_name is deliberately not part of this gate -- Telethon
+        # doesn't always populate msg.sender for a self-chat message the
+        # same way it does for a message from someone else, the same kind
+        # of legitimately-sometimes-empty field Jira's assignee is.
+        complete = tagged is not None and bool(tagged.text and tagged.date)
+        ok = tagged is not None and complete
+        if tagged is None:
+            note = f"no message carrying {QATEST_TAG} found in Saved Messages (chat_id={chat_id}) history"
+        elif not complete:
+            note = "missing popup field(s) -- text/date not both present"
+        else:
+            note = "text, date present"
+        raw = None
+        if record and ok and isinstance(cap.captured, list):
+            matching = [m for m in cap.captured if isinstance(m, dict) and m.get("id") == tagged.id]
+            raw = redact(redact_telegram_messages(matching))
+        results.append(CheckResult("telegram", "get_messages", "Saved Messages", ok, note, raw, "get_messages.json"))
+    except TelegramClientError as exc:
+        results.append(CheckResult("telegram", "get_messages", "Saved Messages", False, str(exc)))
+    finally:
+        if client._client is not None:
+            try:
+                await client._client.disconnect()
+            except Exception:  # noqa: BLE001 - best-effort cleanup, never masks the real result
+                pass
+
+    return results
+
+
 CONNECTOR_CHECKS: dict[str, Callable[[bool, dict[str, Any]], list[CheckResult]]] = {
     "confluence": check_confluence,
     "jira": check_jira,
@@ -950,6 +1116,7 @@ CONNECTOR_CHECKS: dict[str, Callable[[bool, dict[str, Any]], list[CheckResult]]]
     "contacts": check_contacts,
     "tasks": check_tasks,
     "slack": check_slack,
+    "telegram": check_telegram,
 }
 
 

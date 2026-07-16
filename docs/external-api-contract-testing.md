@@ -88,9 +88,9 @@ credential store, no separate accounts.
 directly rather than a full gated `Connector`, since it only ever calls a small, curated set of
 **targeted, read-only** methods per connector: always by the specific ID/key of a
 `qa-environment-setup.md` seed artifact (read from the non-secret manifest below), never a blanket
-list/search call kept for its own sake. Implemented today: **Confluence, Jira, Salesforce, Gmail,
-Drive, Calendar, Contacts, Tasks, and Slack** — every connector except Telegram. Four capture
-mechanisms cover them:
+list/search call kept for its own sake. Implemented today: **every connector** — Confluence, Jira,
+Salesforce, Gmail, Drive, Calendar, Contacts, Tasks, Slack, and Telegram. Five capture mechanisms
+cover them:
 
 - `RawCapture` — Confluence and Jira funnel every client call through the same
   `self._request(fn, *a, **kw)` choke point (same author, same Atlassian OAuth grant); works for
@@ -122,10 +122,21 @@ mechanisms cover them:
   `users.info`'s response instead of `conversations.replies`', so this one keys captures by Slack API
   method name (`{"conversations.replies": {...}, "users.info": {...}}`) and the caller picks the one
   it actually wants.
-
-Telegram's client is fully `async`, which the recorder (currently synchronous end to end) can't
-drive without also becoming async — it still needs real, connector-specific work — see the comment
-above `CONNECTOR_CHECKS` in the script:
+- `RawCaptureTelethon` — Telegram is the most different of all: its client (`telegram_client.py`) is
+  fully `async` (Telethon is natively asyncio-based), and its raw responses are typed TL objects
+  (`Message`/`Dialog`/`User`/...), not JSON dicts the way every REST-backed connector's response is —
+  there's no HTTP response body to begin with, since Telethon speaks MTProto directly. Two
+  consequences, handled separately: (1) `check_telegram()` itself is a plain synchronous function
+  (matching every other entry in `CONNECTOR_CHECKS`), but internally just calls `asyncio.run()` on an
+  `async` implementation — the rest of the recorder (`run()`/`main()`) never has to know Telegram is
+  different at all. (2) The capture class wraps a single bound *async* method on the raw
+  `telethon.TelegramClient` instance (`"get_messages"`) the same instance-level way
+  `RawCapture`/`RawCaptureCall` do, then converts the captured TL object to a plain JSON-serializable
+  form via a small recursive helper, `_telethon_to_jsonable()` — needed because `TLObject.to_dict()`
+  (Telethon's own generated code) resolves most nesting but still leaves `datetime`/`bytes` leaf
+  values un-JSON-serializable, and Telethon's *non*-generated wrapper classes (`custom.Dialog`, not
+  used by this recorder but worth naming the trap) don't recursively resolve nested TL objects via
+  `to_dict()` at all.
 
 ```bash
 python3 scripts/qa_fixture_recorder.py --check                          # every implemented connector
@@ -195,6 +206,14 @@ other connector's raw shape instead of catching a real gap. Also covers the same
 where it recurs one level down — a reply's `edited.user`, a `reactions[].users` list, a
 `files[].user` — the same kind of nested-shape gap Salesforce's `Owner`/`CreatedBy`/`LastModifiedBy`
 turned out to have.
+
+A **fifth** pass, `redact_telegram_messages()`, exists for Telegram: its raw `Message.to_dict()`
+shape identifies the chat/sender through numeric `Peer` sub-objects — `{"_": "PeerUser", "user_id":
+123456789}` nested under `peer_id`/`from_id`/`saved_peer_id` — again a generic key one level down,
+not a distinctively-named top-level field. Especially relevant here since the only chat this
+recorder ever targets is Saved Messages, where `peer_id` is always *your own* real numeric account
+id, not some other party's — the exact same "even synthetic content still says a real account
+touched it" concern as everywhere else, just with an `int` in place of an email/name string.
 
 This is a genuinely different, and larger, concern than it looks: content-level synthetic data
 (covered by `qa-environment-setup.md`) and identity-level metadata redaction (covered here) are two
@@ -314,32 +333,34 @@ scripts/
 6. **Optional staleness reminder workflow** — whenever convenient; it's decoupled from everything
    else and adds no risk.
 
-**Status**: 1, 2, and 5 are done for **Confluence, Jira, Salesforce, Gmail, Drive, Calendar,
-Contacts, Tasks, and Slack** — every connector except Telegram (`assert_no_placeholder_fields`
+**Status**: 1, 2, and 5 are done for **every connector** — Confluence, Jira, Salesforce, Gmail,
+Drive, Calendar, Contacts, Tasks, Slack, and Telegram (`assert_no_placeholder_fields`
 in `tests/helpers.py`; `TestFieldCompleteness` in Confluence/Jira/Salesforce's connector test
 modules specifically — the three whose popup preview fields were already the target of a real,
 historical field-mapping bug; the rest (Drive/Tasks are auto-approved with no popup to check;
-Gmail/Calendar/Contacts/Slack's equivalent coverage is still just `TestLiveFixtureParsing`, not
-yet extended to `TestFieldCompleteness`) don't have it yet;
+Gmail/Calendar/Contacts/Slack/Telegram's equivalent coverage is still just `TestLiveFixtureParsing`,
+not yet extended to `TestFieldCompleteness`) don't have it yet;
 `TestLiveFixtureParsing` in each client's test module, skipped until a real fixture exists for
-each). 3 and 4 shipped together rather than staged, since the guardrail and redaction logic weren't
-separable in practice from the recording code path itself — `scripts/qa_fixture_recorder.py`
-implements `--check`/`--record` for all nine now, with `CONNECTOR_CHECKS` as the extension point
-for Telegram. Verified against realistic mocked/offline API responses for each, including the
-guardrail correctly refusing an untagged/stale-ID/mismatched-name fetch, **and** — as a permanent
-regression suite now, not just one-off manual runs — `tests/unit/test_qa_fixture_recorder.py`,
-which is also where `RawCaptureExecute` gets its offline `HttpRequest` proof (see above). Three real
+each — Telegram's version replays through a small reconstructed stand-in object rather than the raw
+dict directly, since `_parse_message()` reads Telethon object attributes, not dict keys; see the
+comment above `_message_from_fixture()` in `test_telegram_client.py`). 3 and 4 shipped together
+rather than staged, since the guardrail and redaction logic weren't separable in practice from the
+recording code path itself — `scripts/qa_fixture_recorder.py` implements `--check`/`--record` for
+all ten now, with `CONNECTOR_CHECKS` fully populated. Verified against realistic mocked/offline API
+responses for each, including the guardrail correctly refusing an untagged/stale-ID/mismatched-name
+fetch, **and** — as a permanent regression suite now, not just one-off manual runs —
+`tests/unit/test_qa_fixture_recorder.py`, which is also where `RawCaptureExecute` gets its offline
+`HttpRequest` proof and `RawCaptureTelethon` gets its real-`to_dict()` proof (see above). Four real
 redaction gaps were found and fixed via that verification, not after the fact: Salesforce's
-whole-object `Owner`/`CreatedBy`/`LastModifiedBy` case, Gmail's `payload.headers`-list case, and
-Slack's `user`/`bot_id`-as-generic-key case (see "Identity-field redaction" above for all three) —
-and one deliberate *non*-redaction decision was made the same careful way: Contacts' recorded
-fixture is left unredacted on purpose, since a contact's own name/email/phone are the content under
-test, not someone else's identity. No real fixture has been recorded for any of the nine yet (each
-needs a real, authenticated account and a seed artifact per `qa-environment-setup.md`
-§1/§2/§3/§4/§5/§6/§8/§9/§10 — something this can't be done from a sandboxed environment);
-`tests/fixtures/qa_environment.yaml` ships with all nine connectors' placeholder values, ready to
-fill in. Telegram still needs real, connector-specific async-recorder work (see above). Step 6
-hasn't started.
+whole-object `Owner`/`CreatedBy`/`LastModifiedBy` case, Gmail's `payload.headers`-list case, Slack's
+`user`/`bot_id`-as-generic-key case, and Telegram's `peer_id`/`from_id`-as-nested-`Peer`-object case
+(see "Identity-field redaction" above for all four) — and one deliberate *non*-redaction decision
+was made the same careful way: Contacts' recorded fixture is left unredacted on purpose, since a
+contact's own name/email/phone are the content under test, not someone else's identity. No real
+fixture has been recorded for any of the ten yet (each needs a real, authenticated account and a
+seed artifact per `qa-environment-setup.md` §1/§2/§3/§4/§5/§6/§7/§8/§9/§10 — something this can't be
+done from a sandboxed environment); `tests/fixtures/qa_environment.yaml` ships with all ten
+connectors' placeholder values, ready to fill in. Step 6 hasn't started.
 
 No step in this plan requires provisioning any credential to GitHub, CI, or any cloud service.
 
