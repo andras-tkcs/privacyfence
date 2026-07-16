@@ -83,6 +83,19 @@ tasks:
   task_list_id: ""
   seed_task_id: ""
 
+slack:
+  # docs/qa-environment-setup.md §3 -- no separate seed artifact here: the
+  # privacyfence-qa-control channel that section already has you create
+  # (deliberately ungranted, so it never matches the approved-channel
+  # allowlist) already carries a durable [QATEST] seed message with a
+  # threaded reply. The recorder targets that thread directly.
+  channel_name: "privacyfence-qa-control"
+  # Leave blank to resolve by name instead (one extra API call per run).
+  channel_id: ""
+  # Leave blank to resolve by scanning channel history for a [QATEST]
+  # message instead (one extra API call per run).
+  seed_thread_ts: ""
+
 # Other connectors follow the same shape once
 # scripts/qa_fixture_recorder.py grows a check_<connector>() for them --
 # see that script's CONNECTOR_CHECKS registry and

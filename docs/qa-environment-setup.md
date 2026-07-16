@@ -232,6 +232,13 @@ prove the review gate still fires for anything not on the allowlist).
         ```
         This gives `slack_get_thread_replies` permanent, reusable, entirely synthetic content
         instead of depending on whatever a given run happens to surface.
+- [ ] **For `scripts/qa_fixture_recorder.py`**: no new fixture needed — the recorder targets this
+      same thread via `get_thread_replies`, resolving the channel by its exact name and the thread
+      by scanning history for the `[QATEST]` tag (or leave `slack.channel_id`/`slack.seed_thread_ts`
+      blank in `tests/fixtures/qa_environment.yaml` and it resolves both automatically)
+  - Note: unlike every other connector's fixture, Slack's author identity (`user`/`bot_id`) isn't a
+    distinctively-named field the generic redaction pass can recognize — the recorder applies a
+    Slack-specific pass first, the same way it does for Gmail's header list.
 
 ## 4. Calendar
 
@@ -563,10 +570,10 @@ also means the *success* path never gets exercised unless you seed some data:
   - Note: this is a narrower requirement than the steps above — the recorder only ever reads this
     one page, by ID/title and the `[QATEST]` tag, never "any page in `PFQA`" — see
     `external-api-contract-testing.md`'s "Guardrail against recording the wrong thing" for why.
-    Only Confluence, Jira, Salesforce, Gmail, Drive, Calendar, Contacts, and Tasks have recorder
-    support today (`scripts/qa_fixture_recorder.py`'s
-    `CONNECTOR_CHECKS`); other connectors will need the same kind of tagged seed artifact once
-    they're wired in — this section is the pattern to follow when that happens, not a one-off.
+    Only Confluence, Jira, Salesforce, Gmail, Drive, Calendar, Contacts, Tasks, and Slack have
+    recorder support today (`scripts/qa_fixture_recorder.py`'s
+    `CONNECTOR_CHECKS`); Telegram will need the same kind of tagged seed artifact once it's wired
+    in — this section is the pattern to follow when that happens, not a one-off.
 
 ## 11. PII Detection Gate
 
@@ -713,6 +720,7 @@ would find, headlessly, without needing a live Claude session first.
 | Drive recorder target | Same QA Sandbox folder, by exact name or `drive.folder_id` | `tests/fixtures/qa_environment.yaml` |
 | Slack approved channel | `auto_accept_grants.slack.channels` (`read: true`), or the legacy `slack.read_messages` → `approved_channel` rule | `settings.yaml` |
 | Slack control channel | Exact name `privacyfence-qa-control` | `slack_list_channels` |
+| Slack recorder seed thread | Same control-channel thread, tag `[QATEST]` (or `slack.channel_id`/`slack.seed_thread_ts`) | `tests/fixtures/qa_environment.yaml` |
 | Telegram Saved Messages | `is_self: true` flag | `telegram_list_chats` |
 | Telegram approved chat | `auto_accept_grants.telegram.chats` (`read: true`), or the legacy `telegram.read_chat_messages` → `approved_chats` rule (falls back to Saved Messages) | `settings.yaml` |
 | Telegram control chat | Any chat that isn't the above two | `telegram_list_chats` |

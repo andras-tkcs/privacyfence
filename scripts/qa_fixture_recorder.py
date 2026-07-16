@@ -57,6 +57,8 @@ from privacyfence.drive_client import DriveClient, DriveClientError  # noqa: E40
 from privacyfence.calendar_client import CalendarClient, CalendarClientError  # noqa: E402
 from privacyfence.contacts_client import ContactsClient, ContactsClientError  # noqa: E402
 from privacyfence.tasks_client import TasksClient, TasksClientError  # noqa: E402
+from privacyfence.slack_client import SlackClient, SlackClientError  # noqa: E402
+from privacyfence.slack_client import load_token_file as load_slack_token  # noqa: E402
 
 FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures" / "live"
 MANIFEST_PATH = REPO_ROOT / "tests" / "fixtures" / "qa_environment.yaml"
@@ -140,6 +142,37 @@ def redact_gmail_message(raw: dict[str, Any]) -> dict[str, Any]:
     for header in headers:
         if isinstance(header, dict) and str(header.get("name", "")).lower() in _SENSITIVE_GMAIL_HEADERS:
             header["value"] = _REDACTED_EMAIL
+    return raw
+
+
+# Slack's raw message shape identifies the author via a single generic
+# "user" (or "bot_id") key -- not a distinctively-named field the way
+# Confluence's authorId/Salesforce's OwnerId are, so adding it to the
+# shared _REDACT_ACCOUNT_ID_KEYS would risk over-redacting an unrelated
+# "user" key on some other connector's raw shape. Applied as a
+# connector-specific pass, before the generic redact() runs, the same way
+# Gmail's headers-list shape is handled.
+_REDACTED_SLACK_USER_ID = "U00QAPLACEHOLDER"
+
+
+def redact_slack_messages(raw: dict[str, Any]) -> dict[str, Any]:
+    raw = copy.deepcopy(raw)
+    for message in raw.get("messages", []) or []:
+        if not isinstance(message, dict):
+            continue
+        if message.get("user"):
+            message["user"] = _REDACTED_SLACK_USER_ID
+        if message.get("bot_id"):
+            message["bot_id"] = _REDACTED_SLACK_USER_ID
+        edited = message.get("edited")
+        if isinstance(edited, dict) and edited.get("user"):
+            edited["user"] = _REDACTED_SLACK_USER_ID
+        for reaction in message.get("reactions", []) or []:
+            if isinstance(reaction, dict) and reaction.get("users"):
+                reaction["users"] = [_REDACTED_SLACK_USER_ID for _ in reaction["users"]]
+        for slack_file in message.get("files", []) or []:
+            if isinstance(slack_file, dict) and slack_file.get("user"):
+                slack_file["user"] = _REDACTED_SLACK_USER_ID
     return raw
 
 
@@ -316,6 +349,42 @@ class RawCaptureExecute:
 
     def __exit__(self, *exc: Any) -> None:
         self._HttpRequest.execute = self._original
+
+
+class RawCaptureApiCall:
+    """Variant for SlackClient, whose choke point is slack_sdk's own
+    ``WebClient.api_call(api_method, ...)`` -- every ``conversations_*``/
+    ``users_*`` method on the SDK is a thin wrapper that calls this with a
+    literal Slack API method name (e.g. ``"conversations.replies"``) and
+    returns a ``SlackResponse`` whose ``.data`` is the raw dict.
+
+    Unlike RawCapture/RawCaptureCall, a single SlackClient read can trigger
+    more than one ``api_call()`` under the hood: ``get_thread_replies()``
+    calls ``conversations.replies`` for the messages, then -- inside its own
+    parsing step, ``_resolve_user_name()``/``get_user_info()`` -- calls
+    ``users.info`` once per distinct message author not already cached. A
+    capture that only kept the most recent result would end up holding
+    ``users.info``'s response instead of ``conversations.replies``', so this
+    keeps one per Slack API method name and lets the caller pick.
+    """
+
+    def __init__(self, slack_client: "SlackClient") -> None:
+        self._web_client = slack_client._client
+        self.captured: dict[str, Any] = {}
+
+    def __enter__(self) -> "RawCaptureApiCall":
+        self._original = self._web_client.api_call
+
+        def wrapped(api_method: str, *args: Any, **kwargs: Any) -> Any:
+            result = self._original(api_method, *args, **kwargs)
+            self.captured[api_method] = copy.deepcopy(result.data)
+            return result
+
+        self._web_client.api_call = wrapped
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self._web_client.api_call = self._original
 
 
 # ---------------------------------------------------------------------------- #
@@ -800,6 +869,77 @@ def check_tasks(record: bool, manifest: dict[str, Any]) -> list[CheckResult]:
     return results
 
 
+def _build_slack_client() -> SlackClient:
+    org_config = daemon_main.load_org_config()
+    slack_org = org_config.get("slack") or {}
+    if not slack_org.get("client_id"):
+        raise SystemExit("Slack organization config not installed -- run Authenticate… in the menu bar first.")
+    token_path = daemon_main._resolve_path(daemon_main.TOKEN_FILES["slack"])
+    token = load_slack_token(token_path)
+    return SlackClient(token.get("access_token", ""))
+
+
+def check_slack(record: bool, manifest: dict[str, Any]) -> list[CheckResult]:
+    # No new seed artifact needed -- qa-environment-setup.md §3 already has
+    # you create the privacyfence-qa-control channel with a durable,
+    # [QATEST]-tagged seed message and threaded reply (it exists precisely
+    # so it does *not* match the approved-channel grant); the recorder just
+    # targets that thread via get_thread_replies instead of adding another.
+    cfg = manifest.get("slack") or {}
+    channel_name = cfg.get("channel_name", "privacyfence-qa-control")
+    channel_id = cfg.get("channel_id", "")
+    seed_thread_ts = cfg.get("seed_thread_ts", "")
+
+    results: list[CheckResult] = []
+    client = _build_slack_client()
+    target = f"#{channel_name}"
+
+    try:
+        if not channel_id:
+            found_channel = next(
+                (c for c in client.list_channels(max_results=1000) if c.name == channel_name), None
+            )
+            if found_channel is None:
+                raise SlackClientError(f"no channel found matching name {channel_name!r}")
+            channel_id = found_channel.id
+
+        if not seed_thread_ts:
+            # Single call, not a fan-out -- get_channel_history() is a
+            # cheap resolve, unlike Gmail's list_messages().
+            history = client.get_channel_history(channel_id, limit=200)
+            found_message = next((m for m in history if QATEST_TAG in (m.text or "")), None)
+            if found_message is None:
+                raise SlackClientError(f"no message carrying {QATEST_TAG} found in {target} history")
+            seed_thread_ts = found_message.id
+
+        with RawCaptureApiCall(client) as cap:
+            replies = client.get_thread_replies(channel_id, seed_thread_ts)
+        tagged = bool(replies) and QATEST_TAG in (replies[0].text or "")
+        # channel_name is deliberately not part of this gate -- unlike
+        # title/summary on the other connectors, a missing channel_name has
+        # a graceful fallback in the popup preview (connectors/slack.py's
+        # _channel_display falls back to the raw channel id), so it isn't
+        # the kind of silent field-mapping bug this check exists to catch.
+        complete = bool(replies) and bool(replies[0].text and replies[0].user_id)
+        ok = tagged and complete
+        if not tagged:
+            note = f"thread starter does not carry {QATEST_TAG} -- refusing to record"
+        elif not complete:
+            note = "missing popup field(s) -- text/user_id not both present"
+        else:
+            note = "text, user_id present"
+        raw = None
+        if record and ok:
+            captured = cap.captured.get("conversations.replies")
+            if isinstance(captured, dict):
+                raw = redact(redact_slack_messages(captured))
+        results.append(CheckResult("slack", "get_thread_replies", target, ok, note, raw, "get_thread_replies.json"))
+    except SlackClientError as exc:
+        results.append(CheckResult("slack", "get_thread_replies", target, False, str(exc)))
+
+    return results
+
+
 CONNECTOR_CHECKS: dict[str, Callable[[bool, dict[str, Any]], list[CheckResult]]] = {
     "confluence": check_confluence,
     "jira": check_jira,
@@ -809,6 +949,7 @@ CONNECTOR_CHECKS: dict[str, Callable[[bool, dict[str, Any]], list[CheckResult]]]
     "calendar": check_calendar,
     "contacts": check_contacts,
     "tasks": check_tasks,
+    "slack": check_slack,
 }
 
 

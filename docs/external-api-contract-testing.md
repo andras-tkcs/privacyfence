@@ -89,7 +89,7 @@ directly rather than a full gated `Connector`, since it only ever calls a small,
 **targeted, read-only** methods per connector: always by the specific ID/key of a
 `qa-environment-setup.md` seed artifact (read from the non-secret manifest below), never a blanket
 list/search call kept for its own sake. Implemented today: **Confluence, Jira, Salesforce, Gmail,
-Drive, Calendar, Contacts, and Tasks** — every connector except Slack and Telegram. Three capture
+Drive, Calendar, Contacts, Tasks, and Slack** — every connector except Telegram. Four capture
 mechanisms cover them:
 
 - `RawCapture` — Confluence and Jira funnel every client call through the same
@@ -112,11 +112,20 @@ mechanisms cover them:
   for Gmail, then reused unmodified for Drive/Calendar/Contacts/Tasks (each still needed its own
   `check_<connector>()`, seed artifact, and — Gmail and Contacts specifically — its own reasoning
   about what redaction should or shouldn't do, see below).
+- `RawCaptureApiCall` — Slack has yet another shape: no PrivacyFence-level choke point, but
+  `slack_sdk`'s own `WebClient.api_call(api_method, ...)` **is** one, underneath every
+  `conversations_*`/`users_*` wrapper method. Different from the other three in one important way:
+  a single `SlackClient` read can trigger more than one `api_call()` — `get_thread_replies()` calls
+  `conversations.replies` for the messages, then its own parsing step
+  (`_resolve_user_name()`/`get_user_info()`) calls `users.info` once per distinct message author not
+  already cached. A capture that only kept the most recent result would silently end up holding
+  `users.info`'s response instead of `conversations.replies`', so this one keys captures by Slack API
+  method name (`{"conversations.replies": {...}, "users.info": {...}}`) and the caller picks the one
+  it actually wants.
 
-Slack does its own per-method pagination inline (no choke point either, and no `HttpRequest`
-equivalent to patch); Telegram's client is fully `async`, which the recorder (currently synchronous
-end to end) can't drive without also becoming async. Both still need real, connector-specific work —
-see the comment above `CONNECTOR_CHECKS` in the script:
+Telegram's client is fully `async`, which the recorder (currently synchronous end to end) can't
+drive without also becoming async — it still needs real, connector-specific work — see the comment
+above `CONNECTOR_CHECKS` in the script:
 
 ```bash
 python3 scripts/qa_fixture_recorder.py --check                          # every implemented connector
@@ -177,6 +186,15 @@ redacted output, not by assuming the generic pass would cover it — and worth c
 because a future connector is likely to have its own version of this same shape (identity value
 addressed indirectly through a sibling key, not the field name itself), which no amount of growing
 the generic key lists will ever catch.
+
+A **fourth** connector-specific pass, `redact_slack_messages()`, exists for Slack: its raw message
+shape identifies the author through a single generic `"user"` (or `"bot_id"`) key — not the kind of
+distinctively-named field (`authorId`, `emailAddress`) the shared key lists above are built around,
+so adding `"user"` to them outright would risk over-redacting an unrelated `"user"` key on some
+other connector's raw shape instead of catching a real gap. Also covers the same identity field
+where it recurs one level down — a reply's `edited.user`, a `reactions[].users` list, a
+`files[].user` — the same kind of nested-shape gap Salesforce's `Owner`/`CreatedBy`/`LastModifiedBy`
+turned out to have.
 
 This is a genuinely different, and larger, concern than it looks: content-level synthetic data
 (covered by `qa-environment-setup.md`) and identity-level metadata redaction (covered here) are two
@@ -297,29 +315,31 @@ scripts/
    else and adds no risk.
 
 **Status**: 1, 2, and 5 are done for **Confluence, Jira, Salesforce, Gmail, Drive, Calendar,
-Contacts, and Tasks** — every connector except Slack and Telegram (`assert_no_placeholder_fields`
-in `tests/helpers.py`; `TestFieldCompleteness` in each *gated* connector's test module — Salesforce's
-is thinner than Confluence/Jira's given `SalesforceRecord`'s raw pass-through fields, and Drive/
-Tasks have none at all since their targeted reads are auto-approved with no popup to check;
+Contacts, Tasks, and Slack** — every connector except Telegram (`assert_no_placeholder_fields`
+in `tests/helpers.py`; `TestFieldCompleteness` in Confluence/Jira/Salesforce's connector test
+modules specifically — the three whose popup preview fields were already the target of a real,
+historical field-mapping bug; the rest (Drive/Tasks are auto-approved with no popup to check;
+Gmail/Calendar/Contacts/Slack's equivalent coverage is still just `TestLiveFixtureParsing`, not
+yet extended to `TestFieldCompleteness`) don't have it yet;
 `TestLiveFixtureParsing` in each client's test module, skipped until a real fixture exists for
 each). 3 and 4 shipped together rather than staged, since the guardrail and redaction logic weren't
 separable in practice from the recording code path itself — `scripts/qa_fixture_recorder.py`
-implements `--check`/`--record` for all eight now, with `CONNECTOR_CHECKS` as the extension point
-for the rest. Verified against realistic mocked/offline API responses for each, including the
+implements `--check`/`--record` for all nine now, with `CONNECTOR_CHECKS` as the extension point
+for Telegram. Verified against realistic mocked/offline API responses for each, including the
 guardrail correctly refusing an untagged/stale-ID/mismatched-name fetch, **and** — as a permanent
 regression suite now, not just one-off manual runs — `tests/unit/test_qa_fixture_recorder.py`,
-which is also where `RawCaptureExecute` gets its offline `HttpRequest` proof (see above). Two real
+which is also where `RawCaptureExecute` gets its offline `HttpRequest` proof (see above). Three real
 redaction gaps were found and fixed via that verification, not after the fact: Salesforce's
-whole-object `Owner`/`CreatedBy`/`LastModifiedBy` case, and Gmail's `payload.headers`-list case (see
-"Identity-field redaction" above for both) — and one deliberate *non*-redaction decision was made
-the same careful way: Contacts' recorded fixture is left unredacted on purpose, since a contact's
-own name/email/phone are the content under test, not someone else's identity. No real fixture has
-been recorded for any of the eight yet (each needs a real, authenticated account and a seed
-artifact per `qa-environment-setup.md` §1/§2/§4/§5/§6/§8/§9/§10 — something this can't be done from
-a sandboxed environment); `tests/fixtures/qa_environment.yaml` ships with all eight connectors'
-placeholder values, ready to fill in. Slack and Telegram still need real, connector-specific
-capture work (see above) — no more low-hanging `RawCaptureExecute` extensions left. Step 6 hasn't
-started.
+whole-object `Owner`/`CreatedBy`/`LastModifiedBy` case, Gmail's `payload.headers`-list case, and
+Slack's `user`/`bot_id`-as-generic-key case (see "Identity-field redaction" above for all three) —
+and one deliberate *non*-redaction decision was made the same careful way: Contacts' recorded
+fixture is left unredacted on purpose, since a contact's own name/email/phone are the content under
+test, not someone else's identity. No real fixture has been recorded for any of the nine yet (each
+needs a real, authenticated account and a seed artifact per `qa-environment-setup.md`
+§1/§2/§3/§4/§5/§6/§8/§9/§10 — something this can't be done from a sandboxed environment);
+`tests/fixtures/qa_environment.yaml` ships with all nine connectors' placeholder values, ready to
+fill in. Telegram still needs real, connector-specific async-recorder work (see above). Step 6
+hasn't started.
 
 No step in this plan requires provisioning any credential to GitHub, CI, or any cloud service.
 

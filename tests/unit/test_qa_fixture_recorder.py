@@ -45,6 +45,7 @@ from privacyfence.drive_client import DriveClient  # noqa: E402
 from privacyfence.calendar_client import CalendarClient  # noqa: E402
 from privacyfence.contacts_client import ContactsClient  # noqa: E402
 from privacyfence.tasks_client import TasksClient  # noqa: E402
+from privacyfence.slack_client import SlackClient  # noqa: E402
 
 
 def _offline_google_service(api: str, version: str, raw_response):
@@ -69,6 +70,29 @@ def _offline_google_service(api: str, version: str, raw_response):
             return resp, json.dumps(body_obj).encode()
 
     return build(api, version, static_discovery=True, cache_discovery=False, http=FakeHttp(), developerKey="unused")
+
+
+def _fake_slack_web_client(responses: dict[str, dict]):
+    """A real slack_sdk WebClient with api_call() monkeypatched to return a
+    canned response per Slack API method name -- lets conversations_list/
+    conversations_history/conversations_replies/conversations_info/
+    users_info (all thin wrappers around api_call()) run for real, with no
+    network access, the same reasoning as _offline_google_service above but
+    for the SDK that RawCaptureApiCall's choke point belongs to.
+    """
+    from slack_sdk import WebClient
+    from slack_sdk.web.slack_response import SlackResponse
+
+    web_client = WebClient(token="xoxp-fake-token")
+
+    def fake_api_call(api_method, **kwargs):
+        return SlackResponse(
+            client=web_client, http_verb="GET", api_url=api_method, req_args={},
+            data={"ok": True, **responses.get(api_method, {})}, headers={}, status_code=200,
+        )
+
+    web_client.api_call = fake_api_call
+    return web_client
 
 
 # ---------------------------------------------------------------------------- #
@@ -152,6 +176,49 @@ class TestRedactGmailMessage:
         raw = {"payload": {"headers": [{"name": "From", "value": "real@company.com"}]}}
         recorder.redact_gmail_message(raw)
         assert raw["payload"]["headers"][0]["value"] == "real@company.com"
+
+
+class TestRedactSlackMessages:
+    """Slack identifies message authors through a single generic "user" (or
+    "bot_id") key -- too generic to add to the shared _REDACT_ACCOUNT_ID_KEYS
+    without risking over-redaction elsewhere; found the same way as the
+    Salesforce/Gmail gaps, by building a realistic response and checking the
+    redacted output before shipping.
+    """
+
+    def test_user_and_bot_id_redacted(self):
+        raw = {"messages": [{"ts": "1.1", "user": "U123", "text": "hi"}, {"ts": "1.2", "bot_id": "B456", "text": "bot hi"}]}
+        out = recorder.redact_slack_messages(raw)
+        assert out["messages"][0]["user"] == recorder._REDACTED_SLACK_USER_ID
+        assert out["messages"][1]["bot_id"] == recorder._REDACTED_SLACK_USER_ID
+
+    def test_nested_identity_in_edited_reactions_and_files_redacted(self):
+        raw = {"messages": [{
+            "ts": "1.1", "user": "U123", "text": "hi",
+            "edited": {"user": "U123", "ts": "1.2"},
+            "reactions": [{"name": "thumbsup", "users": ["U123", "U456"], "count": 2}],
+            "files": [{"id": "F1", "user": "U123", "name": "notes.txt"}],
+        }]}
+        out = recorder.redact_slack_messages(raw)
+        message = out["messages"][0]
+        assert message["edited"]["user"] == recorder._REDACTED_SLACK_USER_ID
+        assert message["reactions"][0]["users"] == [recorder._REDACTED_SLACK_USER_ID] * 2
+        assert message["files"][0]["user"] == recorder._REDACTED_SLACK_USER_ID
+        assert message["files"][0]["name"] == "notes.txt"  # content, untouched
+
+    def test_text_and_ts_are_left_alone(self):
+        raw = {"messages": [{"ts": "1.1", "user": "U123", "text": "PrivacyFence QA seed message [QATEST]"}]}
+        out = recorder.redact_slack_messages(raw)
+        assert out["messages"][0]["text"] == "PrivacyFence QA seed message [QATEST]"
+        assert out["messages"][0]["ts"] == "1.1"
+
+    def test_does_not_mutate_input(self):
+        raw = {"messages": [{"ts": "1.1", "user": "U123", "text": "hi"}]}
+        recorder.redact_slack_messages(raw)
+        assert raw["messages"][0]["user"] == "U123"
+
+    def test_missing_messages_does_not_raise(self):
+        assert recorder.redact_slack_messages({}) == {}
 
 
 # ---------------------------------------------------------------------------- #
@@ -268,6 +335,68 @@ class TestRawCaptureExecute:
 
         req = service.users().messages().get(userId="me", id="m1")
         req.execute()  # must not raise / must not still be wrapped
+
+
+class TestRawCaptureApiCall:
+    """SlackClient's choke point is slack_sdk's own WebClient.api_call(), not
+    a PrivacyFence-level method the way ConfluenceClient/JiraClient/
+    SalesforceClient have -- tested against a real WebClient (api_call
+    monkeypatched, no network), not a MagicMock, so conversations_replies()
+    etc. genuinely route through it.
+    """
+
+    def test_captures_by_api_method_name(self):
+        client = SlackClient(user_token="xoxp-fake-token")
+        client._client = _fake_slack_web_client({
+            "conversations.replies": {"messages": [{"ts": "1.1", "text": "hi", "user": "U1"}]},
+        })
+
+        with recorder.RawCaptureApiCall(client) as cap:
+            result = client.get_thread_replies("C1", "1.1")
+
+        assert cap.captured["conversations.replies"]["messages"][0]["text"] == "hi"
+        assert result[0].text == "hi"
+
+    def test_keeps_the_matching_call_when_a_second_api_call_happens_inside(self):
+        # get_thread_replies() triggers conversations.replies for the
+        # messages *and* users.info to resolve the author's display name --
+        # a capture that only kept the most recent result would end up
+        # holding users.info's response instead.
+        client = SlackClient(user_token="xoxp-fake-token")
+        client._client = _fake_slack_web_client({
+            "conversations.replies": {"messages": [{"ts": "1.1", "text": "hi", "user": "U1"}]},
+            "users.info": {"user": {"id": "U1", "name": "qauser", "profile": {}}},
+        })
+
+        with recorder.RawCaptureApiCall(client) as cap:
+            client.get_thread_replies("C1", "1.1")
+
+        assert "conversations.replies" in cap.captured
+        assert "users.info" in cap.captured
+        assert cap.captured["conversations.replies"]["messages"][0]["ts"] == "1.1"
+
+    def test_capture_does_not_alias_later_mutation(self):
+        client = SlackClient(user_token="xoxp-fake-token")
+        mutable_messages = [{"ts": "1.1", "text": "hi", "user": "U1"}]
+        client._client = _fake_slack_web_client({"conversations.replies": {"messages": mutable_messages}})
+
+        with recorder.RawCaptureApiCall(client) as cap:
+            client.get_thread_replies("C1", "1.1")
+        mutable_messages[0]["text"] = "MUTATED"
+
+        assert cap.captured["conversations.replies"]["messages"][0]["text"] == "hi"
+
+    def test_restores_original_api_call_on_exit(self):
+        client = SlackClient(user_token="xoxp-fake-token")
+        client._client = _fake_slack_web_client({
+            "conversations.replies": {"messages": [{"ts": "1.1", "text": "hi", "user": "U1"}]},
+        })
+        original = client._client.api_call
+
+        with recorder.RawCaptureApiCall(client):
+            pass
+
+        assert client._client.api_call is original
 
 
 # ---------------------------------------------------------------------------- #
@@ -619,6 +748,93 @@ class TestCheckTasks:
         get_task = next(r for r in results if r.method == "get_task")
         assert not get_task.ok
         assert get_task.raw is None
+
+
+class TestCheckSlack:
+    SEED_TEXT = "PrivacyFence QA seed message [QATEST]. No real information. Safe to read/reply/delete."
+
+    def _client(self, responses: dict[str, dict]) -> SlackClient:
+        client = SlackClient(user_token="xoxp-fake-token")
+        client._client = _fake_slack_web_client(responses)
+        return client
+
+    def test_resolves_channel_and_thread_when_not_configured(self, monkeypatch):
+        client = self._client({
+            "conversations.list": {
+                "channels": [{"id": "C1", "name": "privacyfence-qa-control", "is_private": False, "num_members": 2}],
+            },
+            "conversations.history": {
+                "messages": [{"ts": "100.1", "user": "U1", "text": self.SEED_TEXT}],
+            },
+            "conversations.replies": {
+                "messages": [
+                    {"ts": "100.1", "user": "U1", "text": self.SEED_TEXT},
+                    {"ts": "100.2", "user": "U1", "text": "PrivacyFence QA seed reply [QATEST]. No real information.", "thread_ts": "100.1"},
+                ],
+            },
+        })
+        monkeypatch.setattr(recorder, "_build_slack_client", lambda: client)
+
+        results = recorder.check_slack(record=True, manifest={})
+
+        get_thread = next(r for r in results if r.method == "get_thread_replies")
+        assert get_thread.ok
+        assert get_thread.raw["messages"][0]["text"] == self.SEED_TEXT
+        assert get_thread.raw["messages"][0]["user"] == recorder._REDACTED_SLACK_USER_ID
+
+    def test_targets_configured_channel_and_thread_directly(self, monkeypatch):
+        # channel_id and seed_thread_ts both configured -- no
+        # conversations.list/conversations.history resolve calls needed.
+        client = self._client({
+            "conversations.replies": {
+                "messages": [{"ts": "100.1", "user": "U1", "text": self.SEED_TEXT}],
+            },
+        })
+        monkeypatch.setattr(recorder, "_build_slack_client", lambda: client)
+
+        results = recorder.check_slack(
+            record=True,
+            manifest={"slack": {"channel_id": "C1", "seed_thread_ts": "100.1"}},
+        )
+
+        get_thread = next(r for r in results if r.method == "get_thread_replies")
+        assert get_thread.ok
+        assert get_thread.raw["messages"][0]["user"] == recorder._REDACTED_SLACK_USER_ID
+
+    def test_untagged_thread_is_refused(self, monkeypatch):
+        client = self._client({
+            "conversations.replies": {
+                "messages": [{"ts": "200.1", "user": "U1", "text": "Some real unrelated message"}],
+            },
+        })
+        monkeypatch.setattr(recorder, "_build_slack_client", lambda: client)
+
+        results = recorder.check_slack(
+            record=True,
+            manifest={"slack": {"channel_id": "C1", "seed_thread_ts": "200.1"}},
+        )
+
+        get_thread = next(r for r in results if r.method == "get_thread_replies")
+        assert not get_thread.ok
+        assert get_thread.raw is None
+
+    def test_no_tagged_message_in_channel_history_is_refused(self, monkeypatch):
+        client = self._client({
+            "conversations.list": {
+                "channels": [{"id": "C1", "name": "privacyfence-qa-control", "is_private": False, "num_members": 2}],
+            },
+            "conversations.history": {
+                "messages": [{"ts": "300.1", "user": "U1", "text": "Some real unrelated message"}],
+            },
+        })
+        monkeypatch.setattr(recorder, "_build_slack_client", lambda: client)
+
+        results = recorder.check_slack(record=True, manifest={})
+
+        get_thread = next(r for r in results if r.method == "get_thread_replies")
+        assert not get_thread.ok
+        assert get_thread.raw is None
+        assert "[QATEST]" in get_thread.note
 
 
 # ---------------------------------------------------------------------------- #
