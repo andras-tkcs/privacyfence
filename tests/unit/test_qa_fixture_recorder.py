@@ -1,5 +1,5 @@
 """Tests for scripts/qa_fixture_recorder.py -- the local-only fixture
-recorder (see docs/external-api-contract-testing.md). Everything here runs
+recorder (see docs/testing-policy.md §2.1). Everything here runs
 offline, with no live credentials and no network:
 
 - redact()/redact_gmail_message() are pure functions, tested directly.
@@ -168,6 +168,16 @@ class TestRedact:
         out = recorder.redact(raw)
         assert out["Owner"] == {"Id": recorder._REDACTED_ACCOUNT_ID, "Name": recorder._REDACTED_NAME}
 
+    def test_confluence_space_owner_id_redacted(self):
+        # The gap found while recording real Confluence fixtures: a space's
+        # list_spaces()/get_page() response carries the owner's real
+        # accountId under "spaceOwnerId", not "ownerId" -- a different key
+        # name entirely, so it silently survived the exact-match key list
+        # until a real recording caught it.
+        raw = {"spaceOwnerId": "712020:a2afc400-067b-419d-81d8-e7a64269a4c3"}
+        out = recorder.redact(raw)
+        assert out["spaceOwnerId"] == recorder._REDACTED_ACCOUNT_ID
+
     def test_recurses_into_nested_lists_and_dicts(self):
         raw = {"results": [{"authorId": "acc-1"}, {"authorId": "acc-2"}]}
         out = recorder.redact(raw)
@@ -177,6 +187,85 @@ class TestRedact:
     def test_content_fields_are_left_alone(self):
         raw = {"title": "PrivacyFence QA seed page [QATEST]", "body": "synthetic content"}
         assert recorder.redact(raw) == raw
+
+
+class TestDeidentifyStructuralFields:
+    """A second, separate pass from TestRedact above -- opaque resource ids
+    and decorative URLs, not identity. Every TestLiveFixtureParsing
+    assertion across all ten connectors was read before writing this: none
+    check a specific id/url value, only non-emptiness -- see the module
+    docstring above deidentify_structural_fields() in qa_fixture_recorder.py.
+    """
+
+    def test_id_and_key_replaced_with_placeholder(self):
+        raw = {"id": "4423681", "key": "PFQA-3"}
+        out = recorder.deidentify_structural_fields(raw)
+        assert out["id"] not in ("4423681", "")
+        assert out["key"] not in ("PFQA-3", "")
+        assert out["id"] != out["key"]  # distinct real values -> distinct fakes
+
+    def test_same_real_value_maps_to_same_fake_value(self):
+        # A page's spaceId and a later lookup keyed by the same id should
+        # still look like the same resource after de-identification.
+        raw = {"first": {"spaceId": "999"}, "second": {"spaceId": "999"}}
+        out = recorder.deidentify_structural_fields(raw)
+        assert out["first"]["spaceId"] == out["second"]["spaceId"]
+        assert out["first"]["spaceId"] != "999"
+
+    def test_already_redacted_identity_values_are_not_re_touched(self):
+        raw = {"id": recorder._REDACTED_ACCOUNT_ID}
+        out = recorder.deidentify_structural_fields(raw)
+        assert out["id"] == recorder._REDACTED_ACCOUNT_ID
+
+    def test_decorative_urls_blanked_wholesale(self):
+        raw = {
+            "self": "https://tkcs.atlassian.net/rest/api/3/user?accountId=712020:real",
+            "_links": {"webui": "/spaces/PFQA/pages/123", "base": "https://tkcs.atlassian.net/wiki"},
+        }
+        out = recorder.deidentify_structural_fields(raw)
+        assert out["self"] == recorder._REDACTED_STRUCTURAL_URL
+        assert out["_links"]["webui"] == recorder._REDACTED_STRUCTURAL_URL
+        assert out["_links"]["base"] == recorder._REDACTED_STRUCTURAL_URL
+
+    def test_nested_url_container_like_avatar_urls_blanked(self):
+        raw = {"avatarUrls": {"16x16": "https://x/a.png", "48x48": "https://x/b.png"}}
+        out = recorder.deidentify_structural_fields(raw)
+        assert out["avatarUrls"]["16x16"] == recorder._REDACTED_STRUCTURAL_URL
+        assert out["avatarUrls"]["48x48"] == recorder._REDACTED_STRUCTURAL_URL
+
+    def test_id_list_key_like_drive_parents_replaced_consistently(self):
+        raw = {"parents": ["1xsQRpPgdmI0jaSLZwXt"], "id": "1xsQRpPgdmI0jaSLZwXt"}
+        out = recorder.deidentify_structural_fields(raw)
+        # The folder referenced in "parents" and the same folder fetched
+        # directly as "id" should still look like the same resource.
+        assert out["parents"][0] == out["id"]
+        assert out["parents"][0] != "1xsQRpPgdmI0jaSLZwXt"
+
+    def test_slack_ts_becomes_a_valid_looking_epoch_not_a_generic_placeholder(self):
+        # SlackClient._parse_ts() tolerates a non-numeric ts fine (catches
+        # ValueError, returns None), but a fake-valid epoch keeps the
+        # recorded fixture realistic instead of silently losing
+        # timestamp-shape coverage for this one field.
+        raw = {"ts": "1697030400.001500", "thread_ts": "1697030400.001500"}
+        out = recorder.deidentify_structural_fields(raw)
+        assert float(out["ts"])  # still parses as a float
+        assert out["ts"] == out["thread_ts"]  # same real value -> same fake
+        assert out["ts"] != "1697030400.001500"
+
+    def test_content_and_non_id_fields_are_left_alone(self):
+        raw = {"title": "PrivacyFence QA seed page [QATEST]", "status": "current", "version": 3}
+        assert recorder.deidentify_structural_fields(raw) == raw
+
+    def test_recurses_into_lists_of_dicts(self):
+        raw = {"results": [{"id": "1"}, {"id": "2"}]}
+        out = recorder.deidentify_structural_fields(raw)
+        assert out["results"][0]["id"] != "1"
+        assert out["results"][1]["id"] != "2"
+        assert out["results"][0]["id"] != out["results"][1]["id"]
+
+    def test_empty_and_blank_ids_are_left_alone(self):
+        raw = {"id": "", "parentId": None}
+        assert recorder.deidentify_structural_fields(raw) == raw
 
 
 class TestRedactGmailMessage:
@@ -212,6 +301,37 @@ class TestRedactGmailMessage:
         assert raw["payload"]["headers"][0]["value"] == "real@company.com"
 
 
+class TestRedactJiraIssue:
+    """Jira's creator/reporter/assignee objects carry the real accountId a
+    second time, URL-encoded inside their own "self" link -- a value the
+    key-based redact() can't see since the identity data isn't the field's
+    own value. Found while recording a real get_issue() fixture, not
+    assumed safe.
+    """
+
+    def test_creator_reporter_self_urls_redacted(self):
+        raw = {"fields": {
+            "creator": {"accountId": "712020:real", "self": "https://x/user?accountId=712020%3Areal"},
+            "reporter": {"accountId": "712020:real", "self": "https://x/user?accountId=712020%3Areal"},
+        }}
+        out = recorder.redact_jira_issue(raw)
+        assert out["fields"]["creator"]["self"] == recorder._REDACTED_JIRA_USER_URL
+        assert out["fields"]["reporter"]["self"] == recorder._REDACTED_JIRA_USER_URL
+
+    def test_missing_assignee_does_not_raise(self):
+        raw = {"fields": {"creator": {"self": "https://x/user?accountId=712020%3Areal"}, "assignee": None}}
+        out = recorder.redact_jira_issue(raw)
+        assert out["fields"]["creator"]["self"] == recorder._REDACTED_JIRA_USER_URL
+
+    def test_missing_fields_does_not_raise(self):
+        assert recorder.redact_jira_issue({}) == {}
+
+    def test_does_not_mutate_input(self):
+        raw = {"fields": {"creator": {"self": "https://x/user?accountId=712020%3Areal"}}}
+        recorder.redact_jira_issue(raw)
+        assert raw["fields"]["creator"]["self"] == "https://x/user?accountId=712020%3Areal"
+
+
 class TestRedactSlackMessages:
     """Slack identifies message authors through a single generic "user" (or
     "bot_id") key -- too generic to add to the shared _REDACT_ACCOUNT_ID_KEYS
@@ -245,6 +365,19 @@ class TestRedactSlackMessages:
         out = recorder.redact_slack_messages(raw)
         assert out["messages"][0]["text"] == "PrivacyFence QA seed message [QATEST]"
         assert out["messages"][0]["ts"] == "1.1"
+
+    def test_parent_user_id_and_reply_users_redacted(self):
+        # The gap found while recording a real get_thread_replies() fixture:
+        # the thread-parent message's reply_users list and a reply's
+        # parent_user_id both carry the real replying user's id, neither
+        # covered by the user/bot_id/edited/reactions/files fields above.
+        raw = {"messages": [
+            {"ts": "1.1", "user": "U123", "text": "parent", "reply_users": ["U456", "U789"]},
+            {"ts": "1.2", "user": "U123", "text": "reply", "parent_user_id": "U456"},
+        ]}
+        out = recorder.redact_slack_messages(raw)
+        assert out["messages"][0]["reply_users"] == [recorder._REDACTED_SLACK_USER_ID] * 2
+        assert out["messages"][1]["parent_user_id"] == recorder._REDACTED_SLACK_USER_ID
 
     def test_does_not_mutate_input(self):
         raw = {"messages": [{"ts": "1.1", "user": "U123", "text": "hi"}]}
@@ -575,6 +708,37 @@ class TestCheckConfluence:
         get_page = next(r for r in results if r.method == "get_page")
         assert get_page.ok
         assert get_page.raw["results"][0]["authorId"] == recorder._REDACTED_ACCOUNT_ID
+
+    def test_id_based_get_page_records_the_page_not_the_trailing_space_lookup(self, monkeypatch):
+        # The real bug: get_page(id) doesn't pass space_key to
+        # _parse_page_v2, so it makes a *second*, trailing call to resolve
+        # spaceId -> space key. RawCapture used to keep only the last call,
+        # which silently recorded that space lookup instead of the page --
+        # found by recording against a real account, not assumed safe.
+        client = self._client()
+        client._client.get.side_effect = [
+            {"key": "PFQA", "name": "Primary"},  # list_spaces
+            {  # get_page(id): the page itself, call 1
+                "id": "123", "title": "PrivacyFence QA seed page [QATEST]", "spaceId": "999",
+                "version": {"number": 3, "createdAt": "2026-07-01T00:00:00Z"},
+                "authorId": "acc-1", "createdAt": "2026-01-01T00:00:00Z",
+                "_links": {"webui": "/spaces/PFQA/pages/123"},
+            },
+            {"key": "PFQA"},  # trailing _resolve_space_key(999) call, call 2
+        ]
+        monkeypatch.setattr(recorder, "_build_confluence_client", lambda: client)
+
+        results = recorder.check_confluence(record=True, manifest={"confluence": {"seed_page_id": "123"}})
+
+        get_page = next(r for r in results if r.method == "get_page")
+        assert get_page.ok
+        # "title" only exists on the page object, not the space lookup
+        # response (which has "key"/"name" instead) -- proves the *page*
+        # was recorded, not the trailing space lookup. "id" itself is
+        # de-identified by deidentify_structural_fields(), so it's no
+        # longer meaningful to compare against the real "123".
+        assert get_page.raw["title"] == "PrivacyFence QA seed page [QATEST]"
+        assert "name" not in get_page.raw  # would be present if the space lookup leaked through instead
 
     def test_untagged_page_is_refused(self, monkeypatch):
         client = self._client()

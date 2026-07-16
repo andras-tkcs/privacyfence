@@ -62,10 +62,15 @@ method has already caught that no unit test did.
 - **The environment fixtures from [`qa-environment-setup.md`](qa-environment-setup.md)
   already exist**: a `PFQA` Jira project, a `PFQA` Confluence space, a Drive
   "PrivacyFence QA Sandbox" folder, a second (non-approved) Slack channel with
-  a thread in it, a Telegram "Saved Messages" chat plus one approved chat, and
-  Salesforce sample records/report. Without these, several phases below fall
-  back to being untestable — work through that doc once per environment; it's
-  a standalone installation guide, not something you redo per run.
+  a thread in it, a Telegram "Saved Messages" chat plus one approved chat,
+  Salesforce sample records/report, a dedicated `PrivacyFence test [PFQA]`
+  calendar (Phase 4 uses this instead of your real primary calendar, except
+  where Google's API leaves no choice — see Phase 4's own notes), and two
+  dedicated Google Tasks lists, neither of which is your real default "My
+  Tasks" (see Phase 0 step 9 and `qa-environment-setup.md` §6). Without these,
+  several phases below fall back to being untestable — work through that doc
+  once per environment; it's a standalone installation guide, not something
+  you redo per run.
 - The PII detection gate check (Phase 2, steps 17–20) needs **no environment
   fixture** — it's self-contained, creating and tearing down its own
   throwaway Drive subfolder and Doc. Confirm **PII Detection Gate** is
@@ -252,16 +257,27 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
    - `confluence_qa_space_key`: confirm `PFQA` exists in the list.
    - `confluence_contrast_space_key`: any other space key in the list.
 9. `tasks_list_task_lists` →
-   - `tasks_qa_list_id`: the list ID from `auto_accept_grants.tasks.task_lists`
-     with `edit: true` (or, legacy, `tasks.update_task` /
-     `tasks.complete_task`/`tasks.uncomplete_task` → `approved_task_list`) in
-     settings.yaml, if configured; otherwise the default list (usually named
-     "My Tasks").
-   - `tasks_contrast_list_id`: the list named exactly
-     `PrivacyFence QA Contrast List`. If it doesn't exist, tell me and skip
-     the auto-accept contrast step in Phase 6 — the rest of Phase 6 doesn't
+   - `tasks_qa_list_id`: the list named exactly `PrivacyFence QA List`, or the
+     list ID from `auto_accept_grants.tasks.task_lists` with `edit: true` (or,
+     legacy, `tasks.update_task` / `tasks.complete_task`/`tasks.uncomplete_task`
+     → `approved_task_list`) in settings.yaml. Never your real default "My
+     Tasks" — see `qa-environment-setup.md` §6. If neither resolves, tell me
+     rather than falling back to your default list.
+   - `tasks_contrast_list_id`: the list named exactly `PrivacyFence QA
+     Contrast List` (deliberately ungranted — not the same list as
+     `tasks_qa_list_id`). If it doesn't exist, tell me and skip the
+     auto-accept contrast step in Phase 6 — the rest of Phase 6 doesn't
      depend on it.
-10. For any fixture you couldn't resolve (missing folder/channel/report, or a
+10. `calendar_list_calendars` →
+    - `calendar_pfqa_id`: the calendar named exactly `PrivacyFence test [PFQA]`.
+      This is the calendar every Phase 4 step targets *except* the two Google
+      hardcodes to primary regardless of `calendar_id` (`calendar_create_out_of_office`,
+      `calendar_set_working_location`) and the Meet-attachments check (step 6),
+      which needs your real calendar history and so unavoidably reads primary.
+      If `PrivacyFence test [PFQA]` doesn't exist, tell me and point at
+      `qa-environment-setup.md` §4 rather than falling back to primary for
+      the rest of Phase 4.
+11. For any fixture you couldn't resolve (missing folder/channel/report, or a
     list that only contains `PFQA` with no contrast candidate), don't invent a
     substitute — tell me which one, point at the relevant section of
     `qa-environment-setup.md`, skip only the steps that depend on it, and keep
@@ -621,25 +637,33 @@ manifest entries needed, both are already tracked.
    Popup, Accept.
 
 ## Phase 4 — Calendar
-1. `calendar_list_calendars`, `calendar_list_events`, `calendar_get_free_busy`
+Every step below targets `{FIXTURES}.calendar_pfqa_id` (pass it as `calendar_id`), not primary —
+except step 6 (needs your real calendar history) and steps 7–10 (Google hardcodes both to primary
+regardless of `calendar_id`), each called out again where they occur.
+
+1. `calendar_list_calendars`, `calendar_list_events` on `calendar_pfqa_id`, `calendar_get_free_busy`
    (expect: all silent). Then `calendar_list_rooms`: if the Calendar room fixture
    from `qa-environment-setup.md` is set up, expect it to succeed and list at
    least one room, silently. If it isn't (no Workspace admin access), expect the
    same permissions error as before — that's a standing, known environment
    limitation, not a new finding, so don't report it as a regression each run.
-2. Pick any existing event, `calendar_get_event_details` — review gate, Accept.
-3. `calendar_create_event` — title `PrivacyFence QA test event [{RUN_ID}] — safe
-   to delete`, date far in the future, no attendees, no Meet link. Popup, Accept.
-   Add to manifest (not deletable via tool).
+2. Pick any existing event on `calendar_pfqa_id` (the seed event from
+   `qa-environment-setup.md` §4 works if nothing else is on it yet),
+   `calendar_get_event_details` — review gate, Accept.
+3. `calendar_create_event` on `calendar_pfqa_id` — title `PrivacyFence QA test event
+   [{RUN_ID}] — safe to delete`, date far in the future, no attendees, no Meet link.
+   Popup, Accept. Add to manifest (not deletable via tool).
 4. `calendar_update_event` on the event you just created. Popup, Accept.
 5. `calendar_get_event_details` again on that same event — you're its organizer,
    so if `calendar.read_event_details` has an `i_am_organizer` rule this should
    NOT prompt. Tell me either way.
-6. Attachments: use `calendar_list_events` to look through recent past events on
-   the primary calendar for one that has a Google Meet "Notes by Gemini" /
+6. Attachments — **the one Phase 4 read that unavoidably targets your real primary
+   calendar, not `calendar_pfqa_id`**: use `calendar_list_events` to look through
+   recent past events on primary for one that has a Google Meet "Notes by Gemini" /
    transcript doc attached (any real past meeting where "take notes for me" was
    used works — this isn't something the test prompt can fabricate, since
-   `calendar_create_event` has no way to attach a file). If you find one:
+   `calendar_create_event` has no way to attach a file, and a brand-new PFQA
+   calendar has no meeting history to draw one from). If you find one:
    - `calendar_get_event_details` on it — review gate, Accept. Confirm the
      result's `attachments` list is non-empty and each entry has `file_id`,
      `title`, `mime_type`, `file_url`.
@@ -649,25 +673,29 @@ manifest entries needed, both are already tracked.
    If no such event exists in this account's calendar history, note that and
    skip this step rather than reporting a gap — it's a fixture-availability
    limitation, not a regression.
-7. `calendar_create_out_of_office` — title `PrivacyFence QA OOO [{RUN_ID}] — safe
-   to delete`, a two-hour window far in the future, no decline message. Popup,
-   Accept. Add to manifest (not deletable via tool). Confirm the created event's
-   details in Google Calendar show it as an Out of Office entry that auto-declines
-   only new conflicting invitations (not existing ones) — this is fixed behavior,
-   not something the tool call can override.
+7. `calendar_create_out_of_office` — **the other unavoidable primary-calendar
+   exception**: this tool (and `calendar_set_working_location` below) always
+   operates on primary regardless of any `calendar_id` passed, so there's no
+   PFQA-calendar equivalent to use instead. Title `PrivacyFence QA OOO
+   [{RUN_ID}] — safe to delete`, a two-hour window far in the future, no decline
+   message. Popup, Accept. Add to manifest (not deletable via tool). Confirm the
+   created event's details in Google Calendar show it as an Out of Office entry
+   that auto-declines only new conflicting invitations (not existing ones) —
+   this is fixed behavior, not something the tool call can override.
 8. `calendar_create_out_of_office` again, this time with a `decline_message`.
    Popup, Accept. Confirm the decline message appears on the created event.
-9. `calendar_set_working_location` for today's date, `location="office"`. Popup,
-   Accept. Confirm your presence shows as "In the office" in Google Calendar's
-   web UI for that day (not deletable via tool — calling it again for the same
-   day overwrites the prior value, so no separate cleanup is needed beyond noting
-   it in the manifest).
+9. `calendar_set_working_location` for today's date, `location="office"` —
+   also always primary, same as steps 7–8. Popup, Accept. Confirm your presence
+   shows as "In the office" in Google Calendar's web UI for that day (not
+   deletable via tool — calling it again for the same day overwrites the prior
+   value, so no separate cleanup is needed beyond noting it in the manifest).
 10. `calendar_set_working_location` again for the same date with
     `location="home"` — confirm it overwrites the office entry from step 9
     rather than adding a second one.
-11. `calendar_get_event_visibility` on the event from step 3 (expect: silent,
-    auto — no popup at all, cheaper than the full `calendar_get_event_details`
-    fetch). Confirm the returned `visibility` is `"default"`.
+11. `calendar_get_event_visibility` on the event from step 3, on `calendar_pfqa_id`
+    (expect: silent, auto — no popup at all, cheaper than the full
+    `calendar_get_event_details` fetch). Confirm the returned `visibility` is
+    `"default"`.
 12. `calendar_set_event_visibility` on the same event, set to `"private"`.
     Popup-gated, and — unlike Phase 2's Sheets/Docs write tools — this one
     never gets a temp-accept shortcut either. If you configured

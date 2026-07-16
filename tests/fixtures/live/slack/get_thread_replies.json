@@ -1,0 +1,96 @@
+{
+  "has_more": false,
+  "messages": [
+    {
+      "app_id": "qa-placeholder-id-2",
+      "blocks": [
+        {
+          "block_id": "qa-placeholder-id-5",
+          "elements": [
+            {
+              "elements": [
+                {
+                  "text": "PrivacyFence QA seed message [QATEST]. No real information. Safe to read/reply/delete.",
+                  "type": "text"
+                }
+              ],
+              "type": "rich_text_section"
+            }
+          ],
+          "type": "rich_text"
+        }
+      ],
+      "bot_id": "U00QAPLACEHOLDER",
+      "bot_profile": {
+        "app_id": "qa-placeholder-id-2",
+        "deleted": false,
+        "icons": {
+          "image_36": "https://a.slack-edge.com/80588/img/plugins/app/bot_36.png",
+          "image_48": "https://a.slack-edge.com/80588/img/plugins/app/bot_48.png",
+          "image_72": "https://a.slack-edge.com/80588/img/plugins/app/service_72.png"
+        },
+        "id": "qa-placeholder-id-4",
+        "name": "PrivacyFence",
+        "team_id": "qa-placeholder-id-3",
+        "updated": 1783071045
+      },
+      "is_locked": false,
+      "last_read": "1784196648.746969",
+      "latest_reply": "1784196648.746969",
+      "reply_count": 1,
+      "reply_users": [
+        "U00QAPLACEHOLDER"
+      ],
+      "reply_users_count": 1,
+      "subscribed": true,
+      "team": "qa-placeholder-id-3",
+      "text": "PrivacyFence QA seed message [QATEST]. No real information. Safe to read/reply/delete.",
+      "thread_ts": "1700000001.000100",
+      "ts": "1700000001.000100",
+      "type": "message",
+      "user": "U00QAPLACEHOLDER"
+    },
+    {
+      "app_id": "qa-placeholder-id-2",
+      "blocks": [
+        {
+          "block_id": "qa-placeholder-id-7",
+          "elements": [
+            {
+              "elements": [
+                {
+                  "text": "PrivacyFence QA seed reply [QATEST]. No real information.",
+                  "type": "text"
+                }
+              ],
+              "type": "rich_text_section"
+            }
+          ],
+          "type": "rich_text"
+        }
+      ],
+      "bot_id": "U00QAPLACEHOLDER",
+      "bot_profile": {
+        "app_id": "qa-placeholder-id-2",
+        "deleted": false,
+        "icons": {
+          "image_36": "https://a.slack-edge.com/80588/img/plugins/app/bot_36.png",
+          "image_48": "https://a.slack-edge.com/80588/img/plugins/app/bot_48.png",
+          "image_72": "https://a.slack-edge.com/80588/img/plugins/app/service_72.png"
+        },
+        "id": "qa-placeholder-id-4",
+        "name": "PrivacyFence",
+        "team_id": "qa-placeholder-id-3",
+        "updated": 1783071045
+      },
+      "parent_user_id": "U00QAPLACEHOLDER",
+      "team": "qa-placeholder-id-3",
+      "text": "PrivacyFence QA seed reply [QATEST]. No real information.",
+      "thread_ts": "1700000001.000100",
+      "ts": "1700000006.000100",
+      "type": "message",
+      "user": "U00QAPLACEHOLDER"
+    }
+  ],
+  "ok": true
+}

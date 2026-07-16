@@ -2,9 +2,10 @@
 
 Standalone installation guide for the fixtures used by both
 [`connector-qa-testing.md`](connector-qa-testing.md) (the manual, live-Cowork QA pass) and
-[`external-api-contract-testing.md`](external-api-contract-testing.md) (the local fixture recorder,
-`scripts/qa_fixture_recorder.py`). Work through it top to bottom on any machine/account where you
-want to run either one. It doesn't assume anything was set up before.
+`scripts/qa_fixture_recorder.py` (the local fixture recorder — see
+[`testing-policy.md` §2.1](testing-policy.md#21-qa_fixture_recorderpy---check---record)). Work
+through it top to bottom on any machine/account where you want to run either one. It doesn't assume
+anything was set up before.
 
 **Scope**: QA-specific fixtures only — a dedicated Jira project, a Drive sandbox folder, sample
 Salesforce records, and so on. Base connector *authentication* (OAuth apps, API enablement, tokens)
@@ -39,10 +40,11 @@ Everything here uses the prefix **`PFQA`** (Jira/Confluence keys) or **`PrivacyF
 match exactly where noted — lookups are by exact string match, not fuzzy search.
 
 The local fixture recorder (`scripts/qa_fixture_recorder.py`) targets exactly one tagged item per
-connector, by ID/key/name, and refuses to record if the tag doesn't match — see
-`external-api-contract-testing.md`'s "Guardrail against recording the wrong thing." Its per-connector
-manifest lives in `tests/fixtures/qa_environment.yaml`; every "For the recorder" step below says
-which field(s) to fill in there.
+connector, by ID/key/name, and refuses to record if the tag doesn't match — see that script's
+`CONNECTOR_CHECKS` and the guardrail check in each `check_<connector>()` function for the exact
+logic. Its per-connector manifest lives in `tests/fixtures/qa_environment.yaml` (git-ignored — copy
+it from [`qa_environment.yaml.example`](../tests/fixtures/qa_environment.yaml.example) first); every
+"For the recorder" step below says which field(s) to fill in there.
 
 Every grant below can also be added from the menu bar — **Auto-accept Rules → \<Connector\> →
 Trusted \<Resource\> → + Add…** — instead of editing YAML by hand; both are equivalent, and the older
@@ -194,6 +196,15 @@ gate still fires for anything not on the allowlist).
 
 ## 4. Calendar
 
+**Use a dedicated calendar, not primary.** Create a secondary calendar named exactly
+`PrivacyFence test [PFQA]` (Google Calendar → Settings → "Add calendar" → "Create new calendar") and
+point every QA activity below at it via its calendar id (`calendar_list_calendars` will show it once
+created). The **only** exception is `calendar_create_out_of_office` and `calendar_set_working_location`
+— both are hardcoded by Google's API to always operate on your primary calendar regardless of what
+`calendar_id` you pass, so there is no way to keep those two off primary. Everything else (the seed
+event, the trust grant, `i_am_organizer`/`non_private_event`, ad-hoc reads during a live QA pass)
+should target the PFQA calendar instead.
+
 - [ ] Decide `calendar_list_rooms` coverage — needs **Google Workspace** (not consumer Gmail) *and*
       admin rights
   - [ ] No Workspace admin access → skip to the next item; this is a permanent, environment-level
@@ -206,20 +217,20 @@ gate still fires for anything not on the allowlist).
            resource** — create at least one, e.g. `PrivacyFence QA Room A`
         4. PrivacyFence menu bar → **Connectors → Calendar → Reconnect…** so the token picks up the
            new scope
-- [ ] (Optional) Trust your primary calendar as a resource-scoped grant — covers
+- [ ] (Optional) Trust the PFQA calendar as a resource-scoped grant — covers
       `calendar.read_event_details` (`read`) and `calendar.create_modify_event` (`write`) for events
       on it, regardless of who organized them (an alternative to the per-rule options below):
       ```yaml
       auto_accept_grants:
         calendar:
           calendars:
-            - id: "primary"
-              name: "My calendar"
+            - id: "<PFQA calendar id>"
+              name: "PrivacyFence test [PFQA]"
               read: true
               write: true
       ```
 - [ ] (Optional) Add `i_am_organizer` instead/as well — any event you create satisfies it
-      automatically:
+      automatically, on any calendar, so this needs no calendar-specific id:
       ```yaml
       auto_accept_rules:
         calendar.read_event_details:
@@ -236,24 +247,28 @@ gate still fires for anything not on the allowlist).
       ```
       Any event set to `private` still prompts regardless — the rule checks the visibility being
       *requested*, not the event's prior state.
-- [ ] For the recorder: create one dedicated seed event on your primary calendar, far enough in the
+- [ ] For the recorder: create one dedicated seed event on the PFQA calendar, far enough in the
       future that it won't need recreating, no real attendees:
       ```
       Title:       PrivacyFence QA seed event [QATEST]
       Description: Synthetic PrivacyFence QA test event. No real information.
       ```
-  - [ ] Fill in its event id (or leave blank to resolve by title search) under
-        `calendar.seed_event_id` in `tests/fixtures/qa_environment.yaml`
-        (`calendar.calendar_id` defaults to `primary`)
+  - [ ] Fill in the PFQA calendar's id under `calendar.calendar_id`, and the event's id (or leave
+        the event id blank to resolve by title search) under `calendar.seed_event_id`, both in
+        `tests/fixtures/qa_environment.yaml`
 
 Event attachments (`calendar_get_event_details`'s "Notes by Gemini"/transcript Docs) can't be
 provisioned — `calendar_create_event` has no way to attach a file, so this only works if your
 account's calendar history already has a past Meet meeting with "take notes for me" enabled;
-otherwise it's a known limitation, not a regression.
+otherwise it's a known limitation, not a regression. In practice such a meeting will only ever exist
+on your real primary calendar, so this one check unavoidably reads primary — a one-off exception
+alongside out-of-office/working-location, not a reason to move anything else off PFQA.
 
 No fixture is needed for `calendar_create_out_of_office` or `calendar_set_working_location` — both
-always operate on your own primary calendar. Repeated QA runs each leave behind their own
-out-of-office event and overwrite the working-location entry (no delete tool for either).
+always operate on your own primary calendar, unconditionally, regardless of `calendar_id`. Repeated
+QA runs each leave behind their own out-of-office event and overwrite the working-location entry (no
+delete tool for either) directly on primary — expected, not a bug, and the one place this doc can't
+avoid touching your real calendar.
 
 ## 5. Contacts
 
@@ -265,8 +280,9 @@ out-of-office event and overwrite the working-location entry (no delete tool for
           - rule: no_contact_info_change
       ```
 - [ ] For the recorder: create one dedicated seed contact. Unlike every other connector, a contact's
-      name/email/phone fields *are* the content under test, so the recorder does **not** redact this
-      fixture — see `external-api-contract-testing.md`'s "Identity-field redaction":
+      name/email/phone fields *are* the content under test, so the recorder does **not** apply its
+      usual identity redaction to this fixture — see `check_contacts()` in
+      `scripts/qa_fixture_recorder.py`:
       ```
       Display name: PrivacyFence QA Test Contact [QATEST]
       Email:        qatest.contact@example.com
@@ -281,25 +297,31 @@ if it doesn't.
 
 ## 6. Google Tasks
 
+**Don't use "My Tasks" for QA at all** — it's your real, default list. Use two dedicated lists
+instead, neither of which is the default:
+
 - [ ] Configure the approved list
-  - [ ] Get your default list's ("My Tasks") ID from `tasks_list_task_lists` or headlessly with
-        `scripts/qa_list_ids.py tasks`
+  - [ ] Create a list named exactly `PrivacyFence QA List` — this is the approved/granted list.
+  - [ ] Get its ID from `tasks_list_task_lists` or headlessly with `scripts/qa_list_ids.py tasks`
   - [ ] Add the grant:
         ```yaml
         auto_accept_grants:
           tasks:
             task_lists:
-              - id: "<default list id>"
-                name: "My Tasks"
+              - id: "<PrivacyFence QA List id>"
+                name: "PrivacyFence QA List"
                 edit: true
                 complete: true
         ```
         `complete` covers both `tasks.complete_task` and `tasks.uncomplete_task`.
 - [ ] Create the contrast list
-  - [ ] Name it exactly `PrivacyFence QA Contrast List`, grant it no capability
-- [ ] (Optional) Add `create: true` to the default list's grant, and/or `move: true` to **both** the
-      default and contrast list's entries (a move only auto-accepts when both ends have `move: true`)
-- [ ] For the recorder: create one dedicated seed task in the approved list:
+  - [ ] Create a second list named exactly `PrivacyFence QA Contrast List`, grant it no capability —
+        it exists specifically to *not* match, for `connector-qa-testing.md`'s Phase 6 steps 7–8
+        (the "should still prompt even though a rule exists elsewhere" check). The recorder itself
+        doesn't use this list at all.
+- [ ] (Optional) Add `create: true` to the approved list's grant, and/or `move: true` to **both**
+      list entries (a move only auto-accepts when both ends have `move: true`)
+- [ ] For the recorder: create one dedicated seed task in `PrivacyFence QA List`:
       ```
       Title: PrivacyFence QA seed task [QATEST]
       Notes: Synthetic PrivacyFence QA test task. No real information.
@@ -494,8 +516,8 @@ a failure.
               read: true
         calendar:
           calendars:
-            - id: "primary"
-              name: "My calendar"
+            - id: "<PFQA calendar id>"
+              name: "PrivacyFence test [PFQA]"
               read: true
               write: true
         salesforce:
@@ -515,8 +537,8 @@ a failure.
               read: true
         tasks:
           task_lists:
-            - id: "<default task list id>"
-              name: "My Tasks"
+            - id: "<PrivacyFence QA List id>"
+              name: "PrivacyFence QA List"
               edit: true
               complete: true
 
@@ -574,7 +596,7 @@ Tasks rows, `scripts/qa_list_ids.py` prints the same IDs headlessly, without a l
 | Confluence QA space | Literal key `PFQA` | — |
 | Confluence contrast space | Any space key that isn't `PFQA` | `confluence_list_spaces` |
 | Confluence recorder seed page | Title tag `[QATEST]` in `PFQA` | `tests/fixtures/qa_environment.yaml` |
-| Tasks approved list | `auto_accept_grants.tasks.task_lists` (`edit: true`), or legacy `approved_task_list` (falls back to the default list) | `settings.yaml` / `tasks_list_task_lists` |
+| Tasks approved list | Exact name `PrivacyFence QA List`, or `auto_accept_grants.tasks.task_lists` (`edit: true`) | `settings.yaml` / `tasks_list_task_lists` |
 | Tasks contrast list | Exact name `PrivacyFence QA Contrast List` | `tasks_list_task_lists` |
 | Tasks recorder seed task | `tasks.task_list_id` + `tasks.seed_task_id`, both required | `tests/fixtures/qa_environment.yaml` |
 | Contacts recorder seed contact | Display name tag `[QATEST]` (or `contacts.seed_contact_resource_name`) — fixture is **not** redacted, see §5 | `tests/fixtures/qa_environment.yaml` |

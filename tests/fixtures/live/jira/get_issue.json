@@ -1,0 +1,171 @@
+{
+  "expand": "renderedFields,names,schema,operations,editmeta,changelog,versionedRepresentations",
+  "fields": {
+    "aggregateprogress": {
+      "progress": 0,
+      "total": 0
+    },
+    "aggregatetimeestimate": null,
+    "aggregatetimeoriginalestimate": null,
+    "aggregatetimespent": null,
+    "assignee": null,
+    "attachment": [],
+    "comment": {
+      "comments": [],
+      "maxResults": 0,
+      "self": "https://example.com/qa-placeholder",
+      "startAt": 0,
+      "total": 0
+    },
+    "components": [],
+    "created": "2026-07-16T12:07:38.596+0200",
+    "creator": {
+      "accountId": "qa-placeholder-account-id",
+      "accountType": "atlassian",
+      "active": true,
+      "avatarUrls": {
+        "16x16": "https://example.com/qa-placeholder",
+        "24x24": "https://example.com/qa-placeholder",
+        "32x32": "https://example.com/qa-placeholder",
+        "48x48": "https://example.com/qa-placeholder"
+      },
+      "displayName": "QA Placeholder",
+      "emailAddress": "qa-placeholder@example.com",
+      "self": "https://example.com/qa-placeholder",
+      "timeZone": "Europe/Budapest"
+    },
+    "customfield_10001": null,
+    "customfield_10015": null,
+    "customfield_10019": "0|i0004v:",
+    "customfield_10021": null,
+    "customfield_10073": null,
+    "description": {
+      "content": [
+        {
+          "content": [
+            {
+              "text": "Synthetic PrivacyFence QA test issue. No real information. Safe to comment on, update, or transition by any automated test.",
+              "type": "text"
+            }
+          ],
+          "type": "paragraph"
+        }
+      ],
+      "type": "doc",
+      "version": 1
+    },
+    "duedate": null,
+    "environment": null,
+    "fixVersions": [],
+    "issuelinks": [],
+    "issuerestriction": {
+      "issuerestrictions": {},
+      "shouldDisplay": true
+    },
+    "issuetype": {
+      "avatarId": 10318,
+      "description": "A small, distinct piece of work.",
+      "entityId": "4633c0de-4f6f-472d-98f8-2eb4361d642f",
+      "hierarchyLevel": 0,
+      "iconUrl": "https://example.com/qa-placeholder",
+      "id": "qa-placeholder-id-3",
+      "name": "Task",
+      "self": "https://example.com/qa-placeholder",
+      "subtask": false
+    },
+    "labels": [],
+    "lastViewed": null,
+    "priority": {
+      "iconUrl": "https://example.com/qa-placeholder",
+      "id": "qa-placeholder-id-8",
+      "name": "Medium",
+      "self": "https://example.com/qa-placeholder"
+    },
+    "progress": {
+      "progress": 0,
+      "total": 0
+    },
+    "project": {
+      "avatarUrls": {
+        "16x16": "https://example.com/qa-placeholder",
+        "24x24": "https://example.com/qa-placeholder",
+        "32x32": "https://example.com/qa-placeholder",
+        "48x48": "https://example.com/qa-placeholder"
+      },
+      "id": "qa-placeholder-id-4",
+      "key": "qa-placeholder-id-5",
+      "name": "PrivacyFence QA Test",
+      "projectTypeKey": "software",
+      "self": "https://example.com/qa-placeholder",
+      "simplified": true
+    },
+    "reporter": {
+      "accountId": "qa-placeholder-account-id",
+      "accountType": "atlassian",
+      "active": true,
+      "avatarUrls": {
+        "16x16": "https://example.com/qa-placeholder",
+        "24x24": "https://example.com/qa-placeholder",
+        "32x32": "https://example.com/qa-placeholder",
+        "48x48": "https://example.com/qa-placeholder"
+      },
+      "displayName": "QA Placeholder",
+      "emailAddress": "qa-placeholder@example.com",
+      "self": "https://example.com/qa-placeholder",
+      "timeZone": "Europe/Budapest"
+    },
+    "resolution": null,
+    "resolutiondate": null,
+    "security": null,
+    "status": {
+      "description": "",
+      "iconUrl": "https://example.com/qa-placeholder",
+      "id": "qa-placeholder-id-9",
+      "name": "To Do",
+      "self": "https://example.com/qa-placeholder",
+      "statusCategory": {
+        "colorName": "blue-gray",
+        "id": "qa-placeholder-id-6",
+        "key": "qa-placeholder-id-7",
+        "name": "To Do",
+        "self": "https://example.com/qa-placeholder"
+      }
+    },
+    "statusCategory": {
+      "colorName": "blue-gray",
+      "id": "qa-placeholder-id-6",
+      "key": "qa-placeholder-id-7",
+      "name": "To Do",
+      "self": "https://example.com/qa-placeholder"
+    },
+    "statuscategorychangedate": "2026-07-16T12:07:39.379+0200",
+    "subtasks": [],
+    "summary": "PrivacyFence QA seed issue [QATEST]",
+    "timeestimate": null,
+    "timeoriginalestimate": null,
+    "timespent": null,
+    "timetracking": {},
+    "updated": "2026-07-16T12:07:38.845+0200",
+    "versions": [],
+    "votes": {
+      "hasVoted": false,
+      "self": "https://example.com/qa-placeholder",
+      "votes": 0
+    },
+    "watches": {
+      "isWatching": true,
+      "self": "https://example.com/qa-placeholder",
+      "watchCount": 1
+    },
+    "worklog": {
+      "maxResults": 20,
+      "startAt": 0,
+      "total": 0,
+      "worklogs": []
+    },
+    "workratio": -1
+  },
+  "id": "qa-placeholder-id-1",
+  "key": "qa-placeholder-id-2",
+  "self": "https://example.com/qa-placeholder"
+}

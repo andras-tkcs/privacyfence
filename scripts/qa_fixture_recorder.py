@@ -18,13 +18,13 @@ Two modes:
 
     qa_fixture_recorder.py --record [connector ...]
         Does the same targeted calls, redacts real account-identity
-        fields (author email, account id, display name -- see
-        ``docs/external-api-contract-testing.md``), and writes the result
-        to tests/fixtures/live/<connector>/<method>.json.
+        fields (author email, account id, display name -- see redact()
+        below) and structural resource ids/URLs (deidentify_structural_
+        fields() below), and writes the result to
+        tests/fixtures/live/<connector>/<method>.json.
 
 Both modes accept ``--report-file PATH`` to also save the printed report,
-ready to paste into a PR description (see
-``docs/external-api-contract-testing.md#local-checks-before-opening-a-pr``).
+ready to paste into a PR description (see ``docs/testing-policy.md`` §2.1).
 
 Only reads from ``tests/fixtures/qa_environment.yaml`` -- a small, non-secret
 manifest of your seed artifacts' IDs/keys/tags (see
@@ -41,7 +41,9 @@ import copy
 import datetime
 import json
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
@@ -74,13 +76,13 @@ QATEST_TAG = "[QATEST]"
 # optional. Content being synthetic (docs/qa-environment-setup.md) does not
 # make an API response's structural identity fields synthetic too: a page
 # you wrote yourself still says *you* wrote it, in your real account id and
-# real name, regardless of what the page says. See
-# docs/external-api-contract-testing.md's "Identity-field redaction".
+# real name, regardless of what the page says.
 # ---------------------------------------------------------------------------- #
 
 _REDACT_ACCOUNT_ID_KEYS = {
     "authorid", "accountid", "author_id", "account_id", "ownerid",
     "createdbyid", "lastmodifiedbyid",  # Salesforce's actual flat field names
+    "spaceownerid",  # Confluence's space-level owner, a real accountId same as authorId
 }
 _REDACT_EMAIL_KEYS = {"email", "emailaddress", "authoremail", "accountemail"}
 # Deliberately narrow -- a bare "name" key is legitimate, non-identity
@@ -128,6 +130,136 @@ def redact(value: Any) -> Any:
     return value
 
 
+# ---------------------------------------------------------------------------- #
+# Structural de-identification -- a second, separate pass from identity
+# redaction above. Every TestLiveFixtureParsing assertion (one per
+# connector, in tests/unit/test_<connector>_client.py) was read before
+# writing this, along with every _parse_* method it exercises: none of them
+# check a specific id/key/url value, only that certain fields are non-empty
+# and that the JSON shape (key names, nesting, value types) still parses.
+# That means the *real* page/issue/event/task/file/thread ids, and the
+# decorative self/webui/htmlLink-style URLs (which embed real site domains
+# and cloud/tenant ids, sometimes inside an opaque base64 blob no substring
+# replace could catch -- see Calendar's htmlLink `eid` param), can be
+# swapped for fixed, non-identity placeholders without reducing test
+# validity at all. Deliberately separate from redact() above: this runs
+# *after* it, so identity fields keep their more specific
+# _REDACTED_ACCOUNT_ID/_REDACTED_EMAIL/_REDACTED_NAME markers instead of
+# being genericized into an opaque id here too.
+# ---------------------------------------------------------------------------- #
+
+# Exact-key-matched (case-insensitive), like redact()'s own key lists --
+# opaque resource identifiers, never a person. Deliberately excludes
+# "name" and any identity key already handled by redact() above.
+_STRUCTURAL_ID_KEYS = frozenset({
+    "id", "key", "spaceid", "homepageid", "parentid", "resourcename",
+    "thread_ts", "ts", "chat_id", "channel_id", "task_list_id",
+    "threadid", "historyid", "driveid", "icaluid",
+    # Slack workspace/app identifiers -- app_id, bot_profile.team_id, the
+    # top-level "team", block_id -- all real, all identify your workspace.
+    "app_id", "team_id", "team", "block_id",
+})
+
+# Same idea, but the value is a *list* of raw id strings rather than one
+# bare id -- Drive's "parents" (list of folder ids). Deliberately narrow
+# (doesn't include Gmail's "labelIds": a mix of real per-account label ids
+# like "Label_7" and universal system constants like "SENT"/"INBOX" that
+# are worth keeping legible -- left uncovered rather than guessed at).
+_STRUCTURAL_ID_LIST_KEYS = frozenset({"parents"})
+
+# Fields whose value (string or nested dict of strings, e.g. Jira's
+# avatarUrls) is a purely decorative navigation link -- not read by any
+# _parse_* method, so wholesale replacement is safe and simpler/more
+# reliable than trying to substring-replace just the domain (some of these
+# embed real ids inside an opaque encoded blob, not plain text). Exact-match
+# for key names that don't literally contain "url" (self, webui, ...);
+# _is_structural_url_key() below also catches anything containing "url" as
+# a substring, since that's turned out to be the more reliable signal --
+# iconUrl and PhotoUrl (Jira, Salesforce) were both missed by an
+# exact-match-only list before a real recording caught them, each in a
+# *different* casing/underscore convention than the last one added.
+_STRUCTURAL_URL_KEYS = frozenset({
+    "self", "webui", "editui", "edituiv2", "tinyui", "base",
+    "htmllink", "html_link", "weblink", "webviewlink", "selflink",
+})
+
+
+def _is_structural_url_key(key_l: str) -> bool:
+    return key_l in _STRUCTURAL_URL_KEYS or "url" in key_l
+
+_REDACTED_STRUCTURAL_URL = "https://example.com/qa-placeholder"
+# 700000000 mirrors _REDACTED_TELEGRAM_USER_ID (defined later in this file,
+# so referenced by value here) -- telegram's redact_telegram_messages() can
+# leave it under a "chat_id"/"channel_id" key (PeerChat/PeerChannel), which
+# this pass would otherwise treat as a fresh real id worth genericizing
+# again; skipping it just avoids replacing one placeholder with another.
+_STRUCTURAL_VALUES_TO_SKIP = {_REDACTED_ACCOUNT_ID, _REDACTED_EMAIL, _REDACTED_NAME, 700000000}
+
+
+def _blank_structural_url(value: Any) -> Any:
+    if isinstance(value, str) and value:
+        return _REDACTED_STRUCTURAL_URL
+    if isinstance(value, dict):
+        return {k: _blank_structural_url(v) for k, v in value.items()}
+    return value
+
+
+# Slack's ts/thread_ts is parsed as a unix epoch string (SlackClient._parse_ts
+# tolerates a non-numeric value fine -- catches ValueError, returns None --
+# but a *valid-looking* fake epoch keeps the recorded fixture realistic
+# instead of silently losing timestamp-shape coverage for this one field).
+_EPOCH_LIKE_KEYS = frozenset({"ts", "thread_ts"})
+_FAKE_EPOCH_BASE = 1700000000
+
+
+def _fake_structural_value(key_l: str, index: int) -> str:
+    if key_l in _EPOCH_LIKE_KEYS:
+        return f"{_FAKE_EPOCH_BASE + index}.000100"
+    return f"qa-placeholder-id-{index}"
+
+
+def deidentify_structural_fields(value: Any, _id_map: dict[Any, str] | None = None) -> Any:
+    """Recursively replace opaque resource ids and decorative URLs with
+    fixed, non-identity placeholders. ``_id_map`` gives every distinct real
+    id value encountered a stable, distinct fake replacement within one
+    call (so e.g. a page id and the space id it references still look like
+    two different resources), reset fresh for each fixture -- nothing
+    cross-references ids between two different recorded files, so a fresh
+    map per call is simpler than a global one and just as correct."""
+    id_map: dict[Any, str] = {} if _id_map is None else _id_map
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for k, v in value.items():
+            key_l = k.lower()
+            if _is_structural_url_key(key_l):
+                out[k] = _blank_structural_url(v)
+            elif (
+                key_l in _STRUCTURAL_ID_KEYS
+                and isinstance(v, (str, int))
+                and v not in _STRUCTURAL_VALUES_TO_SKIP
+                and v != ""
+            ):
+                if v not in id_map:
+                    id_map[v] = _fake_structural_value(key_l, len(id_map) + 1)
+                out[k] = id_map[v]
+            elif key_l in _STRUCTURAL_ID_LIST_KEYS and isinstance(v, list):
+                fake_ids = []
+                for item in v:
+                    if isinstance(item, (str, int)) and item != "":
+                        if item not in id_map:
+                            id_map[item] = _fake_structural_value(key_l, len(id_map) + 1)
+                        fake_ids.append(id_map[item])
+                    else:
+                        fake_ids.append(item)
+                out[k] = fake_ids
+            else:
+                out[k] = deidentify_structural_fields(v, id_map)
+        return out
+    if isinstance(value, list):
+        return [deidentify_structural_fields(v, id_map) for v in value]
+    return value
+
+
 # Gmail's raw message shape buries sender/recipient identity inside
 # payload.headers -- a *list* of {"name": "From", "value": "..."} objects,
 # where the interesting key is always the generic "value", never a
@@ -168,6 +300,10 @@ def redact_slack_messages(raw: dict[str, Any]) -> dict[str, Any]:
             message["user"] = _REDACTED_SLACK_USER_ID
         if message.get("bot_id"):
             message["bot_id"] = _REDACTED_SLACK_USER_ID
+        if message.get("parent_user_id"):
+            message["parent_user_id"] = _REDACTED_SLACK_USER_ID
+        if message.get("reply_users"):
+            message["reply_users"] = [_REDACTED_SLACK_USER_ID for _ in message["reply_users"]]
         edited = message.get("edited")
         if isinstance(edited, dict) and edited.get("user"):
             edited["user"] = _REDACTED_SLACK_USER_ID
@@ -202,6 +338,32 @@ def redact_telegram_messages(raw: list[Any]) -> list[Any]:
                 for id_key in ("user_id", "chat_id", "channel_id"):
                     if peer.get(id_key):
                         peer[id_key] = _REDACTED_TELEGRAM_USER_ID
+    return raw
+
+
+_REDACTED_JIRA_USER_URL = (
+    "https://api.atlassian.com/ex/jira/qa-placeholder/rest/api/3/user?accountId=qa-placeholder-account-id"
+)
+
+
+def redact_jira_issue(raw: dict[str, Any]) -> dict[str, Any]:
+    """Jira's creator/reporter/assignee objects carry the real accountId a
+    second time, URL-encoded inside their own "self" link
+    (.../user?accountId=<real accountId>) -- a value the key-based redact()
+    can't see, since the identity data isn't that field's own value, it's
+    embedded inside an unrelated "self" navigation-link string. Same shape
+    as Gmail's headers/Slack's user key/Telegram's Peer objects: identity
+    addressed indirectly through a sibling field, found by checking a real
+    recorded fixture, not assumed safe.
+    """
+    raw = copy.deepcopy(raw)
+    fields = raw.get("fields")
+    if not isinstance(fields, dict):
+        return raw
+    for person_key in ("creator", "reporter", "assignee"):
+        person = fields.get(person_key)
+        if isinstance(person, dict) and person.get("self"):
+            person["self"] = _REDACTED_JIRA_USER_URL
     return raw
 
 
@@ -284,7 +446,9 @@ def load_manifest() -> dict[str, Any]:
     if not MANIFEST_PATH.exists():
         print(
             f"error: manifest not found at {MANIFEST_PATH}\n"
-            "Work through docs/qa-environment-setup.md first, then fill in your seed artifacts'\n"
+            "It's git-ignored (not committed -- see tests/fixtures/qa_environment.yaml.example).\n"
+            f"cp {MANIFEST_PATH}.example {MANIFEST_PATH}\n"
+            "then work through docs/qa-environment-setup.md and fill in your seed artifacts'\n"
             "IDs/keys in that file.",
             file=sys.stderr,
         )
@@ -303,9 +467,24 @@ def load_manifest() -> dict[str, Any]:
 # ---------------------------------------------------------------------------- #
 
 class RawCapture:
+    """``captured`` is the *last* ``_request()`` call made inside the `with`
+    block -- correct for every current single-call use site (list_spaces,
+    list_projects, get_issue, ...), but wrong for Confluence's
+    ``get_page(page_id)``: when ``_parse_page_v2`` isn't given a space_key
+    (which the id-based path never is), it makes a *second* call to resolve
+    the space's key from its id -- so the page fetch, the actual thing being
+    recorded, gets silently clobbered by that trailing space lookup. Found
+    the same way as Slack's analogous "which of several calls did I
+    actually want" gap: by recording against a real account, not assumed
+    safe. ``calls`` keeps every call in order so a caller that knows more
+    than one might happen (Confluence's get_page) can pick the first one
+    instead of trusting whichever happened to run last.
+    """
+
     def __init__(self, client: Any) -> None:
         self._client = client
         self.captured: Any = None
+        self.calls: list[Any] = []
 
     def __enter__(self) -> "RawCapture":
         self._original = self._client._request
@@ -313,6 +492,7 @@ class RawCapture:
         def wrapped(fn: Callable, *args: Any, **kwargs: Any) -> Any:
             result = self._original(fn, *args, **kwargs)
             self.captured = copy.deepcopy(result)
+            self.calls.append(self.captured)
             return result
 
         self._client._request = wrapped
@@ -523,7 +703,7 @@ def check_confluence(record: bool, manifest: dict[str, Any]) -> list[CheckResult
         if record and ok and isinstance(cap.captured, dict):
             filtered = dict(cap.captured)
             filtered["results"] = [r for r in (cap.captured.get("results") or []) if r.get("key") == space_key]
-            raw = redact(filtered)
+            raw = deidentify_structural_fields(redact(filtered))
         results.append(CheckResult("confluence", "list_spaces", space_key, ok, note, raw, "list_spaces.json"))
     except ConfluenceClientError as exc:
         results.append(CheckResult("confluence", "list_spaces", space_key, False, str(exc)))
@@ -542,7 +722,15 @@ def check_confluence(record: bool, manifest: dict[str, Any]) -> list[CheckResult
             note = "missing popup field(s) -- title/author/updated/space_key not all present"
         else:
             note = "title, author, updated, space_key all present"
-        raw = redact(cap.captured) if (record and ok and isinstance(cap.captured, dict)) else None
+        # Which call in cap.calls is the page itself depends on which method
+        # ran, and the two disagree on order: get_page(id) fetches the page
+        # first, *then* makes a trailing call to resolve space_key from
+        # spaceId (call 0 is the page); get_page_by_title() resolves the
+        # space id *before* fetching the page (call -1, i.e. the last one --
+        # what cap.captured already gives) -- see RawCapture's docstring.
+        # Picking the wrong end silently records the wrong response.
+        page_raw = (cap.calls[0] if cap.calls else None) if seed_page_id else cap.captured
+        raw = deidentify_structural_fields(redact(page_raw)) if (record and ok and isinstance(page_raw, dict)) else None
         results.append(CheckResult("confluence", "get_page", seed_page_title, ok, note, raw, "get_page.json"))
     except ConfluenceClientError as exc:
         results.append(CheckResult("confluence", "get_page", seed_page_title, False, str(exc)))
@@ -570,7 +758,7 @@ def check_jira(record: bool, manifest: dict[str, Any]) -> list[CheckResult]:
         note = "found" if ok else f"project key {project_key!r} not in list_projects() result"
         raw = None
         if record and ok and isinstance(cap.captured, list):
-            raw = redact([p for p in cap.captured if p.get("key") == project_key])
+            raw = deidentify_structural_fields(redact([p for p in cap.captured if p.get("key") == project_key]))
         results.append(CheckResult("jira", "list_projects", project_key, ok, note, raw, "list_projects.json"))
     except JiraClientError as exc:
         results.append(CheckResult("jira", "list_projects", project_key, False, str(exc)))
@@ -603,7 +791,10 @@ def check_jira(record: bool, manifest: dict[str, Any]) -> list[CheckResult]:
             note = "missing popup field(s) -- key/summary/status not all present"
         else:
             note = "key, summary, status all present"
-        raw = redact(cap.captured) if (record and ok and isinstance(cap.captured, dict)) else None
+        raw = (
+            deidentify_structural_fields(redact(redact_jira_issue(cap.captured)))
+            if (record and ok and isinstance(cap.captured, dict)) else None
+        )
         results.append(CheckResult("jira", "get_issue", seed_issue_summary, ok, note, raw, "get_issue.json"))
     except JiraClientError as exc:
         results.append(CheckResult("jira", "get_issue", seed_issue_summary, False, str(exc)))
@@ -653,7 +844,7 @@ def check_salesforce(record: bool, manifest: dict[str, Any]) -> list[CheckResult
             filtered["records"] = [
                 r for r in (cap.captured.get("records") or []) if r.get("Id") == match.id
             ]
-            raw = redact(filtered)
+            raw = deidentify_structural_fields(redact(filtered))
         results.append(
             CheckResult("salesforce", "list_reports", report_id or report_name, ok, note, raw, "list_reports.json")
         )
@@ -684,7 +875,7 @@ def check_salesforce(record: bool, manifest: dict[str, Any]) -> list[CheckResult
             note = "missing popup field(s) -- id/Name not both present"
         else:
             note = "id, Name present"
-        raw = redact(cap.captured) if (record and ok and isinstance(cap.captured, dict)) else None
+        raw = deidentify_structural_fields(redact(cap.captured)) if (record and ok and isinstance(cap.captured, dict)) else None
         results.append(
             CheckResult("salesforce", "get_record", seed_record_name, ok, note, raw, "get_record.json")
         )
@@ -737,7 +928,7 @@ def check_gmail(record: bool, manifest: dict[str, Any]) -> list[CheckResult]:
             note = "sender, date, subject all present"
         raw = None
         if record and ok and isinstance(cap.captured, dict):
-            raw = redact(redact_gmail_message(cap.captured))
+            raw = deidentify_structural_fields(redact(redact_gmail_message(cap.captured)))
         results.append(CheckResult("gmail", "get_message", seed_message_id, ok, note, raw, "get_message.json"))
     except GmailClientError as exc:
         results.append(CheckResult("gmail", "get_message", seed_message_id, False, str(exc)))
@@ -792,7 +983,7 @@ def check_drive(record: bool, manifest: dict[str, Any]) -> list[CheckResult]:
             note = "missing field(s) -- id/name not both present"
         else:
             note = "id, name present"
-        raw = redact(cap.captured) if (record and ok and isinstance(cap.captured, dict)) else None
+        raw = deidentify_structural_fields(redact(cap.captured)) if (record and ok and isinstance(cap.captured, dict)) else None
         results.append(
             CheckResult("drive", "get_file_metadata", folder_name, ok, note, raw, "get_file_metadata.json")
         )
@@ -841,7 +1032,7 @@ def check_calendar(record: bool, manifest: dict[str, Any]) -> list[CheckResult]:
             note = "missing popup field(s) -- title/start_time/organizer_email not all present"
         else:
             note = "title, start_time, organizer_email all present"
-        raw = redact(cap.captured) if (record and ok and isinstance(cap.captured, dict)) else None
+        raw = deidentify_structural_fields(redact(cap.captured)) if (record and ok and isinstance(cap.captured, dict)) else None
         results.append(CheckResult("calendar", "get_event", seed_event_title, ok, note, raw, "get_event.json"))
     except CalendarClientError as exc:
         results.append(CheckResult("calendar", "get_event", seed_event_title, False, str(exc)))
@@ -866,8 +1057,7 @@ def check_contacts(record: bool, manifest: dict[str, Any]) -> list[CheckResult]:
     # deliberately NOT applied: doing so would scrub the very field
     # mapping this check exists to verify (a real displayName/value would
     # come back as a placeholder either way, masking a genuine parsing
-    # bug). See qa-environment-setup.md §5 and this repo's
-    # external-api-contract-testing.md "Identity-field redaction" section.
+    # bug). See qa-environment-setup.md §5.
     cfg = manifest.get("contacts") or {}
     seed_contact_resource_name = cfg.get("seed_contact_resource_name", "")
     seed_contact_display_name = cfg.get("seed_contact_display_name", f"PrivacyFence QA Test Contact {QATEST_TAG}")
@@ -894,7 +1084,11 @@ def check_contacts(record: bool, manifest: dict[str, Any]) -> list[CheckResult]:
             note = "missing field(s) -- resource_name/display_name not both present"
         else:
             note = "resource_name, display_name present"
-        raw = copy.deepcopy(cap.captured) if (record and ok and isinstance(cap.captured, dict)) else None
+        # Structural ids/urls (resourceName, photo url, source metadata id)
+        # get the same de-identification pass as every other connector --
+        # only the content fields (name/email/phone) skip redact() above,
+        # since those are the thing under test here.
+        raw = deidentify_structural_fields(copy.deepcopy(cap.captured)) if (record and ok and isinstance(cap.captured, dict)) else None
         results.append(
             CheckResult("contacts", "get_contact", seed_contact_display_name, ok, note, raw, "get_contact.json")
         )
@@ -947,7 +1141,7 @@ def check_tasks(record: bool, manifest: dict[str, Any]) -> list[CheckResult]:
             note = "missing field(s) -- id/title not both present"
         else:
             note = "id, title present"
-        raw = redact(cap.captured) if (record and ok and isinstance(cap.captured, dict)) else None
+        raw = deidentify_structural_fields(redact(cap.captured)) if (record and ok and isinstance(cap.captured, dict)) else None
         results.append(CheckResult("tasks", "get_task", seed_task_id, ok, note, raw, "get_task.json"))
     except TasksClientError as exc:
         results.append(CheckResult("tasks", "get_task", seed_task_id, False, str(exc)))
@@ -1018,7 +1212,7 @@ def check_slack(record: bool, manifest: dict[str, Any]) -> list[CheckResult]:
         if record and ok:
             captured = cap.captured.get("conversations.replies")
             if isinstance(captured, dict):
-                raw = redact(redact_slack_messages(captured))
+                raw = deidentify_structural_fields(redact(redact_slack_messages(captured)))
         results.append(CheckResult("slack", "get_thread_replies", target, ok, note, raw, "get_thread_replies.json"))
     except SlackClientError as exc:
         results.append(CheckResult("slack", "get_thread_replies", target, False, str(exc)))
@@ -1036,7 +1230,22 @@ def _build_telegram_client() -> TelegramPrivacyFenceClient:
         raise SystemExit(
             "Telegram is not authenticated -- run `privacyfence-app --telegram-setup` first."
         )
-    return TelegramPrivacyFenceClient(api_id=api_id, api_hash=api_hash, session_file=session_file)
+    # The live daemon typically holds this same SQLite session file open for
+    # its own long-running Telethon connection, so connecting to it directly
+    # here fails with "database is locked". The recorder only ever reads
+    # (never sends/marks-read), so a throwaway copy sidesteps the lock
+    # instead of requiring the daemon to be stopped first -- cleaned up in
+    # _check_telegram_async's finally block via the temp dir stashed below.
+    temp_dir = tempfile.mkdtemp(prefix="privacyfence-qa-telegram-")
+    temp_session = os.path.join(temp_dir, os.path.basename(session_file))
+    shutil.copy2(session_file, temp_session)
+    for suffix in ("-wal", "-shm"):
+        sidecar = session_file + suffix
+        if os.path.exists(sidecar):
+            shutil.copy2(sidecar, temp_session + suffix)
+    client = TelegramPrivacyFenceClient(api_id=api_id, api_hash=api_hash, session_file=temp_session)
+    client._qa_recorder_temp_dir = temp_dir
+    return client
 
 
 def check_telegram(record: bool, manifest: dict[str, Any]) -> list[CheckResult]:
@@ -1092,7 +1301,7 @@ async def _check_telegram_async(record: bool, manifest: dict[str, Any]) -> list[
         raw = None
         if record and ok and isinstance(cap.captured, list):
             matching = [m for m in cap.captured if isinstance(m, dict) and m.get("id") == tagged.id]
-            raw = redact(redact_telegram_messages(matching))
+            raw = deidentify_structural_fields(redact(redact_telegram_messages(matching)))
         results.append(CheckResult("telegram", "get_messages", "Saved Messages", ok, note, raw, "get_messages.json"))
     except TelegramClientError as exc:
         results.append(CheckResult("telegram", "get_messages", "Saved Messages", False, str(exc)))
@@ -1102,6 +1311,9 @@ async def _check_telegram_async(record: bool, manifest: dict[str, Any]) -> list[
                 await client._client.disconnect()
             except Exception:  # noqa: BLE001 - best-effort cleanup, never masks the real result
                 pass
+        temp_dir = getattr(client, "_qa_recorder_temp_dir", None)
+        if temp_dir:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     return results
 
@@ -1133,8 +1345,8 @@ def run(mode: str, connectors: list[str], report_file: str | None) -> int:
     for name in requested:
         check_fn = CONNECTOR_CHECKS.get(name)
         if check_fn is None:
-            print(f"'{name}' has no recorder implementation yet -- see scripts/qa_fixture_recorder.py "
-                  "CONNECTOR_CHECKS and docs/external-api-contract-testing.md's Part A.", file=sys.stderr)
+            print(f"'{name}' has no recorder implementation yet -- add a check_{name}() function and "
+                  "register it in CONNECTOR_CHECKS.", file=sys.stderr)
             continue
         all_results.extend(check_fn(record, manifest))
 
