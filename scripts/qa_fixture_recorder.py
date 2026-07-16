@@ -51,6 +51,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from privacyfence import daemon_main  # noqa: E402
 from privacyfence.confluence_client import ConfluenceClient, ConfluenceClientError  # noqa: E402
 from privacyfence.jira_client import JiraClient, JiraClientError  # noqa: E402
+from privacyfence.salesforce_client import SalesforceClient, SalesforceClientError  # noqa: E402
 
 FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures" / "live"
 MANIFEST_PATH = REPO_ROOT / "tests" / "fixtures" / "qa_environment.yaml"
@@ -66,17 +67,29 @@ QATEST_TAG = "[QATEST]"
 # docs/external-api-contract-testing.md's "Identity-field redaction".
 # ---------------------------------------------------------------------------- #
 
-_REDACT_ACCOUNT_ID_KEYS = {"authorid", "accountid", "author_id", "account_id", "createdby", "updatedby", "ownerid"}
+_REDACT_ACCOUNT_ID_KEYS = {
+    "authorid", "accountid", "author_id", "account_id", "ownerid",
+    "createdbyid", "lastmodifiedbyid",  # Salesforce's actual flat field names
+}
 _REDACT_EMAIL_KEYS = {"email", "emailaddress", "authoremail", "accountemail"}
 # Deliberately narrow -- a bare "name" key is legitimate, non-identity
 # content just as often as it's a person's name (a space's name, a page
 # title field, a Salesforce record's Name field), so it's excluded here on
 # purpose. Only qualified, unambiguously-identity name fields are redacted.
 _REDACT_NAME_KEYS = {"displayname", "publicname", "authorname", "accountname"}
+# Keys whose *entire* nested value is a person, regardless of what
+# sub-fields it has -- Salesforce relationship lookups (Owner, CreatedBy,
+# LastModifiedBy) can return a nested {Id, Name, Email, ...} object rather
+# than a flat *Id field, and a bare "Name" sub-key inside one of these
+# would otherwise slip past _REDACT_NAME_KEYS's deliberately narrow list.
+# Found by actually testing redact() against a realistic nested shape
+# before shipping Salesforce support, not assumed safe.
+_REDACT_WHOLE_OBJECT_KEYS = {"owner", "createdby", "lastmodifiedby"}
 
 _REDACTED_ACCOUNT_ID = "qa-placeholder-account-id"
 _REDACTED_EMAIL = "qa-placeholder@example.com"
 _REDACTED_NAME = "QA Placeholder"
+_REDACTED_WHOLE_OBJECT = {"Id": _REDACTED_ACCOUNT_ID, "Name": _REDACTED_NAME}
 
 
 def redact(value: Any) -> Any:
@@ -88,7 +101,9 @@ def redact(value: Any) -> Any:
         out: dict[str, Any] = {}
         for k, v in value.items():
             key_l = k.lower()
-            if key_l in _REDACT_ACCOUNT_ID_KEYS:
+            if key_l in _REDACT_WHOLE_OBJECT_KEYS and isinstance(v, dict):
+                out[k] = dict(_REDACTED_WHOLE_OBJECT)
+            elif key_l in _REDACT_ACCOUNT_ID_KEYS:
                 out[k] = _REDACTED_ACCOUNT_ID
             elif key_l in _REDACT_EMAIL_KEYS:
                 out[k] = _REDACTED_EMAIL
@@ -194,6 +209,37 @@ class RawCapture:
 
     def __exit__(self, *exc: Any) -> None:
         self._client._request = self._original
+
+
+class RawCaptureCall:
+    """Variant of RawCapture for a client whose choke point takes a single
+    ``fn(state)`` callable instead of ``fn(*args, **kwargs)`` --
+    SalesforceClient._call(fn) is the one example today (``fn`` closes over
+    whatever arguments it needs and receives the built ``sf`` client as its
+    only parameter). ``_call`` itself doesn't transform the result at all
+    (unlike ConfluenceClient/JiraClient's ``_request``, which is also just a
+    passthrough) -- the parsing happens one level up, in the calling method
+    -- so what's captured here is exactly the same raw shape that method
+    then parses.
+    """
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+        self.captured: Any = None
+
+    def __enter__(self) -> "RawCaptureCall":
+        self._original = self._client._call
+
+        def wrapped(fn: Callable) -> Any:
+            result = self._original(fn)
+            self.captured = copy.deepcopy(result)
+            return result
+
+        self._client._call = wrapped
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self._client._call = self._original
 
 
 # ---------------------------------------------------------------------------- #
@@ -334,9 +380,93 @@ def check_jira(record: bool, manifest: dict[str, Any]) -> list[CheckResult]:
     return results
 
 
+def _build_salesforce_client() -> SalesforceClient:
+    org_config = daemon_main.load_org_config()
+    sf_org = org_config.get("salesforce") or {}
+    if not sf_org.get("consumer_key"):
+        raise SystemExit("Salesforce organization config not installed -- run Authenticate… in the menu bar first.")
+    token_path = daemon_main._resolve_path(daemon_main.TOKEN_FILES["salesforce"])
+    token = daemon_main.load_salesforce_token(token_path)
+    config = {**sf_org, **token}
+    return SalesforceClient(config=config, token_file=token_path)
+
+
+def check_salesforce(record: bool, manifest: dict[str, Any]) -> list[CheckResult]:
+    cfg = manifest.get("salesforce") or {}
+    report_id = cfg.get("report_id", "")
+    report_name = cfg.get("report_name", "PrivacyFence QA Report")
+    object_type = cfg.get("object_type", "Account")
+    seed_record_id = cfg.get("seed_record_id", "")
+    # No separate seed artifact here -- qa-environment-setup.md §8 already
+    # has you create sample records tagged [QATEST]; the recorder just
+    # targets one of those instead of adding a new one.
+    seed_record_name = cfg.get("seed_record_name", f"PrivacyFence QA — Acme Test Co {QATEST_TAG}")
+
+    results: list[CheckResult] = []
+    client = _build_salesforce_client()
+
+    # list_reports -- only ever recorded filtered to the one QA report,
+    # never every real report accessible to the account.
+    try:
+        with RawCaptureCall(client) as cap:
+            reports = client.list_reports()
+        if report_id:
+            match = next((r for r in reports if r.id == report_id), None)
+        else:
+            match = next((r for r in reports if r.name == report_name), None)
+        ok = match is not None
+        note = "found" if ok else f"report {report_id or report_name!r} not in list_reports() result"
+        raw = None
+        if record and ok and isinstance(cap.captured, dict):
+            filtered = dict(cap.captured)
+            filtered["records"] = [
+                r for r in (cap.captured.get("records") or []) if r.get("Id") == match.id
+            ]
+            raw = redact(filtered)
+        results.append(
+            CheckResult("salesforce", "list_reports", report_id or report_name, ok, note, raw, "list_reports.json")
+        )
+    except SalesforceClientError as exc:
+        results.append(CheckResult("salesforce", "list_reports", report_id or report_name, False, str(exc)))
+
+    # get_record -- targeted at the seed record's id if the manifest has
+    # it, otherwise resolved once via search() by its tagged Name.
+    try:
+        if seed_record_id:
+            with RawCaptureCall(client) as cap:
+                rec = client.get_record(object_type, seed_record_id)
+        else:
+            found = client.search(seed_record_name, object_types=object_type)
+            if not found:
+                raise SalesforceClientError(
+                    f"no {object_type} record found matching name {seed_record_name!r}"
+                )
+            with RawCaptureCall(client) as cap:
+                rec = client.get_record(object_type, found[0].id)
+        name_field = str(rec.fields.get("Name") or rec.fields.get("name") or "")
+        tagged = QATEST_TAG in name_field
+        complete = bool(rec.id and name_field)
+        ok = tagged and complete
+        if not tagged:
+            note = f"fetched record name {name_field!r} does not carry {QATEST_TAG} -- refusing to record"
+        elif not complete:
+            note = "missing popup field(s) -- id/Name not both present"
+        else:
+            note = "id, Name present"
+        raw = redact(cap.captured) if (record and ok and isinstance(cap.captured, dict)) else None
+        results.append(
+            CheckResult("salesforce", "get_record", seed_record_name, ok, note, raw, "get_record.json")
+        )
+    except SalesforceClientError as exc:
+        results.append(CheckResult("salesforce", "get_record", seed_record_name, False, str(exc)))
+
+    return results
+
+
 CONNECTOR_CHECKS: dict[str, Callable[[bool, dict[str, Any]], list[CheckResult]]] = {
     "confluence": check_confluence,
     "jira": check_jira,
+    "salesforce": check_salesforce,
 }
 
 

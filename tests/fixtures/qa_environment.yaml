@@ -27,6 +27,19 @@ jira:
   seed_issue_key: ""
   seed_issue_summary: "PrivacyFence QA seed issue [QATEST]"
 
+salesforce:
+  # docs/qa-environment-setup.md §8 -- no separate seed artifact here,
+  # unlike Confluence/Jira: the sample Account records that section
+  # already has you create (tagged [QATEST]) are what the recorder
+  # targets directly.
+  report_name: "PrivacyFence QA Report"
+  report_id: ""
+  object_type: Account
+  seed_record_name: "PrivacyFence QA — Acme Test Co [QATEST]"
+  # Leave blank to resolve by search() on seed_record_name instead (one
+  # extra API call per run).
+  seed_record_id: ""
+
 # Other connectors follow the same shape once
 # scripts/qa_fixture_recorder.py grows a check_<connector>() for them --
 # see that script's CONNECTOR_CHECKS registry and

@@ -22,9 +22,14 @@ import pytest
 from privacyfence.audit_log import current_week, init_audit_logger
 from privacyfence.connectors import salesforce as salesforce_module
 from privacyfence.connectors.salesforce import SalesforceConnector
-from privacyfence.salesforce_client import SalesforceClientError, SalesforceRecord, SalesforceReport
+from privacyfence.salesforce_client import (
+    SalesforceClient,
+    SalesforceClientError,
+    SalesforceRecord,
+    SalesforceReport,
+)
 
-from ...helpers import assert_all_tools_leave_an_audit_trail
+from ...helpers import assert_all_tools_leave_an_audit_trail, assert_no_placeholder_fields
 
 
 def make_connector(my_email="me@example.com"):
@@ -32,6 +37,21 @@ def make_connector(my_email="me@example.com"):
     connector = SalesforceConnector(client)
     connector.my_email = my_email
     return connector, client
+
+
+def make_real_client(sf: MagicMock) -> SalesforceClient:
+    """A real SalesforceClient (real get_record/attributes-stripping) with
+    only the underlying simple-salesforce object mocked -- same pattern as
+    test_salesforce_client.py's with_fake_sf(). Used by
+    TestFieldCompleteness to exercise the real raw-response ->
+    SalesforceRecord -> popup-preview path end to end, instead of a
+    hand-built SalesforceRecord like every other test in this file --
+    this module's own docstring documents a real bug in exactly that gap
+    (record_dict.get("Name") missing the nested "fields" key).
+    """
+    client = SalesforceClient(config={"access_token": "tok", "instance_url": "https://my.salesforce.com"})
+    client._get_sf = lambda: sf
+    return client
 
 
 @pytest.fixture
@@ -423,6 +443,32 @@ class TestSearch:
 
         with pytest.raises(RuntimeError, match="MALFORMED_QUERY"):
             await connector.call("salesforce_search", {"search_term": "x"})
+
+
+class TestFieldCompleteness:
+    """End to end: a fully-populated raw REST response -> the real
+    SalesforceClient.get_record -> the real connector's popup preview --
+    not a hand-built SalesforceRecord, unlike every other test in this
+    file. Mirrors test_confluence_connector.py's TestFieldCompleteness;
+    this module's own docstring already documents a real bug this exact
+    shape of check would have caught (the record_dict.get("Name") vs.
+    nested "fields" key mistake) before it shipped.
+    """
+
+    async def test_get_record_preview_has_no_placeholder_fields(self, gated_call_spy):
+        sf = MagicMock()
+        sf.Account.get.return_value = {
+            "attributes": {"type": "Account", "url": "/x"},
+            "Id": "001xx0001",
+            "Name": "PrivacyFence QA — Acme Test Co [QATEST]",
+        }
+        client = make_real_client(sf)
+        connector = SalesforceConnector(client)
+        connector.my_email = "me@example.com"
+
+        await connector.call("salesforce_get_record", {"object_type": "Account", "record_id": "001xx0001"})
+
+        assert_no_placeholder_fields(gated_call_spy[0]["preview"])
 
 
 class TestEveryToolIsAudited:

@@ -410,6 +410,15 @@ also means the *success* path never gets exercised unless you seed some data:
     that also touches any other object type, or one left unscoped entirely (Salesforce's default
     globally-searchable set), still prompts — that asymmetry is worth confirming too, not just the
     auto-accept path.
+- [ ] **For `scripts/qa_fixture_recorder.py`** (the local fixture recorder — see
+      [`external-api-contract-testing.md`](external-api-contract-testing.md)): no new fixture
+      needed — unlike Confluence/Jira, the recorder targets one of the sample Account records
+      already created above (`PrivacyFence QA — Acme Test Co [QATEST]`) directly, since it's
+      already tagged
+  - [ ] Fill in its record ID (or leave blank to resolve via `search()` on its name — one extra API
+        call per run) under `salesforce.seed_record_id` in `tests/fixtures/qa_environment.yaml`
+  - Note: same narrower requirement as Confluence/Jira's equivalent step — the recorder only ever
+    reads this one record, by ID/name and the `[QATEST]` tag, never an arbitrary record
 
 ## 9. Jira
 
@@ -498,7 +507,7 @@ also means the *success* path never gets exercised unless you seed some data:
   - Note: this is a narrower requirement than the steps above — the recorder only ever reads this
     one page, by ID/title and the `[QATEST]` tag, never "any page in `PFQA`" — see
     `external-api-contract-testing.md`'s "Guardrail against recording the wrong thing" for why.
-    Only Confluence and Jira have recorder support today (`scripts/qa_fixture_recorder.py`'s
+    Only Confluence, Jira, and Salesforce have recorder support today (`scripts/qa_fixture_recorder.py`'s
     `CONNECTOR_CHECKS`); other connectors will need the same kind of tagged seed artifact once
     they're wired in — this section is the pattern to follow when that happens, not a one-off.
 
@@ -650,6 +659,7 @@ would find, headlessly, without needing a live Claude session first.
 | Telegram control chat | Any chat that isn't the above two | `telegram_list_chats` |
 | Salesforce QA report | `auto_accept_grants.salesforce.reports` (`run: true`), or the legacy `salesforce.run_report` → `approved_report_ids` rule (falls back to exact name `PrivacyFence QA Report`) | `settings.yaml` / `salesforce_list_reports` |
 | Salesforce QA object type | `salesforce.read_record` → `approved_object_types` (falls back to `Account`) | `settings.yaml` |
+| Salesforce recorder seed record | Name tag `[QATEST]`, same record as the seeded Account (only used by `scripts/qa_fixture_recorder.py`) | `tests/fixtures/qa_environment.yaml` |
 | Jira QA project | Literal key `PFQA` | — |
 | Jira contrast project | Any project key that isn't `PFQA` | `jira_list_projects` |
 | Jira recorder seed issue | Summary tag `[QATEST]` in `PFQA` (only used by `scripts/qa_fixture_recorder.py`) | `tests/fixtures/qa_environment.yaml` |

@@ -6,6 +6,8 @@ so it gets the deepest coverage here.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -21,6 +23,8 @@ from privacyfence.salesforce_client import (
     _validate_salesforce_id,
     load_token_file,
 )
+
+LIVE_FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "live" / "salesforce"
 
 
 def make_client(config: dict | None = None, token_file: str | None = None) -> SalesforceClient:
@@ -473,3 +477,49 @@ class TestSearch:
         client = with_fake_sf(make_client(), sf)
 
         assert client.search("Acme") == []
+
+
+class TestLiveFixtureParsing:
+    """Replays fixtures recorded from real, [QATEST]-tagged seed artifacts
+    by scripts/qa_fixture_recorder.py --record salesforce -- real API
+    shape, not hand-authored, with identity fields already redacted.
+    Skipped (not failed) until each fixture exists; see
+    tests/fixtures/live/README.md and
+    docs/external-api-contract-testing.md's Part A/B. Unlike
+    Confluence/Jira, there's no separate _parse_* method to call directly
+    -- list_reports/get_record parse inline -- so these mock at the
+    _get_sf() boundary instead and call the real public method.
+    Re-record via that script if this ever starts failing after a
+    genuine Salesforce API change.
+    """
+
+    def _load(self, name: str) -> dict:
+        path = LIVE_FIXTURES_DIR / name
+        if not path.exists():
+            pytest.skip(
+                f"{path} not recorded yet -- run "
+                "`python3 scripts/qa_fixture_recorder.py --record salesforce` locally first"
+            )
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def test_get_record_fixture_still_parses(self):
+        raw = self._load("get_record.json")
+        object_type = (raw.get("attributes") or {}).get("type", "Account")
+        sf = MagicMock()
+        getattr(sf, object_type).get.return_value = raw
+        client = with_fake_sf(make_client(), sf)
+
+        record = client.get_record(object_type, raw["Id"])
+
+        assert record.id and record.fields.get("Name")
+
+    def test_list_reports_fixture_still_parses(self):
+        raw = self._load("list_reports.json")
+        sf = MagicMock()
+        sf.query.return_value = raw
+        client = with_fake_sf(make_client(), sf)
+
+        reports = client.list_reports()
+
+        assert reports, "recorded list_reports.json has no records"
+        assert all(r.id and r.name for r in reports)
