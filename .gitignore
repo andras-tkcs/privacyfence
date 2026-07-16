@@ -14,6 +14,11 @@ config/settings.yaml
 config/settings.local.yaml
 resource_name_cache.json
 
+# QA fixture manifest (keep only the .example) -- reveals which real
+# project/space/folder/calendar/list/channel/chat a QA environment uses,
+# on which real accounts. See tests/fixtures/qa_environment.yaml.example.
+tests/fixtures/qa_environment.yaml
+
 # Claude Code
 .claude/
 

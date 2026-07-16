@@ -1,0 +1,22 @@
+[
+  {
+    "avatarUrls": {
+      "16x16": "https://example.com/qa-placeholder",
+      "24x24": "https://example.com/qa-placeholder",
+      "32x32": "https://example.com/qa-placeholder",
+      "48x48": "https://example.com/qa-placeholder"
+    },
+    "entityId": "c7c3f697-98ae-49fd-bcad-3aa035540922",
+    "expand": "description,lead,issueTypes,url,projectKeys,permissions,insight",
+    "id": "qa-placeholder-id-1",
+    "isPrivate": false,
+    "key": "qa-placeholder-id-2",
+    "name": "PrivacyFence QA Test",
+    "projectTypeKey": "software",
+    "properties": {},
+    "self": "https://example.com/qa-placeholder",
+    "simplified": true,
+    "style": "next-gen",
+    "uuid": "c7c3f697-98ae-49fd-bcad-3aa035540922"
+  }
+]

@@ -16,9 +16,16 @@ import pytest
 from privacyfence.audit_log import current_week, init_audit_logger
 from privacyfence.connectors import jira as jira_module
 from privacyfence.connectors.jira import JiraConnector
-from privacyfence.jira_client import JiraClientError, JiraComment, JiraIssue, JiraProject, JiraTransition
+from privacyfence.jira_client import (
+    JiraClient,
+    JiraClientError,
+    JiraComment,
+    JiraIssue,
+    JiraProject,
+    JiraTransition,
+)
 
-from ...helpers import assert_all_tools_leave_an_audit_trail
+from ...helpers import assert_all_tools_leave_an_audit_trail, assert_no_placeholder_fields
 
 
 def make_connector(my_email="me@example.com"):
@@ -26,6 +33,20 @@ def make_connector(my_email="me@example.com"):
     connector = JiraConnector(client)
     connector.my_email = my_email
     return connector, client
+
+
+def make_real_client(config: dict | None = None) -> JiraClient:
+    """A real JiraClient (real _parse_issue and friends) with only the
+    underlying atlassian-python-api object mocked -- same pattern as
+    test_jira_client.py's make_client(). Used by TestFieldCompleteness to
+    exercise the real raw-response -> dataclass -> popup-preview path end
+    to end, instead of a hand-built JiraIssue like every other test here.
+    """
+    base = {"access_token": "tok", "cloud_id": "cloud-1", "site_url": "https://acme.atlassian.net"}
+    base.update(config or {})
+    client = JiraClient(config=base)
+    client._client = MagicMock()
+    return client
 
 
 def make_issue(**overrides):
@@ -409,6 +430,43 @@ class TestTransitionIssue:
             await connector.call(
                 "jira_transition_issue", {"issue_key": "ENG-1", "transition_name": "Done"}
             )
+
+
+class TestFieldCompleteness:
+    """End to end: a fully-populated raw REST response -> the real
+    JiraClient._parse_issue -> the real connector's popup preview -- not a
+    hand-built JiraIssue, unlike every other test in this file. Mirrors
+    test_confluence_connector.py's TestFieldCompleteness, the shape of
+    check that would catch a _parse_* field mapping silently degrading to
+    a fallback before it ships, not after.
+    """
+
+    async def test_get_issue_preview_has_no_placeholder_fields(self, gated_call_spy):
+        client = make_real_client()
+        # jira_client.py's get_issue and get_issue_comments both call
+        # self._client.issue(...) (with different args) -- one raw response
+        # with both the full fields and an (empty) comment list satisfies
+        # both call sites.
+        client._client.issue.return_value = {
+            "key": "PFQA-1",
+            "fields": {
+                "summary": "PrivacyFence QA seed issue [QATEST]",
+                "status": {"name": "To Do"},
+                "issuetype": {"name": "Task"},
+                "reporter": {"displayName": "Real Reporter"},
+                "assignee": {"displayName": "Real Assignee"},
+                "description": "Synthetic PrivacyFence QA test issue.",
+                "created": "2026-01-01T00:00:00Z",
+                "updated": "2026-07-01T00:00:00Z",
+                "comment": {"comments": []},
+            },
+        }
+
+        connector = JiraConnector(client)
+        connector.my_email = "me@example.com"
+        await connector.call("jira_get_issue", {"issue_key": "PFQA-1"})
+
+        assert_no_placeholder_fields(gated_call_spy[0]["preview"])
 
 
 class TestEveryToolIsAudited:

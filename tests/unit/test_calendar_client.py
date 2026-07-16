@@ -7,7 +7,9 @@ googleapiclient service object.
 """
 from __future__ import annotations
 
+import json
 import threading
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -25,6 +27,8 @@ from privacyfence.calendar_client import (
     _has_timezone,
 )
 from googleapiclient.errors import HttpError
+
+LIVE_FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "live" / "calendar"
 
 
 def make_client(service: MagicMock) -> CalendarClient:
@@ -880,3 +884,29 @@ class TestServiceIsThreadLocal:
             mock_build.side_effect = lambda *a, **k: MagicMock()
             assert client._get_service() is client._get_service()
             assert mock_build.call_count == 1
+
+
+class TestLiveFixtureParsing:
+    """Replays a fixture recorded from a real, [QATEST]-tagged seed event by
+    scripts/qa_fixture_recorder.py --record calendar -- real API shape, not
+    hand-authored, with organizer/attendee identity already redacted.
+    Skipped (not failed) until that fixture exists; see
+    tests/fixtures/live/README.md and
+    docs/testing-policy.md. Re-record via that
+    script if this ever starts failing after a genuine Calendar API
+    change.
+    """
+
+    def test_get_event_fixture_still_parses(self):
+        path = LIVE_FIXTURES_DIR / "get_event.json"
+        if not path.exists():
+            pytest.skip(
+                f"{path} not recorded yet -- run "
+                "`python3 scripts/qa_fixture_recorder.py --record calendar` locally first"
+            )
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        client = make_client(MagicMock())
+
+        event = client._parse_event(raw, "primary")
+
+        assert event.title and event.start_time and event.organizer_email

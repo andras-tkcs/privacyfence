@@ -1,0 +1,13 @@
+{
+  "etag": "\"JakAltpkQI8\"",
+  "id": "qa-placeholder-id-1",
+  "kind": "tasks#task",
+  "links": [],
+  "notes": "Synthetic PrivacyFence QA test task. No real information.",
+  "position": "00000000000000000000",
+  "selfLink": "https://example.com/qa-placeholder",
+  "status": "needsAction",
+  "title": "PrivacyFence QA seed task [QATEST]",
+  "updated": "2026-07-16T10:34:44.890Z",
+  "webViewLink": "https://example.com/qa-placeholder"
+}

@@ -28,12 +28,13 @@ Run it whenever approval_window.py's modal-loop plumbing changes
 (build_panel() itself, i.e. everything about window *content*, is already
 covered by test_approval_window.py on every PR and doesn't need this).
 Paste the printed report into the PR description under a "## Popup smoke
-check" heading, the same convention docs/external-api-contract-testing.md's
-local `--check` report already establishes.
+check" heading -- see docs/testing-policy.md §2.2.
 
-Usage:
-    python3 scripts/qa_popup_smoke.py
-    python3 scripts/qa_popup_smoke.py --report-file /tmp/popup_smoke.md
+Usage (the project's own venv, not a bare system python3 -- this needs the
+same pyobjc/AppKit packages the app itself depends on, which only the venv
+has installed):
+    .venv/bin/python scripts/qa_popup_smoke.py
+    .venv/bin/python scripts/qa_popup_smoke.py --report-file /tmp/popup_smoke.md
 """
 from __future__ import annotations
 

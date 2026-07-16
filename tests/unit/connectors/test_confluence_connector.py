@@ -18,6 +18,7 @@ import pytest
 
 from privacyfence.audit_log import current_week, init_audit_logger
 from privacyfence.confluence_client import (
+    ConfluenceClient,
     ConfluenceClientError,
     ConfluencePage,
     ConfluenceSearchResult,
@@ -26,7 +27,7 @@ from privacyfence.confluence_client import (
 from privacyfence.connectors import confluence as confluence_module
 from privacyfence.connectors.confluence import ConfluenceConnector
 
-from ...helpers import assert_all_tools_leave_an_audit_trail
+from ...helpers import assert_all_tools_leave_an_audit_trail, assert_no_placeholder_fields
 
 
 def make_connector(my_email="me@example.com"):
@@ -34,6 +35,21 @@ def make_connector(my_email="me@example.com"):
     connector = ConfluenceConnector(client)
     connector.my_email = my_email
     return connector, client
+
+
+def make_real_client(config: dict | None = None) -> ConfluenceClient:
+    """A real ConfluenceClient (real _parse_page_v2 and friends) with only
+    the underlying atlassian-python-api object mocked -- same pattern as
+    test_confluence_client.py's make_client(). Used by TestFieldCompleteness
+    to exercise the real raw-response -> dataclass -> popup-preview path end
+    to end, instead of stubbing ConfluencePage directly like every other
+    test in this file does.
+    """
+    base = {"access_token": "tok", "cloud_id": "cloud-1", "site_url": "https://acme.atlassian.net"}
+    base.update(config or {})
+    client = ConfluenceClient(config=base)
+    client._client = MagicMock()
+    return client
 
 
 def make_page(**overrides):
@@ -280,6 +296,39 @@ class TestUpdatePage:
 
         with pytest.raises(RuntimeError, match="locked"):
             await connector.call("confluence_update_page", {"page_id": "p1", "title": "x", "body": "y"})
+
+
+class TestFieldCompleteness:
+    """End to end: a fully-populated raw v2 API response -> the real
+    ConfluenceClient._parse_page_v2 -> the real connector's popup preview
+    -- not a hand-built ConfluencePage, unlike every other test in this
+    file. This is the shape of check that would have caught the
+    last_modified bug (see module docstring) without already knowing it
+    existed: assert_no_placeholder_fields fails loudly the moment any
+    preview field silently degrades to a fallback.
+    """
+
+    async def test_get_page_preview_has_no_placeholder_fields(self, gated_call_spy):
+        client = make_real_client()
+        # First _client.get() call is get_page's own fetch; the second is
+        # _resolve_space_key's follow-up lookup for the human-readable key
+        # (v2 pages only carry a numeric spaceId).
+        client._client.get.side_effect = [
+            {
+                "id": "123", "title": "My Page", "spaceId": "999",
+                "version": {"number": 3, "createdAt": "2026-07-01T00:00:00Z"},
+                "authorId": "acc-1", "createdAt": "2026-01-01T00:00:00Z",
+                "_links": {"webui": "/spaces/ENG/pages/123"},
+                "body": {"storage": {"value": "<p>content</p>"}},
+            },
+            {"key": "ENG"},
+        ]
+
+        connector = ConfluenceConnector(client)
+        connector.my_email = "me@example.com"
+        await connector.call("confluence_get_page", {"page_id": "123"})
+
+        assert_no_placeholder_fields(gated_call_spy[0]["preview"])
 
 
 class TestEveryToolIsAudited:

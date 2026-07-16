@@ -9,8 +9,10 @@ DriveClient itself and never touch this file.
 from __future__ import annotations
 
 import base64
+import json
 import os
 import threading
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -30,6 +32,8 @@ from privacyfence.drive_client import (
     _parse_inline_runs,
 )
 from googleapiclient.errors import HttpError
+
+LIVE_FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "live" / "drive"
 
 
 def make_client(service: MagicMock) -> DriveClient:
@@ -1636,3 +1640,27 @@ class TestServiceIsThreadLocal:
                 t.join()
 
             assert len({id(s) for s in services.values()}) == 5
+
+
+class TestLiveFixtureParsing:
+    """Replays a fixture recorded from the real QA Sandbox folder by
+    scripts/qa_fixture_recorder.py --record drive -- real API shape, not
+    hand-authored, with owner identity already redacted. Skipped (not
+    failed) until that fixture exists; see tests/fixtures/live/README.md
+    and docs/testing-policy.md. Re-record via
+    that script if this ever starts failing after a genuine Drive API
+    change.
+    """
+
+    def test_get_file_metadata_fixture_still_parses(self):
+        path = LIVE_FIXTURES_DIR / "get_file_metadata.json"
+        if not path.exists():
+            pytest.skip(
+                f"{path} not recorded yet -- run "
+                "`python3 scripts/qa_fixture_recorder.py --record drive` locally first"
+            )
+        raw = json.loads(path.read_text(encoding="utf-8"))
+
+        drive_file = DriveClient._parse_file(raw)
+
+        assert drive_file.id and drive_file.name

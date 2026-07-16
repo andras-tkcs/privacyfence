@@ -1,0 +1,17 @@
+{
+  "createdTime": "2026-07-08T11:43:09.392Z",
+  "id": "qa-placeholder-id-1",
+  "mimeType": "application/vnd.google-apps.folder",
+  "modifiedTime": "2026-07-08T11:43:09.392Z",
+  "name": "PrivacyFence QA Sandbox",
+  "owners": [
+    {
+      "emailAddress": "qa-placeholder@example.com"
+    }
+  ],
+  "parents": [
+    "qa-placeholder-id-2"
+  ],
+  "shared": false,
+  "webViewLink": "https://example.com/qa-placeholder"
+}

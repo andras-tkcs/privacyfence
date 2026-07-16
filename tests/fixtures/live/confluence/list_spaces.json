@@ -1,0 +1,29 @@
+{
+  "_links": {
+    "base": "https://example.com/qa-placeholder"
+  },
+  "results": [
+    {
+      "_links": {
+        "webui": "https://example.com/qa-placeholder"
+      },
+      "authorId": "qa-placeholder-account-id",
+      "createdAt": "2026-07-08T11:58:19.628Z",
+      "currentActiveAlias": "PFQA",
+      "description": {
+        "plain": {
+          "representation": "plain",
+          "value": ""
+        }
+      },
+      "homepageId": "qa-placeholder-id-1",
+      "icon": null,
+      "id": "qa-placeholder-id-3",
+      "key": "qa-placeholder-id-2",
+      "name": "PrivacyFence QA Test",
+      "spaceOwnerId": "qa-placeholder-account-id",
+      "status": "current",
+      "type": "collaboration"
+    }
+  ]
+}

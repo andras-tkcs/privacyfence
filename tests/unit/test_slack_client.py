@@ -6,7 +6,9 @@ MagicMock stand-in for slack_sdk.WebClient.
 """
 from __future__ import annotations
 
+import json
 from datetime import timezone
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -20,6 +22,8 @@ from privacyfence.slack_client import (
     load_token_file,
 )
 from slack_sdk.errors import SlackApiError
+
+LIVE_FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "live" / "slack"
 
 
 def make_client(web_client: MagicMock) -> SlackClient:
@@ -496,3 +500,39 @@ class TestGetUserInfo:
         client = make_client(web_client)
         with pytest.raises(SlackClientError, match="get_user_info"):
             client.get_user_info("U1")
+
+
+# ---------------------------------------------------------------------------- #
+# Live fixture replay
+# ---------------------------------------------------------------------------- #
+
+class TestLiveFixtureParsing:
+    """Replays a fixture recorded from the real, [QATEST]-tagged seed thread
+    in privacyfence-qa-control by scripts/qa_fixture_recorder.py --record
+    slack -- real API shape, not hand-authored. Skipped (not failed) until
+    that fixture exists; see tests/fixtures/live/README.md and
+    docs/testing-policy.md. Re-record via that
+    script if this ever starts failing after a genuine Slack API change.
+    """
+
+    def test_get_thread_replies_fixture_still_parses(self):
+        path = LIVE_FIXTURES_DIR / "get_thread_replies.json"
+        if not path.exists():
+            pytest.skip(
+                f"{path} not recorded yet -- run "
+                "`python3 scripts/qa_fixture_recorder.py --record slack` locally first"
+            )
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        messages = raw.get("messages", [])
+        assert messages, "recorded fixture has no messages"
+
+        # The recorded fixture's author id is already the redaction
+        # placeholder, not a real user -- users.info is mocked the same way
+        # TestParseMessage does above, rather than hitting the network.
+        web_client = MagicMock()
+        web_client.users_info.return_value = {"user": {"id": messages[0].get("user", ""), "name": "qauser"}}
+        client = make_client(web_client)
+
+        starter = client._parse_message(messages[0], "C1", "privacyfence-qa-control")
+
+        assert starter.text and "[QATEST]" in starter.text
