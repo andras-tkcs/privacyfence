@@ -89,7 +89,8 @@ directly rather than a full gated `Connector`, since it only ever calls a small,
 **targeted, read-only** methods per connector: always by the specific ID/key of a
 `qa-environment-setup.md` seed artifact (read from the non-secret manifest below), never a blanket
 list/search call kept for its own sake. Implemented today: **Confluence, Jira, Salesforce, Gmail,
-and Drive**. Three capture mechanisms cover them:
+Drive, Calendar, Contacts, and Tasks** — every connector except Slack and Telegram. Three capture
+mechanisms cover them:
 
 - `RawCapture` — Confluence and Jira funnel every client call through the same
   `self._request(fn, *a, **kw)` choke point (same author, same Atlassian OAuth grant); works for
@@ -107,8 +108,10 @@ and Drive**. Three capture mechanisms cover them:
   `HttpRequest` and so can't exercise this class at all — `tests/unit/test_qa_fixture_recorder.py`
   instead builds a real, offline `HttpRequest` (`googleapiclient.discovery.build(...,
   static_discovery=True)` needs no network or credentials) with a fake httplib2 transport, and
-  confirms the patched method is what actually runs. Proven for Gmail and Drive; Calendar, Contacts,
-  and Tasks should work the same way but aren't wired up yet.
+  confirms the patched method is what actually runs. One mechanism, five connectors — proven once
+  for Gmail, then reused unmodified for Drive/Calendar/Contacts/Tasks (each still needed its own
+  `check_<connector>()`, seed artifact, and — Gmail and Contacts specifically — its own reasoning
+  about what redaction should or shouldn't do, see below).
 
 Slack does its own per-method pagination inline (no choke point either, and no `HttpRequest`
 equivalent to patch); Telegram's client is fully `async`, which the recorder (currently synchronous
@@ -293,27 +296,30 @@ scripts/
 6. **Optional staleness reminder workflow** — whenever convenient; it's decoupled from everything
    else and adds no risk.
 
-**Status**: 1, 2, and 5 are done for **Confluence, Jira, Salesforce, Gmail, and Drive**
-(`assert_no_placeholder_fields` in `tests/helpers.py`; `TestFieldCompleteness` in each gated
-connector's test module — Salesforce's is thinner than Confluence/Jira's given
-`SalesforceRecord`'s raw pass-through fields, and Drive has none at all since
-`drive_get_file_metadata` is auto-approved with no popup to check; `TestLiveFixtureParsing` in
-each client's test module, skipped until a real fixture exists for each). 3 and 4 shipped together
-rather than staged, since the guardrail and redaction logic weren't separable in practice from the
-recording code path itself — `scripts/qa_fixture_recorder.py` implements `--check`/`--record` for
-all five now, with `CONNECTOR_CHECKS` as the extension point for the rest. Verified against
-realistic mocked/offline API responses for each, including the guardrail correctly refusing an
-untagged/stale-ID/mismatched-name fetch, **and** — as a permanent regression suite now, not just
-one-off manual runs — `tests/unit/test_qa_fixture_recorder.py`, which is also where
-`RawCaptureExecute` gets its offline `HttpRequest` proof (see above). Two real redaction gaps were
-found and fixed via that verification, not after the fact: Salesforce's whole-object
-`Owner`/`CreatedBy`/`LastModifiedBy` case, and Gmail's `payload.headers`-list case (see "Identity-
-field redaction" above for both). No real fixture has been recorded for any of the five yet (each
-needs a real, authenticated account and a seed artifact per `qa-environment-setup.md` §1/§2/§8/§9/
-§10 — something this can't be done from a sandboxed environment); `tests/fixtures/qa_environment.yaml`
-ships with all five connectors' placeholder values, ready to fill in. Calendar, Contacts, and Tasks
-should extend `RawCaptureExecute` the same way Gmail/Drive did, but aren't wired up yet; Slack and
-Telegram still need real, connector-specific capture work (see above). Step 6 hasn't started.
+**Status**: 1, 2, and 5 are done for **Confluence, Jira, Salesforce, Gmail, Drive, Calendar,
+Contacts, and Tasks** — every connector except Slack and Telegram (`assert_no_placeholder_fields`
+in `tests/helpers.py`; `TestFieldCompleteness` in each *gated* connector's test module — Salesforce's
+is thinner than Confluence/Jira's given `SalesforceRecord`'s raw pass-through fields, and Drive/
+Tasks have none at all since their targeted reads are auto-approved with no popup to check;
+`TestLiveFixtureParsing` in each client's test module, skipped until a real fixture exists for
+each). 3 and 4 shipped together rather than staged, since the guardrail and redaction logic weren't
+separable in practice from the recording code path itself — `scripts/qa_fixture_recorder.py`
+implements `--check`/`--record` for all eight now, with `CONNECTOR_CHECKS` as the extension point
+for the rest. Verified against realistic mocked/offline API responses for each, including the
+guardrail correctly refusing an untagged/stale-ID/mismatched-name fetch, **and** — as a permanent
+regression suite now, not just one-off manual runs — `tests/unit/test_qa_fixture_recorder.py`,
+which is also where `RawCaptureExecute` gets its offline `HttpRequest` proof (see above). Two real
+redaction gaps were found and fixed via that verification, not after the fact: Salesforce's
+whole-object `Owner`/`CreatedBy`/`LastModifiedBy` case, and Gmail's `payload.headers`-list case (see
+"Identity-field redaction" above for both) — and one deliberate *non*-redaction decision was made
+the same careful way: Contacts' recorded fixture is left unredacted on purpose, since a contact's
+own name/email/phone are the content under test, not someone else's identity. No real fixture has
+been recorded for any of the eight yet (each needs a real, authenticated account and a seed
+artifact per `qa-environment-setup.md` §1/§2/§4/§5/§6/§8/§9/§10 — something this can't be done from
+a sandboxed environment); `tests/fixtures/qa_environment.yaml` ships with all eight connectors'
+placeholder values, ready to fill in. Slack and Telegram still need real, connector-specific
+capture work (see above) — no more low-hanging `RawCaptureExecute` extensions left. Step 6 hasn't
+started.
 
 No step in this plan requires provisioning any credential to GitHub, CI, or any cloud service.
 

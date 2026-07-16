@@ -4,7 +4,9 @@ fallback, and update_contact's partial-field update building.
 """
 from __future__ import annotations
 
+import json
 import threading
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -18,6 +20,8 @@ from privacyfence.contacts_client import (
     _parse_person,
 )
 from googleapiclient.errors import HttpError
+
+LIVE_FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "live" / "contacts"
 
 
 def make_client(service: MagicMock) -> ContactsClient:
@@ -742,3 +746,29 @@ class TestServiceIsThreadLocal:
             mock_build.side_effect = lambda *a, **k: MagicMock()
             assert client._get_service() is client._get_service()
             assert mock_build.call_count == 1
+
+
+class TestLiveFixtureParsing:
+    """Replays a fixture recorded from a real, [QATEST]-tagged seed contact
+    by scripts/qa_fixture_recorder.py --record contacts -- real API shape,
+    not hand-authored. Unlike every other connector's fixture, this one is
+    deliberately *not* redacted (the contact's own fields are the content
+    under test, not someone else's identity -- see check_contacts() in
+    scripts/qa_fixture_recorder.py). Skipped (not failed) until that
+    fixture exists; see tests/fixtures/live/README.md and
+    docs/external-api-contract-testing.md's Part A/B. Re-record via that
+    script if this ever starts failing after a genuine People API change.
+    """
+
+    def test_get_contact_fixture_still_parses(self):
+        path = LIVE_FIXTURES_DIR / "get_contact.json"
+        if not path.exists():
+            pytest.skip(
+                f"{path} not recorded yet -- run "
+                "`python3 scripts/qa_fixture_recorder.py --record contacts` locally first"
+            )
+        raw = json.loads(path.read_text(encoding="utf-8"))
+
+        contact = _parse_person(raw)
+
+        assert contact.resource_name and contact.display_name

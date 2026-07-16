@@ -58,6 +58,31 @@ drive:
   # Leave blank to resolve by name instead (one extra API call per run).
   folder_id: ""
 
+calendar:
+  # docs/qa-environment-setup.md §4
+  calendar_id: primary
+  seed_event_title: "PrivacyFence QA seed event [QATEST]"
+  # Leave blank to resolve by a title search instead (one extra API call
+  # per run).
+  seed_event_id: ""
+
+contacts:
+  # docs/qa-environment-setup.md §5 -- unlike every other connector, the
+  # recorded fixture for this one is NOT redacted: the seed contact's own
+  # name/email/phone are the content under test, not someone else's
+  # identity. See check_contacts() in scripts/qa_fixture_recorder.py.
+  seed_contact_display_name: "PrivacyFence QA Test Contact [QATEST]"
+  # Leave blank to resolve by a name search instead (one extra API call
+  # per run).
+  seed_contact_resource_name: ""
+
+tasks:
+  # docs/qa-environment-setup.md §6 -- no by-title resolve fallback
+  # (tasks_client.py has no search-by-title method, only list_tasks, an
+  # uncontrolled full-list fetch), so both ids are required.
+  task_list_id: ""
+  seed_task_id: ""
+
 # Other connectors follow the same shape once
 # scripts/qa_fixture_recorder.py grows a check_<connector>() for them --
 # see that script's CONNECTOR_CHECKS registry and

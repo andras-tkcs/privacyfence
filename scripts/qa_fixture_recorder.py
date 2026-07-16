@@ -54,6 +54,9 @@ from privacyfence.jira_client import JiraClient, JiraClientError  # noqa: E402
 from privacyfence.salesforce_client import SalesforceClient, SalesforceClientError  # noqa: E402
 from privacyfence.gmail_client import GmailClient, GmailClientError  # noqa: E402
 from privacyfence.drive_client import DriveClient, DriveClientError  # noqa: E402
+from privacyfence.calendar_client import CalendarClient, CalendarClientError  # noqa: E402
+from privacyfence.contacts_client import ContactsClient, ContactsClientError  # noqa: E402
+from privacyfence.tasks_client import TasksClient, TasksClientError  # noqa: E402
 
 FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures" / "live"
 MANIFEST_PATH = REPO_ROOT / "tests" / "fixtures" / "qa_environment.yaml"
@@ -644,12 +647,168 @@ def check_drive(record: bool, manifest: dict[str, Any]) -> list[CheckResult]:
     return results
 
 
+def _build_calendar_client() -> CalendarClient:
+    org_config = daemon_main.load_org_config()
+    client_config = daemon_main._google_client_config(org_config)
+    if not client_config:
+        raise SystemExit("Google organization config not installed -- run Authenticate… in the menu bar first.")
+    token_path = daemon_main._resolve_path(daemon_main.TOKEN_FILES["calendar"])
+    return CalendarClient(client_config=client_config, token_file=token_path)
+
+
+def check_calendar(record: bool, manifest: dict[str, Any]) -> list[CheckResult]:
+    cfg = manifest.get("calendar") or {}
+    calendar_id = cfg.get("calendar_id", "primary")
+    seed_event_id = cfg.get("seed_event_id", "")
+    seed_event_title = cfg.get("seed_event_title", f"PrivacyFence QA seed event {QATEST_TAG}")
+
+    results: list[CheckResult] = []
+    client = _build_calendar_client()
+
+    try:
+        if seed_event_id:
+            with RawCaptureExecute() as cap:
+                event = client.get_event(calendar_id, seed_event_id)
+        else:
+            # list_events is a single .execute() call (unlike Gmail's
+            # list_messages), so a resolve-then-get fallback is safe here.
+            found = client.list_events(calendar_id, max_results=1, query=seed_event_title)
+            if not found:
+                raise CalendarClientError(f"no event found matching query {seed_event_title!r}")
+            with RawCaptureExecute() as cap:
+                event = client.get_event(calendar_id, found[0].id)
+        tagged = QATEST_TAG in event.title
+        complete = bool(event.title and event.start_time and event.organizer_email)
+        ok = tagged and complete
+        if not tagged:
+            note = f"fetched event title {event.title!r} does not carry {QATEST_TAG} -- refusing to record"
+        elif not complete:
+            note = "missing popup field(s) -- title/start_time/organizer_email not all present"
+        else:
+            note = "title, start_time, organizer_email all present"
+        raw = redact(cap.captured) if (record and ok and isinstance(cap.captured, dict)) else None
+        results.append(CheckResult("calendar", "get_event", seed_event_title, ok, note, raw, "get_event.json"))
+    except CalendarClientError as exc:
+        results.append(CheckResult("calendar", "get_event", seed_event_title, False, str(exc)))
+
+    return results
+
+
+def _build_contacts_client() -> ContactsClient:
+    org_config = daemon_main.load_org_config()
+    client_config = daemon_main._google_client_config(org_config)
+    if not client_config:
+        raise SystemExit("Google organization config not installed -- run Authenticate… in the menu bar first.")
+    token_path = daemon_main._resolve_path(daemon_main.TOKEN_FILES["contacts"])
+    return ContactsClient(client_config=client_config, token_file=token_path)
+
+
+def check_contacts(record: bool, manifest: dict[str, Any]) -> list[CheckResult]:
+    # A contact's name/email/phone *are* the content under test here, not
+    # someone else's identity leaking into an otherwise-synthetic page/
+    # issue/event -- there's no separate "real author touched this" split
+    # the way every other connector has. The usual redact() pass is
+    # deliberately NOT applied: doing so would scrub the very field
+    # mapping this check exists to verify (a real displayName/value would
+    # come back as a placeholder either way, masking a genuine parsing
+    # bug). See qa-environment-setup.md §5 and this repo's
+    # external-api-contract-testing.md "Identity-field redaction" section.
+    cfg = manifest.get("contacts") or {}
+    seed_contact_resource_name = cfg.get("seed_contact_resource_name", "")
+    seed_contact_display_name = cfg.get("seed_contact_display_name", f"PrivacyFence QA Test Contact {QATEST_TAG}")
+
+    results: list[CheckResult] = []
+    client = _build_contacts_client()
+
+    try:
+        if seed_contact_resource_name:
+            with RawCaptureExecute() as cap:
+                contact = client.get_contact(seed_contact_resource_name)
+        else:
+            found = client.search_contacts(seed_contact_display_name, max_results=1, source="personal")
+            if not found:
+                raise ContactsClientError(f"no contact found matching name {seed_contact_display_name!r}")
+            with RawCaptureExecute() as cap:
+                contact = client.get_contact(found[0].resource_name)
+        tagged = QATEST_TAG in contact.display_name
+        complete = bool(contact.resource_name and contact.display_name)
+        ok = tagged and complete
+        if not tagged:
+            note = f"fetched contact name {contact.display_name!r} does not carry {QATEST_TAG} -- refusing to record"
+        elif not complete:
+            note = "missing field(s) -- resource_name/display_name not both present"
+        else:
+            note = "resource_name, display_name present"
+        raw = copy.deepcopy(cap.captured) if (record and ok and isinstance(cap.captured, dict)) else None
+        results.append(
+            CheckResult("contacts", "get_contact", seed_contact_display_name, ok, note, raw, "get_contact.json")
+        )
+    except ContactsClientError as exc:
+        results.append(CheckResult("contacts", "get_contact", seed_contact_display_name, False, str(exc)))
+
+    return results
+
+
+def _build_tasks_client() -> TasksClient:
+    org_config = daemon_main.load_org_config()
+    client_config = daemon_main._google_client_config(org_config)
+    if not client_config:
+        raise SystemExit("Google organization config not installed -- run Authenticate… in the menu bar first.")
+    token_path = daemon_main._resolve_path(daemon_main.TOKEN_FILES["tasks"])
+    return TasksClient(client_config=client_config, token_file=token_path)
+
+
+def check_tasks(record: bool, manifest: dict[str, Any]) -> list[CheckResult]:
+    # Task carries no identity field at all (id/title/notes/due/status/
+    # completed/updated/position/parent -- see tasks_client.py), so this
+    # is the one connector where the generic redact() is a safe no-op
+    # rather than a deliberate choice either way.
+    cfg = manifest.get("tasks") or {}
+    task_list_id = cfg.get("task_list_id", "")
+    seed_task_id = cfg.get("seed_task_id", "")
+
+    # Unlike Confluence/Jira/Salesforce/Calendar/Contacts, tasks_client.py
+    # has no search-by-title method to reuse for a resolve fallback --
+    # only list_tasks, an uncontrolled full-list fetch. Both ids required.
+    if not task_list_id or not seed_task_id:
+        return [CheckResult(
+            "tasks", "get_task", "(unconfigured)", False,
+            "tasks.task_list_id and tasks.seed_task_id must both be set in "
+            "tests/fixtures/qa_environment.yaml -- Tasks has no by-title resolve fallback",
+        )]
+
+    results: list[CheckResult] = []
+    client = _build_tasks_client()
+
+    try:
+        with RawCaptureExecute() as cap:
+            task = client.get_task(task_list_id, seed_task_id)
+        tagged = QATEST_TAG in task.title
+        complete = bool(task.id and task.title)
+        ok = tagged and complete
+        if not tagged:
+            note = f"fetched task title {task.title!r} does not carry {QATEST_TAG} -- refusing to record"
+        elif not complete:
+            note = "missing field(s) -- id/title not both present"
+        else:
+            note = "id, title present"
+        raw = redact(cap.captured) if (record and ok and isinstance(cap.captured, dict)) else None
+        results.append(CheckResult("tasks", "get_task", seed_task_id, ok, note, raw, "get_task.json"))
+    except TasksClientError as exc:
+        results.append(CheckResult("tasks", "get_task", seed_task_id, False, str(exc)))
+
+    return results
+
+
 CONNECTOR_CHECKS: dict[str, Callable[[bool, dict[str, Any]], list[CheckResult]]] = {
     "confluence": check_confluence,
     "jira": check_jira,
     "salesforce": check_salesforce,
     "gmail": check_gmail,
     "drive": check_drive,
+    "calendar": check_calendar,
+    "contacts": check_contacts,
+    "tasks": check_tasks,
 }
 
 

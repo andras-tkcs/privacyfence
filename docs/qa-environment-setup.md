@@ -271,6 +271,18 @@ prove the review gate still fires for anything not on the allowlist).
     visibility being *requested*, not the event's prior state. Combine with `i_am_organizer` above
     if you want both — a matching rule short-circuits the list, so order only changes which rule
     name shows up in the audit log, not what auto-accepts.
+- [ ] **For `scripts/qa_fixture_recorder.py`**: create one dedicated seed event on your primary
+      calendar, far enough in the future that it won't need recreating, with synthetic content and
+      no real attendees, tagged so the recorder can confirm it's the right one:
+      ```
+      Title:       PrivacyFence QA seed event [QATEST]
+      Description: Synthetic PrivacyFence QA test event. No real information.
+      ```
+  - [ ] Fill in its event id (or leave blank to resolve by a title search instead — one extra API
+        call per run) under `calendar.seed_event_id` in `tests/fixtures/qa_environment.yaml`
+        (`calendar.calendar_id` defaults to `primary`)
+  - Note: same narrower requirement as Confluence/Jira's equivalent step — the recorder only ever
+    reads this one event, by id/title and the `[QATEST]` tag, never an arbitrary event
 
 > **Note** — event attachments (`calendar_get_event_details`'s "Notes by Gemini"/transcript Docs)
 > are opportunistic, not something this doc can provision: attachments can't be created via
@@ -295,6 +307,21 @@ prove the review gate still fires for anything not on the allowlist).
         contacts.edit:
           - rule: no_contact_info_change
       ```
+- [ ] **For `scripts/qa_fixture_recorder.py`**: create one dedicated seed contact, using the
+      placeholder-value conventions from the top of this doc — unlike every other connector's
+      recorder target, a contact's name/email/phone fields *are* the content under test (there's no
+      separate "real author touched this synthetic thing" split the way a page/issue/event has), so
+      the recorder does **not** apply its usual identity redaction pass here — see
+      `external-api-contract-testing.md`'s "Identity-field redaction" for why that would be wrong,
+      not just unnecessary, for this one connector:
+      ```
+      Display name: PrivacyFence QA Test Contact [QATEST]
+      Email:        qatest.contact@example.com
+      Phone:        555-0142
+      ```
+  - [ ] Fill in its resource name (e.g. `people/c12345`, or leave blank to resolve by a name search
+        instead — one extra API call per run) under `contacts.seed_contact_resource_name` in
+        `tests/fixtures/qa_environment.yaml`
 
 > **Note** — no fixture is needed for `source="personal"` vs. `source="directory"`: whether your
 > account has Workspace directory colleagues is a fact about your account, not something to
@@ -331,6 +358,20 @@ prove the review gate still fires for anything not on the allowlist).
       the source and destination list have `move: true` set). Skip any capability you'd rather
       leave always-prompting — the test prompt handles "not configured" gracefully for each one
       independently.
+- [ ] **For `scripts/qa_fixture_recorder.py`**: create one dedicated seed task in your approved
+      list, tagged so the recorder can confirm it's the right one:
+      ```
+      Title: PrivacyFence QA seed task [QATEST]
+      Notes: Synthetic PrivacyFence QA test task. No real information.
+      ```
+  - [ ] Fill in the approved list's id (already resolved in the first step above) and the task's id
+        under `tasks.task_list_id` / `tasks.seed_task_id` in `tests/fixtures/qa_environment.yaml`
+        (no by-title resolve fallback for this one — `tasks_client.py` has no search-by-title
+        method to reuse, only `list_tasks`, which would mean an uncontrolled full-list fetch;
+        `seed_task_id` is required)
+  - Note: `tasks_get_task` is auto-approved (no gate/popup preview — see `connectors/tasks.py`),
+    so like Drive's equivalent step, this only proves the raw-response → `Task` mapping stays
+    correct, not popup-field completeness
 
 ## 7. Telegram
 
@@ -522,7 +563,8 @@ also means the *success* path never gets exercised unless you seed some data:
   - Note: this is a narrower requirement than the steps above — the recorder only ever reads this
     one page, by ID/title and the `[QATEST]` tag, never "any page in `PFQA`" — see
     `external-api-contract-testing.md`'s "Guardrail against recording the wrong thing" for why.
-    Only Confluence, Jira, Salesforce, Gmail, and Drive have recorder support today (`scripts/qa_fixture_recorder.py`'s
+    Only Confluence, Jira, Salesforce, Gmail, Drive, Calendar, Contacts, and Tasks have recorder
+    support today (`scripts/qa_fixture_recorder.py`'s
     `CONNECTOR_CHECKS`); other connectors will need the same kind of tagged seed artifact once
     they're wired in — this section is the pattern to follow when that happens, not a one-off.
 
@@ -685,6 +727,9 @@ would find, headlessly, without needing a live Claude session first.
 | Confluence recorder seed page | Title tag `[QATEST]` in `PFQA` (only used by `scripts/qa_fixture_recorder.py`) | `tests/fixtures/qa_environment.yaml` |
 | Tasks approved list | `auto_accept_grants.tasks.task_lists` (`edit: true`), or the legacy `tasks.update_task` → `approved_task_list` rule (falls back to the default list) | `settings.yaml` / `tasks_list_task_lists` |
 | Tasks contrast list | Exact name `PrivacyFence QA Contrast List` | `tasks_list_task_lists` |
+| Tasks recorder seed task | `tasks.task_list_id` + `tasks.seed_task_id`, both required (no resolve fallback) | `tests/fixtures/qa_environment.yaml` |
+| Calendar recorder seed event | Title tag `[QATEST]` (or `calendar.seed_event_id`) | `tests/fixtures/qa_environment.yaml` |
+| Contacts recorder seed contact | Display name tag `[QATEST]` (or `contacts.seed_contact_resource_name`) — fixture is **not** redacted, see §5 | `tests/fixtures/qa_environment.yaml` |
 
 ---
 

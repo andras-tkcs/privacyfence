@@ -4,13 +4,17 @@ insert-then-delete sequencing).
 """
 from __future__ import annotations
 
+import json
 import threading
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from privacyfence.tasks_client import Task, TaskList, TasksClient, TasksClientError
 from googleapiclient.errors import HttpError
+
+LIVE_FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "live" / "tasks"
 
 
 def make_client(service: MagicMock) -> TasksClient:
@@ -368,3 +372,26 @@ class TestServiceIsThreadLocal:
 
             assert first is second
             assert mock_build.call_count == 1
+
+
+class TestLiveFixtureParsing:
+    """Replays a fixture recorded from a real, [QATEST]-tagged seed task by
+    scripts/qa_fixture_recorder.py --record tasks -- real API shape, not
+    hand-authored. Skipped (not failed) until that fixture exists; see
+    tests/fixtures/live/README.md and
+    docs/external-api-contract-testing.md's Part A/B. Re-record via that
+    script if this ever starts failing after a genuine Tasks API change.
+    """
+
+    def test_get_task_fixture_still_parses(self):
+        path = LIVE_FIXTURES_DIR / "get_task.json"
+        if not path.exists():
+            pytest.skip(
+                f"{path} not recorded yet -- run "
+                "`python3 scripts/qa_fixture_recorder.py --record tasks` locally first"
+            )
+        raw = json.loads(path.read_text(encoding="utf-8"))
+
+        task = TasksClient._parse_task(raw, "l1")
+
+        assert task.id and task.title

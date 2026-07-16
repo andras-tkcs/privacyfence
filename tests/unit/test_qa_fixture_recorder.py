@@ -42,6 +42,9 @@ from privacyfence.jira_client import JiraClient  # noqa: E402
 from privacyfence.salesforce_client import SalesforceClient  # noqa: E402
 from privacyfence.gmail_client import GmailClient  # noqa: E402
 from privacyfence.drive_client import DriveClient  # noqa: E402
+from privacyfence.calendar_client import CalendarClient  # noqa: E402
+from privacyfence.contacts_client import ContactsClient  # noqa: E402
+from privacyfence.tasks_client import TasksClient  # noqa: E402
 
 
 def _offline_google_service(api: str, version: str, raw_response):
@@ -498,6 +501,124 @@ class TestCheckDrive:
         get_meta = next(r for r in results if r.method == "get_file_metadata")
         assert not get_meta.ok
         assert get_meta.raw is None
+
+
+class TestCheckCalendar:
+    def test_organizer_and_attendee_identity_redacted(self, monkeypatch):
+        raw_event = {
+            "id": "e1", "summary": "PrivacyFence QA seed event [QATEST]",
+            "start": {"dateTime": "2026-12-01T10:00:00Z"}, "end": {"dateTime": "2026-12-01T11:00:00Z"},
+            "organizer": {"email": "real.user@company.com", "self": True},
+            "attendees": [{"email": "real.other@company.com", "displayName": "Real Attendee", "responseStatus": "accepted"}],
+        }
+        client = CalendarClient(client_config={}, token_file="/tmp/unused-token.json")
+        client._local.service = _offline_google_service("calendar", "v3", raw_event)
+        monkeypatch.setattr(recorder, "_build_calendar_client", lambda: client)
+
+        results = recorder.check_calendar(record=True, manifest={"calendar": {"seed_event_id": "e1"}})
+
+        get_event = next(r for r in results if r.method == "get_event")
+        assert get_event.ok
+        assert get_event.raw["organizer"]["email"] == recorder._REDACTED_EMAIL
+        assert get_event.raw["attendees"][0]["email"] == recorder._REDACTED_EMAIL
+        assert get_event.raw["attendees"][0]["displayName"] == recorder._REDACTED_NAME
+        assert get_event.raw["summary"] == "PrivacyFence QA seed event [QATEST]"  # content, untouched
+
+    def test_untagged_event_is_refused(self, monkeypatch):
+        raw_event = {
+            "id": "e2", "summary": "Some real unrelated event",
+            "start": {"dateTime": "x"}, "end": {"dateTime": "y"},
+            "organizer": {"email": "real.user@company.com"},
+        }
+        client = CalendarClient(client_config={}, token_file="/tmp/unused-token.json")
+        client._local.service = _offline_google_service("calendar", "v3", raw_event)
+        monkeypatch.setattr(recorder, "_build_calendar_client", lambda: client)
+
+        results = recorder.check_calendar(record=True, manifest={"calendar": {"seed_event_id": "e2"}})
+
+        get_event = next(r for r in results if r.method == "get_event")
+        assert not get_event.ok
+        assert get_event.raw is None
+
+
+class TestCheckContacts:
+    """Contacts is the one connector where redaction is deliberately
+    skipped -- the seed contact's own name/email/phone are the content
+    under test, not someone else's identity leaking into it. These tests
+    prove that choice explicitly (the fixture's own fields survive
+    unredacted), not just that nothing crashes.
+    """
+
+    def test_seed_contact_fields_survive_unredacted(self, monkeypatch):
+        raw_contact = {
+            "resourceName": "people/c1",
+            "names": [{"displayName": "PrivacyFence QA Test Contact [QATEST]"}],
+            "emailAddresses": [{"value": "qatest.contact@example.com", "type": "home"}],
+            "phoneNumbers": [{"value": "555-0142", "type": "home"}],
+        }
+        client = ContactsClient(client_config={}, token_file="/tmp/unused-token.json")
+        client._local.service = _offline_google_service("people", "v1", raw_contact)
+        monkeypatch.setattr(recorder, "_build_contacts_client", lambda: client)
+
+        results = recorder.check_contacts(
+            record=True, manifest={"contacts": {"seed_contact_resource_name": "people/c1"}},
+        )
+
+        get_contact = next(r for r in results if r.method == "get_contact")
+        assert get_contact.ok
+        # Deliberately NOT redacted -- see the comment in check_contacts().
+        assert get_contact.raw["names"][0]["displayName"] == "PrivacyFence QA Test Contact [QATEST]"
+        assert get_contact.raw["emailAddresses"][0]["value"] == "qatest.contact@example.com"
+
+    def test_untagged_contact_is_refused(self, monkeypatch):
+        raw_contact = {"resourceName": "people/c2", "names": [{"displayName": "Some Real Unrelated Person"}]}
+        client = ContactsClient(client_config={}, token_file="/tmp/unused-token.json")
+        client._local.service = _offline_google_service("people", "v1", raw_contact)
+        monkeypatch.setattr(recorder, "_build_contacts_client", lambda: client)
+
+        results = recorder.check_contacts(
+            record=True, manifest={"contacts": {"seed_contact_resource_name": "people/c2"}},
+        )
+
+        get_contact = next(r for r in results if r.method == "get_contact")
+        assert not get_contact.ok
+        assert get_contact.raw is None
+
+
+class TestCheckTasks:
+    def test_missing_ids_fails_without_a_call(self):
+        results = recorder.check_tasks(record=True, manifest={})
+        assert len(results) == 1
+        assert not results[0].ok
+        assert "task_list_id" in results[0].note
+
+    def test_tagged_seed_task_records_successfully(self, monkeypatch):
+        raw_task = {"id": "t1", "title": "PrivacyFence QA seed task [QATEST]", "status": "needsAction"}
+        client = TasksClient(client_config={}, token_file="/tmp/unused-token.json")
+        client._local.service = _offline_google_service("tasks", "v1", raw_task)
+        monkeypatch.setattr(recorder, "_build_tasks_client", lambda: client)
+
+        results = recorder.check_tasks(
+            record=True, manifest={"tasks": {"task_list_id": "l1", "seed_task_id": "t1"}},
+        )
+
+        get_task = next(r for r in results if r.method == "get_task")
+        assert get_task.ok
+        assert get_task.raw["title"] == "PrivacyFence QA seed task [QATEST]"
+
+    def test_untagged_task_is_refused(self, monkeypatch):
+        raw_task = {"id": "t2", "title": "Some real unrelated task", "status": "needsAction"}
+        client = TasksClient(client_config={}, token_file="/tmp/unused-token.json")
+        client._local.service = _offline_google_service("tasks", "v1", raw_task)
+        monkeypatch.setattr(recorder, "_build_tasks_client", lambda: client)
+
+        results = recorder.check_tasks(
+            record=True, manifest={"tasks": {"task_list_id": "l1", "seed_task_id": "t2"}},
+        )
+
+        get_task = next(r for r in results if r.method == "get_task")
+        assert not get_task.ok
+        assert get_task.raw is None
 
 
 # ---------------------------------------------------------------------------- #
