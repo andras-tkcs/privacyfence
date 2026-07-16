@@ -9,7 +9,7 @@ from typing import Any
 
 from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
-from ..gate import gated_call
+from ..gate import current_reason, gated_call
 from ..gmail_client import GmailClient, GmailClientError, resolve_attachment_destination
 from ..html_to_text import html_to_text
 from ..privacy_filter import apply_list, apply_text, category_policy
@@ -38,6 +38,7 @@ class GmailConnector(Connector):
                 params=[
                     ToolParam("query", "str"),
                     ToolParam("max_results", "int", required=False, default=10),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -50,6 +51,7 @@ class GmailConnector(Connector):
                 params=[
                     ToolParam("query", "str"),
                     ToolParam("max_results", "int", required=False, default=10),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -59,7 +61,7 @@ class GmailConnector(Connector):
                     "Fetch a single Gmail message by id, including body, metadata, "
                     "and attachment list. Requires user approval."
                 ),
-                params=[ToolParam("message_id", "str")],
+                params=[ToolParam("message_id", "str"), ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
                 read_only=True,
             ),
             ToolSpec(
@@ -68,7 +70,7 @@ class GmailConnector(Connector):
                     "Fetch a full Gmail thread by id, including all messages. "
                     "Requires user approval."
                 ),
-                params=[ToolParam("thread_id", "str")],
+                params=[ToolParam("thread_id", "str"), ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
                 read_only=True,
             ),
             ToolSpec(
@@ -79,7 +81,7 @@ class GmailConnector(Connector):
                     "content is returned. Use gmail_download_attachment to "
                     "fetch the actual file."
                 ),
-                params=[ToolParam("message_id", "str")],
+                params=[ToolParam("message_id", "str"), ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
                 read_only=True,
             ),
             ToolSpec(
@@ -95,6 +97,7 @@ class GmailConnector(Connector):
                     ToolParam("message_id", "str"),
                     ToolParam("attachment_name", "str"),
                     ToolParam("destination_dir", "str", required=False, default=""),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -107,6 +110,7 @@ class GmailConnector(Connector):
                     ToolParam("body", "str"),
                     ToolParam("cc", "str", required=False, default=""),
                     ToolParam("bcc", "str", required=False, default=""),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -122,6 +126,7 @@ class GmailConnector(Connector):
                     ToolParam("body", "str"),
                     ToolParam("cc", "str", required=False, default=""),
                     ToolParam("bcc", "str", required=False, default=""),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -136,6 +141,7 @@ class GmailConnector(Connector):
                     ToolParam("body", "str"),
                     ToolParam("cc", "str", required=False, default=""),
                     ToolParam("bcc", "str", required=False, default=""),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -144,6 +150,7 @@ class GmailConnector(Connector):
                 params=[
                     ToolParam("message_id", "str"),
                     ToolParam("label_name", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -152,6 +159,7 @@ class GmailConnector(Connector):
                 params=[
                     ToolParam("message_id", "str"),
                     ToolParam("label_name", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -160,7 +168,7 @@ class GmailConnector(Connector):
                     "Archive a Gmail message by removing it from the Inbox. "
                     "The message is not deleted and remains searchable. Requires user approval."
                 ),
-                params=[ToolParam("message_id", "str")],
+                params=[ToolParam("message_id", "str"), ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
             ),
             ToolSpec(
                 name="gmail_list_filters",
@@ -168,7 +176,7 @@ class GmailConnector(Connector):
                     "List all Gmail filters with their criteria and actions. "
                     "Auto-approved -- filter rules only, no message content is returned."
                 ),
-                params=[],
+                params=[ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
                 read_only=True,
             ),
             ToolSpec(
@@ -178,7 +186,7 @@ class GmailConnector(Connector):
                     "have a '/' in their name (e.g. 'Work/Projects'). "
                     "Auto-approved -- label metadata only."
                 ),
-                params=[],
+                params=[ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
                 read_only=True,
             ),
             ToolSpec(
@@ -206,6 +214,7 @@ class GmailConnector(Connector):
                     ToolParam("mark_as_read", "bool", required=False, default=False),
                     ToolParam("star", "bool", required=False, default=False),
                     ToolParam("forward_to", "str", required=False, default=""),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -229,6 +238,7 @@ class GmailConnector(Connector):
                     ToolParam("mark_as_read", "bool", required=False, default=False),
                     ToolParam("star", "bool", required=False, default=False),
                     ToolParam("forward_to", "str", required=False, default=""),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -239,7 +249,7 @@ class GmailConnector(Connector):
                     "creating 'Work' first if it doesn't already exist). Fails if "
                     "the exact label name already exists. Requires user approval."
                 ),
-                params=[ToolParam("label_name", "str")],
+                params=[ToolParam("label_name", "str"), ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
             ),
         ]
 
@@ -844,6 +854,7 @@ class GmailConnector(Connector):
                 decision="auto_accepted",
                 auto_accept_rule="auto",
                 latency_seconds=time.time() - created_at,
+                claude_reason=current_reason(),
             ))
         except Exception as exc:
             logger.warning("Audit log write failed: %s", exc)

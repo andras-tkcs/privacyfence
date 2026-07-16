@@ -11,7 +11,7 @@ from typing import Any
 from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
 from ..contacts_client import ContactsClient, ContactsClientError
-from ..gate import gated_call
+from ..gate import current_reason, gated_call
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,7 @@ class ContactsConnector(Connector):
                     ToolParam("source", "str", required=False, default="both",
                               description="'personal' (saved contacts only), 'directory' "
                                            "(Workspace directory only), or 'both' (default)."),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -59,6 +60,7 @@ class ContactsConnector(Connector):
                     ToolParam("max_results", "int", required=False, default=20),
                     ToolParam("source", "str", required=False, default="both",
                               description="'personal', 'directory', or 'both' (default)."),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -74,6 +76,7 @@ class ContactsConnector(Connector):
                     ToolParam("resource_name", "str"),
                     ToolParam("source", "str", required=False, default="both",
                               description="'personal', 'directory', or 'both' (default)."),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -95,6 +98,7 @@ class ContactsConnector(Connector):
                     ToolParam("organization", "str", required=False, default=""),
                     ToolParam("job_title", "str", required=False, default=""),
                     ToolParam("notes", "str", required=False, default=""),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -115,6 +119,7 @@ class ContactsConnector(Connector):
                     ToolParam("organization", "str", required=False, default=""),
                     ToolParam("job_title", "str", required=False, default=""),
                     ToolParam("notes", "str", required=False, default=""),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -126,6 +131,7 @@ class ContactsConnector(Connector):
                 params=[
                     ToolParam("resource_name", "str"),
                     ToolParam("label_name", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -134,6 +140,7 @@ class ContactsConnector(Connector):
                 params=[
                     ToolParam("resource_name", "str"),
                     ToolParam("label_name", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
         ]
@@ -369,6 +376,7 @@ class ContactsConnector(Connector):
                 decision="auto_accepted",
                 auto_accept_rule="auto",
                 latency_seconds=time.time() - created_at,
+                claude_reason=current_reason(),
             ))
         except Exception as exc:
             logger.warning("Audit log write failed: %s", exc)

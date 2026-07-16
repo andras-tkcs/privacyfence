@@ -20,6 +20,7 @@ from privacyfence import ipc_server as ipc_server_module
 from privacyfence.audit_log import current_week, init_audit_logger
 from privacyfence.auto_accept import init_auto_accept_evaluator
 from privacyfence.connector import Connector, ToolSpec
+from privacyfence.gate import current_reason
 from privacyfence.ipc import LINE_LIMIT
 from privacyfence.ipc_server import IPCServer
 
@@ -198,6 +199,80 @@ class TestCallDispatch:
             resp = await client.recv()
             assert resp["result"] == {"ok": True}
             assert connector.calls == [("gmail_get_message", {"message_id": "abc"})]
+        finally:
+            await client.close()
+
+    async def test_reason_is_stripped_from_args_before_reaching_the_connector(self, running_server):
+        # See docs/security-review-ui-redesign.md §7 Phase 1b: every gated
+        # ToolSpec now declares a required "reason" param, but no connector
+        # method signature changed to accept it -- it must never reach
+        # connector.call(), or every gated call would raise a TypeError.
+        server, socket_path = running_server
+        connector = FakeConnector("gmail", result={"ok": True})
+        server.set_connectors([connector])
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "call",
+                "params": {
+                    "connector": "gmail", "tool": "gmail_get_message",
+                    "args": {"message_id": "abc", "reason": "Summarizing for the user."},
+                },
+            })
+            await client.recv()
+            assert connector.calls == [("gmail_get_message", {"message_id": "abc"})]
+        finally:
+            await client.close()
+
+    async def test_reason_is_available_via_current_reason_during_the_call(self, running_server):
+        server, socket_path = running_server
+        captured = {}
+
+        class ReasonCapturingConnector(FakeConnector):
+            async def call(self, tool: str, args: dict) -> object:
+                captured["reason"] = current_reason()
+                return await super().call(tool, args)
+
+        connector = ReasonCapturingConnector("gmail", result={"ok": True})
+        server.set_connectors([connector])
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "call",
+                "params": {
+                    "connector": "gmail", "tool": "gmail_get_message",
+                    "args": {"message_id": "abc", "reason": "Summarizing for the user."},
+                },
+            })
+            await client.recv()
+            assert captured["reason"] == "Summarizing for the user."
+            # The scope must not leak past the call it was set for.
+            assert current_reason() == ""
+        finally:
+            await client.close()
+
+    async def test_differing_reason_text_does_not_defeat_dedupe(self, running_server):
+        # The exact bug this pop-before-dedupe-key ordering prevents: a
+        # client-timeout retry regenerates reason text, which must not make
+        # an otherwise-identical call look like a new one.
+        server, socket_path = running_server
+        connector = FakeConnector("drive", result={"ok": True}, delay=0.05)
+        server.set_connectors([connector])
+        client = await _RawClient.connect(socket_path)
+        try:
+            params_1 = {
+                "connector": "drive", "tool": "write_file_content",
+                "args": {"file_id": "f1", "content": "hi", "reason": "First phrasing of the reason."},
+            }
+            params_2 = {
+                "connector": "drive", "tool": "write_file_content",
+                "args": {"file_id": "f1", "content": "hi", "reason": "Differently-worded retry reason."},
+            }
+            await client.send({"id": "1", "method": "call", "params": params_1})
+            await client.send({"id": "2", "method": "call", "params": params_2})
+            await client.recv()
+            await client.recv()
+            assert len(connector.calls) == 1  # deduped despite differing reason text
         finally:
             await client.close()
 

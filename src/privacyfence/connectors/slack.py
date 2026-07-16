@@ -9,7 +9,7 @@ from typing import Any
 
 from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
-from ..gate import gated_call
+from ..gate import current_reason, gated_call
 from ..privacy_filter import apply_list, apply_text, category_policy
 from ..slack_client import SlackClient, SlackClientError
 
@@ -68,6 +68,7 @@ class SlackConnector(Connector):
                 params=[
                     ToolParam("exclude_archived", "bool", required=False, default=True),
                     ToolParam("max_results", "int", required=False, default=100),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -77,6 +78,7 @@ class SlackConnector(Connector):
                 params=[
                     ToolParam("channel_id", "str"),
                     ToolParam("limit", "int", required=False, default=50),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -86,6 +88,7 @@ class SlackConnector(Connector):
                 params=[
                     ToolParam("channel_id", "str"),
                     ToolParam("thread_ts", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -95,6 +98,7 @@ class SlackConnector(Connector):
                 params=[
                     ToolParam("query", "str"),
                     ToolParam("count", "int", required=False, default=20),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -111,6 +115,7 @@ class SlackConnector(Connector):
                     ToolParam("text", "str"),
                     ToolParam("thread_ts", "str", required=False, default=""),
                     ToolParam("mark_unread", "bool", required=False, default=False),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
         ]
@@ -338,6 +343,7 @@ class SlackConnector(Connector):
                 decision="auto_accepted",
                 auto_accept_rule="auto",
                 latency_seconds=time.time() - created_at,
+                claude_reason=current_reason(),
             ))
         except Exception as exc:
             logger.warning("Audit log write failed: %s", exc)

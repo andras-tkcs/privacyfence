@@ -1179,6 +1179,87 @@ class TestUnattendedMode:
         assert len(called) == 1
 
 
+class TestClaudeReason:
+    """The mandatory "reason" ToolSpec param (docs/security-review-ui-
+    redesign.md §7 Phase 1b), carried the same way is_unattended() is: a
+    contextvar set by ipc_server.py, read internally by gated_call() via
+    current_reason() -- no caller passes it as an explicit kwarg."""
+
+    async def test_reason_scope_value_reaches_the_audit_entry(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+
+        with gate.reason_scope("Summarizing the Q3 budget for the user."):
+            await gate.gated_call(**base_kwargs(gate="review"))
+
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["claude_reason"] == "Summarizing the Q3 budget for the user."
+
+    async def test_no_reason_scope_defaults_to_empty_string(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+
+        await gate.gated_call(**base_kwargs(gate="review"))
+
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["claude_reason"] == ""
+
+    async def test_reason_forwarded_to_show_read_popup(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        captured = {}
+
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason=""):
+            captured["claude_reason"] = claude_reason
+            return "accept"
+
+        monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
+
+        with gate.reason_scope("Checking for calendar conflicts."):
+            await gate.gated_call(**base_kwargs(gate="review"))
+
+        assert captured["claude_reason"] == "Checking for calendar conflicts."
+
+    async def test_reason_forwarded_to_show_popup(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        captured = {}
+
+        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason=""):
+            captured["claude_reason"] = claude_reason
+            return "accept"
+
+        monkeypatch.setattr(gate, "show_popup", fake_show_popup)
+
+        with gate.reason_scope("Sending the confirmation the user asked for."):
+            await gate.gated_call(**base_kwargs(gate="popup", tool="gmail_create_draft"))
+
+        assert captured["claude_reason"] == "Sending the confirmation the user asked for."
+
+    async def test_auto_accepted_call_still_records_reason(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "i_am_sender")))
+
+        with gate.reason_scope("Reading my own sent mail."):
+            await gate.gated_call(**base_kwargs(gate="review"))
+
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "auto_accepted"
+        assert entries[0]["claude_reason"] == "Reading my own sent mail."
+
+    async def test_scope_does_not_leak_to_calls_outside_it(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+
+        with gate.reason_scope("Only for this one call."):
+            pass  # scope already exited before gated_call runs
+        await gate.gated_call(**base_kwargs(gate="review"))
+
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["claude_reason"] == ""
+
+
 class TestDefaultDetails:
     def test_object_with_dict_is_json_dumped(self):
         class Obj:

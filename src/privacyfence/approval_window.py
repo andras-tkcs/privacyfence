@@ -193,6 +193,7 @@ class ApprovalWindowController(NSObject):
         self.allow_temp_accept = False
         self.pii_categories: list[str] = []
         self.visibility: dict[str, str] = {}
+        self.claude_reason: str = ""
         self.result = "deny"
         self.panel = None
         self._details_text_view = None
@@ -302,6 +303,32 @@ class ApprovalWindowController(NSObject):
         return max(20.0, text_h) + _SUMMARY_PAD
 
     # ------------------------------------------------------------------ #
+    # "Claude says" -- self-reported, unverified. See gate.py's
+    # reason_scope docstring and docs/security-review-ui-redesign.md §4:
+    # this is Claude's own stated reason for the call, never checked
+    # against anything, so it must never be styled or merged as if it were
+    # a verified field (WHAT / AI VISIBILITY / RISK above all come from
+    # data PrivacyFence itself computed). Present for both read and write
+    # gates -- unlike the visibility checklist, "why am I doing this"
+    # applies equally to a write.
+    # ------------------------------------------------------------------ #
+
+    def _claude_reason_height(self, width: float) -> float:
+        if not self.claude_reason:
+            return 0.0
+        value_width = width - 2 * _SUMMARY_PAD
+        text_h = _text_height(self.claude_reason, value_width, NSFont.systemFontOfSize_(13))
+        return max(16.0, text_h) + 2 * _SUMMARY_PAD
+
+    def _build_claude_reason_overlay(self, y: float, width: float) -> tuple[NSView, float]:
+        box_h = self._claude_reason_height(width)
+        box = _FlippedView.alloc().initWithFrame_(NSMakeRect(_MARGIN, y, width, box_h))
+        label = _make_label(self.claude_reason, size=13, color=NSColor.secondaryLabelColor())
+        label.setFrame_(NSMakeRect(_SUMMARY_PAD, _SUMMARY_PAD, width - 2 * _SUMMARY_PAD, box_h - 2 * _SUMMARY_PAD))
+        box.addSubview_(label)
+        return box, box_h
+
+    # ------------------------------------------------------------------ #
     # Details (scrollable body)
     # ------------------------------------------------------------------ #
 
@@ -384,6 +411,9 @@ class ApprovalWindowController(NSObject):
             y += self._visibility_height(content_width) + 18.0
         if self.pii_categories:
             y += self._pii_banner_height(content_width) + 18.0
+        if self.claude_reason:
+            y += 20.0  # "Claude says (unverified)" label row
+            y += self._claude_reason_height(content_width) + 18.0
         y += 20.0  # "Preview" label row
         y += _DETAILS_HEIGHT
         return y, title_h
@@ -504,6 +534,23 @@ class ApprovalWindowController(NSObject):
             content.addSubview_(banner_label)
             y += banner_h + 18.0
 
+        # "Claude says" -- self-reported, unverified (see class-level
+        # comment above _claude_reason_height). Its own label, its own
+        # (unbolded, secondary-colored) text -- deliberately not styled
+        # like the verified sections above it.
+        if self.claude_reason:
+            reason_label = _make_label("Claude says (unverified)", size=12, color=NSColor.secondaryLabelColor())
+            reason_label.setFrame_(NSMakeRect(_MARGIN, y, 300.0, 16.0))
+            content.addSubview_(reason_label)
+            y += 20.0
+
+            box_h = self._claude_reason_height(content_width)
+            bg = _background_box(NSMakeRect(_MARGIN, y, content_width, box_h))
+            content.addSubview_(bg)
+            overlay, _ = self._build_claude_reason_overlay(y, content_width)
+            content.addSubview_(overlay)
+            y += box_h + 18.0
+
         # PREVIEW: full content, last section before the buttons -- with a
         # reading-time estimate so opening it doesn't feel like an
         # open-ended commitment (§5's "Inspect" framing).
@@ -594,6 +641,7 @@ def show_native_approval(
     pii_categories: list[str] | None = None,
     allow_temp_accept: bool = False,
     visibility: dict[str, str] | None = None,
+    claude_reason: str = "",
 ) -> str:
     """Show the approval window and block until the user picks a button.
 
@@ -611,6 +659,7 @@ def show_native_approval(
         controller.allow_temp_accept = allow_temp_accept
         controller.pii_categories = pii_categories or []
         controller.visibility = visibility or {}
+        controller.claude_reason = claude_reason or ""
 
         controller.performSelectorOnMainThread_withObject_waitUntilDone_(
             "runApproval:", None, True

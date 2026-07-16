@@ -40,7 +40,7 @@ from typing import Any, Callable
 from .audit_log import AuditEntry, current_week, get_audit_logger
 from .auto_accept import TOOL_TO_GATE, TOOL_TO_OPERATION, get_auto_accept_evaluator
 from .connector import Connector, ToolSpec
-from .gate import unattended_scope
+from .gate import reason_scope, unattended_scope
 from .ipc import LINE_LIMIT, SOCKET_PATH, VERSION
 
 logger = logging.getLogger(__name__)
@@ -185,6 +185,20 @@ class IPCServer:
         connector_name = params["connector"]
         tool = params["tool"]
         args = params.get("args", {})
+        # Every gated/auto tool's ToolSpec now declares a required "reason"
+        # param (docs/security-review-ui-redesign.md §7 Phase 1b), but it
+        # must never reach _dedupe_key or connector.call(): left in args, a
+        # client-timeout retry with freshly-regenerated reason text would
+        # get a different dedupe key every time and silently defeat the
+        # coalescing this method's docstring describes -- exactly the
+        # double-popup bug that mechanism exists to prevent. It's also not
+        # a parameter any connector method actually accepts (no method
+        # signature changed for this feature -- see gate.py's reason_scope
+        # docstring), so leaving it in args would raise a TypeError on
+        # every single gated call. Popped here, once, centrally; carried
+        # from here on via reason_scope, the same pattern unattended_scope
+        # already uses for connection-scoped state.
+        reason = args.pop("reason", "")
         connector = self._connectors.get(connector_name)
         if connector is None:
             raise ValueError(f"Unknown connector: {connector_name!r}")
@@ -207,7 +221,8 @@ class IPCServer:
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._inflight[key] = (fut, now)
         try:
-            result = await connector.call(tool, args)
+            with reason_scope(reason):
+                result = await connector.call(tool, args)
         except Exception as exc:
             fut.set_exception(exc)
             fut.exception()  # mark retrieved so an unwaited future doesn't log "never retrieved"

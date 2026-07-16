@@ -45,6 +45,11 @@ class AuditEntry:
     auto_accept_rule: str   # rule name if auto_accepted, else ""
     latency_seconds: float
     pii_detected: bool = False  # True if pii_detector.py flagged the content before this decision
+    claude_reason: str = ""  # Claude's self-reported reason for the call, from the mandatory
+                              # "reason" ToolSpec param every gated/auto tool now declares (see
+                              # gate.py's reason_scope). Self-reported and unverified -- never
+                              # treated as fact, see docs/security-review-ui-redesign.md §4. Empty
+                              # for decisions with no associated tool call (e.g. "policy_check").
 
 
 class AuditLogger:
@@ -101,9 +106,9 @@ class AuditLogger:
         HEADERS = [
             "Timestamp", "Week", "Connector", "Tool", "Human-Readable Name",
             "Summary", "Sender / Context", "Decision", "Auto-Accept Rule", "Latency (s)",
-            "PII Detected",
+            "PII Detected", "Claude's Reason (unverified)",
         ]
-        COL_WIDTHS = [22, 10, 12, 30, 22, 55, 30, 14, 22, 12, 12]
+        COL_WIDTHS = [22, 10, 12, 30, 22, 55, 30, 14, 22, 12, 12, 55]
 
         hdr_font  = Font(bold=True, color="FFFFFF")
         hdr_fill  = PatternFill("solid", fgColor="2D4A6B")
@@ -132,7 +137,7 @@ class AuditLogger:
                 entry.timestamp, entry.week, entry.connector, entry.tool,
                 entry.tool_name, entry.summary, entry.sender, entry.decision,
                 entry.auto_accept_rule or "", round(entry.latency_seconds, 2),
-                "Yes" if entry.pii_detected else "",
+                "Yes" if entry.pii_detected else "", entry.claude_reason or "",
             ])
             fill = decision_fills.get(entry.decision, PatternFill())
             for col in range(1, len(HEADERS) + 1):

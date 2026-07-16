@@ -19,7 +19,7 @@ from typing import Any
 
 from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
-from ..gate import gated_call
+from ..gate import current_reason, gated_call
 from ..tasks_client import TasksClient, TasksClientError
 
 logger = logging.getLogger(__name__)
@@ -43,7 +43,7 @@ class TasksConnector(Connector):
             ToolSpec(
                 name="tasks_list_task_lists",
                 description="List all Google Task lists. Auto-approved.",
-                params=[],
+                params=[ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
                 read_only=True,
             ),
             ToolSpec(
@@ -52,6 +52,7 @@ class TasksConnector(Connector):
                 params=[
                     ToolParam("task_list_id", "str"),
                     ToolParam("show_completed", "bool", required=False, default=False),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -61,6 +62,7 @@ class TasksConnector(Connector):
                 params=[
                     ToolParam("task_list_id", "str"),
                     ToolParam("task_id", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -73,6 +75,7 @@ class TasksConnector(Connector):
                     ToolParam("notes", "str", required=False, default=""),
                     ToolParam("due", "str", required=False, default="",
                               description="Due date in RFC 3339 format"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -84,6 +87,7 @@ class TasksConnector(Connector):
                     ToolParam("title", "str", required=False, default=""),
                     ToolParam("notes", "str", required=False, default=""),
                     ToolParam("due", "str", required=False, default=""),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -92,6 +96,7 @@ class TasksConnector(Connector):
                 params=[
                     ToolParam("task_list_id", "str"),
                     ToolParam("task_id", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -100,6 +105,7 @@ class TasksConnector(Connector):
                 params=[
                     ToolParam("task_list_id", "str"),
                     ToolParam("task_id", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -109,6 +115,7 @@ class TasksConnector(Connector):
                     ToolParam("source_list_id", "str"),
                     ToolParam("task_id", "str"),
                     ToolParam("destination_list_id", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
         ]
@@ -315,6 +322,7 @@ class TasksConnector(Connector):
                 decision="auto_accepted",
                 auto_accept_rule="auto",
                 latency_seconds=time.time() - created_at,
+                claude_reason=current_reason(),
             ))
         except Exception as exc:
             logger.warning("Audit log write failed: %s", exc)

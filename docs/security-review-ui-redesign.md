@@ -344,48 +344,72 @@ matches) and new tests were added following the same patterns, but none of it ha
 real `pytest` yet. That is the one remaining gate before this is trustworthy, not just plausible.
 
 **Phase 1b — mandatory `reason` parameter, on every tool including auto-gated (largest-footprint
-item in this whole plan — decided scope, see §10)**
+item in this whole plan — decided scope, see §10) — implemented, see status below**
+
 The maintainer's decision (§10 Q1) is to capture `reason` universally, not just on tools a human
 reviews, so it's available for later audit-log pattern analysis even where there's no popup to
-show it in. That's a materially bigger change than a layout tweak or even a gated-tools-only
-version would have been — it touches literally every tool declaration and every tool call site in
-every connector, plus the audit schema:
-- Add a required `reason: str` param to **every** `ToolSpec` in **every** connector
-  (`connectors/gmail.py`, `drive.py`, `slack.py`, `calendar.py`, `salesforce.py`, `jira.py`,
-  `confluence.py`, `telegram.py`, `tasks.py`, `contacts.py`) — gated and auto/`read_only` tools
-  alike. Each tool's description should instruct Claude to state, in one sentence, why it's
-  calling the tool right now.
-- Gated tools (`gate="review"`/`"popup"`): thread `reason` through `gated_call(...)` as a new
-  `claude_reason` kwarg so `gate.py`/`approval_popup.py` can render it in the popup as its own
-  labeled block, distinct from `preview`/`details_text` — never merged with verified fields (§4).
-- Auto-accepted / `read_only=True` tools: there is no popup to render it in — every connector
-  currently has its own `_auto_audit(tool, tool_name, summary, sender, created_at)` helper (one
-  copy per connector, same shape: `gmail.py:783`, `drive.py:1136`, `slack.py:296`,
-  `calendar.py:656`, `salesforce.py:318`, `confluence.py:320`, `contacts.py:356`, `jira.py:378`,
-  `telegram.py:216`, `tasks.py:304` — `tasks.py`'s and `telegram.py`'s already differ slightly in
-  signature from the rest, worth normalizing while touching all ten anyway). Each needs a
-  `reason: str` parameter, recorded straight to the audit log — not reviewed in real time, but
-  available for later pattern analysis (e.g. spotting when Claude gives the same boilerplate
-  reason across hundreds of auto-accepted calls).
-- **The three bridge meta-tools are in scope too, not just connector `ToolSpec`s**:
-  `privacyfence_check_policy`, `privacyfence_begin_unattended_session`, and
-  `privacyfence_end_unattended_session` (`bridge_main.py:267-328`) are hand-registered outside the
-  connector-manifest mechanism, but they already write their own audit entries (`policy_check`,
-  `unattended_session_started`, `unattended_session_ended` — see `audit_log.py`'s `AuditEntry`
-  docstring). `begin_unattended_session` in particular is worth a `reason` even more than most
-  auto-accepted calls: it changes gate posture for the rest of the connection (every uncovered
-  call fails fast from that point on), and it's exactly the kind of decision a later audit review
-  would want explained ("why did Claude switch this connection into unattended mode").
-- `audit_log.py`: add `claude_reason: str = ""` to `AuditEntry`, and pass it through `_audit()` in
-  `gate.py:338` (currently `_audit(...)` doesn't take one — add it there too) so the gated, auto,
-  and meta-tool paths all write to the same field.
-- Test impact per `coding-and-testing-guidelines.md` §2.5/§2.6: `tests/helpers.py::build_stub_args`
-  needs a default `reason` value for every tool's stub args (not just gated ones), and
-  `assert_all_tools_leave_an_audit_trail` / the new-connector checklist gain a line item ("every
-  tool — gated or auto — carries a `reason` param and records it in the audit entry").
-- Trade-off accepted deliberately: this adds a small token/latency cost to high-frequency,
+show it in.
+
+**Design refinement made during implementation, worth recording**: the plan as originally written
+called for threading `claude_reason` explicitly through every one of the ~95 `gated_call(...)`/
+`_auto_audit(...)` call sites. Implementing it surfaced a better option already idiomatic to this
+codebase: `gate.py` already carries `is_unattended()`'s state via a `contextvars.ContextVar` set
+once per dispatched request in `ipc_server.py` (`unattended_scope`), not threaded through every
+call site individually. `reason` now uses the identical pattern (`reason_scope`/`current_reason()`
+in `gate.py`) — set once, centrally, in `ipc_server.py`'s `_call_connector`, read internally by
+`gated_call()` and every connector's `_auto_audit()`. This turned out to be **not just lower-risk
+but more correct**: `_call_connector`'s existing request-deduplication (see its own docstring)
+hashes `(connector, tool, args)` to coalesce a client-timeout retry with the original in-flight
+call — if `reason` (naturally-varying, freshly-regenerated text) stayed inside `args`, a genuine
+retry would get a different dedupe key every time and silently defeat that coalescing, reproducing
+the exact double-popup bug the mechanism exists to prevent. `reason` is popped out of `args` before
+the dedupe key is computed and before it reaches `connector.call()` — which also means **no
+connector method signature needed to change at all**, only the `ToolSpec` declarations (so the MCP
+schema still enforces "required") and a handful of central files.
+
+- **Done**: a required `reason: str` `ToolParam` on all 95 tools across all ten connectors
+  (verified count: `ToolSpec(` occurrences == `ToolParam("reason"` occurrences in every file,
+  95/95), description instructing Claude to state in one sentence why it's calling the tool.
+- **Done**: `gate.py`'s `reason_scope`/`current_reason()` (mirrors `unattended_scope`/
+  `is_unattended()` exactly); `ipc_server.py`'s `_call_connector` pops `reason` from `args` before
+  the dedupe-key computation and wraps `connector.call(...)` in `reason_scope(reason)`.
+- **Done**: `gated_call()` reads `current_reason()` internally (no new required kwarg on its own
+  signature) and forwards it to `_audit()` (both the gated and, via each connector's own
+  `_auto_audit`, the auto-accepted path write to the same `AuditEntry.claude_reason` field) and to
+  both `show_read_popup` and `show_popup` — unlike `visibility` (§7 Phase 1a), `reason` applies to
+  writes too, since "why am I doing this" isn't read-specific.
+- **Done**: `approval_window.py` renders a "Claude says (unverified)" block (own label, own
+  secondary-colored, unbolded text — deliberately not styled like the verified WHAT/AI-VISIBILITY/
+  RISK sections above it), positioned between RISK and PREVIEW per the design mockup (§6).
+- **Done**: `audit_log.py`'s `AuditEntry.claude_reason` field, plus a "Claude's Reason (unverified)"
+  column in the Excel export — genuinely unit-tested and passing in this environment (see
+  verification note below), unlike everything touching the AppKit/gate chain.
+- **Done**: `tests/helpers.py::build_stub_args` updated — it now deliberately *excludes* `reason`
+  from the args it builds, since it models what a connector method actually receives (post
+  `ipc_server.py` stripping), and no method signature accepts `reason`.
+- **Not done, deferred**: the three bridge meta-tools (`privacyfence_check_policy`,
+  `privacyfence_begin_unattended_session`, `privacyfence_end_unattended_session`) do not yet have a
+  `reason` parameter of their own, even though `begin_unattended_session` in particular was flagged
+  as worth one. This is a distinct, smaller extension (touching `bridge_main.py`'s meta-tool
+  registration, `ipc.py`/`ipc_client.py`'s method signatures, and `ipc_server.py`'s handlers, none
+  of which this pass touched) rather than a natural fit for the contextvar mechanism above (there's
+  no connector-layer `_auto_audit` for these to read it from).
+- Trade-off accepted deliberately, per §10 Q1: a small token/latency cost on high-frequency,
   low-risk calls (e.g. `list_messages`) that no human ever reviews, in exchange for uniform
-  coverage in the audit log. Worth revisiting if that overhead turns out to matter in practice.
+  coverage in the audit log.
+
+**Verification honesty note**: this piece split cleanly along a line worth naming explicitly.
+`privacy_filter.py`, `audit_log.py`, `tests/helpers.py`, and `connector.py` have no AppKit
+dependency and their test suites **actually ran and passed** in this environment (89 tests total
+across `test_audit_log.py`, `test_privacy_filter.py`, `test_pii_detector.py`) — including a real
+`openpyxl` Excel export round-trip confirming the new "Claude's Reason" column. The 95 `ToolSpec`
+edits were generated by a small script (bracket-depth-aware, handling empty/single-line/multi-line
+`params=[...]` and description strings containing nested quotes/brackets), dry-run and diffed
+before being applied, with the resulting count cross-checked (`ToolSpec(` count == new-param count,
+95/95, in every file) and every file re-verified with `py_compile`. `gate.py`, `ipc_server.py`, and
+every connector still require macOS/AppKit to actually import or run — that verification gap is
+unchanged from Phase 0/1a and still needs a real `pytest` run before this is trustworthy end to
+end, not just internally consistent.
 
 **Phase 2 — new local detectors, still zero external calls**
 - Extend `pii_detector.py`'s pattern set with a broader "financial data" category (currency
@@ -478,36 +502,40 @@ whatever new infrastructure it would require — rather than revisited inside th
 ## 9. Concrete data-model additions this plan needs
 
 - `connector.py`: no mechanism change needed — `ToolParam.required` already defaults to `True`.
-  **Every** `ToolSpec.params` — gated and auto/`read_only` alike, per the decided scope (§10 Q1) —
-  gets a new `ToolParam(name="reason", annotation="str", required=True, description="One
-  sentence: why are you calling this tool right now?")`, which `bridge_main.py`'s existing dynamic
-  registration (`_build_tool_fn`) picks up unchanged — it already builds the function signature
-  from `spec.params` generically.
-- Every connector: the `reason` value arrives as a normal kwarg alongside the tool's other args.
-  Gated tools pass it into `gated_call(...)` as a new required `claude_reason: str` kwarg, kept
-  separate from `args`/`preview`/`details_text` so it can never be silently folded into content
-  that's rendered as verified. Auto/`read_only` tools pass it into their connector's `_auto_audit`
-  helper instead (ten near-duplicate implementations, one per connector — see §7 Phase 1b for the
-  file/line list).
-- `gate.py`: `gated_call()` gains the `claude_reason: str` parameter, forwards it to
-  `show_read_popup`/`show_popup` (the same pass-through pattern `pii_categories` already uses),
-  and passes it into `_audit()` — which also needs a new parameter, since it's the single audit
-  entry point both the gated and (indirectly, via each connector's own `_auto_audit`) auto paths
-  ultimately mirror the shape of.
-- `gate.py` / connectors: thread the resolved `privacy.categories`-style policy (already computed
-  per connector before `gated_call`) into a new `visibility: dict[str, bool]` kwarg, alongside
-  the existing `preview`/`details_text`, so the popup can render the "AI will receive" checklist
-  without re-deriving policy state itself.
+  **Done**: every `ToolSpec.params` — gated and auto/`read_only` alike — has a new
+  `ToolParam(name="reason", annotation="str", required=True, description="One sentence: why are
+  you calling this tool right now?")`, picked up unchanged by `bridge_main.py`'s existing dynamic
+  registration (`_build_tool_fn`, generic over `spec.params`).
+- **Superseded by a better design, see §7 Phase 1b**: the original plan here was an explicit
+  `claude_reason: str` kwarg threaded through every `gated_call(...)`/`_auto_audit(...)` call site.
+  Implemented instead as `gate.py`'s `reason_scope`/`current_reason()` — a `contextvars.ContextVar`
+  set once, centrally, in `ipc_server.py`'s `_call_connector` (mirroring the existing
+  `unattended_scope`/`is_unattended()` pattern), read internally by `gated_call()` and every
+  connector's `_auto_audit()`. No connector method signature changed; `gated_call()`'s own
+  parameter list didn't gain a new required kwarg either. This also fixed a real correctness gap
+  the original plan would have introduced: `ipc_server.py`'s request-dedup hashes `(connector,
+  tool, args)`, and leaving naturally-varying `reason` text inside `args` would have silently
+  defeated deduplication for genuine client-timeout retries — see §7 Phase 1b for the full
+  explanation.
+- **Done**: `gate.py`'s `gated_call()` forwards `current_reason()` to `show_read_popup` **and**
+  `show_popup` (the same pass-through pattern `pii_categories`/`visibility` use) and into
+  `_audit()`, which gained a `claude_reason` parameter — the single audit entry point both the
+  gated and (indirectly, via each connector's own `_auto_audit`) auto paths write through.
+- **Done** (§7 Phase 1a): `gate.py` / the three connectors with a category schema thread the
+  resolved `privacy_filter.category_policy()` state into a `visibility: dict[str, str]` kwarg,
+  alongside the existing `preview`/`details_text`, so the popup renders the "AI will receive"
+  checklist without re-deriving policy state itself.
 - `pii_detector.py`: additive category patterns only (broader financial keywords beyond the
   salary/compensation category already shipped) — no interface change, matches its existing
-  `_PATTERNS` extension model.
-- `audit_log.py`: add `claude_reason: str = ""` to `AuditEntry` (populated on every entry, gated
-  or auto-accepted, per the decided scope) and a lookup helper (`recent_matches(operation_key,
-  preview) -> int`) for the request-fingerprint feature.
-- `approval_window.py`: layout rewrite (Phase 1a pure-AppKit reorder plus a new "Claude says"
-  block; Phase 3 WKWebView migration — see resolved signing/notarization investigation in §7
-  Phase 3 and §10 Q3). Also add `com.apple.security.cs.allow-jit` to `scripts/entitlements.plist`
-  and `pyobjc-framework-WebKit` to `pyproject.toml`'s dependencies.
+  `_PATTERNS` extension model. **Not yet done** — Phase 2, still open.
+- **Done**: `audit_log.py`'s `AuditEntry.claude_reason: str = ""`, populated on every entry (gated,
+  auto-accepted, or otherwise) via `_audit()`/`_auto_audit()`, plus a "Claude's Reason (unverified)"
+  column in the Excel export. The request-fingerprint lookup helper (`recent_matches(operation_key,
+  preview) -> int`) is **not yet done** — still Phase 2.
+- **Done**: `approval_window.py`'s Phase 1a layout reorder plus a new "Claude says (unverified)"
+  block. Phase 3's WKWebView migration (and the `com.apple.security.cs.allow-jit`/
+  `pyobjc-framework-WebKit` additions it needs) remain **not yet done** — still gated on the real
+  signed build check from §7 Phase 3 / §10 Q3.
 
 ## 10. Open questions for the maintainer — decisions recorded
 

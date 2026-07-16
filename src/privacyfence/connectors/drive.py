@@ -11,7 +11,7 @@ from typing import Any
 from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
 from ..drive_client import DriveClient, DriveClientError, _parse_a1_range
-from ..gate import gated_call
+from ..gate import current_reason, gated_call
 from ..privacy_filter import apply_list, apply_text, category_policy
 
 logger = logging.getLogger(__name__)
@@ -70,6 +70,7 @@ class DriveConnector(Connector):
                 params=[
                     ToolParam("query", "str"),
                     ToolParam("max_results", "int", required=False, default=20),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -79,7 +80,7 @@ class DriveConnector(Connector):
                     "Fetch metadata for a single Drive file by id "
                     "(name, owners, times, sharing status). Auto-approved."
                 ),
-                params=[ToolParam("file_id", "str")],
+                params=[ToolParam("file_id", "str"), ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
                 read_only=True,
             ),
             ToolSpec(
@@ -88,6 +89,7 @@ class DriveConnector(Connector):
                 params=[
                     ToolParam("folder_id", "str"),
                     ToolParam("max_results", "int", required=False, default=50),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -98,6 +100,7 @@ class DriveConnector(Connector):
                     ToolParam("name", "str"),
                     ToolParam("mime_type", "str"),
                     ToolParam("parent_folder_id", "str", required=False, default=""),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -105,7 +108,7 @@ class DriveConnector(Connector):
                 description=(
                     "Fetch the content of a Drive file by id. Requires user approval."
                 ),
-                params=[ToolParam("file_id", "str")],
+                params=[ToolParam("file_id", "str"), ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
                 read_only=True,
             ),
             ToolSpec(
@@ -114,6 +117,7 @@ class DriveConnector(Connector):
                 params=[
                     ToolParam("file_id", "str"),
                     ToolParam("content", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -134,6 +138,7 @@ class DriveConnector(Connector):
                     ToolParam("content_base64", "str", required=False, default=""),
                     ToolParam("name", "str", required=False, default=""),
                     ToolParam("parent_folder_id", "str", required=False, default=""),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -142,6 +147,7 @@ class DriveConnector(Connector):
                 params=[
                     ToolParam("file_id", "str"),
                     ToolParam("destination_folder_id", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -150,6 +156,7 @@ class DriveConnector(Connector):
                 params=[
                     ToolParam("file_id", "str"),
                     ToolParam("comment", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -160,6 +167,7 @@ class DriveConnector(Connector):
                 ),
                 params=[
                     ToolParam("max_results", "int", required=False, default=50),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -179,6 +187,7 @@ class DriveConnector(Connector):
                 params=[
                     ToolParam("file_id", "str"),
                     ToolParam("markdown", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -203,6 +212,7 @@ class DriveConnector(Connector):
                         description="Markdown to insert in its place",
                     ),
                     ToolParam("replace_all", "bool", required=False, default=False),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -228,6 +238,7 @@ class DriveConnector(Connector):
                     ToolParam("text_color", "str", required=False, default="",
                               description="hex color e.g. '#000000'; omit to leave unchanged"),
                     ToolParam("replace_all", "bool", required=False, default=False),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -247,6 +258,7 @@ class DriveConnector(Connector):
                         required=False,
                         default="",
                     ),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -266,6 +278,7 @@ class DriveConnector(Connector):
                         ),
                     ),
                     ToolParam("parent_folder_id", "str", required=False, default=""),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -274,7 +287,7 @@ class DriveConnector(Connector):
                     "List the tabs in a spreadsheet (id, title, index, row/column "
                     "count). Auto-approved."
                 ),
-                params=[ToolParam("spreadsheet_id", "str")],
+                params=[ToolParam("spreadsheet_id", "str"), ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
                 read_only=True,
             ),
             ToolSpec(
@@ -286,6 +299,7 @@ class DriveConnector(Connector):
                         "range_a1", "str",
                         description="A1 notation range, e.g. 'Sheet1!A1:C10'",
                     ),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -311,6 +325,7 @@ class DriveConnector(Connector):
                             '["Alice","=B2*2"]]'
                         ),
                     ),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -321,6 +336,7 @@ class DriveConnector(Connector):
                     ToolParam("title", "str"),
                     ToolParam("rows", "int", required=False, default=1000),
                     ToolParam("cols", "int", required=False, default=26),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -335,6 +351,7 @@ class DriveConnector(Connector):
                     ToolParam("spreadsheet_id", "str"),
                     ToolParam("sheet_id", "int", description="Numeric tab id, from drive_sheets_get_metadata"),
                     ToolParam("new_title", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -377,6 +394,7 @@ class DriveConnector(Connector):
                               description="Pixel width for the range's columns; omit (-1) to leave unchanged"),
                     ToolParam("merge_type", "str", required=False, default="KEEP",
                               description="KEEP (default) / NONE (unmerge) / MERGE_ALL / MERGE_COLUMNS / MERGE_ROWS"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -398,6 +416,7 @@ class DriveConnector(Connector):
                         "inherit_from_before", "bool", required=False, default=True,
                         description="Copy formatting from the row/column before the insertion point (Sheets UI default)",
                     ),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -415,6 +434,7 @@ class DriveConnector(Connector):
                     ToolParam("dimension", "str", description="'ROWS' or 'COLUMNS'"),
                     ToolParam("start_index", "int", description="0-based, inclusive of the first row/column removed"),
                     ToolParam("count", "int", required=False, default=1),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
         ]
@@ -1168,6 +1188,7 @@ class DriveConnector(Connector):
                 decision="auto_accepted",
                 auto_accept_rule="auto",
                 latency_seconds=time.time() - created_at,
+                claude_reason=current_reason(),
             ))
         except Exception as exc:
             logger.warning("Audit log write failed: %s", exc)

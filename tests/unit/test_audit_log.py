@@ -58,6 +58,30 @@ class TestPiiDetectedField:
         assert entry.pii_detected is False
 
 
+class TestClaudeReasonField:
+    def test_defaults_to_empty_string(self):
+        assert make_entry().claude_reason == ""
+
+    def test_round_trips_through_jsonl(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry(claude_reason="Summarizing the Q3 budget for the user."))
+
+        line = (tmp_path / "2026-W28.jsonl").read_text(encoding="utf-8").splitlines()[0]
+        assert json.loads(line)["claude_reason"] == "Summarizing the Q3 budget for the user."
+
+    def test_old_jsonl_lines_without_the_field_still_parse(self):
+        # Same backward-compatibility need as pii_detected above -- entries
+        # written before this field existed have no "claude_reason" key.
+        legacy = dict(
+            timestamp="2026-07-06T12:00:00+00:00", week="2026-W28", request_id="",
+            connector="gmail", tool="gmail_get_message", tool_name="Read Gmail message",
+            summary="s", sender="a@example.com", decision="approved",
+            auto_accept_rule="", latency_seconds=1.0,
+        )
+        entry = AuditEntry(**legacy)
+        assert entry.claude_reason == ""
+
+
 class TestCurrentWeek:
     @freeze_time("2026-07-06")  # a Monday, ISO week 28 of 2026
     def test_format(self):
@@ -114,7 +138,7 @@ class TestExportWeekToExcel:
         openpyxl = pytest.importorskip("openpyxl")
 
         logger = AuditLogger(str(tmp_path))
-        logger.record(make_entry(decision="approved", pii_detected=True))
+        logger.record(make_entry(decision="approved", pii_detected=True, claude_reason="Summarizing for the user."))
         logger.record(make_entry(decision="auto_accepted", auto_accept_rule="i_am_sender"))
         logger.record(make_entry(decision="rejected"))
 
@@ -132,6 +156,10 @@ class TestExportWeekToExcel:
         assert ws.cell(row=1, column=11).value == "PII Detected"
         pii_col = [ws.cell(row=r, column=11).value for r in range(2, 5)]
         assert pii_col == ["Yes", None, None]  # openpyxl reads back "" cells as None
+
+        assert ws.cell(row=1, column=12).value == "Claude's Reason (unverified)"
+        reason_col = [ws.cell(row=r, column=12).value for r in range(2, 5)]
+        assert reason_col == ["Summarizing for the user.", None, None]
 
         summary = wb["Summary"]
         summary_rows = {row[0].value: row[1].value for row in summary.iter_rows(min_row=2) if row[0].value}

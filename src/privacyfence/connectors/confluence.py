@@ -12,7 +12,7 @@ from typing import Any
 from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..confluence_client import ConfluenceClient, ConfluenceClientError
 from ..connector import Connector, ToolParam, ToolSpec
-from ..gate import gated_call
+from ..gate import current_reason, gated_call
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,7 @@ class ConfluenceConnector(Connector):
                     ToolParam("space_type", "str", required=False, default="",
                               description="Filter to 'global' or 'personal'; "
                                            "omit/empty to return all types"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             read_only=True,
             ),
@@ -55,6 +56,7 @@ class ConfluenceConnector(Connector):
                 params=[
                     ToolParam("query", "str", description="Plain-text search terms"),
                     ToolParam("max_results", "int", required=False, default=20),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             read_only=True,
             ),
@@ -67,6 +69,7 @@ class ConfluenceConnector(Connector):
                 params=[
                     ToolParam("cql", "str", description="e.g. 'space = MYSPACE AND type = page'"),
                     ToolParam("max_results", "int", required=False, default=20),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             read_only=True,
             ),
@@ -79,6 +82,7 @@ class ConfluenceConnector(Connector):
                 params=[
                     ToolParam("space_key", "str"),
                     ToolParam("max_results", "int", required=False, default=20),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             read_only=True,
             ),
@@ -90,6 +94,7 @@ class ConfluenceConnector(Connector):
                 ),
                 params=[
                     ToolParam("page_id", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             read_only=True,
             ),
@@ -102,6 +107,7 @@ class ConfluenceConnector(Connector):
                 params=[
                     ToolParam("space_key", "str"),
                     ToolParam("title", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             read_only=True,
             ),
@@ -117,6 +123,7 @@ class ConfluenceConnector(Connector):
                     ToolParam("body", "str", description="HTML storage format body"),
                     ToolParam("parent_id", "str", required=False, default="",
                               description="Optional parent page ID"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -129,6 +136,7 @@ class ConfluenceConnector(Connector):
                     ToolParam("page_id", "str"),
                     ToolParam("title", "str"),
                     ToolParam("body", "str", description="New HTML storage format body"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
         ]
@@ -333,6 +341,7 @@ class ConfluenceConnector(Connector):
                 decision="auto_accepted",
                 auto_accept_rule="auto",
                 latency_seconds=time.time() - created_at,
+                claude_reason=current_reason(),
             ))
         except Exception as exc:
             logger.warning("Audit log write failed: %s", exc)

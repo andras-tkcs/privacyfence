@@ -82,6 +82,7 @@ def show_popup(
     preview: dict[str, str],
     details_text: str,
     allow_temp_accept: bool = False,
+    claude_reason: str = "",
 ) -> str:
     """Approval popup for write tools. No PII scan applies here -- see
     gate.py's module docstring for why the PII gate is read-only. Same
@@ -90,13 +91,17 @@ def show_popup(
     sent, since it's content Claude itself drafted, not something read from
     an external source and potentially filtered on the way in.
 
+    ``claude_reason`` (unlike ``visibility``) is shown here too -- Claude's
+    self-reported reason for the call applies to writes as much as reads.
+    See gate.py's reason_scope docstring: unverified, rendered as such.
+
     Returns 'accept', 'deny', or 'accept_temp' (only offered when
     allow_temp_accept is True -- see gate.py's TEMP_ACCEPT_ELIGIBLE_OPERATIONS
     for which write operations get that button).
     """
     return show_native_approval(
         title=title, preview=preview, details_text=details_text, allow_accept_all=False,
-        allow_temp_accept=allow_temp_accept,
+        allow_temp_accept=allow_temp_accept, claude_reason=claude_reason,
     )
 
 
@@ -111,6 +116,7 @@ def show_read_popup(
     allow_accept_all: bool,
     pii_categories: list[str] | None = None,
     visibility: dict[str, str] | None = None,
+    claude_reason: str = "",
 ) -> str:
     """Approval popup for read tools. Full content is always shown before the
     decision, in a scrollable pane — the user never has to click through to
@@ -119,14 +125,15 @@ def show_read_popup(
     ``visibility`` is the "AI will receive" checklist (label -> resolved
     allow/redact/block policy from privacy_filter.category_policy()) --
     write (popup-gate) approvals never carry this, see show_popup's
-    docstring for why.
+    docstring for why. ``claude_reason`` is Claude's self-reported reason
+    for the call -- unverified, see gate.py's reason_scope docstring.
 
     Returns 'accept', 'deny', or 'accept_all' (only offered when
     allow_accept_all is True).
     """
     return show_native_approval(
         title=title, preview=preview, details_text=details_text, allow_accept_all=allow_accept_all,
-        pii_categories=pii_categories, visibility=visibility,
+        pii_categories=pii_categories, visibility=visibility, claude_reason=claude_reason,
     )
 
 
