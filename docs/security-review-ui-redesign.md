@@ -11,6 +11,36 @@ exactly what fields the AI receives, an "Inspect before approve" mode, per-file 
 rationale, richer time-limited approval language, and a long-term vision of PR-style multi-person
 governance (Purpose / Files / Risk Analysis / Preview / Comments / Approve).
 
+## Revalidation note — main has moved since this plan was written
+
+This branch was rebased onto current `main` (merge commit bringing in PRs #42–#50, including
+`457d020` salary/compensation PII patterns, `f24a9f1` connector-scoped auto-accept grants, and the
+unattended/scheduled-Cowork-task work). Nothing in that merge invalidates the plan below, but three
+things changed enough to update it in place rather than leave stale:
+
+1. **The PII detector already grew a salary/compensation category** (HU/DE/EN patterns,
+   `pii_detector.py`) — this was Phase 2's headline example. Phase 2's remaining scope narrows to
+   *other* financial signals (currency amounts, budget/revenue keywords) this category doesn't
+   cover. See the updated feasibility table and §7 Phase 2.
+2. **A new unattended/scheduled-session mode exists** (`gate.py`'s `unattended_scope`/
+   `is_unattended`, three new bridge meta-tools, new `denied_unattended`/`policy_check`/
+   `unattended_session_started`/`unattended_session_ended` audit decision types — see
+   `docs/TECHNICAL_REFERENCE.md`'s "Scheduled / unattended Cowork tasks" section). This doesn't
+   change any conclusion here — it fails closed and stays entirely local, so §8's resolution
+   stands — but it strengthens the case for Phase 1b's mandatory `reason`: for calls denied
+   unattended, there is *never* a popup, so a captured `reason` is the only human-legible record
+   of what Claude was attempting. Folded into §7 Phase 1b and §9 below.
+3. **`approval_window.py` was refactored** to split pure view construction (`build_panel()`) from
+   activation (`runApproval_()`), specifically so the view hierarchy can be asserted on in tests
+   without a real interactive session (`tests/unit/test_approval_window.py`, new). This lowers
+   Phase 1a's risk: layout changes can follow the same tested pattern rather than needing manual
+   click-through verification for every change. Nothing in Phase 3's WKWebView plan is affected —
+   none of the merged PRs touch `entitlements.plist`, `PrivacyFenceApp.spec`, `build_dmg.sh`, or
+   build dependencies, so the §7 Phase 3 / §10 Q3 signing investigation still holds as written.
+
+Line-number references throughout this doc have been refreshed against the merged tree. See §11
+for the implementation-readiness verdict.
+
 ## 1. Verdict
 
 **Feasible, and directionally right — with one central correction.** The concept's instinct
@@ -28,17 +58,32 @@ anything.
 
 - **Architecture**: `Claude → stdio MCP bridge (bridge_main.py) → local Unix socket →
   daemon (gate.py + connectors) → external API`. The bridge is a thin FastMCP relay
-  (`bridge_main.py:221-234`) — it forwards `(connector, tool, kwargs)` and nothing else. There is
-  no PrivacyFence-operated server (`security-and-compliance.md` §2).
-- **The gate is synchronous and blocking** (`gate.py:86-246`): a tool call resolves inside one
-  `gated_call()` — auto-accept check → native popup → audit write — before Claude ever gets data
-  back. This is exactly the "review, not notify" model the concept wants; it doesn't need to be
-  invented, only surfaced better.
+  (`bridge_main.py`'s `_build_tool_fn`, around line 199-232) — for connector tools it forwards
+  `(connector, tool, kwargs)` and nothing else. There is no PrivacyFence-operated server
+  (`security-and-compliance.md` §2). Three additional **bridge meta-tools** now exist
+  (`_register_meta_tools`, `bridge_main.py:267-328`) — `privacyfence_check_policy`,
+  `privacyfence_begin_unattended_session`, `privacyfence_end_unattended_session` — not backed by a
+  connector, for planning around scheduled/unattended runs (see below and
+  `docs/TECHNICAL_REFERENCE.md`'s "Scheduled / unattended Cowork tasks" section).
+- **The gate is synchronous and blocking** (`gate.py`'s `gated_call`, starting line 127): a tool
+  call resolves inside one call — auto-accept check → native popup → audit write — before Claude
+  ever gets data back. This is exactly the "review, not notify" model the concept wants; it
+  doesn't need to be invented, only surfaced better. New since this plan's first draft: a
+  connection can be marked **unattended** (`gate.py`'s `unattended_scope`/`is_unattended`,
+  scheduled/triggered Cowork runs only, off by default, admin opt-in via
+  `unattended_sessions.enabled`) — while marked, any call a rule doesn't already cover is denied
+  immediately (`_deny_unattended`, `gate.py:301`) rather than opening a popup nobody will answer.
+  This doesn't touch anything a human actually reviews interactively, so it doesn't change any
+  conclusion in this plan, but see the Revalidation note above for how it strengthens Phase 1b.
 - **Current popup** (`approval_window.py`) is a native AppKit `NSPanel`, fixed 620pt wide, with a
   plain-text `NSTextView` for the body. It already does: a title, a key/value "summary box"
   (`preview` dict), a scrollable details pane, PII-category tinting/banner, and up to three
   buttons (Deny / Accept / Accept All or Accept-for-5-min). This is a real foundation, not a
   blank slate — but it has no rich layout, no images/PDF rendering, no progressive disclosure.
+  Its construction is now split into `build_panel()` (pure view-hierarchy construction, line 295)
+  and `runApproval_()` (activation/modal-block, line 427) specifically so tests can assert on the
+  resulting view hierarchy without a real interactive session (`tests/unit/test_approval_window.py`)
+  — new test infrastructure this plan's Phase 1a/3 work should extend, not work around.
 - **Data minimization is already enforced upstream of the popup**: `gate.py`'s docstring states
   `filtered_data` vs `raw_data` are computed per connector and the popup's `preview` dict is
   metadata-only by convention (`coding-and-testing-guidelines.md` §1.5). `settings.yaml.example`
@@ -53,14 +98,31 @@ anything.
 - **Auto-accept rules** (`auto_accept.py`) already implement "Always allow this workflow":
   `suggest_rule()` proposes a rule from the item's own attributes (sender domain, folder, "I am
   the organizer"), and `show_rule_confirmation_popup` requires an explicit second confirmation
-  before persisting it.
+  before persisting it. New since this plan's first draft: **auto-accept grants**
+  (`resource_grants.py`, `resource_names.py`) let a specific resource (a Drive folder, Tasks list,
+  Slack channel, ...) be trusted once, with a small set of capability booleans, instead of
+  repeating the same ID across every operation key — they compile down to the same rule shape
+  `auto_accept_rules` always used, so `AutoAcceptEvaluator` has no separate code path. Relevant to
+  this plan: resource **names are already resolved and cached** (`resource_name_cache.json`,
+  falling back to "(resolving…)"/"(connect X to see its name)") for display in the menu bar's
+  grant-management UI — the same resolved-name machinery the "Resources requested" section (§6)
+  and request-fingerprint feature (§7 Phase 2) should reuse rather than re-deriving display names
+  from raw IDs.
 - **Audit log** (`audit_log.py`) records every decision with connector/tool/summary/sender/
-  decision/latency/pii_detected, one JSONL line per event, weekly Excel export.
+  decision/latency/pii_detected, one JSONL line per event, weekly Excel export. `AuditEntry.decision`
+  now has four more values beyond `approved`/`rejected`/`auto_accepted`/`accepted_via_accept_all`/
+  `error`: `accepted_via_temp_session`, `denied_unattended`, `policy_check`,
+  `unattended_session_started`/`_ended` — all relevant surface area for where a mandatory `reason`
+  (§4, §7 Phase 1b) should also be recorded.
 - **What is *not* present anywhere in the codebase**: any field carrying the AI's natural-language
   reasoning, the user's original prompt, or a cross-file "why I picked this" rationale. Confirmed
   by grep — `reasoning`/`rationale`/`intent`/`purpose`/`prompt` appear only in client/library
   method names (`slack_client.py`, `gmail_client.py`, OAuth "purpose" strings), never in the gate,
-  connector, or bridge layer.
+  connector, or bridge layer. One near-miss worth flagging: `privacyfence_check_policy`'s response
+  schema (new bridge meta-tool) has its own `"reason": "<str>"` field — that's PrivacyFence
+  *explaining its verdict* to Claude (e.g. "matched rule X"), the opposite direction from what
+  this plan's `reason` param would carry (Claude explaining itself to PrivacyFence). Naming this
+  plan's field `claude_reason` throughout (already done in §9) avoids the collision.
 
 ## 3. Feature-by-feature feasibility
 
@@ -70,12 +132,12 @@ anything.
 | "Claude wants to answer: '...'" stated purpose | **Derivable via a new mandatory tool parameter — presence guaranteed, truthfulness is not** | MCP tool calls today carry only `(tool name, args)` — see `bridge_main.py:221-234`. But `args` is extensible: adding a required `reason: str` param to every gated `ToolSpec` gives PrivacyFence a real, protocol-enforced channel for this. It must ship labeled as Claude's self-report, never as verified fact. See §4. |
 | "Requested because Claude found a reference in board_minutes.docx" | **Same mechanism, same caveat** | A mandatory `reason` param can carry exactly this sentence — Claude is free to write it. What can't be added is any way to confirm it's true; treat it as reviewer context, not evidence. Best independently-verifiable substitute for cross-file rationale is factual session history (§4). |
 | Requested-resources checklist | **Feasible now** | Already the `preview` dict's job; just needs a list-shaped rendering instead of key/value rows when a call touches multiple items. |
-| Sensitivity badges (🟢 Internal / 🟠 Financial / 🔴 PII) | **Feasible, needs extension** | `pii_detector.py` already returns category labels. Needs: (a) new category groups for "financial" keywords (amounts, "salary", "payroll"), (b) a badge computed for the *popup-gate* (write) path too, where PII scanning is deliberately absent today by design (`gate.py` docstring) — badges there should read from Claude's own drafted content, not treated as an "external PII" gate. See §7 Phase 2. |
+| Sensitivity badges (🟢 Internal / 🟠 Financial / 🔴 PII) | **Feasible, partially shipped already** | `pii_detector.py` already returns category labels, and now includes a dedicated "Salary/compensation information" category (HU/DE/EN) added since this plan's first draft. Remaining: (a) a broader "financial" category for amounts/budget/revenue that salary-specific patterns don't catch, (b) a badge computed for the *popup-gate* (write) path too, where PII scanning is deliberately absent today by design (`gate.py` docstring) — badges there should read from Claude's own drafted content, not treated as an "external PII" gate. See §7 Phase 2. |
 | "🟢 Internal / 🟠 Confidential" **classification labels** | **Feasible only where the org has them — deferred, see §10 Q2** | Google Workspace Enterprise has native Drive data-classification labels, readable via `drive.labels.readonly` scope — PrivacyFence does not currently request this scope (`google-cloud-setup.md`). Real for orgs on that tier, but the maintainer has deferred it: narrow benefit relative to the new scope/consent surface. Sensitivity badges ship from local detectors only (Phase 2) until revisited. |
-| Large (60–70%) preview / "document reader" | **Feasible for text and Google-native docs; not for arbitrary binary files** | `drive.py:437-449` truncates extracted text to 2000 chars for `details_text`; genuinely binary content (real .docx, images) currently renders as a placeholder string (`drive_client.py`'s `"[binary content — N bytes; use drive_download_file to save it]"`), not a preview. True page-faithful preview needs new work per file type — see §7 Phase 3. |
-| PDF preview specifically | **Feasible** | macOS `PDFKit` (`PDFView`) is a standard AppKit control; PrivacyFence already fetches `content_bytes` for binary Drive files, just doesn't render them. |
+| Large (60–70%) preview / "document reader" | **Feasible for text and Google-native docs; not for arbitrary binary files** | `drive.py`'s `_get_file_content` (line 539) truncates extracted text to 2000 chars for `details_text`; genuinely binary content (real .docx, images) currently renders as a placeholder string (`"[binary content — N bytes; use drive_download_file to save it]"`), not a preview. True page-faithful preview needs new work per file type — see §7 Phase 3. |
+| PDF preview specifically | **Feasible** | macOS `PDFKit` (`PDFView`) is a standard AppKit control; PrivacyFence already fetches `content_bytes` for binary Drive files (`drive.py:546`), just doesn't render them. |
 | Arbitrary .docx/.xlsx page-faithful preview | **Not reliably feasible** | No first-party macOS text/layout extraction without Office's own QuickLook generator being installed, which isn't guaranteed on every Mac. Fall back to extracted-text preview (already computed) rather than promising a "first page" render for every format. |
-| Gmail-style email layout | **Feasible now** | `gmail.py:334-347` already builds exactly this shape (From/To/Date/Subject preview + plain-text body) — this is a pure layout change, no new data. |
+| Gmail-style email layout | **Feasible now** | `gmail.py`'s `_get_message` (around line 250) already builds exactly this shape (From/To/Date/Subject preview + plain-text body) — this is a pure layout change, no new data. |
 | "AI visibility" checklist (exactly which fields reach the AI) | **Feasible now, and the strongest feature in the concept** | This is *already computed*, not new: `privacy.categories` / `drive_privacy.categories` / `slack_privacy.categories` in `settings.yaml.example` decide `allow`/`redact`/`block` per category before the popup is ever built, and `gate.py`'s `filtered_data` is the literal payload Claude receives. Rendering this policy state as a checklist is surfacing ground truth, not inventing a promise. |
 | "Inspect before approve" mode | **Feasible now** | Same modal session, an expand/collapse of the existing scrollable pane, or a resized `NSPanel`. No protocol change. |
 | Split view (prompt vs. document) | **Not feasible as literally stated** | There is no "the AI's prompt" available to place side by side (same root cause as row 2). Could split PREVIEW vs. DETAILS instead, or PREVIEW vs. self-reported reasoning (labelled as such). |
@@ -92,8 +154,8 @@ anything.
 The concept's mental-model shift — "do I allow this?" → "do I understand what the AI is about to
 see?" — is the right instinct, but "Claude wants to answer: ..." implies PrivacyFence can read
 Claude's intent directly. It can't, structurally: the MCP bridge sees a function call, not a
-conversation (`bridge_main.py`). The fix isn't to give up on a stated-purpose field — it's to be
-precise about what adding one to the protocol does and doesn't buy.
+conversation (`bridge_main.py`'s `_build_tool_fn`). The fix isn't to give up on a stated-purpose
+field — it's to be precise about what adding one to the protocol does and doesn't buy.
 
 **It is fully feasible to make this mandatory, not optional.** `ToolParam.required` already
 exists (`connector.py`), and MCP tool-call schemas enforce required fields at the protocol level:
@@ -217,16 +279,25 @@ every connector, plus the audit schema:
   labeled block, distinct from `preview`/`details_text` — never merged with verified fields (§4).
 - Auto-accepted / `read_only=True` tools: there is no popup to render it in — every connector
   currently has its own `_auto_audit(tool, tool_name, summary, sender, created_at)` helper (one
-  copy per connector, same shape, e.g. `gmail.py:783`, `drive.py:864`, `slack.py:292`,
-  `calendar.py:575`, `salesforce.py:241`, `confluence.py:316`, `contacts.py:356`, `jira.py:374`,
-  `telegram.py:212`, `tasks.py:300` — `tasks.py`'s and `telegram.py`'s already differ slightly in
+  copy per connector, same shape: `gmail.py:783`, `drive.py:1136`, `slack.py:296`,
+  `calendar.py:656`, `salesforce.py:318`, `confluence.py:320`, `contacts.py:356`, `jira.py:378`,
+  `telegram.py:216`, `tasks.py:304` — `tasks.py`'s and `telegram.py`'s already differ slightly in
   signature from the rest, worth normalizing while touching all ten anyway). Each needs a
   `reason: str` parameter, recorded straight to the audit log — not reviewed in real time, but
   available for later pattern analysis (e.g. spotting when Claude gives the same boilerplate
   reason across hundreds of auto-accepted calls).
+- **The three bridge meta-tools are in scope too, not just connector `ToolSpec`s**:
+  `privacyfence_check_policy`, `privacyfence_begin_unattended_session`, and
+  `privacyfence_end_unattended_session` (`bridge_main.py:267-328`) are hand-registered outside the
+  connector-manifest mechanism, but they already write their own audit entries (`policy_check`,
+  `unattended_session_started`, `unattended_session_ended` — see `audit_log.py`'s `AuditEntry`
+  docstring). `begin_unattended_session` in particular is worth a `reason` even more than most
+  auto-accepted calls: it changes gate posture for the rest of the connection (every uncovered
+  call fails fast from that point on), and it's exactly the kind of decision a later audit review
+  would want explained ("why did Claude switch this connection into unattended mode").
 - `audit_log.py`: add `claude_reason: str = ""` to `AuditEntry`, and pass it through `_audit()` in
-  `gate.py` (currently `_audit(...)` doesn't take one — add it there too) so both the gated and
-  auto paths write to the same field.
+  `gate.py:338` (currently `_audit(...)` doesn't take one — add it there too) so the gated, auto,
+  and meta-tool paths all write to the same field.
 - Test impact per `coding-and-testing-guidelines.md` §2.5/§2.6: `tests/helpers.py::build_stub_args`
   needs a default `reason` value for every tool's stub args (not just gated ones), and
   `assert_all_tools_leave_an_audit_trail` / the new-connector checklist gain a line item ("every
@@ -236,8 +307,10 @@ every connector, plus the audit schema:
   coverage in the audit log. Worth revisiting if that overhead turns out to matter in practice.
 
 **Phase 2 — new local detectors, still zero external calls**
-- Extend `pii_detector.py`'s pattern set with a "financial data" category (currency amounts near
-  salary/budget/revenue keywords) per its own documented extension model.
+- Extend `pii_detector.py`'s pattern set with a broader "financial data" category (currency
+  amounts near budget/revenue/invoice keywords), per its own documented extension model. Narrower
+  in scope than originally planned: a dedicated "Salary/compensation information" category
+  (HU/DE/EN) shipped since this plan's first draft — that part of Phase 2 is already done.
 - Compute badges for the popup (write) gate from Claude's *own drafted content* — explicitly not
   routed through the PII-detection "is this external data" framing (`gate.py` docstring is clear
   that distinction is deliberate), but still worth flagging e.g. "this draft email contains what
@@ -291,8 +364,6 @@ every connector, plus the audit schema:
     build (and, once notarization is turned on, one real notarization submission) with the
     WebKit dependency included, on the existing `macos-latest` CI runner — not a design decision,
     an empirical check.
-  requirements against the actual signing pipeline before committing engineering time to the
-  WKWebView rewrite specifically.
 - Three-level progressive disclosure (summary → expanded metadata → full inspect), all within one
   modal session.
 
@@ -346,8 +417,9 @@ whatever new infrastructure it would require — rather than revisited inside th
   per connector before `gated_call`) into a new `visibility: dict[str, bool]` kwarg, alongside
   the existing `preview`/`details_text`, so the popup can render the "AI will receive" checklist
   without re-deriving policy state itself.
-- `pii_detector.py`: additive category patterns only (financial keywords) — no interface change,
-  matches its existing `_PATTERNS` extension model.
+- `pii_detector.py`: additive category patterns only (broader financial keywords beyond the
+  salary/compensation category already shipped) — no interface change, matches its existing
+  `_PATTERNS` extension model.
 - `audit_log.py`: add `claude_reason: str = ""` to `AuditEntry` (populated on every entry, gated
   or auto-accepted, per the decided scope) and a lookup helper (`recent_matches(operation_key,
   preview) -> int`) for the request-fingerprint feature.
@@ -382,3 +454,37 @@ whatever new infrastructure it would require — rather than revisited inside th
    runner before shipping Phase 3.
 4. **Decided**: multi-reviewer governance is not being scoped. The single-reviewer "PR grammar, no
    PR infrastructure" version (Phases 1–3) is the intended ceiling — see §8.
+
+## 11. Implementation readiness — verdict
+
+**Ready to start.** This branch is merged up to date with `main` (through PR #50 as of this
+revalidation); the merge was clean (no conflicts — this doc's only prior footprint was a new file)
+and nothing it brought in blocks or invalidates the plan. Concretely:
+
+- **No open design blockers remain.** All four original open questions (§10) are resolved or
+  investigated to a concrete action-item level; nothing is still "waiting on a decision."
+- **Two pieces of Phase 2 work are already done upstream** (salary/compensation PII category) —
+  start there smaller than originally scoped, the doc above reflects the narrowed remainder.
+- **Phase 1a's risk went down, not up**, since the branch point: `approval_window.py`'s
+  `build_panel()`/`runApproval_()` split and `tests/unit/test_approval_window.py` give the layout
+  work a tested seam that didn't exist when this plan was first drafted. New layout sections
+  should be asserted on through that same harness rather than verified by manual click-through.
+- **Phase 1b's justification got stronger, not weaker**: the new unattended-session fail-fast path
+  means some fraction of real calls will now go through `denied_unattended` with no popup ever
+  shown — `claude_reason` is the only artifact a later reviewer gets for those, which is a
+  concrete answer to "why capture this if it's never displayed live."
+- **Phase 3's signing investigation is unaffected**: none of the merged PRs touched
+  `entitlements.plist`, `PrivacyFenceApp.spec`, `build_dmg.sh`, or `pyproject.toml`'s build
+  dependencies, so §7 Phase 3 / §10 Q3's findings and action items (add
+  `com.apple.security.cs.allow-jit`, add `pyobjc-framework-WebKit`, run one real signed build)
+  still stand exactly as written.
+- **No merge-introduced scope creep requires re-litigating §8.** The new unattended-session mode
+  is a fail-closed, purely local mechanism — it doesn't introduce a server, a second reviewer, or
+  any shared state, so it doesn't reopen the multi-reviewer-governance question that was
+  deliberately closed off.
+
+Recommended order unchanged: **1a → 1b → 2 → 3**, each independently shippable and testable before
+the next starts. Phase 1a can begin immediately with no prerequisites. Phase 1b is the largest
+single unit of work (touches all ten connectors plus the three meta-tools) but has no unresolved
+design question blocking it. Phase 3 has exactly one prerequisite — the real signed build check
+from §7/§10 Q3 — before committing to the WKWebView rewrite specifically.
