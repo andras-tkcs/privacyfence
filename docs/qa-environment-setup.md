@@ -1,52 +1,54 @@
-# QA Environment Setup (for `connector-qa-testing.md`)
+# QA Environment Setup
 
-This is a complete, standalone installation guide for the environment that
-[`connector-qa-testing.md`](connector-qa-testing.md) — and the local fixture recorder, see
-[`external-api-contract-testing.md`](external-api-contract-testing.md) — run against. Work through
-it top to bottom on any machine/account where you want to run either one; it doesn't assume
-anything was set up before, and it doesn't assume you've read any prior QA report.
+Standalone installation guide for the fixtures used by both
+[`connector-qa-testing.md`](connector-qa-testing.md) (the manual, live-Cowork QA pass) and
+[`external-api-contract-testing.md`](external-api-contract-testing.md) (the local fixture recorder,
+`scripts/qa_fixture_recorder.py`). Work through it top to bottom on any machine/account where you
+want to run either one. It doesn't assume anything was set up before.
 
-**Scope**: this doc only covers QA-specific fixtures — a dedicated Jira project, a Drive sandbox
-folder, sample Salesforce records, and so on. Base connector *authentication* (OAuth apps, API
-enablement, tokens) is a separate, one-time prerequisite covered by each connector's own setup
-guide; see [Prerequisites](#prerequisites) below.
+**Scope**: QA-specific fixtures only — a dedicated Jira project, a Drive sandbox folder, sample
+Salesforce records, and so on. Base connector *authentication* (OAuth apps, API enablement, tokens)
+is a separate, one-time prerequisite — see [Prerequisites](#prerequisites).
 
-Once set up, these fixtures are **durable and reusable** — the test prompt re-discovers them by
-name/key/flag at the start of every run instead of you recreating or re-pasting anything (see
-[`connector-qa-testing.md`](connector-qa-testing.md)'s Phase 0). You should only need to work
-through this guide once per environment, and revisit a section if you ever rename/delete one of the
-fixtures it describes. Every section below is a checklist — check items off as you go; nothing here
-needs to be re-run once done, short of that.
+Fixtures created here are **durable and reusable**: both consumers re-discover them by name/key/flag
+at the start of every run (`connector-qa-testing.md`'s Phase 0; `scripts/qa_fixture_recorder.py`'s
+manifest lookups) instead of you recreating or re-pasting anything. Work through this guide once per
+environment; revisit a section only if you rename/delete one of its fixtures.
 
 ## The one rule this doc follows wherever it creates content
 
 **A fixture's *identity* (which project, space, channel, folder) can be real — these are your real
-accounts, and that's fine — but a fixture's *content*, wherever this doc has you type or paste
-something, is always synthetic and tagged, never something copied from a real message/contact/event
-you didn't create for this purpose.** Concretely: `PFQA`/`PrivacyFence QA`-prefixed names identify
-*which* real project or folder a fixture lives in; a `[QATEST]` tag inside a body/title/summary
-marks content that's *safe to read, act on, or record* because it was written for exactly that.
+accounts — but a fixture's *content*, wherever this doc has you type or paste something, is always
+synthetic and tagged, never copied from a real message/contact/event.** `PFQA`/`PrivacyFence
+QA`-prefixed names identify *which* real project or folder a fixture lives in; a `[QATEST]` tag
+inside a body/title/summary marks content that's safe to read, act on, or record.
 
-A few things below are real by necessity, not by oversight, and are called out explicitly where
-they occur: `trusted_sender_domain` needs a domain you actually receive mail from (there's no
-synthetic substitute for "is this domain in my real inbox"), and a couple of contrast cases lean on
-"whatever other real project/space/chat already exists" rather than a dedicated second one, since
-that's simpler and lower-risk than provisioning a second fixture purely to be empty. In both cases,
-only the *existence* of something real matters, never its content — nothing here ever reads,
-quotes, or acts on what that real thing actually contains.
+Two things are real by necessity, not oversight: `trusted_sender_domain` needs a domain you actually
+receive mail from, and contrast cases ("a different project, should still prompt") reuse whatever
+other real project/space/chat already exists rather than provisioning a second one purely to be
+empty. In both cases only *existence* matters, never content.
 
-**Placeholder values** — use these wherever a step needs a fake email/phone/address:
+**Placeholder values** — use these wherever a step needs a fake email/phone:
 
-- Email: anything `@example.com` / `@example.org` / `@example.net` — reserved by RFC 2606
-  specifically so these addresses never resolve to a real mailbox.
-- Phone: `555-01XX` (e.g. `555-0142`) — the `555-0100`–`555-0199` block is reserved by NANPA
-  specifically for fictional use in exactly this kind of test content.
+- Email: anything `@example.com` / `@example.org` / `@example.net` (RFC 2606 — reserved so these
+  never resolve to a real mailbox).
+- Phone: `555-01XX`, e.g. `555-0142` (NANPA's `555-0100`–`555-0199` block, reserved for fiction).
 
-Everything this guide creates uses the prefix **`PFQA`** (Jira/Confluence keys) or **`PrivacyFence
-QA`** (folder/channel/report/event names, titles) so it's grep-able and obviously safe to touch, and
-tags any body/message content with **`[QATEST]`**. **Names must match exactly** where noted — the
-test prompt looks fixtures up by exact string match, not fuzzy search, so a typo here means Phase 0
-reports the fixture as missing instead of silently guessing wrong.
+Everything here uses the prefix **`PFQA`** (Jira/Confluence keys) or **`PrivacyFence QA`**
+(folder/channel/report/event names), and tags body/message content with **`[QATEST]`**. Names must
+match exactly where noted — lookups are by exact string match, not fuzzy search.
+
+The local fixture recorder (`scripts/qa_fixture_recorder.py`) targets exactly one tagged item per
+connector, by ID/key/name, and refuses to record if the tag doesn't match — see
+`external-api-contract-testing.md`'s "Guardrail against recording the wrong thing." Its per-connector
+manifest lives in `tests/fixtures/qa_environment.yaml`; every "For the recorder" step below says
+which field(s) to fill in there.
+
+Every grant below can also be added from the menu bar — **Auto-accept Rules → \<Connector\> →
+Trusted \<Resource\> → + Add…** — instead of editing YAML by hand; both are equivalent, and the older
+per-operation form under `auto_accept_rules` (e.g. `approved_folder`, `approved_channel`) still
+works too. Only the YAML form is shown below. See [Auto-accept
+grants](TECHNICAL_REFERENCE.md#auto-accept-grants) for the full reference.
 
 ---
 
@@ -59,23 +61,21 @@ reports the fixture as missing instead of silently guessing wrong.
   - [ ] Salesforce — [`salesforce-setup.md`](salesforce-setup.md)
   - [ ] Telegram — [`telegram-setup.md`](telegram-setup.md)
 - [ ] Confirm `privacyfence-app` (the daemon) is running, and you have admin/owner-level access on
-      each external service to create a project/space/channel/folder in it (not just read access)
+      each external service to create a project/space/channel/folder in it
 - [ ] Confirm you can edit and reload `settings.yaml`
   - [ ] Bundled install: `~/.privacyfence/config/settings.yaml`
   - [ ] From source: `config/settings.yaml` in the repo root — see
         [`dev-vs-live-setup.md`](dev-vs-live-setup.md)
-  - [ ] Reload it by restarting the daemon, or by clicking "Accept All" once on any popup, which
-        calls `reload_rules()` for you
-- [ ] Note your own email address as PrivacyFence sees it (`my_email`) — used internally by rules
-      like `i_am_sender`/`i_am_organizer`; it's just whatever address you authenticated
-      Gmail/Calendar/etc. with, nothing extra to configure
+  - [ ] Reload by restarting the daemon, or by clicking "Accept All" once on any popup
+        (`reload_rules()`)
+- [ ] Note your own email address as PrivacyFence sees it (`my_email`) — used by rules like
+      `i_am_sender`/`i_am_organizer`; it's whatever address you authenticated Gmail/Calendar with
 
 ---
 
 ## 1. Gmail
 
-- [ ] (Optional) Create a synthetic seed thread, if you'd rather not point the Deny test or the
-      label/archive round-trip at a real message
+- [ ] (Optional) Create a synthetic seed thread
   - [ ] Send yourself an email:
         ```
         Subject: PrivacyFence QA seed message [QATEST]
@@ -83,46 +83,33 @@ reports the fixture as missing instead of silently guessing wrong.
         Synthetic PrivacyFence QA test message. No real information. Safe to read, label,
         archive, or delete by any automated test.
         ```
-  - [ ] Reply to your own message, creating a real 2-message thread that's still entirely
-        synthetic:
+  - [ ] Reply to your own message, creating a real 2-message thread that's still synthetic:
         ```
         Subject: Re: PrivacyFence QA seed message [QATEST]
         Body:
         Synthetic PrivacyFence QA reply. No real information.
         ```
-  - Note: it's also the right pick for the Deny test either way — short, no large attachment, so a
-    Deny response can't be confused with a size-truncation error.
-  - [ ] **For `scripts/qa_fixture_recorder.py`**: fill in the seed message's real id under
-        `gmail.seed_message_id` in `tests/fixtures/qa_environment.yaml` — required, not optional,
-        for the recorder specifically. Unlike Confluence/Jira/Salesforce, Gmail has no cheap
-        by-subject resolve fallback (`GmailClient.list_messages()` makes one extra API call *per
-        result* on top of the list call itself, so "resolve then get" here would mean an
-        uncontrolled number of calls instead of one targeted one).
-- [ ] (Optional) Configure the `trusted_sender_domain` rule
-  - [ ] Look through your inbox (or run `gmail_list_messages`) and pick any sender domain you get
-        recurring mail from — a newsletter, a receipt sender, a notification address
-  - [ ] Add it to `settings.yaml` — rules are a list, add more than one domain if you like:
-        ```yaml
-        auto_accept_rules:
-          gmail.read_message:
-            - rule: trusted_sender_domain
-              value: [example.com]   # ← whatever domain you actually receive mail from
-        ```
+  - [ ] For the recorder: fill in the seed message's real id under `gmail.seed_message_id` in
+        `tests/fixtures/qa_environment.yaml` — required, no resolve-by-subject fallback
+        (`GmailClient.list_messages()` makes one extra API call *per result*)
+- [ ] (Optional) Configure `trusted_sender_domain` — pick any sender domain you get recurring real
+      mail from:
+      ```yaml
+      auto_accept_rules:
+        gmail.read_message:
+          - rule: trusted_sender_domain
+            value: [example.com]   # ← a domain you actually receive mail from
+      ```
 
-> **Note** — no fixture is needed for the archive/label round-trip (add label → archive →
-> un-archive → remove label): it targets whatever message you already picked for the first
-> `gmail_get_message` call (the seed thread above, or any message) and restores it to its exact
-> starting state by the end, so there's nothing to provision or clean up here either way.
+No fixture is needed for the archive/label round-trip — it targets whichever message you already
+picked for the first `gmail_get_message` call and restores it to its exact starting state.
 
 ## 2. Drive & Sheets
 
 - [ ] Create the Drive QA Sandbox folder
   - [ ] Name it exactly `PrivacyFence QA Sandbox` in "My Drive"
-  - [ ] Note its file ID (visible in the folder's URL) — you need it once, for the grant below; the
-        test prompt itself finds the folder by name, not by ID
-- [ ] Add the auto-accept fixture — a `drive.folders` grant with `read: true` covers
-      `drive.read_file_contents`/`drive.download_file` and `sheets.read_values` all at once (see
-      [Auto-accept grants](TECHNICAL_REFERENCE.md#auto-accept-grants)):
+  - [ ] Note its file ID (in the folder's URL)
+- [ ] Add the grant — covers `drive.read_file_contents`/`drive.download_file`/`sheets.read_values`:
       ```yaml
       auto_accept_grants:
         drive:
@@ -131,80 +118,58 @@ reports the fixture as missing instead of silently guessing wrong.
               name: "PrivacyFence QA Sandbox"
               read: true
       ```
-  - Note: equivalently, from the menu bar — **Auto-accept Rules → Drive → Trusted Folders → + Add
-    folder…**, then check **Read auto-accept**. The older, still-supported form is a raw
-    `approved_folder` rule under `auto_accept_rules` — see
-    [Auto-accept rules](TECHNICAL_REFERENCE.md#auto-accept-rules).
 - [ ] Confirm every Drive/Sheets artifact the test prompt creates goes **inside this folder** (as
-      `parent_folder_id`), including uploads, Docs, and moves — already synthetic content by
-      construction, so nothing here ever touches a real file or folder elsewhere in your Drive
-- [ ] (Maintenance, periodic) Empty Drive trash by hand — there's no bulk-empty-trash tool; trashed
-      items auto-purge after 30 days regardless
-- [ ] **For `scripts/qa_fixture_recorder.py`**: no new fixture needed — the recorder targets this
-      folder directly via `drive_get_file_metadata`, identified by its exact name (a folder has no
-      body to carry a `[QATEST]` tag, so the name itself is the check)
-  - [ ] Fill in its file ID (or leave blank to resolve by name — one extra API call per run) under
-        `drive.folder_id` in `tests/fixtures/qa_environment.yaml`
-  - Note: unlike every other connector's targeted read here, `drive_get_file_metadata` is
-    auto-approved (no gate/popup preview), so this only proves the raw-response → `DriveFile`
-    mapping stays correct — it doesn't exercise popup-field completeness the way Confluence/Jira/
-    Salesforce/Gmail's checks do.
-- [ ] (Optional) Extend `approved_sandbox_folder` to `sheets.rename_sheet` / `sheets.format_range`
-  - [ ] Only add this if you specifically want `connector-qa-testing.md`'s Phase 2 to also
-        demonstrate that these two can auto-accept by folder. Skip it if you'd rather Phase 2 keep
-        exercising the plain popup / "Accept for 5 min" flow instead — the two are mutually
-        exclusive for the same spreadsheet, since a matching rule auto-accepts before any popup
-        would appear:
-        ```yaml
-        auto_accept_rules:
-          sheets.rename_sheet:
-            - rule: approved_sandbox_folder
-              value: ["<QA Sandbox folder id>"]
-          sheets.format_range:
-            - rule: approved_sandbox_folder
-              value: ["<QA Sandbox folder id>"]
-        ```
-  - Note: a `drive.sandbox_folders` grant's `write` capability (this step's grant-managed sibling —
-    see the consolidated block below) auto-accepts **every** Drive/Sheets/Docs write operation for
-    that folder at once — `drive.write_file`, `drive.write_doc`, all six `sheets.*` writes
-    (including `rename_sheet`/`format_range` and, below, `insert_dimensions`/`delete_dimensions`),
-    and `docs.edit_content`/`docs.format_content`. If you want *only* `rename_sheet`/`format_range`
-    auto-accepted while the rest keep prompting, that per-operation split isn't expressible as a
-    grant — use the raw rules above directly instead.
-- [ ] (Optional) Extend the same rule to `sheets.insert_dimensions` / `sheets.delete_dimensions`
-  - [ ] Add both:
-        ```yaml
-        auto_accept_rules:
-          sheets.insert_dimensions:
-            - rule: approved_sandbox_folder
-              value: ["<QA Sandbox folder id>"]
-          sheets.delete_dimensions:
-            - rule: approved_sandbox_folder
-              value: ["<QA Sandbox folder id>"]
-        ```
-  - Note: `sheets.insert_dimensions` still offers "Accept for 5 min" on its plain popup
-    (non-destructive, like `format_range`); `sheets.delete_dimensions` never does (removes cell
-    content, no undo path) — that asymmetry stays visible whenever this rule doesn't match.
-- [ ] (Optional) Extend the same rule to `docs.edit_content` / `docs.format_content`
-  - [ ] Add both:
-        ```yaml
-        auto_accept_rules:
-          docs.edit_content:
-            - rule: approved_sandbox_folder
-              value: ["<QA Sandbox folder id>"]
-          docs.format_content:
-            - rule: approved_sandbox_folder
-              value: ["<QA Sandbox folder id>"]
-        ```
+      `parent_folder_id`), including uploads, Docs, and moves
+- [ ] (Maintenance, periodic) Empty Drive trash by hand — no bulk-empty-trash tool; items auto-purge
+      after 30 days regardless
+- [ ] For the recorder: no new fixture — targets this folder directly via `drive_get_file_metadata`,
+      identified by exact name (a folder has no body to carry `[QATEST]`)
+  - [ ] Fill in its file ID (or leave blank to resolve by name) under `drive.folder_id` in
+        `tests/fixtures/qa_environment.yaml`
+- [ ] (Optional) Add `approved_sandbox_folder` to `sheets.rename_sheet` / `sheets.format_range`,
+      scoped to this same folder — kept as raw per-operation rules rather than the
+      `drive.sandbox_folders` grant's all-or-nothing `write` capability specifically so
+      `connector-qa-testing.md`'s Phase 2 can still exercise the plain popup / "Accept for 5 min"
+      flow for the *other* Sheets/Docs writes (`write_file`, `write_doc`, `add_sheet`) in the same
+      folder:
+      ```yaml
+      auto_accept_rules:
+        sheets.rename_sheet:
+          - rule: approved_sandbox_folder
+            value: ["<QA Sandbox folder id>"]
+        sheets.format_range:
+          - rule: approved_sandbox_folder
+            value: ["<QA Sandbox folder id>"]
+      ```
+- [ ] (Optional) Add the same rule to `sheets.insert_dimensions` / `sheets.delete_dimensions`:
+      ```yaml
+      auto_accept_rules:
+        sheets.insert_dimensions:
+          - rule: approved_sandbox_folder
+            value: ["<QA Sandbox folder id>"]
+        sheets.delete_dimensions:
+          - rule: approved_sandbox_folder
+            value: ["<QA Sandbox folder id>"]
+      ```
+- [ ] (Optional) Add the same rule to `docs.edit_content` / `docs.format_content`:
+      ```yaml
+      auto_accept_rules:
+        docs.edit_content:
+          - rule: approved_sandbox_folder
+            value: ["<QA Sandbox folder id>"]
+        docs.format_content:
+          - rule: approved_sandbox_folder
+            value: ["<QA Sandbox folder id>"]
+      ```
 
 ## 3. Slack
 
-Two channels are needed: one the test prompt is allowed to read silently, and one it isn't (to
-prove the review gate still fires for anything not on the allowlist).
+Two channels: one the test prompt is allowed to read silently, one it isn't (to prove the review
+gate still fires for anything not on the allowlist).
 
 - [ ] Designate the approved channel
   - [ ] Pick or create a channel and join it
-  - [ ] Add its ID as a `slack.channels` grant with `read: true`:
+  - [ ] Add the grant:
         ```yaml
         auto_accept_grants:
           slack:
@@ -212,60 +177,56 @@ prove the review gate still fires for anything not on the allowlist).
               - id: "<channel id>"
                 read: true
         ```
-  - Note: equivalently, from the menu bar — **Auto-accept Rules → Slack → Trusted Channels → + Add
-    channel…** — this connector supports the live picker (by channel name), so you don't need to
-    look up the ID by hand. The test prompt itself still reads the ID straight out of the config —
-    there's no naming requirement on this channel. The older, still-supported form is a raw
-    `approved_channel` rule under `auto_accept_rules`.
 - [ ] Create the control channel
-  - [ ] Name it exactly `privacyfence-qa-control` and join it
-  - [ ] Do **not** grant it any capability — it exists specifically to *not* match, and the test
-        prompt finds it by this exact name via `slack_list_channels`
+  - [ ] Name it exactly `privacyfence-qa-control` and join it — grant it no capability, it exists
+        specifically to *not* match; found by exact name via `slack_list_channels`
   - [ ] Post a synthetic seed message:
         ```
         PrivacyFence QA seed message [QATEST]. No real information. Safe to read/reply/delete.
         ```
-  - [ ] Reply to it in-thread (replying from your own account is fine — Slack doesn't require a
-        second person for a thread to exist):
+  - [ ] Reply to it in-thread (from your own account is fine):
         ```
         PrivacyFence QA seed reply [QATEST]. No real information.
         ```
-        This gives `slack_get_thread_replies` permanent, reusable, entirely synthetic content
-        instead of depending on whatever a given run happens to surface.
-- [ ] **For `scripts/qa_fixture_recorder.py`**: no new fixture needed — the recorder targets this
-      same thread via `get_thread_replies`, resolving the channel by its exact name and the thread
-      by scanning history for the `[QATEST]` tag (or leave `slack.channel_id`/`slack.seed_thread_ts`
-      blank in `tests/fixtures/qa_environment.yaml` and it resolves both automatically)
-  - Note: unlike every other connector's fixture, Slack's author identity (`user`/`bot_id`) isn't a
-    distinctively-named field the generic redaction pass can recognize — the recorder applies a
-    Slack-specific pass first, the same way it does for Gmail's header list.
+- [ ] For the recorder: no new fixture — targets this same thread via `get_thread_replies`,
+      resolving the channel by exact name and the thread by scanning history for `[QATEST]` (or fill
+      in `slack.channel_id`/`slack.seed_thread_ts` in `tests/fixtures/qa_environment.yaml` directly)
 
 ## 4. Calendar
 
-- [ ] Decide `calendar_list_rooms` coverage — needs **Google Workspace** (not a consumer Gmail
-      account) *and* admin rights, a hard external dependency no local config can substitute for
-  - [ ] Consumer Gmail, or no Workspace admin access → skip straight to the next item. This is a
-        permanent, environment-level limitation — the test prompt already treats the resulting
-        error as expected rather than a regression
+- [ ] Decide `calendar_list_rooms` coverage — needs **Google Workspace** (not consumer Gmail) *and*
+      admin rights
+  - [ ] No Workspace admin access → skip to the next item; this is a permanent, environment-level
+        limitation, not a regression
   - [ ] Workspace admin access available:
-        1. In Google Cloud Console → APIs & Services → Library, enable **Admin SDK API** (see
-           [`google-cloud-setup.md`](google-cloud-setup.md))
-        2. Nothing to add manually for the OAuth scope —
-           `admin.directory.resource.calendar.readonly` is requested at runtime by
-           `calendar_client.py`
-        3. In the Google Admin console: **Directory → Buildings and resources → Calendar
-           resources → Add resource**. Create at least one, e.g. `PrivacyFence QA Room A`
-        4. In PrivacyFence: **Connectors → Calendar → Reconnect…** so the token picks up the new
-           admin scope
-- [ ] (Optional) Add the `i_am_organizer` rule — any event you create satisfies it automatically:
+        1. Google Cloud Console → APIs & Services → Library → enable **Admin SDK API**
+        2. No OAuth scope to add manually — `admin.directory.resource.calendar.readonly` is
+           requested at runtime
+        3. Google Admin console → **Directory → Buildings and resources → Calendar resources → Add
+           resource** — create at least one, e.g. `PrivacyFence QA Room A`
+        4. PrivacyFence menu bar → **Connectors → Calendar → Reconnect…** so the token picks up the
+           new scope
+- [ ] (Optional) Trust your primary calendar as a resource-scoped grant — covers
+      `calendar.read_event_details` (`read`) and `calendar.create_modify_event` (`write`) for events
+      on it, regardless of who organized them (an alternative to the per-rule options below):
+      ```yaml
+      auto_accept_grants:
+        calendar:
+          calendars:
+            - id: "primary"
+              name: "My calendar"
+              read: true
+              write: true
+      ```
+- [ ] (Optional) Add `i_am_organizer` instead/as well — any event you create satisfies it
+      automatically:
       ```yaml
       auto_accept_rules:
         calendar.read_event_details:
           - rule: i_am_organizer
       ```
-- [ ] (Optional) Add the `non_private_event` rule, if you want Phase 2 to demonstrate
-      `calendar_get_event_details` and `calendar_set_event_visibility` auto-accepting for a
-      non-private event:
+- [ ] (Optional) Add `non_private_event`, to also exercise `calendar_get_event_details` and
+      `calendar_set_event_visibility` auto-accepting for a non-private event:
       ```yaml
       auto_accept_rules:
         calendar.read_event_details:
@@ -273,74 +234,57 @@ prove the review gate still fires for anything not on the allowlist).
         calendar.set_visibility:
           - rule: non_private_event
       ```
-  - Note: no fixture is needed for the contrast case either way — any event the test prompt sets to
-    `private` still prompts regardless of this rule, since `non_private_event` checks the
-    visibility being *requested*, not the event's prior state. Combine with `i_am_organizer` above
-    if you want both — a matching rule short-circuits the list, so order only changes which rule
-    name shows up in the audit log, not what auto-accepts.
-- [ ] **For `scripts/qa_fixture_recorder.py`**: create one dedicated seed event on your primary
-      calendar, far enough in the future that it won't need recreating, with synthetic content and
-      no real attendees, tagged so the recorder can confirm it's the right one:
+      Any event set to `private` still prompts regardless — the rule checks the visibility being
+      *requested*, not the event's prior state.
+- [ ] For the recorder: create one dedicated seed event on your primary calendar, far enough in the
+      future that it won't need recreating, no real attendees:
       ```
       Title:       PrivacyFence QA seed event [QATEST]
       Description: Synthetic PrivacyFence QA test event. No real information.
       ```
-  - [ ] Fill in its event id (or leave blank to resolve by a title search instead — one extra API
-        call per run) under `calendar.seed_event_id` in `tests/fixtures/qa_environment.yaml`
+  - [ ] Fill in its event id (or leave blank to resolve by title search) under
+        `calendar.seed_event_id` in `tests/fixtures/qa_environment.yaml`
         (`calendar.calendar_id` defaults to `primary`)
-  - Note: same narrower requirement as Confluence/Jira's equivalent step — the recorder only ever
-    reads this one event, by id/title and the `[QATEST]` tag, never an arbitrary event
 
-> **Note** — event attachments (`calendar_get_event_details`'s "Notes by Gemini"/transcript Docs)
-> are opportunistic, not something this doc can provision: attachments can't be created via
-> `calendar_create_event`, so this only works if your account's calendar history already has a past
-> Google Meet meeting with "take notes for me" enabled; otherwise that step is a known limitation,
-> not a regression.
->
-> **Note** — no fixture is needed for `calendar_create_out_of_office` or
-> `calendar_set_working_location` either: both always operate on your own primary calendar (a
-> Google Calendar API restriction), so any account works out of the box. Repeated QA runs each leave
-> behind their own out-of-office event and overwrite the working-location entry — there's no delete
-> tool for either, so they accumulate in "needs manual deletion" the same way plain Calendar events
-> do (see Phase 11 in [`connector-qa-testing.md`](connector-qa-testing.md)).
+Event attachments (`calendar_get_event_details`'s "Notes by Gemini"/transcript Docs) can't be
+provisioned — `calendar_create_event` has no way to attach a file, so this only works if your
+account's calendar history already has a past Meet meeting with "take notes for me" enabled;
+otherwise it's a known limitation, not a regression.
+
+No fixture is needed for `calendar_create_out_of_office` or `calendar_set_working_location` — both
+always operate on your own primary calendar. Repeated QA runs each leave behind their own
+out-of-office event and overwrite the working-location entry (no delete tool for either).
 
 ## 5. Contacts
 
-- [ ] (Optional) Add the `no_contact_info_change` rule — auto-accepts edits that don't touch
-      `emails`/`phones` (e.g. appending `(PrivacyFence QA test)` to a name/note field), safe to
-      leave enabled permanently since an edit that *does* touch email/phone still prompts anyway:
+- [ ] (Optional) Add `no_contact_info_change` — auto-accepts edits that don't touch
+      `emails`/`phones` (e.g. appending a note), safe to leave enabled permanently:
       ```yaml
       auto_accept_rules:
         contacts.edit:
           - rule: no_contact_info_change
       ```
-- [ ] **For `scripts/qa_fixture_recorder.py`**: create one dedicated seed contact, using the
-      placeholder-value conventions from the top of this doc — unlike every other connector's
-      recorder target, a contact's name/email/phone fields *are* the content under test (there's no
-      separate "real author touched this synthetic thing" split the way a page/issue/event has), so
-      the recorder does **not** apply its usual identity redaction pass here — see
-      `external-api-contract-testing.md`'s "Identity-field redaction" for why that would be wrong,
-      not just unnecessary, for this one connector:
+- [ ] For the recorder: create one dedicated seed contact. Unlike every other connector, a contact's
+      name/email/phone fields *are* the content under test, so the recorder does **not** redact this
+      fixture — see `external-api-contract-testing.md`'s "Identity-field redaction":
       ```
       Display name: PrivacyFence QA Test Contact [QATEST]
       Email:        qatest.contact@example.com
       Phone:        555-0142
       ```
-  - [ ] Fill in its resource name (e.g. `people/c12345`, or leave blank to resolve by a name search
-        instead — one extra API call per run) under `contacts.seed_contact_resource_name` in
-        `tests/fixtures/qa_environment.yaml`
+  - [ ] Fill in its resource name (e.g. `people/c12345`, or leave blank to resolve by name search)
+        under `contacts.seed_contact_resource_name` in `tests/fixtures/qa_environment.yaml`
 
-> **Note** — no fixture is needed for `source="personal"` vs. `source="directory"`: whether your
-> account has Workspace directory colleagues is a fact about your account, not something to
-> provision. If it doesn't, `source="directory"` coming back empty is the correct, permanent answer.
+No fixture is needed for `source="personal"` vs. `source="directory"` — whether your account has
+Workspace directory colleagues is a fact about the account; an empty `directory` result is correct
+if it doesn't.
 
 ## 6. Google Tasks
 
 - [ ] Configure the approved list
-  - [ ] Get your default list's ("My Tasks") ID from `tasks_list_task_lists` (via a live Claude
-        session) or headlessly with `scripts/qa_list_ids.py tasks`
-  - [ ] Add it as a `tasks.task_lists` grant with `edit`/`complete` (and optionally
-        `create`/`move`, see below):
+  - [ ] Get your default list's ("My Tasks") ID from `tasks_list_task_lists` or headlessly with
+        `scripts/qa_list_ids.py tasks`
+  - [ ] Add the grant:
         ```yaml
         auto_accept_grants:
           tasks:
@@ -350,56 +294,35 @@ prove the review gate still fires for anything not on the allowlist).
                 edit: true
                 complete: true
         ```
-  - Note: equivalently, from the menu bar — **Auto-accept Rules → Tasks → Trusted Task Lists → +
-    Add task list…** (live picker by list name), then check **Auto-accept edits** and **Auto-accept
-    complete/uncomplete**. `complete` covers both `tasks.complete_task` and `tasks.uncomplete_task`
-    at once — one difference from the older, still-supported `auto_accept_rules` form, which
-    configured them separately.
+        `complete` covers both `tasks.complete_task` and `tasks.uncomplete_task`.
 - [ ] Create the contrast list
-  - [ ] Name it exactly `PrivacyFence QA Contrast List` (no tool creates a task list through
-        PrivacyFence itself, so this has to be done outside it)
-  - [ ] Do **not** grant it any capability — it exists specifically to *not* match, and the test
-        prompt finds it by this exact name via `tasks_list_task_lists`
-- [ ] (Optional) Add `create: true` to the default list's grant entry, and/or `move: true` to
-      **both** the default and contrast list's grant entries (a move only auto-accepts when both
-      the source and destination list have `move: true` set). Skip any capability you'd rather
-      leave always-prompting — the test prompt handles "not configured" gracefully for each one
-      independently.
-- [ ] **For `scripts/qa_fixture_recorder.py`**: create one dedicated seed task in your approved
-      list, tagged so the recorder can confirm it's the right one:
+  - [ ] Name it exactly `PrivacyFence QA Contrast List`, grant it no capability
+- [ ] (Optional) Add `create: true` to the default list's grant, and/or `move: true` to **both** the
+      default and contrast list's entries (a move only auto-accepts when both ends have `move: true`)
+- [ ] For the recorder: create one dedicated seed task in the approved list:
       ```
       Title: PrivacyFence QA seed task [QATEST]
       Notes: Synthetic PrivacyFence QA test task. No real information.
       ```
-  - [ ] Fill in the approved list's id (already resolved in the first step above) and the task's id
-        under `tasks.task_list_id` / `tasks.seed_task_id` in `tests/fixtures/qa_environment.yaml`
-        (no by-title resolve fallback for this one — `tasks_client.py` has no search-by-title
-        method to reuse, only `list_tasks`, which would mean an uncontrolled full-list fetch;
-        `seed_task_id` is required)
-  - Note: `tasks_get_task` is auto-approved (no gate/popup preview — see `connectors/tasks.py`),
-    so like Drive's equivalent step, this only proves the raw-response → `Task` mapping stays
-    correct, not popup-field completeness
+  - [ ] Fill in the approved list's id and the task's id under `tasks.task_list_id` /
+        `tasks.seed_task_id` in `tests/fixtures/qa_environment.yaml` — both required, no
+        by-title resolve fallback (`tasks_client.py` has no search-by-title method)
 
 ## 7. Telegram
 
 - [ ] Seed Saved Messages
-  - [ ] Open Telegram (phone or desktop) and send yourself **one** message, once:
+  - [ ] Open Telegram and send yourself **one** message, once:
         ```
         PrivacyFence QA seed message [QATEST]. No real information.
         ```
-        (`telegram_list_chats` only returns chats you've actually opened at least once, and "Saved
-        Messages" is no exception; once sent, it stays in the list forever. No naming needed
-        afterward — the test prompt finds it every run via the `is_self` flag, not by matching a
-        name.)
-  - [ ] **For `scripts/qa_fixture_recorder.py`**: no new fixture needed — same message, same
-        resolve-by-`is_self` logic; it scans Saved Messages' recent history for the `[QATEST]` tag
-        the same way Slack's recorder scans the control-channel thread (§3)
+        (`telegram_list_chats` only returns chats you've opened at least once; once sent, it stays
+        forever. Found every run via the `is_self` flag, not by name.)
+  - [ ] For the recorder: no new fixture — same message, same resolve-by-`is_self` logic; scans
+        Saved Messages' recent history for the `[QATEST]` tag
 - [ ] Decide `approved_chats`
-  - [ ] Point it at Saved Messages itself (get its numeric `chat_id` from `telegram_list_chats`
-        after the step above, or headlessly with `scripts/qa_list_ids.py telegram` — look for
-        `is_self=True`) — safe, since it's always fine to auto-accept reads of your own messages to
-        yourself. Or create/repurpose a second low-stakes chat (a private group with just you, or a
-        throwaway test contact) and use its `chat_id` instead
+  - [ ] Point it at Saved Messages itself (get its numeric `chat_id` from `telegram_list_chats` or
+        headlessly with `scripts/qa_list_ids.py telegram` — look for `is_self=True`), or a second
+        low-stakes chat
   - [ ] Add the grant:
         ```yaml
         auto_accept_grants:
@@ -408,39 +331,29 @@ prove the review gate still fires for anything not on the allowlist).
               - id: "<chat_id>"
                 read: true
         ```
-  - Note: equivalently, from the menu bar — **Auto-accept Rules → Telegram → Trusted Chats → + Add
-    chat…** (live picker by chat name). Skip this grant entirely if you'd rather leave Telegram
-    reads always review-gated — the test prompt handles "not configured" gracefully. The older,
-    still-supported form is a raw `approved_chats` rule under `auto_accept_rules`.
 - [ ] Confirm at least one *other* chat beyond your approved one has some message history — real by
-      necessity (no bot-token equivalent exists for reading a real chat's own history), used only
-      for its existence, never its content: the test prompt picks any such chat dynamically for the
-      "not approved, should still prompt" contrast case and for `telegram_search_messages` to have
-      something to find
+      necessity, used only for its existence: the contrast case for "not approved, should still
+      prompt" and for `telegram_search_messages` to have something to find
 
-> **Note** — whether a native approval popup actually appears for `telegram_get_messages` /
-> `telegram_search_messages` can be ambiguous from the tool result alone. The test prompt has Claude
-> watch for the popup *and* cross-reference the audit log's `decision` field for these calls, so
-> this doesn't require any special environment setup, just both checks being run.
+Whether a native approval popup actually appeared for `telegram_get_messages` /
+`telegram_search_messages` can be ambiguous from the tool result alone — cross-reference the audit
+log's `decision` field for these calls.
 
 ## 8. Salesforce
 
-A fresh Salesforce org (dev/sandbox) typically has zero data rows anywhere reachable, which means
-every call either 404s, comes back empty, or hits `FORBIDDEN` — none of that is a gate bug, but it
-also means the *success* path never gets exercised unless you seed some data:
+A fresh Salesforce org typically has zero data rows anywhere reachable — every call either 404s,
+comes back empty, or hits `FORBIDDEN` until you seed data:
 
 - [ ] Seed sample records
-  - [ ] **Setup → Object Manager → Account** (or any object you're comfortable using) → create 2–3
-        sample records, all clearly fake and tagged:
+  - [ ] **Setup → Object Manager → Account** (or any object) → create 2–3 sample records, tagged:
         ```
         Name: PrivacyFence QA — Acme Test Co [QATEST]
         Name: PrivacyFence QA — Globex Test Co [QATEST]
         ```
 - [ ] Create the QA report
   - [ ] **Reports → New Report**, based on that object, named exactly `PrivacyFence QA Report`
-- [ ] Add the auto-accept fixtures — recommended, this is also how you get rule coverage for both
-      the report and the object type. The report ID is grant-managed; the object type is a small
-      fixed vocabulary, not a resource identity, so it stays a plain `auto_accept_rules` entry:
+- [ ] Add the grants — the report ID is grant-managed; the object type is a small fixed vocabulary,
+      so it stays a plain `auto_accept_rules` entry:
       ```yaml
       auto_accept_grants:
         salesforce:
@@ -453,45 +366,31 @@ also means the *success* path never gets exercised unless you seed some data:
           - rule: approved_object_types
             value: [Account]
       ```
-  - Note: equivalently, from the menu bar — **Auto-accept Rules → Salesforce → Trusted Reports → +
-    Add report…** (live picker by report name), then check **Read auto-accept**. If you skip the
-    report grant, the test prompt falls back to finding the report by its exact name via
-    `salesforce_list_reports` — either path works.
-- [ ] Confirm a contrast case exists — any report/object type you don't add above already serves as
-      the "should still prompt" contrast; no extra setup needed
+- [ ] Confirm a contrast case exists — any report/object type not added above already serves as
+      the "should still prompt" contrast
 - [ ] Confirm `salesforce_search` needs no separate fixture — the tagged sample records above are
-      exactly what a search for `PrivacyFence QA` should find
-  - Note: **known quirk, not a bug** — Salesforce's SOSL search index can take a minute or two to
-    pick up freshly created records. If a search run immediately after seeding comes back empty,
-    wait briefly and retry before treating it as a regression.
-- [ ] (Optional) Add `approved_object_types` to `salesforce.search`, generalized to check *every*
-      object type in the search's comma-separated `object_types` (not just one):
+      what a search for `PrivacyFence QA` should find. Salesforce's SOSL search index can take a
+      minute or two to pick up freshly created records — an empty result immediately after seeding
+      is a known quirk, not a bug; wait and retry.
+- [ ] (Optional) Add `approved_object_types` to `salesforce.search` too:
       ```yaml
       auto_accept_rules:
         salesforce.search:
           - rule: approved_object_types
             value: [Account]
       ```
-  - Note: with this configured, a search scoped to `object_types="Account"` auto-accepts; a search
-    that also touches any other object type, or one left unscoped entirely (Salesforce's default
-    globally-searchable set), still prompts — that asymmetry is worth confirming too, not just the
-    auto-accept path.
-- [ ] **For `scripts/qa_fixture_recorder.py`** (the local fixture recorder — see
-      [`external-api-contract-testing.md`](external-api-contract-testing.md)): no new fixture
-      needed — unlike Confluence/Jira, the recorder targets one of the sample Account records
-      already created above (`PrivacyFence QA — Acme Test Co [QATEST]`) directly, since it's
-      already tagged
-  - [ ] Fill in its record ID (or leave blank to resolve via `search()` on its name — one extra API
-        call per run) under `salesforce.seed_record_id` in `tests/fixtures/qa_environment.yaml`
-  - Note: same narrower requirement as Confluence/Jira's equivalent step — the recorder only ever
-    reads this one record, by ID/name and the `[QATEST]` tag, never an arbitrary record
+      A search scoped to `object_types="Account"` auto-accepts; one that also touches another type,
+      or is left unscoped, still prompts.
+- [ ] For the recorder: no new fixture — targets one of the sample Account records above directly
+      (`PrivacyFence QA — Acme Test Co [QATEST]`)
+  - [ ] Fill in its record ID (or leave blank to resolve via `search()` on its name) under
+        `salesforce.seed_record_id` in `tests/fixtures/qa_environment.yaml`
 
 ## 9. Jira
 
 - [ ] Create the QA project
-  - [ ] Key exactly `PFQA`, any template (Kanban is fine) — the key has to match exactly, the test
-        prompt uses it as a literal string, not a fuzzy lookup
-- [ ] Add the fixture as a `jira.projects` grant with `read: true`:
+  - [ ] Key exactly `PFQA`, any template (Kanban is fine)
+- [ ] Add the grant:
       ```yaml
       auto_accept_grants:
         jira:
@@ -500,45 +399,31 @@ also means the *success* path never gets exercised unless you seed some data:
               name: "PrivacyFence QA"
               read: true
       ```
-  - Note: equivalently, from the menu bar — **Auto-accept Rules → Jira → Trusted Projects → + Add
-    project…** (live picker by project name), then check **Read auto-accept**. The older,
-    still-supported form is a raw `approved_project_keys` rule under `auto_accept_rules`.
-- [ ] Confirm at least one other real Jira project exists in your site to serve as the "different
-      project, should still prompt" contrast — the test prompt picks whichever project isn't
-      `PFQA` at runtime; create one throwaway second project (any key) only if `PFQA` would
-      otherwise be the only one in your site
+- [ ] Confirm at least one other real Jira project exists in your site as the "different project,
+      should still prompt" contrast — create a throwaway second one only if `PFQA` would otherwise
+      be the only project in your site
 - [ ] Confirm `i_am_reporter`/`i_am_assignee` need no setup — any issue you create in `PFQA`
-      satisfies both automatically. If a second Jira user exists in your site, optionally reassign
-      one test issue to them to get a contrast case for `i_am_assignee`; skip this if you're the
-      only user
-- [ ] Confirm `jira_get_transitions`/`jira_transition_issue` need no setup — every Jira project
-      ships with a default workflow that has at least one transition reachable from a new issue's
-      initial status (e.g. "To Do" → "In Progress")
+      satisfies both automatically. If a second Jira user exists, optionally reassign one test issue
+      to them for an `i_am_assignee` contrast
+- [ ] Confirm `jira_get_transitions`/`jira_transition_issue` need no setup — every project ships
+      with a default workflow with at least one transition reachable from a new issue
 - [ ] (Opportunistic) If `PFQA`'s issue screen has a custom field, note it for the `custom_fields`
-      test — check an issue's "..." menu or **Project settings → Fields**. If it doesn't have one
-      and you want this exercised, add any custom field (e.g. a number field called "Story
-      Points"); otherwise the test prompt skips that step as a fixture-availability limitation, not
-      a regression
-- [ ] **For `scripts/qa_fixture_recorder.py`** (the local fixture recorder — see
-      [`external-api-contract-testing.md`](external-api-contract-testing.md)), as opposed to the
-      manual `connector-qa-testing.md` process above: create one dedicated seed issue in `PFQA`,
-      with synthetic content, tagged so the recorder can find it and confirm it's the right one
-      before recording anything from it:
+      test; otherwise add one (e.g. a number field "Story Points"), or skip — a fixture-availability
+      limitation, not a regression
+- [ ] For the recorder: create one dedicated seed issue in `PFQA`:
       ```
       Summary:     PrivacyFence QA seed issue [QATEST]
       Description: Synthetic PrivacyFence QA test issue. No real information. Safe to comment on,
                    update, or transition by any automated test.
       ```
-  - [ ] Fill in its issue key (or leave blank to resolve by a JQL summary search — one extra API
-        call per run) under `jira.seed_issue_key` in `tests/fixtures/qa_environment.yaml`
-  - Note: same narrower requirement as Confluence's equivalent step — the recorder only ever reads
-    this one issue, by key/summary and the `[QATEST]` tag, never "any issue in `PFQA`."
+  - [ ] Fill in its issue key (or leave blank to resolve by a JQL summary search) under
+        `jira.seed_issue_key` in `tests/fixtures/qa_environment.yaml`
 
 ## 10. Confluence
 
 - [ ] Create the QA space
   - [ ] Key exactly `PFQA`
-- [ ] Add the fixture as a `confluence.spaces` grant with `read: true`:
+- [ ] Add the grant:
       ```yaml
       auto_accept_grants:
         confluence:
@@ -547,92 +432,51 @@ also means the *success* path never gets exercised unless you seed some data:
               name: "PrivacyFence QA"
               read: true
       ```
-  - Note: equivalently, from the menu bar — **Auto-accept Rules → Confluence → Trusted Spaces → +
-    Add space…** (live picker by space name), then check **Read auto-accept**. The older,
-    still-supported form is a raw `approved_space_keys` rule under `auto_accept_rules`.
-- [ ] Confirm at least one other real Confluence space exists in your site to serve as the contrast
-      case — the test prompt picks whichever space isn't `PFQA` at runtime; create one throwaway
-      second space only if `PFQA` would otherwise be the only one in your site
+- [ ] Confirm at least one other real Confluence space exists as the contrast case — create a
+      throwaway second one only if `PFQA` would otherwise be the only space in your site
 - [ ] Confirm `i_am_author` needs no setup — any page you create in `PFQA` satisfies it
       automatically
 - [ ] Confirm the daemon build under test has the Confluence v1→v2 API migration (commit `34e7108`
-      in this repo) — `confluence_get_page`/`create_page`/`update_page` return 410 without it; this
-      is unrelated to this environment setup, but worth ruling out first
-- [ ] **For `scripts/qa_fixture_recorder.py`** (the local fixture recorder — see
-      [`external-api-contract-testing.md`](external-api-contract-testing.md)), as opposed to the
-      manual `connector-qa-testing.md` process above: create one dedicated seed page in `PFQA`,
-      with synthetic content, tagged so the recorder can find it and confirm it's the right one
-      before recording anything from it:
+      in this repo) — `confluence_get_page`/`create_page`/`update_page` return 410 without it
+- [ ] For the recorder: create one dedicated seed page in `PFQA`:
       ```
       Title: PrivacyFence QA seed page [QATEST]
       Body:  Synthetic PrivacyFence QA test page. No real information. Safe to read, comment on,
              or edit by any automated test.
       ```
-  - [ ] Fill in its page ID (or leave blank to resolve by title — one extra API call per run)
-        under `confluence.seed_page_id` in `tests/fixtures/qa_environment.yaml`
-  - Note: this is a narrower requirement than the steps above — the recorder only ever reads this
-    one page, by ID/title and the `[QATEST]` tag, never "any page in `PFQA`" — see
-    `external-api-contract-testing.md`'s "Guardrail against recording the wrong thing" for why.
-    Every connector has recorder support today (`scripts/qa_fixture_recorder.py`'s
-    `CONNECTOR_CHECKS`) — this section is the pattern every one of them follows.
+  - [ ] Fill in its page ID (or leave blank to resolve by title) under `confluence.seed_page_id` in
+        `tests/fixtures/qa_environment.yaml`
+
+Every connector above has recorder support (`scripts/qa_fixture_recorder.py`'s `CONNECTOR_CHECKS`).
 
 ## 11. PII Detection Gate
 
-- [ ] Confirm **PII Detection Gate** is enabled in the PrivacyFence menu bar (default on —
-      equivalently, `pii_detection.enabled` is `true` or absent in `settings.yaml`)
+- [ ] Confirm **PII Detection Gate** is enabled in the menu bar (default on — equivalently,
+      `pii_detection.enabled` is `true` or absent in `settings.yaml`)
 
-> **Note** — no fixture to create here. This is the one part of the QA test that's genuinely
-> self-contained: the dedicated check in `connector-qa-testing.md` (Phase 2, steps 17–20) creates
-> its own throwaway Drive subfolder and Google Doc seeded with synthetic, obviously-fake PII, writes
-> it, reads it back, and tears both down in Phase 11 — nothing here to provision ahead of time.
->
-> The gate only ever runs on the `review` (read) direction, never on `popup` (write) — see the
-> Technical Reference's "PII detection gate" section — so the write (step 18) and read (step 19)
-> are expected to produce *different* results even with the same synthetic-PII body: the write
-> always stays plain, the read gets flagged (when the gate is enabled).
->
-> If you've turned the gate off, step 19 now also produces the *disabled* result (no tint, no
-> second confirmation, `pii_detected: false`) — the same result step 18 always produces regardless
-> of the toggle, since writes are never scanned in either state. Expected for the disabled case, not
-> a failure — but the test prompt needs to know which state it's in rather than assume enabled.
->
-> The check deliberately writes to a **subfolder** of the Drive QA Sandbox folder, not the Sandbox
-> folder's own top level: the `drive.folders` grant (or the legacy `approved_folder` rule) from §2
-> matches a file's *immediate* parent folder ID only, not folders nested inside it, so the read step
-> is guaranteed to hit the normal `review` gate (and the PII gate on top of it) instead of being
-> silently auto-accepted.
->
-> A second, related check (`connector-qa-testing.md` steps 21–23) proves the stronger claim that PII
-> detection *overrides* a matching auto-accept rule, rather than just running independently of one —
-> it writes the same synthetic PII directly into `drive_qa_folder_id` itself, the folder §2's
-> grant/rule *does* cover. This one only exercises the override if you actually configured
-> `drive.folders` (or the legacy rule); without either, there's no rule in play to override, and the
-> test prompt says so plainly rather than claim the override was proven. The write step there (step
-> 21) again stays plain regardless — only the read (step 22) can exercise the override, since only
-> reads are ever scanned.
+No fixture to create here — `connector-qa-testing.md`'s Phase 2 (steps 17–20) creates and tears down
+its own throwaway Drive subfolder and Doc seeded with synthetic PII. The gate only ever runs on the
+`review` (read) direction, never `popup` (write) — see
+[TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md#pii-detection-gate) — so a write always stays plain
+while the matching read gets flagged, when the gate is enabled. If you've turned it off, the read
+also stays plain (no tint, `pii_detected: false`), which is the expected disabled-state result, not
+a failure.
 
 ## 12. Scheduled / unattended Cowork tasks
 
-- [ ] Confirm no new fixture is needed — Phase 11 of `connector-qa-testing.md` reuses the Slack
-      channels from §3 (an approved one, a control one)
-- [ ] Know how to restart your daemon (`privacyfence-app`, or `scripts/dev_start.sh` if running
-      from source — see [`dev-vs-live-setup.md`](dev-vs-live-setup.md))
-  - Note: `unattended_sessions.enabled` in `settings.yaml` is off by default and toggled (with a
-    daemon restart) as part of the phase itself, not something to pre-configure here. Unlike
-    `pii_detection.enabled`, it has no menu-bar toggle and isn't hot-reloaded — the phase requires
-    an actual restart partway through, twice. See
-    [`TECHNICAL_REFERENCE.md`](TECHNICAL_REFERENCE.md#scheduled--unattended-cowork-tasks) for what
-    this mode does and why.
+- [ ] No new fixture — `connector-qa-testing.md`'s Phase 11 reuses the Slack channels from §3
+- [ ] Know how to restart your daemon (`privacyfence-app`, or `scripts/dev_start.sh` from source —
+      see [`dev-vs-live-setup.md`](dev-vs-live-setup.md)): `unattended_sessions.enabled` in
+      `settings.yaml` is off by default, has no menu-bar toggle, and isn't hot-reloaded — Phase 11
+      toggles it and restarts the daemon twice as part of the phase itself. See
+      [TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md#scheduled--unattended-cowork-tasks).
 
 ---
 
 ## Consolidated `auto_accept_grants` / `auto_accept_rules` blocks
 
-- [ ] Merge both into `settings.yaml` (they're separate top-level keys, both shown here), replacing
-      every `<placeholder>` with your actual value. Most per-connector fixtures are grant-managed
-      as of [Auto-accept grants](TECHNICAL_REFERENCE.md#auto-accept-grants) — the four that aren't
-      (sender-domain trust, calendar organizer, contact-edit scope, Salesforce object type) stay
-      under `auto_accept_rules`, same as before:
+- [ ] Merge both into `settings.yaml` (separate top-level keys, both shown here), replacing every
+      `<placeholder>` with your actual value:
       ```yaml
       auto_accept_grants:
         drive:
@@ -648,6 +492,12 @@ also means the *success* path never gets exercised unless you seed some data:
           chats:
             - id: "<chat_id>"
               read: true
+        calendar:
+          calendars:
+            - id: "primary"
+              name: "My calendar"
+              read: true
+              write: true
         salesforce:
           reports:
             - id: "<PrivacyFence QA Report id>"
@@ -682,36 +532,23 @@ also means the *success* path never gets exercised unless you seed some data:
           - rule: approved_object_types
             value: [Account]
       ```
-- [ ] Restart the daemon after editing this file by hand (or use the "Accept All" popup once, which
-      hot-reloads rules for you via `reload_rules()`)
+- [ ] Restart the daemon after editing by hand (or use "Accept All" once, which hot-reloads rules)
 
-> **Note** — the menu bar builds/edits exactly this `auto_accept_grants` shape from **Auto-accept
-> Rules → \<Connector\> → Trusted \<Resource\>** — editing it by hand here and editing it from the
-> menu are equivalent; use whichever's more convenient per fixture.
->
-> `sheets.read_values` → `approved_spreadsheet` (also grant-managed, under `drive.spreadsheets`)
-> isn't included here because it gets created automatically the first time you click **"Accept
-> All"** on a `drive_sheets_get_values` call during a test run — nothing to pre-configure.
->
-> `sheets.rename_sheet` / `sheets.format_range` / `sheets.insert_dimensions` /
-> `sheets.delete_dimensions` / `docs.edit_content` / `docs.format_content` → `approved_sandbox_folder`
-> (§2) — also grant-managed as part of `drive.sandbox_folders`'s `write` capability, same as
-> `drive.write_file`/`drive.write_doc`/`sheets.write_range`/`sheets.add_sheet` — is deliberately
-> left out of this block's `drive.sandbox_folders` entry, since enabling `write` there would make
-> Phase 2 silently auto-accept all ten of these operations at once instead of exercising their
-> popup / "Accept for 5 min" flow. `calendar.read_event_details`/`calendar.set_visibility` →
-> `non_private_event` (§4) and `salesforce.search` → `approved_object_types` (§8) are left out for
-> the same reason (each has no grant form). Add whichever of these you specifically want Phase 2 to
-> exercise as silent auto-accept instead, individually.
+`sheets.read_values` → `approved_spreadsheet` (grant-managed under `drive.spreadsheets`) isn't
+included above — it's created automatically the first time you click "Accept All" on a
+`drive_sheets_get_values` call. `sheets.rename_sheet`/`format_range`/`insert_dimensions`/
+`delete_dimensions` and `docs.edit_content`/`format_content` → `approved_sandbox_folder` (§2),
+`calendar.calendars`'s `write` capability (§4), and `salesforce.search` → `approved_object_types`
+(§8) are also left out of this block by default, since enabling them would make Phase 2/4/8 silently
+auto-accept operations meant to exercise the popup flow — add whichever you specifically want
+auto-accepted, individually.
 
 ---
 
 ## Fixture reference
 
-What [`connector-qa-testing.md`](connector-qa-testing.md)'s Phase 0 looks up, and how it finds each
-one. Use this table to sanity-check your setup before a run, or to debug a fixture Phase 0 reports
-as missing. For the Telegram and Tasks rows, `scripts/qa_list_ids.py` prints the same IDs Phase 0
-would find, headlessly, without needing a live Claude session first.
+What `connector-qa-testing.md`'s Phase 0 looks up, and how it finds each one. For the Telegram and
+Tasks rows, `scripts/qa_list_ids.py` prints the same IDs headlessly, without a live Claude session.
 
 | Fixture | How it's found | Source |
 |---|---|---|
@@ -719,44 +556,39 @@ would find, headlessly, without needing a live Claude session first.
 | Gmail recorder seed message | `gmail.seed_message_id`, required (no resolve fallback) | `tests/fixtures/qa_environment.yaml` |
 | Drive QA folder | Exact name `PrivacyFence QA Sandbox` | `drive_list_files` |
 | Drive recorder target | Same QA Sandbox folder, by exact name or `drive.folder_id` | `tests/fixtures/qa_environment.yaml` |
-| Slack approved channel | `auto_accept_grants.slack.channels` (`read: true`), or the legacy `slack.read_messages` → `approved_channel` rule | `settings.yaml` |
+| Slack approved channel | `auto_accept_grants.slack.channels` (`read: true`), or legacy `approved_channel` | `settings.yaml` |
 | Slack control channel | Exact name `privacyfence-qa-control` | `slack_list_channels` |
 | Slack recorder seed thread | Same control-channel thread, tag `[QATEST]` (or `slack.channel_id`/`slack.seed_thread_ts`) | `tests/fixtures/qa_environment.yaml` |
 | Telegram Saved Messages | `is_self: true` flag | `telegram_list_chats` |
-| Telegram approved chat | `auto_accept_grants.telegram.chats` (`read: true`), or the legacy `telegram.read_chat_messages` → `approved_chats` rule (falls back to Saved Messages) | `settings.yaml` |
+| Telegram approved chat | `auto_accept_grants.telegram.chats` (`read: true`), or legacy `approved_chats` (falls back to Saved Messages) | `settings.yaml` |
 | Telegram control chat | Any chat that isn't the above two | `telegram_list_chats` |
 | Telegram recorder seed message | Same Saved Messages `[QATEST]` message (or `telegram.chat_id`) | `tests/fixtures/qa_environment.yaml` |
-| Salesforce QA report | `auto_accept_grants.salesforce.reports` (`run: true`), or the legacy `salesforce.run_report` → `approved_report_ids` rule (falls back to exact name `PrivacyFence QA Report`) | `settings.yaml` / `salesforce_list_reports` |
+| Calendar trusted calendar | `auto_accept_grants.calendar.calendars` (`read`/`write`) — optional, see §4 | `settings.yaml` |
+| Calendar recorder seed event | Title tag `[QATEST]` (or `calendar.seed_event_id`) | `tests/fixtures/qa_environment.yaml` |
+| Salesforce QA report | `auto_accept_grants.salesforce.reports` (`run: true`), or legacy `approved_report_ids` (falls back to exact name `PrivacyFence QA Report`) | `settings.yaml` / `salesforce_list_reports` |
 | Salesforce QA object type | `salesforce.read_record` → `approved_object_types` (falls back to `Account`) | `settings.yaml` |
-| Salesforce recorder seed record | Name tag `[QATEST]`, same record as the seeded Account (only used by `scripts/qa_fixture_recorder.py`) | `tests/fixtures/qa_environment.yaml` |
+| Salesforce recorder seed record | Name tag `[QATEST]`, same record as the seeded Account | `tests/fixtures/qa_environment.yaml` |
 | Jira QA project | Literal key `PFQA` | — |
 | Jira contrast project | Any project key that isn't `PFQA` | `jira_list_projects` |
-| Jira recorder seed issue | Summary tag `[QATEST]` in `PFQA` (only used by `scripts/qa_fixture_recorder.py`) | `tests/fixtures/qa_environment.yaml` |
+| Jira recorder seed issue | Summary tag `[QATEST]` in `PFQA` | `tests/fixtures/qa_environment.yaml` |
 | Confluence QA space | Literal key `PFQA` | — |
 | Confluence contrast space | Any space key that isn't `PFQA` | `confluence_list_spaces` |
-| Confluence recorder seed page | Title tag `[QATEST]` in `PFQA` (only used by `scripts/qa_fixture_recorder.py`) | `tests/fixtures/qa_environment.yaml` |
-| Tasks approved list | `auto_accept_grants.tasks.task_lists` (`edit: true`), or the legacy `tasks.update_task` → `approved_task_list` rule (falls back to the default list) | `settings.yaml` / `tasks_list_task_lists` |
+| Confluence recorder seed page | Title tag `[QATEST]` in `PFQA` | `tests/fixtures/qa_environment.yaml` |
+| Tasks approved list | `auto_accept_grants.tasks.task_lists` (`edit: true`), or legacy `approved_task_list` (falls back to the default list) | `settings.yaml` / `tasks_list_task_lists` |
 | Tasks contrast list | Exact name `PrivacyFence QA Contrast List` | `tasks_list_task_lists` |
-| Tasks recorder seed task | `tasks.task_list_id` + `tasks.seed_task_id`, both required (no resolve fallback) | `tests/fixtures/qa_environment.yaml` |
-| Calendar recorder seed event | Title tag `[QATEST]` (or `calendar.seed_event_id`) | `tests/fixtures/qa_environment.yaml` |
+| Tasks recorder seed task | `tasks.task_list_id` + `tasks.seed_task_id`, both required | `tests/fixtures/qa_environment.yaml` |
 | Contacts recorder seed contact | Display name tag `[QATEST]` (or `contacts.seed_contact_resource_name`) — fixture is **not** redacted, see §5 | `tests/fixtures/qa_environment.yaml` |
 
 ---
 
 ## Idempotency: environment fixtures vs. per-run artifacts
 
-Two different lifetimes are at play:
-
 - **Environment fixtures** (this doc): the `PFQA` Jira project/Confluence space, the Drive Sandbox
   folder, the Slack channels, the Telegram chats, the Salesforce sample records/report. Created
-  **once** by working through this guide; re-discovered by every subsequent test run, never
-  recreated and never pasted in by hand.
-- **Per-run artifacts** (the test prompt itself): drafts, events, one-off issues/pages/files. These
-  carry a run-scoped identifier so repeated runs don't produce indistinguishable duplicates — see
-  [`connector-qa-testing.md`](connector-qa-testing.md), which stamps every title with a timestamp
-  and ends with a teardown phase.
+  **once**; re-discovered by every subsequent run, never recreated or pasted in by hand.
+- **Per-run artifacts** (`connector-qa-testing.md`'s test prompt): drafts, events, one-off
+  issues/pages/files. Carry a run-scoped identifier so repeated runs don't produce indistinguishable
+  duplicates, and get cleaned up by that doc's teardown phase.
 
 If you deliberately skip a fixture (e.g. no Workspace admin access for Calendar rooms), that's a
-permanent, known gap — the test prompt already treats it as expected rather than re-discovering and
-re-reporting it every run, as long as you leave the corresponding config/rule unset rather than
-half-configuring it.
+permanent, known gap — leave the corresponding config/rule unset rather than half-configuring it.

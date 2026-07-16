@@ -12,20 +12,14 @@ substitute `~/.privacyfence/config/settings.yaml` and
 
 PrivacyFence's real attack surface is the interaction between ten connectors,
 three gate types (`auto` / `review` / `popup`), a growing set of auto-accept
-rules, and the PII detection gate layered on top of the `review` (read)
-dialog specifically — none of which unit tests exercise end to end, since
-they mock the gate itself.
-The fastest way to catch drift between what the code does and what a user
-actually experiences is to drive every tool through a live Claude
-Cowork/Desktop session connected to the real `privacyfence` daemon, against
-real accounts, and watch what actually prompts.
-
-This method found four real bugs and two stale-documentation sections in a
-single pass (see [Example findings](#example-findings-from-the-2026-07-run)
-below) that no unit test had caught, because unit tests mock `GmailClient`,
-`ConfluenceClient`, etc. — they can't detect that a connector is calling a
-REST endpoint the provider removed, or that a specific header-encoding
-combination only breaks for non-ASCII input.
+rules, and the PII detection gate on top of the `review` (read) dialog — none
+of which unit tests exercise end to end, since they mock the gate itself and
+each connector's client. The fastest way to catch drift between what the code
+does and what a user actually experiences is to drive every tool through a
+live Claude Cowork/Desktop session connected to the real `privacyfence`
+daemon, against real accounts, and watch what actually prompts — see
+[Example findings](#example-findings-from-the-2026-07-run) for what this
+method has already caught that no unit test did.
 
 ## When to use this
 
@@ -55,22 +49,16 @@ combination only breaks for non-ASCII input.
   before you start by asking Claude to read `config/settings.yaml` — if it
   can't find the file, fix the project folder before pasting the prompt
   below.
-- No filesystem access to the audit log is needed during the run itself — a
-  live mid-run read from a Cowork/Desktop session isn't reliable (recently
-  written entries can appear to lag or go missing depending on how the
-  session reaches the file), so the prompt below no longer has Claude read
-  `logs/audit/<current-ISO-week>.jsonl` as it goes, even with the project
-  folder set correctly. Instead, the very last phase asks you to **attach
-  that file to the conversation** — `logs/audit/` in the repo root per the
-  assumption at the top of this doc, or `~/.privacyfence/audit/` if you're
-  testing a bundled/DMG install instead — and Claude reconciles every call
-  against that attached copy in one pass at the end, instead of piecemeal
-  during the run. This is a test environment against your own accounts, so
-  there's no confidentiality reason to keep the log human-only. Claude still
-  can't observe the popup UI directly (it only sees whether the tool call
-  ultimately succeeded or errored) — the audit log's `decision` field is what
-  closes that gap, since it records `accepted` / `denied` / `auto_accepted`
-  regardless of whether Claude witnessed the click.
+- No filesystem access to the audit log is needed during the run — a live
+  mid-run read isn't reliable (recently written entries can lag or go
+  missing depending on how the session reaches the file). Instead the last
+  phase has you **attach that file to the conversation** —
+  `logs/audit/<current-ISO-week>.jsonl` in the repo root, or
+  `~/.privacyfence/audit/` for a bundled/DMG install — and Claude reconciles
+  every call against it in one pass at the end. Claude can't observe the
+  popup UI directly (it only sees whether the tool call succeeded or
+  errored); the audit log's `decision` field (`accepted`/`denied`/
+  `auto_accepted`) is what closes that gap.
 - **The environment fixtures from [`qa-environment-setup.md`](qa-environment-setup.md)
   already exist**: a `PFQA` Jira project, a `PFQA` Confluence space, a Drive
   "PrivacyFence QA Sandbox" folder, a second (non-approved) Slack channel with
@@ -424,7 +412,7 @@ in step 3, if you configured it.
 15. `drive_sheets_rename_sheet` — rename `Extra` to `TO BE DELETED - Extra`.
     Same as step 14: no temp-accept shortcut here either. If you configured
     the **optional** `sheets.rename_sheet` → `approved_sandbox_folder`
-    fixture (`qa-environment-setup.md` §2 step 5) matching the QA Sandbox
+    fixture (`qa-environment-setup.md` §2 step 6) matching the QA Sandbox
     folder, this should NOT prompt — tell me either way. If you didn't
     configure it (the default), expect the normal popup, Accept.
 16. `drive_sheets_format_range` — bold `A1:B2`. If you configured the
