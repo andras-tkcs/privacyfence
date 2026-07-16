@@ -137,6 +137,11 @@ async def gated_call(
     preview: dict | None = None,  # fields shown in the review-gate dialog
     details_text: str = "",       # full text shown inline or via TextEdit
     pii_scan_text: str | None = None,  # content-only text for the PII scan; defaults to details_text
+    visibility: dict[str, str] | None = None,  # {label: "allow"|"redact"|"block"} -- the review
+        # gate's "AI will receive" checklist, from privacy_filter.category_policy(). Read-only
+        # (gate="review") calls only: a popup-gate write already shows exactly what's being sent,
+        # since the human is looking at content Claude itself just drafted, not something read
+        # from an external source and potentially filtered on the way in.
     my_email: str = "",
     session_created_ids: set | None = None,
     args: dict | None = None,
@@ -217,7 +222,8 @@ async def gated_call(
                     _deny_unattended(audit, connector, tool, pii_categories=pii_categories)
 
                 decision = await asyncio.to_thread(
-                    show_read_popup, popup_title, preview or {}, details, suggestion is not None, pii_categories
+                    show_read_popup, popup_title, preview or {}, details, suggestion is not None,
+                    pii_categories, visibility,
                 )
 
                 if decision in ("accept", "accept_all") and pii_categories:

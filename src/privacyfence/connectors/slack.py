@@ -10,7 +10,7 @@ from typing import Any
 from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
 from ..gate import gated_call
-from ..privacy_filter import apply_list, apply_text
+from ..privacy_filter import apply_list, apply_text, category_policy
 from ..slack_client import SlackClient, SlackClientError
 
 logger = logging.getLogger(__name__)
@@ -182,6 +182,10 @@ class SlackConnector(Connector):
             preview=preview,
             details_text=details,
             pii_scan_text="\n".join(d["text"] or "" for d in filtered),
+            visibility={
+                "Message text": category_policy("slack_privacy", "message_content"),
+                "Usernames": category_policy("slack_privacy", "user_identity"),
+            },
             my_email=self.my_email,
             args={"channel_id": channel_id},
         )
@@ -214,6 +218,10 @@ class SlackConnector(Connector):
             preview=preview,
             details_text=details,
             pii_scan_text="\n".join(d["text"] or "" for d in filtered),
+            visibility={
+                "Reply text": category_policy("slack_privacy", "thread_content"),
+                "Usernames": category_policy("slack_privacy", "user_identity"),
+            },
             my_email=self.my_email,
             args={"channel_id": channel_id, "thread_ts": thread_ts},
         )
@@ -243,6 +251,10 @@ class SlackConnector(Connector):
             preview=preview,
             details_text=details,
             pii_scan_text="\n".join(d["text"] or "" for d in filtered),
+            visibility={
+                "Message text": category_policy("slack_privacy", "message_content"),
+                "Usernames": category_policy("slack_privacy", "user_identity"),
+            },
             my_email=self.my_email,
             args={"query": query},
         )

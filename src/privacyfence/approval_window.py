@@ -1,11 +1,20 @@
 """Native macOS approval window (AppKit / PyObjC).
 
 Renders the single blocking approval dialog every gated call resolves
-through: a fence-shield icon top right, a bold title, a summary box with the
-item's key fields (when the caller has them), and a scrollable pane for full
-content. This replaces the AppleScript `display dialog` popups that used to
+through: a fence-shield icon top right, a bold title, and — in this order,
+per docs/security-review-ui-redesign.md §5 — a summary box with the item's
+key fields (WHAT), an "AI will receive" checklist (AI VISIBILITY, read-gate
+calls only), a PII warning banner when applicable (RISK), and a scrollable
+pane for full content with a reading-time estimate (PREVIEW), before the
+buttons. This replaces the AppleScript `display dialog` popups that used to
 live in approval_popup.py — those had no room for a real layout, an icon, or
 a genuinely scrollable body.
+
+The "AI will receive" checklist renders privacy_filter.category_policy()'s
+resolved allow/redact/block per category — ground truth PrivacyFence already
+computed before the popup was built, not a new claim invented for display.
+Never present for a write (show_popup never sets self.visibility; see its
+docstring for why).
 
 When gate.py's PII detector (pii_detector.py) flags categories in the
 content of a read (review-gate) popup, the window renders a light-red wash
@@ -14,6 +23,12 @@ visual cue that a second, explicit "Are you sure?" confirmation (approval_
 popup.show_pii_confirmation_popup) is coming after Accept, not a decision by
 itself. Write (popup-gate) approvals never carry pii_categories, so this
 never renders for them.
+
+Accept has no "\\r" keyEquivalent and the details pane is the panel's
+initial first responder — hitting Enter the moment the window appears
+cannot approve a request nobody has actually read yet. Deny keeps Escape:
+declining via a reflexive keypress is the safe direction, not a risk the
+way an accidental approve would be.
 
 AppKit windows must be created and driven on the main thread, but gate.py
 calls in here from the IPC server thread (via asyncio.to_thread). show_native_
@@ -84,7 +99,29 @@ _PII_RED = NSColor.systemRedColor()
 _PII_BACKGROUND_ALPHA = 0.10
 _PII_BANNER_FILL_ALPHA = 0.16
 
+# "AI will receive" checklist symbols -- allow/redact/block from
+# privacy_filter.category_policy(). No per-row color coding (deliberately):
+# the symbol alone is legible without relying on systemGreen/systemRed's
+# exact resolved appearance across light/dark/accessibility settings, which
+# the PII banner above already uses its alpha-based (not RGB-based) test
+# assertions to sidestep for the same reason.
+_VISIBILITY_SYMBOL = {"allow": "✓", "redact": "◐", "block": "✗"}  # ✓ ◐ ✗
+
 _popup_lock = threading.Lock()  # only one native window on screen at a time
+
+
+def _estimate_reading_seconds(text: str) -> int:
+    """~200 words/minute silent-reading estimate, floored at 1 second so an
+    empty/tiny body still renders a sane label rather than "~0 sec read"."""
+    words = len(text.split())
+    return max(1, round(words / 200 * 60))
+
+
+def _reading_time_label(text: str) -> str:
+    seconds = _estimate_reading_seconds(text)
+    if seconds < 60:
+        return f"~{seconds} sec read"
+    return f"~{round(seconds / 60)} min read"
 
 
 def _icon_path() -> str | None:
@@ -155,8 +192,10 @@ class ApprovalWindowController(NSObject):
         self.allow_accept_all = False
         self.allow_temp_accept = False
         self.pii_categories: list[str] = []
+        self.visibility: dict[str, str] = {}
         self.result = "deny"
         self.panel = None
+        self._details_text_view = None
         return self
 
     # ------------------------------------------------------------------ #
@@ -204,6 +243,50 @@ class ApprovalWindowController(NSObject):
         return box, box_h
 
     # ------------------------------------------------------------------ #
+    # "AI will receive" visibility checklist -- privacy_filter.py's
+    # category_policy() made visible, not a new promise: see
+    # docs/security-review-ui-redesign.md §4 and §7 Phase 1a. Read-gate
+    # calls only -- show_popup never sets self.visibility (see its
+    # docstring), so this section never renders for a write.
+    # ------------------------------------------------------------------ #
+
+    def _visibility_lines(self) -> list[str]:
+        return [
+            f"{_VISIBILITY_SYMBOL.get(policy, '?')} {label}"
+            for label, policy in self.visibility.items()
+        ]
+
+    def _visibility_height(self, width: float) -> float:
+        lines = self._visibility_lines()
+        if not lines:
+            return 0.0
+        value_width = width - 2 * _SUMMARY_PAD
+        font = NSFont.systemFontOfSize_(13)
+        rows_h = sum(max(16.0, _text_height(t, value_width, font)) for t in lines)
+        rows_h += max(0, len(lines) - 1) * _SUMMARY_ROW_GAP
+        return rows_h + 2 * _SUMMARY_PAD
+
+    def _build_visibility_overlay(self, y: float, width: float) -> tuple[NSView, float]:
+        """Same box+overlay construction as _build_summary_overlay, just a
+        single column of "symbol label" lines instead of label/value pairs
+        -- a checklist has no natural second column."""
+        lines = self._visibility_lines()
+        box_h = self._visibility_height(width)
+        value_width = width - 2 * _SUMMARY_PAD
+        font = NSFont.systemFontOfSize_(13)
+
+        box = _FlippedView.alloc().initWithFrame_(NSMakeRect(_MARGIN, y, width, box_h))
+        row_y = _SUMMARY_PAD
+        for text in lines:
+            h = max(16.0, _text_height(text, value_width, font))
+            label = _make_label(text, size=13)
+            label.setFrame_(NSMakeRect(_SUMMARY_PAD, row_y, value_width, h))
+            box.addSubview_(label)
+            row_y += h + _SUMMARY_ROW_GAP
+
+        return box, box_h
+
+    # ------------------------------------------------------------------ #
     # PII warning banner
     # ------------------------------------------------------------------ #
 
@@ -242,6 +325,10 @@ class ApprovalWindowController(NSObject):
         text_view.textContainer().setWidthTracksTextView_(True)
 
         scroll.setDocumentView_(text_view)
+        # Kept for build_panel() to set as the panel's initial first
+        # responder -- default focus lands on the content to read, not on
+        # Accept (§5.4, same reasoning as dropping Accept's "\r" above).
+        self._details_text_view = text_view
         return scroll
 
     # ------------------------------------------------------------------ #
@@ -260,7 +347,14 @@ class ApprovalWindowController(NSObject):
         if frame.size.width < min_width:
             btn.setFrameSize_((min_width, frame.size.height))
         if primary:
-            btn.setKeyEquivalent_("\r")
+            # Deliberately no "\r" keyEquivalent -- see
+            # docs/security-review-ui-redesign.md §5.4: hitting Enter
+            # shouldn't be able to approve a request the reviewer hasn't
+            # actually looked at yet. Accept still keeps its blue "this is
+            # the affirmative action" styling; only the Enter-key muscle
+            # memory is removed. Deny keeps Escape (danger branch below) --
+            # declining via a reflexive keypress is the safe direction, not
+            # a risk the way an accidental approve would be.
             if hasattr(btn, "setBezelColor_"):
                 btn.setBezelColor_(_BLUE)
                 btn.setContentTintColor_(NSColor.whiteColor())
@@ -275,15 +369,22 @@ class ApprovalWindowController(NSObject):
     # ------------------------------------------------------------------ #
 
     def _compute_layout(self, content_width: float) -> tuple[float, float]:
+        # Section order matches docs/security-review-ui-redesign.md §5:
+        # WHAT (summary/preview) -> AI VISIBILITY -> RISK (PII banner) ->
+        # PREVIEW (details) -> decision (buttons, laid out separately
+        # below). Must stay in lockstep with build_panel()'s real layout.
         y = 22.0
         y += _KICKER_HEIGHT + 4.0
         title_h = max(24.0, _text_height(self.title, content_width - _TITLE_RIGHT_RESERVE, NSFont.boldSystemFontOfSize_(21)))
         y += title_h + 18.0
-        if self.pii_categories:
-            y += self._pii_banner_height(content_width) + 18.0
         if self.preview:
             y += self._summary_height(content_width) + 18.0
-        y += 20.0  # "Message" label row
+        if self.visibility:
+            y += 20.0  # "AI will receive" label row
+            y += self._visibility_height(content_width) + 18.0
+        if self.pii_categories:
+            y += self._pii_banner_height(content_width) + 18.0
+        y += 20.0  # "Preview" label row
         y += _DETAILS_HEIGHT
         return y, title_h
 
@@ -360,6 +461,34 @@ class ApprovalWindowController(NSObject):
         content.addSubview_(title_field)
         y += title_h + 18.0
 
+        # WHAT: resources/summary box, first -- the data, not the decision,
+        # is the visual lead (docs/security-review-ui-redesign.md §5.1).
+        if self.preview:
+            box_h = self._summary_height(content_width)
+            bg = _background_box(NSMakeRect(_MARGIN, y, content_width, box_h))
+            content.addSubview_(bg)
+            overlay, _ = self._build_summary_overlay(y, content_width)
+            content.addSubview_(overlay)
+            y += box_h + 18.0
+
+        # AI VISIBILITY: the "AI will receive" checklist, from
+        # privacy_filter.category_policy() -- ground truth, not a promise
+        # (§4). Never present for a write (show_popup never sets it).
+        if self.visibility:
+            visibility_label = _make_label("AI will receive", size=12, color=NSColor.secondaryLabelColor())
+            visibility_label.setFrame_(NSMakeRect(_MARGIN, y, 200.0, 16.0))
+            content.addSubview_(visibility_label)
+            y += 20.0
+
+            box_h = self._visibility_height(content_width)
+            bg = _background_box(NSMakeRect(_MARGIN, y, content_width, box_h))
+            content.addSubview_(bg)
+            overlay, _ = self._build_visibility_overlay(y, content_width)
+            content.addSubview_(overlay)
+            y += box_h + 18.0
+
+        # RISK: the PII banner, relabeled in framing (not literal text) as
+        # the risk section per the design -- content unchanged from before.
         if self.pii_categories:
             banner_h = self._pii_banner_height(content_width)
             banner_bg = _background_box(
@@ -375,16 +504,13 @@ class ApprovalWindowController(NSObject):
             content.addSubview_(banner_label)
             y += banner_h + 18.0
 
-        if self.preview:
-            box_h = self._summary_height(content_width)
-            bg = _background_box(NSMakeRect(_MARGIN, y, content_width, box_h))
-            content.addSubview_(bg)
-            overlay, _ = self._build_summary_overlay(y, content_width)
-            content.addSubview_(overlay)
-            y += box_h + 18.0
-
-        details_label = _make_label("Message", size=12, color=NSColor.secondaryLabelColor())
-        details_label.setFrame_(NSMakeRect(_MARGIN, y, 200.0, 16.0))
+        # PREVIEW: full content, last section before the buttons -- with a
+        # reading-time estimate so opening it doesn't feel like an
+        # open-ended commitment (§5's "Inspect" framing).
+        details_label = _make_label(
+            f"Preview ({_reading_time_label(self.details_text)})", size=12, color=NSColor.secondaryLabelColor()
+        )
+        details_label.setFrame_(NSMakeRect(_MARGIN, y, content_width, 16.0))
         content.addSubview_(details_label)
         y += 20.0
 
@@ -417,6 +543,9 @@ class ApprovalWindowController(NSObject):
             right_x -= temp_accept_btn.frame().size.width + 8.0
             temp_accept_btn.setFrameOrigin_((right_x, button_y))
             content.addSubview_(temp_accept_btn)
+
+        if self._details_text_view is not None:
+            panel.setInitialFirstResponder_(self._details_text_view)
 
         return panel
 
@@ -464,6 +593,7 @@ def show_native_approval(
     allow_accept_all: bool,
     pii_categories: list[str] | None = None,
     allow_temp_accept: bool = False,
+    visibility: dict[str, str] | None = None,
 ) -> str:
     """Show the approval window and block until the user picks a button.
 
@@ -480,6 +610,7 @@ def show_native_approval(
         controller.allow_accept_all = allow_accept_all
         controller.allow_temp_accept = allow_temp_accept
         controller.pii_categories = pii_categories or []
+        controller.visibility = visibility or {}
 
         controller.performSelectorOnMainThread_withObject_waitUntilDone_(
             "runApproval:", None, True

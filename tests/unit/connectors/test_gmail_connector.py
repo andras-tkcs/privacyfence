@@ -340,6 +340,30 @@ class TestGmailPrivacyFilter:
 
         assert gated_call_spy[0]["details_text"] == "business as usual"
 
+    async def test_visibility_checklist_reflects_resolved_policy(self, gated_call_spy):
+        init_privacy_filter({"privacy": {"categories": {"body": "block", "attachments": "redact"}}})
+        connector, client = make_connector()
+        message = GmailMessage(id="m1", thread_id="t1", subject="s", sender="a@b.com", body_text="secret")
+        client.get_message.return_value = message
+
+        await connector.call("gmail_get_message", {"message_id": "m1"})
+
+        visibility = gated_call_spy[0]["visibility"]
+        assert visibility["Message body"] == "block"
+        assert visibility["Attachments"] == "redact"
+        assert visibility["Sender & metadata"] == "allow"  # unconfigured -> default_policy allow
+
+    async def test_thread_visibility_uses_thread_history_not_body(self, gated_call_spy):
+        connector, client = make_connector()
+        m1 = GmailMessage(id="m1", thread_id="t1", subject="s", sender="a@b.com", body_text="hi")
+        thread = GmailThread(id="t1", subject="s", messages=[m1])
+        client.get_thread.return_value = thread
+
+        await connector.call("gmail_get_thread", {"thread_id": "t1"})
+
+        assert "Thread messages" in gated_call_spy[0]["visibility"]
+        assert "Message body" not in gated_call_spy[0]["visibility"]
+
 
 class TestListMessageAttachments:
     """gmail_list_message_attachments is auto-approved (metadata only, no

@@ -12,7 +12,7 @@ from ..connector import Connector, ToolParam, ToolSpec
 from ..gate import gated_call
 from ..gmail_client import GmailClient, GmailClientError, resolve_attachment_destination
 from ..html_to_text import html_to_text
-from ..privacy_filter import apply_list, apply_text
+from ..privacy_filter import apply_list, apply_text, category_policy
 
 logger = logging.getLogger(__name__)
 
@@ -369,6 +369,11 @@ class GmailConnector(Connector):
             preview=preview,
             details_text=body or "(no body)",
             pii_scan_text=body,
+            visibility={
+                "Sender & metadata": category_policy("privacy", "metadata"),
+                "Message body": category_policy("privacy", "body"),
+                "Attachments": category_policy("privacy", "attachments"),
+            },
             my_email=self.my_email,
             args={"message_id": message_id},
         )
@@ -435,6 +440,11 @@ class GmailConnector(Connector):
             preview=preview,
             details_text=details,
             pii_scan_text="\n".join(bodies),
+            visibility={
+                "Sender & metadata": category_policy("privacy", "metadata"),
+                "Thread messages": category_policy("privacy", "thread_history"),
+                "Attachments": category_policy("privacy", "attachments"),
+            },
             my_email=self.my_email,
             args={"thread_id": thread_id},
         )

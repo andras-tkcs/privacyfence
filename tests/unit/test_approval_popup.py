@@ -196,6 +196,36 @@ class TestShowPopupAndShowReadPopup:
 
         assert captured["pii_categories"] is None
 
+    def test_show_read_popup_forwards_visibility(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(approval_popup, "show_native_approval", lambda **kw: captured.update(kw) or "deny")
+
+        approval_popup.show_read_popup(
+            "Title", {}, "details", allow_accept_all=False, visibility={"Body": "allow", "Attachments": "block"}
+        )
+
+        assert captured["visibility"] == {"Body": "allow", "Attachments": "block"}
+
+    def test_show_read_popup_defaults_visibility_to_none(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(approval_popup, "show_native_approval", lambda **kw: captured.update(kw) or "deny")
+
+        approval_popup.show_read_popup("Title", {}, "details", allow_accept_all=False)
+
+        assert captured["visibility"] is None
+
+    def test_show_popup_never_carries_visibility(self, monkeypatch):
+        # Write (popup-gate) approvals don't get the checklist -- see
+        # show_popup's docstring. Locking this in as an explicit test so a
+        # future refactor that accidentally threads visibility through here
+        # too gets caught, not just documented.
+        captured = {}
+        monkeypatch.setattr(approval_popup, "show_native_approval", lambda **kw: captured.update(kw) or "accept")
+
+        approval_popup.show_popup("Title", {"Field": "Value"}, "details")
+
+        assert "visibility" not in captured
+
 
 class TestShowPiiConfirmationPopup:
     def test_proceed_returns_true(self, monkeypatch):

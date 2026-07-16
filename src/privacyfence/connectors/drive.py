@@ -580,6 +580,10 @@ class DriveConnector(Connector):
             preview=preview,
             details_text=text[:2000],
             pii_scan_text=text[:2000],
+            visibility={
+                "File metadata": category_policy("drive_privacy", "file_metadata"),
+                "Document content": category_policy("drive_privacy", "file_content"),
+            },
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={"file_id": file_id},
@@ -605,6 +609,7 @@ class DriveConnector(Connector):
             preview=preview,
             details_text=rows_preview,
             pii_scan_text=rows_preview,
+            visibility={"Cell values": category_policy("drive_privacy", "file_content")},
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={"spreadsheet_id": spreadsheet_id, "range_a1": range_a1},

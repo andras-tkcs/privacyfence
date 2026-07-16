@@ -84,7 +84,11 @@ def show_popup(
     allow_temp_accept: bool = False,
 ) -> str:
     """Approval popup for write tools. No PII scan applies here -- see
-    gate.py's module docstring for why the PII gate is read-only.
+    gate.py's module docstring for why the PII gate is read-only. Same
+    reasoning is why this has no "AI will receive" visibility checklist
+    (show_read_popup does): a write already shows exactly what's being
+    sent, since it's content Claude itself drafted, not something read from
+    an external source and potentially filtered on the way in.
 
     Returns 'accept', 'deny', or 'accept_temp' (only offered when
     allow_temp_accept is True -- see gate.py's TEMP_ACCEPT_ELIGIBLE_OPERATIONS
@@ -106,17 +110,23 @@ def show_read_popup(
     details_text: str,
     allow_accept_all: bool,
     pii_categories: list[str] | None = None,
+    visibility: dict[str, str] | None = None,
 ) -> str:
     """Approval popup for read tools. Full content is always shown before the
     decision, in a scrollable pane — the user never has to click through to
     a second "show details" step.
+
+    ``visibility`` is the "AI will receive" checklist (label -> resolved
+    allow/redact/block policy from privacy_filter.category_policy()) --
+    write (popup-gate) approvals never carry this, see show_popup's
+    docstring for why.
 
     Returns 'accept', 'deny', or 'accept_all' (only offered when
     allow_accept_all is True).
     """
     return show_native_approval(
         title=title, preview=preview, details_text=details_text, allow_accept_all=allow_accept_all,
-        pii_categories=pii_categories,
+        pii_categories=pii_categories, visibility=visibility,
     )
 
 

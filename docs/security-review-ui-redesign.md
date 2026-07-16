@@ -300,16 +300,48 @@ Sensitivity: 🟠 Financial terms
 
 ## 7. Phased roadmap
 
-**Phase 1a — layout only, zero new data (lowest risk, ship first)**
+**Phase 1a — layout only, zero new data (lowest risk, ship first) — implemented, see status below**
 - Restructure `approval_window.py`'s section order to WHAT → AI VISIBILITY → RISK (existing PII
-  banner, relabeled) → PREVIEW → decision.
+  banner, relabeled) → PREVIEW → decision. **Done**: `_compute_layout`/`build_panel()` now build
+  in that order (summary box, then the new visibility checklist, then the PII banner, then
+  details); the "must mirror the real layout" invariant between the two is preserved.
 - Render `privacy.categories`/`drive_privacy.categories`/`slack_privacy.categories` state as the
-  "AI will receive" checklist — the policy object already exists at the point `gated_call` is
-  invoked; it just needs to be threaded into `preview` or a new `visibility` kwarg.
+  "AI will receive" checklist. **Done**: `gate.py`'s `gated_call()` gained a `visibility: dict[str,
+  str] | None` kwarg (read-gate calls only — a write already shows exactly what it's sending, see
+  `approval_popup.show_popup`'s docstring), threaded through `show_read_popup` →
+  `show_native_approval` → a new `_visibility_lines`/`_visibility_height`/
+  `_build_visibility_overlay` trio in `approval_window.py` (same box+overlay pattern as the
+  existing summary box, single-column since a checklist has no natural second column). Wired at
+  the call sites for every review-gated read tool in Gmail (`_get_message`, `_get_thread`), Drive
+  (`_get_file_content`, `_sheets_get_values`), and Slack (`_get_channel_history`,
+  `_get_thread_replies`, `_search_messages`) — the same three connectors and tools Phase 0 covers,
+  using `privacy_filter.category_policy()` directly rather than re-deriving policy state.
 - Rename buttons/labels per the concept ("Allow once" / "Allow for 5 min" / relabel Accept All).
-- Default keyboard focus to a non-destructive "Inspect/expand" affordance rather than Accept.
-- Add reading-time estimate from `details_text` length.
-- Gmail-specific layout for `gmail_get_message`/`gmail_get_thread`.
+  **Not done** — deferred, see status below.
+- Default keyboard focus to a non-destructive affordance rather than Accept. **Done, adapted**:
+  rather than a separate "Inspect" button (the popup already shows full content inline, with no
+  expand step to attach one to), `_build_button` no longer sets `"\r"` as Accept's key equivalent,
+  and the details pane's `NSTextView` is now the panel's initial first responder — Enter can no
+  longer approve a request nobody's looked at, and default focus visibly lands on the content.
+  Deny keeps Escape.
+- Add reading-time estimate from `details_text` length. **Done**: `_estimate_reading_seconds`/
+  `_reading_time_label` (~200 wpm, floored at 1 second), shown in the "Preview (~N sec/min read)"
+  label above the details pane.
+- Gmail-specific layout for `gmail_get_message`/`gmail_get_thread`. **Not done** — deferred to
+  Phase 3 (WKWebView), per this doc's own original reasoning: a bespoke Gmail-style NSView layout
+  in raw AppKit is exactly the kind of per-surface layout work the WKWebView migration exists to
+  avoid hand-building.
+
+**Phase 1a implementation status**: the data-flow and layout-reorder pieces (visibility checklist,
+section order, reading time, focus/Enter change) are implemented; button relabeling and the
+Gmail-specific layout are deliberately deferred (the former needs its own pass across
+`buttonClicked_`'s title-based dispatch and every test that references button titles by string;
+the latter is Phase 3's job). **Verification honesty note, same as Phase 0**: this repo's test
+suite requires macOS (PyObjC/AppKit) and could not be executed in this environment — every change
+here was checked by hand against `tests/unit/test_approval_window.py`'s existing assertions
+(including working out, line by line, that the `_compute_layout`/`build_panel()` height math still
+matches) and new tests were added following the same patterns, but none of it has run through a
+real `pytest` yet. That is the one remaining gate before this is trustworthy, not just plausible.
 
 **Phase 1b — mandatory `reason` parameter, on every tool including auto-gated (largest-footprint
 item in this whole plan — decided scope, see §10)**

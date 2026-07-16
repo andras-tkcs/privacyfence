@@ -48,6 +48,7 @@ def make_controller(
     allow_accept_all=False,
     allow_temp_accept=False,
     pii_categories=None,
+    visibility=None,
 ):
     c = ApprovalWindowController.alloc().init()
     c.title = title
@@ -56,6 +57,7 @@ def make_controller(
     c.allow_accept_all = allow_accept_all
     c.allow_temp_accept = allow_temp_accept
     c.pii_categories = pii_categories or []
+    c.visibility = visibility or {}
     return c
 
 
@@ -110,11 +112,23 @@ class TestButtonSet:
         titles = buttons_by_title(build_views(make_controller(allow_accept_all=True, allow_temp_accept=True)))
         assert {"Accept", "Deny", "Accept All", "Accept for 5 min"} <= titles.keys()
 
-    def test_accept_defaults_to_enter_and_deny_to_escape(self):
+    def test_accept_has_no_enter_shortcut_but_deny_keeps_escape(self):
+        # Changed deliberately (was "Accept defaults to Enter") -- see
+        # docs/security-review-ui-redesign.md §5.4 and the reasoning in
+        # _build_button: hitting Enter the instant the popup appears must
+        # not be able to approve a request nobody has read yet. Declining
+        # via Escape stays bound since that's the safe direction.
         views = build_views(make_controller())
         titles = buttons_by_title(views)
-        assert titles["Accept"].keyEquivalent() == "\r"
+        assert titles["Accept"].keyEquivalent() != "\r"
         assert titles["Deny"].keyEquivalent() == "\x1b"
+
+    def test_details_view_is_the_panel_initial_first_responder(self):
+        # Default focus lands on the content to read, not on a button --
+        # same reasoning as the Enter-shortcut removal above.
+        controller = make_controller()
+        panel = controller.build_panel()
+        assert panel.initialFirstResponder() is controller._details_text_view
 
 
 class TestPiiTintAndBanner:
@@ -195,6 +209,57 @@ class TestSummaryBox:
         assert "3" in text_field_values(views)
 
 
+class TestVisibilityChecklist:
+    """The "AI will receive" checklist -- privacy_filter.category_policy()
+    surfaced, not a new promise. See docs/security-review-ui-redesign.md §4."""
+
+    def test_no_visibility_renders_no_checklist_label(self):
+        views = build_views(make_controller(visibility={}))
+        values = text_field_values(views)
+        assert "AI will receive" not in values
+
+    def test_visibility_present_renders_the_checklist_label(self):
+        views = build_views(make_controller(visibility={"Body": "allow"}))
+        values = text_field_values(views)
+        assert "AI will receive" in values
+
+    def test_each_category_renders_with_its_policy_symbol(self):
+        views = build_views(make_controller(
+            visibility={"Body": "allow", "Attachments": "block", "Notes": "redact"}
+        ))
+        values = text_field_values(views)
+        assert "✓ Body" in values
+        assert "✗ Attachments" in values
+        assert "◐ Notes" in values
+
+    def test_write_style_popup_never_has_visibility(self):
+        # gate.py never populates visibility for a popup (write) gate in the
+        # first place (see approval_popup.show_popup's docstring) -- this
+        # locks in that the window itself renders nothing when it's empty,
+        # the same "no independent rediscovery logic" guarantee
+        # TestPiiTintAndBanner asserts for PII tinting.
+        views = build_views(make_controller(visibility={}))
+        values = text_field_values(views)
+        assert not any(v.startswith(("✓ ", "✗ ", "◐ ")) for v in values)
+
+
+class TestReadingTimeLabel:
+    def test_preview_label_includes_a_reading_time_estimate(self):
+        views = build_views(make_controller(details_text="word " * 400))  # ~2 min at 200wpm
+        values = text_field_values(views)
+        assert any(v.startswith("Preview (~") and "read" in v for v in values)
+
+    def test_short_text_uses_seconds_not_minutes(self):
+        views = build_views(make_controller(details_text="a short message"))
+        values = text_field_values(views)
+        assert any("sec read" in v for v in values if v.startswith("Preview"))
+
+    def test_long_text_uses_minutes(self):
+        views = build_views(make_controller(details_text="word " * 1000))  # ~5 min at 200wpm
+        values = text_field_values(views)
+        assert any("min read" in v for v in values if v.startswith("Preview"))
+
+
 class TestDetailsPane:
     def test_scroll_view_document_holds_the_full_details_text_verbatim(self):
         long_body = "line one\n" * 500 + "the last line, still present"
@@ -259,6 +324,11 @@ class TestComputeLayout:
         base = make_controller()._compute_layout(560.0)[0]
         with_preview = make_controller(preview={"from": "alice@example.com"})._compute_layout(560.0)[0]
         assert with_preview > base
+
+    def test_visibility_checklist_adds_height_relative_to_none(self):
+        base = make_controller()._compute_layout(560.0)[0]
+        with_visibility = make_controller(visibility={"Body": "allow"})._compute_layout(560.0)[0]
+        assert with_visibility > base
 
     def test_a_longer_wrapping_title_never_shrinks_the_computed_height(self):
         short = make_controller(title="Short")._compute_layout(560.0)[0]

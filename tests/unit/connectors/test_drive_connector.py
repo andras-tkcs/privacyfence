@@ -265,6 +265,28 @@ class TestDrivePrivacyFilter:
 
         assert gated_call_spy[0]["filtered_data"]["content"] == "business as usual"
 
+    async def test_visibility_checklist_reflects_resolved_policy(self, gated_call_spy):
+        init_privacy_filter({"drive_privacy": {"categories": {"file_content": "redact", "file_metadata": "allow"}}})
+        connector, client = make_connector()
+        content = DriveFileContent(file=make_file(), content_text="secret text")
+        client.get_file_content.return_value = content
+
+        await connector.call("drive_get_file_content", {"file_id": "f1"})
+
+        visibility = gated_call_spy[0]["visibility"]
+        assert visibility["Document content"] == "redact"
+        assert visibility["File metadata"] == "allow"
+
+    async def test_sheets_visibility_reflects_file_content_policy(self, gated_call_spy):
+        init_privacy_filter({"drive_privacy": {"categories": {"file_content": "block"}}})
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file(name="Budget.gsheet")
+        client.get_sheet_values.return_value = [["a", "b"]]
+
+        await connector.call("drive_sheets_get_values", {"spreadsheet_id": "f1", "range_a1": "A1:B1"})
+
+        assert gated_call_spy[0]["visibility"]["Cell values"] == "block"
+
 
 class TestDownloadFile:
     async def test_download_file_preview_and_args(self, gated_call_spy):

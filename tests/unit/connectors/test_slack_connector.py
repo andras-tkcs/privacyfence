@@ -229,6 +229,26 @@ class TestSlackPrivacyFilter:
 
         assert result[0]["text"] == "business as usual"
 
+    async def test_visibility_checklist_reflects_resolved_policy(self, gated_call_spy):
+        init_privacy_filter({"slack_privacy": {"categories": {"message_content": "block", "user_identity": "allow"}}})
+        connector, client = make_connector()
+        client.get_channel_history.return_value = [make_message(text="secret")]
+
+        await connector.call("slack_get_channel_history", {"channel_id": "C123"})
+
+        visibility = gated_call_spy[0]["visibility"]
+        assert visibility["Message text"] == "block"
+        assert visibility["Usernames"] == "allow"
+
+    async def test_thread_visibility_uses_thread_content_not_message_content(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_thread_replies.return_value = [make_message(text="reply")]
+
+        await connector.call("slack_get_thread_replies", {"channel_id": "C123", "thread_ts": "123.456"})
+
+        assert "Reply text" in gated_call_spy[0]["visibility"]
+        assert "Message text" not in gated_call_spy[0]["visibility"]
+
 
 class TestGetThreadReplies:
     async def test_reply_count_excludes_thread_starter(self, gated_call_spy):

@@ -180,7 +180,7 @@ class TestReviewGateDecisions:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: ("i_am_sender", None))
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None):
             captured["allow_accept_all"] = allow_accept_all
             return "deny"
 
@@ -196,7 +196,7 @@ class TestReviewGateDecisions:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None):
             captured["allow_accept_all"] = allow_accept_all
             return "deny"
 
@@ -501,7 +501,7 @@ class TestPIIGate:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None):
             captured["pii_categories"] = pii_categories
             return "deny"
 
@@ -517,7 +517,7 @@ class TestPIIGate:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None):
             captured["pii_categories"] = pii_categories
             return "deny"
 
@@ -687,7 +687,7 @@ class TestPiiScanText:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None):
             captured["pii_categories"] = pii_categories
             return "deny"
 
@@ -707,7 +707,7 @@ class TestPiiScanText:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None):
             captured["pii_categories"] = pii_categories
             return "deny"
 
@@ -727,7 +727,7 @@ class TestPiiScanText:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None):
             captured["pii_categories"] = pii_categories
             return "deny"
 
@@ -749,7 +749,7 @@ class TestPiiScanText:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None):
             captured["pii_categories"] = pii_categories
             return "deny"
 
@@ -769,7 +769,7 @@ class TestPopupSerialization:
         concurrent = 0
         max_concurrent = 0
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None):
             nonlocal concurrent, max_concurrent
             concurrent += 1
             max_concurrent = max(max_concurrent, concurrent)
@@ -820,7 +820,7 @@ class TestQueuedRequestReCheck:
 
         popup_calls = []
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None):
             popup_calls.append(title)
             return "accept_all"
 
