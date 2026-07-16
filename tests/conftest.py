@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from privacyfence import auto_accept, audit_log, pii_detector
+from privacyfence import auto_accept, audit_log, pii_detector, privacy_filter
 
 
 @pytest.fixture(autouse=True)
@@ -17,6 +17,7 @@ def _reset_singletons():
     audit_log._INSTANCE = None
     pii_detector._enabled = True
     pii_detector._changed_listener = None
+    privacy_filter._GROUPS = {}
     yield
     auto_accept._INSTANCE = None
     auto_accept._config_path = None
@@ -24,3 +25,4 @@ def _reset_singletons():
     audit_log._INSTANCE = None
     pii_detector._enabled = True
     pii_detector._changed_listener = None
+    privacy_filter._GROUPS = {}

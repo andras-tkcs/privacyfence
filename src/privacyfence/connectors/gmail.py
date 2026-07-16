@@ -12,6 +12,7 @@ from ..connector import Connector, ToolParam, ToolSpec
 from ..gate import gated_call
 from ..gmail_client import GmailClient, GmailClientError, resolve_attachment_destination
 from ..html_to_text import html_to_text
+from ..privacy_filter import apply_list, apply_text
 
 logger = logging.getLogger(__name__)
 
@@ -331,14 +332,31 @@ class GmailConnector(Connector):
 
     async def _get_message(self, message_id: str) -> Any:
         message = await self._fetch(self._gmail.get_message, message_id)
-        recipients = message.recipients if isinstance(message.recipients, str) else ", ".join(message.recipients or [])
+        recipients_raw = message.recipients if isinstance(message.recipients, str) else ", ".join(message.recipients or [])
+        sender = apply_text("privacy", "metadata", message.sender or "")
+        recipients = apply_text("privacy", "metadata", recipients_raw)
+        date = apply_text("privacy", "metadata", message.date or "")
+        subject = apply_text("privacy", "metadata", message.subject or "")
+        raw_body = message.body_text or html_to_text(message.body_html) or ""
+        body = apply_text("privacy", "body", raw_body)
+        attachments = apply_list("privacy", "attachments", message.attachments or [])
         preview = {
-            "From": message.sender or "(unknown)",
+            "From": sender or "(unknown)",
             "To": recipients or "(unknown)",
-            "Date": message.date or "(unknown)",
-            "Subject": message.subject or "(no subject)",
+            "Date": date or "(unknown)",
+            "Subject": subject or "(no subject)",
         }
-        body = message.body_text or html_to_text(message.body_html) or "(no body)"
+        filtered = {
+            "id": message.id,
+            "thread_id": message.thread_id,
+            "subject": subject,
+            "sender": sender,
+            "recipients": recipients,
+            "date": date,
+            "body_text": body,
+            "attachments": attachments,
+            "labels": message.labels,
+        }
         return await gated_call(
             connector=self.name,
             tool="gmail_get_message",
@@ -346,10 +364,10 @@ class GmailConnector(Connector):
             summary=f"Read email: {message.subject or '(no subject)'}",
             sender=message.sender or "",
             raw_data=message,
-            filtered_data=message.to_dict() if hasattr(message, "to_dict") else vars(message),
+            filtered_data=filtered,
             gate="review",
             preview=preview,
-            details_text=body,
+            details_text=body or "(no body)",
             pii_scan_text=body,
             my_email=self.my_email,
             args={"message_id": message_id},
@@ -365,32 +383,52 @@ class GmailConnector(Connector):
             if hasattr(m, "recipients"):
                 recips = m.recipients if isinstance(m.recipients, list) else [m.recipients]
                 all_participants.update(r for r in recips if r)
-        subject = (messages[0].subject if messages and hasattr(messages[0], "subject") else "") or thread_id
+        subject_raw = (messages[0].subject if messages and hasattr(messages[0], "subject") else "") or thread_id
+        subject = apply_text("privacy", "metadata", subject_raw)
+        participants = apply_text("privacy", "metadata", ", ".join(sorted(all_participants)))
         dates = [m.date for m in messages if hasattr(m, "date") and m.date]
-        date_range = f"{dates[0]} – {dates[-1]}" if len(dates) > 1 else (dates[0] if dates else "")
+        date_range_raw = f"{dates[0]} – {dates[-1]}" if len(dates) > 1 else (dates[0] if dates else "")
+        date_range = apply_text("privacy", "metadata", date_range_raw)
         preview = {
             "Subject": subject,
-            "Participants": ", ".join(sorted(all_participants)) or "(unknown)",
+            "Participants": participants or "(unknown)",
             "Messages": str(len(messages)),
             "Dates": date_range,
         }
         lines = []
         bodies = []
+        filtered_messages = []
         for i, m in enumerate(messages, 1):
+            sender = apply_text("privacy", "metadata", getattr(m, "sender", "") or "")
+            date = apply_text("privacy", "metadata", getattr(m, "date", "") or "")
+            raw_body = getattr(m, "body_text", "") or html_to_text(getattr(m, "body_html", "") or "") or ""
+            # This tool assembles multiple messages into one thread view --
+            # "thread_history" is its own documented category (settings.yaml.
+            # example), distinct from the single-message "body" category
+            # gmail_get_message uses.
+            body = apply_text("privacy", "thread_history", raw_body)
+            attachments = apply_list("privacy", "attachments", getattr(m, "attachments", None) or [])
             lines.append(f"--- Message {i} ---")
-            lines.append(f"From: {getattr(m, 'sender', '')}")
-            lines.append(f"Date: {getattr(m, 'date', '')}")
-            body = getattr(m, "body_text", "") or html_to_text(getattr(m, "body_html", "") or "") or ""
+            lines.append(f"From: {sender}")
+            lines.append(f"Date: {date}")
             lines.append(body)
             bodies.append(body)
+            filtered_messages.append({
+                "id": getattr(m, "id", ""),
+                "subject": apply_text("privacy", "metadata", getattr(m, "subject", "") or ""),
+                "sender": sender,
+                "date": date,
+                "body_text": body,
+                "attachments": attachments,
+            })
         details = "\n".join(lines)
-        filtered = thread.to_dict() if hasattr(thread, "to_dict") else vars(thread)
+        filtered = {"id": thread.id, "subject": subject, "messages": filtered_messages}
         return await gated_call(
             connector=self.name,
             tool="gmail_get_thread",
             tool_name="Read Email Thread",
-            summary=f"Read thread: {subject}",
-            sender=subject,
+            summary=f"Read thread: {subject_raw}",
+            sender=subject_raw,
             raw_data=thread,
             filtered_data=filtered,
             gate="review",

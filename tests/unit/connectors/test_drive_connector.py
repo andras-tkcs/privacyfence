@@ -21,6 +21,7 @@ from privacyfence.audit_log import current_week, init_audit_logger
 from privacyfence.connectors import drive as drive_module
 from privacyfence.connectors.drive import DriveConnector
 from privacyfence.drive_client import DriveClientError, DriveFile, DriveFileContent
+from privacyfence.privacy_filter import init_privacy_filter
 
 from ...helpers import assert_all_tools_leave_an_audit_trail
 
@@ -183,6 +184,86 @@ class TestGetFileContentBugFix:
         assert kwargs["pii_scan_text"] == "nothing sensitive"
         assert kwargs["preview"]["Owner"] == "alice@example.com"  # still shown in the popup
         assert "alice@example.com" not in kwargs["pii_scan_text"]
+
+
+class TestDrivePrivacyFilter:
+    """drive_privacy.categories, enforced -- see privacy_filter.py. Without
+    calling init_privacy_filter (every other test class here), every
+    category resolves to "allow" and behaves exactly as before this
+    existed; these tests are the ones that actually turn a policy on."""
+
+    async def test_file_content_blocked_replaces_details_and_filtered_data(self, gated_call_spy):
+        init_privacy_filter({"drive_privacy": {"categories": {"file_content": "block"}}})
+        connector, client = make_connector()
+        content = DriveFileContent(file=make_file(), content_text="the actual confidential text")
+        client.get_file_content.return_value = content
+
+        await connector.call("drive_get_file_content", {"file_id": "f1"})
+
+        kwargs = gated_call_spy[0]
+        assert "the actual confidential text" not in kwargs["details_text"]
+        assert kwargs["filtered_data"] == {"file_id": "f1", "content": "[BLOCKED BY PRIVACY FILTER]"}
+
+    async def test_file_metadata_blocked_replaces_preview_and_get_file_metadata_result(self, gated_call_spy, tmp_path):
+        init_audit_logger(str(tmp_path))
+        init_privacy_filter({"drive_privacy": {"categories": {"file_metadata": "block"}}})
+        connector, client = make_connector()
+        content = DriveFileContent(file=make_file(), content_text="fine to read")
+        client.get_file_content.return_value = content
+
+        await connector.call("drive_get_file_content", {"file_id": "f1"})
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview"]["File"] == "[BLOCKED BY PRIVACY FILTER]"
+        assert kwargs["filtered_data"]["content"] == "fine to read"  # file_content is a separate category
+
+        client.get_file_metadata.return_value = make_file()
+        result = await connector.call("drive_get_file_metadata", {"file_id": "f1"})
+        assert result == {"id": "f1"}
+
+    async def test_file_list_blocked_empties_auto_accepted_result(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        init_privacy_filter({"drive_privacy": {"categories": {"file_list": "block"}}})
+        connector, client = make_connector()
+        client.list_files.return_value = [make_file()]
+
+        result = await connector.call("drive_list_files", {"query": "report", "max_results": 5})
+
+        assert result == []
+
+    async def test_folder_structure_blocked_empties_auto_accepted_result(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        init_privacy_filter({"drive_privacy": {"categories": {"folder_structure": "block"}}})
+        connector, client = make_connector()
+        client.list_folder.return_value = [make_file()]
+
+        result = await connector.call("drive_list_folder", {"folder_id": "folder1"})
+
+        assert result == []
+
+    async def test_sheets_file_content_blocked_empties_values(self, gated_call_spy):
+        init_privacy_filter({"drive_privacy": {"categories": {"file_content": "block"}}})
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file(name="Budget.gsheet")
+        client.get_sheet_values.return_value = [["salary", "100000"]]
+
+        result = await connector.call(
+            "drive_sheets_get_values", {"spreadsheet_id": "f1", "range_a1": "A1:B1"}
+        )
+
+        assert result == []
+        assert "100000" not in gated_call_spy[0]["details_text"]
+
+    async def test_allow_is_the_default_when_unconfigured(self, gated_call_spy):
+        # No init_privacy_filter call in this test -- conftest's autouse
+        # reset leaves _GROUPS empty, which must resolve to "allow", not
+        # "block" -- this module must never fail closed on missing config.
+        connector, client = make_connector()
+        content = DriveFileContent(file=make_file(), content_text="business as usual")
+        client.get_file_content.return_value = content
+
+        await connector.call("drive_get_file_content", {"file_id": "f1"})
+
+        assert gated_call_spy[0]["filtered_data"]["content"] == "business as usual"
 
 
 class TestDownloadFile:

@@ -124,10 +124,17 @@ should not be read as PrivacyFence treating writes as safe.
 
 ## 5. Data handling
 
-- **Data minimization by default:** the default policy for undefined categories is `block` (see
-  `src/privacyfence/resources/settings.yaml.example`). Each connector's privacy filter narrows what the review UI
-  even shows before a human approves it — filtering is a floor under human review, not a
-  substitute for it.
+- **Data minimization by default:** for the three connectors with a documented category schema —
+  Gmail, Google Drive (including Sheets), and Slack (see
+  `src/privacyfence/resources/settings.yaml.example`'s `privacy`/`drive_privacy`/`slack_privacy`
+  sections, enforced by `src/privacyfence/privacy_filter.py`) — the default policy for undefined
+  categories is `block`, and each configured category narrows what the review UI even shows
+  before a human approves it: filtering is a floor under human review, not a substitute for it.
+  The remaining connectors (Calendar, Contacts, Salesforce, Jira, Confluence, Telegram, Tasks)
+  have no category-based privacy filter of their own; what they disclose is governed by the
+  review/popup gate (§4) and by what each connector's code structurally includes or omits (e.g.
+  attachment content is never carried in a read, by design — see
+  `coding-and-testing-guidelines.md` §1.3), not by a configurable category policy.
 - **No aggregation, no secondary use:** PrivacyFence does not copy data to any store beyond the
   local audit log entry needed to record the decision. It does not build profiles, does not train
   models, and has no mechanism to transmit mediated content anywhere other than back to the

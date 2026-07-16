@@ -12,6 +12,7 @@ from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
 from ..drive_client import DriveClient, DriveClientError, _parse_a1_range
 from ..gate import gated_call
+from ..privacy_filter import apply_list, apply_text, category_policy
 
 logger = logging.getLogger(__name__)
 
@@ -476,7 +477,8 @@ class DriveConnector(Connector):
         files = await self._fetch(self._drive.list_files, query, max_results)
         self._auto_audit("drive_list_files", "Search Drive Files",
                          f"List files: query={query!r}", f"{len(files)} result(s)", t0)
-        return files if isinstance(files, list) else (files.to_dict() if hasattr(files, "to_dict") else files)
+        result = files if isinstance(files, list) else (files.to_dict() if hasattr(files, "to_dict") else files)
+        return apply_list("drive_privacy", "file_list", result) if isinstance(result, list) else result
 
     async def _get_file_metadata(self, file_id: str) -> Any:
         t0 = time.time()
@@ -484,14 +486,20 @@ class DriveConnector(Connector):
         self._auto_audit("drive_get_file_metadata", "Get Drive File Info",
                          f"Get metadata: {getattr(drive_file, 'name', file_id)}",
                          ", ".join(getattr(drive_file, "owners", [])) or "(unknown)", t0)
-        return drive_file.to_dict() if hasattr(drive_file, "to_dict") else drive_file
+        # file_metadata has no single "the whole record" shape to redact --
+        # unlike apply_list's collection-of-records case, this is one
+        # record, so block collapses it to just the id (still needed to
+        # correlate the call), not an empty value.
+        if category_policy("drive_privacy", "file_metadata") == "allow":
+            return drive_file.to_dict() if hasattr(drive_file, "to_dict") else drive_file
+        return {"id": getattr(drive_file, "id", file_id)}
 
     async def _list_folder(self, folder_id: str, max_results: int = 50) -> Any:
         t0 = time.time()
         files = await self._fetch(self._drive.list_folder, folder_id, max_results)
         self._auto_audit("drive_list_folder", "List Drive Folder",
                          f"List folder: {folder_id}", f"{len(files)} item(s)", t0)
-        return files
+        return apply_list("drive_privacy", "folder_structure", files)
 
     async def _list_shared_drives(self, max_results: int = 50) -> Any:
         t0 = time.time()
@@ -544,17 +552,22 @@ class DriveConnector(Connector):
         size = getattr(drive_file, "size", "")
         modified = getattr(drive_file, "modified_time", "")
         content_bytes = getattr(content, "content_bytes", b"") or b""
-        text = getattr(content, "content_text", "") or (
+        raw_text = getattr(content, "content_text", "") or (
             f"[binary content — {len(content_bytes)} bytes; use drive_download_file to save it]"
             if content_bytes else "(no content)"
         )
+        text = apply_text("drive_privacy", "file_content", raw_text)
+        file_display = apply_text("drive_privacy", "file_metadata", name)
+        owner_display = apply_text("drive_privacy", "file_metadata", ", ".join(owners) if owners else "")
+        size_display = apply_text("drive_privacy", "file_metadata", str(size) if size else "")
+        modified_display = apply_text("drive_privacy", "file_metadata", str(modified) if modified else "")
         preview = {
-            "File": name,
-            "Owner": ", ".join(owners) if owners else "(unknown)",
-            "Size": str(size) if size else "(unknown)",
-            "Modified": str(modified) if modified else "(unknown)",
+            "File": file_display or "(unknown)",
+            "Owner": owner_display or "(unknown)",
+            "Size": size_display or "(unknown)",
+            "Modified": modified_display or "(unknown)",
         }
-        filtered = content.to_dict() if hasattr(content, "to_dict") else {"file_id": file_id, "content": text}
+        filtered = {"file_id": file_id, "content": text}
         return await gated_call(
             connector=self.name,
             tool="drive_get_file_content",
@@ -576,7 +589,8 @@ class DriveConnector(Connector):
         drive_file = await self._fetch(self._drive.get_file_metadata, spreadsheet_id)
         name = getattr(drive_file, "name", spreadsheet_id)
         owners = getattr(drive_file, "owners", [])
-        values = await self._fetch(self._drive.get_sheet_values, spreadsheet_id, range_a1)
+        raw_values = await self._fetch(self._drive.get_sheet_values, spreadsheet_id, range_a1)
+        values = apply_list("drive_privacy", "file_content", raw_values)
         preview = {"Spreadsheet": name, "Owner": ", ".join(owners) or "(unknown)", "Range": range_a1}
         rows_preview = _format_sheet_rows(values)
         return await gated_call(
@@ -585,7 +599,7 @@ class DriveConnector(Connector):
             tool_name="Read Sheet Values",
             summary=f"Read {range_a1} from \"{name}\"",
             sender=", ".join(owners) or "(unknown)",
-            raw_data={"file": drive_file, "values": values},
+            raw_data={"file": drive_file, "values": raw_values},
             filtered_data=values,
             gate="review",
             preview=preview,

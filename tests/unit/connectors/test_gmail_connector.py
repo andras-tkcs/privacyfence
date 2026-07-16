@@ -24,6 +24,7 @@ from privacyfence.audit_log import current_week, init_audit_logger
 from privacyfence.connectors import gmail as gmail_module
 from privacyfence.connectors.gmail import GmailConnector
 from privacyfence.gmail_client import Attachment, GmailClientError, GmailMessage, GmailThread
+from privacyfence.privacy_filter import init_privacy_filter
 
 from ...helpers import assert_all_tools_leave_an_audit_trail
 
@@ -257,6 +258,87 @@ class TestGetThread:
         assert "<p>" not in details
         assert "<b>" not in details
         assert "Plain please." in details
+
+
+class TestGmailPrivacyFilter:
+    """privacy.categories, enforced -- see privacy_filter.py. Without calling
+    init_privacy_filter (every other test class here), every category
+    resolves to "allow" and behaves exactly as before this existed; these
+    tests are the ones that actually turn a policy on."""
+
+    async def test_body_blocked_replaces_details_and_pii_scan_text(self, gated_call_spy):
+        init_privacy_filter({"privacy": {"categories": {"body": "block"}}})
+        connector, client = make_connector()
+        message = GmailMessage(
+            id="m1", thread_id="t1", subject="s", sender="a@b.com",
+            body_text="the actual confidential body",
+        )
+        client.get_message.return_value = message
+
+        await connector.call("gmail_get_message", {"message_id": "m1"})
+
+        kwargs = gated_call_spy[0]
+        assert "the actual confidential body" not in kwargs["details_text"]
+        assert "the actual confidential body" not in kwargs["pii_scan_text"]
+        assert kwargs["details_text"] == "[BLOCKED BY PRIVACY FILTER]"
+        assert kwargs["filtered_data"]["body_text"] == "[BLOCKED BY PRIVACY FILTER]"
+
+    async def test_metadata_blocked_replaces_preview_and_filtered_data(self, gated_call_spy):
+        init_privacy_filter({"privacy": {"categories": {"metadata": "block"}}})
+        connector, client = make_connector()
+        message = GmailMessage(
+            id="m1", thread_id="t1", subject="Confidential deal", sender="alice@example.com",
+            recipients=["bob@example.com"], date="Mon", body_text="fine to read",
+        )
+        client.get_message.return_value = message
+
+        await connector.call("gmail_get_message", {"message_id": "m1"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview"]["From"] == "[BLOCKED BY PRIVACY FILTER]"
+        assert kwargs["preview"]["Subject"] == "[BLOCKED BY PRIVACY FILTER]"
+        assert kwargs["filtered_data"]["sender"] == "[BLOCKED BY PRIVACY FILTER]"
+        # body is a separate category from metadata -- must be unaffected
+        assert kwargs["filtered_data"]["body_text"] == "fine to read"
+
+    async def test_attachments_blocked_empties_the_list_in_filtered_data(self, gated_call_spy):
+        init_privacy_filter({"privacy": {"categories": {"attachments": "block"}}})
+        connector, client = make_connector()
+        message = GmailMessage(
+            id="m1", thread_id="t1", subject="s", sender="a@b.com",
+            attachments=[Attachment(name="secret.pdf", mime_type="application/pdf", size=10)],
+        )
+        client.get_message.return_value = message
+
+        await connector.call("gmail_get_message", {"message_id": "m1"})
+
+        assert gated_call_spy[0]["filtered_data"]["attachments"] == []
+
+    async def test_thread_history_and_body_are_independent_categories(self, gated_call_spy):
+        # gmail_get_thread's assembled body text uses "thread_history", not
+        # "body" -- blocking one must not affect the other, and must not
+        # affect gmail_get_message's single-message reads either.
+        init_privacy_filter({"privacy": {"categories": {"body": "block"}}})
+        connector, client = make_connector()
+        m1 = GmailMessage(id="m1", thread_id="t1", subject="s", sender="a@b.com", body_text="thread body")
+        thread = GmailThread(id="t1", subject="s", messages=[m1])
+        client.get_thread.return_value = thread
+
+        await connector.call("gmail_get_thread", {"thread_id": "t1"})
+
+        assert "thread body" in gated_call_spy[0]["details_text"]
+
+    async def test_allow_is_the_default_when_unconfigured(self, gated_call_spy):
+        # No init_privacy_filter call in this test -- conftest's autouse
+        # reset leaves _GROUPS empty, which must resolve to "allow", not
+        # "block" -- this module must never fail closed on missing config.
+        connector, client = make_connector()
+        message = GmailMessage(id="m1", thread_id="t1", subject="s", sender="a@b.com", body_text="business as usual")
+        client.get_message.return_value = message
+
+        await connector.call("gmail_get_message", {"message_id": "m1"})
+
+        assert gated_call_spy[0]["details_text"] == "business as usual"
 
 
 class TestListMessageAttachments:

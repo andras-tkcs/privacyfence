@@ -11,6 +11,55 @@ exactly what fields the AI receives, an "Inspect before approve" mode, per-file 
 rationale, richer time-limited approval language, and a long-term vision of PR-style multi-person
 governance (Purpose / Files / Risk Analysis / Preview / Comments / Approve).
 
+## Phase 0 — privacy-filter enforcement (implemented, prerequisite for Phase 1a)
+
+Discovered while starting implementation of Phase 1a's "AI will receive" visibility checklist:
+`settings.yaml.example`'s `privacy`/`drive_privacy`/`slack_privacy` sections (per-category
+allow/redact/block, described in this doc's §3 feasibility table and in
+`docs/security-and-compliance.md` §5 as an active enforcement mechanism) were **never actually
+read by any code** — editing a category from `allow` to `block` changed nothing. Building the
+visibility checklist on top of that would have meant displaying a policy PrivacyFence couldn't
+back up, exactly the failure mode this whole redesign exists to avoid.
+
+Per the maintainer's decision, this was implemented as a prerequisite rather than worked around:
+
+- `src/privacyfence/privacy_filter.py` (new): `init_privacy_filter()`/`apply_text()`/
+  `apply_list()`/`category_policy()`, mirroring `pii_detector.py`'s module-global init pattern.
+  allow passes through; block replaces text with a fixed marker or empties a list; redact reveals
+  a text value's length only, and (documented explicitly, since "partial" has no single correct
+  shape for a list of structured records) behaves identically to block for list categories. 18
+  unit tests in `tests/unit/test_privacy_filter.py` — this module has no AppKit dependency, so
+  these actually ran and passed, unlike the rest of this codebase's test suite in this environment.
+- Wired into `daemon_main.py`'s startup sequence, and applied to every category documented in
+  `settings.yaml.example`, across the three connectors that had a schema for it: Gmail
+  (`_get_message`, `_get_thread` — `body`/`thread_history`/`metadata`/`attachments`), Drive
+  (`_get_file_content`, `_get_file_metadata`, `_list_files`, `_list_folder`,
+  `_sheets_get_values` — `file_content`/`file_metadata`/`file_list`/`folder_structure`), Slack
+  (`_get_channel_history`, `_get_thread_replies`, `_search_messages`, `_list_channels` —
+  `message_content`/`thread_content`/`user_identity`/`channel_list`). Integration tests added
+  per connector, following each file's existing `gated_call_spy` pattern.
+- **Deliberately left out of scope**: `gmail_list_message_attachments`, a dedicated auto-approved
+  tool whose entire purpose is exposing attachment metadata — applying the `attachments: block`
+  default there would make the tool permanently return nothing, a much bigger behavior change
+  than "make the documented config real." Flagged for the maintainer rather than decided
+  unilaterally.
+- `docs/security-and-compliance.md` §5 corrected: it claimed *every* connector had a privacy
+  filter; only Gmail/Drive/Slack do (the only three with a documented category schema). Reworded
+  to say so precisely rather than leave a now-partially-true claim in a document written for
+  auditors.
+- **Verification honesty note**: this repo's real test suite requires macOS (PyObjC/AppKit) and
+  cannot run in this Linux environment — confirmed by attempting `pip install -e ".[dev]"`, which
+  fails at `sw_vers`. `gate.py` (and therefore every connector) imports AppKit transitively, so
+  only `privacy_filter.py`'s own isolated unit tests could actually be executed and confirmed
+  green here; the per-connector integration tests and the connector edits themselves are
+  carefully pattern-matched against each file's existing conventions and cross-checked against
+  every existing assertion they run alongside, but not executed. They need a real `pytest` run on
+  macOS before this is considered verified, not just written.
+
+With this in place, Phase 1a's visibility checklist (below) can now honestly render
+`privacy_filter.category_policy(group, category)` per category instead of a fictional config
+value — that implementation is still open, tracked in §7 Phase 1a.
+
 ## Revalidation note — main has moved since this plan was written
 
 This branch was rebased onto current `main` (merge commit bringing in PRs #42–#50, including
