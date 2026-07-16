@@ -52,6 +52,8 @@ from privacyfence import daemon_main  # noqa: E402
 from privacyfence.confluence_client import ConfluenceClient, ConfluenceClientError  # noqa: E402
 from privacyfence.jira_client import JiraClient, JiraClientError  # noqa: E402
 from privacyfence.salesforce_client import SalesforceClient, SalesforceClientError  # noqa: E402
+from privacyfence.gmail_client import GmailClient, GmailClientError  # noqa: E402
+from privacyfence.drive_client import DriveClient, DriveClientError  # noqa: E402
 
 FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures" / "live"
 MANIFEST_PATH = REPO_ROOT / "tests" / "fixtures" / "qa_environment.yaml"
@@ -115,6 +117,27 @@ def redact(value: Any) -> Any:
     if isinstance(value, list):
         return [redact(v) for v in value]
     return value
+
+
+# Gmail's raw message shape buries sender/recipient identity inside
+# payload.headers -- a *list* of {"name": "From", "value": "..."} objects,
+# where the interesting key is always the generic "value", never a
+# distinctively-named field. redact()'s key-based matching structurally
+# cannot see this -- found before shipping Gmail support (the same way the
+# Salesforce Owner/CreatedBy gap was), not discovered after a fixture was
+# already committed. Applied as a connector-specific pass, before the
+# generic redact() runs, since the QA seed thread is sent to yourself, so
+# both From and To carry your real address.
+_SENSITIVE_GMAIL_HEADERS = {"from", "to", "cc", "bcc", "reply-to", "sender", "delivered-to", "return-path"}
+
+
+def redact_gmail_message(raw: dict[str, Any]) -> dict[str, Any]:
+    raw = copy.deepcopy(raw)
+    headers = ((raw.get("payload") or {}).get("headers")) or []
+    for header in headers:
+        if isinstance(header, dict) and str(header.get("name", "")).lower() in _SENSITIVE_GMAIL_HEADERS:
+            header["value"] = _REDACTED_EMAIL
+    return raw
 
 
 # ---------------------------------------------------------------------------- #
@@ -240,6 +263,56 @@ class RawCaptureCall:
 
     def __exit__(self, *exc: Any) -> None:
         self._client._call = self._original
+
+
+class RawCaptureExecute:
+    """Variant for the Google-API connectors (Gmail/Drive/Calendar/Contacts/
+    Tasks), none of which have any PrivacyFence-level choke point at all --
+    every method calls googleapiclient's chained-builder pattern
+    (``service.users().messages().get(...).execute()``) inline, with the
+    ``.execute()`` call built fresh, on a new ``googleapiclient.http.
+    HttpRequest`` instance, every time. There is no per-client method to
+    monkeypatch the way ConfluenceClient/JiraClient/SalesforceClient have --
+    so this patches ``HttpRequest.execute`` itself, at the class level, for
+    the scope of the ``with`` block only.
+
+    This is a real, verified mechanism, not a guess: offline (no network, no
+    credentials), ``googleapiclient.discovery.build(..., static_discovery=
+    True)`` returns a real ``HttpRequest`` from a real chained call, and
+    ``HttpRequest.execute()`` genuinely routes through this patched method
+    when called normally (no special args needed at the call site) -- see
+    ``tests/unit/test_qa_fixture_recorder.py`` for that exact offline proof,
+    built specifically because a MagicMock-based service double (the
+    existing pattern in test_gmail_client.py etc.) never touches
+    ``HttpRequest`` at all and so can't verify this class.
+
+    Patching a third-party class method process-wide is a bigger lever than
+    RawCapture/RawCaptureCall's instance-level monkeypatching, but the
+    recorder is single-threaded and sequential (one connector, one call, at
+    a time), so there's no concurrent caller to interfere with, and the
+    patch is removed the moment the ``with`` block exits either way.
+    """
+
+    def __init__(self) -> None:
+        self.captured: Any = None
+
+    def __enter__(self) -> "RawCaptureExecute":
+        from googleapiclient.http import HttpRequest
+
+        self._HttpRequest = HttpRequest
+        self._original = HttpRequest.execute
+        outer = self
+
+        def wrapped(self_req: Any, http: Any = None, num_retries: int = 0) -> Any:
+            result = outer._original(self_req, http=http, num_retries=num_retries)
+            outer.captured = copy.deepcopy(result)
+            return result
+
+        HttpRequest.execute = wrapped
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self._HttpRequest.execute = self._original
 
 
 # ---------------------------------------------------------------------------- #
@@ -463,10 +536,120 @@ def check_salesforce(record: bool, manifest: dict[str, Any]) -> list[CheckResult
     return results
 
 
+def _build_gmail_client() -> GmailClient:
+    org_config = daemon_main.load_org_config()
+    client_config = daemon_main._google_client_config(org_config)
+    if not client_config:
+        raise SystemExit("Google organization config not installed -- run Authenticate… in the menu bar first.")
+    token_path = daemon_main._resolve_path(daemon_main.TOKEN_FILES["gmail"])
+    return GmailClient(client_config=client_config, token_file=token_path)
+
+
+def check_gmail(record: bool, manifest: dict[str, Any]) -> list[CheckResult]:
+    cfg = manifest.get("gmail") or {}
+    seed_message_id = cfg.get("seed_message_id", "")
+
+    # Unlike Confluence/Jira/Salesforce, Gmail has no cheap by-title resolve
+    # fallback: GmailClient.list_messages() itself makes one .execute() call
+    # per result on top of the list call (fetching each stub's metadata),
+    # so "resolve then get" here would mean multiple uncontrolled calls
+    # instead of one targeted one. seed_message_id is required.
+    if not seed_message_id:
+        return [CheckResult(
+            "gmail", "get_message", "(unconfigured)", False,
+            "gmail.seed_message_id is not set in tests/fixtures/qa_environment.yaml -- "
+            "Gmail has no by-subject resolve fallback, fill this in from the seed thread "
+            "in qa-environment-setup.md §1",
+        )]
+
+    results: list[CheckResult] = []
+    client = _build_gmail_client()
+
+    try:
+        with RawCaptureExecute() as cap:
+            message = client.get_message(seed_message_id)
+        tagged = QATEST_TAG in message.subject
+        complete = bool(message.sender and message.date and message.subject)
+        ok = tagged and complete
+        if not tagged:
+            note = f"fetched message subject {message.subject!r} does not carry {QATEST_TAG} -- refusing to record"
+        elif not complete:
+            note = "missing popup field(s) -- sender/date/subject not all present"
+        else:
+            note = "sender, date, subject all present"
+        raw = None
+        if record and ok and isinstance(cap.captured, dict):
+            raw = redact(redact_gmail_message(cap.captured))
+        results.append(CheckResult("gmail", "get_message", seed_message_id, ok, note, raw, "get_message.json"))
+    except GmailClientError as exc:
+        results.append(CheckResult("gmail", "get_message", seed_message_id, False, str(exc)))
+
+    return results
+
+
+def _build_drive_client() -> DriveClient:
+    org_config = daemon_main.load_org_config()
+    client_config = daemon_main._google_client_config(org_config)
+    if not client_config:
+        raise SystemExit("Google organization config not installed -- run Authenticate… in the menu bar first.")
+    token_path = daemon_main._resolve_path(daemon_main.TOKEN_FILES["drive"])
+    return DriveClient(client_config=client_config, token_file=token_path)
+
+
+def check_drive(record: bool, manifest: dict[str, Any]) -> list[CheckResult]:
+    # drive_get_file_metadata is auto-approved (no gate/preview -- see
+    # connectors/drive.py), unlike every other connector's targeted read
+    # here, so this only proves the raw-response -> DriveFile mapping
+    # stays correct (contract drift), not popup-preview completeness. No
+    # new seed artifact needed: targets the QA Sandbox folder
+    # qa-environment-setup.md §2 already has you create, identified by its
+    # exact name rather than a [QATEST] body tag (a folder has no body,
+    # and this one is already unique/durable by construction).
+    cfg = manifest.get("drive") or {}
+    folder_name = cfg.get("folder_name", "PrivacyFence QA Sandbox")
+    folder_id = cfg.get("folder_id", "")
+
+    results: list[CheckResult] = []
+    client = _build_drive_client()
+
+    try:
+        if folder_id:
+            with RawCaptureExecute() as cap:
+                file = client.get_file_metadata(folder_id)
+        else:
+            matches = client.list_files(
+                f"name = '{folder_name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+                max_results=1,
+            )
+            if not matches:
+                raise DriveClientError(f"no folder found matching name {folder_name!r}")
+            with RawCaptureExecute() as cap:
+                file = client.get_file_metadata(matches[0].id)
+        tagged = file.name == folder_name
+        complete = bool(file.id and file.name)
+        ok = tagged and complete
+        if not tagged:
+            note = f"fetched file name {file.name!r} does not match expected {folder_name!r} -- refusing to record"
+        elif not complete:
+            note = "missing field(s) -- id/name not both present"
+        else:
+            note = "id, name present"
+        raw = redact(cap.captured) if (record and ok and isinstance(cap.captured, dict)) else None
+        results.append(
+            CheckResult("drive", "get_file_metadata", folder_name, ok, note, raw, "get_file_metadata.json")
+        )
+    except DriveClientError as exc:
+        results.append(CheckResult("drive", "get_file_metadata", folder_name, False, str(exc)))
+
+    return results
+
+
 CONNECTOR_CHECKS: dict[str, Callable[[bool, dict[str, Any]], list[CheckResult]]] = {
     "confluence": check_confluence,
     "jira": check_jira,
     "salesforce": check_salesforce,
+    "gmail": check_gmail,
+    "drive": check_drive,
 }
 
 

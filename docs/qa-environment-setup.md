@@ -92,6 +92,12 @@ reports the fixture as missing instead of silently guessing wrong.
         ```
   - Note: it's also the right pick for the Deny test either way — short, no large attachment, so a
     Deny response can't be confused with a size-truncation error.
+  - [ ] **For `scripts/qa_fixture_recorder.py`**: fill in the seed message's real id under
+        `gmail.seed_message_id` in `tests/fixtures/qa_environment.yaml` — required, not optional,
+        for the recorder specifically. Unlike Confluence/Jira/Salesforce, Gmail has no cheap
+        by-subject resolve fallback (`GmailClient.list_messages()` makes one extra API call *per
+        result* on top of the list call itself, so "resolve then get" here would mean an
+        uncontrolled number of calls instead of one targeted one).
 - [ ] (Optional) Configure the `trusted_sender_domain` rule
   - [ ] Look through your inbox (or run `gmail_list_messages`) and pick any sender domain you get
         recurring mail from — a newsletter, a receipt sender, a notification address
@@ -134,6 +140,15 @@ reports the fixture as missing instead of silently guessing wrong.
       construction, so nothing here ever touches a real file or folder elsewhere in your Drive
 - [ ] (Maintenance, periodic) Empty Drive trash by hand — there's no bulk-empty-trash tool; trashed
       items auto-purge after 30 days regardless
+- [ ] **For `scripts/qa_fixture_recorder.py`**: no new fixture needed — the recorder targets this
+      folder directly via `drive_get_file_metadata`, identified by its exact name (a folder has no
+      body to carry a `[QATEST]` tag, so the name itself is the check)
+  - [ ] Fill in its file ID (or leave blank to resolve by name — one extra API call per run) under
+        `drive.folder_id` in `tests/fixtures/qa_environment.yaml`
+  - Note: unlike every other connector's targeted read here, `drive_get_file_metadata` is
+    auto-approved (no gate/popup preview), so this only proves the raw-response → `DriveFile`
+    mapping stays correct — it doesn't exercise popup-field completeness the way Confluence/Jira/
+    Salesforce/Gmail's checks do.
 - [ ] (Optional) Extend `approved_sandbox_folder` to `sheets.rename_sheet` / `sheets.format_range`
   - [ ] Only add this if you specifically want `connector-qa-testing.md`'s Phase 2 to also
         demonstrate that these two can auto-accept by folder. Skip it if you'd rather Phase 2 keep
@@ -507,7 +522,7 @@ also means the *success* path never gets exercised unless you seed some data:
   - Note: this is a narrower requirement than the steps above — the recorder only ever reads this
     one page, by ID/title and the `[QATEST]` tag, never "any page in `PFQA`" — see
     `external-api-contract-testing.md`'s "Guardrail against recording the wrong thing" for why.
-    Only Confluence, Jira, and Salesforce have recorder support today (`scripts/qa_fixture_recorder.py`'s
+    Only Confluence, Jira, Salesforce, Gmail, and Drive have recorder support today (`scripts/qa_fixture_recorder.py`'s
     `CONNECTOR_CHECKS`); other connectors will need the same kind of tagged seed artifact once
     they're wired in — this section is the pattern to follow when that happens, not a one-off.
 
@@ -651,7 +666,9 @@ would find, headlessly, without needing a live Claude session first.
 | Fixture | How it's found | Source |
 |---|---|---|
 | Gmail seed thread | Subject tag `[QATEST]` (optional — see §1) | `gmail_list_messages` |
+| Gmail recorder seed message | `gmail.seed_message_id`, required (no resolve fallback) | `tests/fixtures/qa_environment.yaml` |
 | Drive QA folder | Exact name `PrivacyFence QA Sandbox` | `drive_list_files` |
+| Drive recorder target | Same QA Sandbox folder, by exact name or `drive.folder_id` | `tests/fixtures/qa_environment.yaml` |
 | Slack approved channel | `auto_accept_grants.slack.channels` (`read: true`), or the legacy `slack.read_messages` → `approved_channel` rule | `settings.yaml` |
 | Slack control channel | Exact name `privacyfence-qa-control` | `slack_list_channels` |
 | Telegram Saved Messages | `is_self: true` flag | `telegram_list_chats` |

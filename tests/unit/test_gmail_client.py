@@ -13,9 +13,11 @@ path entirely.
 from __future__ import annotations
 
 import base64
+import json
 import os
 import threading
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -29,6 +31,8 @@ from privacyfence.gmail_client import (
     resolve_attachment_destination,
 )
 from googleapiclient.errors import HttpError
+
+LIVE_FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "live" / "gmail"
 
 
 def make_client(service: MagicMock) -> GmailClient:
@@ -1132,3 +1136,28 @@ class TestServiceIsThreadLocal:
             mock_build.side_effect = lambda *a, **k: MagicMock()
             assert client._get_service() is client._get_service()
             assert mock_build.call_count == 1
+
+
+class TestLiveFixtureParsing:
+    """Replays a fixture recorded from a real, [QATEST]-tagged seed message
+    by scripts/qa_fixture_recorder.py --record gmail -- real API shape, not
+    hand-authored, with From/To headers already redacted. Skipped (not
+    failed) until that fixture exists; see tests/fixtures/live/README.md
+    and docs/external-api-contract-testing.md's Part A/B. Re-record via
+    that script if this ever starts failing after a genuine Gmail API
+    change.
+    """
+
+    def test_get_message_fixture_still_parses(self):
+        path = LIVE_FIXTURES_DIR / "get_message.json"
+        if not path.exists():
+            pytest.skip(
+                f"{path} not recorded yet -- run "
+                "`python3 scripts/qa_fixture_recorder.py --record gmail` locally first"
+            )
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        client = make_client(MagicMock())
+
+        message = client._parse_message(raw)
+
+        assert message.sender and message.date and message.subject

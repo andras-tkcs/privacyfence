@@ -40,6 +40,24 @@ salesforce:
   # extra API call per run).
   seed_record_id: ""
 
+gmail:
+  # docs/qa-environment-setup.md §1 -- the seed thread there is optional
+  # for the manual connector-qa-testing.md process, but required here:
+  # Gmail has no cheap by-subject resolve fallback (list_messages() makes
+  # one extra API call per result, so "resolve then get" isn't a single
+  # targeted call the way it is for the other connectors). Fill this in
+  # with the seed message's real id after creating it -- there is no
+  # blank-to-resolve-by-title option for this one.
+  seed_message_id: ""
+
+drive:
+  # docs/qa-environment-setup.md §2 -- no separate seed artifact: targets
+  # the QA Sandbox folder that section already has you create, identified
+  # by its exact name (a folder has no body to tag [QATEST]).
+  folder_name: "PrivacyFence QA Sandbox"
+  # Leave blank to resolve by name instead (one extra API call per run).
+  folder_id: ""
+
 # Other connectors follow the same shape once
 # scripts/qa_fixture_recorder.py grows a check_<connector>() for them --
 # see that script's CONNECTOR_CHECKS registry and
