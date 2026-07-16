@@ -1,0 +1,73 @@
+{
+  "emailAddresses": [
+    {
+      "formattedType": "Work",
+      "metadata": {
+        "primary": true,
+        "source": {
+          "id": "qa-placeholder-id-2",
+          "type": "CONTACT"
+        }
+      },
+      "type": "work",
+      "value": "qatest.contact@example.com"
+    }
+  ],
+  "etag": "%EgwBAgMFCQsMLjc9Pj8aBAECBQciDDZLdjh4aThlYlcwPQ==",
+  "metadata": {
+    "objectType": "PERSON",
+    "sources": [
+      {
+        "etag": "#6Kv8xi8ebW0=",
+        "id": "qa-placeholder-id-2",
+        "type": "CONTACT",
+        "updateTime": "2026-07-16T10:08:00.992818Z"
+      }
+    ]
+  },
+  "names": [
+    {
+      "displayName": "PrivacyFence QA Test Contact [QATEST]",
+      "displayNameLastFirst": "QA Test Contact [QATEST], PrivacyFence",
+      "familyName": "QA Test Contact [QATEST]",
+      "givenName": "PrivacyFence",
+      "metadata": {
+        "primary": true,
+        "source": {
+          "id": "qa-placeholder-id-2",
+          "type": "CONTACT"
+        },
+        "sourcePrimary": true
+      },
+      "unstructuredName": "PrivacyFence QA Test Contact [QATEST]"
+    }
+  ],
+  "phoneNumbers": [
+    {
+      "formattedType": "Work",
+      "metadata": {
+        "primary": true,
+        "source": {
+          "id": "qa-placeholder-id-2",
+          "type": "CONTACT"
+        }
+      },
+      "type": "work",
+      "value": "555-0142"
+    }
+  ],
+  "photos": [
+    {
+      "default": true,
+      "metadata": {
+        "primary": true,
+        "source": {
+          "id": "qa-placeholder-id-2",
+          "type": "CONTACT"
+        }
+      },
+      "url": "https://example.com/qa-placeholder"
+    }
+  ],
+  "resourceName": "qa-placeholder-id-1"
+}

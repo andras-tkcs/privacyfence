@@ -1,0 +1,82 @@
+{
+  "historyId": "qa-placeholder-id-3",
+  "id": "qa-placeholder-id-1",
+  "internalDate": "1784183362000",
+  "labelIds": [
+    "Label_7",
+    "SENT"
+  ],
+  "payload": {
+    "body": {
+      "size": 0
+    },
+    "filename": "",
+    "headers": [
+      {
+        "name": "MIME-Version",
+        "value": "1.0"
+      },
+      {
+        "name": "Date",
+        "value": "Thu, 16 Jul 2026 08:29:22 +0200"
+      },
+      {
+        "name": "Message-ID",
+        "value": "<CAPfg5gG_Wa-eVxKB9b-Z-vN7upadJEs98+j=ffh6h6H_v2hvLA@mail.gmail.com>"
+      },
+      {
+        "name": "Subject",
+        "value": "PrivacyFence QA seed message [QATEST]"
+      },
+      {
+        "name": "From",
+        "value": "qa-placeholder@example.com"
+      },
+      {
+        "name": "To",
+        "value": "qa-placeholder@example.com"
+      },
+      {
+        "name": "Content-Type",
+        "value": "multipart/alternative; boundary=\"0000000000009391fe0656b48f75\""
+      }
+    ],
+    "mimeType": "multipart/alternative",
+    "partId": "",
+    "parts": [
+      {
+        "body": {
+          "data": "U3ludGhldGljIFByaXZhY3lGZW5jZSBRQSB0ZXN0IG1lc3NhZ2UuIE5vIHJlYWwgaW5mb3JtYXRpb24uIFNhZmUgdG8gcmVhZCwNCmxhYmVsLCBhcmNoaXZlLCBvciBkZWxldGUgYnkgYW55IGF1dG9tYXRlZCB0ZXN0Lg0K",
+          "size": 126
+        },
+        "filename": "",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "text/plain; charset=\"UTF-8\""
+          }
+        ],
+        "mimeType": "text/plain",
+        "partId": "0"
+      },
+      {
+        "body": {
+          "data": "PGRpdiBkaXI9Imx0ciI-U3ludGhldGljIFByaXZhY3lGZW5jZSBRQSB0ZXN0IG1lc3NhZ2UuIE5vIHJlYWwgaW5mb3JtYXRpb24uIFNhZmUgdG8gcmVhZCwgbGFiZWwsIGFyY2hpdmUsIG9yIGRlbGV0ZSBieSBhbnkgYXV0b21hdGVkIHRlc3QuPC9kaXY-DQo=",
+          "size": 146
+        },
+        "filename": "",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "text/html; charset=\"UTF-8\""
+          }
+        ],
+        "mimeType": "text/html",
+        "partId": "1"
+      }
+    ]
+  },
+  "sizeEstimate": 819,
+  "snippet": "Synthetic PrivacyFence QA test message. No real information. Safe to read, label, archive, or delete by any automated test.",
+  "threadId": "qa-placeholder-id-2"
+}

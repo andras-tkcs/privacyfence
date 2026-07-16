@@ -324,6 +324,123 @@ class TestRegisterTools:
 
 
 # ---------------------------------------------------------------------------- #
+# _check_policy_handler + _register_meta_tools: privacyfence_check_policy
+# ---------------------------------------------------------------------------- #
+
+class TestCheckPolicyHandler:
+    def test_forwards_to_ipc_client(self, monkeypatch):
+        fake_ipc = MagicMock()
+        fake_ipc.check_policy = AsyncMock(return_value={"verdict": "auto_accept"})
+        monkeypatch.setattr(bridge_main_module, "_ipc", fake_ipc)
+
+        result = asyncio.run(
+            bridge_main_module._check_policy_handler("gmail", "gmail_get_message", {"message_id": "m1"})
+        )
+
+        assert result == {"verdict": "auto_accept"}
+        fake_ipc.check_policy.assert_awaited_once_with("gmail", "gmail_get_message", {"message_id": "m1"})
+
+    def test_missing_args_defaults_to_empty_dict(self, monkeypatch):
+        fake_ipc = MagicMock()
+        fake_ipc.check_policy = AsyncMock(return_value={"verdict": "auto_accept"})
+        monkeypatch.setattr(bridge_main_module, "_ipc", fake_ipc)
+
+        asyncio.run(bridge_main_module._check_policy_handler("gmail", "gmail_list_messages"))
+
+        fake_ipc.check_policy.assert_awaited_once_with("gmail", "gmail_list_messages", {})
+
+    def test_ipc_error_becomes_tool_error(self, monkeypatch):
+        from fastmcp.exceptions import ToolError
+        fake_ipc = MagicMock()
+        fake_ipc.check_policy = AsyncMock(side_effect=IPCError("daemon says no"))
+        monkeypatch.setattr(bridge_main_module, "_ipc", fake_ipc)
+
+        with pytest.raises(ToolError, match="daemon says no"):
+            asyncio.run(bridge_main_module._check_policy_handler("gmail", "gmail_get_message", {}))
+
+    def test_uninitialized_ipc_client_raises_tool_error(self, monkeypatch):
+        from fastmcp.exceptions import ToolError
+        monkeypatch.setattr(bridge_main_module, "_ipc", None)
+
+        with pytest.raises(ToolError, match="not initialized"):
+            asyncio.run(bridge_main_module._check_policy_handler("gmail", "gmail_get_message", {}))
+
+
+class TestBeginEndUnattendedSessionHandlers:
+    def test_begin_forwards_to_ipc_client(self, monkeypatch):
+        fake_ipc = MagicMock()
+        fake_ipc.begin_unattended_session = AsyncMock(return_value={"unattended": True})
+        monkeypatch.setattr(bridge_main_module, "_ipc", fake_ipc)
+
+        result = asyncio.run(bridge_main_module._begin_unattended_session_handler())
+
+        assert result == {"unattended": True}
+        fake_ipc.begin_unattended_session.assert_awaited_once_with()
+
+    def test_begin_ipc_error_becomes_tool_error(self, monkeypatch):
+        from fastmcp.exceptions import ToolError
+        fake_ipc = MagicMock()
+        fake_ipc.begin_unattended_session = AsyncMock(side_effect=IPCError("unattended sessions disabled"))
+        monkeypatch.setattr(bridge_main_module, "_ipc", fake_ipc)
+
+        with pytest.raises(ToolError, match="disabled"):
+            asyncio.run(bridge_main_module._begin_unattended_session_handler())
+
+    def test_begin_uninitialized_ipc_client_raises_tool_error(self, monkeypatch):
+        from fastmcp.exceptions import ToolError
+        monkeypatch.setattr(bridge_main_module, "_ipc", None)
+
+        with pytest.raises(ToolError, match="not initialized"):
+            asyncio.run(bridge_main_module._begin_unattended_session_handler())
+
+    def test_end_forwards_to_ipc_client(self, monkeypatch):
+        fake_ipc = MagicMock()
+        fake_ipc.end_unattended_session = AsyncMock(return_value={"unattended": False})
+        monkeypatch.setattr(bridge_main_module, "_ipc", fake_ipc)
+
+        result = asyncio.run(bridge_main_module._end_unattended_session_handler())
+
+        assert result == {"unattended": False}
+        fake_ipc.end_unattended_session.assert_awaited_once_with()
+
+    def test_end_uninitialized_ipc_client_raises_tool_error(self, monkeypatch):
+        from fastmcp.exceptions import ToolError
+        monkeypatch.setattr(bridge_main_module, "_ipc", None)
+
+        with pytest.raises(ToolError, match="not initialized"):
+            asyncio.run(bridge_main_module._end_unattended_session_handler())
+
+
+class TestRegisterMetaTools:
+    async def test_registers_privacyfence_check_policy(self):
+        mcp = FastMCP(name="test")
+        bridge_main_module._register_meta_tools(mcp)
+        tool = await mcp.get_tool("privacyfence_check_policy")
+        assert tool is not None
+
+    async def test_registers_begin_and_end_unattended_session(self):
+        mcp = FastMCP(name="test")
+        bridge_main_module._register_meta_tools(mcp)
+        assert await mcp.get_tool("privacyfence_begin_unattended_session") is not None
+        assert await mcp.get_tool("privacyfence_end_unattended_session") is not None
+
+    async def test_advertised_read_only_with_no_side_effects(self):
+        mcp = FastMCP(name="test")
+        bridge_main_module._register_meta_tools(mcp)
+        tool = await mcp.get_tool("privacyfence_check_policy")
+        assert tool.annotations.readOnlyHint is True
+        assert tool.annotations.destructiveHint is False
+        assert tool.annotations.idempotentHint is True
+
+    async def test_does_not_touch_the_connector_manifest(self):
+        # Meta-tools aren't sourced from a connector manifest -- registering
+        # them must not require or consult one.
+        mcp = FastMCP(name="test")
+        bridge_main_module._register_meta_tools(mcp)  # no manifest argument at all
+        assert await mcp.get_tool("privacyfence_check_policy") is not None
+
+
+# ---------------------------------------------------------------------------- #
 # _run_bridge: IPC lifespan around mcp.run_async
 # ---------------------------------------------------------------------------- #
 

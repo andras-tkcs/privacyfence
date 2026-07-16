@@ -22,9 +22,14 @@ import pytest
 from privacyfence.audit_log import current_week, init_audit_logger
 from privacyfence.connectors import salesforce as salesforce_module
 from privacyfence.connectors.salesforce import SalesforceConnector
-from privacyfence.salesforce_client import SalesforceClientError, SalesforceRecord, SalesforceReport
+from privacyfence.salesforce_client import (
+    SalesforceClient,
+    SalesforceClientError,
+    SalesforceRecord,
+    SalesforceReport,
+)
 
-from ...helpers import assert_all_tools_leave_an_audit_trail
+from ...helpers import assert_all_tools_leave_an_audit_trail, assert_no_placeholder_fields
 
 
 def make_connector(my_email="me@example.com"):
@@ -32,6 +37,21 @@ def make_connector(my_email="me@example.com"):
     connector = SalesforceConnector(client)
     connector.my_email = my_email
     return connector, client
+
+
+def make_real_client(sf: MagicMock) -> SalesforceClient:
+    """A real SalesforceClient (real get_record/attributes-stripping) with
+    only the underlying simple-salesforce object mocked -- same pattern as
+    test_salesforce_client.py's with_fake_sf(). Used by
+    TestFieldCompleteness to exercise the real raw-response ->
+    SalesforceRecord -> popup-preview path end to end, instead of a
+    hand-built SalesforceRecord like every other test in this file --
+    this module's own docstring documents a real bug in exactly that gap
+    (record_dict.get("Name") missing the nested "fields" key).
+    """
+    client = SalesforceClient(config={"access_token": "tok", "instance_url": "https://my.salesforce.com"})
+    client._get_sf = lambda: sf
+    return client
 
 
 @pytest.fixture
@@ -345,11 +365,119 @@ class TestRunReport:
         )
 
 
+class TestSearch:
+    async def test_preview_and_gate(self, gated_call_spy):
+        connector, client = make_connector()
+        client.search.return_value = [
+            SalesforceRecord(object_type="Opportunity", id="006x", fields={"Id": "006x", "Name": "Big Deal"}),
+        ]
+
+        result = await connector.call("salesforce_search", {"search_term": "Big Deal"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["gate"] == "review"
+        assert kwargs["preview"] == {
+            "Search term": "Big Deal", "Object types": "(default)", "Results": "1",
+        }
+        assert "Account ID" not in kwargs["preview"]
+        assert kwargs["args"] == {"search_term": "Big Deal", "object_types": "", "account_id": ""}
+        client.search.assert_called_once_with("Big Deal", "", "", 20)
+        assert result == [{"object_type": "Opportunity", "id": "006x", "fields": {"Id": "006x", "Name": "Big Deal"}}]
+
+    async def test_details_list_one_match_per_line(self, gated_call_spy):
+        connector, client = make_connector()
+        client.search.return_value = [
+            SalesforceRecord(object_type="Opportunity", id="006x", fields={"Name": "Big Deal"}),
+            SalesforceRecord(object_type="Contact", id="003y", fields={"Name": "Jane Doe"}),
+        ]
+
+        await connector.call("salesforce_search", {"search_term": "a"})
+
+        details = gated_call_spy[0]["details_text"]
+        assert "Opportunity — Big Deal (id=006x)" in details
+        assert "Contact — Jane Doe (id=003y)" in details
+
+    async def test_no_matches_shows_placeholder(self, gated_call_spy):
+        connector, client = make_connector()
+        client.search.return_value = []
+
+        await connector.call("salesforce_search", {"search_term": "nothing"})
+
+        assert gated_call_spy[0]["details_text"] == "(no matches)"
+
+    async def test_missing_name_field_falls_back_to_placeholder(self, gated_call_spy):
+        connector, client = make_connector()
+        client.search.return_value = [SalesforceRecord(object_type="Task", id="00T1", fields={})]
+
+        await connector.call("salesforce_search", {"search_term": "x"})
+
+        assert "(no name)" in gated_call_spy[0]["details_text"]
+
+    async def test_account_id_shown_in_preview_and_passed_to_client(self, gated_call_spy):
+        connector, client = make_connector()
+        client.search.return_value = []
+
+        await connector.call(
+            "salesforce_search",
+            {"search_term": "Acme", "object_types": "Opportunity", "account_id": "001xx0000012345"},
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview"]["Account ID"] == "001xx0000012345"
+        client.search.assert_called_once_with("Acme", "Opportunity", "001xx0000012345", 20)
+
+    async def test_account_id_without_object_types_rejected_before_gate(self, gated_call_spy):
+        connector, client = make_connector()
+
+        with pytest.raises(ValueError, match="account_id requires object_types"):
+            await connector.call(
+                "salesforce_search", {"search_term": "Acme", "account_id": "001xx0000012345"}
+            )
+
+        assert gated_call_spy == []
+        client.search.assert_not_called()
+
+    async def test_client_error_becomes_runtime_error(self):
+        connector, client = make_connector()
+        client.search.side_effect = SalesforceClientError("MALFORMED_QUERY")
+
+        with pytest.raises(RuntimeError, match="MALFORMED_QUERY"):
+            await connector.call("salesforce_search", {"search_term": "x"})
+
+
+class TestFieldCompleteness:
+    """End to end: a fully-populated raw REST response -> the real
+    SalesforceClient.get_record -> the real connector's popup preview --
+    not a hand-built SalesforceRecord, unlike every other test in this
+    file. Mirrors test_confluence_connector.py's TestFieldCompleteness;
+    this module's own docstring already documents a real bug this exact
+    shape of check would have caught (the record_dict.get("Name") vs.
+    nested "fields" key mistake) before it shipped.
+    """
+
+    async def test_get_record_preview_has_no_placeholder_fields(self, gated_call_spy):
+        sf = MagicMock()
+        sf.Account.get.return_value = {
+            "attributes": {"type": "Account", "url": "/x"},
+            "Id": "001xx0001",
+            "Name": "PrivacyFence QA — Acme Test Co [QATEST]",
+        }
+        client = make_real_client(sf)
+        connector = SalesforceConnector(client)
+        connector.my_email = "me@example.com"
+
+        await connector.call("salesforce_get_record", {"object_type": "Account", "record_id": "001xx0001"})
+
+        assert_no_placeholder_fields(gated_call_spy[0]["preview"])
+
+
 class TestEveryToolIsAudited:
     async def test_every_declared_tool_leaves_an_audit_trail(self, monkeypatch, tmp_path):
         connector, client = make_connector()
-        # get_record's result is asdict()'d unconditionally, so it needs a
-        # real SalesforceRecord -- a bare MagicMock isn't a dataclass instance.
+        # get_record's/search's results are asdict()'d unconditionally, so
+        # they need real SalesforceRecord instances -- a bare MagicMock
+        # isn't a dataclass instance.
         client.get_record.return_value = SalesforceRecord(object_type="Account", id="001", fields={})
+        client.search.return_value = [SalesforceRecord(object_type="Account", id="001", fields={})]
 
         await assert_all_tools_leave_an_audit_trail(connector, salesforce_module, monkeypatch, tmp_path)

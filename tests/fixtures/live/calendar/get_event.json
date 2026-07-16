@@ -1,0 +1,33 @@
+{
+  "created": "2026-07-16T10:35:33.000Z",
+  "creator": {
+    "email": "qa-placeholder@example.com"
+  },
+  "description": "Synthetic PrivacyFence QA test event. No real information.",
+  "end": {
+    "dateTime": "2027-03-15T10:30:00+01:00",
+    "timeZone": "Europe/Budapest"
+  },
+  "etag": "\"3568396267171262\"",
+  "eventType": "default",
+  "htmlLink": "https://example.com/qa-placeholder",
+  "iCalUID": "qa-placeholder-id-2",
+  "id": "qa-placeholder-id-1",
+  "kind": "calendar#event",
+  "organizer": {
+    "displayName": "QA Placeholder",
+    "email": "qa-placeholder@example.com",
+    "self": true
+  },
+  "reminders": {
+    "useDefault": true
+  },
+  "sequence": 0,
+  "start": {
+    "dateTime": "2027-03-15T10:00:00+01:00",
+    "timeZone": "Europe/Budapest"
+  },
+  "status": "confirmed",
+  "summary": "PrivacyFence QA seed event [QATEST]",
+  "updated": "2026-07-16T10:35:33.585Z"
+}

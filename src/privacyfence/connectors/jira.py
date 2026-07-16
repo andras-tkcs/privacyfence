@@ -34,6 +34,10 @@ class JiraConnector(Connector):
         self.my_email: str = ""
 
     @property
+    def client(self) -> JiraClient:
+        return self._jira
+
+    @property
     def name(self) -> str:
         return "jira"
 

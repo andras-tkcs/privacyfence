@@ -52,7 +52,11 @@ def app(tmp_path, monkeypatch):
     config_path.write_text("auto_accept_rules: {}\nconnectors: {}\n", encoding="utf-8")
 
     ipc_calls = []
-    ipc_server = SimpleNamespace(set_connectors=lambda conns: ipc_calls.append(conns))
+    ipc_server = SimpleNamespace(
+        set_connectors=lambda conns: ipc_calls.append(conns),
+        unattended_session_count=lambda: 0,
+        set_unattended_changed_listener=lambda callback: None,
+    )
 
     instance = menu_bar.PrivacyFenceMenuBar(str(config_path), connectors=[], ipc_server=ipc_server)
     instance._ipc_calls = ipc_calls  # test-only hook
@@ -312,27 +316,6 @@ class TestConcurrentAuthAndRuleChangeDoNotLoseUpdates:
 # test's approach of not popping up real modal dialogs in a test run.
 # ============================================================================ #
 
-class TestFormatValue:
-    def test_none_is_none_placeholder(self):
-        assert menu_bar._format_value(None) == "(none)"
-
-    def test_empty_list_placeholder(self):
-        assert menu_bar._format_value([]) == "(empty)"
-
-    def test_short_list_shows_all_values(self):
-        assert menu_bar._format_value(["a", "b"]) == "a, b"
-
-    def test_long_list_truncates_with_count(self):
-        assert menu_bar._format_value(["a", "b", "c", "d", "e"]) == "a, b, c +2 more"
-
-    def test_scalar_stringified(self):
-        assert menu_bar._format_value(30) == "30"
-
-    def test_list_of_spreadsheet_pair_dicts_uses_format_pair_line(self):
-        value = [{"spreadsheet_id": "sheet1", "tab": "Sheet1"}, {"spreadsheet_id": "sheet2"}]
-        assert menu_bar._format_value(value) == "sheet1:Sheet1, sheet2"
-
-
 class TestFormatPairLine:
     def test_with_tab(self):
         assert menu_bar._format_pair_line({"spreadsheet_id": "sheet1", "tab": "Sheet1"}) == "sheet1:Sheet1"
@@ -505,15 +488,19 @@ class TestBuildRulesMenu:
         titles = {item.title for item in rules_parent.values()}
         assert "Sheets" in titles
 
+        # Sheets has no grantable resource type of its own (drive.folders/
+        # sandbox_folders/spreadsheets grants live under "Drive" -- see
+        # resource_grants.py), so its top-level entry is Filters-only.
         sheets_item = rules_parent["Sheets"]
-        sub_titles = {i.title for i in sheets_item.values()}
+        assert {i.title for i in sheets_item.values()} == {"Filters"}
+        sub_titles = {i.title for i in sheets_item["Filters"].values()}
         assert sub_titles == {
             "Read values", "Write range", "Add tab", "Rename tab", "Format range",
         }
 
         drive_item = rules_parent["Drive"]
-        drive_sub_titles = {i.title for i in drive_item.values()}
-        assert not (drive_sub_titles & sub_titles)  # Sheets ops aren't duplicated under Drive
+        drive_filter_titles = {i.title for i in drive_item["Filters"].values()}
+        assert not (drive_filter_titles & sub_titles)  # Sheets ops aren't duplicated under Drive
 
     def test_connector_with_no_configurable_ops_shows_placeholder(self, app, monkeypatch):
         # Every real connector has at least one entry in OPERATION_LABELS
@@ -528,32 +515,42 @@ class TestBuildRulesMenu:
     def test_tasks_shows_its_write_operations(self, app):
         rules_parent = app._build_rules_menu({})
         tasks_item = rules_parent["Tasks"]
-        sub_titles = {i.title for i in tasks_item.values()}
+        # Tasks also gets a "Trusted Task Lists" grant submenu now, alongside
+        # its Filters submenu -- see resource_grants.py's tasks.task_lists.
+        assert {i.title for i in tasks_item.values()} == {"Trusted Task Lists", "Filters"}
+        sub_titles = {i.title for i in tasks_item["Filters"].values()}
         assert sub_titles == {
             "Create task", "Update task", "Complete task",
             "Uncomplete task", "Move task",
         }
 
     def test_existing_rule_appears_with_toggle_and_remove(self, app):
-        rules_cfg = {"gmail.read_message": [{"rule": "i_am_sender"}]}
-        rules_parent = app._build_rules_menu(rules_cfg)
+        cfg = {"auto_accept_rules": {"gmail.read_message": [{"rule": "i_am_sender"}]}}
+        rules_parent = app._build_rules_menu(cfg)
         gmail_item = rules_parent["Gmail"]
-        read_message_item = gmail_item["Read message"]
+        read_message_item = gmail_item["Filters"]["Read message"]
         sub_titles = [i.title for i in read_message_item.values()]
+        # Boolean rules (no value) render as a single click-to-remove row --
+        # no separate toggle/remove pair, see _build_rule_row.
         assert any("i_am_sender" in t for t in sub_titles)
-        assert any("Remove" in t for t in sub_titles)
 
-    def test_rule_with_list_value_shows_edit_entry(self, app):
-        rules_cfg = {"gmail.read_message": [{"rule": "trusted_sender_domain", "value": ["a.com"]}]}
-        rules_parent = app._build_rules_menu(rules_cfg)
-        read_message_item = rules_parent["Gmail"]["Read message"]
-        sub_titles = [i.title for i in read_message_item.values()]
-        assert any("Edit…" in t for t in sub_titles)
+    def test_rule_with_list_value_shows_each_entry_and_add_value(self, app):
+        # List-value rules no longer open a shared multi-line "Edit…" box --
+        # each value is its own row (with its own Remove), plus a single
+        # "+ Add value…" row to add another one at a time.
+        cfg = {"auto_accept_rules": {"gmail.read_message": [{"rule": "trusted_sender_domain", "value": ["a.com"]}]}}
+        rules_parent = app._build_rules_menu(cfg)
+        read_message_item = rules_parent["Gmail"]["Filters"]["Read message"]
+        rule_row = read_message_item["  trusted_sender_domain"]
+        sub_titles = [i.title for i in rule_row.values()]
+        assert any("a.com" in t for t in sub_titles)
+        assert any("Add value" in t for t in sub_titles)
+        assert not any("Edit…" in t for t in sub_titles)
 
     def test_rule_without_value_has_no_edit_entry(self, app):
-        rules_cfg = {"gmail.read_message": [{"rule": "i_am_sender"}]}
-        rules_parent = app._build_rules_menu(rules_cfg)
-        read_message_item = rules_parent["Gmail"]["Read message"]
+        cfg = {"auto_accept_rules": {"gmail.read_message": [{"rule": "i_am_sender"}]}}
+        rules_parent = app._build_rules_menu(cfg)
+        read_message_item = rules_parent["Gmail"]["Filters"]["Read message"]
         sub_titles = [i.title for i in read_message_item.values()]
         assert not any("Edit…" in t for t in sub_titles)
 
@@ -680,15 +677,20 @@ class TestAddRule:
         cfg = app._load_config()
         assert cfg["auto_accept_rules"]["gmail.read_message"] == [{"rule": "i_am_sender"}]
 
-    def test_rule_with_list_value_prompts_and_splits_lines(self, app, monkeypatch):
+    def test_rule_with_list_value_starts_empty_no_prompt(self, app, monkeypatch):
+        # List-value rules no longer prompt immediately for a (multi-line)
+        # value -- they're created empty and populated one value at a time
+        # via "+ Add value..." on the new row (see TestAddRuleValue).
         monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: "trusted_sender_domain")
-        monkeypatch.setattr(menu_bar.rumps, "Window", _fake_window(clicked=True, text="a.com\nb.com\n"))
+        window_calls = []
+        monkeypatch.setattr(menu_bar.rumps, "Window", lambda **kw: window_calls.append(kw))
 
         app._add_rule("gmail.read_message")
 
+        assert window_calls == []
         cfg = app._load_config()
         assert cfg["auto_accept_rules"]["gmail.read_message"] == [
-            {"rule": "trusted_sender_domain", "value": ["a.com", "b.com"]}
+            {"rule": "trusted_sender_domain", "value": []}
         ]
 
     def test_rule_with_int_value_parses_integer(self, app, monkeypatch):
@@ -711,36 +713,32 @@ class TestAddRule:
         assert len(alerts) == 1
         assert app._load_config().get("auto_accept_rules", {}) == {}
 
-    def test_cancelled_value_prompt_makes_no_change(self, app, monkeypatch):
-        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: "trusted_sender_domain")
-        monkeypatch.setattr(menu_bar.rumps, "Window", _fake_window(clicked=False))
-
-        app._add_rule("gmail.read_message")
-
-        assert app._load_config().get("auto_accept_rules", {}) == {}
-
-    def test_empty_value_text_makes_no_change(self, app, monkeypatch):
-        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: "trusted_sender_domain")
-        monkeypatch.setattr(menu_bar.rumps, "Window", _fake_window(clicked=True, text="   "))
-
-        app._add_rule("gmail.read_message")
-
-        assert app._load_config().get("auto_accept_rules", {}) == {}
-
-    def test_pair_value_rule_parses_id_and_id_colon_tab_lines(self, app, monkeypatch):
+    def test_pair_value_rule_starts_empty_no_prompt(self, app, monkeypatch):
+        # approved_spreadsheet is normally offered via a grant now (see
+        # resource_grants.py's drive.spreadsheets); this exercises _add_rule's
+        # generic pair-value handling regardless of what the picker returned.
         monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: "approved_spreadsheet")
-        monkeypatch.setattr(menu_bar.rumps, "Window", _fake_window(clicked=True, text="sheet1\nsheet2:Sheet1"))
+        window_calls = []
+        monkeypatch.setattr(menu_bar.rumps, "Window", lambda **kw: window_calls.append(kw))
 
         app._add_rule("sheets.read_values")
 
+        assert window_calls == []
         cfg = app._load_config()
-        assert cfg["auto_accept_rules"]["sheets.read_values"] == [{
-            "rule": "approved_spreadsheet",
-            "value": [{"spreadsheet_id": "sheet1"}, {"spreadsheet_id": "sheet2", "tab": "Sheet1"}],
-        }]
+        assert cfg["auto_accept_rules"]["sheets.read_values"] == [
+            {"rule": "approved_spreadsheet", "value": []}
+        ]
 
-    def test_pair_value_rule_prompt_uses_pair_specific_hint_kind(self, app, monkeypatch):
-        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: "approved_spreadsheet")
+    def test_add_rule_int_prompt_starts_empty_not_prefilled_with_hint(self, app, monkeypatch):
+        # Regression: the "Add rule" dialog used to pre-fill the text field with
+        # the RULE_HINTS example value, so the first line looked like garbage
+        # data the user had to delete before typing their real value. The
+        # example belongs in the message text, not in the editable field's
+        # initial content. (List/pair-value rules no longer prompt at all in
+        # _add_rule -- see test_rule_with_list_value_starts_empty_no_prompt --
+        # so the int-value case is the only one left that still opens a Window
+        # here.)
+        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: "age_threshold_days")
         captured = {}
         class _CapturingWindow:
             def __init__(self, **kwargs):
@@ -749,74 +747,39 @@ class TestAddRule:
                 return _FakeWindowResponse(clicked=False)
         monkeypatch.setattr(menu_bar.rumps, "Window", _CapturingWindow)
 
-        app._add_rule("sheets.read_values")
+        app._add_rule("gmail.read_message")
 
-        assert "spreadsheet_id" in captured["message"]
+        assert captured["default_text"] == ""
+        assert "Example:" in captured["message"]
+        assert menu_bar.RULE_HINTS["age_threshold_days"] in captured["message"]
 
-    def test_rename_sheet_offers_approved_sandbox_folder(self, app, monkeypatch):
-        # Regression: rename_sheet/format_range used to have no folder-scoped
-        # rule at all, so a folder approved for write_range/add_sheet had no
-        # effect on these two -- they always prompted regardless.
+    def test_grant_covered_rules_are_not_offered(self, app, monkeypatch):
+        # approved_sandbox_folder is grant-managed now (drive.sandbox_folders
+        # -- see resource_grants.py); rename_sheet/format_range used to have
+        # no folder-scoped rule offered at all, then gained one as a raw rule
+        # -- now it's offered as a grant capability instead, so it must NOT
+        # appear in _add_rule's own picker options anymore (there's no longer
+        # a second, more tedious way to do the same thing).
         captured = {}
         monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: captured.update(kw) or None)
 
         app._add_rule("sheets.rename_sheet")
+        assert "approved_sandbox_folder" not in captured["options"]
 
-        assert "approved_sandbox_folder" in captured["options"]
-
-    def test_format_range_offers_approved_sandbox_folder(self, app, monkeypatch):
-        captured = {}
-        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: captured.update(kw) or None)
-
+        captured.clear()
         app._add_rule("sheets.format_range")
-
-        assert "approved_sandbox_folder" in captured["options"]
-
-
-class TestToggleRule:
-    def _seed(self, app, op_key, rules):
-        cfg = app._load_config()
-        cfg.setdefault("auto_accept_rules", {})[op_key] = rules
-        app._save_config(cfg)
-
-    def test_removes_the_rule_at_index(self, app):
-        self._seed(app, "gmail.read_message", [{"rule": "i_am_sender"}, {"rule": "trusted_sender_domain"}])
-
-        app._toggle_rule("gmail.read_message", 0)
-
-        cfg = app._load_config()
-        assert cfg["auto_accept_rules"]["gmail.read_message"] == [{"rule": "trusted_sender_domain"}]
-
-    def test_removing_last_rule_drops_the_operation_key_entirely(self, app):
-        self._seed(app, "gmail.read_message", [{"rule": "i_am_sender"}])
-
-        app._toggle_rule("gmail.read_message", 0)
-
-        assert "gmail.read_message" not in app._load_config().get("auto_accept_rules", {})
-
-    def test_out_of_range_index_is_a_no_op(self, app):
-        self._seed(app, "gmail.read_message", [{"rule": "i_am_sender"}])
-        before = app._load_config()
-
-        app._toggle_rule("gmail.read_message", 5)
-
-        assert app._load_config() == before
+        assert "approved_sandbox_folder" not in captured["options"]
 
 
 class TestEditRuleValue:
+    """_edit_rule_value is only reachable for RULES_INT_VALUE rows now --
+    list/pair values are edited one at a time via _add_rule_value/
+    _remove_rule_value instead (see TestAddRuleValue/TestRemoveRuleValue)."""
+
     def _seed(self, app, op_key, rules):
         cfg = app._load_config()
         cfg.setdefault("auto_accept_rules", {})[op_key] = rules
         app._save_config(cfg)
-
-    def test_edits_list_value_in_place(self, app, monkeypatch):
-        self._seed(app, "gmail.read_message", [{"rule": "trusted_sender_domain", "value": ["old.com"]}])
-        monkeypatch.setattr(menu_bar.rumps, "Window", _fake_window(clicked=True, text="new1.com\nnew2.com"))
-
-        app._edit_rule_value("gmail.read_message", 0)
-
-        rules = app._load_config()["auto_accept_rules"]["gmail.read_message"]
-        assert rules[0]["value"] == ["new1.com", "new2.com"]
 
     def test_edits_int_value_in_place(self, app, monkeypatch):
         self._seed(app, "gmail.read_message", [{"rule": "age_threshold_days", "value": 10}])
@@ -827,36 +790,8 @@ class TestEditRuleValue:
         rules = app._load_config()["auto_accept_rules"]["gmail.read_message"]
         assert rules[0]["value"] == 99
 
-    def test_edits_pair_value_in_place(self, app, monkeypatch):
-        self._seed(app, "sheets.read_values", [{
-            "rule": "approved_spreadsheet", "value": [{"spreadsheet_id": "old"}],
-        }])
-        monkeypatch.setattr(menu_bar.rumps, "Window", _fake_window(clicked=True, text="new1\nnew2:Sheet1"))
-
-        app._edit_rule_value("sheets.read_values", 0)
-
-        rules = app._load_config()["auto_accept_rules"]["sheets.read_values"]
-        assert rules[0]["value"] == [{"spreadsheet_id": "new1"}, {"spreadsheet_id": "new2", "tab": "Sheet1"}]
-
-    def test_prefills_pair_value_as_id_colon_tab_lines(self, app, monkeypatch):
-        self._seed(app, "sheets.read_values", [{
-            "rule": "approved_spreadsheet",
-            "value": [{"spreadsheet_id": "sheet1", "tab": "Sheet1"}, {"spreadsheet_id": "sheet2"}],
-        }])
-        captured = {}
-        class _CapturingWindow:
-            def __init__(self, **kwargs):
-                captured.update(kwargs)
-            def run(self):
-                return _FakeWindowResponse(clicked=False)
-        monkeypatch.setattr(menu_bar.rumps, "Window", _CapturingWindow)
-
-        app._edit_rule_value("sheets.read_values", 0)
-
-        assert captured["default_text"] == "sheet1:Sheet1\nsheet2"
-
-    def test_prefills_current_value_as_default_text(self, app, monkeypatch):
-        self._seed(app, "gmail.read_message", [{"rule": "trusted_sender_domain", "value": ["a.com", "b.com"]}])
+    def test_prefills_current_int_value_as_default_text(self, app, monkeypatch):
+        self._seed(app, "gmail.read_message", [{"rule": "age_threshold_days", "value": 10}])
         captured = {}
         class _CapturingWindow:
             def __init__(self, **kwargs):
@@ -867,7 +802,7 @@ class TestEditRuleValue:
 
         app._edit_rule_value("gmail.read_message", 0)
 
-        assert captured["default_text"] == "a.com\nb.com"
+        assert captured["default_text"] == "10"
 
     def test_cancelled_edit_makes_no_change(self, app, monkeypatch):
         self._seed(app, "gmail.read_message", [{"rule": "trusted_sender_domain", "value": ["a.com"]}])
@@ -948,6 +883,400 @@ class TestRemoveRule:
         app._remove_rule("gmail.read_message", 9)
 
         assert app._load_config() == before
+
+
+class TestAddRuleValue:
+    def _seed(self, app, op_key, rules):
+        cfg = app._load_config()
+        cfg.setdefault("auto_accept_rules", {})[op_key] = rules
+        app._save_config(cfg)
+
+    def test_appends_a_value_to_an_existing_list_rule(self, app, monkeypatch):
+        self._seed(app, "gmail.read_message", [{"rule": "trusted_sender_domain", "value": ["a.com"]}])
+        monkeypatch.setattr(menu_bar.rumps, "Window", _fake_window(clicked=True, text="b.com"))
+
+        app._add_rule_value("gmail.read_message", 0)
+
+        rules = app._load_config()["auto_accept_rules"]["gmail.read_message"]
+        assert rules[0]["value"] == ["a.com", "b.com"]
+
+    def test_does_not_duplicate_an_existing_value(self, app, monkeypatch):
+        self._seed(app, "gmail.read_message", [{"rule": "trusted_sender_domain", "value": ["a.com"]}])
+        monkeypatch.setattr(menu_bar.rumps, "Window", _fake_window(clicked=True, text="a.com"))
+
+        app._add_rule_value("gmail.read_message", 0)
+
+        rules = app._load_config()["auto_accept_rules"]["gmail.read_message"]
+        assert rules[0]["value"] == ["a.com"]
+
+    def test_hint_shown_in_message_not_prefilled(self, app, monkeypatch):
+        # Same fix as _add_rule's int-value prompt -- see
+        # test_add_rule_int_prompt_starts_empty_not_prefilled_with_hint.
+        self._seed(app, "gmail.read_message", [{"rule": "trusted_sender_domain", "value": []}])
+        captured = {}
+        class _CapturingWindow:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+            def run(self):
+                return _FakeWindowResponse(clicked=False)
+        monkeypatch.setattr(menu_bar.rumps, "Window", _CapturingWindow)
+
+        app._add_rule_value("gmail.read_message", 0)
+
+        assert captured["default_text"] == ""
+        assert "Example:" in captured["message"]
+
+    def test_pair_value_parses_id_and_id_colon_tab(self, app, monkeypatch):
+        self._seed(app, "sheets.read_values", [{"rule": "approved_spreadsheet", "value": []}])
+        monkeypatch.setattr(menu_bar.rumps, "Window", _fake_window(clicked=True, text="sheet1:Sheet1"))
+
+        app._add_rule_value("sheets.read_values", 0)
+
+        rules = app._load_config()["auto_accept_rules"]["sheets.read_values"]
+        assert rules[0]["value"] == [{"spreadsheet_id": "sheet1", "tab": "Sheet1"}]
+
+    def test_cancelled_prompt_makes_no_change(self, app, monkeypatch):
+        self._seed(app, "gmail.read_message", [{"rule": "trusted_sender_domain", "value": ["a.com"]}])
+        monkeypatch.setattr(menu_bar.rumps, "Window", _fake_window(clicked=False))
+
+        app._add_rule_value("gmail.read_message", 0)
+
+        rules = app._load_config()["auto_accept_rules"]["gmail.read_message"]
+        assert rules[0]["value"] == ["a.com"]
+
+    def test_out_of_range_index_is_a_no_op(self, app):
+        self._seed(app, "gmail.read_message", [{"rule": "trusted_sender_domain", "value": ["a.com"]}])
+        before = app._load_config()
+
+        app._add_rule_value("gmail.read_message", 9)
+
+        assert app._load_config() == before
+
+
+class TestRemoveRuleValue:
+    def _seed(self, app, op_key, rules):
+        cfg = app._load_config()
+        cfg.setdefault("auto_accept_rules", {})[op_key] = rules
+        app._save_config(cfg)
+
+    def test_removes_one_value_keeps_the_rest(self, app):
+        self._seed(app, "gmail.read_message", [{"rule": "trusted_sender_domain", "value": ["a.com", "b.com"]}])
+
+        app._remove_rule_value("gmail.read_message", 0, 0)
+
+        rules = app._load_config()["auto_accept_rules"]["gmail.read_message"]
+        assert rules[0]["value"] == ["b.com"]
+
+    def test_removing_the_last_value_drops_the_whole_rule(self, app):
+        self._seed(app, "gmail.read_message", [{"rule": "trusted_sender_domain", "value": ["a.com"]}])
+
+        app._remove_rule_value("gmail.read_message", 0, 0)
+
+        assert "gmail.read_message" not in app._load_config().get("auto_accept_rules", {})
+
+    def test_removing_last_value_of_one_rule_keeps_sibling_rules(self, app):
+        self._seed(app, "gmail.read_message", [
+            {"rule": "trusted_sender_domain", "value": ["a.com"]},
+            {"rule": "i_am_sender"},
+        ])
+
+        app._remove_rule_value("gmail.read_message", 0, 0)
+
+        rules = app._load_config()["auto_accept_rules"]["gmail.read_message"]
+        assert rules == [{"rule": "i_am_sender"}]
+
+    def test_out_of_range_value_index_is_a_no_op(self, app):
+        self._seed(app, "gmail.read_message", [{"rule": "trusted_sender_domain", "value": ["a.com"]}])
+        before = app._load_config()
+
+        app._remove_rule_value("gmail.read_message", 0, 9)
+
+        assert app._load_config() == before
+
+
+class TestClientFor:
+    def test_returns_the_connected_connector_s_client(self, app):
+        fake_client = object()
+        app._connector_objs = {"drive": SimpleNamespace(client=fake_client)}
+
+        assert app._client_for("drive") is fake_client
+
+    def test_returns_none_for_an_unconnected_connector(self, app):
+        app._connector_objs = {}
+
+        assert app._client_for("drive") is None
+
+
+class TestBuildGrantResourceMenu:
+    def test_new_grant_defaults_every_capability_off(self, app):
+        cfg = {"auto_accept_grants": {"drive": {"sandbox_folders": [{"id": "F1"}]}}}
+        rt = menu_bar.grant_resource_type("drive", "sandbox_folders")
+        grants_cfg = cfg["auto_accept_grants"]
+
+        group_item = app._build_grant_resource_menu(rt, grants_cfg)
+
+        folder_row = group_item.values()[0]
+        assert any("☑" in c.title for c in folder_row.values()) is False
+
+    def test_resolved_name_is_shown_instead_of_raw_id(self, app):
+        rt = menu_bar.grant_resource_type("drive", "sandbox_folders")
+        grants_cfg = {"drive": {"sandbox_folders": [{"id": "F1", "name": "Scratch", "write": True}]}}
+
+        group_item = app._build_grant_resource_menu(rt, grants_cfg)
+
+        folder_row = group_item.values()[0]
+        assert "Scratch" in folder_row.title
+        assert "F1" not in folder_row.title
+
+    def test_no_name_falls_back_to_short_id(self, app):
+        rt = menu_bar.grant_resource_type("drive", "sandbox_folders")
+        long_id = "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms"
+        grants_cfg = {"drive": {"sandbox_folders": [{"id": long_id, "write": True}]}}
+
+        group_item = app._build_grant_resource_menu(rt, grants_cfg)
+
+        folder_row = group_item.values()[0]
+        assert menu_bar._short_id(long_id) in folder_row.title
+
+    def test_add_item_is_always_present(self, app):
+        rt = menu_bar.grant_resource_type("drive", "sandbox_folders")
+
+        group_item = app._build_grant_resource_menu(rt, {})
+
+        assert any("Add folder" in i.title for i in group_item.values())
+
+
+class TestToggleGrantCapability:
+    def test_toggles_capability_on(self, app):
+        cfg = {"auto_accept_grants": {"drive": {"sandbox_folders": [{"id": "F1", "write": False}]}}}
+        app._save_config(cfg)
+
+        app._toggle_grant_capability("drive", "sandbox_folders", 0, "write")
+
+        entries = app._load_config()["auto_accept_grants"]["drive"]["sandbox_folders"]
+        assert entries[0]["write"] is True
+
+    def test_toggles_capability_off(self, app):
+        cfg = {"auto_accept_grants": {"drive": {"sandbox_folders": [{"id": "F1", "write": True}]}}}
+        app._save_config(cfg)
+
+        app._toggle_grant_capability("drive", "sandbox_folders", 0, "write")
+
+        entries = app._load_config()["auto_accept_grants"]["drive"]["sandbox_folders"]
+        assert entries[0]["write"] is False
+
+    def test_unknown_resource_type_is_a_no_op(self, app):
+        before = app._load_config()
+
+        app._toggle_grant_capability("nope", "nope", 0, "write")
+
+        assert app._load_config() == before
+
+    def test_out_of_range_index_is_a_no_op(self, app):
+        cfg = {"auto_accept_grants": {"drive": {"sandbox_folders": [{"id": "F1", "write": True}]}}}
+        app._save_config(cfg)
+        before = app._load_config()
+
+        app._toggle_grant_capability("drive", "sandbox_folders", 9, "write")
+
+        assert app._load_config() == before
+
+
+class TestRemoveGrant:
+    def test_confirmed_removal_removes_the_entry(self, app, monkeypatch):
+        cfg = {"auto_accept_grants": {"drive": {"sandbox_folders": [{"id": "F1", "write": True}]}}}
+        app._save_config(cfg)
+        monkeypatch.setattr(menu_bar.rumps, "alert", lambda **kw: 1)
+
+        app._remove_grant("drive", "sandbox_folders", 0)
+
+        assert "auto_accept_grants" not in app._load_config() or not app._load_config().get(
+            "auto_accept_grants", {}
+        ).get("drive", {}).get("sandbox_folders")
+
+    def test_cancelled_removal_makes_no_change(self, app, monkeypatch):
+        cfg = {"auto_accept_grants": {"drive": {"sandbox_folders": [{"id": "F1", "write": True}]}}}
+        app._save_config(cfg)
+        monkeypatch.setattr(menu_bar.rumps, "alert", lambda **kw: 0)
+
+        app._remove_grant("drive", "sandbox_folders", 0)
+
+        entries = app._load_config()["auto_accept_grants"]["drive"]["sandbox_folders"]
+        assert entries == [{"id": "F1", "write": True}]
+
+    def test_out_of_range_index_is_a_no_op(self, app, monkeypatch):
+        cfg = {"auto_accept_grants": {"drive": {"sandbox_folders": [{"id": "F1", "write": True}]}}}
+        app._save_config(cfg)
+        monkeypatch.setattr(menu_bar.rumps, "alert", lambda **kw: 1)
+        before = app._load_config()
+
+        app._remove_grant("drive", "sandbox_folders", 9)
+
+        assert app._load_config() == before
+
+
+class TestConfirmAndSaveGrant:
+    def test_confirmed_add_creates_a_grant_with_every_capability_off(self, app, monkeypatch):
+        monkeypatch.setattr(menu_bar.rumps, "alert", lambda **kw: 1)
+        rt = menu_bar.grant_resource_type("drive", "sandbox_folders")
+
+        app._confirm_and_save_grant(rt, "F1", "Scratch", "")
+
+        entries = app._load_config()["auto_accept_grants"]["drive"]["sandbox_folders"]
+        assert entries == [{"id": "F1", "name": "Scratch"}]
+
+    def test_cancelled_confirmation_saves_nothing(self, app, monkeypatch):
+        monkeypatch.setattr(menu_bar.rumps, "alert", lambda **kw: 0)
+        rt = menu_bar.grant_resource_type("drive", "sandbox_folders")
+
+        app._confirm_and_save_grant(rt, "F1", "Scratch", "")
+
+        assert app._load_config().get("auto_accept_grants", {}) == {}
+
+    def test_duplicate_resource_id_is_rejected(self, app, monkeypatch):
+        cfg = {"auto_accept_grants": {"drive": {"sandbox_folders": [{"id": "F1", "write": True}]}}}
+        app._save_config(cfg)
+        alerts = []
+        monkeypatch.setattr(menu_bar.rumps, "alert", lambda *a, **kw: alerts.append((a, kw)) or 1)
+        rt = menu_bar.grant_resource_type("drive", "sandbox_folders")
+
+        app._confirm_and_save_grant(rt, "F1", "Scratch", "")
+
+        entries = app._load_config()["auto_accept_grants"]["drive"]["sandbox_folders"]
+        assert entries == [{"id": "F1", "write": True}]  # unchanged, not duplicated
+        assert len(alerts) == 2  # the "already trusted" alert, on top of the initial confirmation
+
+    def test_spreadsheet_tab_is_stored_on_the_entry(self, app, monkeypatch):
+        monkeypatch.setattr(menu_bar.rumps, "alert", lambda **kw: 1)
+        rt = menu_bar.grant_resource_type("drive", "spreadsheets")
+
+        app._confirm_and_save_grant(rt, "S1", "Budget Sheet", "Q3")
+
+        entries = app._load_config()["auto_accept_grants"]["drive"]["spreadsheets"]
+        assert entries == [{"id": "S1", "name": "Budget Sheet", "tab": "Q3"}]
+
+
+class TestOnCandidatesListed:
+    def test_no_candidates_alerts_and_saves_nothing(self, app, monkeypatch):
+        alerts = []
+        monkeypatch.setattr(menu_bar.rumps, "alert", lambda *a, **kw: alerts.append((a, kw)) or 1)
+        rt = menu_bar.grant_resource_type("tasks", "task_lists")
+
+        app._on_candidates_listed(rt, [])
+
+        assert len(alerts) == 1
+        assert app._load_config().get("auto_accept_grants", {}) == {}
+
+    def test_picked_candidate_is_saved_with_its_name(self, app, monkeypatch):
+        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: "Work (LIST2)")
+        monkeypatch.setattr(menu_bar.rumps, "alert", lambda **kw: 1)
+        rt = menu_bar.grant_resource_type("tasks", "task_lists")
+
+        app._on_candidates_listed(rt, [("LIST1", "Personal"), ("LIST2", "Work")])
+
+        entries = app._load_config()["auto_accept_grants"]["tasks"]["task_lists"]
+        assert entries == [{"id": "LIST2", "name": "Work"}]
+
+    def test_cancelled_picker_saves_nothing(self, app, monkeypatch):
+        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: None)
+        rt = menu_bar.grant_resource_type("tasks", "task_lists")
+
+        app._on_candidates_listed(rt, [("LIST1", "Personal")])
+
+        assert app._load_config().get("auto_accept_grants", {}) == {}
+
+
+class TestAddGrant:
+    def test_enumerable_resource_lists_candidates_via_the_live_client(self, app, monkeypatch):
+        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: None)  # cancel the picker
+        listed = []
+
+        class _FakeTaskList:
+            def __init__(self, id, title):
+                self.id = id
+                self.title = title
+
+        class _FakeTasksClient:
+            def list_task_lists(self):
+                listed.append(True)
+                return [_FakeTaskList("LIST1", "Personal")]
+
+        app._connector_objs = {"tasks": SimpleNamespace(client=_FakeTasksClient())}
+
+        app._add_grant("tasks", "task_lists")
+
+        assert listed == [True]
+
+    def test_enumerable_resource_with_no_connected_client_alerts(self, app, monkeypatch):
+        alerts = []
+        monkeypatch.setattr(menu_bar.rumps, "alert", lambda *a, **kw: alerts.append((a, kw)) or 1)
+        app._connector_objs = {}
+
+        app._add_grant("tasks", "task_lists")
+
+        assert len(alerts) == 1
+        assert app._load_config().get("auto_accept_grants", {}) == {}
+
+    def test_paste_id_resource_extracts_id_from_pasted_url_and_confirms(self, app, monkeypatch):
+        monkeypatch.setattr(
+            menu_bar.rumps, "Window",
+            _fake_window(clicked=True, text="https://drive.google.com/drive/folders/FOLDER9"),
+        )
+        monkeypatch.setattr(menu_bar.rumps, "alert", lambda **kw: 1)
+        app._connector_objs = {}  # no client -- confirm-by-ID-only path
+
+        app._add_grant("drive", "sandbox_folders")
+
+        entries = app._load_config()["auto_accept_grants"]["drive"]["sandbox_folders"]
+        assert entries == [{"id": "FOLDER9"}]
+
+    def test_paste_id_resource_cancelled_prompt_saves_nothing(self, app, monkeypatch):
+        monkeypatch.setattr(menu_bar.rumps, "Window", _fake_window(clicked=False))
+
+        app._add_grant("drive", "sandbox_folders")
+
+        assert app._load_config().get("auto_accept_grants", {}) == {}
+
+    def test_paste_id_resource_with_unparseable_text_alerts(self, app, monkeypatch):
+        monkeypatch.setattr(menu_bar.rumps, "Window", _fake_window(clicked=True, text="not a url or id"))
+        alerts = []
+        monkeypatch.setattr(menu_bar.rumps, "alert", lambda *a, **kw: alerts.append((a, kw)) or 1)
+
+        app._add_grant("drive", "sandbox_folders")
+
+        assert len(alerts) == 1
+        assert app._load_config().get("auto_accept_grants", {}) == {}
+
+
+class TestExtractDriveId:
+    def test_bare_id_is_accepted_as_is(self):
+        assert menu_bar._extract_drive_id("FOLDER1") == "FOLDER1"
+
+    def test_folder_url_extracts_the_id(self):
+        url = "https://drive.google.com/drive/folders/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms?usp=sharing"
+        assert menu_bar._extract_drive_id(url) == "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms"
+
+    def test_file_url_extracts_the_id(self):
+        url = "https://docs.google.com/spreadsheets/d/1AbCdEf12345/edit#gid=0"
+        assert menu_bar._extract_drive_id(url) == "1AbCdEf12345"
+
+    def test_unparseable_text_returns_empty_string(self):
+        assert menu_bar._extract_drive_id("not a url or id, has spaces") == ""
+
+    def test_empty_text_returns_empty_string(self):
+        assert menu_bar._extract_drive_id("") == ""
+
+
+class TestShortId:
+    def test_short_id_returned_unchanged(self):
+        assert menu_bar._short_id("FOLDER1") == "FOLDER1"
+
+    def test_long_id_truncated_with_ellipsis(self):
+        long_id = "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms"
+        result = menu_bar._short_id(long_id)
+        assert result.startswith("1BxiMVs0")
+        assert result.endswith(long_id[-6:])
+        assert "…" in result
 
 
 class TestInstallOrgConfig:
@@ -1322,6 +1651,58 @@ class TestPrompt:
 
         assert clicked is False
         assert text == ""
+
+
+class TestUnattendedIndicator:
+    """The top menu item's live count of connections currently in an
+    unattended session (see docs/TECHNICAL_REFERENCE.md's "Scheduled /
+    unattended Cowork tasks" section) -- ipc_server.py fires
+    set_unattended_changed_listener from its own
+    asyncio thread, so this must marshal through AppHelper.callAfter the
+    same way _on_rules_changed does (see TestRunAsyncMarshaling's module
+    docstring for why that matters)."""
+
+    def test_status_label_no_unattended_sessions(self, app):
+        app._ipc_server.unattended_session_count = lambda: 0
+        assert app._status_label() == "PrivacyFence is running"
+
+    def test_status_label_singular(self, app):
+        app._ipc_server.unattended_session_count = lambda: 1
+        assert app._status_label() == "PrivacyFence is running — 1 unattended session active"
+
+    def test_status_label_plural(self, app):
+        app._ipc_server.unattended_session_count = lambda: 3
+        assert app._status_label() == "PrivacyFence is running — 3 unattended sessions active"
+
+    def test_registers_a_listener_with_the_ipc_server_on_init(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(menu_bar, "_find_icon", lambda: None)
+        monkeypatch.setattr(menu_bar, "load_org_config", lambda: {})
+        config_path = tmp_path / "settings.yaml"
+        config_path.write_text("auto_accept_rules: {}\nconnectors: {}\n", encoding="utf-8")
+
+        registered = []
+        ipc_server = SimpleNamespace(
+            set_connectors=lambda conns: None,
+            unattended_session_count=lambda: 0,
+            set_unattended_changed_listener=lambda callback: registered.append(callback),
+        )
+
+        instance = menu_bar.PrivacyFenceMenuBar(str(config_path), connectors=[], ipc_server=ipc_server)
+
+        assert registered == [instance._on_unattended_changed]
+
+    def test_on_unattended_changed_marshals_rebuild_through_app_helper(self, app, monkeypatch):
+        # Rather than asserting on the rendered menu (rumps has no headless
+        # render target worth inspecting -- see this module's docstring),
+        # confirm the rebuild is handed to AppHelper.callAfter rather than
+        # invoked directly, which is what protects the main thread from a
+        # callback fired off ipc_server.py's own asyncio thread.
+        recorded = []
+        monkeypatch.setattr(menu_bar.AppHelper, "callAfter", lambda f, *a, **k: recorded.append(f))
+
+        app._on_unattended_changed()
+
+        assert recorded == [app._rebuild]
 
 
 class TestMiscActions:

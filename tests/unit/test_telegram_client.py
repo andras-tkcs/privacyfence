@@ -9,7 +9,9 @@ connect() tests, since constructing a real Telethon client touches disk
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -25,6 +27,8 @@ from privacyfence.telegram_client import (
     _peer_id,
 )
 from telethon.tl.types import Channel, Chat, User
+
+LIVE_FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "live" / "telegram"
 
 
 def make_client() -> TelegramPrivacyFenceClient:
@@ -515,3 +519,57 @@ class TestSendMessage:
         client = connected_client(fake)
         with pytest.raises(TelegramClientError, match="send_message"):
             await client.send_message(5, "hi")
+
+
+# ---------------------------------------------------------------------------- #
+# Live fixture replay
+# ---------------------------------------------------------------------------- #
+
+def _message_from_fixture(raw: dict) -> SimpleNamespace:
+    """Reconstruct just enough of a Telethon Message's attribute shape from
+    a recorded fixture dict to drive the real _parse_message().
+
+    Unlike every other connector's fixture (a plain JSON dict/list that its
+    _parse_* method already accepts as-is), _parse_message() reads
+    attributes (msg.sender, msg.date, ...) off a real Telethon object, not
+    dict keys -- and msg.sender in particular is a *lazily resolved*
+    Telethon property (SenderGetter), not part of to_dict()'s output at
+    all, so this can only rebuild an id-only stand-in from from_id, not a
+    fully resolved profile. That's a real, structural limitation of
+    replaying Telegram fixtures, not an oversight.
+    """
+    from_id = raw.get("from_id") or {}
+    user_id = from_id.get("user_id")
+    sender = SimpleNamespace(id=user_id, username="", first_name="", last_name="") if user_id else None
+    date_str = raw.get("date")
+    date = datetime.fromisoformat(date_str) if date_str else None
+    return SimpleNamespace(
+        id=raw.get("id"), sender=sender, date=date,
+        text=raw.get("message", ""), message=raw.get("message", ""),
+        out=False, media=None,
+    )
+
+
+class TestLiveFixtureParsing:
+    """Replays a fixture recorded from the real, [QATEST]-tagged seed
+    message in Saved Messages by scripts/qa_fixture_recorder.py --record
+    telegram -- real API shape, not hand-authored. Skipped (not failed)
+    until that fixture exists; see tests/fixtures/live/README.md and
+    docs/testing-policy.md. Re-record via that
+    script if this ever starts failing after a genuine Telegram API change.
+    """
+
+    def test_get_messages_fixture_still_parses(self):
+        path = LIVE_FIXTURES_DIR / "get_messages.json"
+        if not path.exists():
+            pytest.skip(
+                f"{path} not recorded yet -- run "
+                "`python3 scripts/qa_fixture_recorder.py --record telegram` locally first"
+            )
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        assert raw, "recorded fixture has no messages"
+
+        msg = _message_from_fixture(raw[0])
+        parsed = _parse_message(msg, chat_id=0, chat_name="Saved Messages")
+
+        assert parsed.text and "[QATEST]" in parsed.text

@@ -23,6 +23,10 @@ class ConfluenceConnector(Connector):
         self.my_email: str = ""
 
     @property
+    def client(self) -> ConfluenceClient:
+        return self._confluence
+
+    @property
     def name(self) -> str:
         return "confluence"
 

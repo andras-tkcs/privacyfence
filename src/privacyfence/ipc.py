@@ -9,9 +9,33 @@ Response:  {"id": "<str>", "result": …}
 
 Methods
 -------
-health    {} → {"version": "<str>", "connectors": ["gmail", …]}
-manifest  {} → {"version": "<str>", "connectors": [{"name": "<str>", "tools": [{ToolSpec.to_dict()}]}]}
-call      {"connector": "<str>", "tool": "<str>", "args": {…}} → <tool result>
+health        {} → {"version": "<str>", "connectors": ["gmail", …]}
+manifest      {} → {"version": "<str>", "connectors": [{"name": "<str>", "tools": [{ToolSpec.to_dict()}]}]}
+call          {"connector": "<str>", "tool": "<str>", "args": {…}} → <tool result>
+check_policy  {"connector": "<str>", "tool": "<str>", "args": {…}} →
+              {"gate": "auto"|"review"|"popup",
+               "verdict": "auto_accept"|"requires_review"|"unknown",
+               "matched_rule": <str|null>, "reason": "<str>",
+               "pii_gate_may_apply": <bool>}
+              Preflight only -- never reaches a connector, makes no external
+              API call, opens no popup, and never blocks. Backs
+              privacyfence_check_policy (see auto_accept.preflight_from_args).
+begin_unattended_session  {} → {"unattended": true}
+              Marks THIS connection as running an unattended/scheduled task:
+              until end_unattended_session (or disconnect), any "call" on
+              this connection that would otherwise open a native review/popup
+              dialog and no auto-accept rule already covers is denied
+              immediately (audited as "denied_unattended") instead of
+              blocking. Errors if unattended_sessions.enabled is false in
+              settings.yaml (off by default -- an administrator opts in).
+              Never changes what auto-accepts, only what happens when
+              nothing does. See docs/TECHNICAL_REFERENCE.md's "Scheduled /
+              unattended Cowork tasks" section.
+end_unattended_session    {} → {"unattended": false}
+              Clears the flag set by begin_unattended_session on this
+              connection. Also cleared automatically if the connection drops
+              (the bridge is one process per Cowork task, so this normally
+              happens anyway when the task ends).
 
 The bridge and the daemon are built and distributed independently (the bridge
 ships in PrivacyFence.mcpb, the daemon in PrivacyFenceApp.app) so they can end

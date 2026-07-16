@@ -7,7 +7,9 @@ googleapiclient service object.
 """
 from __future__ import annotations
 
+import json
 import threading
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -25,6 +27,8 @@ from privacyfence.calendar_client import (
     _has_timezone,
 )
 from googleapiclient.errors import HttpError
+
+LIVE_FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "live" / "calendar"
 
 
 def make_client(service: MagicMock) -> CalendarClient:
@@ -127,6 +131,16 @@ class TestParseEvent:
         client = make_client(MagicMock())
         event = client._parse_event({"id": "e1"}, "primary")
         assert event.status == "confirmed"
+
+    def test_missing_visibility_defaults_to_default(self):
+        client = make_client(MagicMock())
+        event = client._parse_event({"id": "e1"}, "primary")
+        assert event.visibility == "default"
+
+    def test_visibility_parsed_from_raw_event(self):
+        client = make_client(MagicMock())
+        event = client._parse_event({"id": "e1", "visibility": "private"}, "primary")
+        assert event.visibility == "private"
 
     def test_calendar_id_is_carried_from_caller_not_the_payload(self):
         client = make_client(MagicMock())
@@ -653,6 +667,74 @@ class TestUpdateEvent:
 
 
 # ---------------------------------------------------------------------------- #
+# set_event_visibility: only the visibility field changes
+# ---------------------------------------------------------------------------- #
+
+class TestSetEventVisibility:
+    def test_invalid_visibility_raises_before_any_api_call(self):
+        service = MagicMock()
+        client = make_client(service)
+        with pytest.raises(CalendarClientError, match="visibility must be one of"):
+            client.set_event_visibility("primary", "e1", "hidden")
+        service.events.return_value.get.assert_not_called()
+
+    def test_value_is_normalized_case_and_whitespace(self):
+        service = MagicMock()
+        service.events.return_value.get.return_value.execute.return_value = {"id": "e1", "summary": "Standup"}
+        service.events.return_value.update.return_value.execute.return_value = {"id": "e1", "visibility": "private"}
+        client = make_client(service)
+
+        client.set_event_visibility("primary", "e1", "  PRIVATE  ")
+
+        body = service.events.return_value.update.call_args.kwargs["body"]
+        assert body["visibility"] == "private"
+
+    def test_only_visibility_field_changes_other_fields_preserved(self):
+        service = MagicMock()
+        service.events.return_value.get.return_value.execute.return_value = {
+            "id": "e1", "summary": "Standup", "description": "daily sync", "location": "Room 1",
+        }
+        service.events.return_value.update.return_value.execute.return_value = {"id": "e1"}
+        client = make_client(service)
+
+        client.set_event_visibility("primary", "e1", "public")
+
+        body = service.events.return_value.update.call_args.kwargs["body"]
+        assert body["visibility"] == "public"
+        assert body["summary"] == "Standup"
+        assert body["description"] == "daily sync"
+        assert body["location"] == "Room 1"
+
+    def test_returns_parsed_updated_event(self):
+        service = MagicMock()
+        service.events.return_value.get.return_value.execute.return_value = {"id": "e1"}
+        service.events.return_value.update.return_value.execute.return_value = {
+            "id": "e1", "summary": "Standup", "visibility": "confidential",
+        }
+        client = make_client(service)
+
+        event = client.set_event_visibility("primary", "e1", "confidential")
+
+        assert event.visibility == "confidential"
+        assert event.title == "Standup"
+
+    def test_get_http_error_becomes_calendar_client_error(self):
+        service = MagicMock()
+        service.events.return_value.get.return_value.execute.side_effect = http_error(404)
+        client = make_client(service)
+        with pytest.raises(CalendarClientError, match="set_event_visibility get"):
+            client.set_event_visibility("primary", "e1", "private")
+
+    def test_update_http_error_becomes_calendar_client_error(self):
+        service = MagicMock()
+        service.events.return_value.get.return_value.execute.return_value = {"id": "e1"}
+        service.events.return_value.update.return_value.execute.side_effect = http_error(400)
+        client = make_client(service)
+        with pytest.raises(CalendarClientError, match="set_event_visibility update"):
+            client.set_event_visibility("primary", "e1", "private")
+
+
+# ---------------------------------------------------------------------------- #
 # create_out_of_office: always the "new conflicts only" autoDeclineMode,
 # always on the primary calendar
 # ---------------------------------------------------------------------------- #
@@ -802,3 +884,29 @@ class TestServiceIsThreadLocal:
             mock_build.side_effect = lambda *a, **k: MagicMock()
             assert client._get_service() is client._get_service()
             assert mock_build.call_count == 1
+
+
+class TestLiveFixtureParsing:
+    """Replays a fixture recorded from a real, [QATEST]-tagged seed event by
+    scripts/qa_fixture_recorder.py --record calendar -- real API shape, not
+    hand-authored, with organizer/attendee identity already redacted.
+    Skipped (not failed) until that fixture exists; see
+    tests/fixtures/live/README.md and
+    docs/testing-policy.md. Re-record via that
+    script if this ever starts failing after a genuine Calendar API
+    change.
+    """
+
+    def test_get_event_fixture_still_parses(self):
+        path = LIVE_FIXTURES_DIR / "get_event.json"
+        if not path.exists():
+            pytest.skip(
+                f"{path} not recorded yet -- run "
+                "`python3 scripts/qa_fixture_recorder.py --record calendar` locally first"
+            )
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        client = make_client(MagicMock())
+
+        event = client._parse_event(raw, "primary")
+
+        assert event.title and event.start_time and event.organizer_email

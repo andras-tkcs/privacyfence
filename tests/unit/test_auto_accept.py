@@ -16,6 +16,9 @@ from freezegun import freeze_time
 
 from privacyfence import auto_accept
 from privacyfence.auto_accept import (
+    ARGS_ONLY_RULES,
+    DATA_DEPENDENT_RULES,
+    TOOL_TO_GATE,
     TOOL_TO_OPERATION,
     AutoAcceptEvaluator,
     TEMP_ACCEPT_ELIGIBLE_OPERATIONS,
@@ -59,6 +62,20 @@ class TestToolToOperationMapping:
         ok, matched = ev.should_auto_accept(TOOL_TO_OPERATION["jira_transition_issue"], ctx)
         assert ok is True
         assert matched == "approved_project_keys"
+
+    def test_sheets_dimension_tools_map_to_clean_operation_keys(self):
+        assert TOOL_TO_OPERATION["drive_sheets_insert_dimensions"] == "sheets.insert_dimensions"
+        assert TOOL_TO_OPERATION["drive_sheets_delete_dimensions"] == "sheets.delete_dimensions"
+
+    def test_docs_edit_and_format_tools_map_to_clean_operation_keys(self):
+        assert TOOL_TO_OPERATION["drive_docs_edit_content"] == "docs.edit_content"
+        assert TOOL_TO_OPERATION["drive_docs_format_content"] == "docs.format_content"
+
+    def test_salesforce_search_maps_to_clean_operation_key(self):
+        assert TOOL_TO_OPERATION["salesforce_search"] == "salesforce.search"
+
+    def test_calendar_set_event_visibility_maps_to_its_own_operation_key(self):
+        assert TOOL_TO_OPERATION["calendar_set_event_visibility"] == "calendar.set_visibility"
 
 
 # --------------------------------------------------------------------------- #
@@ -315,6 +332,37 @@ class TestCalendarRules:
         assert ev._rule_no_conferencing_link(None, make_ctx(raw_data=SimpleNamespace(conference_link=""))) is True
         assert ev._rule_no_conferencing_link(None, make_ctx(raw_data=SimpleNamespace(hangout_link="https://x"))) is False
 
+    def test_non_private_event_reads_current_visibility_from_raw_data(self):
+        # calendar_get_event_details (and any other read) has no "visibility"
+        # arg -- falls back to the event's current visibility.
+        ev = AutoAcceptEvaluator({})
+        private = make_ctx(args={}, raw_data=SimpleNamespace(visibility="private"))
+        public = make_ctx(args={}, raw_data=SimpleNamespace(visibility="public"))
+        default = make_ctx(args={}, raw_data=SimpleNamespace(visibility="default"))
+        assert ev._rule_non_private_event(None, private) is False
+        assert ev._rule_non_private_event(None, public) is True
+        assert ev._rule_non_private_event(None, default) is True
+
+    def test_non_private_event_missing_visibility_attribute_defaults_non_private(self):
+        ev = AutoAcceptEvaluator({})
+        ctx = make_ctx(args={}, raw_data=SimpleNamespace())
+        assert ev._rule_non_private_event(None, ctx) is True
+
+    def test_non_private_event_prefers_requested_visibility_from_args(self):
+        # calendar_set_event_visibility's args always carry the visibility
+        # being requested -- that's the state being approved, not the
+        # event's prior visibility (which could differ and would be the
+        # wrong signal for "is the action about to make this private").
+        ev = AutoAcceptEvaluator({})
+        setting_private = make_ctx(
+            args={"visibility": "private"}, raw_data=SimpleNamespace(visibility="default"),
+        )
+        setting_public = make_ctx(
+            args={"visibility": "public"}, raw_data=SimpleNamespace(visibility="private"),
+        )
+        assert ev._rule_non_private_event(None, setting_private) is False
+        assert ev._rule_non_private_event(None, setting_public) is True
+
 
 # --------------------------------------------------------------------------- #
 # Salesforce rules
@@ -327,6 +375,25 @@ class TestSalesforceRules:
         assert ev._rule_approved_object_types(["account"], ctx) is True
         assert ev._rule_approved_object_types(["contact"], ctx) is False
         assert ev._rule_approved_object_types([], ctx) is False
+
+    def test_approved_object_types_for_search_requires_every_requested_type_approved(self):
+        # salesforce.search carries a comma-separated object_types arg
+        # instead of get_record's singular object_type -- a partial match
+        # (some but not all requested types approved) must not auto-accept,
+        # since that would silently leak an unapproved object type's results.
+        ev = AutoAcceptEvaluator({})
+        ctx = make_ctx(args={"object_types": "Opportunity,Contact"})
+        assert ev._rule_approved_object_types(["opportunity", "contact"], ctx) is True
+        assert ev._rule_approved_object_types(["opportunity"], ctx) is False
+        assert ev._rule_approved_object_types([], ctx) is False
+
+    def test_approved_object_types_for_search_empty_object_types_never_matches(self):
+        # An unscoped search (no object_types given) reaches Salesforce's
+        # whole default set of globally-searchable objects -- never
+        # auto-accepted by an object-type allowlist.
+        ev = AutoAcceptEvaluator({})
+        ctx = make_ctx(args={"object_types": ""})
+        assert ev._rule_approved_object_types(["opportunity"], ctx) is False
 
     def test_approved_report_ids(self):
         ev = AutoAcceptEvaluator({})
@@ -536,6 +603,64 @@ class TestSheetsFolderScopedRules:
             raw_data={"file": SimpleNamespace(parent_ids=["folder9"]), "range_a1": "A1:B2", "format": "bold=true"},
         )
         assert ev.should_auto_accept("sheets.format_range", ctx) == (False, "")
+
+    def test_insert_dimensions_matches_folder_via_should_auto_accept(self):
+        # New operation key, same generic approved_sandbox_folder rule and
+        # raw_data shape as rename_sheet/format_range above -- no new rule
+        # code was needed to wire this up, just the TOOL_TO_OPERATION entry.
+        ev = AutoAcceptEvaluator({
+            "sheets.insert_dimensions": [{"rule": "approved_sandbox_folder", "value": ["folder1"]}],
+        })
+        ctx = make_ctx(
+            args={"spreadsheet_id": "sheet1", "sheet_id": 0, "dimension": "ROWS", "start_index": 0, "count": 1},
+            raw_data={"file": SimpleNamespace(parent_ids=["folder1"]), "dimension": "ROWS"},
+        )
+        assert ev.should_auto_accept("sheets.insert_dimensions", ctx) == (True, "approved_sandbox_folder")
+
+    def test_delete_dimensions_matches_folder_via_should_auto_accept(self):
+        ev = AutoAcceptEvaluator({
+            "sheets.delete_dimensions": [{"rule": "approved_sandbox_folder", "value": ["folder1"]}],
+        })
+        ctx = make_ctx(
+            args={"spreadsheet_id": "sheet1", "sheet_id": 0, "dimension": "ROWS", "start_index": 0, "count": 1},
+            raw_data={"file": SimpleNamespace(parent_ids=["folder1"]), "dimension": "ROWS"},
+        )
+        assert ev.should_auto_accept("sheets.delete_dimensions", ctx) == (True, "approved_sandbox_folder")
+
+    def test_insert_dimensions_scopes_approved_spreadsheet_to_sheet_id_tab(self):
+        # sheet_id is present in args, so _sheet_tab_of resolves it the same
+        # way rename_sheet/format_range do.
+        ev = AutoAcceptEvaluator({
+            "sheets.insert_dimensions": [
+                {"rule": "approved_spreadsheet", "value": [{"spreadsheet_id": "sheet1", "tab": "5"}]},
+            ],
+        })
+        matching_ctx = make_ctx(
+            args={"spreadsheet_id": "sheet1", "sheet_id": 5, "dimension": "ROWS", "start_index": 0, "count": 1},
+            raw_data={"file": SimpleNamespace(parent_ids=[])},
+        )
+        other_tab_ctx = make_ctx(
+            args={"spreadsheet_id": "sheet1", "sheet_id": 9, "dimension": "ROWS", "start_index": 0, "count": 1},
+            raw_data={"file": SimpleNamespace(parent_ids=[])},
+        )
+        assert ev.should_auto_accept("sheets.insert_dimensions", matching_ctx) == (True, "approved_spreadsheet")
+        assert ev.should_auto_accept("sheets.insert_dimensions", other_tab_ctx) == (False, "")
+
+    def test_docs_edit_and_format_content_match_owner_via_should_auto_accept(self):
+        # docs.* operations reuse the plain Drive-file rules (i_am_owner,
+        # approved_sandbox_folder, created_this_session) the same way
+        # drive.write_doc does -- no docs-specific rule code needed.
+        ev = AutoAcceptEvaluator({
+            "docs.edit_content": [{"rule": "i_am_owner"}],
+            "docs.format_content": [{"rule": "i_am_owner"}],
+        })
+        ctx = make_ctx(
+            my_email="me@example.com",
+            args={"file_id": "f1"},
+            raw_data={"file": SimpleNamespace(owners=["me@example.com"])},
+        )
+        assert ev.should_auto_accept("docs.edit_content", ctx) == (True, "i_am_owner")
+        assert ev.should_auto_accept("docs.format_content", ctx) == (True, "i_am_owner")
 
 
 # --------------------------------------------------------------------------- #
@@ -807,15 +932,37 @@ class TestSuggestRule:
         )
         assert suggest_rule("calendar.read_event_details", internal) == ("no_external_attendees", None)
 
+    def test_calendar_falls_back_to_non_private_event_when_external_but_not_private(self):
+        # Neither i_am_organizer nor no_external_attendees apply, but the
+        # event isn't private either -- still a plausible suggestion rather
+        # than no suggestion at all.
         external = make_ctx(
             my_email="me@example.com",
-            raw_data=SimpleNamespace(organizer_email="other@example.com", attendees=[{"email": "x@external.com"}]),
+            raw_data=SimpleNamespace(
+                organizer_email="other@example.com", attendees=[{"email": "x@external.com"}], visibility="public",
+            ),
         )
-        assert suggest_rule("calendar.read_event_details", external) is None
+        assert suggest_rule("calendar.read_event_details", external) == ("non_private_event", None)
+
+    def test_calendar_suggests_nothing_for_a_private_event_with_external_attendees(self):
+        private_external = make_ctx(
+            my_email="me@example.com",
+            raw_data=SimpleNamespace(
+                organizer_email="other@example.com", attendees=[{"email": "x@external.com"}], visibility="private",
+            ),
+        )
+        assert suggest_rule("calendar.read_event_details", private_external) is None
 
     def test_salesforce_suggests_object_type(self):
         ctx = make_ctx(args={"object_type": "Account"})
         assert suggest_rule("salesforce.read_record", ctx) == ("approved_object_types", ["Account"])
+
+    def test_salesforce_search_suggests_scoped_object_types(self):
+        ctx = make_ctx(args={"object_types": "Opportunity,Contact"})
+        assert suggest_rule("salesforce.search", ctx) == ("approved_object_types", ["Opportunity", "Contact"])
+
+    def test_salesforce_search_suggests_nothing_when_unscoped(self):
+        assert suggest_rule("salesforce.search", make_ctx(args={"object_types": ""})) is None
 
     def test_unrecognized_operation_suggests_nothing(self):
         assert suggest_rule("some.unmapped.operation", make_ctx()) is None
@@ -1144,6 +1291,24 @@ class TestTempAcceptKey:
             ctx = make_ctx(args={arg_name: "some-id"})
             assert temp_accept_key(op_key, ctx) == "some-id"
 
+    def test_insert_dimensions_is_eligible_scoped_to_spreadsheet_id(self):
+        ctx = make_ctx(args={"spreadsheet_id": "sheet-1", "dimension": "ROWS"})
+        assert temp_accept_key("sheets.insert_dimensions", ctx) == "sheet-1"
+
+    def test_delete_dimensions_is_deliberately_not_eligible(self):
+        # Resolved design decision: unlike format_range/insert_dimensions,
+        # deleting rows/columns is destructive with no undo path through
+        # PrivacyFence, so it only ever gets the standing-rule treatment, not
+        # a lightweight "Accept for 5 min" button.
+        assert "sheets.delete_dimensions" not in TEMP_ACCEPT_ELIGIBLE_OPERATIONS
+        ctx = make_ctx(args={"spreadsheet_id": "sheet-1", "dimension": "ROWS"})
+        assert temp_accept_key("sheets.delete_dimensions", ctx) is None
+
+    def test_docs_edit_and_format_content_are_eligible_scoped_to_file_id(self):
+        ctx = make_ctx(args={"file_id": "f1"})
+        assert temp_accept_key("docs.edit_content", ctx) == "f1"
+        assert temp_accept_key("docs.format_content", ctx) == "f1"
+
 
 class TestEvaluatorTempAccept:
     def test_not_accepted_before_registration(self):
@@ -1216,3 +1381,123 @@ class TestEvaluatorTempAccept:
         ev = AutoAcceptEvaluator({})
         ctx = make_ctx(args={})
         assert ev.should_auto_accept("sheets.write_range", ctx) == (False, "")
+
+
+# --------------------------------------------------------------------------- #
+# ARGS_ONLY_RULES / DATA_DEPENDENT_RULES / preflight_from_args: the preflight
+# check behind privacyfence_check_policy. Nothing here should reach a real
+# connector or the network -- these predict should_auto_accept()'s answer
+# from args alone, before anything is fetched.
+# --------------------------------------------------------------------------- #
+
+class TestRuleClassificationCompleteness:
+    """Guards against a newly added _rule_* method being left unclassified,
+    which would silently make preflight_from_args() treat it as permanently
+    "undetermined" without anyone deciding that on purpose."""
+
+    def _all_rule_names(self) -> set[str]:
+        return {
+            name[len("_rule_"):]
+            for name in vars(AutoAcceptEvaluator)
+            if name.startswith("_rule_") and callable(getattr(AutoAcceptEvaluator, name))
+        }
+
+    def test_every_rule_is_classified(self):
+        classified = ARGS_ONLY_RULES | DATA_DEPENDENT_RULES
+        unclassified = self._all_rule_names() - classified
+        assert unclassified == set(), (
+            f"_rule_* methods not classified into ARGS_ONLY_RULES or DATA_DEPENDENT_RULES: {unclassified}"
+        )
+
+    def test_no_rule_is_in_both_sets(self):
+        assert ARGS_ONLY_RULES & DATA_DEPENDENT_RULES == set()
+
+    def test_no_stale_entries_for_removed_rules(self):
+        stale = (ARGS_ONLY_RULES | DATA_DEPENDENT_RULES) - self._all_rule_names()
+        assert stale == set(), f"Classified rule names with no matching _rule_* method: {stale}"
+
+
+class TestPreflightFromArgs:
+    def test_temp_accept_match_wins_first(self):
+        ev = AutoAcceptEvaluator({})
+        ev.register_temp_accept("sheets.write_range", "sheet-1")
+        verdict, rule, _reason = ev.preflight_from_args("sheets.write_range", {"spreadsheet_id": "sheet-1"})
+        assert (verdict, rule) == ("auto_accept", "session_temp_accept")
+
+    def test_args_only_rule_match(self):
+        ev = AutoAcceptEvaluator({"slack.read_messages": [{"rule": "approved_channel", "value": ["C123"]}]})
+        verdict, rule, _reason = ev.preflight_from_args("slack.read_messages", {"channel_id": "C123"})
+        assert (verdict, rule) == ("auto_accept", "approved_channel")
+
+    def test_args_only_rule_no_match_is_requires_review(self):
+        ev = AutoAcceptEvaluator({"slack.read_messages": [{"rule": "approved_channel", "value": ["C999"]}]})
+        verdict, rule, _reason = ev.preflight_from_args("slack.read_messages", {"channel_id": "C123"})
+        assert verdict == "requires_review"
+        assert rule == ""
+
+    def test_no_configured_rules_is_requires_review(self):
+        ev = AutoAcceptEvaluator({})
+        verdict, _rule, _reason = ev.preflight_from_args("gmail.read_message", {})
+        assert verdict == "requires_review"
+
+    def test_data_dependent_rule_configured_is_unknown(self):
+        ev = AutoAcceptEvaluator({"gmail.read_message": [{"rule": "i_am_sender"}]})
+        verdict, rule, reason = ev.preflight_from_args("gmail.read_message", {})
+        assert verdict == "unknown"
+        assert rule == ""
+        assert "i_am_sender" in reason
+
+    def test_undetermined_data_dependent_rule_does_not_produce_a_false_match(self):
+        ev = AutoAcceptEvaluator({
+            "gmail.read_message": [
+                {"rule": "i_am_sender"},
+                {"rule": "trusted_sender_domain", "value": ["trusted.com"]},
+            ]
+        })
+        verdict, _rule, _reason = ev.preflight_from_args("gmail.read_message", {})
+        assert verdict == "unknown"
+
+    def test_args_only_match_wins_even_behind_an_undetermined_rule(self):
+        ev = AutoAcceptEvaluator({
+            "jira.read_issue": [
+                {"rule": "i_am_reporter"},  # data-dependent, can't be decided from args
+                {"rule": "approved_project_keys", "value": ["OPS"]},  # args-only, matches
+            ]
+        })
+        verdict, rule, _reason = ev.preflight_from_args("jira.read_issue", {"issue_key": "OPS-1"})
+        assert (verdict, rule) == ("auto_accept", "approved_project_keys")
+
+    def test_absence_rule_never_evaluated_speculatively(self):
+        # shared_drive_exclusion (and the other "absence" rules) would
+        # falsely report a match if evaluated with raw_data=None -- see the
+        # ARGS_ONLY_RULES docstring. Confirms it's routed to "unknown"
+        # instead of a false "auto_accept".
+        ev = AutoAcceptEvaluator({"drive.read_file_contents": [{"rule": "shared_drive_exclusion"}]})
+        verdict, rule, _reason = ev.preflight_from_args("drive.read_file_contents", {})
+        assert verdict == "unknown"
+        assert rule == ""
+
+    def test_never_calls_the_network_or_touches_raw_data(self):
+        # preflight_from_args builds its own ReviewContext with raw_data=None
+        # regardless of what's passed in -- there's no argument for raw_data
+        # at all, so this is really just documenting the contract.
+        ev = AutoAcceptEvaluator({"slack.read_messages": [{"rule": "approved_channel", "value": ["C1"]}]})
+        verdict, rule, _reason = ev.preflight_from_args("slack.read_messages", {"channel_id": "C1"})
+        assert (verdict, rule) == ("auto_accept", "approved_channel")
+
+
+# --------------------------------------------------------------------------- #
+# TOOL_TO_GATE: exhaustively cross-checked against docs and connector source
+# in tests/unit/connectors/test_readme_manifest_alignment.py. This is just a
+# couple of direct spot checks for the dict itself.
+# --------------------------------------------------------------------------- #
+
+class TestToolToGate:
+    def test_auto_tool(self):
+        assert TOOL_TO_GATE["gmail_list_messages"] == "auto"
+
+    def test_review_tool(self):
+        assert TOOL_TO_GATE["gmail_get_message"] == "review"
+
+    def test_popup_tool(self):
+        assert TOOL_TO_GATE["gmail_create_draft"] == "popup"

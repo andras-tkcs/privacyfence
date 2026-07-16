@@ -1,0 +1,17 @@
+{
+  "done": true,
+  "records": [
+    {
+      "Description": null,
+      "DeveloperName": "PrivacyFence_QA_Report_partial",
+      "FolderName": "Private Reports",
+      "Id": "qa-placeholder-id-1",
+      "Name": "Copy of New Opportunities Report",
+      "attributes": {
+        "type": "Report",
+        "url": "https://example.com/qa-placeholder"
+      }
+    }
+  ],
+  "totalSize": 32
+}

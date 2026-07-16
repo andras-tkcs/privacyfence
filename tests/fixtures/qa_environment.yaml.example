@@ -1,0 +1,126 @@
+# Template for tests/fixtures/qa_environment.yaml, read by
+# scripts/qa_fixture_recorder.py. Copy this file to
+# tests/fixtures/qa_environment.yaml and fill in each connector's section
+# after working through the matching checklist in
+# docs/qa-environment-setup.md.
+#
+# tests/fixtures/qa_environment.yaml itself is git-ignored, not committed:
+# although the IDs/keys it holds aren't credentials, a filled-in copy
+# reveals which real project/space/folder/calendar/list/channel/chat you
+# use for QA, on which real accounts -- kept local rather than published in
+# a fork-based, effectively-public repo history. This template is the
+# thing that's committed.
+#
+# The recorder refuses to record anything whose title/summary doesn't carry
+# the [QATEST] tag that checklist has you put on every seed artifact, so an
+# out-of-date or wrong value here fails loudly rather than silently
+# recording the wrong thing.
+
+confluence:
+  # docs/qa-environment-setup.md §10
+  space_key: PFQA
+  # Leave blank to resolve by title instead (one extra API call per run).
+  # Fill in once known, to make --record faster and more precise.
+  seed_page_id: ""
+  seed_page_title: "PrivacyFence QA seed page [QATEST]"
+
+jira:
+  # docs/qa-environment-setup.md §9
+  project_key: PFQA
+  # Leave blank to resolve by a JQL summary search instead (one extra API
+  # call per run). Fill in once known, to make --record faster and more
+  # precise.
+  seed_issue_key: ""
+  seed_issue_summary: "PrivacyFence QA seed issue [QATEST]"
+
+salesforce:
+  # docs/qa-environment-setup.md §8 -- no separate seed artifact here,
+  # unlike Confluence/Jira: the sample Account records that section
+  # already has you create (tagged [QATEST]) are what the recorder
+  # targets directly.
+  report_name: "PrivacyFence QA Report"
+  report_id: ""
+  object_type: Account
+  seed_record_name: "PrivacyFence QA — Acme Test Co [QATEST]"
+  # Leave blank to resolve by search() on seed_record_name instead (one
+  # extra API call per run).
+  seed_record_id: ""
+
+gmail:
+  # docs/qa-environment-setup.md §1 -- the seed thread there is optional
+  # for the manual connector-qa-testing.md process, but required here:
+  # Gmail has no cheap by-subject resolve fallback (list_messages() makes
+  # one extra API call per result, so "resolve then get" isn't a single
+  # targeted call the way it is for the other connectors). Fill this in
+  # with the seed message's real id after creating it -- there is no
+  # blank-to-resolve-by-title option for this one.
+  seed_message_id: ""
+
+drive:
+  # docs/qa-environment-setup.md §2 -- no separate seed artifact: targets
+  # the QA Sandbox folder that section already has you create, identified
+  # by its exact name (a folder has no body to tag [QATEST]).
+  folder_name: "PrivacyFence QA Sandbox"
+  # Leave blank to resolve by name instead (one extra API call per run).
+  folder_id: ""
+
+calendar:
+  # docs/qa-environment-setup.md §4 -- the dedicated "PrivacyFence test
+  # [PFQA]" calendar, not primary. Primary is reserved for the two cases
+  # Google's API leaves no choice about (create_out_of_office,
+  # set_working_location, both always operate on primary regardless of
+  # calendar_id) -- everything else, including this recorder, targets PFQA
+  # instead so QA activity never touches your real primary calendar.
+  calendar_id: ""
+  seed_event_title: "PrivacyFence QA seed event [QATEST]"
+  # Leave blank to resolve by a title search instead (one extra API call
+  # per run).
+  seed_event_id: ""
+
+contacts:
+  # docs/qa-environment-setup.md §5 -- unlike every other connector, the
+  # recorded fixture for this one is NOT redacted: the seed contact's own
+  # name/email/phone are the content under test, not someone else's
+  # identity. See check_contacts() in scripts/qa_fixture_recorder.py.
+  seed_contact_display_name: "PrivacyFence QA Test Contact [QATEST]"
+  # Leave blank to resolve by a name search instead (one extra API call
+  # per run).
+  seed_contact_resource_name: ""
+
+tasks:
+  # docs/qa-environment-setup.md §6 -- targets "PrivacyFence QA List", the
+  # approved/granted list. Neither this nor "PrivacyFence QA Contrast List"
+  # (the separate, deliberately ungranted contrast case) is your real "My
+  # Tasks" default list. No by-title resolve fallback (tasks_client.py has
+  # no search-by-title method, only list_tasks, an uncontrolled full-list
+  # fetch), so both ids are required.
+  task_list_id: ""
+  seed_task_id: ""
+
+slack:
+  # docs/qa-environment-setup.md §3 -- no separate seed artifact here: the
+  # privacyfence-qa-control channel that section already has you create
+  # (deliberately ungranted, so it never matches the approved-channel
+  # allowlist) already carries a durable [QATEST] seed message with a
+  # threaded reply. The recorder targets that thread directly.
+  channel_name: "privacyfence-qa-control"
+  # Leave blank to resolve by name instead (one extra API call per run).
+  channel_id: ""
+  # Leave blank to resolve by scanning channel history for a [QATEST]
+  # message instead (one extra API call per run).
+  seed_thread_ts: ""
+
+telegram:
+  # docs/qa-environment-setup.md §7 -- no separate seed artifact here: the
+  # one durable [QATEST] message you send yourself in Saved Messages is
+  # what the recorder targets. Saved Messages has no fixed name to match
+  # on, so it's always found via the is_self flag, never by chat_id here --
+  # this override exists only for the rare case where is_self resolution
+  # itself is what you're trying to debug.
+  chat_id: ""
+  # How many recent Saved Messages to scan for the [QATEST] tag.
+  history_limit: 100
+
+# Other connectors follow the same shape once
+# scripts/qa_fixture_recorder.py grows a check_<connector>() for them --
+# see that script's CONNECTOR_CHECKS registry.

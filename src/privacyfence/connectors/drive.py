@@ -54,6 +54,10 @@ class DriveConnector(Connector):
     def name(self) -> str:
         return "drive"
 
+    @property
+    def client(self) -> DriveClient:
+        return self._drive
+
     def tool_specs(self) -> list[ToolSpec]:
         return [
             ToolSpec(
@@ -162,8 +166,11 @@ class DriveConnector(Connector):
                 name="drive_write_doc_content",
                 description=(
                     "Write Markdown content to a Google Doc with rich formatting "
-                    "(headings, bold, italic, links, bullet and numbered lists). "
-                    "Clears the existing document content before writing. "
+                    "(headings, bold, italic, ==highlight==, links, bullet and "
+                    "numbered lists). Clears the existing document content "
+                    "before writing — use drive_docs_edit_content or "
+                    "drive_docs_format_content instead for a change that "
+                    "shouldn't touch the rest of the document. "
                     "Use this instead of drive_write_file_content when the target "
                     "is a Google Doc and you want formatted output. "
                     "Requires user approval."
@@ -171,6 +178,55 @@ class DriveConnector(Connector):
                 params=[
                     ToolParam("file_id", "str"),
                     ToolParam("markdown", "str"),
+                ],
+            ),
+            ToolSpec(
+                name="drive_docs_edit_content",
+                description=(
+                    "Replace one occurrence of existing text in a Google Doc "
+                    "with new Markdown, without touching the rest of the "
+                    "document. find_text must match exactly one location in "
+                    "the document's plain text (as read by "
+                    "drive_get_file_content) — include enough surrounding "
+                    "context to make it unique, the same way a unique-match "
+                    "text editor requires; set replace_all=true to replace "
+                    "every occurrence instead. replace_markdown supports the "
+                    "same inline syntax as drive_write_doc_content, including "
+                    "==highlight==. Requires user approval."
+                ),
+                params=[
+                    ToolParam("file_id", "str"),
+                    ToolParam("find_text", "str", description="Exact plain-text substring to locate"),
+                    ToolParam(
+                        "replace_markdown", "str",
+                        description="Markdown to insert in its place",
+                    ),
+                    ToolParam("replace_all", "bool", required=False, default=False),
+                ],
+            ),
+            ToolSpec(
+                name="drive_docs_format_content",
+                description=(
+                    "Apply formatting (bold, italic, highlight, text color) to "
+                    "existing text in a Google Doc, located the same way as "
+                    "drive_docs_edit_content, without changing the text itself. "
+                    "Every formatting parameter is opt-in — its default means "
+                    "'leave that aspect unchanged', so a call that only sets "
+                    "highlight_color never touches bold/italic already on the "
+                    "matched text. Requires user approval."
+                ),
+                params=[
+                    ToolParam("file_id", "str"),
+                    ToolParam("find_text", "str", description="Exact plain-text substring to locate"),
+                    ToolParam("bold", "str", required=False, default="",
+                              description="'true' or 'false'; omit to leave unchanged"),
+                    ToolParam("italic", "str", required=False, default="",
+                              description="'true' or 'false'; omit to leave unchanged"),
+                    ToolParam("highlight_color", "str", required=False, default="",
+                              description="hex color e.g. '#fff59d'; omit to leave unchanged"),
+                    ToolParam("text_color", "str", required=False, default="",
+                              description="hex color e.g. '#000000'; omit to leave unchanged"),
+                    ToolParam("replace_all", "bool", required=False, default=False),
                 ],
             ),
             ToolSpec(
@@ -322,6 +378,44 @@ class DriveConnector(Connector):
                               description="KEEP (default) / NONE (unmerge) / MERGE_ALL / MERGE_COLUMNS / MERGE_ROWS"),
                 ],
             ),
+            ToolSpec(
+                name="drive_sheets_insert_dimensions",
+                description=(
+                    "Insert blank rows or columns into a sheet tab, shifting "
+                    "existing content after the insertion point. Values/"
+                    "formulas are untouched, only their position shifts; "
+                    "formulas referencing shifted cells are adjusted "
+                    "automatically. Requires user approval."
+                ),
+                params=[
+                    ToolParam("spreadsheet_id", "str"),
+                    ToolParam("sheet_id", "int", description="Numeric tab id, from drive_sheets_get_metadata"),
+                    ToolParam("dimension", "str", description="'ROWS' or 'COLUMNS'"),
+                    ToolParam("start_index", "int", description="0-based index to insert before"),
+                    ToolParam("count", "int", required=False, default=1),
+                    ToolParam(
+                        "inherit_from_before", "bool", required=False, default=True,
+                        description="Copy formatting from the row/column before the insertion point (Sheets UI default)",
+                    ),
+                ],
+            ),
+            ToolSpec(
+                name="drive_sheets_delete_dimensions",
+                description=(
+                    "Delete rows or columns from a sheet tab, including any "
+                    "values, formulas, and formatting they contain. This is "
+                    "destructive — deleted cell content is not recoverable "
+                    "through PrivacyFence. Remaining rows/columns shift to "
+                    "close the gap. Requires user approval."
+                ),
+                params=[
+                    ToolParam("spreadsheet_id", "str"),
+                    ToolParam("sheet_id", "int", description="Numeric tab id, from drive_sheets_get_metadata"),
+                    ToolParam("dimension", "str", description="'ROWS' or 'COLUMNS'"),
+                    ToolParam("start_index", "int", description="0-based, inclusive of the first row/column removed"),
+                    ToolParam("count", "int", required=False, default=1),
+                ],
+            ),
         ]
 
     async def call(self, tool: str, args: dict[str, Any]) -> Any:
@@ -363,6 +457,14 @@ class DriveConnector(Connector):
             return await self._sheets_rename_sheet(**args)
         if tool == "drive_sheets_format_range":
             return await self._sheets_format_range(**args)
+        if tool == "drive_sheets_insert_dimensions":
+            return await self._sheets_insert_dimensions(**args)
+        if tool == "drive_sheets_delete_dimensions":
+            return await self._sheets_delete_dimensions(**args)
+        if tool == "drive_docs_edit_content":
+            return await self._docs_edit_content(**args)
+        if tool == "drive_docs_format_content":
+            return await self._docs_format_content(**args)
         raise ValueError(f"Unknown Drive tool: {tool!r}")
 
     # ------------------------------------------------------------------ #
@@ -557,6 +659,85 @@ class DriveConnector(Connector):
             args={"file_id": file_id},
         )
         return await self._fetch(self._drive.write_doc_rich_content, file_id, markdown)
+
+    async def _docs_edit_content(
+        self, file_id: str, find_text: str, replace_markdown: str, replace_all: bool = False
+    ) -> Any:
+        drive_file = await self._fetch(self._drive.get_file_metadata, file_id)
+        name = getattr(drive_file, "name", file_id)
+        owners = getattr(drive_file, "owners", [])
+        preview = {
+            "File": name, "Owner": ", ".join(owners) or "(unknown)",
+            "Match": "every occurrence" if replace_all else "the one matching occurrence",
+        }
+        details = f"Find:\n{find_text}\n\nReplace with:\n{replace_markdown}"
+        await gated_call(
+            connector=self.name,
+            tool="drive_docs_edit_content",
+            tool_name="Edit Google Doc",
+            summary=f"Replace text in \"{name}\"",
+            sender=", ".join(owners) or "(unknown)",
+            raw_data={"file": drive_file, "find_text_preview": find_text[:200]},
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text=details,
+            my_email=self.my_email,
+            session_created_ids=self.session_created_ids,
+            args={"file_id": file_id},
+        )
+        return await self._fetch(
+            self._drive.edit_doc_content, file_id, find_text, replace_markdown, replace_all
+        )
+
+    async def _docs_format_content(
+        self,
+        file_id: str,
+        find_text: str,
+        bold: str = "",
+        italic: str = "",
+        highlight_color: str = "",
+        text_color: str = "",
+        replace_all: bool = False,
+    ) -> Any:
+        drive_file = await self._fetch(self._drive.get_file_metadata, file_id)
+        name = getattr(drive_file, "name", file_id)
+        owners = getattr(drive_file, "owners", [])
+
+        applied = []
+        if bold:
+            applied.append(f"bold={bold}")
+        if italic:
+            applied.append(f"italic={italic}")
+        if highlight_color:
+            applied.append(f"highlight={highlight_color}")
+        if text_color:
+            applied.append(f"text_color={text_color}")
+        summary_detail = ", ".join(applied) or "(no changes)"
+
+        preview = {
+            "File": name, "Owner": ", ".join(owners) or "(unknown)",
+            "Format": summary_detail,
+        }
+        details = f"Applying the formatting above to:\n{find_text}"
+        await gated_call(
+            connector=self.name,
+            tool="drive_docs_format_content",
+            tool_name="Format Google Doc Text",
+            summary=f"Format text in \"{name}\": {summary_detail}",
+            sender=", ".join(owners) or "(unknown)",
+            raw_data={"file": drive_file, "find_text_preview": find_text[:200], "format": summary_detail},
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text=details,
+            my_email=self.my_email,
+            session_created_ids=self.session_created_ids,
+            args={"file_id": file_id},
+        )
+        return await self._fetch(
+            self._drive.format_doc_content, file_id, find_text, bold, italic, highlight_color, text_color, replace_all
+        )
 
     async def _upload_file(
         self,
@@ -848,6 +1029,97 @@ class DriveConnector(Connector):
             self._drive.format_sheet_range, spreadsheet_id, sheet_id, range_a1,
             bold, italic, background_color, text_color, number_format,
             horizontal_alignment, freeze_rows, freeze_cols, column_width, merge_type,
+        )
+
+    async def _sheets_insert_dimensions(
+        self,
+        spreadsheet_id: str,
+        sheet_id: int,
+        dimension: str,
+        start_index: int,
+        count: int = 1,
+        inherit_from_before: bool = True,
+    ) -> Any:
+        # Validate before gating, not after -- same reasoning as
+        # _sheets_format_range's early range_a1 check: a doomed call
+        # shouldn't cost the user an unnecessary approval decision.
+        dimension = dimension.strip().upper()
+        if dimension not in ("ROWS", "COLUMNS"):
+            raise ValueError(
+                f"drive_sheets_insert_dimensions: dimension must be 'ROWS' or 'COLUMNS', got {dimension!r}"
+            )
+        drive_file = await self._fetch(self._drive.get_file_metadata, spreadsheet_id)
+        name = getattr(drive_file, "name", spreadsheet_id)
+        owners = getattr(drive_file, "owners", [])
+        preview = {
+            "Spreadsheet": name, "Owner": ", ".join(owners) or "(unknown)",
+            "Tab id": sheet_id, "Action": f"Insert {count} {dimension} before index {start_index}",
+        }
+        await gated_call(
+            connector=self.name,
+            tool="drive_sheets_insert_dimensions",
+            tool_name="Insert Sheet Rows/Columns",
+            summary=f"Insert {count} {dimension} in \"{name}\"",
+            sender=", ".join(owners) or "(unknown)",
+            raw_data={"file": drive_file, "dimension": dimension, "start_index": start_index, "count": count},
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text=(
+                "Existing rows/columns from the insertion point shift accordingly; "
+                "other cells are unchanged."
+            ),
+            my_email=self.my_email,
+            session_created_ids=self.session_created_ids,
+            args={
+                "spreadsheet_id": spreadsheet_id, "sheet_id": sheet_id,
+                "dimension": dimension, "start_index": start_index, "count": count,
+            },
+        )
+        return await self._fetch(
+            self._drive.insert_dimensions, spreadsheet_id, sheet_id, dimension,
+            start_index, count, inherit_from_before,
+        )
+
+    async def _sheets_delete_dimensions(
+        self, spreadsheet_id: str, sheet_id: int, dimension: str, start_index: int, count: int = 1
+    ) -> Any:
+        dimension = dimension.strip().upper()
+        if dimension not in ("ROWS", "COLUMNS"):
+            raise ValueError(
+                f"drive_sheets_delete_dimensions: dimension must be 'ROWS' or 'COLUMNS', got {dimension!r}"
+            )
+        drive_file = await self._fetch(self._drive.get_file_metadata, spreadsheet_id)
+        name = getattr(drive_file, "name", spreadsheet_id)
+        owners = getattr(drive_file, "owners", [])
+        preview = {
+            "Spreadsheet": name, "Owner": ", ".join(owners) or "(unknown)",
+            "Tab id": sheet_id, "Action": f"Delete {count} {dimension} starting at index {start_index}",
+        }
+        await gated_call(
+            connector=self.name,
+            tool="drive_sheets_delete_dimensions",
+            tool_name="Delete Sheet Rows/Columns",
+            summary=f"Delete {count} {dimension} in \"{name}\"",
+            sender=", ".join(owners) or "(unknown)",
+            raw_data={"file": drive_file, "dimension": dimension, "start_index": start_index, "count": count},
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text=(
+                "Rows/columns and any values, formulas, or formatting they contain will be "
+                "removed — not recoverable through PrivacyFence. Remaining rows/columns shift "
+                "to close the gap."
+            ),
+            my_email=self.my_email,
+            session_created_ids=self.session_created_ids,
+            args={
+                "spreadsheet_id": spreadsheet_id, "sheet_id": sheet_id,
+                "dimension": dimension, "start_index": start_index, "count": count,
+            },
+        )
+        return await self._fetch(
+            self._drive.delete_dimensions, spreadsheet_id, sheet_id, dimension, start_index, count,
         )
 
     # ------------------------------------------------------------------ #

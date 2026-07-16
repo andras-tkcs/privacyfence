@@ -11,6 +11,8 @@ save_token_file monkeypatched at their call sites.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -26,6 +28,8 @@ from privacyfence.jira_client import (
     JiraTransition,
     _text_to_adf,
 )
+
+LIVE_FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "live" / "jira"
 
 
 def make_client(config: dict | None = None, token_file: str | None = None) -> JiraClient:
@@ -644,3 +648,35 @@ class TestTransitionIssue:
         client._client.set_issue_status_by_transition_id.side_effect = RuntimeError("boom")
         with pytest.raises(JiraClientError, match="transition_issue\\(.*\\) failed"):
             client.transition_issue("ENG-1", "Done")
+
+
+class TestLiveFixtureParsing:
+    """Replays fixtures recorded from a real, [QATEST]-tagged seed issue by
+    scripts/qa_fixture_recorder.py --record jira -- real API shape, not
+    hand-authored, with identity fields already redacted. Skipped (not
+    failed) until that fixture exists; see tests/fixtures/live/README.md and
+    docs/testing-policy.md. Re-record via that
+    script if this ever starts failing after a genuine Jira API change.
+    """
+
+    def _load(self, name: str) -> dict:
+        path = LIVE_FIXTURES_DIR / name
+        if not path.exists():
+            pytest.skip(
+                f"{path} not recorded yet -- run "
+                "`python3 scripts/qa_fixture_recorder.py --record jira` locally first"
+            )
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def test_get_issue_fixture_still_parses(self):
+        client = make_client()
+        raw = self._load("get_issue.json")
+        issue = client._parse_issue(raw, include_description=True)
+        assert issue.key and issue.summary and issue.status
+
+    def test_list_projects_fixture_still_parses(self):
+        client = make_client()
+        raw = self._load("list_projects.json")
+        projects = [client._parse_project(p) for p in raw]
+        assert projects, "recorded list_projects.json has no results"
+        assert all(p.key and p.name for p in projects)

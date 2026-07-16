@@ -23,7 +23,7 @@ Open **APIs & Services → Library** and enable each of the following APIs one b
 |----------|--------------------|---------| 
 | Gmail API | `Gmail API` | Gmail connector |
 | Google Drive API | `Google Drive API` | Drive connector |
-| Google Docs API | `Google Docs API` | Drive connector (`drive_write_doc_content`) |
+| Google Docs API | `Google Docs API` | Drive connector (`drive_write_doc_content`, `drive_docs_edit_content`, `drive_docs_format_content`) |
 | Google Sheets API | `Google Sheets API` | Drive connector (`drive_sheets_*`) |
 | Google People API | `People API` | Contacts connector |
 | Google Calendar API | `Google Calendar API` | Calendar connector |

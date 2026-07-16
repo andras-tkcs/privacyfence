@@ -1,0 +1,34 @@
+{
+  "_links": {
+    "base": "https://example.com/qa-placeholder",
+    "editui": "https://example.com/qa-placeholder",
+    "edituiv2": "https://example.com/qa-placeholder",
+    "tinyui": "https://example.com/qa-placeholder",
+    "webui": "https://example.com/qa-placeholder"
+  },
+  "authorId": "qa-placeholder-account-id",
+  "body": {
+    "storage": {
+      "representation": "storage",
+      "value": "&lt;p&gt;Synthetic PrivacyFence QA test page. No real information. Safe to read, comment on, or edit by any automated test.&lt;/p&gt;"
+    }
+  },
+  "createdAt": "2026-07-16T10:07:55.313Z",
+  "id": "qa-placeholder-id-3",
+  "lastOwnerId": null,
+  "ownerId": "qa-placeholder-account-id",
+  "parentId": "qa-placeholder-id-1",
+  "parentType": "page",
+  "position": 1454,
+  "spaceId": "qa-placeholder-id-2",
+  "status": "current",
+  "title": "PrivacyFence QA seed page [QATEST]",
+  "version": {
+    "authorId": "qa-placeholder-account-id",
+    "createdAt": "2026-07-16T10:07:55.313Z",
+    "message": "",
+    "minorEdit": false,
+    "ncsStepVersion": "1",
+    "number": 1
+  }
+}
