@@ -1143,7 +1143,7 @@ class TestLiveFixtureParsing:
     by scripts/qa_fixture_recorder.py --record gmail -- real API shape, not
     hand-authored, with From/To headers already redacted. Skipped (not
     failed) until that fixture exists; see tests/fixtures/live/README.md
-    and docs/external-api-contract-testing.md's Part A/B. Re-record via
+    and docs/testing-policy.md. Re-record via
     that script if this ever starts failing after a genuine Gmail API
     change.
     """

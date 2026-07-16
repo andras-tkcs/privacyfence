@@ -1,14 +1,20 @@
-# Non-secret manifest of QA seed-artifact identifiers, read by
-# scripts/qa_fixture_recorder.py. Safe to commit -- these are IDs and
-# keys, not credentials, the same way a Jira project key or a Drive
-# folder id isn't a secret on its own.
+# Template for tests/fixtures/qa_environment.yaml, read by
+# scripts/qa_fixture_recorder.py. Copy this file to
+# tests/fixtures/qa_environment.yaml and fill in each connector's section
+# after working through the matching checklist in
+# docs/qa-environment-setup.md.
 #
-# Fill in each connector's section after working through the matching
-# checklist in docs/qa-environment-setup.md. The recorder refuses to
-# record anything whose title/summary doesn't carry the [QATEST] tag
-# that checklist has you put on every seed artifact, so an out-of-date
-# or wrong value here fails loudly rather than silently recording the
-# wrong thing.
+# tests/fixtures/qa_environment.yaml itself is git-ignored, not committed:
+# although the IDs/keys it holds aren't credentials, a filled-in copy
+# reveals which real project/space/folder/calendar/list/channel/chat you
+# use for QA, on which real accounts -- kept local rather than published in
+# a fork-based, effectively-public repo history. This template is the
+# thing that's committed.
+#
+# The recorder refuses to record anything whose title/summary doesn't carry
+# the [QATEST] tag that checklist has you put on every seed artifact, so an
+# out-of-date or wrong value here fails loudly rather than silently
+# recording the wrong thing.
 
 confluence:
   # docs/qa-environment-setup.md §10
@@ -59,8 +65,13 @@ drive:
   folder_id: ""
 
 calendar:
-  # docs/qa-environment-setup.md §4
-  calendar_id: primary
+  # docs/qa-environment-setup.md §4 -- the dedicated "PrivacyFence test
+  # [PFQA]" calendar, not primary. Primary is reserved for the two cases
+  # Google's API leaves no choice about (create_out_of_office,
+  # set_working_location, both always operate on primary regardless of
+  # calendar_id) -- everything else, including this recorder, targets PFQA
+  # instead so QA activity never touches your real primary calendar.
+  calendar_id: ""
   seed_event_title: "PrivacyFence QA seed event [QATEST]"
   # Leave blank to resolve by a title search instead (one extra API call
   # per run).
@@ -77,9 +88,12 @@ contacts:
   seed_contact_resource_name: ""
 
 tasks:
-  # docs/qa-environment-setup.md §6 -- no by-title resolve fallback
-  # (tasks_client.py has no search-by-title method, only list_tasks, an
-  # uncontrolled full-list fetch), so both ids are required.
+  # docs/qa-environment-setup.md §6 -- targets "PrivacyFence QA List", the
+  # approved/granted list. Neither this nor "PrivacyFence QA Contrast List"
+  # (the separate, deliberately ungranted contrast case) is your real "My
+  # Tasks" default list. No by-title resolve fallback (tasks_client.py has
+  # no search-by-title method, only list_tasks, an uncontrolled full-list
+  # fetch), so both ids are required.
   task_list_id: ""
   seed_task_id: ""
 
@@ -109,5 +123,4 @@ telegram:
 
 # Other connectors follow the same shape once
 # scripts/qa_fixture_recorder.py grows a check_<connector>() for them --
-# see that script's CONNECTOR_CHECKS registry and
-# docs/external-api-contract-testing.md's Part A.
+# see that script's CONNECTOR_CHECKS registry.

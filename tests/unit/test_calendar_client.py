@@ -892,7 +892,7 @@ class TestLiveFixtureParsing:
     hand-authored, with organizer/attendee identity already redacted.
     Skipped (not failed) until that fixture exists; see
     tests/fixtures/live/README.md and
-    docs/external-api-contract-testing.md's Part A/B. Re-record via that
+    docs/testing-policy.md. Re-record via that
     script if this ever starts failing after a genuine Calendar API
     change.
     """

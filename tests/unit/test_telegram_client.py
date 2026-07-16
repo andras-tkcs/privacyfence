@@ -536,8 +536,7 @@ def _message_from_fixture(raw: dict) -> SimpleNamespace:
     Telethon property (SenderGetter), not part of to_dict()'s output at
     all, so this can only rebuild an id-only stand-in from from_id, not a
     fully resolved profile. That's a real, structural limitation of
-    replaying Telegram fixtures, not an oversight -- see
-    docs/external-api-contract-testing.md's Telegram section.
+    replaying Telegram fixtures, not an oversight.
     """
     from_id = raw.get("from_id") or {}
     user_id = from_id.get("user_id")
@@ -556,7 +555,7 @@ class TestLiveFixtureParsing:
     message in Saved Messages by scripts/qa_fixture_recorder.py --record
     telegram -- real API shape, not hand-authored. Skipped (not failed)
     until that fixture exists; see tests/fixtures/live/README.md and
-    docs/external-api-contract-testing.md's Part A/B. Re-record via that
+    docs/testing-policy.md. Re-record via that
     script if this ever starts failing after a genuine Telegram API change.
     """
 

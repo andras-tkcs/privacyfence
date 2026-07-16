@@ -756,7 +756,7 @@ class TestLiveFixtureParsing:
     under test, not someone else's identity -- see check_contacts() in
     scripts/qa_fixture_recorder.py). Skipped (not failed) until that
     fixture exists; see tests/fixtures/live/README.md and
-    docs/external-api-contract-testing.md's Part A/B. Re-record via that
+    docs/testing-policy.md. Re-record via that
     script if this ever starts failing after a genuine People API change.
     """
 

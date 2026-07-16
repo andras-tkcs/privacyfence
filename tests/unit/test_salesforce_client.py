@@ -485,7 +485,7 @@ class TestLiveFixtureParsing:
     shape, not hand-authored, with identity fields already redacted.
     Skipped (not failed) until each fixture exists; see
     tests/fixtures/live/README.md and
-    docs/external-api-contract-testing.md's Part A/B. Unlike
+    docs/testing-policy.md. Unlike
     Confluence/Jira, there's no separate _parse_* method to call directly
     -- list_reports/get_record parse inline -- so these mock at the
     _get_sf() boundary instead and call the real public method.

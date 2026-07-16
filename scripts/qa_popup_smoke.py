@@ -28,8 +28,7 @@ Run it whenever approval_window.py's modal-loop plumbing changes
 (build_panel() itself, i.e. everything about window *content*, is already
 covered by test_approval_window.py on every PR and doesn't need this).
 Paste the printed report into the PR description under a "## Popup smoke
-check" heading, the same convention docs/external-api-contract-testing.md's
-local `--check` report already establishes.
+check" heading -- see docs/testing-policy.md §2.2.
 
 Usage:
     python3 scripts/qa_popup_smoke.py

@@ -511,7 +511,7 @@ class TestLiveFixtureParsing:
     in privacyfence-qa-control by scripts/qa_fixture_recorder.py --record
     slack -- real API shape, not hand-authored. Skipped (not failed) until
     that fixture exists; see tests/fixtures/live/README.md and
-    docs/external-api-contract-testing.md's Part A/B. Re-record via that
+    docs/testing-policy.md. Re-record via that
     script if this ever starts failing after a genuine Slack API change.
     """
 
