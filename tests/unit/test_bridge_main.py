@@ -334,20 +334,30 @@ class TestCheckPolicyHandler:
         monkeypatch.setattr(bridge_main_module, "_ipc", fake_ipc)
 
         result = asyncio.run(
-            bridge_main_module._check_policy_handler("gmail", "gmail_get_message", {"message_id": "m1"})
+            bridge_main_module._check_policy_handler(
+                "gmail", "gmail_get_message", "Planning a scheduled run.", {"message_id": "m1"}
+            )
         )
 
         assert result == {"verdict": "auto_accept"}
-        fake_ipc.check_policy.assert_awaited_once_with("gmail", "gmail_get_message", {"message_id": "m1"})
+        fake_ipc.check_policy.assert_awaited_once_with(
+            "gmail", "gmail_get_message", {"message_id": "m1"}, "Planning a scheduled run."
+        )
 
     def test_missing_args_defaults_to_empty_dict(self, monkeypatch):
         fake_ipc = MagicMock()
         fake_ipc.check_policy = AsyncMock(return_value={"verdict": "auto_accept"})
         monkeypatch.setattr(bridge_main_module, "_ipc", fake_ipc)
 
-        asyncio.run(bridge_main_module._check_policy_handler("gmail", "gmail_list_messages"))
+        asyncio.run(
+            bridge_main_module._check_policy_handler(
+                "gmail", "gmail_list_messages", "Planning a scheduled run."
+            )
+        )
 
-        fake_ipc.check_policy.assert_awaited_once_with("gmail", "gmail_list_messages", {})
+        fake_ipc.check_policy.assert_awaited_once_with(
+            "gmail", "gmail_list_messages", {}, "Planning a scheduled run."
+        )
 
     def test_ipc_error_becomes_tool_error(self, monkeypatch):
         from fastmcp.exceptions import ToolError
@@ -356,14 +366,18 @@ class TestCheckPolicyHandler:
         monkeypatch.setattr(bridge_main_module, "_ipc", fake_ipc)
 
         with pytest.raises(ToolError, match="daemon says no"):
-            asyncio.run(bridge_main_module._check_policy_handler("gmail", "gmail_get_message", {}))
+            asyncio.run(
+                bridge_main_module._check_policy_handler("gmail", "gmail_get_message", "reason", {})
+            )
 
     def test_uninitialized_ipc_client_raises_tool_error(self, monkeypatch):
         from fastmcp.exceptions import ToolError
         monkeypatch.setattr(bridge_main_module, "_ipc", None)
 
         with pytest.raises(ToolError, match="not initialized"):
-            asyncio.run(bridge_main_module._check_policy_handler("gmail", "gmail_get_message", {}))
+            asyncio.run(
+                bridge_main_module._check_policy_handler("gmail", "gmail_get_message", "reason", {})
+            )
 
 
 class TestBeginEndUnattendedSessionHandlers:
@@ -372,10 +386,12 @@ class TestBeginEndUnattendedSessionHandlers:
         fake_ipc.begin_unattended_session = AsyncMock(return_value={"unattended": True})
         monkeypatch.setattr(bridge_main_module, "_ipc", fake_ipc)
 
-        result = asyncio.run(bridge_main_module._begin_unattended_session_handler())
+        result = asyncio.run(
+            bridge_main_module._begin_unattended_session_handler("Nightly digest Routine.")
+        )
 
         assert result == {"unattended": True}
-        fake_ipc.begin_unattended_session.assert_awaited_once_with()
+        fake_ipc.begin_unattended_session.assert_awaited_once_with("Nightly digest Routine.")
 
     def test_begin_ipc_error_becomes_tool_error(self, monkeypatch):
         from fastmcp.exceptions import ToolError
@@ -384,31 +400,33 @@ class TestBeginEndUnattendedSessionHandlers:
         monkeypatch.setattr(bridge_main_module, "_ipc", fake_ipc)
 
         with pytest.raises(ToolError, match="disabled"):
-            asyncio.run(bridge_main_module._begin_unattended_session_handler())
+            asyncio.run(bridge_main_module._begin_unattended_session_handler("reason"))
 
     def test_begin_uninitialized_ipc_client_raises_tool_error(self, monkeypatch):
         from fastmcp.exceptions import ToolError
         monkeypatch.setattr(bridge_main_module, "_ipc", None)
 
         with pytest.raises(ToolError, match="not initialized"):
-            asyncio.run(bridge_main_module._begin_unattended_session_handler())
+            asyncio.run(bridge_main_module._begin_unattended_session_handler("reason"))
 
     def test_end_forwards_to_ipc_client(self, monkeypatch):
         fake_ipc = MagicMock()
         fake_ipc.end_unattended_session = AsyncMock(return_value={"unattended": False})
         monkeypatch.setattr(bridge_main_module, "_ipc", fake_ipc)
 
-        result = asyncio.run(bridge_main_module._end_unattended_session_handler())
+        result = asyncio.run(
+            bridge_main_module._end_unattended_session_handler("Nightly digest Routine finished.")
+        )
 
         assert result == {"unattended": False}
-        fake_ipc.end_unattended_session.assert_awaited_once_with()
+        fake_ipc.end_unattended_session.assert_awaited_once_with("Nightly digest Routine finished.")
 
     def test_end_uninitialized_ipc_client_raises_tool_error(self, monkeypatch):
         from fastmcp.exceptions import ToolError
         monkeypatch.setattr(bridge_main_module, "_ipc", None)
 
         with pytest.raises(ToolError, match="not initialized"):
-            asyncio.run(bridge_main_module._end_unattended_session_handler())
+            asyncio.run(bridge_main_module._end_unattended_session_handler("reason"))
 
 
 class TestRegisterMetaTools:
@@ -423,6 +441,20 @@ class TestRegisterMetaTools:
         bridge_main_module._register_meta_tools(mcp)
         assert await mcp.get_tool("privacyfence_begin_unattended_session") is not None
         assert await mcp.get_tool("privacyfence_end_unattended_session") is not None
+
+    async def test_reason_is_a_required_param_on_all_three_meta_tools(self):
+        # docs/security-review-ui-redesign.md §7 Phase 1b: mandatory reason,
+        # not just for the 95 connector ToolSpecs -- these three meta-tools
+        # were the one deferred gap.
+        mcp = FastMCP(name="test")
+        bridge_main_module._register_meta_tools(mcp)
+        for name in (
+            "privacyfence_check_policy",
+            "privacyfence_begin_unattended_session",
+            "privacyfence_end_unattended_session",
+        ):
+            tool = await mcp.get_tool(name)
+            assert "reason" in tool.parameters["required"], name
 
     async def test_advertised_read_only_with_no_side_effects(self):
         mcp = FastMCP(name="test")

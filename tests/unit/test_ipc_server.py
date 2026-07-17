@@ -700,6 +700,45 @@ class TestCheckPolicyDispatch:
         assert entries[0]["connector"] == "gmail"
         assert entries[0]["tool"] == "gmail_list_messages"
 
+    async def test_reason_param_is_recorded_on_the_audit_entry(self, running_server):
+        # docs/security-review-ui-redesign.md §7 Phase 1b: privacyfence_check_policy
+        # gained a "reason" param, same mandatory-everywhere spirit as every
+        # gated tool's -- it's the only artifact recorded for a preflight
+        # check, so it has to reach claude_reason on this entry.
+        server, socket_path = running_server
+        server.set_connectors([FakeConnector("gmail")])
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "check_policy",
+                "params": {
+                    "connector": "gmail", "tool": "gmail_list_messages", "args": {},
+                    "reason": "Planning a scheduled run.",
+                },
+            })
+            await client.recv()
+        finally:
+            await client.close()
+        entries = self._read_entries()
+        assert entries[0]["claude_reason"] == "Planning a scheduled run."
+
+    async def test_missing_reason_param_defaults_to_empty_string(self, running_server):
+        # Backward compatibility with an old bridge that never sends "reason"
+        # -- see ipc.py's module docstring.
+        server, socket_path = running_server
+        server.set_connectors([FakeConnector("gmail")])
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "check_policy",
+                "params": {"connector": "gmail", "tool": "gmail_list_messages", "args": {}},
+            })
+            await client.recv()
+        finally:
+            await client.close()
+        entries = self._read_entries()
+        assert entries[0]["claude_reason"] == ""
+
 
 class UnattendedAwareConnector(Connector):
     """Records gate.is_unattended() at the moment call() runs, so tests can
@@ -806,6 +845,45 @@ class TestUnattendedSessionDispatch:
             ]
         finally:
             await server.stop()
+
+    async def test_reason_param_is_recorded_on_begin_and_end_audit_entries(self, short_socket_path, monkeypatch):
+        # docs/security-review-ui-redesign.md §7 Phase 1b: these two meta-tools
+        # gained a "reason" param -- for calls this session denies without ever
+        # showing a popup, it's the only human-legible record of why.
+        server = await self._server(short_socket_path, monkeypatch, enabled=True)
+        client = await _RawClient.connect(short_socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "begin_unattended_session",
+                "params": {"reason": "Nightly digest Routine."},
+            })
+            await client.recv()
+            await client.send({
+                "id": "2", "method": "end_unattended_session",
+                "params": {"reason": "Nightly digest Routine finished."},
+            })
+            await client.recv()
+        finally:
+            await client.close()
+            await server.stop()
+
+        entries = self._read_entries()
+        assert [e["claude_reason"] for e in entries] == [
+            "Nightly digest Routine.", "Nightly digest Routine finished.",
+        ]
+
+    async def test_missing_reason_param_defaults_to_empty_string(self, short_socket_path, monkeypatch):
+        server = await self._server(short_socket_path, monkeypatch, enabled=True)
+        client = await _RawClient.connect(short_socket_path)
+        try:
+            await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
+            await client.recv()
+        finally:
+            await client.close()
+            await server.stop()
+
+        entries = self._read_entries()
+        assert entries[0]["claude_reason"] == ""
 
     async def test_end_without_begin_does_not_audit_a_phantom_end(self, short_socket_path, monkeypatch):
         server = await self._server(short_socket_path, monkeypatch, enabled=True)

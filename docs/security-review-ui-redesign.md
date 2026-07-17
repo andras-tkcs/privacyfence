@@ -353,7 +353,17 @@ Sensitivity: 🟠 Financial terms
   `_get_thread_replies`, `_search_messages`) — the same three connectors and tools Phase 0 covers,
   using `privacy_filter.category_policy()` directly rather than re-deriving policy state.
 - Rename buttons/labels per the concept ("Allow once" / "Allow for 5 min" / relabel Accept All).
-  **Not done** — deferred, see status below.
+  **Done 2026-07-17** (previously deferred): `_build_button` calls in `approval_window.py` now use
+  "Allow once" / "Deny" / "Always allow" / "Allow for 5 min"; `buttonClicked_`'s title-based
+  dispatch updated to match, with the underlying result vocabulary
+  (`"accept"`/`"accept_all"`/`"accept_temp"`/`"deny"`) left unchanged since `gate.py`/
+  `audit_log.py`/every test keys on those internally. Propagated to every place that names a
+  button: `test_approval_window.py`'s button-set/dispatch assertions, `qa_popup_smoke.py`'s click
+  targets, `connector-qa-testing.md`'s human-operator instructions, the audit log's Excel export
+  labels, and the relevant prose comments/docstrings in `gate.py`, `auto_accept.py`,
+  `approval_popup.py`, `pii_detector.py`, `settings.yaml.example`, `TECHNICAL_REFERENCE.md`,
+  `security-and-compliance.md`, and `qa-environment-setup.md`. `atlassian-setup.md`'s "Accept" is
+  Atlassian's own OAuth consent screen, not this button — left alone.
 - Default keyboard focus to a non-destructive affordance rather than Accept. **Done, adapted**:
   rather than a separate "Inspect" button (the popup already shows full content inline, with no
   expand step to attach one to), `_build_button` no longer sets `"\r"` as Accept's key equivalent,
@@ -369,10 +379,9 @@ Sensitivity: 🟠 Financial terms
   avoid hand-building.
 
 **Phase 1a implementation status**: the data-flow and layout-reorder pieces (visibility checklist,
-section order, reading time, focus/Enter change) are implemented; button relabeling and the
-Gmail-specific layout are deliberately deferred (the former needs its own pass across
-`buttonClicked_`'s title-based dispatch and every test that references button titles by string;
-the latter is Phase 3's job). **Verification honesty note, same as Phase 0**: this repo's test
+section order, reading time, focus/Enter change, button relabeling) are implemented; the
+Gmail-specific layout remains deliberately deferred to Phase 3's job. **Verification honesty note,
+same as Phase 0**: this repo's test
 suite requires macOS (PyObjC/AppKit) and could not be executed in this environment — every change
 here was checked by hand against `tests/unit/test_approval_window.py`'s existing assertions
 (including working out, line by line, that the `_compute_layout`/`build_panel()` height math still
@@ -424,13 +433,20 @@ schema still enforces "required") and a handful of central files.
 - **Done**: `tests/helpers.py::build_stub_args` updated — it now deliberately *excludes* `reason`
   from the args it builds, since it models what a connector method actually receives (post
   `ipc_server.py` stripping), and no method signature accepts `reason`.
-- **Not done, deferred**: the three bridge meta-tools (`privacyfence_check_policy`,
-  `privacyfence_begin_unattended_session`, `privacyfence_end_unattended_session`) do not yet have a
-  `reason` parameter of their own, even though `begin_unattended_session` in particular was flagged
-  as worth one. This is a distinct, smaller extension (touching `bridge_main.py`'s meta-tool
-  registration, `ipc.py`/`ipc_client.py`'s method signatures, and `ipc_server.py`'s handlers, none
-  of which this pass touched) rather than a natural fit for the contextvar mechanism above (there's
-  no connector-layer `_auto_audit` for these to read it from).
+- **Done 2026-07-17** (previously deferred): the three bridge meta-tools (`privacyfence_check_policy`,
+  `privacyfence_begin_unattended_session`, `privacyfence_end_unattended_session`) now each declare a
+  required `reason: str` parameter directly in their handler's function signature — a distinct,
+  smaller extension from the contextvar mechanism above (there's no connector-layer `_auto_audit`
+  for these to read it from), touching `bridge_main.py`'s handlers and tool descriptions,
+  `ipc_client.py`'s three method signatures, `ipc.py`'s protocol docstring, and `ipc_server.py`'s
+  `_check_policy`/`_begin_unattended_session`/`_end_unattended_session` plus their audit-write
+  helpers. `reason` is required at the MCP tool-schema layer (so Claude must always supply it,
+  matching every other tool) but optional (default `""`) at the wire-protocol layer between
+  `ipc_client.py` and `ipc_server.py`, so an old bridge talking to a new daemon (or vice versa)
+  degrades to an empty `claude_reason` instead of breaking — consistent with this doc's note (§7
+  intro) that bridge and daemon ship and update independently. Recorded on the resulting
+  `"policy_check"`/`"unattended_session_started"`/`"unattended_session_ended"` audit entries; the
+  automatic session-end-on-disconnect path has no reason to attribute and stays `""`.
 - Trade-off accepted deliberately, per §10 Q1: a small token/latency cost on high-frequency,
   low-risk calls (e.g. `list_messages`) that no human ever reviews, in exchange for uniform
   coverage in the audit log.

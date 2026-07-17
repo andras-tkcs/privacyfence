@@ -234,32 +234,34 @@ def _build_tool_fn(
     return _handler
 
 
-async def _check_policy_handler(connector: str, tool: str, args: dict[str, Any] | None = None) -> dict:
+async def _check_policy_handler(
+    connector: str, tool: str, reason: str, args: dict[str, Any] | None = None
+) -> dict:
     global _ipc
     if _ipc is None:
         raise ToolError("IPC client not initialized")
     try:
-        return await _ipc.check_policy(connector, tool, args or {})
+        return await _ipc.check_policy(connector, tool, args or {}, reason)
     except IPCError as exc:
         raise ToolError(str(exc)) from exc
 
 
-async def _begin_unattended_session_handler() -> dict:
+async def _begin_unattended_session_handler(reason: str) -> dict:
     global _ipc
     if _ipc is None:
         raise ToolError("IPC client not initialized")
     try:
-        return await _ipc.begin_unattended_session()
+        return await _ipc.begin_unattended_session(reason)
     except IPCError as exc:
         raise ToolError(str(exc)) from exc
 
 
-async def _end_unattended_session_handler() -> dict:
+async def _end_unattended_session_handler(reason: str) -> dict:
     global _ipc
     if _ipc is None:
         raise ToolError("IPC client not initialized")
     try:
-        return await _ipc.end_unattended_session()
+        return await _ipc.end_unattended_session(reason)
     except IPCError as exc:
         raise ToolError(str(exc)) from exc
 
@@ -277,7 +279,9 @@ def _register_meta_tools(mcp: FastMCP) -> None:
         description=(
             "Ask PrivacyFence, before calling a gated tool, whether that specific call would "
             "auto-accept or need a human. Pass the same connector, tool, and args you're about "
-            "to call. Returns {gate, verdict, matched_rule, reason, pii_gate_may_apply}, where "
+            "to call, plus reason: one sentence on why you're checking this right now (logged, "
+            "self-reported, unverified -- same as every gated tool's reason param). Returns "
+            "{gate, verdict, matched_rule, reason, pii_gate_may_apply}, where "
             "verdict is one of: 'auto_accept' (the real call will pass through identically), "
             "'requires_review' (no configured rule can match these arguments, with or without "
             "fetching anything), or 'unknown' (whether it auto-accepts depends on the actual "
@@ -304,7 +308,9 @@ def _register_meta_tools(mcp: FastMCP) -> None:
             "which steps are safe to attempt. Never changes what auto-accepts, only what happens "
             "when nothing does. Errors if an administrator hasn't enabled unattended sessions for "
             "this install. Do not call this during a normal interactive conversation -- it makes "
-            "denials immediate instead of prompting."
+            "denials immediate instead of prompting. reason: one sentence on why this session is "
+            "unattended (e.g. the Routine/schedule that triggered it) -- logged in the audit "
+            "entry for this session change, since no popup is shown for it to appear in."
         ),
         annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
     )(_begin_unattended_session_handler)
@@ -316,7 +322,8 @@ def _register_meta_tools(mcp: FastMCP) -> None:
             "this connection, restoring normal interactive approval behavior. Call this when a "
             "scheduled run finishes. Not strictly required -- the flag also clears automatically "
             "when the connection closes -- but call it if this connection might be reused "
-            "afterward for something interactive."
+            "afterward for something interactive. reason: one sentence on why the unattended "
+            "session is ending now -- logged the same way as privacyfence_begin_unattended_session's."
         ),
         annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
     )(_end_unattended_session_handler)

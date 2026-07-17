@@ -170,9 +170,9 @@ class IPCServer:
             elif method == "check_policy":
                 result = self._check_policy(params)
             elif method == "begin_unattended_session":
-                result = self._begin_unattended_session(writer)
+                result = self._begin_unattended_session(writer, params.get("reason", ""))
             elif method == "end_unattended_session":
-                result = self._end_unattended_session(writer)
+                result = self._end_unattended_session(writer, params.get("reason", ""))
             else:
                 raise ValueError(f"Unknown method: {method!r}")
 
@@ -242,6 +242,7 @@ class IPCServer:
         connector_name = params["connector"]
         tool = params["tool"]
         args = params.get("args", {})
+        claude_reason = params.get("reason", "")
         connector = self._connectors.get(connector_name)
         if connector is None:
             raise ValueError(f"Unknown connector: {connector_name!r}")
@@ -273,11 +274,11 @@ class IPCServer:
                 "reason": reason, "pii_gate_may_apply": gate == "review",
             }
 
-        self._audit_policy_check(connector_name, tool, result)
+        self._audit_policy_check(connector_name, tool, result, claude_reason)
         return result
 
     @staticmethod
-    def _audit_policy_check(connector_name: str, tool: str, result: dict) -> None:
+    def _audit_policy_check(connector_name: str, tool: str, result: dict, claude_reason: str = "") -> None:
         try:
             get_audit_logger().record(AuditEntry(
                 timestamp=datetime.now(timezone.utc).isoformat(),
@@ -292,12 +293,13 @@ class IPCServer:
                 auto_accept_rule=result.get("matched_rule") or "",
                 latency_seconds=0.0,
                 pii_detected=False,
+                claude_reason=claude_reason,
             ))
         except Exception as exc:
             logger.warning("Audit log write failed for policy check: %s", exc)
 
     @staticmethod
-    def _audit_unattended_session_event(decision: str) -> None:
+    def _audit_unattended_session_event(decision: str, claude_reason: str = "") -> None:
         """Session-level audit entry for begin/end_unattended_session --
         this connection's gate posture just changed, which is a governance
         decision in its own right, not just a bookkeeping detail."""
@@ -315,11 +317,12 @@ class IPCServer:
                 auto_accept_rule="",
                 latency_seconds=0.0,
                 pii_detected=False,
+                claude_reason=claude_reason,
             ))
         except Exception as exc:
             logger.warning("Audit log write failed for unattended-session event: %s", exc)
 
-    def _begin_unattended_session(self, writer: asyncio.StreamWriter) -> dict:
+    def _begin_unattended_session(self, writer: asyncio.StreamWriter, claude_reason: str = "") -> dict:
         """privacyfence_begin_unattended_session -- see settings.yaml.example's
         unattended_sessions.enabled and docs/TECHNICAL_REFERENCE.md's
         "Scheduled / unattended Cowork tasks" section.
@@ -336,18 +339,18 @@ class IPCServer:
             "connection will now be denied immediately instead of prompting",
             writer.get_extra_info("peername") or "<unknown>",
         )
-        self._audit_unattended_session_event("unattended_session_started")
+        self._audit_unattended_session_event("unattended_session_started", claude_reason)
         self._fire_unattended_changed()
         return {"unattended": True}
 
-    def _end_unattended_session(self, writer: asyncio.StreamWriter) -> dict:
+    def _end_unattended_session(self, writer: asyncio.StreamWriter, claude_reason: str = "") -> dict:
         changed = id(writer) in self._unattended_connections
         self._unattended_connections.discard(id(writer))
         logger.info(
             "Unattended session ended on connection %s", writer.get_extra_info("peername") or "<unknown>"
         )
         if changed:
-            self._audit_unattended_session_event("unattended_session_ended")
+            self._audit_unattended_session_event("unattended_session_ended", claude_reason)
             self._fire_unattended_changed()
         return {"unattended": False}
 

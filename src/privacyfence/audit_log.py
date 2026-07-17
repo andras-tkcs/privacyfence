@@ -54,9 +54,14 @@ class AuditEntry:
     pii_detected: bool = False  # True if pii_detector.py flagged the content before this decision
     claude_reason: str = ""  # Claude's self-reported reason for the call, from the mandatory
                               # "reason" ToolSpec param every gated/auto tool now declares (see
-                              # gate.py's reason_scope). Self-reported and unverified -- never
-                              # treated as fact, see docs/security-review-ui-redesign.md §4. Empty
-                              # for decisions with no associated tool call (e.g. "policy_check").
+                              # gate.py's reason_scope), or the "reason" param on the three
+                              # privacyfence_* meta-tools for "policy_check"/
+                              # "unattended_session_started"/"_ended" entries, which have no
+                              # underlying gated tool call to take it from otherwise (see
+                              # ipc_server.py's _audit_policy_check/_audit_unattended_session_event).
+                              # Self-reported and unverified -- never treated as fact, see
+                              # docs/security-review-ui-redesign.md §4. Empty for the automatic
+                              # session-end-on-disconnect path, which has no reason to attribute.
 
 
 class AuditLogger:
