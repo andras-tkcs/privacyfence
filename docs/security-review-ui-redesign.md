@@ -54,7 +54,8 @@ Per the maintainer's decision, this was implemented as a prerequisite rather tha
   green here; the per-connector integration tests and the connector edits themselves are
   carefully pattern-matched against each file's existing conventions and cross-checked against
   every existing assertion they run alongside, but not executed. They need a real `pytest` run on
-  macOS before this is considered verified, not just written.
+  macOS before this is considered verified, not just written. **Resolved 2026-07-17** — see
+  "Verification note — real `pytest` run completed on macOS" above.
 
 With this in place, Phase 1a's visibility checklist (below) can now honestly render
 `privacy_filter.category_policy(group, category)` per category instead of a fictional config
@@ -89,6 +90,41 @@ things changed enough to update it in place rather than leave stale:
 
 Line-number references throughout this doc have been refreshed against the merged tree. See §11
 for the implementation-readiness verdict.
+
+## Verification note — real `pytest` run completed on macOS (2026-07-17)
+
+Every "verification honesty note" below (Phase 0, 1a, 1b, 2) flagged the same gap: this repo's
+full test suite needs real macOS/PyObjC/AppKit and could only be hand-checked against existing
+assertions, not executed, in the environment those phases were originally implemented in. That gap
+is now closed — `pytest -v --cov=src/privacyfence --cov-report=term-missing` has run for real,
+locally, on macOS.
+
+The first run caught two real bugs the hand-checking missed, both now fixed (`cb5febb`):
+- `approval_window.py`: `_CONTENT_FLAG_FILL_ALPHA` was accidentally equal to
+  `_PII_BANNER_FILL_ALPHA` (both `0.16`), silently defeating the visual distinction Phase 2's
+  write-side amber banner is supposed to have from the read-gate's PII red banner —
+  `test_flags_and_pii_categories_use_visually_distinct_alphas` caught it.
+- `test_gate.py`: a copy-pasted IBAN string in
+  `test_review_gate_call_succeeds_without_write_content_flags_kwarg` tripped Phase 2's new
+  financial detector on the `gate="review"` path, routing to a real, unmocked
+  `show_pii_confirmation_popup` and hanging for 30s on a live `osascript` subprocess call waiting
+  for a click nobody was there to give. Not a flaky test — a genuine hang, and a preview of exactly
+  the kind of gap these honesty notes existed to flag.
+
+After both fixes: **2447 passed, 0 failed, 93% coverage, ~21s.** Phases 0–2 are now genuinely
+pytest-verified end to end, not just internally consistent.
+
+Two more checks from `docs/coding-and-testing-guidelines.md` §2.7 also ran, since this branch
+touches `approval_window.py`'s modal-loop plumbing and every connector:
+- `scripts/qa_fixture_recorder.py --check` against real accounts for all 10 connectors — 13/13
+  checks passed.
+- `scripts/qa_popup_smoke.py` — driving real clicks against the real modal popups. Along the way,
+  found and fixed a bug in the script itself (pre-existing on `main`, unrelated to this branch):
+  `AppHelper.runEventLoop()` (`NSApplicationMain` under the hood) doesn't reliably return control
+  to Python once the background thread finishes and calls `stopEventLoop()`, so the report the
+  script is supposed to print after all scenarios run never printed. Fixed by printing/writing the
+  report and exiting from inside the background thread itself, which does reliably run to
+  completion (`cb5febb`).
 
 ## 1. Verdict
 
@@ -342,6 +378,7 @@ here was checked by hand against `tests/unit/test_approval_window.py`'s existing
 (including working out, line by line, that the `_compute_layout`/`build_panel()` height math still
 matches) and new tests were added following the same patterns, but none of it has run through a
 real `pytest` yet. That is the one remaining gate before this is trustworthy, not just plausible.
+**Resolved 2026-07-17** — see "Verification note — real `pytest` run completed on macOS" above.
 
 **Phase 1b — mandatory `reason` parameter, on every tool including auto-gated (largest-footprint
 item in this whole plan — decided scope, see §10) — implemented, see status below**
@@ -409,7 +446,8 @@ before being applied, with the resulting count cross-checked (`ToolSpec(` count 
 95/95, in every file) and every file re-verified with `py_compile`. `gate.py`, `ipc_server.py`, and
 every connector still require macOS/AppKit to actually import or run — that verification gap is
 unchanged from Phase 0/1a and still needs a real `pytest` run before this is trustworthy end to
-end, not just internally consistent.
+end, not just internally consistent. **Resolved 2026-07-17** — see "Verification note — real
+`pytest` run completed on macOS" above.
 
 **Phase 2 — new local detectors, still zero external calls — implemented, see status below**
 
@@ -453,7 +491,9 @@ this environment. `gate.py`, `approval_popup.py`, and `approval_window.py`'s wir
 not be executed here for the same reason as every prior phase's AppKit-touching work — checked by
 hand against every existing test assertion and the layout-height "must mirror" invariant, with a
 real bug (the `fake_show_popup` gap above) already found this way once. Still needs a real
-`pytest` run on macOS before this is trustworthy end to end.
+`pytest` run on macOS before this is trustworthy end to end. **Resolved 2026-07-17** — a real run
+found one more real bug beyond the `fake_show_popup` gap (a duplicated banner-alpha constant); see
+"Verification note — real `pytest` run completed on macOS" above.
 
 **Phase 3 — real preview rendering (bigger UI investment)**
 - Move `approval_window.py`'s body from a plain `NSTextView` to an embedded local `WKWebView`
