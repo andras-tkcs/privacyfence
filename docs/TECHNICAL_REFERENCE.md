@@ -62,25 +62,25 @@ layered on top.
 PrivacyFence opens a native popup with a summary box and a scrollable pane showing the full
 content (e.g. the email body) up front, offering:
 
-- **Accept** — data is returned to Claude
+- **Allow once** — data is returned to Claude
 - **Deny** — request is blocked; Claude receives an error
-- **Accept All** — when a plausible rule can be derived from the item's attributes, proposes
+- **Always allow** — when a plausible rule can be derived from the item's attributes, proposes
   (with a second confirmation dialog) a standing [auto-accept rule](#auto-accept-rules) for
   similar future reads
 
 **Claude → Tool (writes / actions) — gate `popup`**
 
 Claude already describes the action it is about to take in the chat. PrivacyFence opens a native
-popup showing the full action details with **Accept** or **Deny** only — no **Accept All**, since
+popup showing the full action details with **Allow once** or **Deny** only — no **Always allow**, since
 auto-accepting a write silently is a materially bigger blast radius than auto-accepting a read.
 
 For write operations expected to be called repeatedly against the same file in quick succession —
 `drive_sheets_write_range`, `drive_sheets_format_range`, `drive_sheets_insert_dimensions`,
 `drive_add_comment`, `drive_docs_edit_content`, and `drive_docs_format_content` — the popup adds a
-third button, **Accept for 5 min**: it auto-accepts further calls of that same operation against
+third button, **Allow for 5 min**: it auto-accepts further calls of that same operation against
 that same file for 5 minutes, entirely in memory. Unlike a standing
 [auto-accept rule](#auto-accept-rules), it's never written to `settings.yaml` and disappears on
-daemon restart — a much smaller commitment than Accept All, appropriate for writes where a
+daemon restart — a much smaller commitment than Always allow, appropriate for writes where a
 standing rule isn't offered at all.
 
 `drive_sheets_delete_dimensions` is deliberately excluded even though it's called in the same kind
@@ -98,7 +98,7 @@ write is content Claude itself already generated for an action it described in c
 `drive_write_file_content`, `gmail_create_draft`, `slack_send_message`), not external personal
 data being newly exposed to it.
 
-On top of the normal Accept/Deny popup, PrivacyFence can scan the message/document/spreadsheet
+On top of the normal Allow once/Deny popup, PrivacyFence can scan the message/document/spreadsheet
 content shown in every `review` dialog for likely personal data — in **Hungarian,
 English, and German** — before you approve it: IBANs, credit card numbers, IP addresses, and
 national identifiers (Hungarian TAJ/adóazonosító jel/ID card number, German
@@ -117,7 +117,7 @@ etc.) are rare enough in ordinary correspondence that a hit is still a meaningfu
 When something is flagged:
 
 - The popup is tinted light red and shows a banner naming the categories found.
-- After clicking **Accept** (or **Accept All**), one more explicit **"Are you sure?"** dialog is
+- After clicking **Allow once** (or **Always allow**), one more explicit **"Are you sure?"** dialog is
   required before the decision takes effect — declining it denies the whole request, the same as
   clicking **Deny** on the original popup.
 
@@ -574,7 +574,7 @@ for `sheets.rename_sheet` / `sheets.format_range` / `sheets.insert_dimensions` /
 `sheets.add_sheet` has no existing tab to scope to, so only bare `spreadsheet_id` entries apply
 there.
 
-Clicking **Accept All** on a "Read Sheet Values" prompt proposes exactly this rule — scoped to the
+Clicking **Always allow** on a "Read Sheet Values" prompt proposes exactly this rule — scoped to the
 spreadsheet and tab you just read — rather than a broader ownership- or folder-based rule.
 
 `drive.comment_file` (`drive_add_comment` — also used for comments on Docs and Sheets, since those
@@ -586,12 +586,12 @@ way plain Drive files do. `docs.edit_content` and `docs.format_content` (`drive_
 its `write` capability auto-accepts `docs.edit_content`/`docs.format_content` too, alongside
 `drive.write_file`/`drive.write_doc` and every `sheets.*` write.
 
-**Write ops have no Accept All, but some get "Accept for 5 min" instead.** All of the above
+**Write ops have no Always allow, but some get "Allow for 5 min" instead.** All of the above
 (including the writes) are `popup`-gated, and unlike `review`-gated reads, a write popup never
 offers to create a standing rule — see [PII detection gate](#pii-detection-gate) and the
 [review model](#review-model) above for why. `sheets.write_range`, `sheets.format_range`,
 `sheets.insert_dimensions`, `drive.comment_file`, `docs.edit_content`, and `docs.format_content`
-are the exception: their popup additionally offers **Accept for 5 min**, an in-memory,
+are the exception: their popup additionally offers **Allow for 5 min**, an in-memory,
 non-persisted acceptance scoped to one spreadsheet/file for 5 minutes — see
 [Two flows by direction](#two-flows-by-direction). `sheets.add_sheet` and `sheets.rename_sheet`
 get neither; they're one-shot per file rather than something called repeatedly in a burst, so a
@@ -643,7 +643,7 @@ not the event's prior visibility, since that's the state actually being approved
 visibility to `public` or `default` can auto-accept, one that sets it to `private` cannot, even if
 the event happened to already be private beforehand. For every other operation this rule applies to
 (currently `calendar.read_event_details`), it falls back to the event's current visibility instead,
-since there's no "requested" value to check. Clicking **Accept All** on a
+since there's no "requested" value to check. Clicking **Always allow** on a
 "Read Calendar Event" prompt proposes this rule when the event isn't private and neither
 `i_am_organizer` nor `no_external_attendees` apply.
 
@@ -744,7 +744,7 @@ A bridge meta-tool (not backed by any connector) Claude can call before actually
 tool, to find out whether that specific call would need a human:
 
 ```
-privacyfence_check_policy(connector, tool, args) -> {
+privacyfence_check_policy(connector, tool, reason, args) -> {
     "gate": "auto" | "review" | "popup",
     "verdict": "auto_accept" | "requires_review" | "unknown",
     "matched_rule": <str | null>,
@@ -753,11 +753,16 @@ privacyfence_check_policy(connector, tool, args) -> {
 }
 ```
 
+`reason` (required, same as every gated tool's — self-reported and unverified, logged as-is, never
+treated as fact) is one sentence on why Claude is checking this right now; recorded on the
+resulting `policy_check` audit entry, since that entry has no underlying tool call to take a reason
+from otherwise.
+
 It never calls a connector, opens a popup, or has any side effect beyond a lightweight
 `policy_check` audit entry (see [Audit log](#audit-log)) — safe to call as often as needed while
 planning a task. The verdict is only ever as certain as the underlying rule allows:
 
-- `auto_accept` — a rule matched using only the call's arguments (or an active "Accept for 5 min"
+- `auto_accept` — a rule matched using only the call's arguments (or an active "Allow for 5 min"
   window); the real call will auto-accept identically.
 - `requires_review` — every rule configured for this operation only needs arguments, and none
   matched; fetching the real data cannot change that answer.
@@ -770,9 +775,13 @@ rule matches, and that can never be predicted before the read happens.
 
 ### Unattended sessions — fail fast instead of hang
 
-`privacyfence_begin_unattended_session()` / `privacyfence_end_unattended_session()` (also bridge
-meta-tools) let Claude mark the current connection as running a scheduled/unattended task, for as
-long as that connection stays open. While marked, any `review`/`popup` call on that connection
+`privacyfence_begin_unattended_session(reason)` / `privacyfence_end_unattended_session(reason)`
+(also bridge meta-tools, each with a required `reason` — same self-reported, unverified, one
+sentence contract as `privacyfence_check_policy`'s) let Claude mark the current connection as
+running a scheduled/unattended task, for as long as that connection stays open. `reason` is
+recorded on the resulting `unattended_session_started`/`unattended_session_ended` audit entry —
+for calls this session denies without ever showing a popup, it's the only human-legible record of
+why the session was unattended in the first place. While marked, any `review`/`popup` call on that connection
 that isn't already covered by a matching auto-accept rule is **denied immediately** — audited as
 `denied_unattended`, distinct from a human's own `rejected` — instead of opening a popup nobody
 will answer. This applies even when a rule matched but the [PII gate](#pii-detection-gate) still

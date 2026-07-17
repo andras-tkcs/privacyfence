@@ -90,26 +90,28 @@ def text_field_values(views):
 
 class TestButtonSet:
     """Ground rule in connector-qa-testing.md: the popup offers exactly
-    Deny / Accept / Accept All / Accept for 5 min, and only the last two are
-    conditional on the gate configuration."""
+    Deny / Allow once / Always allow / Allow for 5 min, and only the last two
+    are conditional on the gate configuration. Labels per
+    docs/security-review-ui-redesign.md §7 Phase 1a; the underlying result
+    values ("accept"/"accept_all"/"accept_temp"/"deny") are unchanged."""
 
     def test_accept_and_deny_are_always_present(self):
         views = build_views(make_controller())
         titles = buttons_by_title(views)
-        assert "Accept" in titles
+        assert "Allow once" in titles
         assert "Deny" in titles
 
     def test_accept_all_present_only_when_allowed(self):
         with_it = buttons_by_title(build_views(make_controller(allow_accept_all=True)))
         without_it = buttons_by_title(build_views(make_controller(allow_accept_all=False)))
-        assert "Accept All" in with_it
-        assert "Accept All" not in without_it
+        assert "Always allow" in with_it
+        assert "Always allow" not in without_it
 
     def test_accept_for_5_min_present_only_when_allowed(self):
         with_it = buttons_by_title(build_views(make_controller(allow_temp_accept=True)))
         without_it = buttons_by_title(build_views(make_controller(allow_temp_accept=False)))
-        assert "Accept for 5 min" in with_it
-        assert "Accept for 5 min" not in without_it
+        assert "Allow for 5 min" in with_it
+        assert "Allow for 5 min" not in without_it
 
     def test_both_optional_buttons_can_appear_together(self):
         # gate.py never actually requests both at once (review vs. popup
@@ -117,7 +119,7 @@ class TestButtonSet:
         # such restriction -- this locks in that the two buttons don't
         # collide or hide each other when combined.
         titles = buttons_by_title(build_views(make_controller(allow_accept_all=True, allow_temp_accept=True)))
-        assert {"Accept", "Deny", "Accept All", "Accept for 5 min"} <= titles.keys()
+        assert {"Allow once", "Deny", "Always allow", "Allow for 5 min"} <= titles.keys()
 
     def test_accept_has_no_enter_shortcut_but_deny_keeps_escape(self):
         # Changed deliberately (was "Accept defaults to Enter") -- see
@@ -127,7 +129,7 @@ class TestButtonSet:
         # via Escape stays bound since that's the safe direction.
         views = build_views(make_controller())
         titles = buttons_by_title(views)
-        assert titles["Accept"].keyEquivalent() != "\r"
+        assert titles["Allow once"].keyEquivalent() != "\r"
         assert titles["Deny"].keyEquivalent() == "\x1b"
 
     def test_details_view_is_the_panel_initial_first_responder(self):
@@ -379,10 +381,10 @@ class TestButtonClicked:
     @pytest.mark.parametrize(
         "button_title,expected_result",
         [
-            ("Accept", "accept"),
+            ("Allow once", "accept"),
             ("Deny", "deny"),
-            ("Accept All", "accept_all"),
-            ("Accept for 5 min", "accept_temp"),
+            ("Always allow", "accept_all"),
+            ("Allow for 5 min", "accept_temp"),
         ],
     )
     def test_title_maps_to_the_documented_result(self, button_title, expected_result):

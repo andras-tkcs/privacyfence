@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Local-only smoke test for approval_window.py's real modal loop: does a
-real click on a real, on-screen "Accept" / "Deny" / "Accept All" / "Accept
-for 5 min" button actually resolve show_native_approval() to the value its
-docstring promises?
+real click on a real, on-screen "Allow once" / "Deny" / "Always allow" /
+"Allow for 5 min" button actually resolve show_native_approval() to the
+value its docstring promises?
 
 tests/unit/test_approval_window.py already builds the real AppKit view tree
 for every popup shape and asserts on its content -- buttons, PII
@@ -161,8 +161,8 @@ def _scenarios() -> list[ScenarioResult]:
     results = []
 
     results.append(_run_scenario(
-        "Plain popup, Accept",
-        click_title="Accept", expected="accept",
+        "Plain popup, Allow once",
+        click_title="Allow once", expected="accept",
         title="PrivacyFence — QA smoke test (plain)",
         preview={"from": "qa-smoke@example.com"},
         details_text="Ordinary, non-sensitive smoke-test content.",
@@ -179,8 +179,8 @@ def _scenarios() -> list[ScenarioResult]:
     ))
 
     results.append(_run_scenario(
-        "PII-tinted popup, Accept",
-        click_title="Accept", expected="accept",
+        "PII-tinted popup, Allow once",
+        click_title="Allow once", expected="accept",
         title="PrivacyFence — QA smoke test (PII-tinted)",
         preview={"from": "qa-smoke@example.com"},
         details_text="His SSN is 123-45-6789 on file.",
@@ -189,17 +189,17 @@ def _scenarios() -> list[ScenarioResult]:
     ))
 
     results.append(_run_scenario(
-        "Review-gate popup, Accept All",
-        click_title="Accept All", expected="accept_all",
-        title="PrivacyFence — QA smoke test (Accept All)",
+        "Review-gate popup, Always allow",
+        click_title="Always allow", expected="accept_all",
+        title="PrivacyFence — QA smoke test (Always allow)",
         preview={"from": "qa-smoke@example.com"},
         details_text="Ordinary, non-sensitive smoke-test content.",
         allow_accept_all=True,
     ))
 
     results.append(_run_scenario(
-        "Write-gate popup, Accept for 5 min",
-        click_title="Accept for 5 min", expected="accept_temp",
+        "Write-gate popup, Allow for 5 min",
+        click_title="Allow for 5 min", expected="accept_temp",
         title="PrivacyFence — QA smoke test (temp accept)",
         preview={"file": "qa-smoke-test-file.txt"},
         details_text="Ordinary, non-sensitive smoke-test content.",

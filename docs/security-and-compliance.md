@@ -90,10 +90,10 @@ defined in the [Review model](TECHNICAL_REFERENCE.md#review-model) section of th
   `auto_accepted`. Reserved for narrow, pre-defined low-risk conditions (e.g., "I am the sender,"
   "the file is one I created this session") — see [Auto-accept rules](TECHNICAL_REFERENCE.md#auto-accept-rules).
 - **`review`** — the AI-bound read is held; the human sees a minimal preview and must explicitly
-  **Accept** or **Deny** before any content reaches the AI.
+  **Allow once** or **Deny** before any content reaches the AI.
 - **`popup`** — the AI-initiated write/action (send an email, post to Slack, edit a Jira issue,
   etc.) is held in a native macOS popup showing the full action before it goes out, with the same
-  **Accept**/**Deny** choice.
+  **Allow once**/**Deny** choice.
 
 No tool call bypasses this gate silently. Even the `auto` gate is a logged, IT-and-user-configured
 exception — never a default absence of control. Sensitive actions (writes, and any read of full
@@ -105,7 +105,7 @@ regex-based scan (Hungarian, English, German) over the content shown in every `r
 before the human decides — and before any auto-accept rule is checked. A match overrides a
 matching rule (a `review` call is content-blind to the rule, so PII in an otherwise-trusted
 sender/folder still routes to a human) and tints the dialog, forcing one additional explicit
-confirmation on top of Accept — see [PII detection gate](TECHNICAL_REFERENCE.md#pii-detection-gate) in the
+confirmation on top of Allow once — see [PII detection gate](TECHNICAL_REFERENCE.md#pii-detection-gate) in the
 Technical Reference. It is a best-effort heuristic layered on top of human review, not a substitute for it,
 and it never logs or stores the matched text — only category labels, in the audit entry for that
 decision. It does not run on the `popup` (write) direction: that content is Claude's own generated
@@ -215,7 +215,7 @@ oversight measure**, sitting in front of the AI system rather than being one:
 |---|---|
 | Authentication to connected services | OAuth2 (or Telethon/MTProto for Telegram), per user, per connector — no shared service accounts |
 | Least privilege | Per-connector, per-operation gating (`auto`/`review`/`popup`); auto-accept rules can be scoped down to a single folder, spreadsheet tab, channel, or task list |
-| PII detection gate | Local regex heuristic (Hungarian/English/German) over `review` (read) dialog content only; a match requires an extra explicit confirmation before Accept takes effect. Toggleable per user (menu bar / `pii_detection.enabled`) |
+| PII detection gate | Local regex heuristic (Hungarian/English/German) over `review` (read) dialog content only; a match requires an extra explicit confirmation before Allow once takes effect. Toggleable per user (menu bar / `pii_detection.enabled`) |
 | Transport between processes | Local Unix domain socket only (`~/.privacyfence/privacyfence.sock`); the bridge carries no credentials and only relays |
 | Process isolation | Bridge (untrusted-facing, talks to Claude) and daemon (holds credentials) are separate processes; only the daemon can reach external APIs |
 | Secrets at rest | Local OS-level storage / local files under `credentials/`; never committed to source control (`.gitignore`'d), never transmitted off-device |

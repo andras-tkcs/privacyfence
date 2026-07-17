@@ -188,7 +188,7 @@ class TestDriveApprovedFolder:
 
 
 class TestDriveTempAccept:
-    """connector-qa-testing.md Phase 2 steps 5/13/16: 'Accept for 5 min' on
+    """connector-qa-testing.md Phase 2 steps 5/13/16: 'Allow for 5 min' on
     one call must silently auto-accept a second call for the same file,
     against the real evaluator's own in-memory temp-accept store -- not
     FakeEvaluator's canned register_temp_accept() list (see
@@ -468,8 +468,8 @@ class TestTasksApprovedTaskList:
 
 
 class TestAcceptAllPersistsARealRule:
-    """connector-qa-testing.md's Accept All pattern (e.g. Phase 2 step 12):
-    confirming 'Accept All' on one call must persist a real rule that then
+    """connector-qa-testing.md's Always allow pattern (e.g. Phase 2 step 12):
+    confirming 'Always allow' on one call must persist a real rule that then
     silently covers a second, different-but-matching call -- exercised here
     against the real on-disk persistence path (auto_accept.add_auto_accept_rule),
     not just the in-memory FakeEvaluator assertions test_gate.py::TestAcceptAll

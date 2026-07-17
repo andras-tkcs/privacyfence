@@ -3,7 +3,7 @@
 Every gated tool call resolves through exactly one blocking dialog here.
 There is no separate "show details" step and no pending-approval handshake:
 full content is always shown before the decision, so the human always sees
-what they're approving before they can click Accept. The main gate
+what they're approving before they can click Allow once. The main gate
 (show_popup / show_read_popup) renders through approval_window.py's custom
 AppKit window; show_rule_confirmation_popup and show_pii_confirmation_popup
 are smaller secondary prompts (confirming a standing auto-accept rule, or
@@ -180,7 +180,7 @@ def show_pii_confirmation_popup(categories: list[str]) -> bool:
 
 
 def show_rule_confirmation_popup(description: str) -> bool:
-    """Second-step confirmation shown after "Accept All" is clicked.
+    """Second-step confirmation shown after "Always allow" is clicked.
 
     Defaults to Cancel — unlike the main gate, hitting Enter here shouldn't
     silently create a standing rule that skips future approvals.

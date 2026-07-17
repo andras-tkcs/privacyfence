@@ -20,11 +20,11 @@ When gate.py's PII detector (pii_detector.py) flags categories in the
 content of a read (review-gate) popup, the window renders a light-red wash
 over the whole panel plus a warning banner naming what was found — the
 visual cue that a second, explicit "Are you sure?" confirmation (approval_
-popup.show_pii_confirmation_popup) is coming after Accept, not a decision by
-itself. Write (popup-gate) approvals never carry pii_categories, so this
-never renders for them.
+popup.show_pii_confirmation_popup) is coming after Allow once, not a
+decision by itself. Write (popup-gate) approvals never carry pii_categories,
+so this never renders for them.
 
-Accept has no "\\r" keyEquivalent and the details pane is the panel's
+Allow once has no "\\r" keyEquivalent and the details pane is the panel's
 initial first responder — hitting Enter the moment the window appears
 cannot approve a request nobody has actually read yet. Deny keeps Escape:
 declining via a reflexive keypress is the safe direction, not a risk the
@@ -391,7 +391,7 @@ class ApprovalWindowController(NSObject):
         scroll.setDocumentView_(text_view)
         # Kept for build_panel() to set as the panel's initial first
         # responder -- default focus lands on the content to read, not on
-        # Accept (§5.4, same reasoning as dropping Accept's "\r" above).
+        # Allow once (§5.4, same reasoning as dropping its "\r" above).
         self._details_text_view = text_view
         return scroll
 
@@ -414,8 +414,8 @@ class ApprovalWindowController(NSObject):
             # Deliberately no "\r" keyEquivalent -- see
             # docs/security-review-ui-redesign.md §5.4: hitting Enter
             # shouldn't be able to approve a request the reviewer hasn't
-            # actually looked at yet. Accept still keeps its blue "this is
-            # the affirmative action" styling; only the Enter-key muscle
+            # actually looked at yet. Allow once still keeps its blue "this
+            # is the affirmative action" styling; only the Enter-key muscle
             # memory is removed. Deny keeps Escape (danger branch below) --
             # declining via a reflexive keypress is the safe direction, not
             # a risk the way an accidental approve would be.
@@ -641,7 +641,7 @@ class ApprovalWindowController(NSObject):
 
         # Button row. content is flipped (y grows downward), so the row
         # sits in the band [content_height, content_height + row height].
-        accept_btn = self._build_button("Accept", primary=True)
+        accept_btn = self._build_button("Allow once", primary=True)
         button_h = accept_btn.frame().size.height
         button_y = content_height + (_BUTTON_ROW_HEIGHT - button_h) / 2.0
 
@@ -654,13 +654,13 @@ class ApprovalWindowController(NSObject):
         content.addSubview_(accept_btn)
 
         if self.allow_accept_all:
-            accept_all_btn = self._build_button("Accept All")
+            accept_all_btn = self._build_button("Always allow")
             right_x -= accept_all_btn.frame().size.width + 8.0
             accept_all_btn.setFrameOrigin_((right_x, button_y))
             content.addSubview_(accept_all_btn)
 
         if self.allow_temp_accept:
-            temp_accept_btn = self._build_button("Accept for 5 min")
+            temp_accept_btn = self._build_button("Allow for 5 min")
             right_x -= temp_accept_btn.frame().size.width + 8.0
             temp_accept_btn.setFrameOrigin_((right_x, button_y))
             content.addSubview_(temp_accept_btn)
@@ -694,12 +694,17 @@ class ApprovalWindowController(NSObject):
         panel.orderOut_(None)
 
     def buttonClicked_(self, sender) -> None:
+        # Internal result values ("accept"/"accept_all"/"accept_temp"/"deny")
+        # stay as-is -- gate.py/audit_log.py/tests key on them throughout.
+        # Only the button labels themselves changed, per
+        # docs/security-review-ui-redesign.md §7 Phase 1a's "Allow once" /
+        # "Allow for 5 min" / "Always allow" relabeling.
         title = str(sender.title())
-        if title == "Accept All":
+        if title == "Always allow":
             self.result = "accept_all"
-        elif title == "Accept for 5 min":
+        elif title == "Allow for 5 min":
             self.result = "accept_temp"
-        elif title == "Accept":
+        elif title == "Allow once":
             self.result = "accept"
         else:
             self.result = "deny"

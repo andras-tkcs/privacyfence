@@ -8,28 +8,29 @@ in the same call that fetched it, so Claude never holds a tool that can
 release gated data on its own.
 
   gate="review"  (read tools)
-    Popup offers Deny / Accept / and — when a plausible auto-accept rule can
-    be derived from the item's attributes — Accept All, which proposes (with
-    a second confirmation dialog) a standing rule for similar future reads.
+    Popup offers Deny / Allow once / and — when a plausible auto-accept rule
+    can be derived from the item's attributes — Always allow, which proposes
+    (with a second confirmation dialog) a standing rule for similar future
+    reads.
 
   gate="popup"   (write tools)
-    Popup offers Deny / Accept only. Auto-accepting writes silently is a
-    materially bigger blast radius than auto-accepting reads, so Accept All
-    is not offered here. A small set of operations expected to be called
-    repeatedly against the same file in quick succession (see
-    auto_accept.TEMP_ACCEPT_ELIGIBLE_OPERATIONS) get a narrower "Accept for
+    Popup offers Deny / Allow once only. Auto-accepting writes silently is a
+    materially bigger blast radius than auto-accepting reads, so Always
+    allow is not offered here. A small set of operations expected to be
+    called repeatedly against the same file in quick succession (see
+    auto_accept.TEMP_ACCEPT_ELIGIBLE_OPERATIONS) get a narrower "Allow for
     5 min" button instead: it auto-accepts further calls of the same
     operation against that same file for 5 minutes, in memory only (never
     written to settings.yaml, gone on daemon restart) -- a much smaller
-    commitment than a standing Accept All rule.
+    commitment than a standing Always allow rule.
 
 PII gate: read tools only (``gate="review"``). Before any auto-accept check,
 the scan text (``pii_scan_text`` if the caller provided one, otherwise the
 same ``details`` shown in the popup) is scanned by pii_detector.py for
 likely Hungarian/English/German personal data. A match overrides a matching
 auto-accept rule — the call is routed to the normal interactive popup
-regardless — which is then tinted, and after the user clicks Accept (or
-Accept All), one more explicit "Are you sure?" dialog is required before the
+regardless — which is then tinted, and after the user clicks Allow once (or
+Always allow), one more explicit "Are you sure?" dialog is required before the
 decision is finalized. Declining it is treated the same as denying the
 original request. Auto-accept rules are typically scoped to metadata (sender
 domain, folder, "I am the organizer") rather than content, so a rule that
@@ -262,15 +263,15 @@ async def gated_call(
         if gate == "review":
             suggestion = suggest_rule(operation_key, ctx)
             # Everything interactive for this item — including the PII
-            # confirmation, the "Accept All" confirmation, and persisting the
-            # resulting rule — stays inside one continuous lock acquisition.
-            # Releasing and re-acquiring the lock between popups would open a
-            # window where a request queued behind this one slips through with
-            # the pre-rule rule set and pops up its own dialog for something the
-            # user just approved.
+            # confirmation, the "Always allow" confirmation, and persisting
+            # the resulting rule — stays inside one continuous lock
+            # acquisition. Releasing and re-acquiring the lock between
+            # popups would open a window where a request queued behind this
+            # one slips through with the pre-rule rule set and pops up its
+            # own dialog for something the user just approved.
             async with _popup_lock:
                 # Re-check: while this call was queued behind another popup, that
-                # popup's "Accept All" may have just created a rule that now
+                # popup's "Always allow" may have just created a rule that now
                 # covers this item too. A PII match still overrides it either way.
                 auto_ok, matched_rule = evaluator.should_auto_accept(operation_key, ctx)
                 if auto_ok and not pii_categories:
@@ -304,7 +305,7 @@ async def gated_call(
                             decision="accepted_via_accept_all", auto_accept_rule=rule_name,
                             pii_detected=bool(pii_categories),
                         )
-                        logger.info("Accept All: created rule %r for %s", rule_name, operation_key)
+                        logger.info("Always allow: created rule %r for %s", rule_name, operation_key)
                         return filtered_data
                     # Cancelled rule creation — this item is still accepted, just once.
                     decision = "accept"
@@ -346,7 +347,7 @@ async def gated_call(
                         pii_detected=False,
                     )
                     logger.info(
-                        "Accept for 5 min: op=%s file=%s (%s, %s)", operation_key, file_key, connector, tool
+                        "Allow for 5 min: op=%s file=%s (%s, %s)", operation_key, file_key, connector, tool
                     )
                     return filtered_data
                 # Button shouldn't have been offered without a file_key -- fall
@@ -392,7 +393,7 @@ def _deny_unattended(audit, connector: str, tool: str, *, pii_categories: list[s
 
 async def _confirm_pii_or_deny(decision: str, pii_categories: list[str]) -> str:
     """Extra gate for content the PII detector flagged: forces one more
-    explicit confirmation on top of the popup's own Accept/Accept All,
+    explicit confirmation on top of the popup's own Allow once/Always allow,
     declining which is treated as a deny of the whole request."""
     confirmed = await asyncio.to_thread(show_pii_confirmation_popup, pii_categories)
     return decision if confirmed else "deny"

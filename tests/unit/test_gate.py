@@ -516,8 +516,8 @@ class TestWriteContentFlags:
 
 
 class TestTempAccept:
-    """"Accept for 5 min" -- a lighter, in-memory-only alternative to a
-    standing Accept All rule, offered on the write-gate popup only for
+    """"Allow for 5 min" -- a lighter, in-memory-only alternative to a
+    standing Always allow rule, offered on the write-gate popup only for
     operations expected to be called repeatedly against the same file in
     quick succession (auto_accept.TEMP_ACCEPT_ELIGIBLE_OPERATIONS).
     """
@@ -640,7 +640,7 @@ class TestTempAccept:
     async def test_accept_temp_without_a_file_key_falls_back_to_a_plain_accept(
         self, monkeypatch, audit_dir
     ):
-        # Defensive path: the "Accept for 5 min" button is never offered for
+        # Defensive path: the "Allow for 5 min" button is never offered for
         # an ineligible operation, so accept_temp should never actually come
         # back for one -- but if it somehow did, this must not be treated as
         # a denial of a click the user clearly meant as approval.
@@ -681,7 +681,7 @@ class TestPIIGate:
     """gate.py runs pii_detector.detect_pii_categories() over ``details``
     before the review (read) popup only -- see TestPopupGateWrites for the
     write gate, which never scans. A match forces a second, explicit
-    confirmation dialog on top of the popup's own Accept/Accept All --
+    confirmation dialog on top of the popup's own Allow once/Always allow --
     declining it is treated as a full deny, same as clicking Deny on the
     original popup.
     """
@@ -985,7 +985,7 @@ class TestQueuedRequestReCheck:
     re-checks should_auto_accept() *after* acquiring _popup_lock, not just
     before. Without that re-check, a request that was merely queued behind
     another popup would show its own dialog for something the user had
-    already approved via Accept All (or via a rule added out-of-band, e.g.
+    already approved via Always allow (or via a rule added out-of-band, e.g.
     from the menu bar) a moment earlier.
 
     A plain FakeEvaluator with a fixed answer can't exercise this: the whole
@@ -1020,7 +1020,7 @@ class TestQueuedRequestReCheck:
 
         # Both calls target the same operation. The first (created first,
         # so it acquires _popup_lock first under asyncio's scheduling) shows
-        # a real popup and creates a standing rule via Accept All. The
+        # a real popup and creates a standing rule via Always allow. The
         # second is queued behind the lock the whole time.
         results = await asyncio.gather(
             gate.gated_call(**base_kwargs(gate="review", tool="gmail_get_message")),
@@ -1039,7 +1039,7 @@ class TestQueuedRequestReCheck:
     async def test_second_write_request_auto_accepts_if_rule_added_while_first_holds_lock(
         self, monkeypatch, audit_dir
     ):
-        # Unlike the review gate, the popup (write) gate has no Accept All of
+        # Unlike the review gate, the popup (write) gate has no Always allow of
         # its own -- but a rule can still appear mid-flight if the user adds
         # one from the menu bar's "Auto-accept Rules" submenu while a write
         # popup is on screen. The second, queued write request must not pop

@@ -68,7 +68,7 @@ grants](TECHNICAL_REFERENCE.md#auto-accept-grants) for the full reference.
   - [ ] Bundled install: `~/.privacyfence/config/settings.yaml`
   - [ ] From source: `config/settings.yaml` in the repo root — see
         [`dev-vs-live-setup.md`](dev-vs-live-setup.md)
-  - [ ] Reload by restarting the daemon, or by clicking "Accept All" once on any popup
+  - [ ] Reload by restarting the daemon, or by clicking "Always allow" once on any popup
         (`reload_rules()`)
 - [ ] Note your own email address as PrivacyFence sees it (`my_email`) — used by rules like
       `i_am_sender`/`i_am_organizer`; it's whatever address you authenticated Gmail/Calendar with
@@ -131,7 +131,7 @@ picked for the first `gmail_get_message` call and restores it to its exact start
 - [ ] (Optional) Add `approved_sandbox_folder` to `sheets.rename_sheet` / `sheets.format_range`,
       scoped to this same folder — kept as raw per-operation rules rather than the
       `drive.sandbox_folders` grant's all-or-nothing `write` capability specifically so
-      `connector-qa-testing.md`'s Phase 2 can still exercise the plain popup / "Accept for 5 min"
+      `connector-qa-testing.md`'s Phase 2 can still exercise the plain popup / "Allow for 5 min"
       flow for the *other* Sheets/Docs writes (`write_file`, `write_doc`, `add_sheet`) in the same
       folder:
       ```yaml
@@ -554,10 +554,10 @@ a failure.
           - rule: approved_object_types
             value: [Account]
       ```
-- [ ] Restart the daemon after editing by hand (or use "Accept All" once, which hot-reloads rules)
+- [ ] Restart the daemon after editing by hand (or use "Always allow" once, which hot-reloads rules)
 
 `sheets.read_values` → `approved_spreadsheet` (grant-managed under `drive.spreadsheets`) isn't
-included above — it's created automatically the first time you click "Accept All" on a
+included above — it's created automatically the first time you click "Always allow" on a
 `drive_sheets_get_values` call. `sheets.rename_sheet`/`format_range`/`insert_dimensions`/
 `delete_dimensions` and `docs.edit_content`/`format_content` → `approved_sandbox_folder` (§2),
 `calendar.calendars`'s `write` capability (§4), and `salesforce.search` → `approved_object_types`

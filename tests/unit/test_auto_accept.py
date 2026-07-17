@@ -1109,7 +1109,7 @@ class TestRulePersistence:
         assert get_auto_accept_evaluator().should_auto_accept("gmail.read_message", ctx) == (True, "no_attachments")
 
     def test_add_auto_accept_rule_is_idempotent_for_identical_rule(self, tmp_path):
-        # Confirming the same "Accept All" suggestion twice (e.g. two popups
+        # Confirming the same "Always allow" suggestion twice (e.g. two popups
         # queued back-to-back) must not pile up duplicate rule entries.
         config_path = tmp_path / "settings.yaml"
         config_path.write_text(yaml.dump({"auto_accept_rules": {}}), encoding="utf-8")
@@ -1169,7 +1169,7 @@ class TestRulesChangedListener:
 # gate.py's popup handling serializes calls through one asyncio.Lock, but
 # add_auto_accept_rule() itself is also reachable directly from the menu
 # bar's own thread (adding a rule via "+ Add rule…") at the same time the
-# IPC server's thread is confirming an "Accept All". _write_lock is what's
+# IPC server's thread is confirming an "Always allow". _write_lock is what's
 # supposed to keep the read-modify-write of the YAML file race-free; these
 # tests hammer it with real threads rather than asyncio tasks, since asyncio
 # concurrency alone never exercises actual OS-level lock contention or
@@ -1255,8 +1255,8 @@ class TestConcurrentRulePersistence:
 
 
 # --------------------------------------------------------------------------- #
-# Session temp accept ("Accept for 5 min") -- gate.py's lighter alternative
-# to a standing Accept All rule for write ops expected to be called
+# Session temp accept ("Allow for 5 min") -- gate.py's lighter alternative
+# to a standing Always allow rule for write ops expected to be called
 # repeatedly against the same file (sheets writes/formats, drive comments).
 # Unlike the YAML-backed rules above, this state is in-memory only and never
 # persisted.
@@ -1286,7 +1286,7 @@ class TestTempAcceptKey:
     def test_covers_every_declared_eligible_operation(self):
         # Every entry in TEMP_ACCEPT_ELIGIBLE_OPERATIONS must actually resolve
         # a key when its arg is present -- otherwise the popup would offer
-        # "Accept for 5 min" for an operation that can never register one.
+        # "Allow for 5 min" for an operation that can never register one.
         for op_key, arg_name in TEMP_ACCEPT_ELIGIBLE_OPERATIONS.items():
             ctx = make_ctx(args={arg_name: "some-id"})
             assert temp_accept_key(op_key, ctx) == "some-id"
@@ -1299,7 +1299,7 @@ class TestTempAcceptKey:
         # Resolved design decision: unlike format_range/insert_dimensions,
         # deleting rows/columns is destructive with no undo path through
         # PrivacyFence, so it only ever gets the standing-rule treatment, not
-        # a lightweight "Accept for 5 min" button.
+        # a lightweight "Allow for 5 min" button.
         assert "sheets.delete_dimensions" not in TEMP_ACCEPT_ELIGIBLE_OPERATIONS
         ctx = make_ctx(args={"spreadsheet_id": "sheet-1", "dimension": "ROWS"})
         assert temp_accept_key("sheets.delete_dimensions", ctx) is None
