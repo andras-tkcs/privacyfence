@@ -475,7 +475,7 @@ class TestWriteContentFlags:
         monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
 
         result = await gate.gated_call(**base_kwargs(
-            gate="review", details_text="Please wire the deposit to DE89370400440532013000.",
+            gate="review", details_text="full body here",
         ))
 
         assert result is FILTERED

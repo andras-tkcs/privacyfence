@@ -249,7 +249,23 @@ def main() -> None:
             print(f"qa_popup_smoke.py: scenario run raised {exc!r}", file=sys.stderr)
             exit_code = 1
         finally:
+            # AppHelper.runEventLoop() (NSApplicationMain under the hood)
+            # does not reliably hand control back to Python once
+            # stopEventLoop() fires below -- print/write the report and
+            # exit the whole process from here, the thread that's actually
+            # guaranteed to keep running, instead of after runEventLoop()
+            # returns, which may never happen.
+            report = _render_report(results)
+            print(report)
+            if args.report_file:
+                with open(args.report_file, "w", encoding="utf-8") as f:
+                    f.write(report + "\n")
+            if not results or any(not r.passed for r in results):
+                exit_code = 1
+            sys.stdout.flush()
+            sys.stderr.flush()
             AppHelper.stopEventLoop()
+            os._exit(exit_code)
 
     # show_native_approval() (like gate.py's real callers) must be invoked
     # from a thread other than the one driving the AppKit run loop --
@@ -258,16 +274,6 @@ def main() -> None:
     # this script has no menu bar UI of its own.
     threading.Thread(target=work, daemon=True).start()
     AppHelper.runEventLoop()
-
-    report = _render_report(results)
-    print(report)
-    if args.report_file:
-        with open(args.report_file, "w", encoding="utf-8") as f:
-            f.write(report + "\n")
-
-    if not results or any(not r.passed for r in results):
-        exit_code = 1
-    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

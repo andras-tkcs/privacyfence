@@ -106,7 +106,7 @@ _PII_BANNER_FILL_ALPHA = 0.16
 # No full-window wash either, only this banner's own fill -- see gate.py's
 # write_content_flags comment and approval_popup.show_popup's docstring.
 _CONTENT_FLAG_AMBER = NSColor.systemOrangeColor()
-_CONTENT_FLAG_FILL_ALPHA = 0.16
+_CONTENT_FLAG_FILL_ALPHA = 0.12
 
 # "AI will receive" checklist symbols -- allow/redact/block from
 # privacy_filter.category_policy(). No per-row color coding (deliberately):
