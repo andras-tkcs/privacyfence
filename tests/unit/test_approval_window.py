@@ -27,13 +27,15 @@ from __future__ import annotations
 import sys
 
 import pytest
-from AppKit import NSBox, NSButton, NSScrollView, NSTextField
+from AppKit import NSBox, NSButton, NSTextField
+from WebKit import WKWebView
 
 from privacyfence.approval_window import (
     _CONTENT_FLAG_FILL_ALPHA,
     _PII_BACKGROUND_ALPHA,
     _PII_BANNER_FILL_ALPHA,
     ApprovalWindowController,
+    _details_html,
 )
 
 pytestmark = pytest.mark.skipif(
@@ -137,7 +139,7 @@ class TestButtonSet:
         # same reasoning as the Enter-shortcut removal above.
         controller = make_controller()
         panel = controller.build_panel()
-        assert panel.initialFirstResponder() is controller._details_text_view
+        assert panel.initialFirstResponder() is controller._details_view
 
 
 class TestPiiTintAndBanner:
@@ -352,17 +354,62 @@ class TestReadingTimeLabel:
 
 
 class TestDetailsPane:
-    def test_scroll_view_document_holds_the_full_details_text_verbatim(self):
+    """docs/security-review-ui-redesign.md §7 Phase 3: the details/body pane
+    is a WKWebView rendering _details_html()'s output, not a plain
+    NSTextView. WKWebView's own loaded content isn't synchronously readable
+    back out the way NSTextView.string() was (loadHTMLString_baseURL_ is
+    asynchronous even for local content), so these tests work at two
+    levels: _details_html() directly (a pure function, same "must mirror
+    the real render" contract _compute_layout() has), and
+    controller._details_html_string -- the exact string build_panel()
+    actually handed to loadHTMLString_baseURL_, kept on the controller
+    purely for this."""
+
+    def test_web_view_is_present_in_the_view_tree(self):
+        views = build_views(make_controller())
+        webviews = [v for v in views if isinstance(v, WKWebView)]
+        assert len(webviews) == 1
+
+    def test_loaded_html_holds_the_full_details_text_verbatim(self):
         long_body = "line one\n" * 500 + "the last line, still present"
-        views = build_views(make_controller(details_text=long_body))
-        scroll_views = [v for v in views if isinstance(v, NSScrollView)]
-        assert len(scroll_views) == 1
-        assert scroll_views[0].documentView().string() == long_body
+        controller = make_controller(details_text=long_body)
+        controller.build_panel()
+        assert _details_html(long_body) == controller._details_html_string
+        assert long_body in controller._details_html_string
 
     def test_empty_details_text_falls_back_to_a_placeholder(self):
-        views = build_views(make_controller(details_text=""))
-        scroll_views = [v for v in views if isinstance(v, NSScrollView)]
-        assert scroll_views[0].documentView().string() == "(no details)"
+        controller = make_controller(details_text="")
+        controller.build_panel()
+        assert "(no details)" in controller._details_html_string
+
+    def test_html_escapes_markup_in_the_details_text(self):
+        # details_text arrives already HTML-stripped (html_to_text.py), so
+        # this is defense in depth, not a real-world "user writes HTML"
+        # case -- but a literal "<script>"/"&" in a message body must never
+        # be interpreted as markup by the WKWebView that renders it.
+        raw = "<script>alert(1)</script> & \"quoted\" 'text'"
+        html = _details_html(raw)
+        assert "<script>alert(1)</script>" not in html
+        assert "&lt;script&gt;" in html
+        assert "&amp;" in html
+
+    def test_html_has_no_script_tag_and_disables_javascript(self):
+        # docs/security-review-ui-redesign.md §5.5 "keep it local and
+        # synchronous" / §7 Phase 3: no code execution, no network --
+        # nothing in this pane should ever need JS, so it's turned off at
+        # the WKWebViewConfiguration level, not just unused by omission.
+        html = _details_html("some content")
+        assert "<script" not in html
+        views = build_views(make_controller())
+        webview = next(v for v in views if isinstance(v, WKWebView))
+        assert webview.configuration().preferences().javaScriptEnabled() is False
+
+    def test_details_html_is_a_pure_function_of_its_argument(self):
+        # Same guarantee _compute_layout() has: nothing here reads
+        # self.-anything, so it's testable and reasoned about independent
+        # of the controller/AppKit entirely.
+        assert _details_html("abc") == _details_html("abc")
+        assert _details_html("abc") != _details_html("xyz")
 
 
 class TestButtonClicked:

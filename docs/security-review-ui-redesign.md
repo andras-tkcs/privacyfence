@@ -511,7 +511,7 @@ real bug (the `fake_show_popup` gap above) already found this way once. Still ne
 found one more real bug beyond the `fake_show_popup` gap (a duplicated banner-alpha constant); see
 "Verification note — real `pytest` run completed on macOS" above.
 
-**Phase 3 — real preview rendering (bigger UI investment)**
+**Phase 3 — real preview rendering (bigger UI investment) — partially implemented, see status below**
 - Move `approval_window.py`'s body from a plain `NSTextView` to an embedded local `WKWebView`
   (PyObjC exposes WebKit) rendering a local HTML template — this is the practical way to get
   badges, a Gmail-style header, progressive disclosure (`<details>`), and a wider/taller window
@@ -521,9 +521,28 @@ found one more real bug beyond the `fake_show_popup` gap (a duplicated banner-al
   self-contained string (inlined `<style>`, no separate resource files) rather than
   `loadFileURL(...)` — WKWebView's `file://` loading model is stricter than the legacy `WebView`
   class and this sidesteps it entirely, at no cost since the template is generated in-process
-  anyway.
+  anyway. **Done 2026-07-17**: `approval_window.py`'s details/body pane (`_build_details_view`) is
+  now a `WKWebView` rendering `_details_html()`'s output — a pure function (same "must mirror"
+  contract `_compute_layout()` has) that HTML-escapes `details_text` (already stripped of any real
+  markup upstream by `html_to_text.py`, so this is defense in depth, not the primary safeguard)
+  into a self-contained document: system-font `<style>` block, `prefers-color-scheme` light/dark
+  support, `white-space: pre-wrap` to preserve the old NSTextView's line-break/wrap behavior.
+  Loaded via `loadHTMLString_baseURL_(html, None)` — nil base URL, so there is nothing for it to
+  even attempt to load out to. `WKWebViewConfiguration.preferences().setJavaScriptEnabled_(False)`
+  explicitly, not just left unused — nothing this pane renders today needs script, matching §5.5's
+  "keep it local and synchronous." **Not done**: the Gmail-style header and per-file-type badges
+  this migration was meant to unlock stay on the "everything above the body pane is still native
+  AppKit, unchanged" side for now — this pass only replaced the body pane's *rendering mechanism*
+  (NSTextView → WKWebView), not its *content* (still one escaped text blob, same as before). A
+  follow-up pass can now build genuinely richer per-connector layouts (structured Gmail
+  From/To/Date/Subject header, etc.) on top of this WKWebView foundation without needing another
+  AppKit-layout rewrite to do it.
 - Native `PDFView` (PDFKit) embed for genuinely binary PDF content already fetched as
-  `content_bytes` in `drive_client.py`.
+  `content_bytes` in `drive_client.py`. **Not done** — deferred: `content_bytes` isn't currently
+  plumbed from `drive_client.py` through `gate.py`/`approval_popup.py` into `approval_window.py` at
+  all (only `details_text`, a string, crosses that boundary today), so this needs its own new data
+  path threaded through several layers, not just a window-layer change like the WKWebView migration
+  above. A distinct follow-up, not attempted in this pass.
 - Drive classification-label lookup (`drive.labels.readonly` scope): **deferred** per the
   maintainer's decision (§10 Q2) — narrow benefit (Workspace Enterprise-tier only) relative to the
   added consent-screen surface and scope request. Revisit if a specific org asks for it; until
@@ -539,17 +558,22 @@ found one more real bug beyond the `fake_show_popup` gap (a duplicated banner-al
     The one entitlement WKWebView needs under Hardened Runtime is
     `com.apple.security.cs.allow-jit`, so JavaScriptCore can JIT-compile JS — a standard,
     Apple-documented entitlement (same one Safari/Xcode/every Electron app ships with) that does
-    **not** trip notarization review. Add it to `entitlements.plist` proactively; it's only
-    load-bearing if the popup ever runs JavaScript at all (the `<details>`/`<summary>`-based
-    progressive disclosure this plan calls for needs none).
+    **not** trip notarization review. **Done 2026-07-17**: added to `entitlements.plist`, with a
+    comment noting it's only load-bearing if the popup ever runs JavaScript at all -- which, per
+    the item above, it explicitly doesn't (`setJavaScriptEnabled_(False)`).
   - WKWebView's own XPC helper processes (`com.apple.WebKit.WebContent`, etc.) are
     system-provided and Apple-sandboxed independently of the host app — no extra entitlements
     needed to use them from a non-sandboxed host.
   - Build footprint: add `pyobjc-framework-WebKit` alongside the existing
-    `pyobjc-framework-Cocoa>=10.0` in `pyproject.toml`. `PrivacyFenceApp.spec` doesn't list
-    `AppKit`/`Foundation`/`objc` in `hidden_imports` at all today — PyInstaller already discovers
-    PyObjC bridge modules from the plain `import AppKit` in `approval_window.py`; a static `from
-    WebKit import WKWebView` should be discovered the same way.
+    `pyobjc-framework-Cocoa>=10.0` in `pyproject.toml`. **Done 2026-07-17.** `PrivacyFenceApp.spec`
+    doesn't list `AppKit`/`Foundation`/`objc` in `hidden_imports` at all today — PyInstaller already
+    discovers PyObjC bridge modules from the plain `import AppKit` in `approval_window.py`; a static
+    `from WebKit import WKWebView` should be discovered the same way. **Left `PrivacyFenceApp.spec`
+    unchanged** on that basis — `approval_window.py`'s `from WebKit import WKWebView,
+    WKWebViewConfiguration` is exactly this same kind of static top-level import, and
+    `approval_popup.py` (the only importer of `approval_window.py`) is only ever bundled into the
+    daemon `Analysis` (`PrivacyFenceApp.spec`), never the bridge (`PrivacyFenceBridge.spec`) —
+    confirmed by grep, matching where `AppKit` itself is already daemon-only.
   - **What's still genuinely unverified, and not WebKit-specific**: notarization is currently
     commented out in `build_dmg.sh` §8 and code-signing itself is optional/unexercised in CI
     today (`SIGN_IDENTITY` secret and the cert-import step in `.github/workflows/build.yml` are
@@ -559,7 +583,38 @@ found one more real bug beyond the `fake_show_popup` gap (a duplicated banner-al
     WebKit dependency included, on the existing `macos-latest` CI runner — not a design decision,
     an empirical check.
 - Three-level progressive disclosure (summary → expanded metadata → full inspect), all within one
-  modal session.
+  modal session. **Not done** — deferred, and worth recording *why* rather than just leaving it
+  unchecked: this codebase's own hard invariant (`approval_popup.py`'s module docstring: "full
+  content is always shown before the decision, so the human always sees what they're approving
+  before they can click") rules out the literal reading of "progressive disclosure" as *hiding*
+  the primary content behind a click by default — that would be a regression, not a feature. The
+  feasibility table's own assessment of "Inspect before approve" (§3, row: "Same modal session, an
+  expand/collapse of the existing scrollable pane, or a resized `NSPanel`. No protocol change.")
+  points at the only honest reading available with today's data model: an *area* expansion (make
+  the already-fully-visible body pane bigger on demand), not an *information* one, since there's no
+  currently-held-back "expanded metadata" layer to reveal -- everything the window has access to
+  (`preview`, `details_text`, `visibility`, `pii_categories`, `claude_reason`, `seen_count`) is
+  already rendered, unconditionally, today. Implementing a real second/third disclosure level
+  meaningfully would need either a new data source (e.g. raw per-field metadata beyond what
+  `preview` already flattens) or an area-only expand/collapse toggle — both left as follow-up work
+  rather than building something that looks like three levels but doesn't hide or reveal anything.
+
+**Phase 3 implementation status**: the WKWebView migration (details/body pane only) and the
+signing-investigation action items (`entitlements.plist`, `pyproject.toml`) are implemented;
+`PDFView` embed, per-connector rich content (Gmail-style header, badges), and progressive
+disclosure remain deliberately deferred -- see the individual items above for why each one is a
+distinct follow-up rather than a small addition to this pass. **Verification honesty note**: the
+new `_details_html()`/`WKWebView` wiring is unit-tested the same way every other AppKit-touching
+piece of this window is (`test_approval_window.py`'s `TestDetailsPane`, construction-only,
+asserting the exact HTML string handed to `loadHTMLString_baseURL_` rather than reading the
+WKWebView's own asynchronously-loaded content back out) and the full suite (2456 tests) passes on
+a real macOS run. What that suite *cannot* verify: whether the page actually renders correctly on
+screen, since WKWebView's real render is out of unit-test reach the same way AppKit's real modal
+loop already was — `scripts/qa_popup_smoke.py` needs a real interactive run (Accessibility granted,
+a real WindowServer session) to confirm that, same gate every prior phase's popup change has had.
+The real signed-build empirical check (§10 Q3) is still outstanding and unrelated to this
+verification gap — it needs the maintainer's own Developer ID signing certificate, not something
+achievable from this environment.
 
 **Phase 4 — decided: not being scoped**
 Per the maintainer's decision (§10 Q4), the single-reviewer "PR grammar, no PR infrastructure"

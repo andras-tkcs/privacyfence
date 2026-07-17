@@ -41,6 +41,7 @@ changes beyond where it imports from.
 from __future__ import annotations
 
 import threading
+from html import escape as _html_escape
 from pathlib import Path
 
 import objc
@@ -59,22 +60,20 @@ from AppKit import (
     NSFontAttributeName,
     NSImage,
     NSImageView,
-    NSLineBorder,
     NSLineBreakByWordWrapping,
     NSMakeRect,
     NSModalResponseStop,
     NSNoTitle,
     NSPanel,
     NSScreen,
-    NSScrollView,
     NSStringDrawingUsesLineFragmentOrigin,
     NSTextField,
-    NSTextView,
     NSView,
     NSWindowStyleMaskClosable,
     NSWindowStyleMaskTitled,
 )
 from Foundation import NSObject, NSString
+from WebKit import WKWebView, WKWebViewConfiguration
 
 _WINDOW_WIDTH = 620.0
 _MARGIN = 28.0
@@ -131,6 +130,54 @@ def _reading_time_label(text: str) -> str:
     if seconds < 60:
         return f"~{seconds} sec read"
     return f"~{round(seconds / 60)} min read"
+
+
+# Details pane, Phase 3 (docs/security-review-ui-redesign.md §7): a local,
+# self-contained HTML document rendered by a WKWebView instead of a plain
+# NSTextView -- see _build_details_view. "%s" substitution rather than
+# str.format() so the CSS's own literal "{"/"}" never need doubling.
+_DETAILS_HTML_TEMPLATE = """<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light dark">
+<style>
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+    font-size: 13px;
+    line-height: 1.45;
+    color: #1d1d1f;
+    background: #ffffff;
+    padding: 6px 8px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    box-sizing: border-box;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { color: #f2f2f2; background: #1e1e1e; }
+  }
+</style>
+</head>
+<body>%s</body>
+</html>
+"""
+
+
+def _details_html(details_text: str) -> str:
+    """Self-contained HTML for the details/body pane's WKWebView.
+
+    Plain text only -- details_text arrives already HTML-stripped (see
+    html_to_text.py), so this only ever escapes and preserves whitespace,
+    never renders markup someone else authored. No <script>, no external
+    resources, no network: loaded via loadHTMLString_baseURL_(html, None)
+    with a nil base URL, so there's nothing here for it to even attempt to
+    load out to. Pure function -- directly unit-testable, the same
+    "must mirror the real render" contract _compute_layout() has for
+    build_panel()'s AppKit layout.
+    """
+    escaped = _html_escape(details_text or "(no details)")
+    return _DETAILS_HTML_TEMPLATE % escaped
 
 
 def _icon_path() -> str | None:
@@ -207,7 +254,8 @@ class ApprovalWindowController(NSObject):
         self.seen_count: int = 0
         self.result = "deny"
         self.panel = None
-        self._details_text_view = None
+        self._details_view = None
+        self._details_html_string = ""
         return self
 
     # ------------------------------------------------------------------ #
@@ -366,34 +414,41 @@ class ApprovalWindowController(NSObject):
         return box, box_h
 
     # ------------------------------------------------------------------ #
-    # Details (scrollable body)
+    # Details (scrollable body) -- Phase 3 (docs/security-review-ui-redesign.md
+    # §7): a local WKWebView rendering _details_html()'s self-contained HTML
+    # document, replacing the plain NSTextView Phases 0-2 used. This is what
+    # unlocks real typography/wrapping control and (in a later pass) a
+    # Gmail-style structured header or per-file-type rendering, without
+    # hand-building each new layout in raw AppKit constraints -- see this
+    # module's own docstring and docs/security-review-ui-redesign.md §7
+    # Phase 1a's note on why the Gmail-specific layout was deferred to here.
     # ------------------------------------------------------------------ #
 
-    def _build_details_view(self, y: float, width: float) -> NSScrollView:
-        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(_MARGIN, y, width, _DETAILS_HEIGHT))
-        scroll.setBorderType_(NSLineBorder)
-        scroll.setHasVerticalScroller_(True)
-        scroll.setHasHorizontalScroller_(False)
-        scroll.setAutohidesScrollers_(False)
-        scroll.setDrawsBackground_(True)
+    def _build_details_view(self, y: float, width: float) -> WKWebView:
+        config = WKWebViewConfiguration.alloc().init()
+        # No script needed for anything this pane renders today (plain text,
+        # escaped) -- see _details_html()'s docstring. Disabled explicitly,
+        # not just left unused, as the actual "no network, no code
+        # execution" guarantee docs/security-review-ui-redesign.md §7 Phase
+        # 3 and §5.5 ("keep it local and synchronous") call for.
+        config.preferences().setJavaScriptEnabled_(False)
 
-        text_view = NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, width, _DETAILS_HEIGHT))
-        text_view.setEditable_(False)
-        text_view.setSelectable_(True)
-        text_view.setFont_(NSFont.systemFontOfSize_(13))
-        text_view.setString_(self.details_text or "(no details)")
-        text_view.setTextContainerInset_((6.0, 8.0))
-        text_view.setVerticallyResizable_(True)
-        text_view.setHorizontallyResizable_(False)
-        text_view.textContainer().setContainerSize_((width, 1_000_000.0))
-        text_view.textContainer().setWidthTracksTextView_(True)
+        webview = WKWebView.alloc().initWithFrame_configuration_(
+            NSMakeRect(_MARGIN, y, width, _DETAILS_HEIGHT), config
+        )
+        html = _details_html(self.details_text)
+        # Kept purely for testability -- WKWebView's own loaded content
+        # isn't synchronously readable back out the way NSTextView.string()
+        # was, so tests assert against this instead of the live view. See
+        # test_approval_window.py's TestDetailsPane.
+        self._details_html_string = html
+        webview.loadHTMLString_baseURL_(html, None)
 
-        scroll.setDocumentView_(text_view)
         # Kept for build_panel() to set as the panel's initial first
         # responder -- default focus lands on the content to read, not on
         # Allow once (§5.4, same reasoning as dropping its "\r" above).
-        self._details_text_view = text_view
-        return scroll
+        self._details_view = webview
+        return webview
 
     # ------------------------------------------------------------------ #
     # Buttons
@@ -665,8 +720,8 @@ class ApprovalWindowController(NSObject):
             temp_accept_btn.setFrameOrigin_((right_x, button_y))
             content.addSubview_(temp_accept_btn)
 
-        if self._details_text_view is not None:
-            panel.setInitialFirstResponder_(self._details_text_view)
+        if self._details_view is not None:
+            panel.setInitialFirstResponder_(self._details_view)
 
         return panel
 
