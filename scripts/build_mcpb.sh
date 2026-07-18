@@ -61,6 +61,34 @@ cp src/privacyfence/resources/icon_512.png "${STAGE}/icon.png"
 # scans inside the .mcpb archive and rejects any Mach-O binary that isn't
 # individually signed with a Developer ID cert + hardened runtime + secure
 # timestamp — codesign on the top-level directory alone doesn't reach these.
+#
+# `@anthropic-ai/mcpb pack` dereferences symlinks into independent file
+# copies rather than preserving them as symlinks in the archive (confirmed by
+# inspecting the packed .mcpb's zip entries). Two PyInstaller-generated
+# symlinks don't survive that dereferencing as valid signed binaries:
+#   - _internal/Python (the @rpath/Python target every extension module
+#     dynamically loads against, confirmed via `lsof` on a running bridge
+#     process) gets a bundle-sealed signature when signed in place inside
+#     Python.framework/Versions/X/, which only validates at that exact path —
+#     the packer's flattened copy at _internal/Python fails
+#     `codesign --verify` ("invalid Info.plist") because the sealed Resources
+#     dir isn't there. Fixed by materializing it into a real file and signing
+#     it at its actual flat destination, so the signature matches where it
+#     ends up.
+#   - Python.framework/Python (the framework's own top-level symlink) isn't
+#     loaded by anything at runtime (same `lsof` check shows nothing opens
+#     it) and can't be signed as a flat file at all — codesign refuses any
+#     regular file living directly inside a `*.framework` directory
+#     ("bundle format is ambiguous"). Simplest fix: drop it, since it's
+#     dead weight the running process never touches.
+PY_RPATH_TARGET="${STAGE}/server/_internal/Python"
+if [ -L "$PY_RPATH_TARGET" ]; then
+  real_python="$(readlink -f "$PY_RPATH_TARGET")"
+  rm "$PY_RPATH_TARGET"
+  cp "$real_python" "$PY_RPATH_TARGET"
+fi
+rm -f "${STAGE}/server/_internal/Python.framework/Python"
+
 if [ -n "${SIGN_IDENTITY:-}" ]; then
   echo "→ Code-signing bridge binaries with: ${SIGN_IDENTITY}…"
   find "${STAGE}/server" -type f -print0 | while IFS= read -r -d '' f; do
