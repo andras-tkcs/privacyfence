@@ -54,6 +54,22 @@ rsync -a --exclude ".DS_Store" "${ONEDIR}/" "${STAGE}/server/"
 sed "s/__VERSION__/${VERSION}/" mcpb/manifest.json.tmpl > "${STAGE}/manifest.json"
 cp src/privacyfence/resources/icon_512.png "${STAGE}/icon.png"
 
+# ── Code sign bundled binaries ────────────────────────────────────────────────
+# The bridge is a PyInstaller onedir build: a loose directory of Mach-O
+# executables, dylibs, and native extensions (its own Python.framework,
+# cryptography/rust extensions, etc.), not a single .app bundle. Notarization
+# scans inside the .mcpb archive and rejects any Mach-O binary that isn't
+# individually signed with a Developer ID cert + hardened runtime + secure
+# timestamp — codesign on the top-level directory alone doesn't reach these.
+if [ -n "${SIGN_IDENTITY:-}" ]; then
+  echo "→ Code-signing bridge binaries with: ${SIGN_IDENTITY}…"
+  find "${STAGE}/server" -type f -print0 | while IFS= read -r -d '' f; do
+    if file -b "$f" | grep -q "Mach-O"; then
+      codesign --force --options runtime --sign "$SIGN_IDENTITY" "$f"
+    fi
+  done
+fi
+
 echo "→ Validating manifest…"
 npx --yes @anthropic-ai/mcpb validate "${STAGE}/manifest.json"
 
