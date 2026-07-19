@@ -35,10 +35,12 @@ same pyobjc/AppKit packages the app itself depends on, which only the venv
 has installed):
     .venv/bin/python scripts/qa_popup_smoke.py
     .venv/bin/python scripts/qa_popup_smoke.py --report-file /tmp/popup_smoke.md
+    .venv/bin/python scripts/qa_popup_smoke.py --pause-seconds 3   # slow down to actually look
 """
 from __future__ import annotations
 
 import argparse
+import functools
 import os
 import subprocess
 import sys
@@ -133,7 +135,8 @@ def _click_button(pid: int, title: str) -> str:
 
 
 def _run_scenario(
-    name: str, *, click_title: str, expected: str, pre_click_title: str | None = None, **popup_kwargs
+    name: str, *, click_title: str, expected: str, pre_click_title: str | None = None,
+    pause_seconds: float = 0.3, **popup_kwargs
 ) -> ScenarioResult:
     pid = os.getpid()
     click_status_box: list[str] = []
@@ -141,10 +144,12 @@ def _run_scenario(
     def clicker() -> None:
         # Fired from a background thread, same as the click has to happen
         # from a different thread than the one show_native_approval() will
-        # block on below (the AppKit modal loop). A short head start lets
-        # the window actually get created before System Events starts
-        # polling for it.
-        time.sleep(0.3)
+        # block on below (the AppKit modal loop). A head start (0.3s by
+        # default, --pause-seconds to look before each click) lets the
+        # window actually get created before System Events starts polling
+        # for it -- and, at a larger value, gives a human time to actually
+        # look at what's on screen before it's clicked away.
+        time.sleep(pause_seconds)
         if pre_click_title is not None:
             # A non-terminal click (e.g. "Show more") that must NOT resolve
             # the modal loop -- if it did, the final click below would hit
@@ -154,7 +159,7 @@ def _run_scenario(
             if pre_status != "clicked":
                 click_status_box.append(f"pre-click {pre_click_title!r} failed: {pre_status}")
                 return
-            time.sleep(0.3)
+            time.sleep(pause_seconds)
         click_status_box.append(_click_button(pid, click_title))
 
     clicker_thread = threading.Thread(target=clicker, daemon=True)
@@ -162,17 +167,25 @@ def _run_scenario(
 
     actual = show_native_approval(**popup_kwargs)
 
-    clicker_thread.join(timeout=WINDOW_WAIT_TIMEOUT_SECONDS + 5)
+    # Two sleeps happen before a click lands on a pre_click_title scenario
+    # (pre-click, then the final click), so the join timeout has to cover
+    # both, not just one -- otherwise a large --pause-seconds would make
+    # this time out while the clicker thread is still legitimately waiting.
+    sleeps = 2 if pre_click_title is not None else 1
+    clicker_thread.join(timeout=sleeps * pause_seconds + WINDOW_WAIT_TIMEOUT_SECONDS + 5)
     click_status = click_status_box[0] if click_status_box else "clicker thread never finished"
     return ScenarioResult(
         name=name, button_clicked=click_title, expected=expected, actual=actual, click_status=click_status,
     )
 
 
-def _scenarios() -> list[ScenarioResult]:
+def _scenarios(pause_seconds: float = 0.3) -> list[ScenarioResult]:
     results = []
+    # Bound once here rather than passing pause_seconds=pause_seconds at
+    # each of the ~11 call sites below.
+    run = functools.partial(_run_scenario, pause_seconds=pause_seconds)
 
-    results.append(_run_scenario(
+    results.append(run(
         "Plain popup, Allow once",
         click_title="Allow once", expected="accept",
         title="PrivacyFence — QA smoke test (plain)",
@@ -181,7 +194,7 @@ def _scenarios() -> list[ScenarioResult]:
         allow_accept_all=False,
     ))
 
-    results.append(_run_scenario(
+    results.append(run(
         "Plain popup, Deny",
         click_title="Deny", expected="deny",
         title="PrivacyFence — QA smoke test (deny path)",
@@ -190,7 +203,7 @@ def _scenarios() -> list[ScenarioResult]:
         allow_accept_all=False,
     ))
 
-    results.append(_run_scenario(
+    results.append(run(
         # Also exercises the sensitivity badge below the banner (§7 Phase
         # 3, docs/security-review-ui-redesign.md §6) -- pii_categories
         # drives both, no separate scenario needed.
@@ -203,7 +216,7 @@ def _scenarios() -> list[ScenarioResult]:
         pii_categories=["US Social Security Number"],
     ))
 
-    results.append(_run_scenario(
+    results.append(run(
         "Review-gate popup, Always allow",
         click_title="Always allow", expected="accept_all",
         title="PrivacyFence — QA smoke test (Always allow)",
@@ -212,7 +225,7 @@ def _scenarios() -> list[ScenarioResult]:
         allow_accept_all=True,
     ))
 
-    results.append(_run_scenario(
+    results.append(run(
         "Write-gate popup, Allow for 5 min",
         click_title="Allow for 5 min", expected="accept_temp",
         title="PrivacyFence — QA smoke test (temp accept)",
@@ -229,7 +242,7 @@ def _scenarios() -> list[ScenarioResult]:
     # window from more sections stacked could silently shift button
     # coordinates). Added to close that gap.
 
-    results.append(_run_scenario(
+    results.append(run(
         "Review-gate popup with AI-visibility checklist, Allow once",
         click_title="Allow once", expected="accept",
         title="PrivacyFence — QA smoke test (visibility checklist)",
@@ -239,7 +252,7 @@ def _scenarios() -> list[ScenarioResult]:
         visibility={"Message body": "allow", "Attachments": "block", "Sender metadata": "redact"},
     ))
 
-    results.append(_run_scenario(
+    results.append(run(
         # Also exercises the sensitivity badge below the banner, same as
         # the PII-tinted scenario above -- write_content_flags drives both.
         "Write-gate popup with content-flag banner, Allow once",
@@ -251,7 +264,7 @@ def _scenarios() -> list[ScenarioResult]:
         write_content_flags=["IBAN (bank account number)"],
     ))
 
-    results.append(_run_scenario(
+    results.append(run(
         "Popup with reason + seen-count + visibility all present, Allow once",
         click_title="Allow once", expected="accept",
         title="PrivacyFence — QA smoke test (kitchen sink)",
@@ -273,7 +286,7 @@ def _scenarios() -> list[ScenarioResult]:
     # would only ever have been caught by construction-only unit tests, not
     # by an actual on-screen click.
 
-    results.append(_run_scenario(
+    results.append(run(
         "Review-gate popup with Gmail-style email header, Allow once",
         click_title="Allow once", expected="accept",
         title="PrivacyFence — QA smoke test (email header)",
@@ -284,7 +297,7 @@ def _scenarios() -> list[ScenarioResult]:
         content_kind="email",
     ))
 
-    results.append(_run_scenario(
+    results.append(run(
         "Review-gate popup with native PDFView, Allow once",
         click_title="Allow once", expected="accept",
         title="PrivacyFence — QA smoke test (PDFView)",
@@ -302,7 +315,7 @@ def _scenarios() -> list[ScenarioResult]:
         ),
     ))
 
-    results.append(_run_scenario(
+    results.append(run(
         # "Show more" is a non-terminal click -- it must resize the window
         # in place without resolving the modal loop, so the following
         # "Allow once" click still has to land on the same (now taller)
@@ -347,6 +360,11 @@ def main() -> None:
     parser.add_argument(
         "--report-file", help="Also write the printed report to this path (not committed to the repo)."
     )
+    parser.add_argument(
+        "--pause-seconds", type=float, default=0.3,
+        help="Seconds to wait before each click (default: 0.3, just enough for the window to "
+             "appear). Raise this (e.g. 3) to actually look at each popup before it's clicked away.",
+    )
     args = parser.parse_args()
 
     results: list[ScenarioResult] = []
@@ -355,7 +373,7 @@ def main() -> None:
     def work() -> None:
         nonlocal exit_code
         try:
-            results.extend(_scenarios())
+            results.extend(_scenarios(args.pause_seconds))
         except Exception as exc:  # noqa: BLE001 - surfaced via the report/exit code below, not swallowed
             print(f"qa_popup_smoke.py: scenario run raised {exc!r}", file=sys.stderr)
             exit_code = 1
