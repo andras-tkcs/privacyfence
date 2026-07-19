@@ -207,6 +207,84 @@ def _scenarios() -> list[ScenarioResult]:
         allow_temp_accept=True,
     ))
 
+    # The five scenarios above predate Phases 1a/1b/2/3 -- none of them ever
+    # set visibility/claude_reason/write_content_flags/seen_count, so a real
+    # on-screen run never actually exercised those sections' rendering or
+    # confirmed they don't break the click-through modal loop (e.g. a taller
+    # window from more sections stacked could silently shift button
+    # coordinates). Added to close that gap.
+
+    results.append(_run_scenario(
+        "Review-gate popup with AI-visibility checklist, Allow once",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — QA smoke test (visibility checklist)",
+        preview={"from": "qa-smoke@example.com"},
+        details_text="Ordinary, non-sensitive smoke-test content.",
+        allow_accept_all=False,
+        visibility={"Message body": "allow", "Attachments": "block", "Sender metadata": "redact"},
+    ))
+
+    results.append(_run_scenario(
+        "Write-gate popup with content-flag banner, Allow once",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — QA smoke test (content-flag banner)",
+        preview={"to": "qa-smoke@example.com"},
+        details_text="Please wire the deposit per the attached IBAN.",
+        allow_accept_all=False,
+        write_content_flags=["IBAN (bank account number)"],
+    ))
+
+    results.append(_run_scenario(
+        "Popup with reason + seen-count + visibility all present, Allow once",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — QA smoke test (kitchen sink)",
+        preview={"from": "qa-smoke@example.com", "subject": "Weekly digest"},
+        details_text="Ordinary, non-sensitive smoke-test content, long enough to show a real "
+                      "reading-time estimate above the details pane rather than a trivial one.",
+        allow_accept_all=True,
+        visibility={"Message body": "allow", "Attachments": "block"},
+        claude_reason="Summarizing the weekly digest for the user, as requested.",
+        seen_count=3,
+    ))
+
+    # Phase 3 additions: the details pane is now a WKWebView, which can
+    # render either the Gmail-style email header or a native PDFView
+    # instead of plain text -- neither was covered by a click-through
+    # scenario before, so a regression in either rendering path (e.g. the
+    # window becoming non-interactive, or the click landing on the wrong
+    # coordinates because the pane's content changed the effective layout)
+    # would only ever have been caught by construction-only unit tests, not
+    # by an actual on-screen click.
+
+    results.append(_run_scenario(
+        "Review-gate popup with Gmail-style email header, Allow once",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — QA smoke test (email header)",
+        preview={"From": "alice@example.com", "To": "bob@example.com",
+                 "Subject": "Q3 numbers", "Date": "2026-07-01"},
+        details_text="Ordinary, non-sensitive smoke-test email body.",
+        allow_accept_all=False,
+        content_kind="email",
+    ))
+
+    results.append(_run_scenario(
+        "Review-gate popup with native PDFView, Allow once",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — QA smoke test (PDFView)",
+        preview={"File": "qa-smoke-test.pdf"},
+        details_text="[binary content — this text should not be visible; the PDFView should be]",
+        allow_accept_all=False,
+        pdf_bytes=(
+            b"%PDF-1.1\n"
+            b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n"
+            b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n"
+            b"3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >> endobj\n"
+            b"xref\n0 4\n0000000000 65535 f \n"
+            b"trailer << /Size 4 /Root 1 0 R >>\n"
+            b"startxref\n0\n%%EOF"
+        ),
+    ))
+
     return results
 
 
