@@ -10,11 +10,16 @@
   },
   "icon": "icon.png",
   "server": {
-    "type": "binary",
-    "entry_point": "server/privacyfence-bridge",
+    "type": "node",
+    "entry_point": "server/bridge.js",
     "mcp_config": {
-      "command": "${__dirname}/server/privacyfence-bridge",
-      "args": []
+      "command": "node",
+      "args": ["${__dirname}/server/bridge.js"]
+    }
+  },
+  "compatibility": {
+    "runtimes": {
+      "node": ">=20.0.0"
     }
   }
 }
