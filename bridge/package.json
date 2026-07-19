@@ -1,0 +1,23 @@
+{
+  "name": "privacyfence-bridge",
+  "version": "0.0.0-dev",
+  "description": "PrivacyFence bridge: ephemeral stdio MCP server spawned by Claude, forwarding calls to the PrivacyFence daemon over a Unix socket.",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "esbuild": "0.28.1",
+    "tsx": "4.23.1",
+    "typescript": "5.9.3"
+  }
+}
