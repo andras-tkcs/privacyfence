@@ -600,14 +600,16 @@ found one more real bug beyond the `fake_show_popup` gap (a duplicated banner-al
     confirmed by grep, matching where `AppKit` itself is already daemon-only. **`pyobjc-framework-
     Quartz` added the same way** once `PDFView`/`PDFDocument` (below) needed it — there's no
     separate `pyobjc-framework-PDFKit` package; Quartz is where PyObjC exposes those classes.
-  - **What's still genuinely unverified, and not WebKit-specific**: notarization is currently
-    commented out in `build_dmg.sh` §8 and code-signing itself is optional/unexercised in CI
-    today (`SIGN_IDENTITY` secret and the cert-import step in `.github/workflows/build.yml` are
-    both optional/commented out) — so *no* signing path in this repo has been run end-to-end yet,
-    independent of WebKit. The actual gate before shipping Phase 3 is running one real signed
-    build (and, once notarization is turned on, one real notarization submission) with the
-    WebKit dependency included, on the existing `macos-latest` CI runner — not a design decision,
-    an empirical check.
+  - **Real signed build / notarization: dropped from this document's tracked scope
+    2026-07-19, per the maintainer** — being handled separately, outside this redesign. Kept here
+    only as historical context for why the investigation above happened at all: code-signing is
+    optional/unexercised in CI today (`SIGN_IDENTITY` secret and the cert-import step in
+    `.github/workflows/build.yml` are both commented out) and notarization is commented out in
+    `build_dmg.sh` §8, so *no* signing path in this repo had been run end-to-end as of this
+    investigation, independent of WebKit. That gap is real, but it's the maintainer's own Developer
+    ID certificate and CI-secrets setup to close, on their own timeline — not something this
+    document (or this branch) blocks Phase 3 on, and not something achievable from an environment
+    without that certificate.
 - Three-level progressive disclosure (summary → expanded metadata → full inspect), all within one
   modal session. **Not done** — deferred, and worth recording *why* rather than just leaving it
   unchecked: this codebase's own hard invariant (`approval_popup.py`'s module docstring: "full
@@ -656,12 +658,14 @@ mocked) and `test_drive_connector.py`'s `TestPdfViewEmbed` (every combination of
 *cannot* verify: whether the page/PDF actually renders correctly on screen, since WKWebView's and
 PDFView's real render are out of unit-test reach the same way AppKit's real modal loop already was
 — `scripts/qa_popup_smoke.py` needs a real interactive run (Accessibility granted, a real
-WindowServer session) to confirm that, same gate every prior phase's popup change has had. (It
-doesn't yet have a PDF-rendering scenario of its own -- worth adding before relying on it for that
-specific path.)
-The real signed-build empirical check (§10 Q3) is still outstanding and unrelated to this
-verification gap — it needs the maintainer's own Developer ID signing certificate, not something
-achievable from this environment.
+WindowServer session) to confirm that, same gate every prior phase's popup change has had.
+**Resolved 2026-07-19**: the maintainer added email-header and PDFView scenarios to
+`scripts/qa_popup_smoke.py` and ran it for real — 10/10 scenarios passed, confirming both render
+and click correctly on screen, not just in construction-only unit tests.
+
+The real signed-build/notarization check (§10 Q3) is out of this document's tracked scope as of
+2026-07-19 — the maintainer is handling it separately, on their own timeline, not as part of this
+redesign.
 
 **Phase 4 — decided: not being scoped**
 Per the maintainer's decision (§10 Q4), the single-reviewer "PR grammar, no PR infrastructure"
@@ -724,9 +728,12 @@ whatever new infrastructure it would require — rather than revisited inside th
   column in the Excel export. The request-fingerprint lookup helper (`recent_matches(operation_key,
   preview) -> int`) is **not yet done** — still Phase 2.
 - **Done**: `approval_window.py`'s Phase 1a layout reorder plus a new "Claude says (unverified)"
-  block. Phase 3's WKWebView migration (and the `com.apple.security.cs.allow-jit`/
-  `pyobjc-framework-WebKit` additions it needs) remain **not yet done** — still gated on the real
-  signed build check from §7 Phase 3 / §10 Q3.
+  block. **Also done** (2026-07-17/19, superseding the "gated on the real signed build check" note
+  this line originally had): Phase 3's WKWebView migration, the `com.apple.security.cs.allow-jit`/
+  `pyobjc-framework-WebKit` additions it needs, the Gmail-style header, and the native PDFView
+  embed — the maintainer decided to proceed with implementation rather than wait on the signed
+  build, and separately descoped that check from this document entirely (see §7 Phase 3 and §10
+  Q3's notes).
 
 ## 10. Open questions for the maintainer — decisions recorded
 
@@ -745,13 +752,14 @@ whatever new infrastructure it would require — rather than revisited inside th
    most of the WKWebView friction that shows up in sandboxed-app discussions. The one entitlement
    WKWebView needs under the app's existing Hardened Runtime signing
    (`com.apple.security.cs.allow-jit`, for JavaScriptCore JIT) is standard, Apple-documented, and
-   does not trip notarization — the same entitlement Safari/Xcode/Electron apps ship with. What
-   remains genuinely unverified is not WebKit-specific: no signing path in this repo has been
-   exercised end-to-end yet (notarization is commented out in `build_dmg.sh`, signing is optional
-   in CI) — that's a pre-existing gap, not something WKWebView introduces. Action items: add
-   `com.apple.security.cs.allow-jit` to `entitlements.plist`, add `pyobjc-framework-WebKit` to
-   `pyproject.toml`, and run one real signed build with it on the existing `macos-latest` CI
-   runner before shipping Phase 3.
+   does not trip notarization — the same entitlement Safari/Xcode/Electron apps ship with.
+   **Done**: `com.apple.security.cs.allow-jit` added to `entitlements.plist`, `pyobjc-framework-
+   WebKit`/`pyobjc-framework-Quartz` added to `pyproject.toml`. **Dropped from this document's
+   tracked scope 2026-07-19, per the maintainer**: the real signed build / notarization run —
+   no signing path in this repo has been exercised end-to-end yet (notarization is commented out
+   in `build_dmg.sh`, signing is optional in CI), a pre-existing gap WKWebView didn't introduce,
+   but the maintainer is closing it separately with their own Developer ID certificate, on their
+   own timeline, not as a prerequisite this document or branch waits on.
 4. **Decided**: multi-reviewer governance is not being scoped. The single-reviewer "PR grammar, no
    PR infrastructure" version (Phases 1–3) is the intended ceiling — see §8.
 
@@ -775,9 +783,10 @@ and nothing it brought in blocks or invalidates the plan. Concretely:
   concrete answer to "why capture this if it's never displayed live."
 - **Phase 3's signing investigation is unaffected**: none of the merged PRs touched
   `entitlements.plist`, `PrivacyFenceApp.spec`, `build_dmg.sh`, or `pyproject.toml`'s build
-  dependencies, so §7 Phase 3 / §10 Q3's findings and action items (add
-  `com.apple.security.cs.allow-jit`, add `pyobjc-framework-WebKit`, run one real signed build)
-  still stand exactly as written.
+  dependencies, so §7 Phase 3 / §10 Q3's findings still stood exactly as written at the time. Since
+  superseded: the `entitlements.plist`/`pyproject.toml` action items are done, and the real signed
+  build was dropped from this document's tracked scope (§10 Q3) — the maintainer is handling it
+  separately.
 - **No merge-introduced scope creep requires re-litigating §8.** The new unattended-session mode
   is a fail-closed, purely local mechanism — it doesn't introduce a server, a second reviewer, or
   any shared state, so it doesn't reopen the multi-reviewer-governance question that was
@@ -786,5 +795,7 @@ and nothing it brought in blocks or invalidates the plan. Concretely:
 Recommended order unchanged: **1a → 1b → 2 → 3**, each independently shippable and testable before
 the next starts. Phase 1a can begin immediately with no prerequisites. Phase 1b is the largest
 single unit of work (touches all ten connectors plus the three meta-tools) but has no unresolved
-design question blocking it. Phase 3 has exactly one prerequisite — the real signed build check
-from §7/§10 Q3 — before committing to the WKWebView rewrite specifically.
+design question blocking it. Phase 3 originally had one prerequisite noted here — the real signed
+build check from §7/§10 Q3 — before committing to the WKWebView rewrite specifically; the
+maintainer decided instead to proceed with the rewrite and handle signing/notarization separately,
+so as of 2026-07-19 that item is no longer tracked as a Phase 3 prerequisite in this document.
