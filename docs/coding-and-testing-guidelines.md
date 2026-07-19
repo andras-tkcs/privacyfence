@@ -139,6 +139,12 @@ This is the one area where "looks like a style rule" is actually a security inva
   export.
 - `tests/unit/` mirrors `src/privacyfence/`; connector tests live in `tests/unit/connectors/`,
   named `test_<connector>_connector.py`. One test module per source module.
+- `tests/integration/` holds cross-boundary tests that don't fit the one-module-per-source-module
+  mirror above — currently just `test_bridge_daemon_contract.py`, which spawns the real Node bridge
+  (`bridge/dist/bridge.js`) against a real `IPCServer` to verify the two independently-implemented
+  sides of the wire protocol actually still agree (see that file's docstring for why
+  `bridge/test/*.test.ts` and `tests/unit/test_ipc_server.py` alone can't catch a protocol drift
+  between them). Skips automatically if Node isn't on PATH, so `pytest tests/unit` stays Node-free.
 - CI (`.github/workflows/`) requires a 100% pass rate on macOS (this app depends on real
   AppKit/PyObjC/osascript behavior) — coverage is reported but not gated. Write tests as if any
   failure blocks the merge, because it does.
@@ -225,3 +231,7 @@ A new connector's test module should include, at minimum:
 - [ ] If this PR touches `approval_window.py`'s modal-loop plumbing: run `scripts/qa_popup_smoke.py`
       locally and paste its report into the PR description — see
       [`testing-policy.md` §2.2](testing-policy.md#22-qa_popup_smokepy).
+- [ ] If this PR changes `ipc.py`, `ipc_server.py`, `connector.py`'s `ToolSpec`/`ToolParam` shapes,
+      or anything under `bridge/src/`: run `pytest tests/integration -v` locally (needs Node on
+      PATH) and confirm it still passes — a change on one side of the wire protocol without the
+      other only fails there, not in either side's own unit tests.
