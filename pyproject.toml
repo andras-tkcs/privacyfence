@@ -11,7 +11,6 @@ requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Andras Takacs", email = "privacyfence@tkcs.name" }]
 dependencies = [
-    "fastmcp>=2.0.0",
     "google-auth>=2.23.0",
     "google-auth-oauthlib>=1.1.0",
     "google-api-python-client>=2.100.0",
@@ -28,8 +27,7 @@ dependencies = [
 ]
 
 [project.scripts]
-privacyfence-bridge = "privacyfence.bridge_main:main"
-privacyfence-app    = "privacyfence.daemon_main:main"
+privacyfence-app = "privacyfence.daemon_main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

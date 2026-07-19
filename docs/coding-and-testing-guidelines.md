@@ -2,9 +2,11 @@
 
 This document describes the conventions this codebase already follows, so new code (human- or
 agent-written) stays consistent with it. It is descriptive before it is prescriptive: every rule
-below was extracted from patterns already established in `src/privacyfence/` and `tests/`, not
-imported from a generic style guide. Where the codebase itself is inconsistent, that's called out
-explicitly rather than papered over.
+below was extracted from patterns already established in `src/privacyfence/` and `tests/` — the
+Python daemon — not imported from a generic style guide. Where the codebase itself is
+inconsistent, that's called out explicitly rather than papered over. `bridge/` (the Node/TypeScript
+MCP bridge — see [`docs/mcp-bridge-nodejs-migration.md`](mcp-bridge-nodejs-migration.md)) follows
+its own, separate conventions and is out of scope for this document.
 
 See [`CONTRIBUTING.md`](../CONTRIBUTING.md) for process (PRs, issues, license) and
 [`docs/security-and-compliance.md`](security-and-compliance.md) for the security model this code
@@ -53,9 +55,10 @@ implements. This document is about how to write and test the code correctly, not
 
 - Every external-API client (`*_client.py`) defines its own `<Name>ClientError(Exception)` and
   raises only that (or lets it propagate) across its public methods. Internal-only clients that
-  never leave the local trust boundary (e.g. `ipc_client.py`, talking over the local Unix socket
-  to the daemon the app itself controls) are the one accepted exception to this — external cloud
-  APIs always get a dedicated error type.
+  never leave the local trust boundary (talking over the local Unix socket to the daemon the app
+  itself controls, e.g. the bridge's `IPCClient` — now `bridge/src/ipcClient.ts`, out of scope for
+  this Python-focused document — see docs/mcp-bridge-nodejs-migration.md) are the one accepted
+  exception to this — external cloud APIs always get a dedicated error type.
 - Connectors catch the client's specific error type at the boundary, log it, and re-raise as
   `RuntimeError(str(exc)) from exc` — never swallow it, never let the raw client exception or a
   bare `except Exception` leak past the connector into the tool-call response.

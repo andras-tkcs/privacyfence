@@ -25,7 +25,10 @@ Use GitHub Issues for bug reports and feature requests. Include:
 
 ## Code Style
 
-- Python 3.11+, standard library preferred over new dependencies
+- `src/privacyfence/` (the daemon): Python 3.11+, standard library preferred over new dependencies
+- `bridge/` (the MCP bridge): TypeScript/Node — see
+  [`docs/mcp-bridge-nodejs-migration.md`](docs/mcp-bridge-nodejs-migration.md) for why it's a
+  separate language from the daemon
 - No comments unless the *why* is non-obvious
 - Match the surrounding code's style
 

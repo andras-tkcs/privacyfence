@@ -918,8 +918,10 @@ The daemon and the bridge are built and shipped separately:
 
 - **PrivacyFenceApp.app** (built by `scripts/build_dmg.sh`) — the daemon: owns credentials,
   connectors, the review gate, the audit log, and the LaunchAgent. Install this first via the DMG.
-- **PrivacyFence.mcpb** (built by `scripts/build_mcpb.sh`, from `PrivacyFenceBridge.spec`) — just
-  the bridge: a small MCP server that talks to the daemon over a Unix socket. Install this into Claude.
+- **PrivacyFence.mcpb** (built by `scripts/build_mcpb.sh`, from `bridge/` — see
+  [`docs/mcp-bridge-nodejs-migration.md`](mcp-bridge-nodejs-migration.md)) — just the bridge: a
+  small Node/TypeScript MCP server that talks to the daemon over a Unix socket. Install this into
+  Claude.
 
 ### Option A: one-click extension (Claude Desktop)
 
@@ -928,9 +930,10 @@ double-click it and Claude Desktop installs the MCP server for you, no
 `claude_desktop_config.json` editing.
 
 The daemon (PrivacyFenceApp.app) must already be installed and configured first — the extension
-only contains `privacyfence-bridge`, built from its own minimal dependency set (no google-auth,
-slack_sdk, telethon, atlassian-python-api, rumps, or tkinter — that's why it's ~30MB instead of
-the daemon's ~185MB).
+only contains the bridge, bundled by esbuild into a single dependency-free `server/bridge.js` with
+no node_modules/ and no Python runtime shipped at all (Claude Desktop supplies its own Node
+runtime — `server.type = "node"` in `mcpb/manifest.json.tmpl`), which is why it's ~300KB instead
+of the daemon's ~185MB.
 
 To build both artifacts yourself:
 
@@ -940,9 +943,10 @@ brew install create-dmg
 bash scripts/build_dmg.sh
 ```
 
-This runs `scripts/build_mcpb.sh` as part of assembling the DMG. To build just the extension
-on its own (e.g. for a quick local test without a full DMG), run `bash scripts/build_mcpb.sh`
-directly — it produces `dist/PrivacyFence-<version>.mcpb`.
+(Node + npm must also be on PATH — used to build `bridge/` and to run the `@anthropic-ai/mcpb` CLI
+via npx.) This runs `scripts/build_mcpb.sh` as part of assembling the DMG. To build just the
+extension on its own (e.g. for a quick local test without a full DMG), run
+`bash scripts/build_mcpb.sh` directly — it produces `dist/PrivacyFence-<version>.mcpb`.
 
 ### Option B: manual MCP config (Claude Desktop, Claude Code, or other MCP clients)
 
@@ -952,18 +956,22 @@ Add the bridge to Claude's MCP config (`~/Library/Application Support/Claude/cla
 {
   "mcpServers": {
     "privacyfence": {
-      "command": "privacyfence-bridge"
+      "command": "node",
+      "args": ["/path/to/PrivacyFence.mcpb/server/bridge.js"]
     }
   }
 }
 ```
 
-If running from source, replace `privacyfence-bridge` with the full path to `.venv/bin/privacyfence-bridge`.
+If running from source, build the bridge first (`cd bridge && npm install && npm run build`) and
+point `args` at `bridge/dist/bridge.js` in your checkout instead — or just run
+`./scripts/dev_start.sh`, which does this for you (see
+[`docs/dev-vs-live-setup.md`](dev-vs-live-setup.md)).
 
 For Claude Code, you can skip editing JSON by running:
 
 ```bash
-claude mcp add privacyfence privacyfence-bridge
+claude mcp add privacyfence node /path/to/bridge/dist/bridge.js
 ```
 
 ---
