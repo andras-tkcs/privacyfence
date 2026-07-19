@@ -132,7 +132,9 @@ def _click_button(pid: int, title: str) -> str:
     return _run_applescript(script)
 
 
-def _run_scenario(name: str, *, click_title: str, expected: str, **popup_kwargs) -> ScenarioResult:
+def _run_scenario(
+    name: str, *, click_title: str, expected: str, pre_click_title: str | None = None, **popup_kwargs
+) -> ScenarioResult:
     pid = os.getpid()
     click_status_box: list[str] = []
 
@@ -143,6 +145,16 @@ def _run_scenario(name: str, *, click_title: str, expected: str, **popup_kwargs)
         # the window actually get created before System Events starts
         # polling for it.
         time.sleep(0.3)
+        if pre_click_title is not None:
+            # A non-terminal click (e.g. "Show more") that must NOT resolve
+            # the modal loop -- if it did, the final click below would hit
+            # BUTTON_NOT_FOUND/TIMEOUT_NO_WINDOW against an already-closed
+            # window, which is exactly the failure mode this catches.
+            pre_status = _click_button(pid, pre_click_title)
+            if pre_status != "clicked":
+                click_status_box.append(f"pre-click {pre_click_title!r} failed: {pre_status}")
+                return
+            time.sleep(0.3)
         click_status_box.append(_click_button(pid, click_title))
 
     clicker_thread = threading.Thread(target=clicker, daemon=True)
@@ -179,6 +191,9 @@ def _scenarios() -> list[ScenarioResult]:
     ))
 
     results.append(_run_scenario(
+        # Also exercises the sensitivity badge below the banner (§7 Phase
+        # 3, docs/security-review-ui-redesign.md §6) -- pii_categories
+        # drives both, no separate scenario needed.
         "PII-tinted popup, Allow once",
         click_title="Allow once", expected="accept",
         title="PrivacyFence — QA smoke test (PII-tinted)",
@@ -225,6 +240,8 @@ def _scenarios() -> list[ScenarioResult]:
     ))
 
     results.append(_run_scenario(
+        # Also exercises the sensitivity badge below the banner, same as
+        # the PII-tinted scenario above -- write_content_flags drives both.
         "Write-gate popup with content-flag banner, Allow once",
         click_title="Allow once", expected="accept",
         title="PrivacyFence — QA smoke test (content-flag banner)",
@@ -283,6 +300,22 @@ def _scenarios() -> list[ScenarioResult]:
             b"trailer << /Size 4 /Root 1 0 R >>\n"
             b"startxref\n0\n%%EOF"
         ),
+    ))
+
+    results.append(_run_scenario(
+        # "Show more" is a non-terminal click -- it must resize the window
+        # in place without resolving the modal loop, so the following
+        # "Allow once" click still has to land on the same (now taller)
+        # window. Exactly the kind of thing a title-bar-height miscalculation
+        # in _rebuild_content would silently break: unit tests confirmed the
+        # frame math, but only a real click sequence confirms the click
+        # target itself is still where System Events expects it after resize.
+        "Review-gate popup, Show more then Allow once",
+        click_title="Allow once", expected="accept", pre_click_title="Show more",
+        title="PrivacyFence — QA smoke test (progressive disclosure)",
+        preview={"from": "qa-smoke@example.com"},
+        details_text="line one\n" * 200 + "the last line, still present",
+        allow_accept_all=False,
     ))
 
     return results

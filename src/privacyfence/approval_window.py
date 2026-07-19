@@ -79,6 +79,14 @@ from WebKit import WKWebView, WKWebViewConfiguration
 _WINDOW_WIDTH = 620.0
 _MARGIN = 28.0
 _DETAILS_HEIGHT = 280.0
+# Progressive disclosure (docs/security-review-ui-redesign.md §7 Phase 3):
+# an *area* expansion of the already-fully-visible details pane, not an
+# *information* one -- this codebase's own invariant (approval_popup.py's
+# module docstring: "full content is always shown before the decision")
+# rules out hiding anything behind a click by default. Toggled by the
+# "Show more"/"Show less" button next to the "Preview" label; see
+# ApprovalWindowController.toggleDetailsExpanded_.
+_DETAILS_HEIGHT_EXPANDED = 520.0
 _ICON_SIZE = 51.0  # 150% of the original 34pt
 _ICON_TITLE_GAP = 14.0
 _TITLE_RIGHT_RESERVE = _ICON_SIZE + _ICON_TITLE_GAP
@@ -115,6 +123,20 @@ _CONTENT_FLAG_FILL_ALPHA = 0.12
 # the PII banner above already uses its alpha-based (not RGB-based) test
 # assertions to sidestep for the same reason.
 _VISIBILITY_SYMBOL = {"allow": "✓", "redact": "◐", "block": "✗"}  # ✓ ◐ ✗
+
+# Sensitivity badges (docs/security-review-ui-redesign.md §6's mockup: "🟠
+# Contains financial figures   🔴 Possible personal data: IBAN") -- a
+# compact, at-a-glance chip per detected category, rendered below the
+# existing PII/content-flag banner text rather than replacing it (that text
+# stays the detailed explanation; badges are the scannable summary). Colors
+# reuse the same two constants the banners already use, not new ones.
+_BADGE_COLOR = {"financial": _CONTENT_FLAG_AMBER, "pii": _PII_RED}
+_BADGE_EMOJI = {"financial": "\U0001f7e0", "pii": "\U0001f534"}  # 🟠 🔴
+_BADGE_FONT_SIZE = 11.0
+_BADGE_PAD_X = 8.0
+_BADGE_ROW_HEIGHT = 20.0
+_BADGE_GAP = 6.0
+_BADGE_ROW_GAP = 6.0
 
 _popup_lock = threading.Lock()  # only one native window on screen at a time
 
@@ -241,6 +263,59 @@ def _text_height(text: str, width: float, font) -> float:
     return float(rect.size.height)
 
 
+def _text_width(text: str, font) -> float:
+    """Single-line width, unbounded -- unlike _text_height, which measures
+    height at a *fixed* width for wrapped text. Used by _badge_rows() to
+    size each badge chip to its own label."""
+    ns = NSString.stringWithString_(text)
+    rect = ns.boundingRectWithSize_options_attributes_(
+        (1_000_000.0, 1_000_000.0),
+        NSStringDrawingUsesLineFragmentOrigin,
+        {NSFontAttributeName: font},
+    )
+    return float(rect.size.width)
+
+
+def _badge_kind(category: str) -> str:
+    """"financial" (🟠) vs "pii" (🔴) -- which color/emoji a detected
+    pii_detector.py category gets as a sensitivity badge
+    (docs/security-review-ui-redesign.md §6's "Sensitivity" mockup). Matches
+    the mockup's own example exactly: currency/salary figures get the
+    orange "financial" treatment, every other category (IBAN, tax IDs,
+    SSNs, ...) gets red. No new detector logic -- purely a presentation
+    split over labels pii_detector.py already returns."""
+    if category in ("Financial figures (currency amounts)", "Salary/compensation information"):
+        return "financial"
+    return "pii"
+
+
+def _badge_rows(categories: list[str], width: float) -> tuple[list[list[tuple[str, str, float]]], float]:
+    """Greedy left-to-right wrap of category badges into rows that fit
+    within ``width``. Returns (rows, total_height); each row is a list of
+    (label, kind, badge_width) tuples. Pure function, no AppKit view
+    construction -- directly testable, same "must mirror the real render"
+    contract _compute_layout() has for the rest of this window's layout."""
+    if not categories:
+        return [], 0.0
+    font = NSFont.boldSystemFontOfSize_(_BADGE_FONT_SIZE)
+    rows: list[list[tuple[str, str, float]]] = []
+    current: list[tuple[str, str, float]] = []
+    current_x = 0.0
+    for category in categories:
+        kind = _badge_kind(category)
+        label = f"{_BADGE_EMOJI[kind]} {category}"
+        badge_w = _text_width(label, font) + 2 * _BADGE_PAD_X
+        if current and current_x + badge_w > width:
+            rows.append(current)
+            current = []
+            current_x = 0.0
+        current.append((label, kind, badge_w))
+        current_x += badge_w + _BADGE_GAP
+    rows.append(current)
+    total_h = len(rows) * _BADGE_ROW_HEIGHT + (len(rows) - 1) * _BADGE_ROW_GAP
+    return rows, total_h
+
+
 def _make_label(text: str, *, size: float, bold: bool = False, color=None) -> NSTextField:
     field = NSTextField.alloc().init()
     field.setStringValue_(text)
@@ -300,6 +375,8 @@ class ApprovalWindowController(NSObject):
         self.panel = None
         self._details_view = None
         self._details_html_string = ""
+        self._details_expanded = False
+        self._details_height = _DETAILS_HEIGHT
         return self
 
     # ------------------------------------------------------------------ #
@@ -432,6 +509,48 @@ class ApprovalWindowController(NSObject):
         return max(20.0, text_h) + _SUMMARY_PAD
 
     # ------------------------------------------------------------------ #
+    # Sensitivity badges (docs/security-review-ui-redesign.md §6, §7 Phase
+    # 3) -- a compact, colored chip per detected category, rendered right
+    # below whichever banner above is present. Both callers pass their own
+    # categories list explicitly (pii_categories / write_content_flags)
+    # rather than this reading self.-state itself, matching the banners'
+    # own "coded independently... nothing here assumes they're mutually
+    # exclusive" convention (see the class-level comment above
+    # _content_flag_banner_height) -- these two lists could in principle
+    # both be non-empty at once, and each must render its own badges. The
+    # banner text stays the detailed explanation; badges are the
+    # at-a-glance summary the design mockup shows.
+    # ------------------------------------------------------------------ #
+
+    def _badges_height(self, categories: list[str], width: float) -> float:
+        _, total_h = _badge_rows(categories, width)
+        return total_h
+
+    def _build_badges_view(self, categories: list[str], y: float, width: float) -> tuple[NSView, float]:
+        rows, total_h = _badge_rows(categories, width)
+        container = _FlippedView.alloc().initWithFrame_(NSMakeRect(_MARGIN, y, width, total_h))
+        row_y = 0.0
+        for row in rows:
+            x = 0.0
+            for label, kind, badge_w in row:
+                color = _BADGE_COLOR[kind]
+                badge_box = _background_box(
+                    NSMakeRect(x, row_y, badge_w, _BADGE_ROW_HEIGHT),
+                    fill=color.colorWithAlphaComponent_(0.18),
+                    corner_radius=_BADGE_ROW_HEIGHT / 2.0,
+                )
+                container.addSubview_(badge_box)
+                label_field = _make_label(label, size=_BADGE_FONT_SIZE, bold=True, color=color)
+                label_field.setFrame_(NSMakeRect(
+                    x + _BADGE_PAD_X, (_BADGE_ROW_HEIGHT - 14.0) / 2.0,
+                    badge_w - 2 * _BADGE_PAD_X, 14.0,
+                ))
+                container.addSubview_(label_field)
+                x += badge_w + _BADGE_GAP
+            row_y += _BADGE_ROW_HEIGHT + _BADGE_ROW_GAP
+        return container, total_h
+
+    # ------------------------------------------------------------------ #
     # "Claude says" -- self-reported, unverified. See gate.py's
     # reason_scope docstring and docs/security-review-ui-redesign.md §4:
     # this is Claude's own stated reason for the call, never checked
@@ -485,7 +604,7 @@ class ApprovalWindowController(NSObject):
         document = PDFDocument.alloc().initWithData_(data)
         if document is None:
             return None
-        pdf_view = PDFView.alloc().initWithFrame_(NSMakeRect(_MARGIN, y, width, _DETAILS_HEIGHT))
+        pdf_view = PDFView.alloc().initWithFrame_(NSMakeRect(_MARGIN, y, width, self._details_height))
         pdf_view.setDocument_(document)
         pdf_view.setAutoScales_(True)
         self._details_view = pdf_view
@@ -501,7 +620,7 @@ class ApprovalWindowController(NSObject):
         config.preferences().setJavaScriptEnabled_(False)
 
         webview = WKWebView.alloc().initWithFrame_configuration_(
-            NSMakeRect(_MARGIN, y, width, _DETAILS_HEIGHT), config
+            NSMakeRect(_MARGIN, y, width, self._details_height), config
         )
         html = _details_html(self.details_text, preview=self.preview, content_kind=self.content_kind)
         # Kept purely for testability -- WKWebView's own loaded content
@@ -550,6 +669,20 @@ class ApprovalWindowController(NSObject):
                 btn.setContentTintColor_(NSColor.systemRedColor())
         return btn
 
+    def _build_expand_toggle_button(self) -> NSButton:
+        """"Show more"/"Show less" -- the details pane's progressive-
+        disclosure toggle. Its own action (toggleDetailsExpanded_), not
+        buttonClicked_ -- it never resolves the approval decision, so it
+        must never be reachable through that title-based dispatch."""
+        btn = NSButton.alloc().init()
+        btn.setTitle_("Show less" if self._details_expanded else "Show more")
+        btn.setBezelStyle_(NSBezelStyleRounded)
+        btn.setFont_(NSFont.systemFontOfSize_(11))
+        btn.setTarget_(self)
+        btn.setAction_("toggleDetailsExpanded:")
+        btn.sizeToFit()
+        return btn
+
     # ------------------------------------------------------------------ #
     # Layout height (dry pass — must mirror runApproval_'s real layout)
     # ------------------------------------------------------------------ #
@@ -571,14 +704,16 @@ class ApprovalWindowController(NSObject):
             y += 20.0  # "AI will receive" label row
             y += self._visibility_height(content_width) + 18.0
         if self.pii_categories:
-            y += self._pii_banner_height(content_width) + 18.0
+            y += self._pii_banner_height(content_width) + _BADGE_ROW_GAP
+            y += self._badges_height(self.pii_categories, content_width) + 18.0
         if self.write_content_flags:
-            y += self._content_flag_banner_height(content_width) + 18.0
+            y += self._content_flag_banner_height(content_width) + _BADGE_ROW_GAP
+            y += self._badges_height(self.write_content_flags, content_width) + 18.0
         if self.claude_reason:
             y += 20.0  # "Claude says (unverified)" label row
             y += self._claude_reason_height(content_width) + 18.0
         y += 20.0  # "Preview" label row
-        y += _DETAILS_HEIGHT
+        y += self._details_height
         return y, title_h
 
     # ------------------------------------------------------------------ #
@@ -599,12 +734,7 @@ class ApprovalWindowController(NSObject):
         sequence.
         """
         content_width = _WINDOW_WIDTH - 2 * _MARGIN
-        content_height, title_h = self._compute_layout(content_width)
-        window_height = content_height + _BUTTON_ROW_HEIGHT
-
-        screen = NSScreen.mainScreen()
-        if screen is not None:
-            window_height = min(window_height, screen.frame().size.height - 80.0)
+        window_height = self._window_height(content_width)
 
         panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, _WINDOW_WIDTH, window_height),
@@ -618,8 +748,28 @@ class ApprovalWindowController(NSObject):
         panel.center()
         self.panel = panel
 
-        content = _FlippedView.alloc().initWithFrame_(NSMakeRect(0, 0, _WINDOW_WIDTH, window_height))
+        content = self._build_content_view(content_width, window_height)
         panel.setContentView_(content)
+        if self._details_view is not None:
+            panel.setInitialFirstResponder_(self._details_view)
+        return panel
+
+    def _window_height(self, content_width: float) -> float:
+        content_height, _ = self._compute_layout(content_width)
+        window_height = content_height + _BUTTON_ROW_HEIGHT
+        screen = NSScreen.mainScreen()
+        if screen is not None:
+            window_height = min(window_height, screen.frame().size.height - 80.0)
+        return window_height
+
+    def _build_content_view(self, content_width: float, window_height: float):
+        """Build the whole content view (everything build_panel() used to
+        build inline) without touching the panel itself -- reused by
+        toggleDetailsExpanded_'s _rebuild_content to regenerate content at a
+        new details-pane height without replacing the NSPanel instance
+        runModalForWindow_ is blocking on."""
+        content_height, title_h = self._compute_layout(content_width)
+        content = _FlippedView.alloc().initWithFrame_(NSMakeRect(0, 0, _WINDOW_WIDTH, window_height))
 
         if self.pii_categories:
             # Full-window wash, added first so every other subview draws on
@@ -706,7 +856,11 @@ class ApprovalWindowController(NSObject):
                 content_width - 2 * _SUMMARY_PAD, banner_h - _SUMMARY_PAD,
             ))
             content.addSubview_(banner_label)
-            y += banner_h + 18.0
+            y += banner_h + _BADGE_ROW_GAP
+
+            badges_view, badges_h = self._build_badges_view(self.pii_categories, y, content_width)
+            content.addSubview_(badges_view)
+            y += badges_h + 18.0
 
         # RISK (write side): content-flag banner -- informational only, no
         # confirmation gate, deliberately amber not red (see class-level
@@ -728,7 +882,11 @@ class ApprovalWindowController(NSObject):
                 content_width - 2 * _SUMMARY_PAD, flag_h - _SUMMARY_PAD,
             ))
             content.addSubview_(flag_label)
-            y += flag_h + 18.0
+            y += flag_h + _BADGE_ROW_GAP
+
+            badges_view, badges_h = self._build_badges_view(self.write_content_flags, y, content_width)
+            content.addSubview_(badges_view)
+            y += badges_h + 18.0
 
         # "Claude says" -- self-reported, unverified (see class-level
         # comment above _claude_reason_height). Its own label, its own
@@ -749,17 +907,25 @@ class ApprovalWindowController(NSObject):
 
         # PREVIEW: full content, last section before the buttons -- with a
         # reading-time estimate so opening it doesn't feel like an
-        # open-ended commitment (§5's "Inspect" framing).
+        # open-ended commitment (§5's "Inspect" framing). The "Show more"/
+        # "Show less" toggle on the same row is progressive disclosure as
+        # an *area* expansion (grows the already-fully-visible pane), not
+        # an *information* one -- see toggleDetailsExpanded_'s docstring
+        # for why that's the only honest reading available here.
+        expand_btn = self._build_expand_toggle_button()
+        expand_w = expand_btn.frame().size.width
         details_label = _make_label(
             f"Preview ({_reading_time_label(self.details_text)})", size=12, color=NSColor.secondaryLabelColor()
         )
-        details_label.setFrame_(NSMakeRect(_MARGIN, y, content_width, 16.0))
+        details_label.setFrame_(NSMakeRect(_MARGIN, y, content_width - expand_w - 8.0, 16.0))
         content.addSubview_(details_label)
+        expand_btn.setFrameOrigin_((_MARGIN + content_width - expand_w, y - 4.0))
+        content.addSubview_(expand_btn)
         y += 20.0
 
         details_view = self._build_details_view(y, content_width)
         content.addSubview_(details_view)
-        y += _DETAILS_HEIGHT
+        y += self._details_height
 
         # Button row. content is flipped (y grows downward), so the row
         # sits in the band [content_height, content_height + row height].
@@ -787,10 +953,50 @@ class ApprovalWindowController(NSObject):
             temp_accept_btn.setFrameOrigin_((right_x, button_y))
             content.addSubview_(temp_accept_btn)
 
-        if self._details_view is not None:
-            panel.setInitialFirstResponder_(self._details_view)
+        return content
 
-        return panel
+    def toggleDetailsExpanded_(self, _sender) -> None:
+        """"Show more"/"Show less" -- progressive disclosure as an *area*
+        expansion of the already-fully-visible details pane, not an
+        *information* one (docs/security-review-ui-redesign.md §7 Phase 3):
+        this codebase's own invariant (approval_popup.py's module docstring,
+        "full content is always shown before the decision") rules out
+        hiding anything behind a click by default, so this only ever grows
+        or shrinks how much of that same content is visible without
+        scrolling -- it never changes *what* content exists.
+
+        Rebuilds the window's content in place rather than replacing
+        self.panel: runModalForWindow_ (in runApproval_) is bound to that
+        specific NSPanel instance, so swapping in a different window object
+        mid-modal-session would break stopModalWithCode_'s association with
+        it. Only the content view and the panel's own frame change.
+        """
+        self._details_expanded = not self._details_expanded
+        self._details_height = _DETAILS_HEIGHT_EXPANDED if self._details_expanded else _DETAILS_HEIGHT
+        self._rebuild_content()
+
+    def _rebuild_content(self) -> None:
+        content_width = _WINDOW_WIDTH - 2 * _MARGIN
+        window_height = self._window_height(content_width)
+        content = self._build_content_view(content_width, window_height)
+
+        # window_height is a *content* height (what NSPanel's own
+        # initWithContentRect_... takes); the window's frame is taller by
+        # its title bar. frameRectForContentRect_ is the panel's own
+        # conversion, not a hardcoded constant, so this stays correct
+        # regardless of title bar height across macOS versions/settings.
+        new_frame = self.panel.frameRectForContentRect_(NSMakeRect(0, 0, _WINDOW_WIDTH, window_height))
+        old_frame = self.panel.frame()
+        # NSWindow's frame origin is bottom-left (screen coordinates), so
+        # keeping the window's visible top edge fixed while its height
+        # changes means shifting origin.y by the same delta, in the
+        # opposite direction.
+        delta = new_frame.size.height - old_frame.size.height
+        new_frame = NSMakeRect(old_frame.origin.x, old_frame.origin.y - delta, _WINDOW_WIDTH, new_frame.size.height)
+        self.panel.setContentView_(content)
+        self.panel.setFrame_display_(new_frame, True)
+        if self._details_view is not None:
+            self.panel.setInitialFirstResponder_(self._details_view)
 
     # ------------------------------------------------------------------ #
     # Entry point (must run on the main thread)

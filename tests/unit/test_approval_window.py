@@ -36,6 +36,8 @@ from privacyfence.approval_window import (
     _PII_BACKGROUND_ALPHA,
     _PII_BANNER_FILL_ALPHA,
     ApprovalWindowController,
+    _badge_kind,
+    _badge_rows,
     _details_html,
     _email_header_html,
 )
@@ -248,6 +250,60 @@ class TestContentFlagBanner:
         assert _CONTENT_FLAG_FILL_ALPHA != _PII_BANNER_FILL_ALPHA
 
 
+class TestSensitivityBadges:
+    """docs/security-review-ui-redesign.md §6's "Sensitivity" mockup ("🟠
+    Contains financial figures   🔴 Possible personal data: IBAN") -- a
+    compact badge per category, rendered below whichever banner (PII or
+    content-flag) is present, in addition to that banner's existing text."""
+
+    def test_financial_categories_get_the_financial_kind(self):
+        assert _badge_kind("Financial figures (currency amounts)") == "financial"
+        assert _badge_kind("Salary/compensation information") == "financial"
+
+    def test_every_other_category_gets_the_pii_kind(self):
+        for category in (
+            "US Social Security Number", "IBAN (bank account number)",
+            "Credit card number", "IP address", "Hungarian TAJ number (social security)",
+        ):
+            assert _badge_kind(category) == "pii"
+
+    def test_badge_rows_wraps_to_a_new_row_when_it_would_overflow(self):
+        long_categories = [f"Category number {i} with a fairly long label" for i in range(10)]
+        rows, total_h = _badge_rows(long_categories, width=300.0)
+        assert len(rows) > 1
+        for row in rows:
+            row_width = sum(w for _, _, w in row) + (len(row) - 1) * 6.0  # _BADGE_GAP
+            assert row_width <= 300.0 + 1e-6
+        assert total_h > 20.0  # more than one row's worth of height
+
+    def test_badge_rows_empty_for_no_categories(self):
+        assert _badge_rows([], width=300.0) == ([], 0.0)
+
+    def test_a_single_short_category_always_fits_on_one_row(self):
+        rows, _ = _badge_rows(["IBAN (bank account number)"], width=300.0)
+        assert len(rows) == 1
+
+    def test_pii_categories_render_one_badge_per_category(self):
+        controller = make_controller(
+            pii_categories=["US Social Security Number", "Financial figures (currency amounts)"],
+        )
+        views = build_views(controller)
+        values = text_field_values(views)
+        assert any("US Social Security Number" in v and "\U0001f534" in v for v in values)
+        assert any("Financial figures (currency amounts)" in v and "\U0001f7e0" in v for v in values)
+
+    def test_write_content_flags_render_one_badge_per_flag(self):
+        controller = make_controller(write_content_flags=["IBAN (bank account number)"])
+        views = build_views(controller)
+        values = text_field_values(views)
+        assert any("IBAN (bank account number)" in v and "\U0001f534" in v for v in values)
+
+    def test_no_categories_renders_no_badges(self):
+        views = build_views(make_controller(pii_categories=[], write_content_flags=[]))
+        values = text_field_values(views)
+        assert not any("\U0001f7e0" in v or "\U0001f534" in v for v in values)
+
+
 class TestClaudeSaysBlock:
     """Claude's self-reported, unverified reason for the call -- see
     gate.py's reason_scope docstring. Present for both read and write
@@ -416,6 +472,83 @@ class TestDetailsPane:
         # of the controller/AppKit entirely.
         assert _details_html("abc") == _details_html("abc")
         assert _details_html("abc") != _details_html("xyz")
+
+
+class TestProgressiveDisclosure:
+    """docs/security-review-ui-redesign.md §7 Phase 3: the "Show more"/
+    "Show less" toggle is an *area* expansion of the already-fully-visible
+    details pane, not an *information* one -- approval_popup.py's "full
+    content is always shown before the decision" invariant rules out
+    hiding anything by default. Toggling must resize the same NSPanel
+    instance in place (not replace it), since runModalForWindow_ binds to
+    a specific window object."""
+
+    def test_starts_collapsed_with_a_show_more_button(self):
+        controller = make_controller()
+        views = build_views(controller)
+        assert controller._details_expanded is False
+        assert "Show more" in buttons_by_title(views)
+        assert "Show less" not in buttons_by_title(views)
+
+    def test_toggle_expands_and_grows_the_details_pane(self):
+        controller = make_controller()
+        panel = controller.build_panel()
+        webview_before = controller._details_view
+        height_before = webview_before.frame().size.height
+
+        controller.toggleDetailsExpanded_(None)
+
+        assert controller._details_expanded is True
+        assert controller._details_view.frame().size.height > height_before
+        # Same NSPanel instance -- never replaced.
+        assert controller.panel is panel
+
+    def test_toggle_twice_returns_to_the_original_frame(self):
+        controller = make_controller()
+        panel = controller.build_panel()
+        original_frame = panel.frame()
+
+        controller.toggleDetailsExpanded_(None)
+        controller.toggleDetailsExpanded_(None)
+
+        assert controller._details_expanded is False
+        new_frame = panel.frame()
+        assert (new_frame.origin.x, new_frame.origin.y) == (original_frame.origin.x, original_frame.origin.y)
+        assert (new_frame.size.width, new_frame.size.height) == (
+            original_frame.size.width, original_frame.size.height,
+        )
+
+    def test_toggle_relabels_the_button(self):
+        controller = make_controller()
+        controller.build_panel()
+
+        controller.toggleDetailsExpanded_(None)
+
+        # Read the current (rebuilt) content view directly -- build_views()
+        # would call build_panel() again, discarding the toggle.
+        views = list(flatten(controller.panel.contentView()))
+        assert "Show less" in buttons_by_title(views)
+        assert "Show more" not in buttons_by_title(views)
+
+    def test_toggle_preserves_all_details_text(self):
+        # The point of "area, not information" -- expanding must not
+        # truncate or otherwise change what's in the pane, only how much
+        # of it is visible without scrolling.
+        long_text = "line one\n" * 500 + "the last line, still present"
+        controller = make_controller(details_text=long_text)
+        controller.build_panel()
+
+        controller.toggleDetailsExpanded_(None)
+
+        assert long_text in controller._details_html_string
+
+    def test_toggle_keeps_the_details_view_as_initial_first_responder(self):
+        controller = make_controller()
+        panel = controller.build_panel()
+
+        controller.toggleDetailsExpanded_(None)
+
+        assert panel.initialFirstResponder() is controller._details_view
 
 
 class TestEmailStyleHeader:

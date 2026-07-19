@@ -542,9 +542,21 @@ found one more real bug beyond the `fake_show_popup` gap (a duplicated banner-al
   accidentally get styled as an email. `gmail_get_thread` does **not** opt in: a thread is several
   messages each with its own sender, which doesn't fit one single-message header (it already
   renders per-message "From:"/"Date:" lines inline in `details_text`) — left as its own,
-  differently-shaped follow-up rather than forcing a mismatched header onto it. Per-file-type
-  *badges* (as opposed to the email header specifically) remain **not done** — this pass only
-  builds the one per-surface rendering §6 actually specifies a mockup for.
+  differently-shaped follow-up rather than forcing a mismatched header onto it.
+
+  **Sensitivity badges done 2026-07-19** (§6's "Sensitivity" row: "🟠 Contains financial figures
+  🔴 Possible personal data: IBAN"): a new `_badge_kind(category)` classifies each detected
+  `pii_categories`/`write_content_flags` label as `"financial"` (exactly `"Financial figures
+  (currency amounts)"` or `"Salary/compensation information"` — matching the mockup's own example)
+  or `"pii"` (everything else pii_detector.py returns) — no new detector logic, purely a
+  presentation split over category labels that already existed. `_badge_rows()` greedily wraps
+  each category into a colored pill/chip (own rounded `NSBox` + label, reusing the existing
+  `_PII_RED`/`_CONTENT_FLAG_AMBER` colors so financial vs. PII reads consistently with the banner
+  above it), rendered as an *addition* below the existing PII/content-flag banner text rather than
+  a replacement — the banner stays the detailed explanation, badges are the at-a-glance summary.
+  Both banners' existing "coded independently, don't assume mutual exclusion" invariant (see the
+  class-level comment above `_content_flag_banner_height`) is preserved: each caller passes its own
+  categories list explicitly rather than the badge builder guessing which one is populated.
 - Native `PDFView` (PDFKit) embed for genuinely binary PDF content already fetched as
   `content_bytes` in `drive_client.py`. **Done 2026-07-17**: `gate.py`'s `gated_call()` gained a
   `pdf_bytes: bytes = b""` param (read-gate only, same scoping as `visibility`/`content_kind`),
@@ -611,28 +623,51 @@ found one more real bug beyond the `fake_show_popup` gap (a duplicated banner-al
     document (or this branch) blocks Phase 3 on, and not something achievable from an environment
     without that certificate.
 - Three-level progressive disclosure (summary → expanded metadata → full inspect), all within one
-  modal session. **Not done** — deferred, and worth recording *why* rather than just leaving it
-  unchecked: this codebase's own hard invariant (`approval_popup.py`'s module docstring: "full
-  content is always shown before the decision, so the human always sees what they're approving
-  before they can click") rules out the literal reading of "progressive disclosure" as *hiding*
-  the primary content behind a click by default — that would be a regression, not a feature. The
-  feasibility table's own assessment of "Inspect before approve" (§3, row: "Same modal session, an
+  modal session. Worth recording *why* the shipped version isn't literally three information
+  levels: this codebase's own hard invariant (`approval_popup.py`'s module docstring: "full content
+  is always shown before the decision, so the human always sees what they're approving before they
+  can click") rules out the literal reading of "progressive disclosure" as *hiding* the primary
+  content behind a click by default — that would be a regression, not a feature. The feasibility
+  table's own assessment of "Inspect before approve" (§3, row: "Same modal session, an
   expand/collapse of the existing scrollable pane, or a resized `NSPanel`. No protocol change.")
   points at the only honest reading available with today's data model: an *area* expansion (make
   the already-fully-visible body pane bigger on demand), not an *information* one, since there's no
   currently-held-back "expanded metadata" layer to reveal -- everything the window has access to
   (`preview`, `details_text`, `visibility`, `pii_categories`, `claude_reason`, `seen_count`) is
-  already rendered, unconditionally, today. Implementing a real second/third disclosure level
-  meaningfully would need either a new data source (e.g. raw per-field metadata beyond what
-  `preview` already flattens) or an area-only expand/collapse toggle — both left as follow-up work
-  rather than building something that looks like three levels but doesn't hide or reveal anything.
+  already rendered, unconditionally, today.
 
-**Phase 3 implementation status**: the WKWebView migration (details/body pane only), the Gmail-style
-From/To/Subject/Date header, the native `PDFView` embed (gated on the same privacy-policy condition
-as the text it replaces), and the signing-investigation action items (`entitlements.plist`,
-`pyproject.toml`) are all implemented; per-file-type badges beyond the email header and PDF case,
-and progressive disclosure, remain deliberately deferred -- see the individual items above for why
-each one is a distinct follow-up rather than a small addition to this pass. **Verification honesty
+  **Done 2026-07-19**: a "Show more"/"Show less" toggle next to the "Preview" label
+  (`_build_expand_toggle_button`, its own `toggleDetailsExpanded_` action -- deliberately not
+  routed through `buttonClicked_`'s decision dispatch, since it never resolves the approval)
+  grows/shrinks the details pane between `_DETAILS_HEIGHT` (280, default) and
+  `_DETAILS_HEIGHT_EXPANDED` (520). `build_panel()` was split into a thin `build_panel()` (creates
+  the `NSPanel` once) plus a reusable `_build_content_view()` (everything that used to be built
+  inline) specifically so the toggle can regenerate content at a new height without replacing the
+  `NSPanel` instance `runApproval_()`'s `runModalForWindow_` is already blocking on — swapping the
+  window object mid-modal-session would break that association. One real bug caught by manually
+  exercising the round-trip (not by the unit tests, which only checked frame *math*, not the
+  window's actual on-screen frame): `NSWindow.setFrame_display_` operates on the window's full
+  frame (title bar included), not the content rect `initWithContentRect_styleMask_backing_defer_`
+  takes — using the content-height value directly shrank the visible window by the title bar's
+  height on every toggle, compounding on repeated toggles. Fixed by computing the real target frame
+  via the panel's own `frameRectForContentRect_` conversion rather than a hardcoded offset, which
+  stays correct across macOS versions/title-bar-height differences. `TestProgressiveDisclosure`
+  locks in the fix, including an exact round-trip check (expand then collapse returns to the exact
+  original frame, not an approximately-close one).
+
+  What's still genuinely three-level (not attempted): a real second/third disclosure level would
+  need a new data source (e.g. raw per-field metadata beyond what `preview` already flattens), left
+  as a distinct follow-up rather than building something that looks like three levels but doesn't
+  actually reveal new information.
+
+**Phase 3 implementation status: every planned item is now implemented.** The WKWebView migration
+(details/body pane only), the Gmail-style From/To/Subject/Date header, the native `PDFView` embed
+(gated on the same privacy-policy condition as the text it replaces), the sensitivity badges, the
+"Show more"/"Show less" area-expansion toggle (progressive disclosure, per that item's own note on
+why "area, not information" is the only honest reading), and the signing-investigation action items
+(`entitlements.plist`, `pyproject.toml`) are all done. The real signed-build/notarization empirical
+check is out of this document's tracked scope entirely (§10 Q3) — the maintainer is handling it
+separately. **Verification honesty
 note**: the new `_details_html()`/`_email_header_html()`/`WKWebView` wiring is unit-tested the same
 way every other AppKit-touching piece of this window is (`test_approval_window.py`'s
 `TestDetailsPane`/`TestEmailStyleHeader`, construction-only, asserting the exact HTML string handed
@@ -662,6 +697,32 @@ WindowServer session) to confirm that, same gate every prior phase's popup chang
 **Resolved 2026-07-19**: the maintainer added email-header and PDFView scenarios to
 `scripts/qa_popup_smoke.py` and ran it for real — 10/10 scenarios passed, confirming both render
 and click correctly on screen, not just in construction-only unit tests.
+
+`_badge_kind()`/`_badge_rows()` (pure functions) and the badge-building/layout wiring are covered by
+`test_approval_window.py`'s `TestSensitivityBadges` -- the classification split, the greedy wrap at
+a narrow width forcing multiple rows, and construction-level checks that badges actually appear (or
+don't) for both the PII and content-flag paths independently, on a real macOS `pytest` run (2480
+tests, 93% coverage). No new `qa_popup_smoke.py` scenario was needed for this one: badges render
+automatically whenever `pii_categories`/`write_content_flags` is non-empty, so the existing
+PII-tinted and content-flag-banner scenarios already exercise them (now noted in-line in the
+script) — but this feature landed *after* the 10/10 `qa_popup_smoke.py` pass recorded just above,
+so that specific run predates it and doesn't cover it. **Still needs**: a real interactive
+`qa_popup_smoke.py` run to confirm the badges actually render as expected on screen (colored pill
+shape, correct emoji/color per category, sensible wrapping) -- same verification gap every other
+piece of this window's real rendering has until someone with a real WindowServer session runs it.
+
+`_build_content_view()`/`_rebuild_content()`/`toggleDetailsExpanded_` are covered by
+`test_approval_window.py`'s `TestProgressiveDisclosure` -- starts-collapsed state, the button label
+flipping, the details pane actually growing, and (the one that caught the title-bar-height bug
+above) an *exact* round-trip check that expand-then-collapse returns to the identical original
+frame, not merely a close one. This one, unusually among this session's Phase 3 additions, was
+caught and fixed through manual exercise of the real `NSPanel`/`NSWindow` API in this environment
+before the automated test was even written -- worth noting as a case where "unit-testable" and
+"actually correct" aren't the same claim: a naive test asserting only that the height *changed*
+would have passed against the buggy version too. **Still needs**: a real interactive
+`qa_popup_smoke.py` run (a "Show more" click followed by the decision click, exercising the resize
+while a real window is on screen) to confirm this looks and behaves correctly for a human, not just
+that the frame math works out.
 
 The real signed-build/notarization check (§10 Q3) is out of this document's tracked scope as of
 2026-07-19 — the maintainer is handling it separately, on their own timeline, not as part of this
