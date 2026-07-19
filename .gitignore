@@ -35,6 +35,11 @@ build/
 dist/
 .venv/
 venv/
+
+# Node (bridge/)
+node_modules/
+bridge/out/
+*.tsbuildinfo
 env/
 
 # Test / coverage artifacts
