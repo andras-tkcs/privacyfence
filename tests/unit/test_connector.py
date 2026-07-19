@@ -1,9 +1,9 @@
 """Unit tests for privacyfence.connector — ToolSpec/ToolParam serialization.
 
 The IPC manifest (ipc_server._build_manifest) sends ToolSpec.to_dict() over
-the wire and the bridge (bridge/src/manifest.ts, now Node/TypeScript — see
-docs/mcp-bridge-nodejs-migration.md) parses that same JSON shape; a
-round-trip mismatch here would silently break tool discovery for Claude.
+the wire and the bridge (bridge/src/manifest.ts, now Node/TypeScript) parses
+that same JSON shape; a round-trip mismatch here would silently break tool
+discovery for Claude.
 """
 from __future__ import annotations
 

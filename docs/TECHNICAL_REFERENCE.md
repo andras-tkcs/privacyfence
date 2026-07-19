@@ -918,8 +918,7 @@ The daemon and the bridge are built and shipped separately:
 
 - **PrivacyFenceApp.app** (built by `scripts/build_dmg.sh`) — the daemon: owns credentials,
   connectors, the review gate, the audit log, and the LaunchAgent. Install this first via the DMG.
-- **PrivacyFence.mcpb** (built by `scripts/build_mcpb.sh`, from `bridge/` — see
-  [`docs/mcp-bridge-nodejs-migration.md`](mcp-bridge-nodejs-migration.md)) — just the bridge: a
+- **PrivacyFence.mcpb** (built by `scripts/build_mcpb.sh`, from `bridge/`) — just the bridge: a
   small Node/TypeScript MCP server that talks to the daemon over a Unix socket. Install this into
   Claude.
 

@@ -16,10 +16,11 @@ export const SOCKET_PATH = path.join(os.homedir(), ".privacyfence", "privacyfenc
 // ipc.py's VERSION is: reported in "manifest"/"health" so each side can
 // detect drift (see manifest.ts's checkVersionMatch). build.mjs statically
 // replaces `process.env.BRIDGE_VERSION` at bundle time with the real
-// version read from pyproject.toml — see docs/mcp-bridge-nodejs-migration.md
-// §9 on why this isn't hand-maintained in package.json. Outside of a bundled
-// build (e.g. running tests directly against src/ under tsx) this reads the
-// literal environment variable instead, falling back to a dev placeholder.
+// version read from pyproject.toml — this isn't hand-maintained in
+// package.json (see CLAUDE.md's "Version bumps" section). Outside of a
+// bundled build (e.g. running tests directly against src/ under tsx) this
+// reads the literal environment variable instead, falling back to a dev
+// placeholder.
 export const VERSION = process.env.BRIDGE_VERSION ?? "0.0.0-dev";
 
 // Messages are newline-delimited JSON. Node has no built-in per-line size

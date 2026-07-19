@@ -63,12 +63,11 @@ export function findDaemonCmd(opts: FindDaemonCmdOptions = {}): string[] {
 
   if (isExecutable(defaultAppPath)) return [defaultAppPath];
 
-  // Development fallback: run the daemon as a Python module. Unlike the
+  // Development fallback: run the daemon as a Python module. Unlike the old
   // Python bridge (which reused sys.executable — its own interpreter, so it
   // was guaranteed to share the dev venv), this bridge is not a Python
   // process, so it relies on a `python3` already on PATH with privacyfence
-  // installed (e.g. an activated venv). See
-  // docs/mcp-bridge-nodejs-migration.md §13.
+  // installed (e.g. an activated venv).
   return ["python3", "-m", "privacyfence.daemon_main"];
 }
 

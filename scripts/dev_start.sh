@@ -5,8 +5,8 @@
 # otherwise edits Claude Desktop's own config file directly.
 #
 # The daemon (privacyfence-app) is still Python, run from .venv. The bridge
-# is Node/TypeScript (bridge/) — see docs/mcp-bridge-nodejs-migration.md —
-# and is rebuilt on every run so it always reflects the current checkout.
+# is Node/TypeScript (bridge/) and is rebuilt on every run so it always
+# reflects the current checkout.
 #
 # Usage:
 #   ./scripts/dev_start.sh

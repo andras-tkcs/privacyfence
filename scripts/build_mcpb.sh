@@ -7,8 +7,7 @@
 # into a single dependency-free server/bridge.js, so the .mcpb ships with
 # neither a Python framework nor a node_modules/ directory. Claude Desktop
 # supplies the Node runtime itself (server.type = "node" in the manifest —
-# see mcpb/manifest.json.tmpl and docs/mcp-bridge-nodejs-migration.md). This
-# script does NOT depend on build_dmg.sh.
+# see mcpb/manifest.json.tmpl). This script does NOT depend on build_dmg.sh.
 #
 # The bridge still talks to the PrivacyFence daemon over a Unix socket, so the
 # daemon (PrivacyFence.app, built separately by build_dmg.sh, still Python)

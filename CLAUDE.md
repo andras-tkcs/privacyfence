@@ -26,7 +26,7 @@ pending CRs") and let the version get bumped once, at actual release time, not p
 `bridge/package.json`'s `version` field is **not** a third place to bump — leave it as
 `0.0.0-dev`. `scripts/build_mcpb.sh` (and `scripts/dev_start.sh`) read the real version out of
 `pyproject.toml` and inject it into the bundled `bridge.js` at build time via esbuild's `define`
-(see `bridge/build.mjs` and `docs/mcp-bridge-nodejs-migration.md` §9). If you find yourself editing
+(see `bridge/build.mjs`). If you find yourself editing
 `bridge/package.json`'s version by hand during a bump, that's a sign something upstream of it broke
 the injection, not a file to add to the bump commit.
 

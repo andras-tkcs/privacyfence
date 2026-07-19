@@ -26,9 +26,8 @@ Use GitHub Issues for bug reports and feature requests. Include:
 ## Code Style
 
 - `src/privacyfence/` (the daemon): Python 3.11+, standard library preferred over new dependencies
-- `bridge/` (the MCP bridge): TypeScript/Node — see
-  [`docs/mcp-bridge-nodejs-migration.md`](docs/mcp-bridge-nodejs-migration.md) for why it's a
-  separate language from the daemon
+- `bridge/` (the MCP bridge): TypeScript/Node, kept as a separate language from the daemon so the
+  `.mcpb` extension ships without a bundled Python runtime
 - No comments unless the *why* is non-obvious
 - Match the surrounding code's style
 

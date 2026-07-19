@@ -10,7 +10,6 @@
 # The bridge (Claude's MCP entry point) is built separately — a Node/TypeScript
 # server, see bridge/ and scripts/build_mcpb.sh — and distributed as a
 # one-click Claude Desktop extension (.mcpb) instead of living inside this app.
-# See docs/mcp-bridge-nodejs-migration.md.
 #
 # Build:
 #   pip install pyinstaller
