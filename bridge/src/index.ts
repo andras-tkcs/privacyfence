@@ -19,8 +19,10 @@
  * setupLogging().
  */
 
+import { pathToFileURL } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { ensureDaemonRunning } from "./daemon.js";
 import { BridgeExitError } from "./errors.js";
 import { IPCClient } from "./ipcClient.js";
@@ -43,7 +45,7 @@ function setupLogging(): void {
 }
 
 /** Validates flags; --config is daemon-side only, accepted here for CLI compatibility. */
-function parseArgs(argv: string[]): void {
+export function parseArgs(argv: string[]): void {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--config") {
@@ -57,46 +59,69 @@ function parseArgs(argv: string[]): void {
   }
 }
 
-async function main(argv = process.argv.slice(2)): Promise<void> {
+export interface MainOptions {
+  /** Overridable for tests; defaults to the real ~/.privacyfence socket. */
+  socketPath?: string;
+  /** Overridable for tests (e.g. InMemoryTransport); defaults to real stdio. */
+  transport?: Transport;
+  /** Overridable for tests; defaults to waiting on stdin closing (real Claude disconnect). */
+  waitForDisconnect?: () => Promise<void>;
+}
+
+function defaultWaitForDisconnect(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    process.stdin.once("close", resolve);
+    process.stdin.once("end", resolve);
+  });
+}
+
+export async function main(argv = process.argv.slice(2), opts: MainOptions = {}): Promise<void> {
   setupLogging();
   parseArgs(argv);
 
-  await ensureDaemonRunning({ socketPath: SOCKET_PATH });
+  const socketPath = opts.socketPath ?? SOCKET_PATH;
+  await ensureDaemonRunning({ socketPath });
 
-  const manifest = await fetchManifest(SOCKET_PATH);
+  const manifest = await fetchManifest(socketPath);
   checkVersionMatch(manifest, VERSION);
   console.error(
     `Got manifest: connectors=${JSON.stringify((manifest.connectors ?? []).map((c) => c.name))}`
   );
 
   const server = new McpServer({ name: "privacyfence", version: VERSION });
-  const ipc = new IPCClient(SOCKET_PATH);
+  const ipc = new IPCClient(socketPath);
   registerTools(server, ipc, manifest);
   registerMetaTools(server, ipc);
 
   await ipc.connect();
   console.error("IPC client connected; starting stdio MCP");
-  const transport = new StdioServerTransport();
+  const transport = opts.transport ?? new StdioServerTransport();
+  const waitForDisconnect = opts.waitForDisconnect ?? defaultWaitForDisconnect;
   try {
     await server.connect(transport);
-    // Keep the process alive until stdin closes (Claude disconnects).
-    await new Promise<void>((resolve) => {
-      process.stdin.once("close", resolve);
-      process.stdin.once("end", resolve);
-    });
+    // Keep the process alive until the client disconnects.
+    await waitForDisconnect();
   } finally {
     ipc.close();
   }
 }
 
-main().catch((exc: unknown) => {
-  // BridgeExitError carries its own fully-formatted, user-facing message
-  // (see daemon.ts/manifest.ts) — print it plainly, no "Error:"
-  // prefix/stack trace, matching bridge_main.py's sys.exit(1) call sites.
-  if (exc instanceof BridgeExitError) {
-    console.error(exc.message);
-    process.exit(exc.code);
-  }
-  console.error(exc instanceof Error ? (exc.stack ?? exc.message) : String(exc));
-  process.exit(1);
-});
+// Only auto-run when this module is the actual entry point (the bundled
+// dist/bridge.js Claude Desktop spawns, or `node`/`tsx src/index.ts` in
+// dev) — not when index.test.ts imports main() directly to drive it in an
+// in-process integration test.
+const isEntryPoint = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isEntryPoint) {
+  main().catch((exc: unknown) => {
+    // BridgeExitError carries its own fully-formatted, user-facing message
+    // (see daemon.ts/manifest.ts) — print it plainly, no "Error:"
+    // prefix/stack trace, matching bridge_main.py's sys.exit(1) call sites.
+    if (exc instanceof BridgeExitError) {
+      console.error(exc.message);
+      process.exit(exc.code);
+    }
+    console.error(exc instanceof Error ? (exc.stack ?? exc.message) : String(exc));
+    process.exit(1);
+  });
+}
