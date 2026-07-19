@@ -24,7 +24,7 @@ import re as _re
 import threading
 import urllib.parse
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
 
 from google.auth.transport.requests import AuthorizedSession, Request
 from google.oauth2.credentials import Credentials
@@ -59,6 +59,8 @@ _FILE_FIELDS = (
 # ------------------------------------------------------------------ #
 
 _HEADING_PREFIXES = [
+    ("###### ", "HEADING_6"),
+    ("##### ", "HEADING_5"),
     ("#### ", "HEADING_4"),
     ("### ", "HEADING_3"),
     ("## ", "HEADING_2"),
@@ -69,41 +71,69 @@ _HEADING_PREFIXES = [
 # yellow swatch) -- v1 has no per-span color argument, see design doc.
 _DEFAULT_HIGHLIGHT_COLOR = "#FFF59D"
 
+# Font substituted for `code` spans so they render monospace like every other
+# Markdown renderer's inline code, instead of indistinguishable plain text.
+_CODE_FONT_FAMILY = "Courier New"
+
+# Two spaces of leading indent = one nested-list level, capped to what the
+# Docs UI itself supports. Callers should indent nested list items by 2
+# spaces per level (see drive_write_doc_content's tool description).
+_MAX_LIST_NESTING = 8
+
+# NOTE: __underline__ intentionally does not follow CommonMark, where a
+# double-underscore is alternate *bold* syntax -- this parser has exactly one
+# bold spelling (**) so the double-underscore slot is free to mean something
+# else, and dedicated underline syntax is otherwise unavailable in Markdown.
 _INLINE_RE = _re.compile(
     r"\*\*\*(.+?)\*\*\*"         # bold + italic
     r"|\*\*(.+?)\*\*"            # bold
     r"|\*(.+?)\*"                # italic
+    r"|~~(.+?)~~"                # strikethrough
+    r"|__(.+?)__"                # underline
     r"|==(.+?)=="                # highlight
-    r"|`(.+?)`"                  # code (no extra style, just plain text)
+    r"|`(.+?)`"                  # code (monospace font)
     r"|\[([^\]]+)\]\(([^)]+)\)"  # link [text](url)
 )
 
 
-def _parse_inline_runs(
-    text: str,
-) -> list[tuple[str, bool, bool, str, bool]]:
-    """Return a list of (text, bold, italic, url, highlight) from an inline Markdown string."""
-    runs: list[tuple[str, bool, bool, str, bool]] = []
+class InlineRun(NamedTuple):
+    text: str
+    bold: bool = False
+    italic: bool = False
+    strikethrough: bool = False
+    underline: bool = False
+    highlight: bool = False
+    code: bool = False
+    url: str = ""
+
+
+def _parse_inline_runs(text: str) -> list[InlineRun]:
+    """Return a list of InlineRun from an inline Markdown string."""
+    runs: list[InlineRun] = []
     last = 0
     for m in _INLINE_RE.finditer(text):
         if m.start() > last:
-            runs.append((text[last : m.start()], False, False, "", False))
+            runs.append(InlineRun(text[last : m.start()]))
         if m.group(1):  # bold+italic
-            runs.append((m.group(1), True, True, "", False))
+            runs.append(InlineRun(m.group(1), bold=True, italic=True))
         elif m.group(2):  # bold
-            runs.append((m.group(2), True, False, "", False))
+            runs.append(InlineRun(m.group(2), bold=True))
         elif m.group(3):  # italic
-            runs.append((m.group(3), False, True, "", False))
-        elif m.group(4):  # highlight
-            runs.append((m.group(4), False, False, "", True))
-        elif m.group(5):  # code → plain
-            runs.append((m.group(5), False, False, "", False))
-        elif m.group(6):  # link
-            runs.append((m.group(6), False, False, m.group(7), False))
+            runs.append(InlineRun(m.group(3), italic=True))
+        elif m.group(4):  # strikethrough
+            runs.append(InlineRun(m.group(4), strikethrough=True))
+        elif m.group(5):  # underline
+            runs.append(InlineRun(m.group(5), underline=True))
+        elif m.group(6):  # highlight
+            runs.append(InlineRun(m.group(6), highlight=True))
+        elif m.group(7):  # code
+            runs.append(InlineRun(m.group(7), code=True))
+        elif m.group(8):  # link
+            runs.append(InlineRun(m.group(8), url=m.group(9)))
         last = m.end()
     if last < len(text):
-        runs.append((text[last:], False, False, "", False))
-    return runs or [("", False, False, "", False)]
+        runs.append(InlineRun(text[last:]))
+    return runs or [InlineRun("")]
 
 
 def _markdown_to_docs_requests(markdown: str, start_index: int = 1) -> list[dict]:
@@ -118,44 +148,57 @@ def _markdown_to_docs_requests(markdown: str, start_index: int = 1) -> list[dict
     """
     lines = markdown.rstrip("\n").split("\n")
 
-    # Parse each line into (inline-runs, paragraph-style, list-bullet-preset)
-    parsed: list[tuple[list, str, str]] = []
+    # Parse each line into (inline-runs, paragraph-style, list-bullet-preset,
+    # list-nesting-level). list_level is only meaningful when list_preset is set.
+    parsed: list[tuple[list[InlineRun], str, str, int]] = []
     for line in lines:
         para_style = "NORMAL_TEXT"
         list_preset = ""
+        list_level = 0
         for prefix, style in _HEADING_PREFIXES:
             if line.startswith(prefix):
                 line = line[len(prefix):]
                 para_style = style
                 break
         else:
-            if _re.match(r"^[-*+] ", line):
-                line = line[2:]
+            stripped = line.lstrip(" \t")
+            indent_width = len(line) - len(stripped)
+            if _re.match(r"^[-*+] ", stripped):
+                line = stripped[2:]
                 list_preset = "BULLET_DISC_CIRCLE_SQUARE"
-            elif _re.match(r"^\d+\. ", line):
-                line = _re.sub(r"^\d+\. ", "", line)
+                list_level = min(indent_width // 2, _MAX_LIST_NESTING)
+            elif _re.match(r"^\d+\. ", stripped):
+                line = _re.sub(r"^\d+\. ", "", stripped)
                 list_preset = "NUMBERED_DECIMAL_ALPHA_ROMAN"
-        parsed.append((_parse_inline_runs(line), para_style, list_preset))
+                list_level = min(indent_width // 2, _MAX_LIST_NESTING)
+        parsed.append((_parse_inline_runs(line), para_style, list_preset, list_level))
 
-    # Build full plain text and record per-line doc positions
+    # Build full plain text and record per-line doc positions. A list line's
+    # paragraph is prefixed with `list_level` literal tab characters -- the
+    # Docs API infers each paragraph's nesting level from its count of
+    # leading tabs at createParagraphBullets time, then strips them, so the
+    # tabs never end up visible in the final document.
     full_text = ""
-    line_spans: list[tuple[int, int, str, list, str]] = []
-    for runs, para_style, list_preset in parsed:
+    line_spans: list[tuple[int, int, str, list[InlineRun], str, int]] = []
+    for runs, para_style, list_preset, list_level in parsed:
         line_start = len(full_text) + start_index
-        for run_text, _, _, _, _ in runs:
-            full_text += run_text
+        if list_level:
+            full_text += "\t" * list_level
+        text_start = len(full_text) + start_index
+        for run in runs:
+            full_text += run.text
         full_text += "\n"
         line_end = len(full_text) + start_index
-        line_spans.append((line_start, line_end, para_style, runs, list_preset))
+        line_spans.append((line_start, line_end, para_style, runs, list_preset, text_start))
 
-    if not full_text.strip("\n"):
+    if not full_text.strip("\n\t"):
         return []
 
     requests: list[dict] = [
         {"insertText": {"location": {"index": start_index}, "text": full_text}}
     ]
 
-    for line_start, line_end, para_style, runs, list_preset in line_spans:
+    for line_start, line_end, para_style, runs, list_preset, text_start in line_spans:
         if para_style != "NORMAL_TEXT":
             requests.append(
                 {
@@ -181,27 +224,36 @@ def _markdown_to_docs_requests(markdown: str, start_index: int = 1) -> list[dict
                     }
                 }
             )
-        # Inline styles
-        pos = line_start
-        for run_text, bold, italic, url, highlight in runs:
-            if not run_text:
+        # Inline styles (start after any leading nesting tabs)
+        pos = text_start
+        for run in runs:
+            if not run.text:
                 continue
-            run_end = pos + len(run_text)
+            run_end = pos + len(run.text)
             text_style: dict = {}
             fields: list[str] = []
-            if bold:
+            if run.bold:
                 text_style["bold"] = True
                 fields.append("bold")
-            if italic:
+            if run.italic:
                 text_style["italic"] = True
                 fields.append("italic")
-            if highlight:
+            if run.strikethrough:
+                text_style["strikethrough"] = True
+                fields.append("strikethrough")
+            if run.underline:
+                text_style["underline"] = True
+                fields.append("underline")
+            if run.code:
+                text_style["weightedFontFamily"] = {"fontFamily": _CODE_FONT_FAMILY}
+                fields.append("weightedFontFamily")
+            if run.highlight:
                 text_style["backgroundColor"] = {
                     "color": {"rgbColor": _hex_to_rgb_dict(_DEFAULT_HIGHLIGHT_COLOR)}
                 }
                 fields.append("backgroundColor")
-            if url:
-                text_style["link"] = {"url": url}
+            if run.url:
+                text_style["link"] = {"url": run.url}
                 fields.append("link")
             if fields:
                 requests.append(
@@ -219,6 +271,107 @@ def _markdown_to_docs_requests(markdown: str, start_index: int = 1) -> list[dict
             pos = run_end
 
     return requests
+
+
+# ------------------------------------------------------------------ #
+# Markdown tables -- handled separately from _markdown_to_docs_requests
+# because a Docs table is a structural element (insertTable), not text:
+# it can't be produced by the single insertText call every other block
+# type shares, and the API doesn't hand back a new table's cell indices
+# synchronously, so filling cell content needs a re-fetch after the
+# table is created (see DriveClient._insert_table_at_placeholder).
+# ------------------------------------------------------------------ #
+
+_TABLE_SEP_CELL_RE = _re.compile(r"^:?-+:?$")
+
+
+class TableBlock(NamedTuple):
+    # rows[0] is the header row; every row (including the header) has the
+    # same number of cells as the header. Cell values are raw Markdown,
+    # rendered later through the same inline-run machinery as everything else.
+    rows: list[list[str]]
+    alignments: list[str]  # one of "START"/"CENTER"/"END" per column
+    placeholder: str
+
+
+def _split_table_row(line: str) -> list[str]:
+    line = line.strip()
+    if line.startswith("|"):
+        line = line[1:]
+    if line.endswith("|") and not line.endswith("\\|"):
+        line = line[:-1]
+    return [cell.strip().replace("\\|", "|") for cell in _re.split(r"(?<!\\)\|", line)]
+
+
+def _is_table_separator_row(line: str) -> bool:
+    cells = _split_table_row(line)
+    return bool(cells) and all(_TABLE_SEP_CELL_RE.match(cell) for cell in cells)
+
+
+def _table_column_alignments(sep_cells: list[str]) -> list[str]:
+    alignments = []
+    for cell in sep_cells:
+        left, right = cell.startswith(":"), cell.endswith(":")
+        alignments.append("CENTER" if left and right else "END" if right else "START")
+    return alignments
+
+
+def _extract_tables(markdown: str) -> tuple[str, list[TableBlock]]:
+    """Pull every GFM pipe-table block out of ``markdown``, replacing each
+    with a unique placeholder line, and return (text_with_placeholders,
+    tables). A block is recognized as a table when a line containing ``|``
+    is immediately followed by a separator row (only ``-``, ``:``, ``|`` and
+    spaces) -- the same rule GFM itself uses. Body rows are collected while
+    they keep containing ``|`` and aren't blank; short/long rows are
+    padded/truncated to the header's column count.
+    """
+    lines = markdown.split("\n")
+    out_lines: list[str] = []
+    tables: list[TableBlock] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if "|" in line and i + 1 < len(lines) and _is_table_separator_row(lines[i + 1]):
+            header = _split_table_row(line)
+            n_cols = len(header)
+            alignments = _table_column_alignments(_split_table_row(lines[i + 1]))
+            rows = [header]
+            j = i + 2
+            while j < len(lines) and "|" in lines[j] and lines[j].strip():
+                row = _split_table_row(lines[j])
+                rows.append((row + [""] * n_cols)[:n_cols])
+                j += 1
+            placeholder = f"\x00PRIVACYFENCE_TABLE_{len(tables)}\x00"
+            tables.append(TableBlock(rows=rows, alignments=alignments, placeholder=placeholder))
+            out_lines.append(placeholder)
+            i = j
+        else:
+            out_lines.append(line)
+            i += 1
+    return "\n".join(out_lines), tables
+
+
+def _table_cell_start_indices(doc: dict, table_start_index: int) -> list[list[int]]:
+    """Return the just-inserted table's cell start indices as doc[row][col],
+    read back from a fresh ``documents().get()`` response -- Docs assigns
+    these itself and doesn't return them from the insertTable request, so
+    this is the only reliable way to know where to insert each cell's text.
+    """
+    for element in doc.get("body", {}).get("content", []):
+        table = element.get("table")
+        if table is None or element.get("startIndex") != table_start_index:
+            continue
+        grid: list[list[int]] = []
+        for row in table.get("tableRows", []):
+            row_starts = []
+            for cell in row.get("tableCells", []):
+                cell_content = cell.get("content", [])
+                if not cell_content or "startIndex" not in cell_content[0]:
+                    raise DriveClientError("write_doc_rich_content: inserted table cell had no content")
+                row_starts.append(cell_content[0]["startIndex"])
+            grid.append(row_starts)
+        return grid
+    raise DriveClientError("write_doc_rich_content: could not locate the inserted table")
 
 
 def _docs_plain_text_with_index_map(doc: dict) -> tuple[str, list[tuple[int, int, int]]]:
@@ -817,9 +970,10 @@ class DriveClient:
     def write_doc_rich_content(self, file_id: str, markdown: str) -> dict:
         """Write Markdown to a Google Doc with rich formatting via the Docs API.
 
-        Supports: headings (# / ## / ### / ####), **bold**, *italic*,
-        ***bold-italic***, [link](url), unordered lists (- item),
-        numbered lists (1. item), and plain paragraphs.
+        Supports: headings (# through ######), **bold**, *italic*,
+        ***bold-italic***, ~~strikethrough~~, __underline__, `code`,
+        ==highlight==, [link](url), unordered/numbered lists (nest a level by
+        indenting 2 spaces per level), GFM pipe tables, and plain paragraphs.
         Clears existing document content before writing.
         Requires the ``drive`` or ``documents`` OAuth scope (already granted).
         """
@@ -841,6 +995,8 @@ class DriveClient:
             if "endIndex" in element:
                 end_index = element["endIndex"]
 
+        text_markdown, tables = _extract_tables(markdown)
+
         requests: list[dict] = []
         if end_index > 2:
             requests.append(
@@ -850,7 +1006,20 @@ class DriveClient:
                     }
                 }
             )
-        requests.extend(_markdown_to_docs_requests(markdown))
+            # deleteContentRange collapses the body to a single empty
+            # paragraph at [1, 2), but that paragraph can still carry bullet
+            # formatting left over from whatever was there before. The Docs
+            # API's createParagraphBullets silently merges a new list into
+            # an immediately-preceding paragraph with a matching bullet --
+            # useful for continuing one list across the per-line calls below,
+            # but it means a leftover bullet here would make the new
+            # document's first list item continue numbering/nesting from the
+            # content we just deleted instead of starting fresh. Clearing it
+            # unconditionally is a no-op when there was nothing to clear.
+            requests.append(
+                {"deleteParagraphBullets": {"range": {"startIndex": 1, "endIndex": 2}}}
+            )
+        requests.extend(_markdown_to_docs_requests(text_markdown))
 
         if requests:
             try:
@@ -862,8 +1031,109 @@ class DriveClient:
                     f"write_doc_rich_content batchUpdate({file_id}) failed: {exc}"
                 ) from exc
 
-        logger.info("write_doc_rich_content: file_id=%s", file_id)
+        # Tables are structural elements the Docs API can't create from plain
+        # text, and it doesn't hand back a new table's cell indices
+        # synchronously -- each one needs its own insert-then-re-fetch cycle
+        # to find out where its cells actually ended up before it can fill
+        # them in. Processed one at a time and in original document order,
+        # each re-fetch naturally accounts for every earlier table's index
+        # shift, so nothing here needs to guess at cumulative offsets.
+        for table in tables:
+            self._insert_table_at_placeholder(docs_service, file_id, table)
+
+        logger.info(
+            "write_doc_rich_content: file_id=%s tables=%d", file_id, len(tables)
+        )
         return {"file_id": file_id}
+
+    def _insert_table_at_placeholder(
+        self, docs_service: Any, file_id: str, table: TableBlock
+    ) -> None:
+        """Replace ``table``'s placeholder text (already written to the
+        document by write_doc_rich_content) with a real Docs table, fetching
+        the document in between steps to get ground-truth indices rather
+        than computing a table's index footprint by hand.
+        """
+        try:
+            doc = docs_service.documents().get(documentId=file_id).execute()
+        except HttpError as exc:
+            raise DriveClientError(
+                f"write_doc_rich_content table lookup({file_id}) failed: {exc}"
+            ) from exc
+        plain_text, runs = _docs_plain_text_with_index_map(doc)
+        matches = _find_text_matches(plain_text, table.placeholder)
+        if len(matches) != 1:
+            raise DriveClientError(
+                "write_doc_rich_content: expected exactly one placeholder for a "
+                f"table, found {len(matches)}"
+            )
+        docs_start = _offset_to_docs_index(matches[0][0], runs)
+        docs_end = _offset_to_docs_index(matches[0][1], runs)
+
+        n_rows = len(table.rows)
+        n_cols = len(table.rows[0]) if table.rows else 0
+        structure_requests = [
+            {"deleteContentRange": {"range": {"startIndex": docs_start, "endIndex": docs_end}}},
+            {"insertTable": {"rows": n_rows, "columns": n_cols, "location": {"index": docs_start}}},
+        ]
+        try:
+            docs_service.documents().batchUpdate(
+                documentId=file_id, body={"requests": structure_requests}
+            ).execute()
+        except HttpError as exc:
+            raise DriveClientError(
+                f"write_doc_rich_content table insert({file_id}) failed: {exc}"
+            ) from exc
+
+        try:
+            doc = docs_service.documents().get(documentId=file_id).execute()
+        except HttpError as exc:
+            raise DriveClientError(
+                f"write_doc_rich_content table lookup({file_id}) failed: {exc}"
+            ) from exc
+        cell_starts = _table_cell_start_indices(doc, docs_start)
+        if len(cell_starts) != n_rows or any(len(row) != n_cols for row in cell_starts):
+            raise DriveClientError(
+                "write_doc_rich_content: inserted table shape did not match the "
+                f"requested {n_rows}x{n_cols} grid"
+            )
+
+        # Fill from the last cell back to the first: every cell_starts index
+        # comes from one snapshot, and inserting text only shifts indices
+        # that come *after* it, so working backwards keeps every
+        # not-yet-filled cell's captured index valid (same trick
+        # edit_doc_content uses for multiple find_text matches).
+        fill_requests: list[dict] = []
+        for r in range(n_rows - 1, -1, -1):
+            for c in range(n_cols - 1, -1, -1):
+                cell_start = cell_starts[r][c]
+                cell_markdown = table.rows[r][c]
+                if r == 0 and cell_markdown:  # bold the header row
+                    cell_markdown = f"**{cell_markdown}**"
+                alignment = table.alignments[c] if c < len(table.alignments) else "START"
+                if alignment != "START":
+                    fill_requests.append(
+                        {
+                            "updateParagraphStyle": {
+                                "range": {"startIndex": cell_start, "endIndex": cell_start + 1},
+                                "paragraphStyle": {"alignment": alignment},
+                                "fields": "alignment",
+                            }
+                        }
+                    )
+                fill_requests.extend(
+                    _markdown_to_docs_requests(cell_markdown, start_index=cell_start)
+                )
+
+        if fill_requests:
+            try:
+                docs_service.documents().batchUpdate(
+                    documentId=file_id, body={"requests": fill_requests}
+                ).execute()
+            except HttpError as exc:
+                raise DriveClientError(
+                    f"write_doc_rich_content table fill({file_id}) failed: {exc}"
+                ) from exc
 
     def edit_doc_content(
         self, file_id: str, find_text: str, replace_markdown: str, replace_all: bool = False
@@ -877,6 +1147,15 @@ class DriveClient:
         match exactly once unless ``replace_all`` is set — an ambiguous match
         raises rather than guessing which occurrence was meant, the same
         contract a unique-match text editor enforces.
+
+        Known limitation: unlike ``write_doc_rich_content``, this doesn't
+        guard against a new list introduced by ``replace_markdown`` merging
+        into an untouched, pre-existing list paragraph that happens to sit
+        immediately before or after the matched span (see the
+        deleteParagraphBullets note in ``write_doc_rich_content``) — doing
+        that safely here would require inspecting the surrounding
+        paragraphs' existing bullet state, which risks stripping bullet
+        formatting from document content the caller never asked to change.
         """
         if not file_id:
             raise DriveClientError("edit_doc_content requires a non-empty file_id")
