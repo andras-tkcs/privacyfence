@@ -180,7 +180,7 @@ silent auto-accept path exactly as before this gate existed.
 | `drive_download_file` | read | review | file name, owner, size, save path | File name, owner, size, modified date, save path |
 | `drive_write_file_content` | write | popup | — | File name, owner, new content (plain text) |
 | `drive_upload_file` | write | popup | — | File name, size, destination folder |
-| `drive_write_doc_content` | write | popup | — | File name, owner, Markdown preview (headings, bold, italic, ==highlight==, links, lists rendered as rich formatting in the Google Doc) |
+| `drive_write_doc_content` | write | popup | — | File name, owner, Markdown preview (headings, bold/italic/strikethrough/underline/code, ==highlight==, links, nested lists, tables rendered as rich formatting in the Google Doc) |
 | `drive_docs_edit_content` | write | popup | — | File name, owner; find/replace text goes in the details pane, not the preview |
 | `drive_docs_format_content` | write | popup | — | File name, owner, formatting summary; the located text goes in the details pane |
 | `drive_move_file` | write | popup | — | File name, from folder → to folder |

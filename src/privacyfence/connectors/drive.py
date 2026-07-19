@@ -165,9 +165,14 @@ class DriveConnector(Connector):
             ToolSpec(
                 name="drive_write_doc_content",
                 description=(
-                    "Write Markdown content to a Google Doc with rich formatting "
-                    "(headings, bold, italic, ==highlight==, links, bullet and "
-                    "numbered lists). Clears the existing document content "
+                    "Write Markdown content to a Google Doc with rich formatting: "
+                    "headings (# through ######), **bold**, *italic*, "
+                    "***bold-italic***, ~~strikethrough~~, __underline__, `code`, "
+                    "==highlight==, [link](url), bullet/numbered lists (indent a "
+                    "sub-list 2 spaces per nesting level), and GFM pipe tables "
+                    "(a '| --- |' separator row under the header; ':---'/'---:'/"
+                    "':---:' for left/right/center column alignment). "
+                    "Clears the existing document content "
                     "before writing — use drive_docs_edit_content or "
                     "drive_docs_format_content instead for a change that "
                     "shouldn't touch the rest of the document. "
@@ -191,8 +196,9 @@ class DriveConnector(Connector):
                     "context to make it unique, the same way a unique-match "
                     "text editor requires; set replace_all=true to replace "
                     "every occurrence instead. replace_markdown supports the "
-                    "same inline syntax as drive_write_doc_content, including "
-                    "==highlight==. Requires user approval."
+                    "same Markdown syntax as drive_write_doc_content except "
+                    "tables, which aren't supported for a partial edit. "
+                    "Requires user approval."
                 ),
                 params=[
                     ToolParam("file_id", "str"),

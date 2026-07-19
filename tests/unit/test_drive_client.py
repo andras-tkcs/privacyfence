@@ -22,14 +22,17 @@ from privacyfence.drive_client import (
     DriveClient,
     DriveClientError,
     DriveFile,
+    InlineRun,
     _col_letters_to_index,
     _docs_plain_text_with_index_map,
+    _extract_tables,
     _find_text_matches,
     _hex_to_rgb_dict,
     _markdown_to_docs_requests,
     _offset_to_docs_index,
     _parse_a1_range,
     _parse_inline_runs,
+    _table_cell_start_indices,
 )
 from googleapiclient.errors import HttpError
 
@@ -529,36 +532,42 @@ class TestCreateBlankFile:
 
 class TestParseInlineRuns:
     def test_plain_text_single_run(self):
-        assert _parse_inline_runs("hello world") == [("hello world", False, False, "", False)]
+        assert _parse_inline_runs("hello world") == [InlineRun("hello world")]
 
     def test_bold(self):
-        assert _parse_inline_runs("**bold**") == [("bold", True, False, "", False)]
+        assert _parse_inline_runs("**bold**") == [InlineRun("bold", bold=True)]
 
     def test_italic(self):
-        assert _parse_inline_runs("*italic*") == [("italic", False, True, "", False)]
+        assert _parse_inline_runs("*italic*") == [InlineRun("italic", italic=True)]
 
     def test_bold_italic(self):
-        assert _parse_inline_runs("***both***") == [("both", True, True, "", False)]
+        assert _parse_inline_runs("***both***") == [InlineRun("both", bold=True, italic=True)]
+
+    def test_strikethrough(self):
+        assert _parse_inline_runs("~~gone~~") == [InlineRun("gone", strikethrough=True)]
+
+    def test_underline(self):
+        assert _parse_inline_runs("__stressed__") == [InlineRun("stressed", underline=True)]
 
     def test_highlight(self):
-        assert _parse_inline_runs("==flagged==") == [("flagged", False, False, "", True)]
+        assert _parse_inline_runs("==flagged==") == [InlineRun("flagged", highlight=True)]
 
-    def test_code_has_no_style(self):
-        assert _parse_inline_runs("`code`") == [("code", False, False, "", False)]
+    def test_code_gets_monospace_style(self):
+        assert _parse_inline_runs("`code`") == [InlineRun("code", code=True)]
 
     def test_link(self):
-        assert _parse_inline_runs("[text](http://x.com)") == [("text", False, False, "http://x.com", False)]
+        assert _parse_inline_runs("[text](http://x.com)") == [InlineRun("text", url="http://x.com")]
 
     def test_mixed_runs_preserve_order_and_plain_gaps(self):
         runs = _parse_inline_runs("hello **bold** world")
         assert runs == [
-            ("hello ", False, False, "", False),
-            ("bold", True, False, "", False),
-            (" world", False, False, "", False),
+            InlineRun("hello "),
+            InlineRun("bold", bold=True),
+            InlineRun(" world"),
         ]
 
     def test_empty_string_yields_single_empty_run(self):
-        assert _parse_inline_runs("") == [("", False, False, "", False)]
+        assert _parse_inline_runs("") == [InlineRun("")]
 
 
 class TestMarkdownToDocsRequests:
@@ -571,7 +580,10 @@ class TestMarkdownToDocsRequests:
         assert requests == [{"insertText": {"location": {"index": 1}, "text": "just text\n"}}]
 
     def test_heading_levels_map_to_named_styles(self):
-        for prefix, style in [("# ", "HEADING_1"), ("## ", "HEADING_2"), ("### ", "HEADING_3"), ("#### ", "HEADING_4")]:
+        for prefix, style in [
+            ("# ", "HEADING_1"), ("## ", "HEADING_2"), ("### ", "HEADING_3"),
+            ("#### ", "HEADING_4"), ("##### ", "HEADING_5"), ("###### ", "HEADING_6"),
+        ]:
             requests = _markdown_to_docs_requests(f"{prefix}Title")
             style_reqs = [r for r in requests if "updateParagraphStyle" in r]
             assert len(style_reqs) == 1
@@ -617,6 +629,58 @@ class TestMarkdownToDocsRequests:
             drive_client_module._DEFAULT_HIGHLIGHT_COLOR
         )
 
+    def test_strikethrough_run_produces_strikethrough_field(self):
+        requests = _markdown_to_docs_requests("~~gone~~")
+        style_reqs = [r for r in requests if "updateTextStyle" in r]
+        assert style_reqs[0]["updateTextStyle"]["textStyle"] == {"strikethrough": True}
+        assert style_reqs[0]["updateTextStyle"]["fields"] == "strikethrough"
+
+    def test_underline_run_produces_underline_field(self):
+        requests = _markdown_to_docs_requests("__stressed__")
+        style_reqs = [r for r in requests if "updateTextStyle" in r]
+        assert style_reqs[0]["updateTextStyle"]["textStyle"] == {"underline": True}
+        assert style_reqs[0]["updateTextStyle"]["fields"] == "underline"
+
+    def test_code_run_produces_monospace_font(self):
+        requests = _markdown_to_docs_requests("`foo()`")
+        style_reqs = [r for r in requests if "updateTextStyle" in r]
+        assert len(style_reqs) == 1
+        style = style_reqs[0]["updateTextStyle"]
+        assert style["fields"] == "weightedFontFamily"
+        assert style["textStyle"]["weightedFontFamily"] == {
+            "fontFamily": drive_client_module._CODE_FONT_FAMILY
+        }
+
+    def test_flat_list_items_get_no_leading_tabs(self):
+        requests = _markdown_to_docs_requests("- top level")
+        assert requests[0]["insertText"]["text"] == "top level\n"
+        bullet_reqs = [r for r in requests if "createParagraphBullets" in r]
+        assert bullet_reqs[0]["createParagraphBullets"]["range"] == {"startIndex": 1, "endIndex": 11}
+
+    def test_nested_bullet_gets_leading_tab_and_shifted_style_range(self):
+        # 2 leading spaces = one nesting level = one leading tab character,
+        # which the Docs API uses to infer nesting depth for createParagraphBullets.
+        requests = _markdown_to_docs_requests("  - nested **bold**")
+        assert requests[0]["insertText"]["text"] == "\tnested bold\n"
+        bullet_reqs = [r for r in requests if "createParagraphBullets" in r]
+        # bullet range spans the leading tab too, per the Docs API contract
+        assert bullet_reqs[0]["createParagraphBullets"]["range"] == {"startIndex": 1, "endIndex": 14}
+        style_reqs = [r for r in requests if "updateTextStyle" in r]
+        # inline-run positions start after the leading tab: "\t" + "nested " = 8 chars, so "bold" starts at 1+8=9
+        assert style_reqs[0]["updateTextStyle"]["range"] == {"startIndex": 9, "endIndex": 13}
+
+    def test_deeply_nested_list_caps_at_max_nesting(self):
+        huge_indent = " " * 40  # far beyond _MAX_LIST_NESTING levels
+        requests = _markdown_to_docs_requests(f"{huge_indent}- deep")
+        assert requests[0]["insertText"]["text"] == ("\t" * drive_client_module._MAX_LIST_NESTING) + "deep\n"
+
+    def test_indented_plain_paragraph_keeps_its_whitespace(self):
+        # Indentation only triggers nesting for recognized list markers --
+        # an indented non-list line must be left untouched.
+        requests = _markdown_to_docs_requests("    not a list")
+        assert requests[0]["insertText"]["text"] == "    not a list\n"
+        assert not any("createParagraphBullets" in r for r in requests)
+
     def test_start_index_offsets_every_range(self):
         requests = _markdown_to_docs_requests("**bold**", start_index=10)
         assert requests[0]["insertText"]["location"]["index"] == 10
@@ -634,6 +698,92 @@ class TestMarkdownToDocsRequests:
         assert not any("updateTextStyle" in r for r in requests)
         assert not any("updateParagraphStyle" in r for r in requests)
         assert not any("createParagraphBullets" in r for r in requests)
+
+
+# ---------------------------------------------------------------------------- #
+# _extract_tables / _table_cell_start_indices: Markdown tables -> Docs API
+# ---------------------------------------------------------------------------- #
+
+class TestExtractTables:
+    def test_basic_table_replaced_with_placeholder(self):
+        text, tables = _extract_tables("| A | B |\n| --- | --- |\n| 1 | 2 |")
+        assert len(tables) == 1
+        assert tables[0].rows == [["A", "B"], ["1", "2"]]
+        assert tables[0].alignments == ["START", "START"]
+        assert text == tables[0].placeholder
+
+    def test_alignment_markers(self):
+        _, tables = _extract_tables("| A | B | C |\n|:---|:---:|---:|\n| 1 | 2 | 3 |")
+        assert tables[0].alignments == ["START", "CENTER", "END"]
+
+    def test_short_and_long_rows_are_padded_and_truncated(self):
+        _, tables = _extract_tables("| A | B |\n| --- | --- |\n| 1 |\n| 1 | 2 | 3 |")
+        assert tables[0].rows == [["A", "B"], ["1", ""], ["1", "2"]]
+
+    def test_escaped_pipe_in_cell_is_unescaped(self):
+        _, tables = _extract_tables("| A |\n| --- |\n| a\\|b |")
+        assert tables[0].rows == [["A"], ["a|b"]]
+
+    def test_non_table_text_is_preserved_around_a_table(self):
+        md = "Intro\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\nOutro"
+        text, tables = _extract_tables(md)
+        assert text == f"Intro\n\n{tables[0].placeholder}\n\nOutro"
+
+    def test_pipe_without_separator_row_is_not_a_table(self):
+        md = "a | b\nnot a separator"
+        text, tables = _extract_tables(md)
+        assert tables == []
+        assert text == md
+
+    def test_multiple_tables_get_distinct_placeholders(self):
+        md = "| A |\n| --- |\n| 1 |\n\ntext\n\n| B |\n| --- |\n| 2 |"
+        text, tables = _extract_tables(md)
+        assert len(tables) == 2
+        assert tables[0].placeholder != tables[1].placeholder
+        assert text.count(tables[0].placeholder) == 1
+        assert text.count(tables[1].placeholder) == 1
+
+    def test_no_table_returns_markdown_unchanged(self):
+        assert _extract_tables("just some\nplain text") == ("just some\nplain text", [])
+
+
+class TestTableCellStartIndices:
+    def test_extracts_grid_of_cell_start_indices(self):
+        doc = {
+            "body": {
+                "content": [
+                    {
+                        "startIndex": 5,
+                        "table": {
+                            "tableRows": [
+                                {
+                                    "tableCells": [
+                                        {"content": [{"startIndex": 7}]},
+                                        {"content": [{"startIndex": 10}]},
+                                    ]
+                                }
+                            ]
+                        },
+                    }
+                ]
+            }
+        }
+        assert _table_cell_start_indices(doc, 5) == [[7, 10]]
+
+    def test_raises_when_table_not_found_at_index(self):
+        with pytest.raises(DriveClientError, match="could not locate"):
+            _table_cell_start_indices({"body": {"content": []}}, 5)
+
+    def test_raises_when_cell_has_no_content(self):
+        doc = {
+            "body": {
+                "content": [
+                    {"startIndex": 5, "table": {"tableRows": [{"tableCells": [{"content": []}]}]}}
+                ]
+            }
+        }
+        with pytest.raises(DriveClientError, match="no content"):
+            _table_cell_start_indices(doc, 5)
 
 
 # ---------------------------------------------------------------------------- #
@@ -675,6 +825,25 @@ class TestWriteDocRichContent:
         batch_kwargs = docs_service.documents.return_value.batchUpdate.call_args.kwargs
         requests = batch_kwargs["body"]["requests"]
         assert requests[0] == {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": 41}}}
+        # The leftover empty paragraph must have any residual bullet
+        # cleared, or createParagraphBullets could silently merge the new
+        # document's first list item into whatever list was there before.
+        assert requests[1] == {"deleteParagraphBullets": {"range": {"startIndex": 1, "endIndex": 2}}}
+
+    def test_empty_document_skips_bullet_clear_too(self, monkeypatch):
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.return_value = {
+            "body": {"content": []}
+        }
+        monkeypatch.setattr(drive_client_module, "build", lambda *a, **kw: docs_service)
+        client = make_client(MagicMock())
+        monkeypatch.setattr(client, "_load_credentials", lambda: MagicMock())
+
+        client.write_doc_rich_content("f1", "hello")
+
+        batch_kwargs = docs_service.documents.return_value.batchUpdate.call_args.kwargs
+        requests = batch_kwargs["body"]["requests"]
+        assert not any("deleteParagraphBullets" in r for r in requests)
 
     def test_get_http_error_becomes_drive_client_error(self, monkeypatch):
         docs_service = MagicMock()
@@ -696,6 +865,277 @@ class TestWriteDocRichContent:
 
         with pytest.raises(DriveClientError, match="write_doc_rich_content batchUpdate"):
             client.write_doc_rich_content("f1", "hello")
+
+    def test_markdown_without_a_table_makes_exactly_one_batch_update(self, monkeypatch):
+        # Regression guard: the table code path must add zero extra
+        # get()/batchUpdate() round trips when there's nothing to insert.
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.return_value = {"body": {"content": []}}
+        monkeypatch.setattr(drive_client_module, "build", lambda *a, **kw: docs_service)
+        client = make_client(MagicMock())
+        monkeypatch.setattr(client, "_load_credentials", lambda: MagicMock())
+
+        client.write_doc_rich_content("f1", "just text, no table here")
+
+        assert docs_service.documents.return_value.get.return_value.execute.call_count == 1
+        assert docs_service.documents.return_value.batchUpdate.call_count == 1
+
+    def test_table_round_trips_through_placeholder_then_cells(self, monkeypatch):
+        markdown = "| A | B |\n| --- | --- |\n| 1 | 2 |"
+        _, tables = _extract_tables(markdown)
+        placeholder = tables[0].placeholder
+
+        empty_doc = {"body": {"content": []}}
+        doc_with_placeholder = {
+            "body": {
+                "content": [
+                    {"paragraph": {"elements": [
+                        {"startIndex": 1, "textRun": {"content": placeholder + "\n"}}
+                    ]}}
+                ]
+            }
+        }
+        doc_with_table = {
+            "body": {
+                "content": [
+                    {
+                        "startIndex": 1,
+                        "table": {
+                            "tableRows": [
+                                {"tableCells": [
+                                    {"content": [{"startIndex": 3}]},
+                                    {"content": [{"startIndex": 6}]},
+                                ]},
+                                {"tableCells": [
+                                    {"content": [{"startIndex": 9}]},
+                                    {"content": [{"startIndex": 12}]},
+                                ]},
+                            ]
+                        },
+                    }
+                ]
+            }
+        }
+
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.side_effect = [
+            empty_doc, doc_with_placeholder, doc_with_table,
+        ]
+        monkeypatch.setattr(drive_client_module, "build", lambda *a, **kw: docs_service)
+        client = make_client(MagicMock())
+        monkeypatch.setattr(client, "_load_credentials", lambda: MagicMock())
+
+        client.write_doc_rich_content("f1", markdown)
+
+        calls = docs_service.documents.return_value.batchUpdate.call_args_list
+        assert len(calls) == 3
+
+        skeleton_requests = calls[0].kwargs["body"]["requests"]
+        assert skeleton_requests == [
+            {"insertText": {"location": {"index": 1}, "text": placeholder + "\n"}}
+        ]
+
+        structure_requests = calls[1].kwargs["body"]["requests"]
+        assert structure_requests[0] == {
+            "deleteContentRange": {"range": {"startIndex": 1, "endIndex": 1 + len(placeholder)}}
+        }
+        assert structure_requests[1] == {
+            "insertTable": {"rows": 2, "columns": 2, "location": {"index": 1}}
+        }
+
+        fill_requests = calls[2].kwargs["body"]["requests"]
+        insert_texts = [r["insertText"] for r in fill_requests if "insertText" in r]
+        # filled from the last cell back to the first
+        assert [it["location"]["index"] for it in insert_texts] == [12, 9, 6, 3]
+        assert [it["text"] for it in insert_texts] == ["2\n", "1\n", "B\n", "A\n"]
+        # header row (A, B) is bolded; body row (1, 2) is not
+        bold_ranges = {
+            (r["updateTextStyle"]["range"]["startIndex"])
+            for r in fill_requests
+            if "updateTextStyle" in r and r["updateTextStyle"]["textStyle"].get("bold")
+        }
+        assert bold_ranges == {3, 6}
+
+    def test_missing_placeholder_raises(self, monkeypatch):
+        markdown = "| A |\n| --- |\n| 1 |"
+        empty_doc = {"body": {"content": []}}
+        doc_without_placeholder = {"body": {"content": []}}  # placeholder text never made it in
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.side_effect = [
+            empty_doc, doc_without_placeholder,
+        ]
+        monkeypatch.setattr(drive_client_module, "build", lambda *a, **kw: docs_service)
+        client = make_client(MagicMock())
+        monkeypatch.setattr(client, "_load_credentials", lambda: MagicMock())
+
+        with pytest.raises(DriveClientError, match="expected exactly one placeholder"):
+            client.write_doc_rich_content("f1", markdown)
+
+    def test_table_shape_mismatch_raises(self, monkeypatch):
+        markdown = "| A | B |\n| --- | --- |\n| 1 | 2 |"
+        _, tables = _extract_tables(markdown)
+        placeholder = tables[0].placeholder
+
+        empty_doc = {"body": {"content": []}}
+        doc_with_placeholder = {
+            "body": {
+                "content": [
+                    {"paragraph": {"elements": [
+                        {"startIndex": 1, "textRun": {"content": placeholder + "\n"}}
+                    ]}}
+                ]
+            }
+        }
+        # Docs somehow returned a 1x1 table instead of the requested 2x2 grid.
+        wrong_shape_doc = {
+            "body": {
+                "content": [
+                    {"startIndex": 1, "table": {"tableRows": [
+                        {"tableCells": [{"content": [{"startIndex": 3}]}]},
+                    ]}},
+                ]
+            }
+        }
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.side_effect = [
+            empty_doc, doc_with_placeholder, wrong_shape_doc,
+        ]
+        monkeypatch.setattr(drive_client_module, "build", lambda *a, **kw: docs_service)
+        client = make_client(MagicMock())
+        monkeypatch.setattr(client, "_load_credentials", lambda: MagicMock())
+
+        with pytest.raises(DriveClientError, match="did not match"):
+            client.write_doc_rich_content("f1", markdown)
+
+    def test_table_placeholder_lookup_http_error(self, monkeypatch):
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.side_effect = [
+            {"body": {"content": []}}, http_error(500),
+        ]
+        monkeypatch.setattr(drive_client_module, "build", lambda *a, **kw: docs_service)
+        client = make_client(MagicMock())
+        monkeypatch.setattr(client, "_load_credentials", lambda: MagicMock())
+
+        with pytest.raises(DriveClientError, match="write_doc_rich_content table lookup"):
+            client.write_doc_rich_content("f1", "| A |\n| --- |\n| 1 |")
+
+    def test_table_structure_batch_update_http_error(self, monkeypatch):
+        markdown = "| A |\n| --- |\n| 1 |"
+        _, tables = _extract_tables(markdown)
+        placeholder = tables[0].placeholder
+        doc_with_placeholder = {
+            "body": {"content": [
+                {"paragraph": {"elements": [
+                    {"startIndex": 1, "textRun": {"content": placeholder + "\n"}}
+                ]}}
+            ]}
+        }
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.side_effect = [
+            {"body": {"content": []}}, doc_with_placeholder,
+        ]
+        docs_service.documents.return_value.batchUpdate.return_value.execute.side_effect = [
+            None, http_error(500),
+        ]
+        monkeypatch.setattr(drive_client_module, "build", lambda *a, **kw: docs_service)
+        client = make_client(MagicMock())
+        monkeypatch.setattr(client, "_load_credentials", lambda: MagicMock())
+
+        with pytest.raises(DriveClientError, match="write_doc_rich_content table insert"):
+            client.write_doc_rich_content("f1", markdown)
+
+    def test_table_second_lookup_http_error(self, monkeypatch):
+        markdown = "| A |\n| --- |\n| 1 |"
+        _, tables = _extract_tables(markdown)
+        placeholder = tables[0].placeholder
+        doc_with_placeholder = {
+            "body": {"content": [
+                {"paragraph": {"elements": [
+                    {"startIndex": 1, "textRun": {"content": placeholder + "\n"}}
+                ]}}
+            ]}
+        }
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.side_effect = [
+            {"body": {"content": []}}, doc_with_placeholder, http_error(500),
+        ]
+        monkeypatch.setattr(drive_client_module, "build", lambda *a, **kw: docs_service)
+        client = make_client(MagicMock())
+        monkeypatch.setattr(client, "_load_credentials", lambda: MagicMock())
+
+        with pytest.raises(DriveClientError, match="write_doc_rich_content table lookup"):
+            client.write_doc_rich_content("f1", markdown)
+
+    def test_table_fill_batch_update_http_error(self, monkeypatch):
+        markdown = "| A |\n| --- |\n| 1 |"
+        _, tables = _extract_tables(markdown)
+        placeholder = tables[0].placeholder
+        doc_with_placeholder = {
+            "body": {"content": [
+                {"paragraph": {"elements": [
+                    {"startIndex": 1, "textRun": {"content": placeholder + "\n"}}
+                ]}}
+            ]}
+        }
+        doc_with_table = {
+            "body": {"content": [
+                {"startIndex": 1, "table": {"tableRows": [
+                    {"tableCells": [{"content": [{"startIndex": 3}]}]},
+                    {"tableCells": [{"content": [{"startIndex": 6}]}]},
+                ]}},
+            ]}
+        }
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.side_effect = [
+            {"body": {"content": []}}, doc_with_placeholder, doc_with_table,
+        ]
+        docs_service.documents.return_value.batchUpdate.return_value.execute.side_effect = [
+            None, None, http_error(500),
+        ]
+        monkeypatch.setattr(drive_client_module, "build", lambda *a, **kw: docs_service)
+        client = make_client(MagicMock())
+        monkeypatch.setattr(client, "_load_credentials", lambda: MagicMock())
+
+        with pytest.raises(DriveClientError, match="write_doc_rich_content table fill"):
+            client.write_doc_rich_content("f1", markdown)
+
+    def test_table_alignment_produces_paragraph_style_request(self, monkeypatch):
+        markdown = "| A | B |\n| :--- | ---: |"  # header row only -> a 1x2 grid
+        _, tables = _extract_tables(markdown)
+        assert tables[0].alignments == ["START", "END"]
+        placeholder = tables[0].placeholder
+        doc_with_placeholder = {
+            "body": {"content": [
+                {"paragraph": {"elements": [
+                    {"startIndex": 1, "textRun": {"content": placeholder + "\n"}}
+                ]}}
+            ]}
+        }
+        doc_with_table = {
+            "body": {"content": [
+                {"startIndex": 1, "table": {"tableRows": [
+                    {"tableCells": [
+                        {"content": [{"startIndex": 3}]},
+                        {"content": [{"startIndex": 6}]},
+                    ]},
+                ]}},
+            ]}
+        }
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.side_effect = [
+            {"body": {"content": []}}, doc_with_placeholder, doc_with_table,
+        ]
+        monkeypatch.setattr(drive_client_module, "build", lambda *a, **kw: docs_service)
+        client = make_client(MagicMock())
+        monkeypatch.setattr(client, "_load_credentials", lambda: MagicMock())
+
+        client.write_doc_rich_content("f1", markdown)
+
+        fill_requests = docs_service.documents.return_value.batchUpdate.call_args_list[-1].kwargs["body"]["requests"]
+        alignment_reqs = [r["updateParagraphStyle"] for r in fill_requests if "updateParagraphStyle" in r]
+        assert len(alignment_reqs) == 1
+        assert alignment_reqs[0]["paragraphStyle"] == {"alignment": "END"}
+        assert alignment_reqs[0]["range"] == {"startIndex": 6, "endIndex": 7}
 
 
 # ---------------------------------------------------------------------------- #
