@@ -26,7 +26,14 @@ _DUMMY_BY_ANNOTATION = {"str": "stub", "int": 1, "bool": False, "float": 1.0}
 
 
 def build_stub_args(spec: ToolSpec, overrides: dict | None = None) -> dict:
-    """Build a minimal-but-plausible args dict for a tool from its ToolSpec.
+    """Build a minimal-but-plausible args dict for a tool from its ToolSpec,
+    modeling what a connector method actually receives -- i.e. after
+    ipc_server.py._call_connector() has already popped "reason" out (every
+    gated/auto ToolSpec declares it as a required param on the MCP schema,
+    but no connector method signature accepts it -- see gate.py's
+    reason_scope docstring). ``reason`` is deliberately excluded here for
+    the same reason: passing it to connector.call() directly, as this
+    helper's only caller does, would raise a TypeError on every tool.
 
     Optional params use the spec's own default (the exact value production
     sends when a caller omits them); required params get a type-appropriate
@@ -36,6 +43,8 @@ def build_stub_args(spec: ToolSpec, overrides: dict | None = None) -> dict:
     """
     args = {}
     for p in spec.params:
+        if p.name == "reason":
+            continue
         args[p.name] = p.default if not p.required else _DUMMY_BY_ANNOTATION.get(p.annotation, "stub")
     args.update(overrides or {})
     return args

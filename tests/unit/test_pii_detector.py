@@ -174,6 +174,72 @@ class TestSalaryPatterns:
         assert detect_categories("Das war wirklich lohnend.") == []
 
 
+class TestFinancialFigurePatterns:
+    """"Financial figures" -- distinct from Salary/compensation above: any
+    currency-symbol- or ISO-code-anchored amount (budgets, invoices,
+    quotes, revenue), not specifically pay. Anchored the same way IBAN/
+    credit-card patterns are, to avoid flagging a bare number alone."""
+
+    def test_dollar_sign_with_thousands_separator(self):
+        assert detect_categories("The invoice total is $12,345.67 due net 30.") == [
+            "Financial figures (currency amounts)"
+        ]
+
+    def test_dollar_sign_no_separator(self):
+        assert detect_categories("Please wire $500 to the vendor.") == [
+            "Financial figures (currency amounts)"
+        ]
+
+    def test_euro_sign_eu_style_separators(self):
+        assert detect_categories("Der Vertragswert beträgt €1.234,56 netto.") == [
+            "Financial figures (currency amounts)"
+        ]
+
+    def test_pound_sign(self):
+        assert detect_categories("Budget approved: £50,000 for Q3.") == [
+            "Financial figures (currency amounts)"
+        ]
+
+    def test_iso_code_suffix(self):
+        assert detect_categories("Revenue this quarter: 1,500,000 HUF.") == [
+            "Financial figures (currency amounts)"
+        ]
+        assert detect_categories("Contract value: 250000 EUR.") == [
+            "Financial figures (currency amounts)"
+        ]
+
+    def test_iso_code_prefix(self):
+        assert detect_categories("Quote: USD 10,000 for the annual license.") == [
+            "Financial figures (currency amounts)"
+        ]
+
+    def test_hungarian_forint_abbreviation(self):
+        assert detect_categories("A számla összege 10 000 Ft.") == [
+            "Financial figures (currency amounts)"
+        ]
+
+    def test_bare_number_without_currency_marker_is_not_flagged(self):
+        # The exact false-positive risk the module docstring warns about for
+        # email/phone patterns -- an unanchored number would flag almost
+        # every document. Section numbers, dates, quantities: none of these
+        # are financial figures on their own.
+        assert detect_categories("See section 12.5 for the 1,234 remaining items.") == []
+
+    def test_spelled_out_currency_word_is_not_flagged(self):
+        # "Euro"/"dollars" spelled out, not the ISO code -- deliberately
+        # out of scope, same anchoring discipline as the ISO-code pattern.
+        assert detect_categories("He has a Nettolohn of 3000 Euro.") == [
+            "Salary/compensation information"
+        ]
+
+    def test_distinct_from_salary_category(self):
+        # A currency amount with no salary-context keyword nearby reports
+        # only the financial-figures category, not salary.
+        assert detect_categories("The office lease costs $4,000 per month.") == [
+            "Financial figures (currency amounts)"
+        ]
+
+
 class TestGermanPatterns:
     def test_tax_id_with_label(self):
         assert detect_categories("Steuer-IdNr. 65 929 970 489") == ["German tax ID (Steuer-IdNr.)"]

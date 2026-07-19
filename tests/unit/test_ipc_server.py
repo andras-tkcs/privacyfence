@@ -20,6 +20,7 @@ from privacyfence import ipc_server as ipc_server_module
 from privacyfence.audit_log import current_week, init_audit_logger
 from privacyfence.auto_accept import init_auto_accept_evaluator
 from privacyfence.connector import Connector, ToolSpec
+from privacyfence.gate import current_reason
 from privacyfence.ipc import LINE_LIMIT
 from privacyfence.ipc_server import IPCServer
 
@@ -198,6 +199,79 @@ class TestCallDispatch:
             resp = await client.recv()
             assert resp["result"] == {"ok": True}
             assert connector.calls == [("gmail_get_message", {"message_id": "abc"})]
+        finally:
+            await client.close()
+
+    async def test_reason_is_stripped_from_args_before_reaching_the_connector(self, running_server):
+        # Every gated ToolSpec declares a required "reason" param, but no
+        # connector method signature changed to accept it -- it must never reach
+        # connector.call(), or every gated call would raise a TypeError.
+        server, socket_path = running_server
+        connector = FakeConnector("gmail", result={"ok": True})
+        server.set_connectors([connector])
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "call",
+                "params": {
+                    "connector": "gmail", "tool": "gmail_get_message",
+                    "args": {"message_id": "abc", "reason": "Summarizing for the user."},
+                },
+            })
+            await client.recv()
+            assert connector.calls == [("gmail_get_message", {"message_id": "abc"})]
+        finally:
+            await client.close()
+
+    async def test_reason_is_available_via_current_reason_during_the_call(self, running_server):
+        server, socket_path = running_server
+        captured = {}
+
+        class ReasonCapturingConnector(FakeConnector):
+            async def call(self, tool: str, args: dict) -> object:
+                captured["reason"] = current_reason()
+                return await super().call(tool, args)
+
+        connector = ReasonCapturingConnector("gmail", result={"ok": True})
+        server.set_connectors([connector])
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "call",
+                "params": {
+                    "connector": "gmail", "tool": "gmail_get_message",
+                    "args": {"message_id": "abc", "reason": "Summarizing for the user."},
+                },
+            })
+            await client.recv()
+            assert captured["reason"] == "Summarizing for the user."
+            # The scope must not leak past the call it was set for.
+            assert current_reason() == ""
+        finally:
+            await client.close()
+
+    async def test_differing_reason_text_does_not_defeat_dedupe(self, running_server):
+        # The exact bug this pop-before-dedupe-key ordering prevents: a
+        # client-timeout retry regenerates reason text, which must not make
+        # an otherwise-identical call look like a new one.
+        server, socket_path = running_server
+        connector = FakeConnector("drive", result={"ok": True}, delay=0.05)
+        server.set_connectors([connector])
+        client = await _RawClient.connect(socket_path)
+        try:
+            params_1 = {
+                "connector": "drive", "tool": "write_file_content",
+                "args": {"file_id": "f1", "content": "hi", "reason": "First phrasing of the reason."},
+            }
+            params_2 = {
+                "connector": "drive", "tool": "write_file_content",
+                "args": {"file_id": "f1", "content": "hi", "reason": "Differently-worded retry reason."},
+            }
+            await client.send({"id": "1", "method": "call", "params": params_1})
+            await client.send({"id": "2", "method": "call", "params": params_2})
+            await client.recv()
+            await client.recv()
+            assert len(connector.calls) == 1  # deduped despite differing reason text
         finally:
             await client.close()
 
@@ -625,6 +699,45 @@ class TestCheckPolicyDispatch:
         assert entries[0]["connector"] == "gmail"
         assert entries[0]["tool"] == "gmail_list_messages"
 
+    async def test_reason_param_is_recorded_on_the_audit_entry(self, running_server):
+        # privacyfence_check_policy has a "reason" param, same
+        # mandatory-everywhere spirit as every
+        # gated tool's -- it's the only artifact recorded for a preflight
+        # check, so it has to reach claude_reason on this entry.
+        server, socket_path = running_server
+        server.set_connectors([FakeConnector("gmail")])
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "check_policy",
+                "params": {
+                    "connector": "gmail", "tool": "gmail_list_messages", "args": {},
+                    "reason": "Planning a scheduled run.",
+                },
+            })
+            await client.recv()
+        finally:
+            await client.close()
+        entries = self._read_entries()
+        assert entries[0]["claude_reason"] == "Planning a scheduled run."
+
+    async def test_missing_reason_param_defaults_to_empty_string(self, running_server):
+        # Backward compatibility with an old bridge that never sends "reason"
+        # -- see ipc.py's module docstring.
+        server, socket_path = running_server
+        server.set_connectors([FakeConnector("gmail")])
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "check_policy",
+                "params": {"connector": "gmail", "tool": "gmail_list_messages", "args": {}},
+            })
+            await client.recv()
+        finally:
+            await client.close()
+        entries = self._read_entries()
+        assert entries[0]["claude_reason"] == ""
+
 
 class UnattendedAwareConnector(Connector):
     """Records gate.is_unattended() at the moment call() runs, so tests can
@@ -731,6 +844,45 @@ class TestUnattendedSessionDispatch:
             ]
         finally:
             await server.stop()
+
+    async def test_reason_param_is_recorded_on_begin_and_end_audit_entries(self, short_socket_path, monkeypatch):
+        # These two meta-tools have a "reason" param -- for calls this
+        # session denies without ever showing a popup, it's the only
+        # human-legible record of why.
+        server = await self._server(short_socket_path, monkeypatch, enabled=True)
+        client = await _RawClient.connect(short_socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "begin_unattended_session",
+                "params": {"reason": "Nightly digest Routine."},
+            })
+            await client.recv()
+            await client.send({
+                "id": "2", "method": "end_unattended_session",
+                "params": {"reason": "Nightly digest Routine finished."},
+            })
+            await client.recv()
+        finally:
+            await client.close()
+            await server.stop()
+
+        entries = self._read_entries()
+        assert [e["claude_reason"] for e in entries] == [
+            "Nightly digest Routine.", "Nightly digest Routine finished.",
+        ]
+
+    async def test_missing_reason_param_defaults_to_empty_string(self, short_socket_path, monkeypatch):
+        server = await self._server(short_socket_path, monkeypatch, enabled=True)
+        client = await _RawClient.connect(short_socket_path)
+        try:
+            await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
+            await client.recv()
+        finally:
+            await client.close()
+            await server.stop()
+
+        entries = self._read_entries()
+        assert entries[0]["claude_reason"] == ""
 
     async def test_end_without_begin_does_not_audit_a_phantom_end(self, short_socket_path, monkeypatch):
         server = await self._server(short_socket_path, monkeypatch, enabled=True)

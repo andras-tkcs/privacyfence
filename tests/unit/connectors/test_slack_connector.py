@@ -12,6 +12,7 @@ import pytest
 from privacyfence.audit_log import current_week, init_audit_logger
 from privacyfence.connectors import slack as slack_module
 from privacyfence.connectors.slack import SlackConnector, _message_to_dict
+from privacyfence.privacy_filter import init_privacy_filter
 from privacyfence.slack_client import SlackChannel, SlackClientError, SlackMessage
 
 from ...helpers import assert_all_tools_leave_an_audit_trail
@@ -158,6 +159,95 @@ class TestGetChannelHistory:
         result = await connector.call("slack_get_channel_history", {"channel_id": "C123"})
 
         assert result == [_message_to_dict(msg)]
+
+
+class TestSlackPrivacyFilter:
+    """slack_privacy.categories, enforced -- see privacy_filter.py. Without
+    calling init_privacy_filter (every other test class here), every
+    category resolves to "allow" and behaves exactly as before this existed;
+    these tests are the ones that actually turn a policy on."""
+
+    async def test_message_content_blocked_replaces_text_everywhere(self, gated_call_spy):
+        init_privacy_filter({"slack_privacy": {"categories": {"message_content": "block"}}})
+        connector, client = make_connector()
+        client.get_channel_history.return_value = [make_message(text="the actual secret")]
+
+        result = await connector.call("slack_get_channel_history", {"channel_id": "C123"})
+
+        kwargs = gated_call_spy[0]
+        assert "the actual secret" not in kwargs["details_text"]
+        assert "the actual secret" not in kwargs["pii_scan_text"]
+        assert result[0]["text"] == "[BLOCKED BY PRIVACY FILTER]"
+
+    async def test_user_identity_blocked_replaces_name_and_id(self, gated_call_spy):
+        init_privacy_filter({"slack_privacy": {"categories": {"user_identity": "block"}}})
+        connector, client = make_connector()
+        client.get_channel_history.return_value = [
+            make_message(user_name="alice", user_id="U1", text="hello")
+        ]
+
+        result = await connector.call("slack_get_channel_history", {"channel_id": "C123"})
+
+        assert "alice" not in gated_call_spy[0]["details_text"]
+        assert result[0]["user_name"] == "[BLOCKED BY PRIVACY FILTER]"
+        assert result[0]["user_id"] == "[BLOCKED BY PRIVACY FILTER]"
+        assert result[0]["text"] == "hello"  # message_content untouched by this category
+
+    async def test_thread_content_uses_its_own_category_not_message_content(self, gated_call_spy):
+        # thread_content and message_content are documented as distinct
+        # categories (settings.yaml.example) -- blocking one must not affect
+        # the other.
+        init_privacy_filter({"slack_privacy": {"categories": {"message_content": "block"}}})
+        connector, client = make_connector()
+        client.get_thread_replies.return_value = [make_message(text="reply text")]
+
+        result = await connector.call(
+            "slack_get_thread_replies", {"channel_id": "C123", "thread_ts": "123.456"}
+        )
+
+        assert result[0]["text"] == "reply text"
+
+    async def test_channel_list_blocked_empties_auto_accepted_result(self):
+        init_privacy_filter({"slack_privacy": {"categories": {"channel_list": "block"}}})
+        connector, client = make_connector()
+        client.list_channels.return_value = [
+            SlackChannel(id="C1", name="general", is_private=False, topic="", purpose="", member_count=5)
+        ]
+
+        result = await connector.call("slack_list_channels", {})
+
+        assert result == []
+
+    async def test_allow_is_the_default_when_unconfigured(self, gated_call_spy):
+        # No init_privacy_filter call in this test -- conftest's autouse
+        # reset leaves _GROUPS empty, which must resolve to "allow", not
+        # "block" -- this module must never fail closed on missing config.
+        connector, client = make_connector()
+        client.get_channel_history.return_value = [make_message(text="business as usual")]
+
+        result = await connector.call("slack_get_channel_history", {"channel_id": "C123"})
+
+        assert result[0]["text"] == "business as usual"
+
+    async def test_visibility_checklist_reflects_resolved_policy(self, gated_call_spy):
+        init_privacy_filter({"slack_privacy": {"categories": {"message_content": "block", "user_identity": "allow"}}})
+        connector, client = make_connector()
+        client.get_channel_history.return_value = [make_message(text="secret")]
+
+        await connector.call("slack_get_channel_history", {"channel_id": "C123"})
+
+        visibility = gated_call_spy[0]["visibility"]
+        assert visibility["Message text"] == "block"
+        assert visibility["Usernames"] == "allow"
+
+    async def test_thread_visibility_uses_thread_content_not_message_content(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_thread_replies.return_value = [make_message(text="reply")]
+
+        await connector.call("slack_get_thread_replies", {"channel_id": "C123", "thread_ts": "123.456"})
+
+        assert "Reply text" in gated_call_spy[0]["visibility"]
+        assert "Message text" not in gated_call_spy[0]["visibility"]
 
 
 class TestGetThreadReplies:

@@ -213,7 +213,7 @@ class TestAuthenticateDoesNotRequireRestart:
 class TestRulesChangedMarshaling:
     """Regression for: 'always allow did not add the new rule to the menu
     ... until restart'. auto_accept.reload_rules() is called from the IPC
-    server's own thread when a rule is created via Accept All. The listener
+    server's own thread when a rule is created via Always allow. The listener
     it fires must schedule the rebuild through AppHelper.callAfter -- if a
     regression calls self._rebuild() directly instead, this test catches it
     because the rebuild would show up on the background thread before any
@@ -234,7 +234,7 @@ class TestRulesChangedMarshaling:
 
         def ipc_server_thread_body():
             # Mirrors what happens inside gate.py's add_auto_accept_rule ->
-            # reload_rules() after an Accept All confirmation, called from
+            # reload_rules() after an Always allow confirmation, called from
             # whatever thread is running the IPC server's request handling.
             auto_accept.reload_rules({"gmail.read_message": [{"rule": "i_am_sender"}]})
             bg_done.set()
@@ -257,7 +257,7 @@ class TestRulesChangedMarshaling:
 
 class TestConcurrentAuthAndRuleChangeDoNotLoseUpdates:
     """Two independent background flows finishing close together (an
-    Authenticate… completing and a rule being added via Accept All) each
+    Authenticate… completing and a rule being added via Always allow) each
     queue their own callAfter callback. Draining them in either order must
     not let one clobber the other's state -- the two update disjoint pieces
     of state ( _connectors / ipc_server vs the rules submenu), but they share

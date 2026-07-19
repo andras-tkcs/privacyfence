@@ -11,7 +11,7 @@ from typing import Any
 
 from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
-from ..gate import gated_call
+from ..gate import current_reason, gated_call
 from ..jira_client import JiraClient, JiraClientError, _text_to_adf
 
 logger = logging.getLogger(__name__)
@@ -46,7 +46,7 @@ class JiraConnector(Connector):
             ToolSpec(
                 name="jira_list_projects",
                 description="List Jira projects accessible to the user (key, name, type, lead). Auto-approved.",
-                params=[ToolParam("max_results", "int", required=False, default=50)],
+                params=[ToolParam("max_results", "int", required=False, default=50), ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
                 read_only=True,
             ),
             ToolSpec(
@@ -57,6 +57,7 @@ class JiraConnector(Connector):
                 params=[
                     ToolParam("jql", "str", description="e.g. 'project = MYPROJ AND status = Open'"),
                     ToolParam("max_results", "int", required=False, default=20),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -66,7 +67,7 @@ class JiraConnector(Connector):
                     "Fetch full details of a Jira issue by key (e.g. PROJ-123), "
                     "including description and comments. Requires user approval."
                 ),
-                params=[ToolParam("issue_key", "str", description="e.g. PROJ-123")],
+                params=[ToolParam("issue_key", "str", description="e.g. PROJ-123"), ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
                 read_only=True,
             ),
             ToolSpec(
@@ -76,7 +77,7 @@ class JiraConnector(Connector):
                     "target status), given its current workflow state. Use before "
                     "jira_transition_issue to see what transition names are valid. Auto-approved."
                 ),
-                params=[ToolParam("issue_key", "str", description="e.g. PROJ-123")],
+                params=[ToolParam("issue_key", "str", description="e.g. PROJ-123"), ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
                 read_only=True,
             ),
             ToolSpec(
@@ -90,6 +91,7 @@ class JiraConnector(Connector):
                     ToolParam("description", "str", required=False, default=""),
                     ToolParam("priority", "str", required=False, default="",
                               description="e.g. High, Medium, Low"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -98,6 +100,7 @@ class JiraConnector(Connector):
                 params=[
                     ToolParam("issue_key", "str", description="e.g. PROJ-123"),
                     ToolParam("body", "str", description="Comment text (plain text)"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -117,6 +120,7 @@ class JiraConnector(Connector):
                                   "(as seen in the Jira UI, not their customfield_NNNNN id) to "
                                   "new values, e.g. {\"Story Points\": 5, \"Sprint\": \"Sprint 12\"}"
                               )),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -129,6 +133,7 @@ class JiraConnector(Connector):
                 params=[
                     ToolParam("issue_key", "str", description="e.g. PROJ-123"),
                     ToolParam("transition_name", "str", description="e.g. Done, In Progress"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
         ]
@@ -391,6 +396,7 @@ class JiraConnector(Connector):
                 decision="auto_accepted",
                 auto_accept_rule="auto",
                 latency_seconds=time.time() - created_at,
+                claude_reason=current_reason(),
             ))
         except Exception as exc:
             logger.warning("Audit log write failed: %s", exc)

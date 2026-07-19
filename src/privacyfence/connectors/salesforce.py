@@ -10,7 +10,7 @@ from typing import Any
 
 from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
-from ..gate import gated_call
+from ..gate import current_reason, gated_call
 from ..salesforce_client import SalesforceClient, SalesforceClientError
 
 logger = logging.getLogger(__name__)
@@ -126,7 +126,7 @@ class SalesforceConnector(Connector):
             ToolSpec(
                 name="salesforce_list_reports",
                 description="List Salesforce reports accessible to the user. Auto-approved.",
-                params=[],
+                params=[ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
                 read_only=True,
             ),
             ToolSpec(
@@ -135,13 +135,14 @@ class SalesforceConnector(Connector):
                 params=[
                     ToolParam("object_type", "str", description="e.g. Account, Contact, Opportunity"),
                     ToolParam("record_id", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
             ToolSpec(
                 name="salesforce_run_report",
                 description="Run a Salesforce report by id and return the results. Requires user approval.",
-                params=[ToolParam("report_id", "str")],
+                params=[ToolParam("report_id", "str"), ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
                 read_only=True,
             ),
             ToolSpec(
@@ -172,6 +173,7 @@ class SalesforceConnector(Connector):
                         ),
                     ),
                     ToolParam("max_results", "int", required=False, default=20),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -331,6 +333,7 @@ class SalesforceConnector(Connector):
                 decision="auto_accepted",
                 auto_accept_rule="auto",
                 latency_seconds=time.time() - created_at,
+                claude_reason=current_reason(),
             ))
         except Exception as exc:
             logger.warning("Audit log write failed: %s", exc)
