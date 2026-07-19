@@ -327,8 +327,7 @@ class TestPopupGateWrites:
 
 class TestRequestFingerprint:
     """seen_count: AuditLogger.recent_matches(connector, tool, summary),
-    computed once per gated_call and forwarded to both popup functions --
-    see docs/security-review-ui-redesign.md §7 Phase 2."""
+    computed once per gated_call and forwarded to both popup functions."""
 
     async def test_first_time_request_has_zero_seen_count(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
@@ -422,9 +421,8 @@ class TestRequestFingerprint:
 
 class TestWriteContentFlags:
     """The separate, informational-only signal computed for the popup
-    (write) gate -- see gate.py's write_content_flags comment and
-    docs/security-review-ui-redesign.md §7 Phase 2. Distinct from
-    pii_categories (TestPIIGate): no confirmation gate, never touches
+    (write) gate -- see gate.py's write_content_flags comment. Distinct
+    from pii_categories (TestPIIGate): no confirmation gate, never touches
     AuditEntry.pii_detected."""
 
     async def test_flags_computed_from_details_and_forwarded_to_show_popup(self, monkeypatch, audit_dir):
@@ -1372,9 +1370,9 @@ class TestUnattendedMode:
 
 
 class TestClaudeReason:
-    """The mandatory "reason" ToolSpec param (docs/security-review-ui-
-    redesign.md §7 Phase 1b), carried the same way is_unattended() is: a
-    contextvar set by ipc_server.py, read internally by gated_call() via
+    """The mandatory "reason" ToolSpec param, carried the same way
+    is_unattended() is: a contextvar set by ipc_server.py, read
+    internally by gated_call() via
     current_reason() -- no caller passes it as an explicit kwarg."""
 
     async def test_reason_scope_value_reaches_the_audit_entry(self, monkeypatch, audit_dir):

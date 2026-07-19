@@ -125,9 +125,9 @@ class unattended_scope:  # noqa: N801 (context-manager-style name, like `freeze_
             _unattended_ctx.reset(self._token)
 
 
-# Every gated tool's ToolSpec now declares a required "reason" param (see
-# docs/security-review-ui-redesign.md §7 Phase 1b) so Claude must state, in
-# one sentence, why it's calling the tool -- enforced at the MCP schema
+# Every gated tool's ToolSpec declares a required "reason" param so Claude
+# must state, in one sentence, why it's calling the tool -- enforced at the
+# MCP schema
 # level, not by convention. Carried the same way is_unattended() is: a
 # contextvar set once, centrally, in ipc_server.py._call_connector() (which
 # pops "reason" out of args before it reaches _dedupe_key -- see that
@@ -147,8 +147,7 @@ def current_reason() -> str:
 class reason_scope:  # noqa: N801 (context-manager-style name, like `freeze_time`)
     """Run the wrapped code with Claude's stated reason for the current tool
     call available via current_reason(). Self-reported and unverified --
-    see gated_call()'s claude_reason handling and
-    docs/security-review-ui-redesign.md §4 for why it must never be
+    see gated_call()'s claude_reason handling for why it must never be
     rendered or logged as fact."""
 
     def __init__(self, reason: str) -> None:
@@ -183,14 +182,14 @@ async def gated_call(
         # since the human is looking at content Claude itself just drafted, not something read
         # from an external source and potentially filtered on the way in.
     content_kind: str = "generic",  # "generic" | "email" -- selects a per-surface body-pane
-        # rendering in approval_window.py's WKWebView (docs/security-review-ui-redesign.md §7
-        # Phase 3). Explicit, connector-set hint rather than guessed from preview's shape, so a
+        # rendering in approval_window.py's WKWebView. Explicit, connector-set hint rather than
+        # guessed from preview's shape, so a
         # future connector that happens to reuse label names like "From"/"Subject" can't
         # accidentally get styled as an email. Read-only (gate="review") calls only, same
         # reasoning as visibility above -- a write is Claude's own drafted content, not something
         # this pane needs a per-surface reading affordance for.
-    pdf_bytes: bytes = b"",  # Raw PDF bytes for a native PDFView embed (docs/security-review-ui-
-        # redesign.md §7 Phase 3), instead of the "[binary content...]" placeholder text.
+    pdf_bytes: bytes = b"",  # Raw PDF bytes for a native PDFView embed, instead of the
+        # "[binary content...]" placeholder text.
         # Read-only (gate="review") calls only. The caller (drive.py's _get_file_content) must
         # only ever pass this when category_policy(..., "file_content") == "allow" for the same
         # item -- exactly the one case where details_text/filtered_data's own content already
@@ -233,13 +232,12 @@ async def gated_call(
     # established meaning is specifically about the read-gate scan -- see
     # its docstring in audit_log.py), and renders in the popup with a
     # neutral/informational style, not the red tint+banner that implies a
-    # confirmation is coming. See docs/security-review-ui-redesign.md §7
-    # Phase 2 for why this exists as its own signal rather than reusing
+    # confirmation is coming. Exists as its own signal rather than reusing
     # pii_categories's machinery.
     write_content_flags = detect_pii_categories(details) if gate == "popup" else []
-    # Request fingerprint (docs/security-review-ui-redesign.md §7 Phase 2):
-    # "you've approved this exact (connector, tool, summary) N times this
-    # week" -- read directly from the audit log, same synchronous-call
+    # Request fingerprint: "you've approved this exact (connector, tool,
+    # summary) N times this week" -- read directly from the audit log,
+    # same synchronous-call
     # pattern _audit()/AuditLogger.record() already use elsewhere in this
     # function rather than asyncio.to_thread (this file's own established
     # precedent for small local JSONL reads/writes on the request path).

@@ -203,9 +203,8 @@ class TestCallDispatch:
             await client.close()
 
     async def test_reason_is_stripped_from_args_before_reaching_the_connector(self, running_server):
-        # See docs/security-review-ui-redesign.md §7 Phase 1b: every gated
-        # ToolSpec now declares a required "reason" param, but no connector
-        # method signature changed to accept it -- it must never reach
+        # Every gated ToolSpec declares a required "reason" param, but no
+        # connector method signature changed to accept it -- it must never reach
         # connector.call(), or every gated call would raise a TypeError.
         server, socket_path = running_server
         connector = FakeConnector("gmail", result={"ok": True})
@@ -701,8 +700,8 @@ class TestCheckPolicyDispatch:
         assert entries[0]["tool"] == "gmail_list_messages"
 
     async def test_reason_param_is_recorded_on_the_audit_entry(self, running_server):
-        # docs/security-review-ui-redesign.md §7 Phase 1b: privacyfence_check_policy
-        # gained a "reason" param, same mandatory-everywhere spirit as every
+        # privacyfence_check_policy has a "reason" param, same
+        # mandatory-everywhere spirit as every
         # gated tool's -- it's the only artifact recorded for a preflight
         # check, so it has to reach claude_reason on this entry.
         server, socket_path = running_server
@@ -847,9 +846,9 @@ class TestUnattendedSessionDispatch:
             await server.stop()
 
     async def test_reason_param_is_recorded_on_begin_and_end_audit_entries(self, short_socket_path, monkeypatch):
-        # docs/security-review-ui-redesign.md §7 Phase 1b: these two meta-tools
-        # gained a "reason" param -- for calls this session denies without ever
-        # showing a popup, it's the only human-legible record of why.
+        # These two meta-tools have a "reason" param -- for calls this
+        # session denies without ever showing a popup, it's the only
+        # human-legible record of why.
         server = await self._server(short_socket_path, monkeypatch, enabled=True)
         client = await _RawClient.connect(short_socket_path)
         try:

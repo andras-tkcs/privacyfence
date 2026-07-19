@@ -577,9 +577,9 @@ class DriveConnector(Connector):
             if content_bytes else "(no content)"
         )
         text = apply_text("drive_privacy", "file_content", raw_text)
-        # Native PDFView embed (docs/security-review-ui-redesign.md §7 Phase
-        # 3) instead of the placeholder text above. Gated on category_policy
-        # == "allow", the same condition raw_text/text already require to
+        # Native PDFView embed instead of the placeholder text above.
+        # Gated on category_policy == "allow", the same condition
+        # raw_text/text already require to
         # flow through unredacted -- a reviewer must never see a rendered
         # PDF that's richer than what the "AI will receive" checklist
         # already discloses Claude gets for this same call (see gate.py's

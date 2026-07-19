@@ -101,9 +101,9 @@ def text_field_values(views):
 class TestButtonSet:
     """Ground rule in connector-qa-testing.md: the popup offers exactly
     Deny / Allow once / Always allow / Allow for 5 min, and only the last two
-    are conditional on the gate configuration. Labels per
-    docs/security-review-ui-redesign.md §7 Phase 1a; the underlying result
-    values ("accept"/"accept_all"/"accept_temp"/"deny") are unchanged."""
+    are conditional on the gate configuration. The underlying result
+    values ("accept"/"accept_all"/"accept_temp"/"deny") are unchanged
+    regardless of what the buttons are labeled."""
 
     def test_accept_and_deny_are_always_present(self):
         views = build_views(make_controller())
@@ -133,8 +133,8 @@ class TestButtonSet:
 
     def test_accept_has_no_enter_shortcut_but_deny_keeps_escape(self):
         # Changed deliberately (was "Accept defaults to Enter") -- see
-        # docs/security-review-ui-redesign.md §5.4 and the reasoning in
-        # _build_button: hitting Enter the instant the popup appears must
+        # the reasoning in _build_button: hitting Enter the instant the
+        # popup appears must
         # not be able to approve a request nobody has read yet. Declining
         # via Escape stays bound since that's the safe direction.
         views = build_views(make_controller())
@@ -251,10 +251,10 @@ class TestContentFlagBanner:
 
 
 class TestSensitivityBadges:
-    """docs/security-review-ui-redesign.md §6's "Sensitivity" mockup ("🟠
-    Contains financial figures   🔴 Possible personal data: IBAN") -- a
-    compact badge per category, rendered below whichever banner (PII or
-    content-flag) is present, in addition to that banner's existing text."""
+    """Sensitivity badges ("🟠 Contains financial figures",
+    "🔴 Possible personal data: IBAN") -- a compact badge per category,
+    rendered below whichever banner (PII or content-flag) is present, in
+    addition to that banner's existing text."""
 
     def test_financial_categories_get_the_financial_kind(self):
         assert _badge_kind("Financial figures (currency amounts)") == "financial"
@@ -366,7 +366,7 @@ class TestSummaryBox:
 
 class TestVisibilityChecklist:
     """The "AI will receive" checklist -- privacy_filter.category_policy()
-    surfaced, not a new promise. See docs/security-review-ui-redesign.md §4."""
+    surfaced, not a new promise."""
 
     def test_no_visibility_renders_no_checklist_label(self):
         views = build_views(make_controller(visibility={}))
@@ -416,9 +416,9 @@ class TestReadingTimeLabel:
 
 
 class TestDetailsPane:
-    """docs/security-review-ui-redesign.md §7 Phase 3: the details/body pane
-    is a WKWebView rendering _details_html()'s output, not a plain
-    NSTextView. WKWebView's own loaded content isn't synchronously readable
+    """The details/body pane is a WKWebView rendering _details_html()'s
+    output, not a plain NSTextView. WKWebView's own loaded content isn't
+    synchronously readable
     back out the way NSTextView.string() was (loadHTMLString_baseURL_ is
     asynchronous even for local content), so these tests work at two
     levels: _details_html() directly (a pure function, same "must mirror
@@ -456,8 +456,7 @@ class TestDetailsPane:
         assert "&amp;" in html
 
     def test_html_has_no_script_tag_and_disables_javascript(self):
-        # docs/security-review-ui-redesign.md §5.5 "keep it local and
-        # synchronous" / §7 Phase 3: no code execution, no network --
+        # "Keep it local and synchronous": no code execution, no network --
         # nothing in this pane should ever need JS, so it's turned off at
         # the WKWebViewConfiguration level, not just unused by omission.
         html = _details_html("some content")
@@ -475,9 +474,9 @@ class TestDetailsPane:
 
 
 class TestProgressiveDisclosure:
-    """docs/security-review-ui-redesign.md §7 Phase 3: the "Show more"/
-    "Show less" toggle is an *area* expansion of the already-fully-visible
-    details pane, not an *information* one -- approval_popup.py's "full
+    """The "Show more"/"Show less" toggle is an *area* expansion of the
+    already-fully-visible details pane, not an *information* one --
+    approval_popup.py's "full
     content is always shown before the decision" invariant rules out
     hiding anything by default. Toggling must resize the same NSPanel
     instance in place (not replace it), since runModalForWindow_ binds to
@@ -552,8 +551,7 @@ class TestProgressiveDisclosure:
 
 
 class TestEmailStyleHeader:
-    """docs/security-review-ui-redesign.md §7 Phase 3, §6 "Email
-    (Gmail-style)" layout: content_kind="email" (an explicit hint gate.py's
+    """The "Email (Gmail-style)" layout: content_kind="email" (an explicit hint gate.py's
     gmail_get_message sets -- never guessed from preview's shape) prepends a
     structured From/To/Subject/Date header to the details pane, built from
     connectors/gmail.py's own preview dict shape."""
@@ -629,8 +627,8 @@ class TestEmailStyleHeader:
 
 
 class TestPdfViewEmbed:
-    """docs/security-review-ui-redesign.md §7 Phase 3: pdf_bytes, when
-    non-empty, renders a native PDFView instead of the usual WKWebView --
+    """pdf_bytes, when non-empty, renders a native PDFView instead of
+    the usual WKWebView --
     connectors/drive.py is the only caller, and only after confirming
     category_policy allows it (see gate.py's gated_call docstring); this
     layer just needs to render whatever bytes it's handed, or fall back

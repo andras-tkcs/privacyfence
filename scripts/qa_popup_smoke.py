@@ -204,9 +204,8 @@ def _scenarios(pause_seconds: float = 0.3) -> list[ScenarioResult]:
     ))
 
     results.append(run(
-        # Also exercises the sensitivity badge below the banner (§7 Phase
-        # 3, docs/security-review-ui-redesign.md §6) -- pii_categories
-        # drives both, no separate scenario needed.
+        # Also exercises the sensitivity badge below the banner --
+        # pii_categories drives both, no separate scenario needed.
         "PII-tinted popup, Allow once",
         click_title="Allow once", expected="accept",
         title="PrivacyFence — QA smoke test (PII-tinted)",

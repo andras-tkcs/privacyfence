@@ -135,9 +135,9 @@ class TestGetMessagePreviewMinimization:
         assert kwargs["my_email"] == "me@example.com"
 
     async def test_content_kind_is_email(self, gated_call_spy):
-        # docs/security-review-ui-redesign.md §7 Phase 3: gmail_get_message
-        # is the one call site that opts into the structured From/To/
-        # Subject/Date header in approval_window.py's details pane -- its
+        # gmail_get_message is the one call site that opts into the
+        # structured From/To/Subject/Date header in approval_window.py's
+        # details pane -- its
         # preview dict shape above is exactly what that header reads.
         connector, client = make_connector()
         client.get_message.return_value = GmailMessage(id="m1", thread_id="t1", subject="s", sender="a@b.com")

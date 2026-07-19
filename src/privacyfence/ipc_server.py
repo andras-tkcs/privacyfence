@@ -185,9 +185,9 @@ class IPCServer:
         connector_name = params["connector"]
         tool = params["tool"]
         args = params.get("args", {})
-        # Every gated/auto tool's ToolSpec now declares a required "reason"
-        # param (docs/security-review-ui-redesign.md §7 Phase 1b), but it
-        # must never reach _dedupe_key or connector.call(): left in args, a
+        # Every gated/auto tool's ToolSpec declares a required "reason"
+        # param, but it must never reach _dedupe_key or connector.call():
+        # left in args, a
         # client-timeout retry with freshly-regenerated reason text would
         # get a different dedupe key every time and silently defeat the
         # coalescing this method's docstring describes -- exactly the

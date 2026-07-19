@@ -87,7 +87,7 @@ def category_policy(group: str, category: str) -> str:
     """The resolved allow/redact/block for one (group, category) pair -- the
     same lookup apply_text/apply_list use internally, exposed so the "AI will
     receive" review-UI checklist can render the real policy instead of
-    re-deriving it (see docs/security-review-ui-redesign.md §7 Phase 1a)."""
+    re-deriving it."""
     g = _GROUPS.get(group, {"default_policy": "allow", "categories": {}})
     return g["categories"].get(category, g["default_policy"])
 

@@ -1,14 +1,15 @@
 """Native macOS approval window (AppKit / PyObjC).
 
 Renders the single blocking approval dialog every gated call resolves
-through: a fence-shield icon top right, a bold title, and — in this order,
-per docs/security-review-ui-redesign.md §5 — a summary box with the item's
-key fields (WHAT), an "AI will receive" checklist (AI VISIBILITY, read-gate
-calls only), a PII warning banner when applicable (RISK), and a scrollable
-pane for full content with a reading-time estimate (PREVIEW), before the
-buttons. This replaces the AppleScript `display dialog` popups that used to
-live in approval_popup.py — those had no room for a real layout, an icon, or
-a genuinely scrollable body.
+through: a fence-shield icon top right, a bold title, and — in this fixed
+order — a summary box with the item's key fields (WHAT), an "AI will
+receive" checklist (AI VISIBILITY, read-gate calls only), a PII warning
+banner when applicable (RISK), and a scrollable pane for full content with
+a reading-time estimate (PREVIEW), before the buttons. This replaces the
+AppleScript `display dialog` popups that used to live in approval_popup.py
+— those had no room for a real layout, an icon, or a genuinely scrollable
+body. See docs/approval-window-content-reference.md for exactly what each
+tool renders.
 
 The "AI will receive" checklist renders privacy_filter.category_policy()'s
 resolved allow/redact/block per category — ground truth PrivacyFence already
@@ -79,11 +80,11 @@ from WebKit import WKWebView, WKWebViewConfiguration
 _WINDOW_WIDTH = 620.0
 _MARGIN = 28.0
 _DETAILS_HEIGHT = 280.0
-# Progressive disclosure (docs/security-review-ui-redesign.md §7 Phase 3):
-# an *area* expansion of the already-fully-visible details pane, not an
-# *information* one -- this codebase's own invariant (approval_popup.py's
-# module docstring: "full content is always shown before the decision")
-# rules out hiding anything behind a click by default. Toggled by the
+# Progressive disclosure: an *area* expansion of the already-fully-visible
+# details pane, not an *information* one -- this codebase's own invariant
+# (approval_popup.py's module docstring: "full content is always shown
+# before the decision") rules out hiding anything behind a click by
+# default. Toggled by the
 # "Show more"/"Show less" button next to the "Preview" label; see
 # ApprovalWindowController.toggleDetailsExpanded_.
 _DETAILS_HEIGHT_EXPANDED = 520.0
@@ -124,12 +125,12 @@ _CONTENT_FLAG_FILL_ALPHA = 0.12
 # assertions to sidestep for the same reason.
 _VISIBILITY_SYMBOL = {"allow": "✓", "redact": "◐", "block": "✗"}  # ✓ ◐ ✗
 
-# Sensitivity badges (docs/security-review-ui-redesign.md §6's mockup: "🟠
-# Contains financial figures   🔴 Possible personal data: IBAN") -- a
-# compact, at-a-glance chip per detected category, rendered below the
-# existing PII/content-flag banner text rather than replacing it (that text
-# stays the detailed explanation; badges are the scannable summary). Colors
-# reuse the same two constants the banners already use, not new ones.
+# Sensitivity badges -- a compact, at-a-glance chip per detected category
+# ("🟠 Contains financial figures", "🔴 Possible personal data: IBAN"),
+# rendered below the existing PII/content-flag banner text rather than
+# replacing it (that text stays the detailed explanation; badges are the
+# scannable summary). Colors reuse the same two constants the banners
+# already use, not new ones.
 _BADGE_COLOR = {"financial": _CONTENT_FLAG_AMBER, "pii": _PII_RED}
 _BADGE_EMOJI = {"financial": "\U0001f7e0", "pii": "\U0001f534"}  # 🟠 🔴
 _BADGE_FONT_SIZE = 11.0
@@ -155,9 +156,9 @@ def _reading_time_label(text: str) -> str:
     return f"~{round(seconds / 60)} min read"
 
 
-# Details pane, Phase 3 (docs/security-review-ui-redesign.md §7): a local,
-# self-contained HTML document rendered by a WKWebView instead of a plain
-# NSTextView -- see _build_details_view. "%s" substitution rather than
+# Details pane: a local, self-contained HTML document rendered by a
+# WKWebView instead of a plain NSTextView -- see _build_details_view.
+# "%s" substitution rather than
 # str.format() so the CSS's own literal "{"/"}" never need doubling. Two
 # slots: an optional per-surface header (e.g. the email header below), then
 # the escaped body text -- empty string for the header renders nothing.
@@ -208,10 +209,9 @@ _EMAIL_HEADER_TEMPLATE = """<div class="email-header">
 
 def _email_header_html(preview: dict[str, str]) -> str:
     """Structured From/To/Subject/Date header for content_kind="email" --
-    docs/security-review-ui-redesign.md §7 Phase 3's "Email (Gmail-style)"
-    layout (§6), "styled like a real email" instead of the generic
-    label/value summary box every other surface gets. Pure function, same
-    testability contract as _details_html()."""
+    styled like a real email instead of the generic label/value summary
+    box every other surface gets. Pure function, same testability
+    contract as _details_html()."""
     return _EMAIL_HEADER_TEMPLATE % (
         _html_escape(preview.get("From", "") or "(unknown)"),
         _html_escape(preview.get("To", "") or "(unknown)"),
@@ -278,11 +278,10 @@ def _text_width(text: str, font) -> float:
 
 def _badge_kind(category: str) -> str:
     """"financial" (🟠) vs "pii" (🔴) -- which color/emoji a detected
-    pii_detector.py category gets as a sensitivity badge
-    (docs/security-review-ui-redesign.md §6's "Sensitivity" mockup). Matches
-    the mockup's own example exactly: currency/salary figures get the
-    orange "financial" treatment, every other category (IBAN, tax IDs,
-    SSNs, ...) gets red. No new detector logic -- purely a presentation
+    pii_detector.py category gets as a sensitivity badge. Currency/salary
+    figures get the orange "financial" treatment, every other category
+    (IBAN, tax IDs, SSNs, ...) gets red. No new detector logic -- purely
+    a presentation
     split over labels pii_detector.py already returns."""
     if category in ("Financial figures (currency amounts)", "Salary/compensation information"):
         return "financial"
@@ -443,8 +442,7 @@ class ApprovalWindowController(NSObject):
 
     # ------------------------------------------------------------------ #
     # "AI will receive" visibility checklist -- privacy_filter.py's
-    # category_policy() made visible, not a new promise: see
-    # docs/security-review-ui-redesign.md §4 and §7 Phase 1a. Read-gate
+    # category_policy() made visible, not a new promise. Read-gate
     # calls only -- show_popup never sets self.visibility (see its
     # docstring), so this section never renders for a write.
     # ------------------------------------------------------------------ #
@@ -503,8 +501,8 @@ class ApprovalWindowController(NSObject):
     # ------------------------------------------------------------------ #
     # Write-gate content-flag banner -- informational, no confirmation
     # gate attached (unlike the PII banner above). See gate.py's
-    # write_content_flags comment and docs/security-review-ui-redesign.md
-    # §7 Phase 2 for why this is a separate signal from pii_categories.
+    # write_content_flags comment for why this is a separate signal from
+    # pii_categories.
     # ------------------------------------------------------------------ #
 
     def _content_flag_banner_text(self) -> str:
@@ -519,10 +517,9 @@ class ApprovalWindowController(NSObject):
         return max(20.0, text_h) + _SUMMARY_PAD
 
     # ------------------------------------------------------------------ #
-    # Sensitivity badges (docs/security-review-ui-redesign.md §6, §7 Phase
-    # 3) -- a compact, colored chip per detected category, rendered right
-    # below whichever banner above is present. Both callers pass their own
-    # categories list explicitly (pii_categories / write_content_flags)
+    # Sensitivity badges -- a compact, colored chip per detected category,
+    # rendered right below whichever banner above is present. Both callers
+    # pass their own categories list explicitly (pii_categories / write_content_flags)
     # rather than this reading self.-state itself, matching the banners'
     # own "coded independently... nothing here assumes they're mutually
     # exclusive" convention (see the class-level comment above
@@ -562,8 +559,8 @@ class ApprovalWindowController(NSObject):
 
     # ------------------------------------------------------------------ #
     # "Claude says" -- self-reported, unverified. See gate.py's
-    # reason_scope docstring and docs/security-review-ui-redesign.md §4:
-    # this is Claude's own stated reason for the call, never checked
+    # reason_scope docstring: this is Claude's own stated reason for the
+    # call, never checked
     # against anything, so it must never be styled or merged as if it were
     # a verified field (WHAT / AI VISIBILITY / RISK above all come from
     # data PrivacyFence itself computed). Present for both read and write
@@ -587,14 +584,12 @@ class ApprovalWindowController(NSObject):
         return box, box_h
 
     # ------------------------------------------------------------------ #
-    # Details (scrollable body) -- Phase 3 (docs/security-review-ui-redesign.md
-    # §7): a local WKWebView rendering _details_html()'s self-contained HTML
-    # document, replacing the plain NSTextView Phases 0-2 used. This is what
-    # unlocks real typography/wrapping control and (in a later pass) a
-    # Gmail-style structured header or per-file-type rendering, without
-    # hand-building each new layout in raw AppKit constraints -- see this
-    # module's own docstring and docs/security-review-ui-redesign.md §7
-    # Phase 1a's note on why the Gmail-specific layout was deferred to here.
+    # Details (scrollable body): a local WKWebView rendering
+    # _details_html()'s self-contained HTML document, rather than a plain
+    # NSTextView. This is what unlocks real typography/wrapping control
+    # and per-surface rendering (the Gmail-style structured header,
+    # native PDFView) without hand-building each new layout in raw
+    # AppKit constraints.
     # ------------------------------------------------------------------ #
 
     def _build_details_view(self, y: float, width: float) -> WKWebView | PDFView:
@@ -624,9 +619,8 @@ class ApprovalWindowController(NSObject):
         config = WKWebViewConfiguration.alloc().init()
         # No script needed for anything this pane renders today (plain text,
         # escaped) -- see _details_html()'s docstring. Disabled explicitly,
-        # not just left unused, as the actual "no network, no code
-        # execution" guarantee docs/security-review-ui-redesign.md §7 Phase
-        # 3 and §5.5 ("keep it local and synchronous") call for.
+        # not just left unused, to actually guarantee no network access and
+        # no code execution from this pane, not merely happen to have none.
         config.preferences().setJavaScriptEnabled_(False)
 
         webview = WKWebView.alloc().initWithFrame_configuration_(
@@ -662,8 +656,7 @@ class ApprovalWindowController(NSObject):
         if frame.size.width < min_width:
             btn.setFrameSize_((min_width, frame.size.height))
         if primary:
-            # Deliberately no "\r" keyEquivalent -- see
-            # docs/security-review-ui-redesign.md §5.4: hitting Enter
+            # Deliberately no "\r" keyEquivalent: hitting Enter
             # shouldn't be able to approve a request the reviewer hasn't
             # actually looked at yet. Allow once still keeps its blue "this
             # is the affirmative action" styling; only the Enter-key muscle
@@ -698,8 +691,7 @@ class ApprovalWindowController(NSObject):
     # ------------------------------------------------------------------ #
 
     def _compute_layout(self, content_width: float) -> tuple[float, float]:
-        # Section order matches docs/security-review-ui-redesign.md §5:
-        # WHAT (summary/preview) -> AI VISIBILITY -> RISK (PII banner) ->
+        # Fixed section order: WHAT (summary/preview) -> AI VISIBILITY -> RISK (PII banner) ->
         # PREVIEW (details) -> decision (buttons, laid out separately
         # below). Must stay in lockstep with build_panel()'s real layout.
         y = 22.0
@@ -814,11 +806,11 @@ class ApprovalWindowController(NSObject):
         content.addSubview_(title_field)
         y += title_h + 18.0
 
-        # Request fingerprint (docs/security-review-ui-redesign.md §7
-        # Phase 2): how many times this exact (connector, tool, summary)
-        # was already approved this week, from AuditLogger.recent_matches
-        # -- helps a reviewer spot a routine repeat versus something novel.
-        # Silent when zero (a first-time request needs no such caption).
+        # Request fingerprint: how many times this exact (connector, tool,
+        # summary) was already approved this week, from
+        # AuditLogger.recent_matches -- helps a reviewer spot a routine
+        # repeat versus something novel. Silent when zero (a first-time
+        # request needs no such caption).
         if self.seen_count > 0:
             seen_label = _make_label(self._seen_count_text(), size=12, color=NSColor.secondaryLabelColor())
             seen_label.setFrame_(NSMakeRect(_MARGIN, y, content_width, 16.0))
@@ -826,8 +818,8 @@ class ApprovalWindowController(NSObject):
             y += 18.0
 
         # WHAT: resources/summary box, first -- the data, not the decision,
-        # is the visual lead (docs/security-review-ui-redesign.md §5.1).
-        # Suppressed for content_kind="email" -- see _show_summary_box().
+        # is the visual lead. Suppressed for content_kind="email" -- see
+        # _show_summary_box().
         if self._show_summary_box():
             box_h = self._summary_height(content_width)
             bg = _background_box(NSMakeRect(_MARGIN, y, content_width, box_h))
@@ -969,8 +961,8 @@ class ApprovalWindowController(NSObject):
     def toggleDetailsExpanded_(self, _sender) -> None:
         """"Show more"/"Show less" -- progressive disclosure as an *area*
         expansion of the already-fully-visible details pane, not an
-        *information* one (docs/security-review-ui-redesign.md §7 Phase 3):
-        this codebase's own invariant (approval_popup.py's module docstring,
+        *information* one: this codebase's own invariant (approval_popup.py's
+        module docstring,
         "full content is always shown before the decision") rules out
         hiding anything behind a click by default, so this only ever grows
         or shrinks how much of that same content is visible without
@@ -1035,9 +1027,8 @@ class ApprovalWindowController(NSObject):
     def buttonClicked_(self, sender) -> None:
         # Internal result values ("accept"/"accept_all"/"accept_temp"/"deny")
         # stay as-is -- gate.py/audit_log.py/tests key on them throughout.
-        # Only the button labels themselves changed, per
-        # docs/security-review-ui-redesign.md §7 Phase 1a's "Allow once" /
-        # "Allow for 5 min" / "Always allow" relabeling.
+        # Only the button labels themselves ("Allow once" / "Allow for 5
+        # min" / "Always allow") are user-facing.
         title = str(sender.title())
         if title == "Always allow":
             self.result = "accept_all"

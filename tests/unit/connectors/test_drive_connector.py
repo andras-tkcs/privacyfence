@@ -289,9 +289,9 @@ class TestDrivePrivacyFilter:
 
 
 class TestPdfViewEmbed:
-    """docs/security-review-ui-redesign.md §7 Phase 3: drive_get_file_content
-    passes pdf_bytes through to gate.py only when every one of: real PDF
-    mime type, content wasn't truncated by get_file_content's max_bytes
+    """drive_get_file_content passes pdf_bytes through to gate.py only
+    when every one of: real PDF mime type, content wasn't truncated by
+    get_file_content's max_bytes
     cap, and category_policy("drive_privacy", "file_content") == "allow" --
     the same condition that already lets raw_text/text flow through
     unredacted, so a reviewer is never shown a rendered PDF richer than

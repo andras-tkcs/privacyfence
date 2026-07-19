@@ -152,8 +152,8 @@ def show_read_popup(
     recent_matches) -- how many times this exact (connector, tool, summary)
     was already approved this week. ``content_kind`` selects a per-surface
     body-pane rendering ("email" gets a structured From/To/Date/Subject
-    header above the body, docs/security-review-ui-redesign.md §7 Phase 3)
-    -- an explicit connector-set hint, not guessed from preview's shape.
+    header above the body) -- an explicit connector-set hint, not guessed
+    from preview's shape.
     ``pdf_bytes``, when non-empty, renders a native PDFView instead of the
     body pane's usual WKWebView text -- see gate.py's gated_call docstring
     for the privacy-policy condition its only caller (drive.py) must check

@@ -59,9 +59,9 @@ class AuditEntry:
                               # "unattended_session_started"/"_ended" entries, which have no
                               # underlying gated tool call to take it from otherwise (see
                               # ipc_server.py's _audit_policy_check/_audit_unattended_session_event).
-                              # Self-reported and unverified -- never treated as fact, see
-                              # docs/security-review-ui-redesign.md §4. Empty for the automatic
-                              # session-end-on-disconnect path, which has no reason to attribute.
+                              # Self-reported and unverified -- never treated as fact. Empty for
+                              # the automatic session-end-on-disconnect path, which has no reason
+                              # to attribute.
 
 
 class AuditLogger:
@@ -197,10 +197,10 @@ class AuditLogger:
     def recent_matches(self, connector: str, tool: str, summary: str, *, week: str | None = None) -> int:
         """Count prior approved-like decisions (see _APPROVED_LIKE_DECISIONS)
         for the same (connector, tool, summary) in one week's log --
-        defaults to the current week. The request-fingerprint feature
-        (docs/security-review-ui-redesign.md §7 Phase 2): "you've approved
-        this exact request N times this week," so a reviewer can spot an
-        unusually novel request versus a routine repeat at a glance.
+        defaults to the current week. The request-fingerprint feature:
+        "you've approved this exact request N times this week," so a
+        reviewer can spot an unusually novel request versus a routine
+        repeat at a glance.
 
         (connector, tool, summary) is a practical proxy for "the same
         request" -- AuditEntry carries neither an operation_key nor the
