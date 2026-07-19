@@ -182,6 +182,20 @@ async def gated_call(
         # (gate="review") calls only: a popup-gate write already shows exactly what's being sent,
         # since the human is looking at content Claude itself just drafted, not something read
         # from an external source and potentially filtered on the way in.
+    content_kind: str = "generic",  # "generic" | "email" -- selects a per-surface body-pane
+        # rendering in approval_window.py's WKWebView (docs/security-review-ui-redesign.md §7
+        # Phase 3). Explicit, connector-set hint rather than guessed from preview's shape, so a
+        # future connector that happens to reuse label names like "From"/"Subject" can't
+        # accidentally get styled as an email. Read-only (gate="review") calls only, same
+        # reasoning as visibility above -- a write is Claude's own drafted content, not something
+        # this pane needs a per-surface reading affordance for.
+    pdf_bytes: bytes = b"",  # Raw PDF bytes for a native PDFView embed (docs/security-review-ui-
+        # redesign.md §7 Phase 3), instead of the "[binary content...]" placeholder text.
+        # Read-only (gate="review") calls only. The caller (drive.py's _get_file_content) must
+        # only ever pass this when category_policy(..., "file_content") == "allow" for the same
+        # item -- exactly the one case where details_text/filtered_data's own content already
+        # flows through unredacted -- so the human reviewer is never shown a rendered PDF that's
+        # richer than what "AI will receive" already discloses Claude gets for this same call.
     my_email: str = "",
     session_created_ids: set | None = None,
     args: dict | None = None,
@@ -289,7 +303,7 @@ async def gated_call(
 
                 decision = await asyncio.to_thread(
                     show_read_popup, popup_title, preview or {}, details, suggestion is not None,
-                    pii_categories, visibility, claude_reason, seen_count,
+                    pii_categories, visibility, claude_reason, seen_count, content_kind, pdf_bytes,
                 )
 
                 if decision in ("accept", "accept_all") and pii_categories:

@@ -577,6 +577,25 @@ class DriveConnector(Connector):
             if content_bytes else "(no content)"
         )
         text = apply_text("drive_privacy", "file_content", raw_text)
+        # Native PDFView embed (docs/security-review-ui-redesign.md §7 Phase
+        # 3) instead of the placeholder text above. Gated on category_policy
+        # == "allow", the same condition raw_text/text already require to
+        # flow through unredacted -- a reviewer must never see a rendered
+        # PDF that's richer than what the "AI will receive" checklist
+        # already discloses Claude gets for this same call (see gate.py's
+        # gated_call docstring). Also requires the fetch to be untruncated:
+        # a partial PDF stream (get_file_content's max_bytes cap) almost
+        # always fails to parse as a valid document anyway, and a page
+        # silently missing its back half is worse than the plain-text
+        # fallback, not better.
+        pdf_bytes = b""
+        if (
+            content_bytes
+            and not getattr(content, "truncated", False)
+            and getattr(drive_file, "mime_type", "") == "application/pdf"
+            and category_policy("drive_privacy", "file_content") == "allow"
+        ):
+            pdf_bytes = content_bytes
         file_display = apply_text("drive_privacy", "file_metadata", name)
         owner_display = apply_text("drive_privacy", "file_metadata", ", ".join(owners) if owners else "")
         size_display = apply_text("drive_privacy", "file_metadata", str(size) if size else "")
@@ -604,6 +623,7 @@ class DriveConnector(Connector):
                 "File metadata": category_policy("drive_privacy", "file_metadata"),
                 "Document content": category_policy("drive_privacy", "file_content"),
             },
+            pdf_bytes=pdf_bytes,
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={"file_id": file_id},

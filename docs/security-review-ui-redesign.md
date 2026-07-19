@@ -530,19 +530,43 @@ found one more real bug beyond the `fake_show_popup` gap (a duplicated banner-al
   Loaded via `loadHTMLString_baseURL_(html, None)` — nil base URL, so there is nothing for it to
   even attempt to load out to. `WKWebViewConfiguration.preferences().setJavaScriptEnabled_(False)`
   explicitly, not just left unused — nothing this pane renders today needs script, matching §5.5's
-  "keep it local and synchronous." **Not done**: the Gmail-style header and per-file-type badges
-  this migration was meant to unlock stay on the "everything above the body pane is still native
-  AppKit, unchanged" side for now — this pass only replaced the body pane's *rendering mechanism*
-  (NSTextView → WKWebView), not its *content* (still one escaped text blob, same as before). A
-  follow-up pass can now build genuinely richer per-connector layouts (structured Gmail
-  From/To/Date/Subject header, etc.) on top of this WKWebView foundation without needing another
-  AppKit-layout rewrite to do it.
+  "keep it local and synchronous." **Gmail-style header done 2026-07-17**: `gate.py`'s
+  `gated_call()` gained a `content_kind: str = "generic"` param ("generic" | "email"), read-gate
+  only (same scoping rationale as `visibility`) and forwarded to `show_read_popup` →
+  `show_native_approval` → `ApprovalWindowController.content_kind`. `_details_html()` prepends a
+  new `_email_header_html()`-built From/To/Subject/Date block (own pure function, `_html_escape`'d
+  per field, styled like a real email — §6's mockup) when `content_kind == "email"`. Set only at
+  `connectors/gmail.py`'s `_get_message` call site, whose `preview` dict already has exactly the
+  From/To/Date/Subject shape the header reads — **deliberately an explicit connector-set hint, not
+  guessed from preview's shape**, so a future connector reusing similar label names can't
+  accidentally get styled as an email. `gmail_get_thread` does **not** opt in: a thread is several
+  messages each with its own sender, which doesn't fit one single-message header (it already
+  renders per-message "From:"/"Date:" lines inline in `details_text`) — left as its own,
+  differently-shaped follow-up rather than forcing a mismatched header onto it. Per-file-type
+  *badges* (as opposed to the email header specifically) remain **not done** — this pass only
+  builds the one per-surface rendering §6 actually specifies a mockup for.
 - Native `PDFView` (PDFKit) embed for genuinely binary PDF content already fetched as
-  `content_bytes` in `drive_client.py`. **Not done** — deferred: `content_bytes` isn't currently
-  plumbed from `drive_client.py` through `gate.py`/`approval_popup.py` into `approval_window.py` at
-  all (only `details_text`, a string, crosses that boundary today), so this needs its own new data
-  path threaded through several layers, not just a window-layer change like the WKWebView migration
-  above. A distinct follow-up, not attempted in this pass.
+  `content_bytes` in `drive_client.py`. **Done 2026-07-17**: `gate.py`'s `gated_call()` gained a
+  `pdf_bytes: bytes = b""` param (read-gate only, same scoping as `visibility`/`content_kind`),
+  forwarded through `show_read_popup` → `show_native_approval` →
+  `ApprovalWindowController.pdf_bytes`. `_build_details_view` renders a `Quartz.PDFView` (backed by
+  `PDFDocument.alloc().initWithData_()`) instead of the usual `WKWebView` when non-empty, falling
+  back to the WKWebView if the bytes don't parse as a real document (`PDFDocument` returns `nil`).
+  `pyobjc-framework-Quartz` added to `pyproject.toml` for `PDFView`/`PDFDocument` (there's no
+  separate `pyobjc-framework-PDFKit` package — Quartz exposes these classes).
+
+  Only ever set at `connectors/drive.py`'s `_get_file_content`, and only when **all** of: real
+  `application/pdf` mime type, `not content.truncated` (a partial PDF stream from
+  `get_file_content`'s `max_bytes` cap almost always fails to parse as a valid document anyway —
+  full PDFs commonly exceed the current 100KB default, an honest, documented limitation, not a
+  bug), and — the load-bearing condition — `category_policy("drive_privacy", "file_content") ==
+  "allow"`. That last check matters more than it looks: `raw_text`/`text` (the placeholder string
+  for binary content) already only flows through unredacted under that exact same condition, and
+  `filtered_data.content` (what Claude actually receives for this call) is always just that
+  placeholder text, never the real bytes. Rendering the actual PDF to the *reviewer* without that
+  check would mean the human sees something strictly richer than what "AI will receive" already
+  discloses Claude gets — exactly the kind of gap this whole redesign exists to close, not open a
+  new instance of. Skipping the check would have been the easy, wrong version of this feature.
 - Drive classification-label lookup (`drive.labels.readonly` scope): **deferred** per the
   maintainer's decision (§10 Q2) — narrow benefit (Workspace Enterprise-tier only) relative to the
   added consent-screen surface and scope request. Revisit if a specific org asks for it; until
@@ -573,7 +597,9 @@ found one more real bug beyond the `fake_show_popup` gap (a duplicated banner-al
     WKWebViewConfiguration` is exactly this same kind of static top-level import, and
     `approval_popup.py` (the only importer of `approval_window.py`) is only ever bundled into the
     daemon `Analysis` (`PrivacyFenceApp.spec`), never the bridge (`PrivacyFenceBridge.spec`) —
-    confirmed by grep, matching where `AppKit` itself is already daemon-only.
+    confirmed by grep, matching where `AppKit` itself is already daemon-only. **`pyobjc-framework-
+    Quartz` added the same way** once `PDFView`/`PDFDocument` (below) needed it — there's no
+    separate `pyobjc-framework-PDFKit` package; Quartz is where PyObjC exposes those classes.
   - **What's still genuinely unverified, and not WebKit-specific**: notarization is currently
     commented out in `build_dmg.sh` §8 and code-signing itself is optional/unexercised in CI
     today (`SIGN_IDENTITY` secret and the cert-import step in `.github/workflows/build.yml` are
@@ -599,19 +625,40 @@ found one more real bug beyond the `fake_show_popup` gap (a duplicated banner-al
   `preview` already flattens) or an area-only expand/collapse toggle — both left as follow-up work
   rather than building something that looks like three levels but doesn't hide or reveal anything.
 
-**Phase 3 implementation status**: the WKWebView migration (details/body pane only) and the
-signing-investigation action items (`entitlements.plist`, `pyproject.toml`) are implemented;
-`PDFView` embed, per-connector rich content (Gmail-style header, badges), and progressive
-disclosure remain deliberately deferred -- see the individual items above for why each one is a
-distinct follow-up rather than a small addition to this pass. **Verification honesty note**: the
-new `_details_html()`/`WKWebView` wiring is unit-tested the same way every other AppKit-touching
-piece of this window is (`test_approval_window.py`'s `TestDetailsPane`, construction-only,
-asserting the exact HTML string handed to `loadHTMLString_baseURL_` rather than reading the
-WKWebView's own asynchronously-loaded content back out) and the full suite (2456 tests) passes on
-a real macOS run. What that suite *cannot* verify: whether the page actually renders correctly on
-screen, since WKWebView's real render is out of unit-test reach the same way AppKit's real modal
-loop already was — `scripts/qa_popup_smoke.py` needs a real interactive run (Accessibility granted,
-a real WindowServer session) to confirm that, same gate every prior phase's popup change has had.
+**Phase 3 implementation status**: the WKWebView migration (details/body pane only), the Gmail-style
+From/To/Subject/Date header, the native `PDFView` embed (gated on the same privacy-policy condition
+as the text it replaces), and the signing-investigation action items (`entitlements.plist`,
+`pyproject.toml`) are all implemented; per-file-type badges beyond the email header and PDF case,
+and progressive disclosure, remain deliberately deferred -- see the individual items above for why
+each one is a distinct follow-up rather than a small addition to this pass. **Verification honesty
+note**: the new `_details_html()`/`_email_header_html()`/`WKWebView` wiring is unit-tested the same
+way every other AppKit-touching piece of this window is (`test_approval_window.py`'s
+`TestDetailsPane`/`TestEmailStyleHeader`, construction-only, asserting the exact HTML string handed
+to `loadHTMLString_baseURL_` rather than reading the WKWebView's own asynchronously-loaded content
+back out; `connectors/test_gmail_connector.py` confirms `content_kind="email"` is set only at
+`_get_message`'s call site, never `_get_thread`'s) and the full suite passes on a real macOS run.
+Fixing this content_kind's threading through `gate.py` also surfaced the exact same latent-bug
+pattern Phase 2 found once already (§7 Phase 2's note on the `fake_show_popup` gap): 16
+`fake_show_read_popup` test doubles in `test_gate.py` had a fixed positional signature that didn't
+anticipate a 9th argument, so they would have raised `TypeError` the moment a real `pytest` ran on
+macOS -- caught immediately by actually running the suite locally, not by inspection, which is
+exactly the point this recurring class of gap keeps making. Adding `pdf_bytes` as a 10th positional
+argument right afterward hit the identical gap a second time in the same session -- fixed the same
+way, same 16 call sites, confirming this class of test double (fixed positional signature, no
+`**kwargs` catch-all) is worth watching for specifically on any future param addition to this call
+chain, not just a one-off.
+
+`_build_details_pdf_view`/`PDFDocument`/`PDFView` and `connectors/drive.py`'s gating logic are
+covered by `test_approval_window.py`'s `TestPdfViewEmbed` (a real, parseable minimal PDF plus a
+garbage-bytes fallback case, both via a real `PDFDocument.alloc().initWithData_()` call -- not
+mocked) and `test_drive_connector.py`'s `TestPdfViewEmbed` (every combination of mime type,
+`truncated`, and `category_policy` that gates whether `pdf_bytes` is set at all). What the suite
+*cannot* verify: whether the page/PDF actually renders correctly on screen, since WKWebView's and
+PDFView's real render are out of unit-test reach the same way AppKit's real modal loop already was
+— `scripts/qa_popup_smoke.py` needs a real interactive run (Accessibility granted, a real
+WindowServer session) to confirm that, same gate every prior phase's popup change has had. (It
+doesn't yet have a PDF-rendering scenario of its own -- worth adding before relying on it for that
+specific path.)
 The real signed-build empirical check (§10 Q3) is still outstanding and unrelated to this
 verification gap — it needs the maintainer's own Developer ID signing certificate, not something
 achievable from this environment.

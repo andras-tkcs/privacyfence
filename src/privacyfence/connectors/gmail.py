@@ -384,6 +384,15 @@ class GmailConnector(Connector):
                 "Message body": category_policy("privacy", "body"),
                 "Attachments": category_policy("privacy", "attachments"),
             },
+            # docs/security-review-ui-redesign.md §7 Phase 3: renders a
+            # structured From/To/Subject/Date header in the details pane
+            # instead of plain text alone -- preview's shape above (From/To/
+            # Date/Subject) is exactly what that header reads. gmail_get_thread
+            # doesn't get this: a thread is several messages each with their
+            # own sender, which doesn't fit one single-message header -- it
+            # already renders per-message "From:"/"Date:" lines inline in
+            # details_text below instead.
+            content_kind="email",
             my_email=self.my_email,
             args={"message_id": message_id},
         )

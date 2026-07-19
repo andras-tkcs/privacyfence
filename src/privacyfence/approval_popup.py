@@ -136,6 +136,8 @@ def show_read_popup(
     visibility: dict[str, str] | None = None,
     claude_reason: str = "",
     seen_count: int = 0,
+    content_kind: str = "generic",
+    pdf_bytes: bytes = b"",
 ) -> str:
     """Approval popup for read tools. Full content is always shown before the
     decision, in a scrollable pane — the user never has to click through to
@@ -148,7 +150,14 @@ def show_read_popup(
     for the call -- unverified, see gate.py's reason_scope docstring.
     ``seen_count`` is the request-fingerprint feature (AuditLogger.
     recent_matches) -- how many times this exact (connector, tool, summary)
-    was already approved this week.
+    was already approved this week. ``content_kind`` selects a per-surface
+    body-pane rendering ("email" gets a structured From/To/Date/Subject
+    header above the body, docs/security-review-ui-redesign.md §7 Phase 3)
+    -- an explicit connector-set hint, not guessed from preview's shape.
+    ``pdf_bytes``, when non-empty, renders a native PDFView instead of the
+    body pane's usual WKWebView text -- see gate.py's gated_call docstring
+    for the privacy-policy condition its only caller (drive.py) must check
+    before ever setting it.
 
     Returns 'accept', 'deny', or 'accept_all' (only offered when
     allow_accept_all is True).
@@ -156,7 +165,7 @@ def show_read_popup(
     return show_native_approval(
         title=title, preview=preview, details_text=details_text, allow_accept_all=allow_accept_all,
         pii_categories=pii_categories, visibility=visibility, claude_reason=claude_reason,
-        seen_count=seen_count,
+        seen_count=seen_count, content_kind=content_kind, pdf_bytes=pdf_bytes,
     )
 
 

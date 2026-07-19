@@ -134,6 +134,18 @@ class TestGetMessagePreviewMinimization:
         assert kwargs["args"] == {"message_id": "m1"}
         assert kwargs["my_email"] == "me@example.com"
 
+    async def test_content_kind_is_email(self, gated_call_spy):
+        # docs/security-review-ui-redesign.md §7 Phase 3: gmail_get_message
+        # is the one call site that opts into the structured From/To/
+        # Subject/Date header in approval_window.py's details pane -- its
+        # preview dict shape above is exactly what that header reads.
+        connector, client = make_connector()
+        client.get_message.return_value = GmailMessage(id="m1", thread_id="t1", subject="s", sender="a@b.com")
+
+        await connector.call("gmail_get_message", {"message_id": "m1"})
+
+        assert gated_call_spy[0]["content_kind"] == "email"
+
     async def test_filtered_data_returned_on_approval(self, gated_call_spy):
         connector, client = make_connector()
         message = GmailMessage(id="m1", thread_id="t1", subject="s", sender="a@b.com")
@@ -242,6 +254,12 @@ class TestGetThread:
         assert "body two secret" in kwargs["pii_scan_text"]
         assert "alice@example.com" not in kwargs["pii_scan_text"]
         assert "bob@example.com" not in kwargs["pii_scan_text"]
+        # Unlike gmail_get_message, a thread has several messages each with
+        # their own sender -- doesn't fit one single-message From/To header,
+        # so this doesn't opt into content_kind="email" (see gate.py's
+        # default and connectors/gmail.py's comment at the _get_message
+        # call site for why).
+        assert "content_kind" not in kwargs
 
     async def test_html_only_message_body_converted_to_plain_text(self, gated_call_spy):
         connector, client = make_connector()

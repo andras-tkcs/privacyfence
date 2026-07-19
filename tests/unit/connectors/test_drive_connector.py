@@ -288,6 +288,79 @@ class TestDrivePrivacyFilter:
         assert gated_call_spy[0]["visibility"]["Cell values"] == "block"
 
 
+class TestPdfViewEmbed:
+    """docs/security-review-ui-redesign.md §7 Phase 3: drive_get_file_content
+    passes pdf_bytes through to gate.py only when every one of: real PDF
+    mime type, content wasn't truncated by get_file_content's max_bytes
+    cap, and category_policy("drive_privacy", "file_content") == "allow" --
+    the same condition that already lets raw_text/text flow through
+    unredacted, so a reviewer is never shown a rendered PDF richer than
+    what the "AI will receive" checklist discloses Claude gets."""
+
+    PDF_BYTES = b"%PDF-1.4 fake but non-empty content bytes"
+
+    async def test_pdf_with_allow_policy_passes_pdf_bytes(self, gated_call_spy):
+        connector, client = make_connector()
+        content = DriveFileContent(
+            file=make_file(mime_type="application/pdf"), content_bytes=self.PDF_BYTES,
+        )
+        client.get_file_content.return_value = content
+
+        await connector.call("drive_get_file_content", {"file_id": "f1"})
+
+        assert gated_call_spy[0]["pdf_bytes"] == self.PDF_BYTES
+
+    async def test_pdf_with_block_policy_does_not_pass_pdf_bytes(self, gated_call_spy):
+        init_privacy_filter({"drive_privacy": {"categories": {"file_content": "block"}}})
+        connector, client = make_connector()
+        content = DriveFileContent(
+            file=make_file(mime_type="application/pdf"), content_bytes=self.PDF_BYTES,
+        )
+        client.get_file_content.return_value = content
+
+        await connector.call("drive_get_file_content", {"file_id": "f1"})
+
+        assert gated_call_spy[0]["pdf_bytes"] == b""
+
+    async def test_pdf_with_redact_policy_does_not_pass_pdf_bytes(self, gated_call_spy):
+        init_privacy_filter({"drive_privacy": {"categories": {"file_content": "redact"}}})
+        connector, client = make_connector()
+        content = DriveFileContent(
+            file=make_file(mime_type="application/pdf"), content_bytes=self.PDF_BYTES,
+        )
+        client.get_file_content.return_value = content
+
+        await connector.call("drive_get_file_content", {"file_id": "f1"})
+
+        assert gated_call_spy[0]["pdf_bytes"] == b""
+
+    async def test_truncated_pdf_does_not_pass_pdf_bytes(self, gated_call_spy):
+        # A partial PDF stream almost always fails to parse as a valid
+        # document anyway -- see approval_window.py's
+        # _build_details_pdf_view fallback -- so this isn't sent at all
+        # rather than sending a document PDFView will likely reject.
+        connector, client = make_connector()
+        content = DriveFileContent(
+            file=make_file(mime_type="application/pdf"), content_bytes=self.PDF_BYTES, truncated=True,
+        )
+        client.get_file_content.return_value = content
+
+        await connector.call("drive_get_file_content", {"file_id": "f1"})
+
+        assert gated_call_spy[0]["pdf_bytes"] == b""
+
+    async def test_non_pdf_binary_content_does_not_pass_pdf_bytes(self, gated_call_spy):
+        connector, client = make_connector()
+        content = DriveFileContent(
+            file=make_file(mime_type="image/png"), content_bytes=b"\x89PNG\r\n...",
+        )
+        client.get_file_content.return_value = content
+
+        await connector.call("drive_get_file_content", {"file_id": "f1"})
+
+        assert gated_call_spy[0]["pdf_bytes"] == b""
+
+
 class TestDownloadFile:
     async def test_download_file_preview_and_args(self, gated_call_spy):
         connector, client = make_connector()

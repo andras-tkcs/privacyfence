@@ -28,6 +28,7 @@ import sys
 
 import pytest
 from AppKit import NSBox, NSButton, NSTextField
+from Quartz import PDFView
 from WebKit import WKWebView
 
 from privacyfence.approval_window import (
@@ -36,6 +37,7 @@ from privacyfence.approval_window import (
     _PII_BANNER_FILL_ALPHA,
     ApprovalWindowController,
     _details_html,
+    _email_header_html,
 )
 
 pytestmark = pytest.mark.skipif(
@@ -55,6 +57,8 @@ def make_controller(
     claude_reason="",
     write_content_flags=None,
     seen_count=0,
+    content_kind="generic",
+    pdf_bytes=b"",
 ):
     c = ApprovalWindowController.alloc().init()
     c.title = title
@@ -67,6 +71,8 @@ def make_controller(
     c.claude_reason = claude_reason
     c.write_content_flags = write_content_flags or []
     c.seen_count = seen_count
+    c.content_kind = content_kind
+    c.pdf_bytes = pdf_bytes
     return c
 
 
@@ -410,6 +416,109 @@ class TestDetailsPane:
         # of the controller/AppKit entirely.
         assert _details_html("abc") == _details_html("abc")
         assert _details_html("abc") != _details_html("xyz")
+
+
+class TestEmailStyleHeader:
+    """docs/security-review-ui-redesign.md §7 Phase 3, §6 "Email
+    (Gmail-style)" layout: content_kind="email" (an explicit hint gate.py's
+    gmail_get_message sets -- never guessed from preview's shape) prepends a
+    structured From/To/Subject/Date header to the details pane, built from
+    connectors/gmail.py's own preview dict shape."""
+
+    GMAIL_PREVIEW = {"From": "alice@example.com", "To": "bob@example.com",
+                      "Subject": "Q3 numbers", "Date": "2026-07-01"}
+
+    def test_generic_content_kind_renders_no_header(self):
+        # The .email-header CSS class is always defined in the static
+        # <style> block -- what must be absent is the actual header <div>
+        # (and its From:/To:/etc. labels), not the class name.
+        html = _details_html("body text", preview=self.GMAIL_PREVIEW, content_kind="generic")
+        assert '<div class="email-header">' not in html
+        assert "From:" not in html
+
+    def test_email_content_kind_renders_all_four_fields(self):
+        html = _details_html("body text", preview=self.GMAIL_PREVIEW, content_kind="email")
+        assert "alice@example.com" in html
+        assert "bob@example.com" in html
+        assert "Q3 numbers" in html
+        assert "2026-07-01" in html
+        assert "body text" in html  # the header supplements the body, doesn't replace it
+
+    def test_email_header_falls_back_when_a_field_is_missing(self):
+        # Defensive only -- content_kind="email" is only ever set at
+        # gmail.py's _get_message call site, alongside the exact preview
+        # shape above, so this should never actually happen in production.
+        html = _email_header_html({"From": "alice@example.com"})
+        assert "alice@example.com" in html
+        assert "(unknown)" in html  # To, Date
+        assert "(no subject)" in html
+
+    def test_email_header_escapes_its_fields(self):
+        html = _email_header_html({"From": "<script>alert(1)</script>"})
+        assert "<script>alert(1)</script>" not in html
+        assert "&lt;script&gt;" in html
+
+    def test_build_panel_wires_content_kind_and_preview_through(self):
+        controller = make_controller(
+            preview=self.GMAIL_PREVIEW, details_text="body text", content_kind="email",
+        )
+        controller.build_panel()
+        assert "alice@example.com" in controller._details_html_string
+        assert "Q3 numbers" in controller._details_html_string
+
+
+class TestPdfViewEmbed:
+    """docs/security-review-ui-redesign.md §7 Phase 3: pdf_bytes, when
+    non-empty, renders a native PDFView instead of the usual WKWebView --
+    connectors/drive.py is the only caller, and only after confirming
+    category_policy allows it (see gate.py's gated_call docstring); this
+    layer just needs to render whatever bytes it's handed, or fall back
+    cleanly if they don't parse as a real PDF."""
+
+    # Minimal single-page PDF -- enough for PDFDocument to parse successfully
+    # (confirmed via a real PDFDocument.alloc().initWithData_() call), not a
+    # claim this is a spec-perfect PDF.
+    VALID_PDF = (
+        b"%PDF-1.1\n"
+        b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n"
+        b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n"
+        b"3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >> endobj\n"
+        b"xref\n0 4\n0000000000 65535 f \n"
+        b"trailer << /Size 4 /Root 1 0 R >>\n"
+        b"startxref\n0\n%%EOF"
+    )
+
+    def test_no_pdf_bytes_renders_the_web_view(self):
+        views = build_views(make_controller(pdf_bytes=b""))
+        assert any(isinstance(v, WKWebView) for v in views)
+        assert not any(isinstance(v, PDFView) for v in views)
+
+    def test_valid_pdf_bytes_renders_a_pdf_view_instead(self):
+        views = build_views(make_controller(pdf_bytes=self.VALID_PDF))
+        assert any(isinstance(v, PDFView) for v in views)
+        assert not any(isinstance(v, WKWebView) for v in views)
+
+    def test_pdf_view_holds_the_parsed_document(self):
+        controller = make_controller(pdf_bytes=self.VALID_PDF)
+        controller.build_panel()
+        assert isinstance(controller._details_view, PDFView)
+        assert controller._details_view.document() is not None
+        assert controller._details_view.document().pageCount() == 1
+
+    def test_pdf_view_is_the_panel_initial_first_responder(self):
+        controller = make_controller(pdf_bytes=self.VALID_PDF)
+        panel = controller.build_panel()
+        assert panel.initialFirstResponder() is controller._details_view
+
+    def test_garbage_pdf_bytes_falls_back_to_the_web_view(self):
+        # A caller passing non-empty, non-PDF bytes shouldn't happen in
+        # practice (connectors/drive.py only ever sets pdf_bytes after
+        # confirming a real "application/pdf" mime type), but this pane
+        # must never silently render a blank/broken PDFView instead of
+        # falling back to something the reviewer can actually read.
+        views = build_views(make_controller(pdf_bytes=b"not a pdf at all"))
+        assert any(isinstance(v, WKWebView) for v in views)
+        assert not any(isinstance(v, PDFView) for v in views)
 
 
 class TestButtonClicked:

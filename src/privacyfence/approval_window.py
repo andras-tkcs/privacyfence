@@ -72,7 +72,8 @@ from AppKit import (
     NSWindowStyleMaskClosable,
     NSWindowStyleMaskTitled,
 )
-from Foundation import NSObject, NSString
+from Foundation import NSData, NSObject, NSString
+from Quartz import PDFDocument, PDFView
 from WebKit import WKWebView, WKWebViewConfiguration
 
 _WINDOW_WIDTH = 620.0
@@ -135,7 +136,9 @@ def _reading_time_label(text: str) -> str:
 # Details pane, Phase 3 (docs/security-review-ui-redesign.md §7): a local,
 # self-contained HTML document rendered by a WKWebView instead of a plain
 # NSTextView -- see _build_details_view. "%s" substitution rather than
-# str.format() so the CSS's own literal "{"/"}" never need doubling.
+# str.format() so the CSS's own literal "{"/"}" never need doubling. Two
+# slots: an optional per-surface header (e.g. the email header below), then
+# the escaped body text -- empty string for the header renders nothing.
 _DETAILS_HTML_TEMPLATE = """<!DOCTYPE html>
 <html>
 <head>
@@ -154,17 +157,50 @@ _DETAILS_HTML_TEMPLATE = """<!DOCTYPE html>
     word-wrap: break-word;
     box-sizing: border-box;
   }
+  .email-header { white-space: normal; margin-bottom: 8px; }
+  .email-header .row { margin-bottom: 2px; }
+  .email-header .label { color: #6e6e73; margin-right: 4px; }
+  .email-header .label + .label { margin-left: 16px; }
+  .email-header hr { border: none; border-top: 1px solid rgba(0, 0, 0, 0.12); margin: 8px 0 0 0; }
   @media (prefers-color-scheme: dark) {
     body { color: #f2f2f2; background: #1e1e1e; }
+    .email-header .label { color: #98989d; }
+    .email-header hr { border-top-color: rgba(255, 255, 255, 0.15); }
   }
 </style>
 </head>
-<body>%s</body>
+<body>%s%s</body>
 </html>
 """
 
+# Gmail's preview dict shape (connectors/gmail.py's _get_message/_get_thread)
+# -- content_kind="email" is only ever set at those two call sites, so these
+# are the only keys this ever needs to read. Never assumed to be full/valid
+# HTML: values still get _html_escape()'d individually, same as the body.
+_EMAIL_HEADER_TEMPLATE = """<div class="email-header">
+  <div class="row"><span class="label">From:</span>%s<span class="label">To:</span>%s</div>
+  <div class="row"><span class="label">Subject:</span>%s<span class="label">Date:</span>%s</div>
+  <hr>
+</div>"""
 
-def _details_html(details_text: str) -> str:
+
+def _email_header_html(preview: dict[str, str]) -> str:
+    """Structured From/To/Subject/Date header for content_kind="email" --
+    docs/security-review-ui-redesign.md §7 Phase 3's "Email (Gmail-style)"
+    layout (§6), "styled like a real email" instead of the generic
+    label/value summary box every other surface gets. Pure function, same
+    testability contract as _details_html()."""
+    return _EMAIL_HEADER_TEMPLATE % (
+        _html_escape(preview.get("From", "") or "(unknown)"),
+        _html_escape(preview.get("To", "") or "(unknown)"),
+        _html_escape(preview.get("Subject", "") or "(no subject)"),
+        _html_escape(preview.get("Date", "") or "(unknown)"),
+    )
+
+
+def _details_html(
+    details_text: str, *, preview: dict[str, str] | None = None, content_kind: str = "generic"
+) -> str:
     """Self-contained HTML for the details/body pane's WKWebView.
 
     Plain text only -- details_text arrives already HTML-stripped (see
@@ -175,9 +211,15 @@ def _details_html(details_text: str) -> str:
     load out to. Pure function -- directly unit-testable, the same
     "must mirror the real render" contract _compute_layout() has for
     build_panel()'s AppKit layout.
+
+    content_kind="email" (an explicit, connector-set hint -- never guessed
+    from preview's shape) prepends a structured From/To/Subject/Date header
+    built from preview; every other content_kind renders body text alone,
+    unchanged from before this parameter existed.
     """
+    header = _email_header_html(preview or {}) if content_kind == "email" else ""
     escaped = _html_escape(details_text or "(no details)")
-    return _DETAILS_HTML_TEMPLATE % escaped
+    return _DETAILS_HTML_TEMPLATE % (header, escaped)
 
 
 def _icon_path() -> str | None:
@@ -252,6 +294,8 @@ class ApprovalWindowController(NSObject):
         self.claude_reason: str = ""
         self.write_content_flags: list[str] = []
         self.seen_count: int = 0
+        self.content_kind: str = "generic"
+        self.pdf_bytes: bytes = b""
         self.result = "deny"
         self.panel = None
         self._details_view = None
@@ -424,7 +468,30 @@ class ApprovalWindowController(NSObject):
     # Phase 1a's note on why the Gmail-specific layout was deferred to here.
     # ------------------------------------------------------------------ #
 
-    def _build_details_view(self, y: float, width: float) -> WKWebView:
+    def _build_details_view(self, y: float, width: float) -> WKWebView | PDFView:
+        # pdf_bytes is only ever non-empty when gate.py's caller (drive.py's
+        # _get_file_content) already confirmed category_policy allows it --
+        # see gate.py's gated_call docstring. _build_details_pdf_view still
+        # falls back to the WKWebView on a corrupt/unparseable document,
+        # since that condition can't be checked before this point.
+        if self.pdf_bytes:
+            pdf_view = self._build_details_pdf_view(y, width)
+            if pdf_view is not None:
+                return pdf_view
+        return self._build_details_web_view(y, width)
+
+    def _build_details_pdf_view(self, y: float, width: float) -> PDFView | None:
+        data = NSData.dataWithBytes_length_(self.pdf_bytes, len(self.pdf_bytes))
+        document = PDFDocument.alloc().initWithData_(data)
+        if document is None:
+            return None
+        pdf_view = PDFView.alloc().initWithFrame_(NSMakeRect(_MARGIN, y, width, _DETAILS_HEIGHT))
+        pdf_view.setDocument_(document)
+        pdf_view.setAutoScales_(True)
+        self._details_view = pdf_view
+        return pdf_view
+
+    def _build_details_web_view(self, y: float, width: float) -> WKWebView:
         config = WKWebViewConfiguration.alloc().init()
         # No script needed for anything this pane renders today (plain text,
         # escaped) -- see _details_html()'s docstring. Disabled explicitly,
@@ -436,7 +503,7 @@ class ApprovalWindowController(NSObject):
         webview = WKWebView.alloc().initWithFrame_configuration_(
             NSMakeRect(_MARGIN, y, width, _DETAILS_HEIGHT), config
         )
-        html = _details_html(self.details_text)
+        html = _details_html(self.details_text, preview=self.preview, content_kind=self.content_kind)
         # Kept purely for testability -- WKWebView's own loaded content
         # isn't synchronously readable back out the way NSTextView.string()
         # was, so tests assert against this instead of the live view. See
@@ -778,6 +845,8 @@ def show_native_approval(
     claude_reason: str = "",
     write_content_flags: list[str] | None = None,
     seen_count: int = 0,
+    content_kind: str = "generic",
+    pdf_bytes: bytes = b"",
 ) -> str:
     """Show the approval window and block until the user picks a button.
 
@@ -798,6 +867,8 @@ def show_native_approval(
         controller.claude_reason = claude_reason or ""
         controller.write_content_flags = write_content_flags or []
         controller.seen_count = seen_count or 0
+        controller.content_kind = content_kind or "generic"
+        controller.pdf_bytes = pdf_bytes or b""
 
         controller.performSelectorOnMainThread_withObject_waitUntilDone_(
             "runApproval:", None, True
