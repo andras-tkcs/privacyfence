@@ -599,6 +599,34 @@ class TestEmailStyleHeader:
         assert "alice@example.com" in controller._details_html_string
         assert "Q3 numbers" in controller._details_html_string
 
+    def test_email_content_kind_suppresses_the_summary_box(self):
+        # gmail_get_message's preview dict is exactly {From, To, Date,
+        # Subject} -- the same four fields the email header above already
+        # renders from that same dict. Showing the summary box too would
+        # put each of them on screen twice, so it's suppressed specifically
+        # for content_kind="email" -- see _show_summary_box()'s docstring.
+        views = build_views(make_controller(preview=self.GMAIL_PREVIEW, content_kind="email"))
+        values = text_field_values(views)
+        assert "alice@example.com" not in values
+        assert "bob@example.com" not in values
+        assert "Q3 numbers" not in values
+
+    def test_generic_content_kind_still_shows_the_summary_box(self):
+        # Same preview dict, but content_kind="generic" -- confirms the
+        # suppression above is keyed on content_kind, not preview shape.
+        views = build_views(make_controller(preview=self.GMAIL_PREVIEW, content_kind="generic"))
+        values = text_field_values(views)
+        assert "alice@example.com" in values
+
+    def test_email_content_kind_reduces_computed_layout_height(self):
+        with_generic = make_controller(
+            preview=self.GMAIL_PREVIEW, content_kind="generic"
+        )._compute_layout(560.0)[0]
+        with_email = make_controller(
+            preview=self.GMAIL_PREVIEW, content_kind="email"
+        )._compute_layout(560.0)[0]
+        assert with_email < with_generic
+
 
 class TestPdfViewEmbed:
     """docs/security-review-ui-redesign.md §7 Phase 3: pdf_bytes, when

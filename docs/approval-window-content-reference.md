@@ -38,7 +38,7 @@ differs is which optional sections a given call populates. In display order:
 |---|---|---|---|---|---|
 | 1 | Kicker + fence icon + title | always | – | – | – |
 | 2 | "Seen N times this week" caption | `seen_count > 0` | no | no | **Automatic** — computed centrally in `gate.py` from the audit log for every call |
-| 3 | Preview summary box (the "WHAT") | `preview` dict is non-empty | no | no | Per-tool — each connector call site builds its own `preview` dict |
+| 3 | Preview summary box (the "WHAT") | `preview` dict is non-empty *and* `content_kind != "email"` | no | no | Per-tool — each connector call site builds its own `preview` dict. Suppressed for `content_kind="email"` (`_show_summary_box()`) — see row 8: the email header already renders those same fields, so showing both would put them on screen twice |
 | 4 | "AI will receive" checklist | `visibility` dict passed | **yes** | – | Per-tool opt-in — only Gmail/Drive/Slack read tools pass this (see View groups below) |
 | 5 | PII banner (red tint + sensitivity badges) | PII detector flagged the scanned content | **yes** | – | **Automatic** — `gate.py` runs `detect_pii_categories()` on every review-gate call's content, not opt-in per tool |
 | 6 | Content-flag banner (amber, informational) | local PII-pattern detector flagged Claude's own drafted content | – | **yes** | **Automatic** — same detector run over every popup-gate call's `details_text` |
@@ -49,9 +49,12 @@ differs is which optional sections a given call populates. In display order:
 Row 8's body defaults to plain escaped text in a WKWebView. Two read-only tools override that:
 
 - **`content_kind="email"`** renders a structured From/To/Subject/Date header above the body
-  instead of plain text. Only ever set by `gmail_get_message` — `gmail_get_thread` deliberately
-  doesn't use it (a thread has several messages, each with its own sender, so a single header
-  doesn't fit; it inlines per-message `From:`/`Date:` lines in the body text instead).
+  instead of plain text, and — since that header is built from the same `preview` dict the row-3
+  summary box would otherwise render — suppresses the summary box for that call, so the same
+  fields never appear twice on the dialog (`_show_summary_box()`). Only ever set by
+  `gmail_get_message` — `gmail_get_thread` deliberately doesn't use it (a thread has several
+  messages, each with its own sender, so a single header doesn't fit; it inlines per-message
+  `From:`/`Date:` lines in the body text instead, and keeps its own summary box).
 - **`pdf_bytes`** (non-empty) renders a native `PDFView` instead of the WKWebView body entirely.
   Only ever set by `drive_get_file_content`, and only when the file is a PDF, wasn't truncated by
   the fetch, and `category_policy(..., "file_content") == "allow"` — the reviewer must never see a
@@ -94,11 +97,12 @@ Same as RG-1 plus row 4: a checklist of `{label: allow/redact/block}` from
 | `slack_get_thread_replies` | Channel, Thread starter (80 chars), Replies (count) | Reply text, Usernames |
 | `slack_search_messages` | Query, Results (count) | Message text, Usernames |
 
-### RG-3 — Review popup + checklist + Gmail-style email header body
+### RG-3 — Review popup + checklist + Gmail-style email header body (no summary box)
 
-One tool: **`gmail_get_message`**. Preview: From, To, Date, Subject. Checklist: Sender & metadata,
-Message body, Attachments. Body pane renders a structured From/To/Subject/Date header (built from
-the same preview fields) above the message text, instead of plain text alone.
+One tool: **`gmail_get_message`**. No summary box — its preview dict (From, To, Date, Subject) is
+rendered once, as the structured header at the top of the details pane, instead of also appearing
+as row-3 label/value pairs (see row 3/row 8 in the anatomy table above). Checklist: Sender &
+metadata, Message body, Attachments.
 
 ### RG-4 — Review popup + checklist + optional native PDFView body
 
@@ -116,11 +120,50 @@ pane. The only structural difference between write tools is the **button set**.
 
 ### WG-1 — Deny / Allow once (no time-boxed accept)
 
-Every popup-gate tool *except* the six in WG-2 below — 38 tools across Gmail (create/reply drafts,
-labels, archive, filters), Drive (write/upload/move/comment, sheets add/rename/delete-dimensions),
-Slack, Calendar, Contacts, Telegram, Jira, Confluence, and Tasks. Preview fields are tool-specific
-— see `TECHNICAL_REFERENCE.md`'s per-connector tables for the exact field list per tool, they're
-not repeated here since there's no shared shape beyond "Deny / Allow once".
+Every popup-gate tool *except* the six in WG-2 below — 38 tools. Preview fields are tool-specific;
+`[brackets]` mark a field that's only added to the dict when the corresponding argument was
+actually provided (empty/default arguments don't produce an empty row).
+
+| Tool | Preview summary fields |
+|---|---|
+| `gmail_create_draft` | To, [Cc], [Bcc], Subject |
+| `gmail_reply_draft` | In reply to, To, [Cc], [Bcc] |
+| `gmail_reply_all_draft` | In reply to, To, Also to, [Cc], [Bcc] |
+| `gmail_add_label` | From, Subject, Label |
+| `gmail_remove_label` | From, Subject, Label |
+| `gmail_archive_message` | From, Subject |
+| `gmail_create_filter` | Criteria, Actions |
+| `gmail_update_filter` | Filter ID, Criteria, Actions |
+| `gmail_create_label` | Label |
+| `drive_write_doc_content` | File, Owner |
+| `drive_upload_file` | File, Source, Size, Destination |
+| `drive_write_file_content` | File, Owner |
+| `drive_move_file` | File, Owner, Move to folder |
+| `drive_sheets_add_sheet` | Spreadsheet, Owner, New tab, Size |
+| `drive_sheets_rename_sheet` | Spreadsheet, Owner, Tab id, New title |
+| `drive_sheets_delete_dimensions` | Spreadsheet, Owner, Tab id, Action (e.g. "Delete 2 COLUMNS starting at index 3") |
+| `slack_send_message` | Channel, [In thread], [Mark unread] |
+| `calendar_create_event` | Title, Time, Calendar, [Location], [Conferencing], [Rooms], [Attendees] |
+| `calendar_update_event` | Event, Calendar, + one row per changed field (Title/Start/End/Description/Location/Conferencing/Rooms — only fields that actually changed appear) |
+| `calendar_create_out_of_office` | Title, Time, Auto-decline |
+| `calendar_set_working_location` | Date, Location, [Building], [Label] |
+| `calendar_set_event_visibility` | Event, Calendar, Visibility (old → new) |
+| `contacts_update` | Contact, [Name], [Emails], [Phones], [Organization], [Job title] |
+| `contacts_create` | Name, [Emails], [Phones], [Organization], [Job title] |
+| `contacts_add_label` | Contact, Label |
+| `contacts_remove_label` | Contact, Label |
+| `telegram_send_message` | Chat |
+| `jira_create_issue` | Project, Type, Summary, [Priority] |
+| `jira_add_comment` | Issue |
+| `jira_update_issue` | Issue, + one row per changed field (Summary/Description/Priority/any custom fields — only fields actually being updated appear) |
+| `jira_transition_issue` | Issue, Status (old → new) |
+| `confluence_create_page` | Space, Title, [Parent page ID] |
+| `confluence_update_page` | Page ID, Space, Title |
+| `tasks_create_task` | Task list, Title, [Due] |
+| `tasks_update_task` | Task list, Task, [New title], [New due] |
+| `tasks_complete_task` | Task list, Task |
+| `tasks_uncomplete_task` | Task list, Task |
+| `tasks_move_task` | Task, From list, To list |
 
 ### WG-2 — Deny / Allow once / Allow for 5 min
 
@@ -146,11 +189,19 @@ minutes, in memory only — never written to `settings.yaml`, gone on daemon res
 - **AI-visibility checklist**: review-gate only, never on a write. A write already shows exactly
   what's being sent (Claude's own drafted content); there's no upstream filtering step to
   disclose.
-- **PII banner (red)**: review-gate only. Triggers the PII confirmation second-step dialog.
-- **Content-flag banner (amber)**: popup-gate only. Purely informational — never triggers a
-  second-step confirmation, unlike the red PII banner.
+- **PII banner (red) vs. content-flag banner (amber)**: both come from the same local detector
+  (`pii_detector.py`'s `detect_pii_categories()`), but scan opposite directions and carry opposite
+  weight. The red banner (review-gate only) scans content flowing **in** from an external source
+  (`gate.py`'s `pii_categories`) and, on Allow/Always-allow, forces a second explicit
+  `show_pii_confirmation_popup` before the decision is final — it's a trust-boundary gate, not
+  just a label. The amber banner (popup-gate only) scans Claude's own drafted content going **out**
+  (`gate.py`'s `write_content_flags`) and is purely informational: no full-window tint, no second
+  dialog, the click resolves immediately regardless. There's no "personal data snuck in" scenario
+  on a write — it's content Claude already described in chat — so it only ever gets a heads-up,
+  never a gate.
 - **Seen-count caption and "Claude says" reason box**: both, since both are computed centrally in
   `gate.py` for every gated call regardless of direction.
 - **content_kind email header / native PDFView**: review-gate only, and only for the two specific
   Gmail/Drive tools named above — no write tool renders anything but plain text in the details
-  pane.
+  pane. The email header is also the one case where row 3 (the summary box) is deliberately
+  suppressed rather than shown alongside it — see row 3 in the anatomy table above.

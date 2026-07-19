@@ -391,6 +391,16 @@ class ApprovalWindowController(NSObject):
     # Summary box
     # ------------------------------------------------------------------ #
 
+    def _show_summary_box(self) -> bool:
+        """False for content_kind="email": gmail_get_message's preview dict
+        is exactly {From, To, Date, Subject} -- the same four fields
+        _email_header_html() below already renders, from that same dict, as
+        a structured header directly above the body. Showing the summary
+        box too would put every one of those fields on screen twice. No
+        other content_kind's preview is a strict subset of what its details
+        pane already shows, so this only ever suppresses the box for email."""
+        return bool(self.preview) and self.content_kind != "email"
+
     def _summary_rows(self, width: float) -> tuple[list[tuple[str, str, float]], float]:
         value_width = width - 2 * _SUMMARY_PAD - _SUMMARY_LABEL_WIDTH - 14.0
         font = NSFont.systemFontOfSize_(13)
@@ -698,7 +708,7 @@ class ApprovalWindowController(NSObject):
         y += title_h + 18.0
         if self.seen_count > 0:
             y += 18.0  # request-fingerprint caption row ("Seen N times this week")
-        if self.preview:
+        if self._show_summary_box():
             y += self._summary_height(content_width) + 18.0
         if self.visibility:
             y += 20.0  # "AI will receive" label row
@@ -817,7 +827,8 @@ class ApprovalWindowController(NSObject):
 
         # WHAT: resources/summary box, first -- the data, not the decision,
         # is the visual lead (docs/security-review-ui-redesign.md §5.1).
-        if self.preview:
+        # Suppressed for content_kind="email" -- see _show_summary_box().
+        if self._show_summary_box():
             box_h = self._summary_height(content_width)
             bg = _background_box(NSMakeRect(_MARGIN, y, content_width, box_h))
             content.addSubview_(bg)
