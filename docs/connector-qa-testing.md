@@ -38,8 +38,8 @@ method has already caught that no unit test did.
 - `privacyfence-app` (the daemon) running, with every connector you want to
   test already authenticated from the menu bar.
 - The `privacyfence` MCP server attached to a Claude Cowork/Desktop
-  conversation — `scripts/dev_start.sh` registers `privacyfence-bridge` from
-  this checkout's venv for you.
+  conversation — `scripts/dev_start.sh` builds the bridge from this
+  checkout's `bridge/` and registers it for you.
 - **Claude Cowork's project/working folder (set in Cowork's UI — the folder
   picker for the conversation) must be this repo's root**, the same folder
   `dev_start.sh` was run from. This is what gives Claude filesystem access

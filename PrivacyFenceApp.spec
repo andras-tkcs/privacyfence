@@ -7,8 +7,8 @@
 #     Contents/MacOS/PrivacyFenceApp       ← daemon (main app, opens menu bar)
 #     Contents/MacOS/privacyfence-app      ← symlink → PrivacyFenceApp (for daemon auto-start)
 #
-# The bridge (Claude's MCP entry point) is built separately — see
-# PrivacyFenceBridge.spec and scripts/build_mcpb.sh — and distributed as a
+# The bridge (Claude's MCP entry point) is built separately — a Node/TypeScript
+# server, see bridge/ and scripts/build_mcpb.sh — and distributed as a
 # one-click Claude Desktop extension (.mcpb) instead of living inside this app.
 #
 # Build:
@@ -39,11 +39,6 @@ datas = [
     # google-auth needs its transport files
     *collect_data_files("google"),
     *collect_data_files("googleapiclient"),
-    # fastmcp may carry JSON schema files
-    *collect_data_files("fastmcp"),
-    # fastmcp/__init__.py reads version via importlib.metadata (tries fastmcp-slim first)
-    *copy_metadata("fastmcp"),
-    *copy_metadata("fastmcp-slim"),
 ]
 
 # ── hidden imports ────────────────────────────────────────────────────────────
@@ -68,9 +63,6 @@ hidden_imports = [
     "cryptography",
     # telethon (optional – Telegram; bundled so the connector works)
     "telethon",
-    # fastmcp transports
-    "fastmcp",
-    "mcp",
     # privacyfence connectors (all loaded at runtime from _build_connectors)
     "privacyfence.connectors.gmail",
     "privacyfence.connectors.drive",
