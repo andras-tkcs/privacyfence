@@ -48,7 +48,6 @@ for arg in "$@"; do
     --sign) SIGN_IDENTITY="${2:-}"; shift 2 ;;
   esac
 done
-export SIGN_IDENTITY   # build_mcpb.sh (run below) needs this too
 
 echo "=== Building ${PRODUCT_NAME} ${VERSION} ==="
 
