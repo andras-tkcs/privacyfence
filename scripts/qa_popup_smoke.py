@@ -50,18 +50,21 @@ has installed):
     .venv/bin/python scripts/qa_popup_smoke.py
     .venv/bin/python scripts/qa_popup_smoke.py --report-file /tmp/popup_smoke.md
     .venv/bin/python scripts/qa_popup_smoke.py --pause-seconds 3   # slow down to actually look
+    .venv/bin/python scripts/qa_popup_smoke.py --screenshot-dir /tmp/popup_smoke_shots
 """
 from __future__ import annotations
 
 import argparse
 import functools
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -72,6 +75,8 @@ if sys.platform != "darwin":
     )
     sys.exit(1)
 
+import Quartz  # noqa: E402
+from AppKit import NSBitmapImageRep, NSPNGFileType  # noqa: E402
 from PyObjCTools import AppHelper  # noqa: E402
 
 from privacyfence.approval_window import show_native_approval  # noqa: E402
@@ -113,13 +118,14 @@ def _run_applescript(script: str) -> str:
             pass
 
 
-def _click_button(pid: int, title: str) -> str:
-    """Wait for our own process's first window to appear, then click a
-    button on it by its exact title -- returns "clicked", "TIMEOUT_NO_WINDOW"
-    (the popup never appeared within WINDOW_WAIT_TIMEOUT_SECONDS),
-    "BUTTON_NOT_FOUND" (the window appeared but has no button with this
-    exact title -- e.g. the button set didn't match what the scenario
-    expected), or an osascript-level error string.
+def _wait_for_window(pid: int) -> str:
+    """Block until our own process's first window appears -- returns "ready",
+    or "TIMEOUT_NO_WINDOW" if it never appeared within
+    WINDOW_WAIT_TIMEOUT_SECONDS.
+
+    Split out from _click_button() (which used to poll and click in one
+    osascript call) so a screenshot can be taken in between: after the
+    window exists but before the click that may dismiss it.
 
     Targets the process by unix id, not by name -- a plain `python3
     scripts/...` invocation's process name varies by how Python itself was
@@ -130,12 +136,27 @@ def _click_button(pid: int, title: str) -> str:
         set targetProcess to first process whose unix id is {pid}
         set deadlineTime to (current date) + {WINDOW_WAIT_TIMEOUT_SECONDS}
         repeat
-            if (exists window 1 of targetProcess) then exit repeat
+            if (exists window 1 of targetProcess) then return "ready"
             if (current date) > deadlineTime then
                 return "TIMEOUT_NO_WINDOW"
             end if
             delay 0.1
         end repeat
+    end tell
+    '''
+    return _run_applescript(script)
+
+
+def _click_button(pid: int, title: str) -> str:
+    """Click a button on our own process's first window by its exact title
+    -- returns "clicked", "BUTTON_NOT_FOUND" (the window has no button with
+    this exact title -- e.g. the button set didn't match what the scenario
+    expected), or an osascript-level error string. Assumes the window
+    already exists (call _wait_for_window() first).
+    """
+    script = f'''
+    tell application "System Events"
+        set targetProcess to first process whose unix id is {pid}
         tell targetProcess
             if not (exists button "{title}" of window 1) then
                 return "BUTTON_NOT_FOUND"
@@ -148,9 +169,53 @@ def _click_button(pid: int, title: str) -> str:
     return _run_applescript(script)
 
 
+_SLUG_RE = re.compile(r"[^A-Za-z0-9_-]+")
+
+
+def _slugify(name: str) -> str:
+    return _SLUG_RE.sub("_", name).strip("_")
+
+
+def _screenshot_own_window(pid: int, path: Path) -> bool:
+    """Screenshot the first on-screen window owned by our own process (there's
+    only ever one at a time -- show_native_approval()'s modal loop means
+    scenarios never overlap) and write it to `path` as a PNG. Returns whether
+    a window was found and captured; a miss isn't treated as a scenario
+    failure, it's a photo opportunity that arrived too late for this run's
+    window.
+
+    No extra macOS permission needed: the Screen Recording permission gate
+    only applies to capturing *other* processes' windows, not your own.
+
+    kCGWindowImageBoundsIgnoreFraming is required, not kCGWindowImageDefault
+    -- the default pads the captured image with the window's drop shadow, at
+    a size that doesn't even scale cleanly with the window's actual point
+    size (verified empirically: a 300x178pt window came back as 824x580px
+    with the default option, vs. a clean 600x356px -- exactly 2x retina --
+    with this one).
+    """
+    window_list = Quartz.CGWindowListCopyWindowInfo(
+        Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID
+    )
+    window_id = next(
+        (w["kCGWindowNumber"] for w in window_list if w.get("kCGWindowOwnerPID") == pid), None
+    )
+    if window_id is None:
+        return False
+    image = Quartz.CGWindowListCreateImage(
+        Quartz.CGRectNull, Quartz.kCGWindowListOptionIncludingWindow, window_id,
+        Quartz.kCGWindowImageBoundsIgnoreFraming,
+    )
+    if image is None:
+        return False
+    bitmap = NSBitmapImageRep.alloc().initWithCGImage_(image)
+    png_data = bitmap.representationUsingType_properties_(NSPNGFileType, None)
+    return bool(png_data.writeToFile_atomically_(str(path), True))
+
+
 def _run_scenario(
     name: str, *, click_title: str, expected: str, pre_click_title: str | None = None,
-    pause_seconds: float = 0.3, **popup_kwargs
+    pause_seconds: float = 0.3, screenshot_dir: Path | None = None, **popup_kwargs
 ) -> ScenarioResult:
     pid = os.getpid()
     click_status_box: list[str] = []
@@ -164,6 +229,15 @@ def _run_scenario(
         # for it -- and, at a larger value, gives a human time to actually
         # look at what's on screen before it's clicked away.
         time.sleep(pause_seconds)
+        wait_status = _wait_for_window(pid)
+        if wait_status != "ready":
+            click_status_box.append(wait_status)
+            return
+        if screenshot_dir is not None:
+            # Taken as the popup first appears, before any click -- for a
+            # pre_click_title scenario that's the collapsed ("Show more"
+            # not yet clicked) state, not the expanded one.
+            _screenshot_own_window(pid, screenshot_dir / f"{_slugify(name)}.png")
         if pre_click_title is not None:
             # A non-terminal click (e.g. "Show more") that must NOT resolve
             # the modal loop -- if it did, the final click below would hit
@@ -249,7 +323,7 @@ _TINY_PDF_BYTES = (
 )
 
 
-def _scenarios(pause_seconds: float = 0.3) -> list[ScenarioResult]:
+def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -> list[ScenarioResult]:
     """One scenario per tool in docs/approval-window-content-reference.md's RG-1/RG-2/RG-3/RG-4/
     WG-1/WG-2 tables (61 tools total) -- every dialog *shape* that reference doc documents, not
     just a representative handful. Cross-cutting mechanics that doc calls "automatic on every
@@ -262,9 +336,9 @@ def _scenarios(pause_seconds: float = 0.3) -> list[ScenarioResult]:
     of the same mechanic twice.
     """
     results = []
-    # Bound once here rather than passing pause_seconds=pause_seconds at each of the ~61 call
-    # sites below.
-    run = functools.partial(_run_scenario, pause_seconds=pause_seconds)
+    # Bound once here rather than passing pause_seconds=pause_seconds, screenshot_dir=screenshot_dir
+    # at each of the ~61 call sites below.
+    run = functools.partial(_run_scenario, pause_seconds=pause_seconds, screenshot_dir=screenshot_dir)
 
     # ================================================================== #
     # RG-1 -- plain review popup (summary box only, no AI-visibility checklist)
@@ -1053,6 +1127,13 @@ def main() -> None:
         help="Seconds to wait before each click (default: 0.3, just enough for the window to "
              "appear). Raise this (e.g. 3) to actually look at each popup before it's clicked away.",
     )
+    parser.add_argument(
+        "--screenshot-dir", type=Path,
+        help="Save one PNG per scenario (named after the scenario, taken as its popup first "
+             "appears, before any click) to this directory. Created if it doesn't exist. No "
+             "extra macOS permission needed beyond what this script already requires -- "
+             "capturing your own process's window doesn't need Screen Recording access.",
+    )
     args = parser.parse_args()
 
     results: list[ScenarioResult] = []
@@ -1061,7 +1142,9 @@ def main() -> None:
     def work() -> None:
         nonlocal exit_code
         try:
-            results.extend(_scenarios(args.pause_seconds))
+            if args.screenshot_dir is not None:
+                args.screenshot_dir.mkdir(parents=True, exist_ok=True)
+            results.extend(_scenarios(args.pause_seconds, args.screenshot_dir))
         except Exception as exc:  # noqa: BLE001 - surfaced via the report/exit code below, not swallowed
             print(f"qa_popup_smoke.py: scenario run raised {exc!r}", file=sys.stderr)
             exit_code = 1
