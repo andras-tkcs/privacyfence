@@ -123,6 +123,60 @@ class TestRunAsyncMarshaling:
         assert done_calls == [(False, boom)]
 
 
+class TestMenuRebuildDeferredWhileOpen:
+    """Regression for a crash: mutating the live status-bar NSMenu
+    (self.menu.clear()/self.menu = [...] inside _rebuild()) while AppKit is
+    tracking it on screen segfaults the process. _MenuTrackingDelegate
+    marks app._menu_is_open via menuWillOpen_/menuDidClose_; _rebuild()
+    must defer to app._rebuild_pending instead of mutating the menu while
+    that flag is set, and replay exactly once when the dropdown closes.
+    """
+
+    def test_rebuild_deferred_while_menu_open(self, app, monkeypatch):
+        load_calls = []
+        monkeypatch.setattr(app, "_load_config", lambda: load_calls.append(1) or {"connectors": {}})
+
+        app._menu_tracking_delegate.menuWillOpen_(None)
+        assert app._menu_is_open is True
+
+        app._rebuild()
+
+        assert load_calls == [], "rebuild must not mutate the menu while it's open"
+        assert app._rebuild_pending is True
+
+    def test_pending_rebuild_replays_exactly_once_on_close(self, app, monkeypatch):
+        rebuild_calls = []
+        real_rebuild = app._rebuild
+
+        def counting_rebuild():
+            rebuild_calls.append(1)
+            # Bypass the guard for the inner call so we can tell whether the
+            # delegate invoked the real rebuild logic, not just re-deferred.
+            app._menu_is_open = False
+            real_rebuild()
+
+        app._menu_tracking_delegate.menuWillOpen_(None)
+        app._rebuild()  # deferred, not counted
+        assert app._rebuild_pending is True
+
+        monkeypatch.setattr(app, "_rebuild", counting_rebuild)
+        app._menu_tracking_delegate.menuDidClose_(None)
+
+        assert app._menu_is_open is False
+        assert app._rebuild_pending is False
+        assert rebuild_calls == [1]
+
+    def test_close_with_no_pending_rebuild_does_not_rebuild(self, app, monkeypatch):
+        rebuild_calls = []
+        monkeypatch.setattr(app, "_rebuild", lambda: rebuild_calls.append(1))
+
+        app._menu_tracking_delegate.menuWillOpen_(None)
+        app._menu_tracking_delegate.menuDidClose_(None)
+
+        assert rebuild_calls == []
+        assert app._menu_is_open is False
+
+
 class TestAuthenticateDoesNotRequireRestart:
     """Regression for: 'authenticate a service was not displayed in the
     menubar until restart'. Simulates a successful Google OAuth flow end to
@@ -500,9 +554,20 @@ class TestGatherConnectorSections:
         sheets_titles = {s.title for s in app._gather_connector_sections("sheets")}
         assert sheets_titles == {
             "Read values", "Write range", "Add tab", "Rename tab", "Format range",
+            "Insert rows/columns", "Delete rows/columns",
         }
         drive_titles = {s.title for s in app._gather_connector_sections("drive")}
         assert not (drive_titles & sheets_titles)  # Sheets ops aren't duplicated under Drive
+
+    def test_docs_is_distinct_from_drive(self, app):
+        # Same bug class as test_sheets_is_distinct_from_drive: "docs" also
+        # rides on Drive's OAuth grant rather than being a real connector in
+        # ALL_CONNECTORS, so it needs its own entry in RULES_MENU_GROUPS or
+        # its bucket is silently dropped and never rendered anywhere.
+        docs_titles = {s.title for s in app._gather_connector_sections("docs")}
+        assert docs_titles == {"Edit content", "Format content"}
+        drive_titles = {s.title for s in app._gather_connector_sections("drive")}
+        assert not (drive_titles & docs_titles)  # Docs ops aren't duplicated under Drive
 
     def test_connector_with_no_configurable_ops_shows_placeholder(self, app, monkeypatch):
         monkeypatch.setattr(menu_bar, "RULES_MENU_GROUPS", menu_bar.RULES_MENU_GROUPS + ["nullconnector"])
@@ -813,6 +878,19 @@ class TestAddRule:
 
         cfg = app._load_config()
         assert cfg["auto_accept_rules"]["gmail.read_message"] == [{"rule": "i_am_sender"}]
+
+    def test_calendar_set_visibility_offers_non_private_event(self, app, monkeypatch):
+        # Regression: calendar.set_visibility was entirely absent from
+        # OPERATION_LABELS/RULES_BY_OPERATION, so non_private_event -- which
+        # auto_accept.py's _rule_non_private_event docstring explicitly
+        # names this operation as supporting -- had no path to be added
+        # short of hand-editing settings.yaml.
+        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: "non_private_event")
+
+        app._add_rule("calendar.set_visibility")
+
+        cfg = app._load_config()
+        assert cfg["auto_accept_rules"]["calendar.set_visibility"] == [{"rule": "non_private_event"}]
 
     def test_rule_with_list_value_starts_empty_no_prompt(self, app, monkeypatch):
         # List-value rules no longer prompt immediately for a (multi-line)
@@ -2184,3 +2262,68 @@ class TestAuthenticateTelegram:
         assert any("invalid code" in str(a) for a in alerts)
         assert rebuild_calls == [1]
         assert refresh_calls == []
+
+
+class TestRuleUiCompleteness:
+    """Structural checks tying menu_bar's rule UI to auto_accept's rule engine.
+
+    These exist so that adding a rule (or an operation) to auto_accept.py
+    without also wiring it into the "Manage Auto-accept Rules…" window fails
+    a test instead of silently shipping a rule/operation nobody can reach
+    from the UI -- which is exactly what happened for calendar.set_visibility
+    and non_private_event before this class was added, and for the "docs"
+    operation group vs. RULES_MENU_GROUPS (see test_docs_is_distinct_from_
+    drive's regression note) before that.
+    """
+
+    @staticmethod
+    def _all_rule_names() -> set[str]:
+        return {
+            name[len("_rule_"):]
+            for name in vars(auto_accept.AutoAcceptEvaluator)
+            if name.startswith("_rule_") and callable(getattr(auto_accept.AutoAcceptEvaluator, name))
+        }
+
+    @staticmethod
+    def _rules_by_operation_names() -> set[str]:
+        return {rule for rules in menu_bar.RULES_BY_OPERATION.values() for rule in rules}
+
+    def test_every_rule_is_reachable_from_some_operation(self):
+        unreachable = self._all_rule_names() - self._rules_by_operation_names()
+        assert unreachable == set(), (
+            f"_rule_* methods with no operation in RULES_BY_OPERATION offering them, so "
+            f"'+ Add rule…' can never surface them: {unreachable}"
+        )
+
+    def test_no_stale_rule_names_in_rules_by_operation(self):
+        stale = self._rules_by_operation_names() - self._all_rule_names()
+        assert stale == set(), (
+            f"RULES_BY_OPERATION names with no matching _rule_* method (renamed/removed rule?): {stale}"
+        )
+
+    def test_every_operation_label_is_a_real_operation_key(self):
+        real_ops = set(auto_accept.TOOL_TO_OPERATION.values())
+        fake = set(menu_bar.OPERATION_LABELS) - real_ops
+        assert fake == set(), (
+            f"OPERATION_LABELS keys not produced by any tool in TOOL_TO_OPERATION: {fake}"
+        )
+
+    def test_every_rules_by_operation_key_has_a_label(self):
+        # Every op_key in RULES_BY_OPERATION needs an OPERATION_LABELS entry
+        # or _gather_connector_sections has no title/section to render it
+        # under -- the rules would be configured but invisible.
+        unlabeled = set(menu_bar.RULES_BY_OPERATION) - set(menu_bar.OPERATION_LABELS)
+        assert unlabeled == set(), f"RULES_BY_OPERATION keys missing from OPERATION_LABELS: {unlabeled}"
+
+    def test_every_operation_labels_connector_prefix_is_in_rules_menu_groups(self):
+        # The bug class behind test_sheets_is_distinct_from_drive and
+        # test_docs_is_distinct_from_drive: an operation can be fully wired
+        # into OPERATION_LABELS/RULES_BY_OPERATION and still never render
+        # anywhere, because _list_rule_connectors/_gather_connector_sections
+        # only iterate connector prefixes listed in RULES_MENU_GROUPS.
+        prefixes = {op_key.split(".", 1)[0] for op_key in menu_bar.OPERATION_LABELS}
+        missing = prefixes - set(menu_bar.RULES_MENU_GROUPS)
+        assert missing == set(), (
+            f"OPERATION_LABELS connector prefixes missing from RULES_MENU_GROUPS -- their "
+            f"whole rule bucket is silently dropped and never rendered: {missing}"
+        )

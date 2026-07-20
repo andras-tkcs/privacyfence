@@ -39,3 +39,9 @@ don't recolor/distort) rather than editing the asset to fit.
 
 All are square, ~512×512 (Google's three are 1024×1024), pulled directly from each company's own
 CDN or app-store listing — not third-party icon aggregators.
+
+`contacts.png`, `slack.png`, `tasks.png`, `salesforce.png`, and `telegram.png` came from their
+app-store listings with an opaque white square behind the mark (the listing-icon convention, not
+part of the brand mark itself). That square has been flood-filled to transparent so the icon sits
+directly on the dialog background like the others, matching each mark's own outline rather than a
+white tile — no other edit to the logo artwork.
