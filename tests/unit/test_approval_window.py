@@ -53,7 +53,7 @@ pytestmark = pytest.mark.skipif(
 
 def make_controller(
     *,
-    title="PrivacyFence — Read Gmail message",
+    title="Read Gmail message",
     preview=None,
     details_text="ordinary, non-sensitive content",
     allow_accept_all=False,

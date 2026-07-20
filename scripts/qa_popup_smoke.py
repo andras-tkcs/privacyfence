@@ -347,7 +347,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "RG-1 · gmail_download_attachment",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Download Gmail Attachment",
+        title="Download Gmail Attachment",
         preview={
             "From": QA_EMAIL, "Subject": QA_GMAIL_SUBJECT, "Attachment name": "qa-smoke-test.pdf",
             "Type": "application/pdf", "Size": "24 KB", "Will save to": "~/Downloads/qa-smoke-test.pdf",
@@ -360,7 +360,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "RG-1 · drive_download_file",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Download Drive File",
+        title="Download Drive File",
         preview={
             "File": QA_DRIVE_FILE, "Owner": QA_EMAIL, "Size": "1.2 KB", "Modified": "2026-07-16",
             "Saved to": f"~/Downloads/{QA_DRIVE_FILE}",
@@ -373,7 +373,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "RG-1 · calendar_get_event_details",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Read Calendar Event",
+        title="Read Calendar Event",
         preview={
             "Title": QA_EVENT, "Time": QA_EVENT_TIME, "Organizer": QA_PERSON, "Attendees": "none",
         },
@@ -385,7 +385,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "RG-1 · jira_get_issue",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Read Jira Issue",
+        title="Read Jira Issue",
         preview={
             "Project": QA_PROJECT, "Key": QA_JIRA_KEY, "Summary": QA_JIRA_SUMMARY,
             "Status": "To Do", "Assignee": "Unassigned",
@@ -405,7 +405,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
         # _rebuild_content would silently break.
         "RG-1 · confluence_get_page (+ Show more → Allow once)",
         click_title="Allow once", expected="accept", pre_click_title="Show more",
-        title="PrivacyFence — Read Confluence Page",
+        title="Read Confluence Page",
         preview={
             "Title": QA_PAGE, "Space": QA_SPACE, "Author": QA_PERSON, "Last modified": "2026-07-16",
         },
@@ -421,7 +421,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
         # above.
         "RG-1 · confluence_get_page_by_title",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Read Confluence Page",
+        title="Read Confluence Page",
         preview={
             "Title": QA_PAGE, "Space": QA_SPACE, "Author": QA_PERSON, "Last modified": "2026-07-16",
         },
@@ -433,7 +433,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "RG-1 · telegram_get_messages",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Read Telegram Messages",
+        title="Read Telegram Messages",
         preview={"Chat": "Saved Messages", "Messages": "1"},
         details_text=QA_TELEGRAM_SEED,
         allow_accept_all=False,
@@ -443,7 +443,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "RG-1 · telegram_search_messages",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Search Telegram Messages",
+        title="Search Telegram Messages",
         preview={"Query": "QATEST", "Results": "1"},
         details_text=QA_TELEGRAM_SEED,
         allow_accept_all=False,
@@ -453,7 +453,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "RG-1 · salesforce_get_record",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Read Salesforce Record",
+        title="Read Salesforce Record",
         preview={"Object type": "Account", "Name": QA_ACCOUNT, "Record ID": "001QA0000012345"},
         details_text=f"Name: {QA_ACCOUNT}\nIndustry: (not set)",
         allow_accept_all=False,
@@ -463,7 +463,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "RG-1 · salesforce_run_report",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Run Salesforce Report",
+        title="Run Salesforce Report",
         preview={"Report": QA_REPORT, "Report ID": "00OQA0000006789"},
         details_text="1 row, 1 grouping -- synthetic PrivacyFence QA report output.",
         allow_accept_all=False,
@@ -475,7 +475,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
         # correctly on an RG-1-shaped popup, not just the write-side one.
         "RG-1 · salesforce_search (Deny)",
         click_title="Deny", expected="deny",
-        title="PrivacyFence — Search Salesforce",
+        title="Search Salesforce",
         preview={
             "Search term": "PrivacyFence QA", "Object types": "Account", "Results": "2",
         },
@@ -492,7 +492,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
         # Also the Always-allow-click mechanic.
         "RG-2 · gmail_get_thread (Always allow)",
         click_title="Always allow", expected="accept_all",
-        title="PrivacyFence — Read Gmail Thread",
+        title="Read Gmail Thread",
         preview={
             "Subject": QA_GMAIL_SUBJECT, "Participants": QA_EMAIL, "Messages": "2",
             "Dates": "2026-07-16 – 2026-07-16",
@@ -507,7 +507,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "RG-2 · drive_sheets_get_values",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Read Sheet Values",
+        title="Read Sheet Values",
         preview={"Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Range": "A1:C10"},
         details_text="Synthetic PrivacyFence QA test spreadsheet values. No real information.",
         allow_accept_all=False,
@@ -522,7 +522,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
         # multi-section window still doesn't shift the button row.
         "RG-2 · slack_get_channel_history (+ reason → seen-count)",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Read Slack Channel History",
+        title="Read Slack Channel History",
         preview={
             "Channel": QA_SLACK_CHANNEL, "Messages": "2", "First message": QA_SLACK_SEED,
         },
@@ -537,7 +537,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "RG-2 · slack_get_thread_replies",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Read Slack Thread Replies",
+        title="Read Slack Thread Replies",
         preview={
             "Channel": QA_SLACK_CHANNEL, "Thread starter": QA_SLACK_SEED, "Replies": "1",
         },
@@ -550,7 +550,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "RG-2 · slack_search_messages",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Search Slack Messages",
+        title="Search Slack Messages",
         preview={"Query": "QATEST", "Results": "2"},
         details_text=f"{QA_SLACK_SEED}\n{QA_SLACK_REPLY}",
         allow_accept_all=False,
@@ -570,7 +570,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
         # covered end to end.
         "RG-3 · gmail_get_message (+ email header, + PII banner)",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Read Gmail Message",
+        title="Read Gmail Message",
         preview={"From": QA_EMAIL, "To": QA_EMAIL, "Subject": QA_GMAIL_SUBJECT, "Date": "2026-07-16"},
         details_text=f"{QA_GMAIL_BODY} Call me back at 555-0142 [QATEST] to confirm.",
         allow_accept_all=False,
@@ -588,7 +588,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
         # Also the native-PDFView mechanic.
         "RG-4 · drive_get_file_content (+ PDFView)",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Read Drive File Content",
+        title="Read Drive File Content",
         preview={
             "File": "PrivacyFence QA test file [QATEST].pdf", "Owner": QA_EMAIL,
             "Size": "18 KB", "Modified": "2026-07-16",
@@ -608,7 +608,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
         # Also the content-flag banner+badges mechanic.
         "WG-1 · gmail_create_draft (+ content-flag banner)",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Create Gmail Draft",
+        title="Create Gmail Draft",
         preview={"To": QA_EMAIL, "Cc": QA_CC_EMAIL, "Subject": f"Re: {QA_GMAIL_SUBJECT}"},
         details_text="Please wire the deposit per the attached IBAN [QATEST].",
         allow_accept_all=False,
@@ -619,7 +619,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · gmail_reply_draft",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Create Gmail Reply Draft",
+        title="Create Gmail Reply Draft",
         preview={"In reply to": QA_GMAIL_SUBJECT, "To": QA_EMAIL},
         details_text="Synthetic PrivacyFence QA reply draft. No real information.",
         allow_accept_all=False,
@@ -629,7 +629,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · gmail_reply_all_draft",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Create Gmail Reply-All Draft",
+        title="Create Gmail Reply-All Draft",
         preview={"In reply to": QA_GMAIL_SUBJECT, "To": QA_EMAIL, "Also to": QA_CC_EMAIL},
         details_text="Synthetic PrivacyFence QA reply-all draft. No real information.",
         allow_accept_all=False,
@@ -639,7 +639,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · gmail_add_label",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Add Gmail Label",
+        title="Add Gmail Label",
         preview={"From": QA_EMAIL, "Subject": QA_GMAIL_SUBJECT, "Label": "QATEST"},
         details_text=QA_GMAIL_BODY,
         allow_accept_all=False,
@@ -649,7 +649,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · gmail_remove_label",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Remove Gmail Label",
+        title="Remove Gmail Label",
         preview={"From": QA_EMAIL, "Subject": QA_GMAIL_SUBJECT, "Label": "QATEST"},
         details_text=QA_GMAIL_BODY,
         allow_accept_all=False,
@@ -659,7 +659,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · gmail_archive_message",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Archive Gmail Message",
+        title="Archive Gmail Message",
         preview={"From": QA_EMAIL, "Subject": QA_GMAIL_SUBJECT},
         details_text=QA_GMAIL_BODY,
         allow_accept_all=False,
@@ -669,7 +669,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · gmail_create_filter",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Create Gmail Filter",
+        title="Create Gmail Filter",
         preview={"Criteria": f"from:{QA_EMAIL}", "Actions": "Apply label QATEST"},
         details_text="Synthetic PrivacyFence QA filter. No real information.",
         allow_accept_all=False,
@@ -679,7 +679,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · gmail_update_filter",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Update Gmail Filter",
+        title="Update Gmail Filter",
         preview={
             "Filter ID": "ANe1Bmh_qa0001", "Criteria": f"from:{QA_EMAIL}", "Actions": "Apply label QATEST",
         },
@@ -691,7 +691,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · gmail_create_label",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Create Gmail Label",
+        title="Create Gmail Label",
         preview={"Label": "QATEST"},
         details_text="Synthetic PrivacyFence QA label. No real information.",
         allow_accept_all=False,
@@ -701,7 +701,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · drive_write_doc_content",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Write Google Doc Content",
+        title="Write Google Doc Content",
         preview={"File": QA_DRIVE_DOC, "Owner": QA_EMAIL},
         details_text="Synthetic PrivacyFence QA doc content. No real information.",
         allow_accept_all=False,
@@ -711,7 +711,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · drive_upload_file",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Upload Drive File",
+        title="Upload Drive File",
         preview={
             "File": "PrivacyFence QA upload [QATEST].txt", "Source": "~/Desktop/qa-smoke-test.txt",
             "Size": "0.8 KB", "Destination": QA_DRIVE_FOLDER,
@@ -724,7 +724,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · drive_write_file_content",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Write Drive File Content",
+        title="Write Drive File Content",
         preview={"File": QA_DRIVE_FILE, "Owner": QA_EMAIL},
         details_text="Synthetic PrivacyFence QA file content. No real information.",
         allow_accept_all=False,
@@ -734,7 +734,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · drive_move_file",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Move Drive File",
+        title="Move Drive File",
         preview={"File": QA_DRIVE_FILE, "Owner": QA_EMAIL, "Move to folder": f"{QA_DRIVE_FOLDER} / Archive"},
         details_text="Synthetic PrivacyFence QA file move. No real information.",
         allow_accept_all=False,
@@ -744,7 +744,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · drive_sheets_add_sheet",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Add Sheet Tab",
+        title="Add Sheet Tab",
         preview={
             "Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "New tab": "QATEST Sheet2",
             "Size": "26 columns x 1000 rows",
@@ -757,7 +757,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · drive_sheets_rename_sheet",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Rename Sheet Tab",
+        title="Rename Sheet Tab",
         preview={
             "Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Tab id": "0", "New title": "QATEST renamed",
         },
@@ -769,7 +769,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · drive_sheets_delete_dimensions",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Delete Sheet Rows/Columns",
+        title="Delete Sheet Rows/Columns",
         preview={
             "Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Tab id": "0",
             "Action": "Delete 2 COLUMNS starting at index 3",
@@ -782,7 +782,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · slack_send_message",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Send Slack Message",
+        title="Send Slack Message",
         preview={"Channel": QA_SLACK_CHANNEL, "In thread": "1700000001.000100"},
         details_text="Synthetic PrivacyFence QA reply. No real information. [QATEST]",
         allow_accept_all=False,
@@ -792,7 +792,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · calendar_create_event",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Create Calendar Event",
+        title="Create Calendar Event",
         preview={
             "Title": "PrivacyFence QA smoke event [QATEST]",
             "Time": "2027-04-01 09:00–09:30 (Europe/Budapest)",
@@ -806,7 +806,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · calendar_update_event",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Update Calendar Event",
+        title="Update Calendar Event",
         preview={"Event": QA_EVENT, "Calendar": QA_CALENDAR, "Start": "2027-03-15 10:00 → 11:00"},
         details_text="Synthetic PrivacyFence QA test event update. No real information.",
         allow_accept_all=False,
@@ -816,7 +816,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · calendar_create_out_of_office",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Create Out of Office",
+        title="Create Out of Office",
         preview={
             "Title": "PrivacyFence QA OOO [QATEST]", "Time": "2027-03-20 – 2027-03-21",
             "Auto-decline": "Yes",
@@ -829,7 +829,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · calendar_set_working_location",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Set Working Location",
+        title="Set Working Location",
         preview={"Date": "2027-03-22", "Location": "Home", "Building": "n/a", "Label": "Remote"},
         details_text="Synthetic PrivacyFence QA working-location entry. No real information.",
         allow_accept_all=False,
@@ -839,7 +839,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · calendar_set_event_visibility",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Set Event Visibility",
+        title="Set Event Visibility",
         preview={"Event": QA_EVENT, "Calendar": QA_CALENDAR, "Visibility": "default → private"},
         details_text="Synthetic PrivacyFence QA test event. No real information.",
         allow_accept_all=False,
@@ -849,7 +849,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · contacts_update",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Update Contact",
+        title="Update Contact",
         preview={"Contact": QA_CONTACT, "Emails": QA_CONTACT_EMAIL, "Phones": QA_PHONE},
         details_text="Synthetic PrivacyFence QA contact update. No real information.",
         allow_accept_all=False,
@@ -859,7 +859,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · contacts_create",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Create Contact",
+        title="Create Contact",
         preview={
             "Name": "PrivacyFence QA New Contact [QATEST]", "Emails": "qatest.new@example.com",
             "Phones": "555-0199",
@@ -872,7 +872,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · contacts_add_label",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Add Contact Label",
+        title="Add Contact Label",
         preview={"Contact": QA_CONTACT, "Label": "QATEST"},
         details_text="Synthetic PrivacyFence QA contact label. No real information.",
         allow_accept_all=False,
@@ -882,7 +882,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · contacts_remove_label",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Remove Contact Label",
+        title="Remove Contact Label",
         preview={"Contact": QA_CONTACT, "Label": "QATEST"},
         details_text="Synthetic PrivacyFence QA contact label removal. No real information.",
         allow_accept_all=False,
@@ -892,7 +892,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · telegram_send_message",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Send Telegram Message",
+        title="Send Telegram Message",
         preview={"Chat": "Saved Messages"},
         details_text="Synthetic PrivacyFence QA reply. No real information. [QATEST]",
         allow_accept_all=False,
@@ -902,7 +902,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · jira_create_issue",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Create Jira Issue",
+        title="Create Jira Issue",
         preview={
             "Project": QA_PROJECT, "Type": "Task", "Summary": "PrivacyFence QA smoke issue [QATEST]",
             "Priority": "Medium",
@@ -915,7 +915,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · jira_add_comment",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Comment on Jira Issue",
+        title="Comment on Jira Issue",
         preview={"Issue": QA_JIRA_KEY},
         details_text="Synthetic PrivacyFence QA comment. No real information. [QATEST]",
         allow_accept_all=False,
@@ -925,7 +925,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · jira_update_issue",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Update Jira Issue",
+        title="Update Jira Issue",
         preview={"Issue": QA_JIRA_KEY, "Priority": "Medium → High"},
         details_text="Synthetic PrivacyFence QA issue update. No real information.",
         allow_accept_all=False,
@@ -935,7 +935,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · jira_transition_issue",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Transition Jira Issue",
+        title="Transition Jira Issue",
         preview={"Issue": QA_JIRA_KEY, "Status": "To Do → In Progress"},
         details_text="Synthetic PrivacyFence QA issue transition. No real information.",
         allow_accept_all=False,
@@ -945,7 +945,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · confluence_create_page",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Create Confluence Page",
+        title="Create Confluence Page",
         preview={"Space": QA_SPACE, "Title": "PrivacyFence QA smoke page [QATEST]"},
         details_text="Synthetic PrivacyFence QA test page. No real information.",
         allow_accept_all=False,
@@ -955,7 +955,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · confluence_update_page",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Update Confluence Page",
+        title="Update Confluence Page",
         preview={"Page ID": "qa-placeholder-id-3", "Space": QA_SPACE, "Title": QA_PAGE},
         details_text=QA_PAGE_BODY,
         allow_accept_all=False,
@@ -965,7 +965,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · tasks_create_task",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Create Task",
+        title="Create Task",
         preview={
             "Task list": QA_TASK_LIST, "Title": "PrivacyFence QA smoke task [QATEST]", "Due": "2027-03-20",
         },
@@ -977,7 +977,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · tasks_update_task",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Update Task",
+        title="Update Task",
         preview={
             "Task list": QA_TASK_LIST, "Task": QA_TASK,
             "New title": f"{QA_TASK} (updated)",
@@ -990,7 +990,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · tasks_complete_task",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Complete Task",
+        title="Complete Task",
         preview={"Task list": QA_TASK_LIST, "Task": QA_TASK},
         details_text="Synthetic PrivacyFence QA test task. No real information.",
         allow_accept_all=False,
@@ -1000,7 +1000,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · tasks_uncomplete_task",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Uncomplete Task",
+        title="Uncomplete Task",
         preview={"Task list": QA_TASK_LIST, "Task": QA_TASK},
         details_text="Synthetic PrivacyFence QA test task. No real information.",
         allow_accept_all=False,
@@ -1010,7 +1010,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-1 · tasks_move_task",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Move Task",
+        title="Move Task",
         preview={"Task": QA_TASK, "From list": QA_TASK_LIST, "To list": QA_CONTRAST_TASK_LIST},
         details_text="Synthetic PrivacyFence QA test task. No real information.",
         allow_accept_all=False,
@@ -1025,7 +1025,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
         # Also the Allow-for-5-min-click mechanic.
         "WG-2 · drive_sheets_write_range (Allow for 5 min)",
         click_title="Allow for 5 min", expected="accept_temp",
-        title="PrivacyFence — Write Sheet Range",
+        title="Write Sheet Range",
         preview={"Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Range": "A1:C10"},
         details_text="Synthetic PrivacyFence QA sheet write. No real information.",
         allow_accept_all=False,
@@ -1036,7 +1036,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-2 · drive_sheets_format_range",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Format Sheet Range",
+        title="Format Sheet Range",
         preview={
             "Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Range": "A1:C10", "Format": "Bold header row",
         },
@@ -1049,7 +1049,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-2 · drive_sheets_insert_dimensions",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Insert Sheet Rows/Columns",
+        title="Insert Sheet Rows/Columns",
         preview={
             "Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Tab id": "0",
             "Action": "Insert 3 ROWS before index 5",
@@ -1063,7 +1063,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-2 · drive_add_comment",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Add Drive Comment",
+        title="Add Drive Comment",
         preview={"File": QA_DRIVE_FILE, "Owner": QA_EMAIL},
         details_text="Synthetic PrivacyFence QA comment. No real information. [QATEST]",
         allow_accept_all=False,
@@ -1074,7 +1074,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-2 · drive_docs_edit_content",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Edit Google Doc Content",
+        title="Edit Google Doc Content",
         preview={"File": QA_DRIVE_DOC, "Owner": QA_EMAIL, "Match": "the one matching occurrence"},
         details_text="Synthetic PrivacyFence QA doc edit. No real information.",
         allow_accept_all=False,
@@ -1085,7 +1085,7 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     results.append(run(
         "WG-2 · drive_docs_format_content",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — Format Google Doc Content",
+        title="Format Google Doc Content",
         preview={"File": QA_DRIVE_DOC, "Owner": QA_EMAIL, "Format": "Italic selection"},
         details_text="Synthetic PrivacyFence QA doc formatting. No real information.",
         allow_accept_all=False,
