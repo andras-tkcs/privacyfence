@@ -77,7 +77,7 @@ Run it again with `--merge` if you're adding Google to a bundle that already has
 ## For users
 
 1. Get `org_config.json` from your IT team.
-2. In the PrivacyFence menu bar: **Organization Config → Install/Update Organization Config…**, and select the file.
+2. In the PrivacyFence menu bar: **Organization Config…**, and select the file.
 3. For each Google connector you want (Gmail, Drive, Calendar, Contacts, Tasks): **Connectors → \<service\> → Authenticate…**. Your browser opens to Google's sign-in page — sign in and click **Allow**.
 4. Quit and reopen PrivacyFence to activate the connector.
 

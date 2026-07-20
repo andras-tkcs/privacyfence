@@ -58,7 +58,7 @@ Distribute the resulting `org_config.json` to your users.
 
 ## For users
 
-1. Get `org_config.json` from your IT team and install it via **Organization Config → Install/Update Organization Config…** in the PrivacyFence menu bar (if you haven't already for another service).
+1. Get `org_config.json` from your IT team and install it via **Organization Config…** in the PrivacyFence menu bar (if you haven't already for another service — if a config is already installed, click **Update…** in the status prompt).
 2. **Connectors → Jira → Authenticate…** (or **Confluence** — either one triggers the same sign-in and activates both). Your browser opens to Atlassian's consent screen — sign in and click **Accept**.
 3. If your account has access to more than one Atlassian site, PrivacyFence asks you to pick one.
 4. Quit and reopen PrivacyFence to activate the connectors.
