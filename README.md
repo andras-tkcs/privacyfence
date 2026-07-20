@@ -95,15 +95,15 @@ PrivacyFence translates MCP tool calls into operation-specific review dialogs. U
 
 ### PII-aware review
 
-![PrivacyFence warning about likely personal data before a Drive file is returned to the AI](docs/images/screenshots/drive-read-file-pii.png)
+![PrivacyFence review dialog for a Gmail thread, showing the AI-visibility checklist, a detected-PII warning, and Claude's stated reason for the request](docs/images/screenshots/gmail-read-thread.png)
 
-The PII gate runs locally before a read is approved. When likely personal data is detected, PrivacyFence highlights the categories found and requires an additional confirmation.
+The PII gate runs locally before a read is approved. When likely personal data is detected, PrivacyFence highlights the categories found and requires an additional confirmation. Every review dialog also discloses exactly what the AI will receive, how often the item has come up recently, and the reason Claude gave for the request.
 
 ### Review before an AI action
 
-![PrivacyFence review dialog for writing a spreadsheet range](docs/images/screenshots/sheets-write.png)
+![PrivacyFence review dialog for writing a spreadsheet range, showing a detected content warning and Claude's stated reason for the request](docs/images/screenshots/sheets-write.png)
 
-Write operations show exactly which object will change and what values will be written. Selected high-frequency operations can receive a narrowly scoped, in-memory **Accept for 5 min** approval.
+Write operations show exactly which object will change and what values will be written, including an informational warning when Claude's own drafted content appears to contain sensitive figures. Selected high-frequency operations can receive a narrowly scoped, in-memory **Accept for 5 min** approval.
 
 ### Local administration
 
@@ -116,6 +116,10 @@ The menu bar provides access to:
 - Auto-accept rules
 - Connector authentication and status
 - The local audit log
+
+Auto-accept rules and trusted-resource grants are managed from a single searchable window, organized by connector:
+
+![PrivacyFence Auto-accept Rules window, showing a sidebar of connectors and a searchable list of that connector's grants and rules](docs/images/screenshots/menubar-auto-accept-rules.png)
 
 ---
 
