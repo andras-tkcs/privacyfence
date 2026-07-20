@@ -76,6 +76,7 @@ from .auto_accept import (
     describe_rule,
     describe_rule_change,
     get_auto_accept_evaluator,
+    known_rule_names,
     mutate_grants,
     remove_auto_accept_rule,
     suggest_rule,
@@ -426,6 +427,11 @@ async def propose_rule_change(
     tool error rather than a result it has to remember to check.
     """
     if target == "rule":
+        if rule_name not in known_rule_names():
+            raise ValueError(
+                f"Unknown auto-accept rule: {rule_name!r}. See privacyfence_list_auto_accept_rules "
+                "or docs/TECHNICAL_REFERENCE.md's Auto-accept rules tables for valid rule names."
+            )
         description = describe_rule_change(operation, operation_key, rule_name, value, old_value)
     elif target == "grant":
         rt = resource_type(connector, config_key)

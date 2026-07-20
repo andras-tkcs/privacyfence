@@ -214,7 +214,10 @@ export function registerMetaTools(server: McpServer, ipc: IPCClientLike): void {
         "actually exists rather than guessing identifiers.\n\n" +
         "target='rule' edits the auto_accept_rules section (one list of {rule, value} entries " +
         "per operation_key): operation_key (e.g. 'sheets.format_range'), rule_name (e.g. " +
-        "'trusted_sender_domain'), value (required for add/update -- often a list), old_value " +
+        "'trusted_sender_domain' -- must be one of the real rule names PrivacyFence's rule engine " +
+        "knows, see privacyfence_list_auto_accept_rules' output or the Auto-accept rules tables in " +
+        "the docs; an unrecognized name is rejected before any popup is shown, not silently " +
+        "persisted as a dead rule), value (required for add/update -- often a list), old_value " +
         "(update only -- the prior value being replaced; omit to add alongside the existing " +
         "value instead of replacing it).\n\n" +
         "target='grant' edits the auto_accept_grants section (one resource trusted once, " +

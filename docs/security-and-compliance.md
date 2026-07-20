@@ -120,6 +120,16 @@ are made by the daemon against the tool's real `read_only`/gate metadata before 
 request is made; the annotation Claude sees is cosmetic UI hinting, not a security control, and
 should not be read as PrivacyFence treating writes as safe.
 
+**Auto-accept configuration itself is human-gated, not just the tool calls it governs.** Claude can
+read the current `auto_accept_rules`/`auto_accept_grants` config (`privacyfence_list_auto_accept_rules`)
+and propose adding, updating, or removing an entry
+(`privacyfence_propose_auto_accept_rule_change`) — see
+[Reading and proposing auto-accept changes from the bridge](TECHNICAL_REFERENCE.md#reading-and-proposing-auto-accept-changes-from-the-bridge).
+Every proposed change still blocks on the same native confirmation dialog the "Always allow" button
+already uses; there is no code path from the bridge to `settings.yaml` that skips a human decision,
+including when an identical entry already exists. This keeps the gate itself — not just what passes
+through it — under the same human-in-the-loop control described above.
+
 ---
 
 ## 5. Data handling

@@ -932,6 +932,27 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
     return None
 
 
+def known_rule_names() -> frozenset[str]:
+    """Every rule name AutoAcceptEvaluator actually knows how to evaluate --
+    the `_rule_*` methods it dispatches to in `_evaluate()`. `_evaluate()`
+    itself only logs a warning and treats an unrecognized name as a
+    non-match (see its docstring), so a rule persisted under a misspelled
+    or invalid name doesn't error, it just silently never matches anything.
+    That's fine for a name that was always typed by hand into settings.yaml
+    by whoever wrote the rule, but gate.propose_rule_change() lets Claude
+    supply rule_name directly (unlike the "Always allow" flow, which only
+    ever offers names suggest_rule() itself produces), so it validates
+    against this set before ever showing a confirmation popup -- the same
+    "don't ship an unreachable rule silently" principle menu_bar.py's
+    TestRuleUiCompleteness applies to the UI side.
+    """
+    return frozenset(
+        name[len("_rule_"):]
+        for name in vars(AutoAcceptEvaluator)
+        if name.startswith("_rule_") and callable(getattr(AutoAcceptEvaluator, name))
+    )
+
+
 _RULE_DESCRIPTIONS: dict[str, str] = {
     "i_am_sender":           "Gmail message/thread reads where you are the sender",
     "trusted_sender_domain": "Gmail message/thread reads from senders at: {value}",

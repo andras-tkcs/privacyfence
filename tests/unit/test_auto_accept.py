@@ -1232,6 +1232,65 @@ class TestRemoveAutoAcceptRule:
 
         assert get_auto_accept_evaluator().should_auto_accept("gmail.read_message", ctx) == (False, "")
 
+    def test_fires_the_rules_changed_listener_the_same_way_add_does(self, tmp_path):
+        # menu_bar.py wires this listener to rebuild the status-bar menu and
+        # (if open) refresh the "Manage Auto-accept Rules…" window -- see
+        # menu_bar.py's _on_rules_changed. A rule removed via the bridge's
+        # propose_rule_change must trigger that same refresh, not just
+        # silently update the live evaluator underneath the open window.
+        config_path = tmp_path / "settings.yaml"
+        config_path.write_text(
+            yaml.dump({"auto_accept_rules": {"gmail.read_message": [{"rule": "i_am_sender"}]}}),
+            encoding="utf-8",
+        )
+        init_config_path(str(config_path))
+        calls = []
+        set_rules_changed_listener(lambda: calls.append(1))
+
+        remove_auto_accept_rule("gmail.read_message", "i_am_sender")
+
+        assert calls == [1]
+
+    def test_no_op_removal_does_not_fire_the_listener(self, tmp_path):
+        config_path = tmp_path / "settings.yaml"
+        config_path.write_text(
+            yaml.dump({"auto_accept_rules": {"gmail.read_message": [{"rule": "i_am_sender"}]}}),
+            encoding="utf-8",
+        )
+        init_config_path(str(config_path))
+        calls = []
+        set_rules_changed_listener(lambda: calls.append(1))
+
+        remove_auto_accept_rule("gmail.read_message", "trusted_sender_domain", ["a.com"])
+
+        assert calls == []
+
+
+class TestKnownRuleNames:
+    """auto_accept.known_rule_names() -- the set gate.propose_rule_change()
+    validates a bridge-supplied rule_name against before ever showing a
+    confirmation popup, so Claude can't silently persist a dead rule under
+    a misspelled or made-up name (see that function's docstring)."""
+
+    def test_includes_real_rule_names(self):
+        names = auto_accept.known_rule_names()
+        assert "i_am_sender" in names
+        assert "trusted_sender_domain" in names
+        assert "approved_sandbox_folder" in names  # grant-managed, but still a real _rule_* method
+
+    def test_excludes_non_rule_names(self):
+        names = auto_accept.known_rule_names()
+        assert "session_temp_accept" not in names  # in-memory marker, not a _rule_* method
+        assert "made_up_rule" not in names
+        assert "" not in names
+
+    def test_every_name_is_actually_dispatchable(self):
+        # Cross-check against the same completeness angle menu_bar.py's
+        # TestRuleUiCompleteness uses: every name here must correspond to a
+        # real, callable _rule_* method, or the set itself would be lying.
+        for name in auto_accept.known_rule_names():
+            assert callable(getattr(auto_accept.AutoAcceptEvaluator, f"_rule_{name}", None))
+
 
 class TestGetCurrentConfig:
     def test_returns_both_sections_straight_from_disk(self, tmp_path):

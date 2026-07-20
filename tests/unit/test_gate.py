@@ -345,6 +345,22 @@ class TestProposeRuleChange:
         entries = read_audit_entries(audit_dir)
         assert entries[0]["decision"] == "grant_removed_via_bridge_proposal"
 
+    async def test_unknown_rule_name_raises_value_error_without_showing_a_popup(self, monkeypatch):
+        # rule_name comes straight from Claude here, unlike the "Always
+        # allow" flow (which only ever offers names suggest_rule() itself
+        # produces) -- a misspelled/made-up name must be rejected up front,
+        # not persisted as a rule that silently never matches anything.
+        called = []
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: called.append(1) or True)
+
+        with pytest.raises(ValueError, match="Unknown auto-accept rule"):
+            await gate.propose_rule_change(
+                target="rule", operation="add", reason="x",
+                operation_key="gmail.read_message", rule_name="made_up_rule", value="x",
+            )
+
+        assert called == []
+
     async def test_unknown_grant_resource_type_raises_value_error(self):
         with pytest.raises(ValueError, match="Unknown grant resource type"):
             await gate.propose_rule_change(
