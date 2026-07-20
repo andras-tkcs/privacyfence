@@ -217,7 +217,12 @@ async def gated_call(
         session_created_ids=session_created_ids or set(),
     )
     details = details_text or _default_details(raw_data)
-    popup_title = f"PrivacyFence — {tool_name}"
+    # No "PrivacyFence — " prefix here -- the "PrivacyFence" kicker line
+    # directly above this title in approval_window.py already says that;
+    # repeating it in the title itself was the redundant "before" state a
+    # design review (see the menu bar/approval pane redesign session) called
+    # out, never actually fixed until now.
+    popup_title = tool_name
     # Only the review (read) gate scans for PII -- see module docstring.
     pii_categories = (
         detect_pii_categories(details if pii_scan_text is None else pii_scan_text)
