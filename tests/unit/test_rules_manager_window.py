@@ -141,12 +141,17 @@ class TestRowRendering:
 
 class TestSearch:
     def test_search_filters_out_non_matching_rows(self, controller):
+        # Deliberately not domain-shaped values (no "word.tld") -- a bare
+        # "x in y" substring check over something that looks like a URL/
+        # domain trips CodeQL's incomplete-URL-substring-sanitization query,
+        # even though this is a plain UI-text assertion with nothing to do
+        # with URL validation.
         sections = {
             "gmail": [
                 Section("Read message", [
                     Row("trusted_sender_domain", False, [("+ Add value…", lambda: None)]),
-                    Row("acme-corp.com", True, [("✕ Remove", lambda: None)]),
-                    Row("legal-partners.eu", True, [("✕ Remove", lambda: None)]),
+                    Row("acme-corp-value", True, [("✕ Remove", lambda: None)]),
+                    Row("legal-partners-value", True, [("✕ Remove", lambda: None)]),
                 ], "+ Add rule…", lambda: None),
             ],
         }
@@ -156,8 +161,8 @@ class TestSearch:
         controller.controlTextDidChange_(_FakeNotification(_FakeField("acme")))
         doc = controller._scroll.documentView()
         texts = [v.stringValue() for v in doc.subviews() if hasattr(v, "stringValue")]
-        assert any("acme-corp.com" in t for t in texts)
-        assert not any("legal-partners.eu" in t for t in texts)
+        assert any("acme-corp-value" in t for t in texts)
+        assert not any("legal-partners-value" in t for t in texts)
 
     def test_search_matching_nothing_shows_no_matches(self, controller):
         sections = {"gmail": [Section("Read message", [Row("i_am_sender", False, [])])]}
