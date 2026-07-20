@@ -500,9 +500,20 @@ class TestGatherConnectorSections:
         sheets_titles = {s.title for s in app._gather_connector_sections("sheets")}
         assert sheets_titles == {
             "Read values", "Write range", "Add tab", "Rename tab", "Format range",
+            "Insert rows/columns", "Delete rows/columns",
         }
         drive_titles = {s.title for s in app._gather_connector_sections("drive")}
         assert not (drive_titles & sheets_titles)  # Sheets ops aren't duplicated under Drive
+
+    def test_docs_is_distinct_from_drive(self, app):
+        # Same bug class as test_sheets_is_distinct_from_drive: "docs" also
+        # rides on Drive's OAuth grant rather than being a real connector in
+        # ALL_CONNECTORS, so it needs its own entry in RULES_MENU_GROUPS or
+        # its bucket is silently dropped and never rendered anywhere.
+        docs_titles = {s.title for s in app._gather_connector_sections("docs")}
+        assert docs_titles == {"Edit content", "Format content"}
+        drive_titles = {s.title for s in app._gather_connector_sections("drive")}
+        assert not (drive_titles & docs_titles)  # Docs ops aren't duplicated under Drive
 
     def test_connector_with_no_configurable_ops_shows_placeholder(self, app, monkeypatch):
         monkeypatch.setattr(menu_bar, "RULES_MENU_GROUPS", menu_bar.RULES_MENU_GROUPS + ["nullconnector"])
@@ -813,6 +824,19 @@ class TestAddRule:
 
         cfg = app._load_config()
         assert cfg["auto_accept_rules"]["gmail.read_message"] == [{"rule": "i_am_sender"}]
+
+    def test_calendar_set_visibility_offers_non_private_event(self, app, monkeypatch):
+        # Regression: calendar.set_visibility was entirely absent from
+        # OPERATION_LABELS/RULES_BY_OPERATION, so non_private_event -- which
+        # auto_accept.py's _rule_non_private_event docstring explicitly
+        # names this operation as supporting -- had no path to be added
+        # short of hand-editing settings.yaml.
+        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: "non_private_event")
+
+        app._add_rule("calendar.set_visibility")
+
+        cfg = app._load_config()
+        assert cfg["auto_accept_rules"]["calendar.set_visibility"] == [{"rule": "non_private_event"}]
 
     def test_rule_with_list_value_starts_empty_no_prompt(self, app, monkeypatch):
         # List-value rules no longer prompt immediately for a (multi-line)
@@ -2184,3 +2208,68 @@ class TestAuthenticateTelegram:
         assert any("invalid code" in str(a) for a in alerts)
         assert rebuild_calls == [1]
         assert refresh_calls == []
+
+
+class TestRuleUiCompleteness:
+    """Structural checks tying menu_bar's rule UI to auto_accept's rule engine.
+
+    These exist so that adding a rule (or an operation) to auto_accept.py
+    without also wiring it into the "Manage Auto-accept Rules…" window fails
+    a test instead of silently shipping a rule/operation nobody can reach
+    from the UI -- which is exactly what happened for calendar.set_visibility
+    and non_private_event before this class was added, and for the "docs"
+    operation group vs. RULES_MENU_GROUPS (see test_docs_is_distinct_from_
+    drive's regression note) before that.
+    """
+
+    @staticmethod
+    def _all_rule_names() -> set[str]:
+        return {
+            name[len("_rule_"):]
+            for name in vars(auto_accept.AutoAcceptEvaluator)
+            if name.startswith("_rule_") and callable(getattr(auto_accept.AutoAcceptEvaluator, name))
+        }
+
+    @staticmethod
+    def _rules_by_operation_names() -> set[str]:
+        return {rule for rules in menu_bar.RULES_BY_OPERATION.values() for rule in rules}
+
+    def test_every_rule_is_reachable_from_some_operation(self):
+        unreachable = self._all_rule_names() - self._rules_by_operation_names()
+        assert unreachable == set(), (
+            f"_rule_* methods with no operation in RULES_BY_OPERATION offering them, so "
+            f"'+ Add rule…' can never surface them: {unreachable}"
+        )
+
+    def test_no_stale_rule_names_in_rules_by_operation(self):
+        stale = self._rules_by_operation_names() - self._all_rule_names()
+        assert stale == set(), (
+            f"RULES_BY_OPERATION names with no matching _rule_* method (renamed/removed rule?): {stale}"
+        )
+
+    def test_every_operation_label_is_a_real_operation_key(self):
+        real_ops = set(auto_accept.TOOL_TO_OPERATION.values())
+        fake = set(menu_bar.OPERATION_LABELS) - real_ops
+        assert fake == set(), (
+            f"OPERATION_LABELS keys not produced by any tool in TOOL_TO_OPERATION: {fake}"
+        )
+
+    def test_every_rules_by_operation_key_has_a_label(self):
+        # Every op_key in RULES_BY_OPERATION needs an OPERATION_LABELS entry
+        # or _gather_connector_sections has no title/section to render it
+        # under -- the rules would be configured but invisible.
+        unlabeled = set(menu_bar.RULES_BY_OPERATION) - set(menu_bar.OPERATION_LABELS)
+        assert unlabeled == set(), f"RULES_BY_OPERATION keys missing from OPERATION_LABELS: {unlabeled}"
+
+    def test_every_operation_labels_connector_prefix_is_in_rules_menu_groups(self):
+        # The bug class behind test_sheets_is_distinct_from_drive and
+        # test_docs_is_distinct_from_drive: an operation can be fully wired
+        # into OPERATION_LABELS/RULES_BY_OPERATION and still never render
+        # anywhere, because _list_rule_connectors/_gather_connector_sections
+        # only iterate connector prefixes listed in RULES_MENU_GROUPS.
+        prefixes = {op_key.split(".", 1)[0] for op_key in menu_bar.OPERATION_LABELS}
+        missing = prefixes - set(menu_bar.RULES_MENU_GROUPS)
+        assert missing == set(), (
+            f"OPERATION_LABELS connector prefixes missing from RULES_MENU_GROUPS -- their "
+            f"whole rule bucket is silently dropped and never rendered: {missing}"
+        )
