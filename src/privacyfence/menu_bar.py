@@ -702,14 +702,27 @@ class PrivacyFenceMenuBar(rumps.App):
             )
             return
 
-        rule_name = _osascript_pick(
-            title="Add Auto-accept Rule",
-            prompt=f"Select a rule to add to:\n{OPERATION_LABELS.get(op_key, op_key)}",
-            options=available,
-        )
-        if not rule_name:
-            return
+        # _osascript_pick blocks on a subprocess without pumping the run
+        # loop -- calling it straight from this button's action handler
+        # segfaulted AppKit (an in-flight window-activation animation lost
+        # its object while the main thread sat blocked in subprocess.run,
+        # see git history). Off the main thread, like every other
+        # subprocess-backed picker in this file (e.g. _authenticate_atlassian's
+        # pick_resource).
+        def work() -> str | None:
+            return _osascript_pick(
+                title="Add Auto-accept Rule",
+                prompt=f"Select a rule to add to:\n{OPERATION_LABELS.get(op_key, op_key)}",
+                options=available,
+            )
 
+        def done(ok: bool, result: Any) -> None:
+            if ok and result:
+                self._finish_add_rule(op_key, result)
+
+        self._run_async(work, done)
+
+    def _finish_add_rule(self, op_key: str, rule_name: str) -> None:
         new_rule: dict[str, Any] = {"rule": rule_name}
 
         if rule_name in RULES_LIST_VALUE or rule_name in RULES_PAIR_VALUE:
@@ -972,14 +985,22 @@ class PrivacyFenceMenuBar(rumps.App):
             rumps.alert("PrivacyFence", f"No {rt.label.lower()} found.")
             return
         options = [f"{name} ({_short_id(resource_id)})" for resource_id, name in candidates]
-        choice = _osascript_pick(
-            title=f"Add {rt.singular}", prompt=f"Select a {rt.singular} to trust:", options=options
-        )
-        if not choice:
-            return
-        chosen_idx = options.index(choice)
-        resource_id, name = candidates[chosen_idx]
-        self._confirm_and_save_grant(rt, resource_id, name, "")
+
+        # See _add_rule's comment -- _osascript_pick must not block the main
+        # thread directly from an AppKit callback.
+        def work() -> str | None:
+            return _osascript_pick(
+                title=f"Add {rt.singular}", prompt=f"Select a {rt.singular} to trust:", options=options
+            )
+
+        def done(ok: bool, choice: Any) -> None:
+            if not ok or not choice:
+                return
+            chosen_idx = options.index(choice)
+            resource_id, name = candidates[chosen_idx]
+            self._confirm_and_save_grant(rt, resource_id, name, "")
+
+        self._run_async(work, done)
 
     def _confirm_and_save_grant(
         self, rt: GrantResourceType, resource_id: str, name: str | None, tab: str

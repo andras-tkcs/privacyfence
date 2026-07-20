@@ -140,6 +140,14 @@ class RulesManagerWindowController(NSObject):
             NSMakeRect(0, 0, _WINDOW_WIDTH, _WINDOW_HEIGHT), style, NSBackingStoreBuffered, False
         )
         window.setTitle_("Auto-accept Rules")
+        # Default isReleasedWhenClosed is True, meaning AppKit issues its own
+        # release when the user closes the window via the close button --
+        # racing our own windowWillClose_ dropping self.window below. Losing
+        # that race let AppKit's close-animation cleanup (_NSWindowTransformAnimation)
+        # dealloc a pointer we'd already caused to be released, segfaulting some
+        # seconds later on an unrelated CATransaction commit. Same fix as
+        # approval_window.py's panel.
+        window.setReleasedWhenClosed_(False)
         window.center()
         window.setDelegate_(self)
         self.window = window

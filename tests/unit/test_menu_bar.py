@@ -854,6 +854,30 @@ def _fake_window(clicked: bool, text: str = ""):
     return _FakeWindow
 
 
+def _run_add_rule(app, monkeypatch, op_key, pick):
+    """Drive _add_rule to completion. _add_rule now runs _osascript_pick on a
+    background thread (see menu_bar.py's comment on the fix for the AppKit
+    segfault that direct, main-thread subprocess.run call caused), so tests
+    have to pump it through the same AppHelper.callAfter interception/drain
+    every other threaded flow in this file uses -- see the module docstring.
+
+    ``pick`` is either the value _osascript_pick should return, or (for tests
+    that need to inspect what it was called with) a callable taking the same
+    kwargs _osascript_pick does.
+    """
+    if not callable(pick):
+        value = pick
+        pick = lambda **kw: value  # noqa: E731
+    monkeypatch.setattr(menu_bar, "_osascript_pick", pick)
+    recorded = []
+    monkeypatch.setattr(menu_bar.AppHelper, "callAfter", lambda f, *a, **k: recorded.append((f, a, k)))
+
+    app._add_rule(op_key)
+
+    assert wait_until(lambda: recorded), "_osascript_pick's result never reached AppHelper.callAfter"
+    _drain_run_async(recorded)
+
+
 class TestAddRule:
     def test_no_configurable_rules_alerts_and_returns(self, app, monkeypatch):
         alerts = []
@@ -864,17 +888,14 @@ class TestAddRule:
         assert len(alerts) == 1
 
     def test_cancelled_picker_makes_no_change(self, app, monkeypatch):
-        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: None)
         before = app._load_config()
 
-        app._add_rule("gmail.read_message")
+        _run_add_rule(app, monkeypatch, "gmail.read_message", None)
 
         assert app._load_config() == before
 
     def test_rule_without_value_is_added_directly(self, app, monkeypatch):
-        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: "i_am_sender")
-
-        app._add_rule("gmail.read_message")
+        _run_add_rule(app, monkeypatch, "gmail.read_message", "i_am_sender")
 
         cfg = app._load_config()
         assert cfg["auto_accept_rules"]["gmail.read_message"] == [{"rule": "i_am_sender"}]
@@ -884,17 +905,13 @@ class TestAddRule:
         # offers the same rule set rather than the visibility-of-the-request-itself
         # check non_private_event used to apply here -- that check never made sense
         # for a write, since it just measured the value the call was asking to set.
-        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: "i_am_organizer")
-
-        app._add_rule("calendar.set_visibility")
+        _run_add_rule(app, monkeypatch, "calendar.set_visibility", "i_am_organizer")
 
         cfg = app._load_config()
         assert cfg["auto_accept_rules"]["calendar.set_visibility"] == [{"rule": "i_am_organizer"}]
 
     def test_calendar_read_event_details_offers_non_private_event(self, app, monkeypatch):
-        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: "non_private_event")
-
-        app._add_rule("calendar.read_event_details")
+        _run_add_rule(app, monkeypatch, "calendar.read_event_details", "non_private_event")
 
         cfg = app._load_config()
         assert cfg["auto_accept_rules"]["calendar.read_event_details"] == [{"rule": "non_private_event"}]
@@ -903,11 +920,10 @@ class TestAddRule:
         # List-value rules no longer prompt immediately for a (multi-line)
         # value -- they're created empty and populated one value at a time
         # via "+ Add value..." on the new row (see TestAddRuleValue).
-        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: "trusted_sender_domain")
         window_calls = []
         monkeypatch.setattr(menu_bar.rumps, "Window", lambda **kw: window_calls.append(kw))
 
-        app._add_rule("gmail.read_message")
+        _run_add_rule(app, monkeypatch, "gmail.read_message", "trusted_sender_domain")
 
         assert window_calls == []
         cfg = app._load_config()
@@ -916,21 +932,19 @@ class TestAddRule:
         ]
 
     def test_rule_with_int_value_parses_integer(self, app, monkeypatch):
-        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: "age_threshold_days")
         monkeypatch.setattr(menu_bar.rumps, "Window", _fake_window(clicked=True, text="30"))
 
-        app._add_rule("gmail.read_message")
+        _run_add_rule(app, monkeypatch, "gmail.read_message", "age_threshold_days")
 
         cfg = app._load_config()
         assert cfg["auto_accept_rules"]["gmail.read_message"] == [{"rule": "age_threshold_days", "value": 30}]
 
     def test_int_value_non_numeric_alerts_and_does_not_add(self, app, monkeypatch):
-        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: "age_threshold_days")
         monkeypatch.setattr(menu_bar.rumps, "Window", _fake_window(clicked=True, text="not-a-number"))
         alerts = []
         monkeypatch.setattr(menu_bar.rumps, "alert", lambda *a, **k: alerts.append((a, k)))
 
-        app._add_rule("gmail.read_message")
+        _run_add_rule(app, monkeypatch, "gmail.read_message", "age_threshold_days")
 
         assert len(alerts) == 1
         assert app._load_config().get("auto_accept_rules", {}) == {}
@@ -939,11 +953,10 @@ class TestAddRule:
         # approved_spreadsheet is normally offered via a grant now (see
         # resource_grants.py's drive.spreadsheets); this exercises _add_rule's
         # generic pair-value handling regardless of what the picker returned.
-        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: "approved_spreadsheet")
         window_calls = []
         monkeypatch.setattr(menu_bar.rumps, "Window", lambda **kw: window_calls.append(kw))
 
-        app._add_rule("sheets.read_values")
+        _run_add_rule(app, monkeypatch, "sheets.read_values", "approved_spreadsheet")
 
         assert window_calls == []
         cfg = app._load_config()
@@ -960,7 +973,6 @@ class TestAddRule:
         # _add_rule -- see test_rule_with_list_value_starts_empty_no_prompt --
         # so the int-value case is the only one left that still opens a Window
         # here.)
-        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: "age_threshold_days")
         captured = {}
         class _CapturingWindow:
             def __init__(self, **kwargs):
@@ -969,7 +981,7 @@ class TestAddRule:
                 return _FakeWindowResponse(clicked=False)
         monkeypatch.setattr(menu_bar.rumps, "Window", _CapturingWindow)
 
-        app._add_rule("gmail.read_message")
+        _run_add_rule(app, monkeypatch, "gmail.read_message", "age_threshold_days")
 
         assert captured["default_text"] == ""
         assert "Example:" in captured["message"]
@@ -983,13 +995,14 @@ class TestAddRule:
         # appear in _add_rule's own picker options anymore (there's no longer
         # a second, more tedious way to do the same thing).
         captured = {}
-        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: captured.update(kw) or None)
-
-        app._add_rule("sheets.rename_sheet")
+        def pick(**kw):
+            captured.update(kw)
+            return None
+        _run_add_rule(app, monkeypatch, "sheets.rename_sheet", pick)
         assert "approved_sandbox_folder" not in captured["options"]
 
         captured.clear()
-        app._add_rule("sheets.format_range")
+        _run_add_rule(app, monkeypatch, "sheets.format_range", pick)
         assert "approved_sandbox_folder" not in captured["options"]
 
 
@@ -1339,32 +1352,48 @@ class TestConfirmAndSaveGrant:
         assert entries == [{"id": "S1", "name": "Budget Sheet", "tab": "Q3"}]
 
 
+def _run_on_candidates_listed(app, monkeypatch, rt, candidates, pick):
+    """Drive _on_candidates_listed to completion -- it now runs
+    _osascript_pick on a background thread too (same fix/reason as
+    _run_add_rule above), so pump it through the same drain."""
+    monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: pick)
+    recorded = []
+    monkeypatch.setattr(menu_bar.AppHelper, "callAfter", lambda f, *a, **k: recorded.append((f, a, k)))
+
+    app._on_candidates_listed(rt, candidates)
+
+    if not candidates:
+        return  # bails out before ever touching _osascript_pick/_run_async
+    assert wait_until(lambda: recorded), "_osascript_pick's result never reached AppHelper.callAfter"
+    _drain_run_async(recorded)
+
+
 class TestOnCandidatesListed:
     def test_no_candidates_alerts_and_saves_nothing(self, app, monkeypatch):
         alerts = []
         monkeypatch.setattr(menu_bar.rumps, "alert", lambda *a, **kw: alerts.append((a, kw)) or 1)
         rt = menu_bar.grant_resource_type("tasks", "task_lists")
 
-        app._on_candidates_listed(rt, [])
+        _run_on_candidates_listed(app, monkeypatch, rt, [], None)
 
         assert len(alerts) == 1
         assert app._load_config().get("auto_accept_grants", {}) == {}
 
     def test_picked_candidate_is_saved_with_its_name(self, app, monkeypatch):
-        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: "Work (LIST2)")
         monkeypatch.setattr(menu_bar.rumps, "alert", lambda **kw: 1)
         rt = menu_bar.grant_resource_type("tasks", "task_lists")
 
-        app._on_candidates_listed(rt, [("LIST1", "Personal"), ("LIST2", "Work")])
+        _run_on_candidates_listed(
+            app, monkeypatch, rt, [("LIST1", "Personal"), ("LIST2", "Work")], "Work (LIST2)"
+        )
 
         entries = app._load_config()["auto_accept_grants"]["tasks"]["task_lists"]
         assert entries == [{"id": "LIST2", "name": "Work"}]
 
     def test_cancelled_picker_saves_nothing(self, app, monkeypatch):
-        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: None)
         rt = menu_bar.grant_resource_type("tasks", "task_lists")
 
-        app._on_candidates_listed(rt, [("LIST1", "Personal")])
+        _run_on_candidates_listed(app, monkeypatch, rt, [("LIST1", "Personal")], None)
 
         assert app._load_config().get("auto_accept_grants", {}) == {}
 
