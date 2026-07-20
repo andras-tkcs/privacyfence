@@ -290,16 +290,11 @@ DATA_DEPENDENT_RULES: frozenset[str] = frozenset({
     "i_am_assignee",
     "i_am_author",
     "no_media_attachments",
-    # non_private_event is *args-derivable for one of its two operations*
-    # (calendar.set_visibility, whose args always carry "visibility") but
-    # not the other (calendar.read_event_details, which has no such arg and
-    # falls back to ctx.raw_data.visibility) -- with raw_data=None that
-    # fallback silently defaults to "default" (not private), a false
-    # "matched" for a read whose real visibility is unknown. Classification
-    # here is per rule name, not per (operation, rule), so this stays
-    # data-dependent globally: calendar.set_visibility gets a conservative
-    # "unknown" from preflight rather than risk read_event_details getting a
-    # false "auto_accept".
+    # non_private_event reads the event's current visibility off
+    # ctx.raw_data (calendar.read_event_details is the only operation that
+    # offers it) -- with raw_data=None that read silently defaults to
+    # "default" (not private), a false "matched" for a read whose real
+    # visibility is unknown, so this stays data-dependent.
     "non_private_event",
 })
 
@@ -633,18 +628,8 @@ class AutoAcceptEvaluator:
         return not bool(getattr(raw, "conference_link", "") or getattr(raw, "hangout_link", ""))
 
     def _rule_non_private_event(self, _v, ctx):
-        """Auto-accept when the event involved is not marked private.
-
-        calendar_set_event_visibility's args always carry the visibility
-        being requested -- that's the state being approved, not whatever the
-        event's prior visibility was. Every other calendar operation this
-        applies to (currently calendar_get_event_details) has no
-        "visibility" arg, so it falls back to the event's current
-        visibility on ctx.raw_data.
-        """
-        visibility = ctx.args.get("visibility")
-        if visibility is None:
-            visibility = getattr(ctx.raw_data, "visibility", None)
+        """Auto-accept a read when the event involved is not marked private."""
+        visibility = getattr(ctx.raw_data, "visibility", None)
         return (visibility or "default") != "private"
 
     # ── Salesforce ────────────────────────────────────────────────────────
@@ -962,7 +947,7 @@ _RULE_DESCRIPTIONS: dict[str, str] = {
     "approved_channel":      "Slack reads in channel(s): {value}",
     "i_am_organizer":        "Calendar event reads for events you organize",
     "no_external_attendees": "Calendar event reads with no external attendees",
-    "non_private_event":     "Calendar event reads/writes where the event is not marked private",
+    "non_private_event":     "Calendar event reads where the event is not marked private",
     "approved_object_types": "Salesforce record reads for object type(s): {value}",
     "i_am_reporter":         "Jira issue reads where you are the reporter",
     "i_am_assignee":         "Jira issue reads where you are the assignee",

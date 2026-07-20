@@ -724,17 +724,18 @@ regardless of `calendar_id`), each called out again where they occur.
     `"default"`.
 12. `calendar_set_event_visibility` on the same event, set to `"private"`.
     Popup-gated, and — unlike Phase 2's Sheets/Docs write tools — this one
-    never gets a temp-accept shortcut either. If you configured
-    `calendar.set_visibility` → `non_private_event` per
-    `qa-environment-setup.md` §4, this call must **still** prompt regardless:
-    the rule checks the visibility being *requested*, and `"private"` never
-    matches it. Confirm that's what happened. Popup, Allow once.
+    never gets a temp-accept shortcut either. It's a write, evaluated by the
+    same rules as `calendar_update_event` in step 4 (`i_am_organizer`,
+    `no_external_attendees`, `personal_calendar`, or the PFQA calendar grant's
+    `write` capability), not by the visibility value being requested — so it
+    should behave the same way step 4 did on this event (auto-accept if you
+    configured one of those rules there, otherwise prompt). Confirm that's
+    what happened. Allow once if it prompts.
 13. `calendar_get_event_visibility` again on the same event (silent). Confirm
     it now returns `"private"`.
-14. `calendar_set_event_visibility` again, this time to `"public"`. If
-    `calendar.set_visibility` → `non_private_event` is configured, this
-    should NOT prompt (the requested value isn't private) — tell me either
-    way.
+14. `calendar_set_event_visibility` again, this time to `"public"`. Same rules
+    as step 12 apply — expect identical accept/prompt behavior regardless of
+    the value being set this time. Confirm.
 15. `calendar_get_event_details` on the same event, now that it's back to
     `"public"`. You're still its organizer (from step 3), so `i_am_organizer`
     may already short-circuit this if configured; if not, and

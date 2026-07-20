@@ -629,8 +629,8 @@ with no undo path through PrivacyFence, so it only ever gets the standing-rule t
 | `non_private_event` | The event's visibility is not `private` |
 
 > **`personal_calendar` is grant-managed** — see [Auto-accept grants](#auto-accept-grants) →
-> `calendar.calendars`. One calendar grant's `read`/`write` capabilities cover both
-> `calendar.read_event_details` and `calendar.create_modify_event`.
+> `calendar.calendars`. One calendar grant's `read`/`write` capabilities cover
+> `calendar.read_event_details`, `calendar.create_modify_event`, and `calendar.set_visibility`.
 
 `calendar_create_out_of_office` (`calendar.out_of_office`) and `calendar_set_working_location`
 (`calendar.working_location`) each have their own operation key but no rule above applies to
@@ -638,15 +638,12 @@ either — both always act on your own primary calendar with no organizer/attend
 concept for these rules to check — so they remain `popup`-gated with no configurable auto-accept,
 unlike `calendar_create_event`/`calendar_update_event` above.
 
-`non_private_event` also applies to `calendar_set_event_visibility` (`calendar.set_visibility`),
-its own operation key — there, it checks the visibility being *requested* (the popup's `args`),
-not the event's prior visibility, since that's the state actually being approved: a call that sets
-visibility to `public` or `default` can auto-accept, one that sets it to `private` cannot, even if
-the event happened to already be private beforehand. For every other operation this rule applies to
-(currently `calendar.read_event_details`), it falls back to the event's current visibility instead,
-since there's no "requested" value to check. Clicking **Always allow** on a
-"Read Calendar Event" prompt proposes this rule when the event isn't private and neither
-`i_am_organizer` nor `no_external_attendees` apply.
+`calendar_set_event_visibility` (`calendar.set_visibility`) is a write like
+`calendar_create_event`/`calendar_update_event`, so it shares `calendar.create_modify_event`'s
+rule set (`i_am_organizer`, `no_external_attendees`, `personal_calendar`) rather than getting a
+rule of its own — `non_private_event` only applies to `calendar.read_event_details`. Clicking
+**Always allow** on a "Read Calendar Event" prompt proposes `non_private_event` when the event
+isn't private and neither `i_am_organizer` nor `no_external_attendees` apply.
 
 **Salesforce**
 

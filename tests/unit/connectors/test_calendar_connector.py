@@ -577,6 +577,24 @@ class TestSetEventVisibility:
             "calendar_id": "primary", "event_id": "e1", "visibility": "private",
         }
 
+    async def test_raw_data_carries_attendees_for_auto_accept_rules(self, gated_call_spy):
+        # calendar.set_visibility is auto-accept-gated like any other event
+        # update (i_am_organizer, no_external_attendees, personal_calendar) --
+        # raw_data.attendees is what _rule_no_external_attendees evaluates
+        # against, same as calendar_update_event's raw_data.
+        connector, client = make_connector()
+        client.get_event.return_value = make_event(attendees=[
+            CalendarAttendee(email="bob@example.com", display_name="Bob", response_status="accepted"),
+        ])
+        client.set_event_visibility.return_value = make_event()
+
+        await connector.call(
+            "calendar_set_event_visibility",
+            {"calendar_id": "primary", "event_id": "e1", "visibility": "private"},
+        )
+
+        assert gated_call_spy[0]["raw_data"]["attendees"] == ["bob@example.com"]
+
 
 class TestFetchErrorMapping:
     async def test_calendar_client_error_becomes_runtime_error(self):
