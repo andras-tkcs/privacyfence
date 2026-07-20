@@ -91,6 +91,7 @@ OPERATION_LABELS: dict[str, str] = {
     "gmail.add_label":             "Gmail – Add label",
     "gmail.remove_label":          "Gmail – Remove label",
     "gmail.archive_message":       "Gmail – Archive message",
+    "gmail.create_label":          "Gmail – Create label",
     "drive.read_file_contents":    "Drive – Read file",
     "drive.download_file":         "Drive – Download file",
     "drive.write_file":            "Drive – Write file",
@@ -103,17 +104,27 @@ OPERATION_LABELS: dict[str, str] = {
     "sheets.add_sheet":            "Sheets – Add tab",
     "sheets.rename_sheet":         "Sheets – Rename tab",
     "sheets.format_range":         "Sheets – Format range",
+    "sheets.insert_dimensions":    "Sheets – Insert rows/columns",
+    "sheets.delete_dimensions":    "Sheets – Delete rows/columns",
+    "docs.edit_content":           "Docs – Edit content",
+    "docs.format_content":         "Docs – Format content",
     "slack.read_messages":         "Slack – Read messages",
     "slack.send_message":          "Slack – Send message",
     "calendar.read_event_details": "Calendar – Read event",
     "calendar.create_modify_event":"Calendar – Create/modify event",
+    "calendar.set_visibility":     "Calendar – Set event visibility",
     "salesforce.read_record":      "Salesforce – Read record",
     "salesforce.run_report":       "Salesforce – Run report",
+    "salesforce.search":           "Salesforce – Search",
     "contacts.edit":               "Contacts – Update contact",
+    "contacts.create":             "Contacts – Create contact",
+    "contacts.add_label":          "Contacts – Add label",
+    "contacts.remove_label":       "Contacts – Remove label",
     "jira.read_issue":             "Jira – Read issue",
     "jira.create_issue":           "Jira – Create issue",
     "jira.add_comment":            "Jira – Add comment",
     "jira.update_issue":           "Jira – Update issue",
+    "jira.transition_issue":       "Jira – Transition issue",
     "confluence.read_page":        "Confluence – Read page",
     "confluence.create_page":      "Confluence – Create page",
     "confluence.update_page":      "Confluence – Update page",
@@ -135,6 +146,7 @@ RULES_BY_OPERATION: dict[str, list[str]] = {
     "gmail.add_label":              ["label_name_allowlist", "i_am_sender", "trusted_sender_domain"],
     "gmail.remove_label":           ["label_name_allowlist", "i_am_sender", "trusted_sender_domain"],
     "gmail.archive_message":        ["i_am_sender", "trusted_sender_domain", "label_match"],
+    "gmail.create_label":           ["label_name_allowlist"],
     "drive.read_file_contents":     ["i_am_owner", "created_by_me", "approved_folder", "file_type_allowlist", "created_this_session", "shared_drive_exclusion"],
     "drive.download_file":          ["i_am_owner", "approved_folder", "file_type_allowlist", "created_this_session", "shared_drive_exclusion"],
     "drive.write_file":             ["i_am_owner", "approved_sandbox_folder", "file_type_allowlist", "created_this_session"],
@@ -147,17 +159,27 @@ RULES_BY_OPERATION: dict[str, list[str]] = {
     "sheets.add_sheet":             ["approved_spreadsheet", "i_am_owner", "approved_sandbox_folder", "created_this_session"],
     "sheets.rename_sheet":          ["approved_spreadsheet", "i_am_owner", "approved_sandbox_folder", "created_this_session"],
     "sheets.format_range":          ["approved_spreadsheet", "i_am_owner", "approved_sandbox_folder", "created_this_session"],
+    "sheets.insert_dimensions":     ["approved_spreadsheet", "i_am_owner", "approved_sandbox_folder", "created_this_session"],
+    "sheets.delete_dimensions":     ["approved_spreadsheet", "i_am_owner", "approved_sandbox_folder", "created_this_session"],
+    "docs.edit_content":            ["i_am_owner", "approved_sandbox_folder", "created_this_session"],
+    "docs.format_content":          ["i_am_owner", "approved_sandbox_folder", "created_this_session"],
     "slack.read_messages":          ["dm_with_myself", "approved_channel", "public_channels_only", "no_file_attachments"],
     "slack.send_message":           ["dm_with_myself", "send_to_myself", "approved_channel", "approved_recipient", "reply_in_existing_thread"],
     "calendar.read_event_details":  ["i_am_organizer", "no_external_attendees", "personal_calendar", "past_event", "time_window_days", "no_conferencing_link"],
     "calendar.create_modify_event": ["i_am_organizer", "no_external_attendees", "personal_calendar"],
+    "calendar.set_visibility":      ["non_private_event"],
     "salesforce.read_record":       ["approved_object_types"],
     "salesforce.run_report":        ["approved_report_ids"],
+    "salesforce.search":            ["approved_object_types"],
     "contacts.edit":                ["no_contact_info_change"],
+    "contacts.create":              ["no_contact_info_change"],
+    "contacts.add_label":           ["label_name_allowlist"],
+    "contacts.remove_label":        ["label_name_allowlist"],
     "jira.read_issue":              ["i_am_reporter", "i_am_assignee", "approved_project_keys"],
     "jira.create_issue":            ["approved_project_keys"],
     "jira.add_comment":             ["approved_project_keys"],
     "jira.update_issue":            ["approved_project_keys"],
+    "jira.transition_issue":        ["approved_project_keys"],
     "confluence.read_page":         ["i_am_author", "approved_space_keys"],
     "confluence.create_page":       ["approved_space_keys"],
     "confluence.update_page":       ["approved_space_keys"],
@@ -193,16 +215,17 @@ ALL_CONNECTORS: list[str] = [
 ]
 
 # Top-level groups shown in the "Auto-accept Rules" menu specifically --
-# distinct from ALL_CONNECTORS because "sheets" isn't a connector (it has no
-# separate auth, org-config section, or entry in GOOGLE_CONNECTORS/
-# _GOOGLE_CLIENTS/ORG_CONFIG_SERVICE -- it rides on Drive's OAuth grant), but
-# its rules live under their own "sheets.*" operation keys (see
-# TOOL_TO_OPERATION in auto_accept.py) rather than nested under "drive.*", so
-# _build_rules_menu's connector-prefix grouping needs it listed here or the
-# whole sheets.* rule bucket is silently dropped (never iterated, so never
-# rendered) -- exactly what happened before this constant existed.
+# distinct from ALL_CONNECTORS because "sheets" and "docs" aren't connectors
+# (neither has a separate auth, org-config section, or entry in
+# GOOGLE_CONNECTORS/_GOOGLE_CLIENTS/ORG_CONFIG_SERVICE -- both ride on
+# Drive's OAuth grant), but their rules live under their own "sheets.*"/
+# "docs.*" operation keys (see TOOL_TO_OPERATION in auto_accept.py) rather
+# than nested under "drive.*", so _build_rules_menu's connector-prefix
+# grouping needs them listed here or the whole bucket is silently dropped
+# (never iterated, so never rendered) -- exactly what happened before this
+# constant existed.
 RULES_MENU_GROUPS: list[str] = [
-    "gmail", "drive", "sheets", "contacts", "calendar", "tasks",
+    "gmail", "drive", "sheets", "docs", "contacts", "calendar", "tasks",
     "slack", "jira", "confluence", "salesforce", "telegram",
 ]
 
