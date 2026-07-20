@@ -30,6 +30,20 @@ covered by test_approval_window.py on every PR and doesn't need this).
 Paste the printed report into the PR description under a "## Popup smoke
 check" heading -- see docs/testing-policy.md §2.2.
 
+_scenarios() has one entry per tool in docs/approval-window-content-reference.md's RG-1/RG-2/
+RG-3/RG-4/WG-1/WG-2 tables (62 tools total, including every RG-1 tool sharing a dialog shape,
+e.g. confluence_get_page/confluence_get_page_by_title) -- every dialog shape that doc documents
+gets a real on-screen click, not just a representative handful. Preview/details data is
+realistic-but-synthetic, sourced from tests/fixtures/live/*/*.json (recorded, redacted real API
+responses -- see scripts/qa_fixture_recorder.py) and docs/qa-environment-setup.md's own PFQA/
+[QATEST] naming conventions, rather than generic placeholder strings -- see that doc's "one rule
+this doc follows wherever it creates content" for why identity fields can look like a real
+project/folder name but content never is. Cross-cutting mechanics this reference doc calls
+"automatic on every group" (Deny, Always allow, Allow for 5 min, the PII/content-flag banners,
+the visibility checklist, seen-count + Claude's reason together, progressive disclosure, the
+Gmail-style header, native PDFView) are folded into specific tool scenarios rather than kept as
+separate generic ones -- see the inline comment at each such scenario in _scenarios().
+
 Usage (the project's own venv, not a bare system python3 -- this needs the
 same pyobjc/AppKit packages the app itself depends on, which only the venv
 has installed):
@@ -179,155 +193,830 @@ def _run_scenario(
     )
 
 
+# ------------------------------------------------------------------------ #
+# Realistic-but-synthetic identity data, sourced from tests/fixtures/live/*/*.json (recorded,
+# redacted real API responses -- see scripts/qa_fixture_recorder.py and that directory's own
+# README) and docs/qa-environment-setup.md's own PFQA/[QATEST] conventions. Never copied from a
+# real message/contact/event; PFQA-prefixed names identify which real project/folder a fixture
+# lives in, [QATEST] tags content that's safe to read/act on -- see that doc's "one rule this
+# doc follows wherever it creates content."
+# ------------------------------------------------------------------------ #
+QA_EMAIL = "qa-placeholder@example.com"
+QA_CC_EMAIL = "qa-cc@example.com"
+QA_CONTACT_EMAIL = "qatest.contact@example.com"
+QA_PHONE = "555-0142"
+QA_PERSON = "QA Placeholder"
+QA_GMAIL_SUBJECT = "PrivacyFence QA seed message [QATEST]"
+QA_GMAIL_BODY = (
+    "Synthetic PrivacyFence QA test message. No real information. Safe to read, "
+    "label, archive, or delete by any automated test."
+)
+QA_DRIVE_FOLDER = "PrivacyFence QA Sandbox"
+QA_DRIVE_FILE = "PrivacyFence QA test file [QATEST].txt"
+QA_DRIVE_DOC = "PrivacyFence QA test doc [QATEST]"
+QA_SHEET = "PrivacyFence QA test sheet [QATEST]"
+QA_SLACK_CHANNEL = "privacyfence-qa-control"
+QA_SLACK_SEED = "PrivacyFence QA seed message [QATEST]. No real information. Safe to read/reply/delete."
+QA_SLACK_REPLY = "PrivacyFence QA seed reply [QATEST]. No real information."
+QA_CALENDAR = "PrivacyFence test [PFQA]"
+QA_EVENT = "PrivacyFence QA seed event [QATEST]"
+QA_EVENT_TIME = "2027-03-15 10:00–10:30 (Europe/Budapest)"
+QA_CONTACT = "PrivacyFence QA Test Contact [QATEST]"
+QA_TASK_LIST = "PrivacyFence QA List"
+QA_CONTRAST_TASK_LIST = "PrivacyFence QA Contrast List"
+QA_TASK = "PrivacyFence QA seed task [QATEST]"
+QA_PROJECT = "PrivacyFence QA Test"
+QA_JIRA_KEY = "PFQA-1"
+QA_JIRA_SUMMARY = "PrivacyFence QA seed issue [QATEST]"
+QA_SPACE = "PrivacyFence QA Test"
+QA_PAGE = "PrivacyFence QA seed page [QATEST]"
+QA_PAGE_BODY = (
+    "Synthetic PrivacyFence QA test page. No real information. Safe to read, comment on, "
+    "or edit by any automated test."
+)
+QA_ACCOUNT = "PrivacyFence QA — Acme Test Co [QATEST]"
+QA_REPORT = "PrivacyFence QA Report"
+QA_TELEGRAM_SEED = "PrivacyFence QA seed message [QATEST]. No real information."
+
+_TINY_PDF_BYTES = (
+    b"%PDF-1.1\n"
+    b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n"
+    b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n"
+    b"3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >> endobj\n"
+    b"xref\n0 4\n0000000000 65535 f \n"
+    b"trailer << /Size 4 /Root 1 0 R >>\n"
+    b"startxref\n0\n%%EOF"
+)
+
+
 def _scenarios(pause_seconds: float = 0.3) -> list[ScenarioResult]:
+    """One scenario per tool in docs/approval-window-content-reference.md's RG-1/RG-2/RG-3/RG-4/
+    WG-1/WG-2 tables (61 tools total) -- every dialog *shape* that reference doc documents, not
+    just a representative handful. Cross-cutting mechanics that doc calls "automatic on every
+    group" (Deny, Always allow, Allow for 5 min, the PII/content-flag banners, the visibility
+    checklist, seen-count + Claude's reason together, progressive disclosure, the Gmail-style
+    header, native PDFView) are folded into specific tool scenarios below rather than kept as
+    separate generic ones -- see the inline notes at each such scenario for which mechanic it
+    carries. This means every button, every banner/card shape, and every tool's exact preview
+    field set all get a real on-screen click at least once, with no redundant duplicate coverage
+    of the same mechanic twice.
+    """
     results = []
-    # Bound once here rather than passing pause_seconds=pause_seconds at
-    # each of the ~11 call sites below.
+    # Bound once here rather than passing pause_seconds=pause_seconds at each of the ~61 call
+    # sites below.
     run = functools.partial(_run_scenario, pause_seconds=pause_seconds)
 
+    # ================================================================== #
+    # RG-1 -- plain review popup (summary box only, no AI-visibility checklist)
+    # ================================================================== #
+
     results.append(run(
-        "Plain popup, Allow once",
+        "RG-1 · gmail_download_attachment",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — QA smoke test (plain)",
-        preview={"from": "qa-smoke@example.com"},
-        details_text="Ordinary, non-sensitive smoke-test content.",
+        title="PrivacyFence — Download Gmail Attachment",
+        preview={
+            "From": QA_EMAIL, "Subject": QA_GMAIL_SUBJECT, "Attachment name": "qa-smoke-test.pdf",
+            "Type": "application/pdf", "Size": "24 KB", "Will save to": "~/Downloads/qa-smoke-test.pdf",
+        },
+        details_text=QA_GMAIL_BODY,
         allow_accept_all=False,
+        connector="gmail",
     ))
 
     results.append(run(
-        "Plain popup, Deny",
+        "RG-1 · drive_download_file",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Download Drive File",
+        preview={
+            "File": QA_DRIVE_FILE, "Owner": QA_EMAIL, "Size": "1.2 KB", "Modified": "2026-07-16",
+            "Saved to": f"~/Downloads/{QA_DRIVE_FILE}",
+        },
+        details_text="Ordinary, non-sensitive smoke-test file content.",
+        allow_accept_all=False,
+        connector="drive",
+    ))
+
+    results.append(run(
+        "RG-1 · calendar_get_event_details",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Read Calendar Event",
+        preview={
+            "Title": QA_EVENT, "Time": QA_EVENT_TIME, "Organizer": QA_PERSON, "Attendees": "none",
+        },
+        details_text="Synthetic PrivacyFence QA test event. No real information.",
+        allow_accept_all=False,
+        connector="calendar",
+    ))
+
+    results.append(run(
+        "RG-1 · jira_get_issue",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Read Jira Issue",
+        preview={
+            "Project": QA_PROJECT, "Key": QA_JIRA_KEY, "Summary": QA_JIRA_SUMMARY,
+            "Status": "To Do", "Assignee": "Unassigned",
+        },
+        details_text="Synthetic PrivacyFence QA test issue. No real information. Safe to comment "
+                      "on, update, or transition by any automated test.",
+        allow_accept_all=False,
+        connector="jira",
+    ))
+
+    results.append(run(
+        # Also the progressive-disclosure mechanic: "Show more" is a
+        # non-terminal click that must resize the window in place without
+        # resolving the modal loop, so the following "Allow once" click
+        # still has to land on the same (now taller) window -- exactly
+        # the kind of thing a title-bar-height miscalculation in
+        # _rebuild_content would silently break.
+        "RG-1 · confluence_get_page (+ Show more → Allow once)",
+        click_title="Allow once", expected="accept", pre_click_title="Show more",
+        title="PrivacyFence — Read Confluence Page",
+        preview={
+            "Title": QA_PAGE, "Space": QA_SPACE, "Author": QA_PERSON, "Last modified": "2026-07-16",
+        },
+        details_text=(QA_PAGE_BODY + "\n") * 60 + "the last line, still present",
+        allow_accept_all=False,
+        connector="confluence",
+    ))
+
+    results.append(run(
+        # Same dialog shape as confluence_get_page above (same row in the
+        # reference doc's RG-1 table) -- a distinct tool since it resolves
+        # by title rather than page ID, not just a duplicate of the one
+        # above.
+        "RG-1 · confluence_get_page_by_title",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Read Confluence Page",
+        preview={
+            "Title": QA_PAGE, "Space": QA_SPACE, "Author": QA_PERSON, "Last modified": "2026-07-16",
+        },
+        details_text=QA_PAGE_BODY,
+        allow_accept_all=False,
+        connector="confluence",
+    ))
+
+    results.append(run(
+        "RG-1 · telegram_get_messages",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Read Telegram Messages",
+        preview={"Chat": "Saved Messages", "Messages": "1"},
+        details_text=QA_TELEGRAM_SEED,
+        allow_accept_all=False,
+        connector="telegram",
+    ))
+
+    results.append(run(
+        "RG-1 · telegram_search_messages",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Search Telegram Messages",
+        preview={"Query": "QATEST", "Results": "1"},
+        details_text=QA_TELEGRAM_SEED,
+        allow_accept_all=False,
+        connector="telegram",
+    ))
+
+    results.append(run(
+        "RG-1 · salesforce_get_record",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Read Salesforce Record",
+        preview={"Object type": "Account", "Name": QA_ACCOUNT, "Record ID": "001QA0000012345"},
+        details_text=f"Name: {QA_ACCOUNT}\nIndustry: (not set)",
+        allow_accept_all=False,
+        connector="salesforce",
+    ))
+
+    results.append(run(
+        "RG-1 · salesforce_run_report",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Run Salesforce Report",
+        preview={"Report": QA_REPORT, "Report ID": "00OQA0000006789"},
+        details_text="1 row, 1 grouping -- synthetic PrivacyFence QA report output.",
+        allow_accept_all=False,
+        connector="salesforce",
+    ))
+
+    results.append(run(
+        # Also the Deny-click mechanic -- confirms Deny still resolves
+        # correctly on an RG-1-shaped popup, not just the write-side one.
+        "RG-1 · salesforce_search (Deny)",
         click_title="Deny", expected="deny",
-        title="PrivacyFence — QA smoke test (deny path)",
-        preview={"from": "qa-smoke@example.com"},
-        details_text="Ordinary, non-sensitive smoke-test content.",
+        title="PrivacyFence — Search Salesforce",
+        preview={
+            "Search term": "PrivacyFence QA", "Object types": "Account", "Results": "2",
+        },
+        details_text=f"{QA_ACCOUNT}\nPrivacyFence QA — Globex Test Co [QATEST]",
         allow_accept_all=False,
+        connector="salesforce",
     ))
 
-    results.append(run(
-        # Also exercises the sensitivity badge below the banner --
-        # pii_categories drives both, no separate scenario needed.
-        "PII-tinted popup, Allow once",
-        click_title="Allow once", expected="accept",
-        title="PrivacyFence — QA smoke test (PII-tinted)",
-        preview={"from": "qa-smoke@example.com"},
-        details_text="His SSN is 123-45-6789 on file.",
-        allow_accept_all=False,
-        pii_categories=["US Social Security Number"],
-    ))
+    # ================================================================== #
+    # RG-2 -- review popup + "AI will receive" checklist, plain body
+    # ================================================================== #
 
     results.append(run(
-        "Review-gate popup, Always allow",
+        # Also the Always-allow-click mechanic.
+        "RG-2 · gmail_get_thread (Always allow)",
         click_title="Always allow", expected="accept_all",
-        title="PrivacyFence — QA smoke test (Always allow)",
-        preview={"from": "qa-smoke@example.com"},
-        details_text="Ordinary, non-sensitive smoke-test content.",
+        title="PrivacyFence — Read Gmail Thread",
+        preview={
+            "Subject": QA_GMAIL_SUBJECT, "Participants": QA_EMAIL, "Messages": "2",
+            "Dates": "2026-07-16 – 2026-07-16",
+        },
+        details_text=f"From: {QA_EMAIL}\n{QA_GMAIL_BODY}\n\nFrom: {QA_EMAIL}\n"
+                      "Synthetic PrivacyFence QA reply. No real information.",
         allow_accept_all=True,
+        visibility={"Sender & metadata": "redact", "Thread messages": "allow", "Attachments": "block"},
+        connector="gmail",
     ))
 
     results.append(run(
-        "Write-gate popup, Allow for 5 min",
-        click_title="Allow for 5 min", expected="accept_temp",
-        title="PrivacyFence — QA smoke test (temp accept)",
-        preview={"file": "qa-smoke-test-file.txt"},
-        details_text="Ordinary, non-sensitive smoke-test content.",
-        allow_accept_all=False,
-        allow_temp_accept=True,
-    ))
-
-    # The five scenarios above predate Phases 1a/1b/2/3 -- none of them ever
-    # set visibility/claude_reason/write_content_flags/seen_count, so a real
-    # on-screen run never actually exercised those sections' rendering or
-    # confirmed they don't break the click-through modal loop (e.g. a taller
-    # window from more sections stacked could silently shift button
-    # coordinates). Added to close that gap.
-
-    results.append(run(
-        "Review-gate popup with AI-visibility checklist, Allow once",
+        "RG-2 · drive_sheets_get_values",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — QA smoke test (visibility checklist)",
-        preview={"from": "qa-smoke@example.com"},
-        details_text="Ordinary, non-sensitive smoke-test content.",
+        title="PrivacyFence — Read Sheet Values",
+        preview={"Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Range": "A1:C10"},
+        details_text="Synthetic PrivacyFence QA test spreadsheet values. No real information.",
         allow_accept_all=False,
-        visibility={"Message body": "allow", "Attachments": "block", "Sender metadata": "redact"},
+        visibility={"Cell values": "allow"},
+        connector="drive",
     ))
 
     results.append(run(
-        # Also exercises the sensitivity badge below the banner, same as
-        # the PII-tinted scenario above -- write_content_flags drives both.
-        "Write-gate popup with content-flag banner, Allow once",
+        # Also the "kitchen sink" mechanic: Claude's reason + a nonzero
+        # seen-count rendered together, alongside the visibility
+        # checklist this view already has -- confirms the taller,
+        # multi-section window still doesn't shift the button row.
+        "RG-2 · slack_get_channel_history (+ reason → seen-count)",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — QA smoke test (content-flag banner)",
-        preview={"to": "qa-smoke@example.com"},
-        details_text="Please wire the deposit per the attached IBAN.",
+        title="PrivacyFence — Read Slack Channel History",
+        preview={
+            "Channel": QA_SLACK_CHANNEL, "Messages": "2", "First message": QA_SLACK_SEED,
+        },
+        details_text=f"{QA_SLACK_SEED}\n{QA_SLACK_REPLY}",
         allow_accept_all=False,
-        write_content_flags=["IBAN (bank account number)"],
+        visibility={"Message text": "allow", "Usernames": "redact"},
+        claude_reason="Checking recent QA channel activity as requested.",
+        seen_count=2,
+        connector="slack",
     ))
 
     results.append(run(
-        "Popup with reason + seen-count + visibility all present, Allow once",
+        "RG-2 · slack_get_thread_replies",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — QA smoke test (kitchen sink)",
-        preview={"from": "qa-smoke@example.com", "subject": "Weekly digest"},
-        details_text="Ordinary, non-sensitive smoke-test content, long enough to show a real "
-                      "reading-time estimate above the details pane rather than a trivial one.",
-        allow_accept_all=True,
-        visibility={"Message body": "allow", "Attachments": "block"},
-        claude_reason="Summarizing the weekly digest for the user, as requested.",
-        seen_count=3,
+        title="PrivacyFence — Read Slack Thread Replies",
+        preview={
+            "Channel": QA_SLACK_CHANNEL, "Thread starter": QA_SLACK_SEED, "Replies": "1",
+        },
+        details_text=QA_SLACK_REPLY,
+        allow_accept_all=False,
+        visibility={"Message text": "allow", "Usernames": "redact"},
+        connector="slack",
     ))
 
-    # Phase 3 additions: the details pane is now a WKWebView, which can
-    # render either the Gmail-style email header or a native PDFView
-    # instead of plain text -- neither was covered by a click-through
-    # scenario before, so a regression in either rendering path (e.g. the
-    # window becoming non-interactive, or the click landing on the wrong
-    # coordinates because the pane's content changed the effective layout)
-    # would only ever have been caught by construction-only unit tests, not
-    # by an actual on-screen click.
+    results.append(run(
+        "RG-2 · slack_search_messages",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Search Slack Messages",
+        preview={"Query": "QATEST", "Results": "2"},
+        details_text=f"{QA_SLACK_SEED}\n{QA_SLACK_REPLY}",
+        allow_accept_all=False,
+        visibility={"Message text": "allow", "Usernames": "redact"},
+        connector="slack",
+    ))
+
+    # ================================================================== #
+    # RG-3 -- review popup + checklist + Gmail-style email header body (no summary box)
+    # ================================================================== #
 
     results.append(run(
-        "Review-gate popup with Gmail-style email header, Allow once",
+        # Also the email-header mechanic (content_kind="email") and the
+        # PII banner+badges mechanic, composed together -- a realistic
+        # combination (a message body that happens to contain a phone
+        # number), and a case the design-review pass specifically wanted
+        # covered end to end.
+        "RG-3 · gmail_get_message (+ email header, + PII banner)",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — QA smoke test (email header)",
-        preview={"From": "alice@example.com", "To": "bob@example.com",
-                 "Subject": "Q3 numbers", "Date": "2026-07-01"},
-        details_text="Ordinary, non-sensitive smoke-test email body.",
+        title="PrivacyFence — Read Gmail Message",
+        preview={"From": QA_EMAIL, "To": QA_EMAIL, "Subject": QA_GMAIL_SUBJECT, "Date": "2026-07-16"},
+        details_text=f"{QA_GMAIL_BODY} Call me back at 555-0142 [QATEST] to confirm.",
         allow_accept_all=False,
+        visibility={"Sender & metadata": "redact", "Message body": "allow", "Attachments": "block"},
         content_kind="email",
+        pii_categories=["Phone number"],
+        connector="gmail",
     ))
 
+    # ================================================================== #
+    # RG-4 -- review popup + checklist + optional native PDFView body
+    # ================================================================== #
+
     results.append(run(
-        "Review-gate popup with native PDFView, Allow once",
+        # Also the native-PDFView mechanic.
+        "RG-4 · drive_get_file_content (+ PDFView)",
         click_title="Allow once", expected="accept",
-        title="PrivacyFence — QA smoke test (PDFView)",
-        preview={"File": "qa-smoke-test.pdf"},
+        title="PrivacyFence — Read Drive File Content",
+        preview={
+            "File": "PrivacyFence QA test file [QATEST].pdf", "Owner": QA_EMAIL,
+            "Size": "18 KB", "Modified": "2026-07-16",
+        },
         details_text="[binary content — this text should not be visible; the PDFView should be]",
         allow_accept_all=False,
-        pdf_bytes=(
-            b"%PDF-1.1\n"
-            b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n"
-            b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n"
-            b"3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >> endobj\n"
-            b"xref\n0 4\n0000000000 65535 f \n"
-            b"trailer << /Size 4 /Root 1 0 R >>\n"
-            b"startxref\n0\n%%EOF"
-        ),
+        visibility={"File metadata": "allow", "Document content": "allow"},
+        pdf_bytes=_TINY_PDF_BYTES,
+        connector="drive",
+    ))
+
+    # ================================================================== #
+    # WG-1 -- popup-gate, Deny / Allow once (38 tools)
+    # ================================================================== #
+
+    results.append(run(
+        # Also the content-flag banner+badges mechanic.
+        "WG-1 · gmail_create_draft (+ content-flag banner)",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Create Gmail Draft",
+        preview={"To": QA_EMAIL, "Cc": QA_CC_EMAIL, "Subject": f"Re: {QA_GMAIL_SUBJECT}"},
+        details_text="Please wire the deposit per the attached IBAN [QATEST].",
+        allow_accept_all=False,
+        write_content_flags=["IBAN (bank account number)"],
+        connector="gmail",
     ))
 
     results.append(run(
-        # "Show more" is a non-terminal click -- it must resize the window
-        # in place without resolving the modal loop, so the following
-        # "Allow once" click still has to land on the same (now taller)
-        # window. Exactly the kind of thing a title-bar-height miscalculation
-        # in _rebuild_content would silently break: unit tests confirmed the
-        # frame math, but only a real click sequence confirms the click
-        # target itself is still where System Events expects it after resize.
-        "Review-gate popup, Show more then Allow once",
-        click_title="Allow once", expected="accept", pre_click_title="Show more",
-        title="PrivacyFence — QA smoke test (progressive disclosure)",
-        preview={"from": "qa-smoke@example.com"},
-        details_text="line one\n" * 200 + "the last line, still present",
+        "WG-1 · gmail_reply_draft",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Create Gmail Reply Draft",
+        preview={"In reply to": QA_GMAIL_SUBJECT, "To": QA_EMAIL},
+        details_text="Synthetic PrivacyFence QA reply draft. No real information.",
         allow_accept_all=False,
+        connector="gmail",
+    ))
+
+    results.append(run(
+        "WG-1 · gmail_reply_all_draft",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Create Gmail Reply-All Draft",
+        preview={"In reply to": QA_GMAIL_SUBJECT, "To": QA_EMAIL, "Also to": QA_CC_EMAIL},
+        details_text="Synthetic PrivacyFence QA reply-all draft. No real information.",
+        allow_accept_all=False,
+        connector="gmail",
+    ))
+
+    results.append(run(
+        "WG-1 · gmail_add_label",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Add Gmail Label",
+        preview={"From": QA_EMAIL, "Subject": QA_GMAIL_SUBJECT, "Label": "QATEST"},
+        details_text=QA_GMAIL_BODY,
+        allow_accept_all=False,
+        connector="gmail",
+    ))
+
+    results.append(run(
+        "WG-1 · gmail_remove_label",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Remove Gmail Label",
+        preview={"From": QA_EMAIL, "Subject": QA_GMAIL_SUBJECT, "Label": "QATEST"},
+        details_text=QA_GMAIL_BODY,
+        allow_accept_all=False,
+        connector="gmail",
+    ))
+
+    results.append(run(
+        "WG-1 · gmail_archive_message",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Archive Gmail Message",
+        preview={"From": QA_EMAIL, "Subject": QA_GMAIL_SUBJECT},
+        details_text=QA_GMAIL_BODY,
+        allow_accept_all=False,
+        connector="gmail",
+    ))
+
+    results.append(run(
+        "WG-1 · gmail_create_filter",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Create Gmail Filter",
+        preview={"Criteria": f"from:{QA_EMAIL}", "Actions": "Apply label QATEST"},
+        details_text="Synthetic PrivacyFence QA filter. No real information.",
+        allow_accept_all=False,
+        connector="gmail",
+    ))
+
+    results.append(run(
+        "WG-1 · gmail_update_filter",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Update Gmail Filter",
+        preview={
+            "Filter ID": "ANe1Bmh_qa0001", "Criteria": f"from:{QA_EMAIL}", "Actions": "Apply label QATEST",
+        },
+        details_text="Synthetic PrivacyFence QA filter update. No real information.",
+        allow_accept_all=False,
+        connector="gmail",
+    ))
+
+    results.append(run(
+        "WG-1 · gmail_create_label",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Create Gmail Label",
+        preview={"Label": "QATEST"},
+        details_text="Synthetic PrivacyFence QA label. No real information.",
+        allow_accept_all=False,
+        connector="gmail",
+    ))
+
+    results.append(run(
+        "WG-1 · drive_write_doc_content",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Write Google Doc Content",
+        preview={"File": QA_DRIVE_DOC, "Owner": QA_EMAIL},
+        details_text="Synthetic PrivacyFence QA doc content. No real information.",
+        allow_accept_all=False,
+        connector="drive",
+    ))
+
+    results.append(run(
+        "WG-1 · drive_upload_file",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Upload Drive File",
+        preview={
+            "File": "PrivacyFence QA upload [QATEST].txt", "Source": "~/Desktop/qa-smoke-test.txt",
+            "Size": "0.8 KB", "Destination": QA_DRIVE_FOLDER,
+        },
+        details_text="Synthetic PrivacyFence QA upload content. No real information.",
+        allow_accept_all=False,
+        connector="drive",
+    ))
+
+    results.append(run(
+        "WG-1 · drive_write_file_content",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Write Drive File Content",
+        preview={"File": QA_DRIVE_FILE, "Owner": QA_EMAIL},
+        details_text="Synthetic PrivacyFence QA file content. No real information.",
+        allow_accept_all=False,
+        connector="drive",
+    ))
+
+    results.append(run(
+        "WG-1 · drive_move_file",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Move Drive File",
+        preview={"File": QA_DRIVE_FILE, "Owner": QA_EMAIL, "Move to folder": f"{QA_DRIVE_FOLDER} / Archive"},
+        details_text="Synthetic PrivacyFence QA file move. No real information.",
+        allow_accept_all=False,
+        connector="drive",
+    ))
+
+    results.append(run(
+        "WG-1 · drive_sheets_add_sheet",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Add Sheet Tab",
+        preview={
+            "Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "New tab": "QATEST Sheet2",
+            "Size": "26 columns x 1000 rows",
+        },
+        details_text="Synthetic PrivacyFence QA new sheet tab. No real information.",
+        allow_accept_all=False,
+        connector="drive",
+    ))
+
+    results.append(run(
+        "WG-1 · drive_sheets_rename_sheet",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Rename Sheet Tab",
+        preview={
+            "Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Tab id": "0", "New title": "QATEST renamed",
+        },
+        details_text="Synthetic PrivacyFence QA sheet rename. No real information.",
+        allow_accept_all=False,
+        connector="drive",
+    ))
+
+    results.append(run(
+        "WG-1 · drive_sheets_delete_dimensions",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Delete Sheet Rows/Columns",
+        preview={
+            "Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Tab id": "0",
+            "Action": "Delete 2 COLUMNS starting at index 3",
+        },
+        details_text="Synthetic PrivacyFence QA dimension delete. No real information.",
+        allow_accept_all=False,
+        connector="drive",
+    ))
+
+    results.append(run(
+        "WG-1 · slack_send_message",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Send Slack Message",
+        preview={"Channel": QA_SLACK_CHANNEL, "In thread": "1700000001.000100"},
+        details_text="Synthetic PrivacyFence QA reply. No real information. [QATEST]",
+        allow_accept_all=False,
+        connector="slack",
+    ))
+
+    results.append(run(
+        "WG-1 · calendar_create_event",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Create Calendar Event",
+        preview={
+            "Title": "PrivacyFence QA smoke event [QATEST]",
+            "Time": "2027-04-01 09:00–09:30 (Europe/Budapest)",
+            "Calendar": QA_CALENDAR, "Location": "Remote",
+        },
+        details_text="Synthetic PrivacyFence QA test event. No real information.",
+        allow_accept_all=False,
+        connector="calendar",
+    ))
+
+    results.append(run(
+        "WG-1 · calendar_update_event",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Update Calendar Event",
+        preview={"Event": QA_EVENT, "Calendar": QA_CALENDAR, "Start": "2027-03-15 10:00 → 11:00"},
+        details_text="Synthetic PrivacyFence QA test event update. No real information.",
+        allow_accept_all=False,
+        connector="calendar",
+    ))
+
+    results.append(run(
+        "WG-1 · calendar_create_out_of_office",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Create Out of Office",
+        preview={
+            "Title": "PrivacyFence QA OOO [QATEST]", "Time": "2027-03-20 – 2027-03-21",
+            "Auto-decline": "Yes",
+        },
+        details_text="Synthetic PrivacyFence QA out-of-office event. No real information.",
+        allow_accept_all=False,
+        connector="calendar",
+    ))
+
+    results.append(run(
+        "WG-1 · calendar_set_working_location",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Set Working Location",
+        preview={"Date": "2027-03-22", "Location": "Home", "Building": "n/a", "Label": "Remote"},
+        details_text="Synthetic PrivacyFence QA working-location entry. No real information.",
+        allow_accept_all=False,
+        connector="calendar",
+    ))
+
+    results.append(run(
+        "WG-1 · calendar_set_event_visibility",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Set Event Visibility",
+        preview={"Event": QA_EVENT, "Calendar": QA_CALENDAR, "Visibility": "default → private"},
+        details_text="Synthetic PrivacyFence QA test event. No real information.",
+        allow_accept_all=False,
+        connector="calendar",
+    ))
+
+    results.append(run(
+        "WG-1 · contacts_update",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Update Contact",
+        preview={"Contact": QA_CONTACT, "Emails": QA_CONTACT_EMAIL, "Phones": QA_PHONE},
+        details_text="Synthetic PrivacyFence QA contact update. No real information.",
+        allow_accept_all=False,
+        connector="contacts",
+    ))
+
+    results.append(run(
+        "WG-1 · contacts_create",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Create Contact",
+        preview={
+            "Name": "PrivacyFence QA New Contact [QATEST]", "Emails": "qatest.new@example.com",
+            "Phones": "555-0199",
+        },
+        details_text="Synthetic PrivacyFence QA contact creation. No real information.",
+        allow_accept_all=False,
+        connector="contacts",
+    ))
+
+    results.append(run(
+        "WG-1 · contacts_add_label",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Add Contact Label",
+        preview={"Contact": QA_CONTACT, "Label": "QATEST"},
+        details_text="Synthetic PrivacyFence QA contact label. No real information.",
+        allow_accept_all=False,
+        connector="contacts",
+    ))
+
+    results.append(run(
+        "WG-1 · contacts_remove_label",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Remove Contact Label",
+        preview={"Contact": QA_CONTACT, "Label": "QATEST"},
+        details_text="Synthetic PrivacyFence QA contact label removal. No real information.",
+        allow_accept_all=False,
+        connector="contacts",
+    ))
+
+    results.append(run(
+        "WG-1 · telegram_send_message",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Send Telegram Message",
+        preview={"Chat": "Saved Messages"},
+        details_text="Synthetic PrivacyFence QA reply. No real information. [QATEST]",
+        allow_accept_all=False,
+        connector="telegram",
+    ))
+
+    results.append(run(
+        "WG-1 · jira_create_issue",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Create Jira Issue",
+        preview={
+            "Project": QA_PROJECT, "Type": "Task", "Summary": "PrivacyFence QA smoke issue [QATEST]",
+            "Priority": "Medium",
+        },
+        details_text="Synthetic PrivacyFence QA test issue. No real information.",
+        allow_accept_all=False,
+        connector="jira",
+    ))
+
+    results.append(run(
+        "WG-1 · jira_add_comment",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Comment on Jira Issue",
+        preview={"Issue": QA_JIRA_KEY},
+        details_text="Synthetic PrivacyFence QA comment. No real information. [QATEST]",
+        allow_accept_all=False,
+        connector="jira",
+    ))
+
+    results.append(run(
+        "WG-1 · jira_update_issue",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Update Jira Issue",
+        preview={"Issue": QA_JIRA_KEY, "Priority": "Medium → High"},
+        details_text="Synthetic PrivacyFence QA issue update. No real information.",
+        allow_accept_all=False,
+        connector="jira",
+    ))
+
+    results.append(run(
+        "WG-1 · jira_transition_issue",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Transition Jira Issue",
+        preview={"Issue": QA_JIRA_KEY, "Status": "To Do → In Progress"},
+        details_text="Synthetic PrivacyFence QA issue transition. No real information.",
+        allow_accept_all=False,
+        connector="jira",
+    ))
+
+    results.append(run(
+        "WG-1 · confluence_create_page",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Create Confluence Page",
+        preview={"Space": QA_SPACE, "Title": "PrivacyFence QA smoke page [QATEST]"},
+        details_text="Synthetic PrivacyFence QA test page. No real information.",
+        allow_accept_all=False,
+        connector="confluence",
+    ))
+
+    results.append(run(
+        "WG-1 · confluence_update_page",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Update Confluence Page",
+        preview={"Page ID": "qa-placeholder-id-3", "Space": QA_SPACE, "Title": QA_PAGE},
+        details_text=QA_PAGE_BODY,
+        allow_accept_all=False,
+        connector="confluence",
+    ))
+
+    results.append(run(
+        "WG-1 · tasks_create_task",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Create Task",
+        preview={
+            "Task list": QA_TASK_LIST, "Title": "PrivacyFence QA smoke task [QATEST]", "Due": "2027-03-20",
+        },
+        details_text="Synthetic PrivacyFence QA test task. No real information.",
+        allow_accept_all=False,
+        connector="tasks",
+    ))
+
+    results.append(run(
+        "WG-1 · tasks_update_task",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Update Task",
+        preview={
+            "Task list": QA_TASK_LIST, "Task": QA_TASK,
+            "New title": f"{QA_TASK} (updated)",
+        },
+        details_text="Synthetic PrivacyFence QA test task update. No real information.",
+        allow_accept_all=False,
+        connector="tasks",
+    ))
+
+    results.append(run(
+        "WG-1 · tasks_complete_task",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Complete Task",
+        preview={"Task list": QA_TASK_LIST, "Task": QA_TASK},
+        details_text="Synthetic PrivacyFence QA test task. No real information.",
+        allow_accept_all=False,
+        connector="tasks",
+    ))
+
+    results.append(run(
+        "WG-1 · tasks_uncomplete_task",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Uncomplete Task",
+        preview={"Task list": QA_TASK_LIST, "Task": QA_TASK},
+        details_text="Synthetic PrivacyFence QA test task. No real information.",
+        allow_accept_all=False,
+        connector="tasks",
+    ))
+
+    results.append(run(
+        "WG-1 · tasks_move_task",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Move Task",
+        preview={"Task": QA_TASK, "From list": QA_TASK_LIST, "To list": QA_CONTRAST_TASK_LIST},
+        details_text="Synthetic PrivacyFence QA test task. No real information.",
+        allow_accept_all=False,
+        connector="tasks",
+    ))
+
+    # ================================================================== #
+    # WG-2 -- popup-gate, Deny / Allow once / Allow for 5 min (6 tools)
+    # ================================================================== #
+
+    results.append(run(
+        # Also the Allow-for-5-min-click mechanic.
+        "WG-2 · drive_sheets_write_range (Allow for 5 min)",
+        click_title="Allow for 5 min", expected="accept_temp",
+        title="PrivacyFence — Write Sheet Range",
+        preview={"Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Range": "A1:C10"},
+        details_text="Synthetic PrivacyFence QA sheet write. No real information.",
+        allow_accept_all=False,
+        allow_temp_accept=True,
+        connector="drive",
+    ))
+
+    results.append(run(
+        "WG-2 · drive_sheets_format_range",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Format Sheet Range",
+        preview={
+            "Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Range": "A1:C10", "Format": "Bold header row",
+        },
+        details_text="Synthetic PrivacyFence QA sheet formatting. No real information.",
+        allow_accept_all=False,
+        allow_temp_accept=True,
+        connector="drive",
+    ))
+
+    results.append(run(
+        "WG-2 · drive_sheets_insert_dimensions",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Insert Sheet Rows/Columns",
+        preview={
+            "Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Tab id": "0",
+            "Action": "Insert 3 ROWS before index 5",
+        },
+        details_text="Synthetic PrivacyFence QA dimension insert. No real information.",
+        allow_accept_all=False,
+        allow_temp_accept=True,
+        connector="drive",
+    ))
+
+    results.append(run(
+        "WG-2 · drive_add_comment",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Add Drive Comment",
+        preview={"File": QA_DRIVE_FILE, "Owner": QA_EMAIL},
+        details_text="Synthetic PrivacyFence QA comment. No real information. [QATEST]",
+        allow_accept_all=False,
+        allow_temp_accept=True,
+        connector="drive",
+    ))
+
+    results.append(run(
+        "WG-2 · drive_docs_edit_content",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Edit Google Doc Content",
+        preview={"File": QA_DRIVE_DOC, "Owner": QA_EMAIL, "Match": "the one matching occurrence"},
+        details_text="Synthetic PrivacyFence QA doc edit. No real information.",
+        allow_accept_all=False,
+        allow_temp_accept=True,
+        connector="drive",
+    ))
+
+    results.append(run(
+        "WG-2 · drive_docs_format_content",
+        click_title="Allow once", expected="accept",
+        title="PrivacyFence — Format Google Doc Content",
+        preview={"File": QA_DRIVE_DOC, "Owner": QA_EMAIL, "Format": "Italic selection"},
+        details_text="Synthetic PrivacyFence QA doc formatting. No real information.",
+        allow_accept_all=False,
+        allow_temp_accept=True,
+        connector="drive",
     ))
 
     return results
