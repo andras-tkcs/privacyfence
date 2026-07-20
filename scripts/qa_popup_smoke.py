@@ -44,6 +44,11 @@ the visibility checklist, seen-count + Claude's reason together, progressive dis
 Gmail-style header, native PDFView) are folded into specific tool scenarios rather than kept as
 separate generic ones -- see the inline comment at each such scenario in _scenarios().
 
+One more, non-tool scenario runs last: the actual menu bar status item and, from it, the "Manage
+Auto-accept Rules…" window (see _run_menu_bar_scenario's docstring) -- the menu bar redesign (PR
+#60) has the same "real click actually reaching it" gap the rest of this script covers for
+approval popups, just never exercised end to end before now.
+
 Usage (the project's own venv, not a bare system python3 -- this needs the
 same pyobjc/AppKit packages the app itself depends on, which only the venv
 has installed):
@@ -51,11 +56,19 @@ has installed):
     .venv/bin/python scripts/qa_popup_smoke.py --report-file /tmp/popup_smoke.md
     .venv/bin/python scripts/qa_popup_smoke.py --pause-seconds 3   # slow down to actually look
     .venv/bin/python scripts/qa_popup_smoke.py --screenshot-dir /tmp/popup_smoke_shots
+    # One scenario only, e.g. to refresh a single README.md screenshot -- the three screenshots
+    # README.md actually uses (as of this writing) come from these three scenario names, one
+    # popup-gate, one review-gate, one menu-bar:
+    .venv/bin/python scripts/qa_popup_smoke.py --scenario "gmail_get_thread" \\
+        --screenshot-dir docs/images/screenshots --pause-seconds 3
+    .venv/bin/python scripts/qa_popup_smoke.py --scenario "drive_sheets_write_range" \\
+        --screenshot-dir docs/images/screenshots --pause-seconds 3
+    .venv/bin/python scripts/qa_popup_smoke.py --scenario "Menu bar" \\
+        --screenshot-dir docs/images/screenshots --pause-seconds 3
 """
 from __future__ import annotations
 
 import argparse
-import functools
 import os
 import re
 import subprocess
@@ -65,6 +78,8 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, Callable
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -76,9 +91,19 @@ if sys.platform != "darwin":
     sys.exit(1)
 
 import Quartz  # noqa: E402
-from AppKit import NSBitmapImageRep, NSPNGFileType  # noqa: E402
+import rumps  # noqa: E402
+from AppKit import (  # noqa: E402
+    NSApplication,
+    NSApplicationActivationPolicyAccessory,
+    NSApplicationActivationPolicyProhibited,
+    NSBitmapImageRep,
+    NSPNGFileType,
+    NSStatusBar,
+)
 from PyObjCTools import AppHelper  # noqa: E402
+from rumps import rumps as _rumps_internal  # noqa: E402
 
+from privacyfence import menu_bar  # noqa: E402
 from privacyfence.approval_window import show_native_approval  # noqa: E402
 
 WINDOW_WAIT_TIMEOUT_SECONDS = 8.0
@@ -162,6 +187,59 @@ def _click_button(pid: int, title: str) -> str:
                 return "BUTTON_NOT_FOUND"
             end if
             click button "{title}" of window 1
+        end tell
+    end tell
+    return "clicked"
+    '''
+    return _run_applescript(script)
+
+
+def _click_menu_bar_icon(pid: int) -> str:
+    """Click our own process's (one and only) menu bar status item --
+    returns "clicked", "TIMEOUT_NO_STATUS_ITEM" if it never appeared within
+    WINDOW_WAIT_TIMEOUT_SECONDS, or an osascript-level error string.
+
+    "menu bar 2" is System Events' name for a process's status-bar extras,
+    distinct from "menu bar 1" (the app's own File/Edit/... menu bar, which
+    an accessory-policy app like this one doesn't have) -- the same
+    real-click-via-System-Events approach _click_button uses for approval
+    windows, just targeting the status item instead of a window button.
+    Clicking it opens its menu the same way a real user click would; no
+    separate "open the menu" call exists or is needed.
+    """
+    script = f'''
+    tell application "System Events"
+        set targetProcess to first process whose unix id is {pid}
+        set deadlineTime to (current date) + {WINDOW_WAIT_TIMEOUT_SECONDS}
+        repeat
+            if (exists menu bar item 1 of menu bar 2 of targetProcess) then exit repeat
+            if (current date) > deadlineTime then return "TIMEOUT_NO_STATUS_ITEM"
+            delay 0.1
+        end repeat
+        click menu bar item 1 of menu bar 2 of targetProcess
+    end tell
+    return "clicked"
+    '''
+    return _run_applescript(script)
+
+
+def _click_menu_item(pid: int, title: str) -> str:
+    """Click an item by exact title in our own process's open status-item
+    menu (call _click_menu_bar_icon() first to actually open it) -- returns
+    "clicked", "MENU_ITEM_NOT_FOUND", or an osascript-level error string.
+    Clicking a real menu item ends that menu's tracking session the same
+    way a real user's click would -- no separate "close the menu" step
+    exists or is needed, mirroring _click_button's resolve-by-clicking
+    contract for approval windows.
+    """
+    script = f'''
+    tell application "System Events"
+        set targetProcess to first process whose unix id is {pid}
+        tell targetProcess
+            if not (exists menu item "{title}" of menu 1 of menu bar item 1 of menu bar 2) then
+                return "MENU_ITEM_NOT_FOUND"
+            end if
+            click menu item "{title}" of menu 1 of menu bar item 1 of menu bar 2
         end tell
     end tell
     return "clicked"
@@ -312,6 +390,46 @@ QA_ACCOUNT = "PrivacyFence QA — Acme Test Co [QATEST]"
 QA_REPORT = "PrivacyFence QA Report"
 QA_TELEGRAM_SEED = "PrivacyFence QA seed message [QATEST]. No real information."
 
+# A synthetic settings.yaml for the menu-bar scenario -- enough auto_accept_grants/auto_accept_
+# rules spread across a few connectors (gmail, drive, sheets, slack) that the Auto-accept Rules
+# window's sidebar and rows have real, multi-section content to screenshot, same PFQA/[QATEST]
+# naming as everything else in this file. QA_DRIVE_SANDBOX_FOLDER_ID/QA_SLACK_CONTROL_CHANNEL_ID
+# are made up, not real resource ids -- see docs/qa-environment-setup.md's Drive/Slack sections for
+# what the real equivalents look like.
+QA_DRIVE_SANDBOX_FOLDER_ID = "1QATestSandboxFolderId00000000001"
+QA_SLACK_CONTROL_CHANNEL_ID = "C0QATESTCONTROL0001"
+QA_MENU_BAR_SETTINGS_YAML = f"""\
+pii_detection:
+  enabled: true
+connectors:
+  gmail:
+    enabled: true
+  drive:
+    enabled: true
+  slack:
+    enabled: true
+auto_accept_grants:
+  drive:
+    folders:
+      - id: "{QA_DRIVE_SANDBOX_FOLDER_ID}"
+        name: "{QA_DRIVE_FOLDER}"
+        read: true
+  slack:
+    channels:
+      - id: "{QA_SLACK_CONTROL_CHANNEL_ID}"
+        name: "{QA_SLACK_CHANNEL}"
+        read: true
+auto_accept_rules:
+  gmail.read_message:
+    - rule: trusted_sender_domain
+      value:
+        - example.com
+  sheets.write_range:
+    - rule: approved_sandbox_folder
+      value:
+        - "{QA_DRIVE_SANDBOX_FOLDER_ID}"
+"""
+
 _TINY_PDF_BYTES = (
     b"%PDF-1.1\n"
     b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n"
@@ -323,7 +441,167 @@ _TINY_PDF_BYTES = (
 )
 
 
-def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -> list[ScenarioResult]:
+def _run_on_main_thread_sync(func: Callable[[], Any]) -> Any:
+    """Run `func` on the main thread and block the calling thread until it
+    finishes, re-raising any exception it raised. AppHelper.callAfter() is
+    fire-and-forget; this adds the synchronous, return/exception-propagating
+    contract show_native_approval() gets for free from performSelectorOn
+    MainThread_withObject_waitUntilDone_ (which needs an NSObject method,
+    not a plain closure -- not worth a helper class for the two call sites
+    below).
+
+    Only ever called here while the main thread is idling in AppHelper.
+    runEventLoop() between scenarios, never while it's inside another
+    blocking call (a modal approval window, an open menu's tracking
+    session) -- callAfter's plain performSelectorOnMainThread scheduling
+    isn't guaranteed to interrupt those, so this deliberately isn't used
+    for anything that needs to.
+    """
+    done = threading.Event()
+    result_box: list[Any] = []
+    error_box: list[BaseException] = []
+
+    def wrapper() -> None:
+        try:
+            result_box.append(func())
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread below
+            error_box.append(exc)
+        finally:
+            done.set()
+
+    AppHelper.callAfter(wrapper)
+    done.wait()
+    if error_box:
+        raise error_box[0]
+    return result_box[0] if result_box else None
+
+
+def _run_menu_bar_scenario(
+    name: str, *, pause_seconds: float = 0.3, screenshot_dir: Path | None = None
+) -> ScenarioResult:
+    """Not a tool-approval dialog -- exercises the actual menu bar status
+    item and, from it, the "Manage Auto-accept Rules..." window (rules_
+    manager_window.py, added by the menu bar redesign in PR #60): a real
+    click on the real on-screen status item, then a real click on a real
+    menu item within the menu that click opens, exactly the "did a real
+    click actually reach it" concern this script's module docstring raises
+    about approval windows -- the redesign has no construction-only test
+    covering that its own menu wiring still resolves to a click landing on
+    the right window, the same gap this whole script exists to cover for
+    approval popups. Screenshots twice: the open status-item menu (the
+    "menu layout"), then the rules window it opens into -- see main()'s
+    --screenshot-dir.
+
+    Fits the same ScenarioResult shape as a popup scenario even though
+    there's no approve/deny decision here: click_status carries the real
+    failure mode (no status item found, menu item not found, the window
+    never appeared, ...) and, on full success, is set to "clicked" with
+    actual==expected=="shown" so .passed means exactly what it means for
+    every other scenario in this file -- a real click actually reached the
+    thing it was supposed to reach.
+
+    Builds its own throwaway PrivacyFenceMenuBar off a temp settings.yaml
+    (see QA_MENU_BAR_SETTINGS_YAML) rather than the user's real config --
+    same reasoning as every other scenario's synthetic preview/details data:
+    this only ever needs to look realistic, never touch what's actually
+    installed. Reaches into rumps' private rumps.rumps.NSApp/initializeStatusBar
+    to attach a real NSStatusItem without also starting a second, nested
+    AppHelper.runEventLoop() -- App.run() normally does both in one call,
+    but this process is already inside its own runEventLoop() (started by
+    main() below), and starting another would never return.
+    """
+    pid = os.getpid()
+    fake_ipc_server = SimpleNamespace(
+        unattended_session_count=lambda: 0,
+        set_unattended_changed_listener=lambda callback: None,
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False, encoding="utf-8") as f:
+        f.write(QA_MENU_BAR_SETTINGS_YAML)
+        config_path = f.name
+
+    app_holder: list[Any] = []
+
+    def build_app() -> None:
+        # Never touches the real org config file -- see this function's
+        # docstring; menu_bar.load_org_config is a plain module-level
+        # function reference, reassigning it here is enough (nothing else
+        # in this short-lived process depends on the original).
+        menu_bar.load_org_config = lambda: {}
+        app = menu_bar.PrivacyFenceMenuBar(
+            config_path, connectors=["gmail", "drive", "slack"],
+            ipc_server=fake_ipc_server, connector_objs=[],
+        )
+        # Mirrors rumps.App.run() (rumps/rumps.py) up to, but not
+        # including, its final AppHelper.runEventLoop() call -- see this
+        # function's docstring for why that call is skipped here.
+        nsapp = NSApplication.sharedApplication()
+        if nsapp.activationPolicy() == NSApplicationActivationPolicyProhibited:
+            nsapp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+        nsapp.activateIgnoringOtherApps_(True)
+        app._nsapp = _rumps_internal.NSApp.alloc().init()
+        app._nsapp._app = app.__dict__
+        nsapp.setDelegate_(app._nsapp)
+        app._nsapp.initializeStatusBar()
+        app_holder.append(app)
+
+    def cleanup(app: Any) -> None:
+        if app._rules_manager is not None and app._rules_manager.window is not None:
+            app._rules_manager.window.close()
+        status_item = getattr(app._nsapp, "nsstatusitem", None)
+        if status_item is not None:
+            NSStatusBar.systemStatusBar().removeStatusItem_(status_item)
+
+    def fail(click_status: str) -> ScenarioResult:
+        if app_holder:
+            _run_on_main_thread_sync(lambda: cleanup(app_holder[0]))
+        os.unlink(config_path)
+        return ScenarioResult(
+            name=name, button_clicked="Manage Auto-accept Rules…", expected="shown",
+            actual=None, click_status=click_status,
+        )
+
+    try:
+        _run_on_main_thread_sync(build_app)
+    except Exception as exc:  # noqa: BLE001 - surfaced as this scenario's failure, not a crash
+        os.unlink(config_path)
+        return ScenarioResult(
+            name=name, button_clicked="Manage Auto-accept Rules…", expected="shown",
+            actual=None, click_status=f"setup error: {exc!r}",
+        )
+
+    time.sleep(pause_seconds)
+    status = _click_menu_bar_icon(pid)
+    if status != "clicked":
+        return fail(status)
+
+    time.sleep(pause_seconds)
+    if screenshot_dir is not None:
+        _screenshot_own_window(pid, screenshot_dir / f"{_slugify(name)}-menu.png")
+    time.sleep(pause_seconds)
+
+    status = _click_menu_item(pid, "Manage Auto-accept Rules…")
+    if status != "clicked":
+        return fail(status)
+
+    wait_status = _wait_for_window(pid)
+    if wait_status != "ready":
+        return fail(wait_status)
+
+    time.sleep(pause_seconds)
+    if screenshot_dir is not None:
+        _screenshot_own_window(pid, screenshot_dir / f"{_slugify(name)}-rules-window.png")
+
+    _run_on_main_thread_sync(lambda: cleanup(app_holder[0]))
+    os.unlink(config_path)
+    return ScenarioResult(
+        name=name, button_clicked="Manage Auto-accept Rules…", expected="shown",
+        actual="shown", click_status="clicked",
+    )
+
+
+def _scenarios(
+    pause_seconds: float = 0.3, screenshot_dir: Path | None = None, only: str | None = None
+) -> list[ScenarioResult]:
     """One scenario per tool in docs/approval-window-content-reference.md's RG-1/RG-2/RG-3/RG-4/
     WG-1/WG-2 tables (61 tools total) -- every dialog *shape* that reference doc documents, not
     just a representative handful. Cross-cutting mechanics that doc calls "automatic on every
@@ -334,11 +612,19 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     carries. This means every button, every banner/card shape, and every tool's exact preview
     field set all get a real on-screen click at least once, with no redundant duplicate coverage
     of the same mechanic twice.
+
+    `only`, when given, restricts this to the scenarios whose name contains it (case-insensitive)
+    -- see main()'s --scenario flag. Filtering happens here, before each matching call site's
+    run(...) actually pops and clicks a real window, rather than after: skipped scenarios must
+    never show a window at all, not just be dropped from the report.
     """
     results = []
-    # Bound once here rather than passing pause_seconds=pause_seconds, screenshot_dir=screenshot_dir
-    # at each of the ~61 call sites below.
-    run = functools.partial(_run_scenario, pause_seconds=pause_seconds, screenshot_dir=screenshot_dir)
+    only_lower = only.lower() if only else None
+
+    def run(name: str, **kwargs) -> ScenarioResult | None:
+        if only_lower is not None and only_lower not in name.lower():
+            return None
+        return _run_scenario(name, pause_seconds=pause_seconds, screenshot_dir=screenshot_dir, **kwargs)
 
     # ================================================================== #
     # RG-1 -- plain review popup (summary box only, no AI-visibility checklist)
@@ -489,18 +775,34 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     # ================================================================== #
 
     results.append(run(
-        # Also the Always-allow-click mechanic.
-        "RG-2 · gmail_get_thread (Always allow)",
+        # The "kitchen sink" scenario: every row that CAN legally coexist
+        # on one dialog, all rendered together -- seen-count, summary box,
+        # visibility checklist, PII banner, and Claude's reason (rows 2-5
+        # and 7 in docs/approval-window-content-reference.md's anatomy
+        # table) -- plus the Always-allow-click mechanic riding along on
+        # the same click. Nothing else in this file combines all five
+        # cards; the RG-3 gmail_get_message scenario below trades the
+        # summary box away for the email header (content_kind="email"
+        # suppresses it per that doc's row 3), and the write-side
+        # content-flag banner can't appear here at all (review-gate
+        # only) -- see that doc's "Cross-cutting" section for exactly
+        # which rows are mutually exclusive. This is also the one
+        # scenario meant to be captured on its own via --scenario for a
+        # README screenshot that shows every card at once.
+        "RG-2 · gmail_get_thread (+ reason, seen-count, PII banner, Always allow -- all cards)",
         click_title="Always allow", expected="accept_all",
         title="Read Gmail Thread",
         preview={
             "Subject": QA_GMAIL_SUBJECT, "Participants": QA_EMAIL, "Messages": "2",
             "Dates": "2026-07-16 – 2026-07-16",
         },
-        details_text=f"From: {QA_EMAIL}\n{QA_GMAIL_BODY}\n\nFrom: {QA_EMAIL}\n"
-                      "Synthetic PrivacyFence QA reply. No real information.",
+        details_text=f"From: {QA_EMAIL}\n{QA_GMAIL_BODY} The refund IBAN [QATEST] is attached.\n\n"
+                      f"From: {QA_EMAIL}\nSynthetic PrivacyFence QA reply. No real information.",
         allow_accept_all=True,
         visibility={"Sender & metadata": "redact", "Thread messages": "allow", "Attachments": "block"},
+        claude_reason="Checking recent QA thread activity as requested.",
+        seen_count=2,
+        pii_categories=["IBAN (bank account number)"],
         connector="gmail",
     ))
 
@@ -1022,14 +1324,28 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
     # ================================================================== #
 
     results.append(run(
-        # Also the Allow-for-5-min-click mechanic.
-        "WG-2 · drive_sheets_write_range (Allow for 5 min)",
+        # The write-side "kitchen sink": every row a popup-gate dialog can
+        # legally show, all rendered together -- summary box, seen-count,
+        # amber content-flag banner, and Claude's reason (rows 1-2 and 6-7
+        # in docs/approval-window-content-reference.md's anatomy table) --
+        # plus the Allow-for-5-min button riding along on the same click.
+        # A write never gets the AI-visibility checklist or the red PII
+        # banner (review-gate only -- see that doc's "Cross-cutting"
+        # section), so this is the actual ceiling for a write dialog: the
+        # write-side counterpart to the RG-2 gmail_get_thread "all cards"
+        # scenario above. Also the one scenario meant to be captured on
+        # its own via --scenario for a README screenshot showing a write
+        # dialog's full card set.
+        "WG-2 · drive_sheets_write_range (+ reason, seen-count, content-flag banner, Allow for 5 min -- all cards)",
         click_title="Allow for 5 min", expected="accept_temp",
         title="Write Sheet Range",
         preview={"Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Range": "A1:C10"},
-        details_text="Synthetic PrivacyFence QA sheet write. No real information.",
+        details_text="Synthetic PrivacyFence QA sheet write: Q2 budget figures, $12,400.00 [QATEST].",
         allow_accept_all=False,
         allow_temp_accept=True,
+        write_content_flags=["Financial figures (currency amounts)"],
+        claude_reason="Filling in the QA budget row as requested.",
+        seen_count=3,
         connector="drive",
     ))
 
@@ -1093,7 +1409,23 @@ def _scenarios(pause_seconds: float = 0.3, screenshot_dir: Path | None = None) -
         connector="drive",
     ))
 
-    return results
+    # ================================================================== #
+    # Menu bar -- not a tool-approval dialog; exercises the actual menu bar
+    # status item and the "Manage Auto-accept Rules..." window it opens
+    # (see _run_menu_bar_scenario's docstring). Kept last, after every
+    # popup scenario above: its status item and non-modal window mustn't
+    # sit on screen alongside an approval popup -- _screenshot_own_window
+    # assumes only one of our own windows is ever on screen at a time, and
+    # this scenario cleans its own window/status item up on the way out
+    # rather than leaving them for whatever runs after it.
+    # ================================================================== #
+    menu_bar_name = "Menu bar · status item → Manage Auto-accept Rules… window"
+    if only_lower is None or only_lower in menu_bar_name.lower():
+        results.append(
+            _run_menu_bar_scenario(menu_bar_name, pause_seconds=pause_seconds, screenshot_dir=screenshot_dir)
+        )
+
+    return [r for r in results if r is not None]
 
 
 def _render_report(results: list[ScenarioResult]) -> str:
@@ -1134,6 +1466,17 @@ def main() -> None:
              "extra macOS permission needed beyond what this script already requires -- "
              "capturing your own process's window doesn't need Screen Recording access.",
     )
+    parser.add_argument(
+        "--scenario",
+        help="Run only the scenario(s) whose name contains this text (case-insensitive substring "
+             "match against the scenario name shown in the report table, e.g. 'gmail_get_thread', "
+             "'RG-4', or 'Menu bar' for the menu-bar/rules-window scenario), instead of the full "
+             "~63-scenario suite (62 tool-approval scenarios plus the one menu-bar scenario). For "
+             "grabbing a single updated screenshot -- e.g. for README.md -- without sitting "
+             "through the whole run: --scenario 'gmail_get_thread' --screenshot-dir "
+             "docs/images/screenshots. Matches nothing -> an empty report and a nonzero exit "
+             "code, same as any other all-failed run.",
+    )
     args = parser.parse_args()
 
     results: list[ScenarioResult] = []
@@ -1144,7 +1487,7 @@ def main() -> None:
         try:
             if args.screenshot_dir is not None:
                 args.screenshot_dir.mkdir(parents=True, exist_ok=True)
-            results.extend(_scenarios(args.pause_seconds, args.screenshot_dir))
+            results.extend(_scenarios(args.pause_seconds, args.screenshot_dir, args.scenario))
         except Exception as exc:  # noqa: BLE001 - surfaced via the report/exit code below, not swallowed
             print(f"qa_popup_smoke.py: scenario run raised {exc!r}", file=sys.stderr)
             exit_code = 1

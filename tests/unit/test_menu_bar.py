@@ -123,6 +123,60 @@ class TestRunAsyncMarshaling:
         assert done_calls == [(False, boom)]
 
 
+class TestMenuRebuildDeferredWhileOpen:
+    """Regression for a crash: mutating the live status-bar NSMenu
+    (self.menu.clear()/self.menu = [...] inside _rebuild()) while AppKit is
+    tracking it on screen segfaults the process. _MenuTrackingDelegate
+    marks app._menu_is_open via menuWillOpen_/menuDidClose_; _rebuild()
+    must defer to app._rebuild_pending instead of mutating the menu while
+    that flag is set, and replay exactly once when the dropdown closes.
+    """
+
+    def test_rebuild_deferred_while_menu_open(self, app, monkeypatch):
+        load_calls = []
+        monkeypatch.setattr(app, "_load_config", lambda: load_calls.append(1) or {"connectors": {}})
+
+        app._menu_tracking_delegate.menuWillOpen_(None)
+        assert app._menu_is_open is True
+
+        app._rebuild()
+
+        assert load_calls == [], "rebuild must not mutate the menu while it's open"
+        assert app._rebuild_pending is True
+
+    def test_pending_rebuild_replays_exactly_once_on_close(self, app, monkeypatch):
+        rebuild_calls = []
+        real_rebuild = app._rebuild
+
+        def counting_rebuild():
+            rebuild_calls.append(1)
+            # Bypass the guard for the inner call so we can tell whether the
+            # delegate invoked the real rebuild logic, not just re-deferred.
+            app._menu_is_open = False
+            real_rebuild()
+
+        app._menu_tracking_delegate.menuWillOpen_(None)
+        app._rebuild()  # deferred, not counted
+        assert app._rebuild_pending is True
+
+        monkeypatch.setattr(app, "_rebuild", counting_rebuild)
+        app._menu_tracking_delegate.menuDidClose_(None)
+
+        assert app._menu_is_open is False
+        assert app._rebuild_pending is False
+        assert rebuild_calls == [1]
+
+    def test_close_with_no_pending_rebuild_does_not_rebuild(self, app, monkeypatch):
+        rebuild_calls = []
+        monkeypatch.setattr(app, "_rebuild", lambda: rebuild_calls.append(1))
+
+        app._menu_tracking_delegate.menuWillOpen_(None)
+        app._menu_tracking_delegate.menuDidClose_(None)
+
+        assert rebuild_calls == []
+        assert app._menu_is_open is False
+
+
 class TestAuthenticateDoesNotRequireRestart:
     """Regression for: 'authenticate a service was not displayed in the
     menubar until restart'. Simulates a successful Google OAuth flow end to
