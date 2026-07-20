@@ -9,9 +9,10 @@ from typing import Any
 
 from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
-from ..gate import gated_call
+from ..gate import current_reason, gated_call
 from ..gmail_client import GmailClient, GmailClientError, resolve_attachment_destination
 from ..html_to_text import html_to_text
+from ..privacy_filter import apply_list, apply_text, category_policy
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ class GmailConnector(Connector):
                 params=[
                     ToolParam("query", "str"),
                     ToolParam("max_results", "int", required=False, default=10),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -49,6 +51,7 @@ class GmailConnector(Connector):
                 params=[
                     ToolParam("query", "str"),
                     ToolParam("max_results", "int", required=False, default=10),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -58,7 +61,7 @@ class GmailConnector(Connector):
                     "Fetch a single Gmail message by id, including body, metadata, "
                     "and attachment list. Requires user approval."
                 ),
-                params=[ToolParam("message_id", "str")],
+                params=[ToolParam("message_id", "str"), ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
                 read_only=True,
             ),
             ToolSpec(
@@ -67,7 +70,7 @@ class GmailConnector(Connector):
                     "Fetch a full Gmail thread by id, including all messages. "
                     "Requires user approval."
                 ),
-                params=[ToolParam("thread_id", "str")],
+                params=[ToolParam("thread_id", "str"), ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
                 read_only=True,
             ),
             ToolSpec(
@@ -78,7 +81,7 @@ class GmailConnector(Connector):
                     "content is returned. Use gmail_download_attachment to "
                     "fetch the actual file."
                 ),
-                params=[ToolParam("message_id", "str")],
+                params=[ToolParam("message_id", "str"), ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
                 read_only=True,
             ),
             ToolSpec(
@@ -94,6 +97,7 @@ class GmailConnector(Connector):
                     ToolParam("message_id", "str"),
                     ToolParam("attachment_name", "str"),
                     ToolParam("destination_dir", "str", required=False, default=""),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -106,6 +110,7 @@ class GmailConnector(Connector):
                     ToolParam("body", "str"),
                     ToolParam("cc", "str", required=False, default=""),
                     ToolParam("bcc", "str", required=False, default=""),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -121,6 +126,7 @@ class GmailConnector(Connector):
                     ToolParam("body", "str"),
                     ToolParam("cc", "str", required=False, default=""),
                     ToolParam("bcc", "str", required=False, default=""),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -135,6 +141,7 @@ class GmailConnector(Connector):
                     ToolParam("body", "str"),
                     ToolParam("cc", "str", required=False, default=""),
                     ToolParam("bcc", "str", required=False, default=""),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -143,6 +150,7 @@ class GmailConnector(Connector):
                 params=[
                     ToolParam("message_id", "str"),
                     ToolParam("label_name", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -151,6 +159,7 @@ class GmailConnector(Connector):
                 params=[
                     ToolParam("message_id", "str"),
                     ToolParam("label_name", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -159,7 +168,7 @@ class GmailConnector(Connector):
                     "Archive a Gmail message by removing it from the Inbox. "
                     "The message is not deleted and remains searchable. Requires user approval."
                 ),
-                params=[ToolParam("message_id", "str")],
+                params=[ToolParam("message_id", "str"), ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
             ),
             ToolSpec(
                 name="gmail_list_filters",
@@ -167,7 +176,7 @@ class GmailConnector(Connector):
                     "List all Gmail filters with their criteria and actions. "
                     "Auto-approved -- filter rules only, no message content is returned."
                 ),
-                params=[],
+                params=[ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
                 read_only=True,
             ),
             ToolSpec(
@@ -177,7 +186,7 @@ class GmailConnector(Connector):
                     "have a '/' in their name (e.g. 'Work/Projects'). "
                     "Auto-approved -- label metadata only."
                 ),
-                params=[],
+                params=[ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
                 read_only=True,
             ),
             ToolSpec(
@@ -205,6 +214,7 @@ class GmailConnector(Connector):
                     ToolParam("mark_as_read", "bool", required=False, default=False),
                     ToolParam("star", "bool", required=False, default=False),
                     ToolParam("forward_to", "str", required=False, default=""),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -228,6 +238,7 @@ class GmailConnector(Connector):
                     ToolParam("mark_as_read", "bool", required=False, default=False),
                     ToolParam("star", "bool", required=False, default=False),
                     ToolParam("forward_to", "str", required=False, default=""),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -238,7 +249,7 @@ class GmailConnector(Connector):
                     "creating 'Work' first if it doesn't already exist). Fails if "
                     "the exact label name already exists. Requires user approval."
                 ),
-                params=[ToolParam("label_name", "str")],
+                params=[ToolParam("label_name", "str"), ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
             ),
         ]
 
@@ -331,14 +342,31 @@ class GmailConnector(Connector):
 
     async def _get_message(self, message_id: str) -> Any:
         message = await self._fetch(self._gmail.get_message, message_id)
-        recipients = message.recipients if isinstance(message.recipients, str) else ", ".join(message.recipients or [])
+        recipients_raw = message.recipients if isinstance(message.recipients, str) else ", ".join(message.recipients or [])
+        sender = apply_text("privacy", "metadata", message.sender or "")
+        recipients = apply_text("privacy", "metadata", recipients_raw)
+        date = apply_text("privacy", "metadata", message.date or "")
+        subject = apply_text("privacy", "metadata", message.subject or "")
+        raw_body = message.body_text or html_to_text(message.body_html) or ""
+        body = apply_text("privacy", "body", raw_body)
+        attachments = apply_list("privacy", "attachments", message.attachments or [])
         preview = {
-            "From": message.sender or "(unknown)",
+            "From": sender or "(unknown)",
             "To": recipients or "(unknown)",
-            "Date": message.date or "(unknown)",
-            "Subject": message.subject or "(no subject)",
+            "Date": date or "(unknown)",
+            "Subject": subject or "(no subject)",
         }
-        body = message.body_text or html_to_text(message.body_html) or "(no body)"
+        filtered = {
+            "id": message.id,
+            "thread_id": message.thread_id,
+            "subject": subject,
+            "sender": sender,
+            "recipients": recipients,
+            "date": date,
+            "body_text": body,
+            "attachments": attachments,
+            "labels": message.labels,
+        }
         return await gated_call(
             connector=self.name,
             tool="gmail_get_message",
@@ -346,11 +374,25 @@ class GmailConnector(Connector):
             summary=f"Read email: {message.subject or '(no subject)'}",
             sender=message.sender or "",
             raw_data=message,
-            filtered_data=message.to_dict() if hasattr(message, "to_dict") else vars(message),
+            filtered_data=filtered,
             gate="review",
             preview=preview,
-            details_text=body,
+            details_text=body or "(no body)",
             pii_scan_text=body,
+            visibility={
+                "Sender & metadata": category_policy("privacy", "metadata"),
+                "Message body": category_policy("privacy", "body"),
+                "Attachments": category_policy("privacy", "attachments"),
+            },
+            # Renders a structured From/To/Subject/Date header in the
+            # details pane instead of plain text alone -- preview's shape
+            # above (From/To/Date/Subject) is exactly what that header
+            # reads. gmail_get_thread
+            # doesn't get this: a thread is several messages each with their
+            # own sender, which doesn't fit one single-message header -- it
+            # already renders per-message "From:"/"Date:" lines inline in
+            # details_text below instead.
+            content_kind="email",
             my_email=self.my_email,
             args={"message_id": message_id},
         )
@@ -365,38 +407,63 @@ class GmailConnector(Connector):
             if hasattr(m, "recipients"):
                 recips = m.recipients if isinstance(m.recipients, list) else [m.recipients]
                 all_participants.update(r for r in recips if r)
-        subject = (messages[0].subject if messages and hasattr(messages[0], "subject") else "") or thread_id
+        subject_raw = (messages[0].subject if messages and hasattr(messages[0], "subject") else "") or thread_id
+        subject = apply_text("privacy", "metadata", subject_raw)
+        participants = apply_text("privacy", "metadata", ", ".join(sorted(all_participants)))
         dates = [m.date for m in messages if hasattr(m, "date") and m.date]
-        date_range = f"{dates[0]} – {dates[-1]}" if len(dates) > 1 else (dates[0] if dates else "")
+        date_range_raw = f"{dates[0]} – {dates[-1]}" if len(dates) > 1 else (dates[0] if dates else "")
+        date_range = apply_text("privacy", "metadata", date_range_raw)
         preview = {
             "Subject": subject,
-            "Participants": ", ".join(sorted(all_participants)) or "(unknown)",
+            "Participants": participants or "(unknown)",
             "Messages": str(len(messages)),
             "Dates": date_range,
         }
         lines = []
         bodies = []
+        filtered_messages = []
         for i, m in enumerate(messages, 1):
+            sender = apply_text("privacy", "metadata", getattr(m, "sender", "") or "")
+            date = apply_text("privacy", "metadata", getattr(m, "date", "") or "")
+            raw_body = getattr(m, "body_text", "") or html_to_text(getattr(m, "body_html", "") or "") or ""
+            # This tool assembles multiple messages into one thread view --
+            # "thread_history" is its own documented category (settings.yaml.
+            # example), distinct from the single-message "body" category
+            # gmail_get_message uses.
+            body = apply_text("privacy", "thread_history", raw_body)
+            attachments = apply_list("privacy", "attachments", getattr(m, "attachments", None) or [])
             lines.append(f"--- Message {i} ---")
-            lines.append(f"From: {getattr(m, 'sender', '')}")
-            lines.append(f"Date: {getattr(m, 'date', '')}")
-            body = getattr(m, "body_text", "") or html_to_text(getattr(m, "body_html", "") or "") or ""
+            lines.append(f"From: {sender}")
+            lines.append(f"Date: {date}")
             lines.append(body)
             bodies.append(body)
+            filtered_messages.append({
+                "id": getattr(m, "id", ""),
+                "subject": apply_text("privacy", "metadata", getattr(m, "subject", "") or ""),
+                "sender": sender,
+                "date": date,
+                "body_text": body,
+                "attachments": attachments,
+            })
         details = "\n".join(lines)
-        filtered = thread.to_dict() if hasattr(thread, "to_dict") else vars(thread)
+        filtered = {"id": thread.id, "subject": subject, "messages": filtered_messages}
         return await gated_call(
             connector=self.name,
             tool="gmail_get_thread",
             tool_name="Read Email Thread",
-            summary=f"Read thread: {subject}",
-            sender=subject,
+            summary=f"Read thread: {subject_raw}",
+            sender=subject_raw,
             raw_data=thread,
             filtered_data=filtered,
             gate="review",
             preview=preview,
             details_text=details,
             pii_scan_text="\n".join(bodies),
+            visibility={
+                "Sender & metadata": category_policy("privacy", "metadata"),
+                "Thread messages": category_policy("privacy", "thread_history"),
+                "Attachments": category_policy("privacy", "attachments"),
+            },
             my_email=self.my_email,
             args={"thread_id": thread_id},
         )
@@ -796,6 +863,7 @@ class GmailConnector(Connector):
                 decision="auto_accepted",
                 auto_accept_rule="auto",
                 latency_seconds=time.time() - created_at,
+                claude_reason=current_reason(),
             ))
         except Exception as exc:
             logger.warning("Audit log write failed: %s", exc)

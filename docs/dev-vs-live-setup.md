@@ -26,12 +26,12 @@ always under `~/.privacyfence`, bundled or not.
 Run from source — never install the DMG here.
 
 `scripts/dev_start.sh` handles the repetitive part: it creates `.venv` and
-`config/settings.yaml` if missing, (re-)registers `privacyfence-bridge` from
-this checkout's venv — via `claude mcp` if that CLI is on PATH, otherwise by
-editing Claude Desktop's own config file directly — and starts the daemon in
-the foreground. Ctrl-C stops the daemon and de-registers the dev bridge again
-(prompting you to restart Claude Desktop when it went the config-file route).
-Safe to re-run any time, e.g. after switching branches:
+`config/settings.yaml` if missing, builds the bridge from this checkout's
+`bridge/` and (re-)registers it — via `claude mcp` if that CLI is on PATH,
+otherwise by editing Claude Desktop's own config file directly — and starts
+the daemon in the foreground. Ctrl-C stops the daemon and de-registers the
+dev bridge again (prompting you to restart Claude Desktop when it went the
+config-file route). Safe to re-run any time, e.g. after switching branches:
 
 ```bash
 cd /Users/user1/Coding/privacyfence

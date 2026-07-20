@@ -11,7 +11,8 @@ from typing import Any
 from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
 from ..drive_client import DriveClient, DriveClientError, _parse_a1_range
-from ..gate import gated_call
+from ..gate import current_reason, gated_call
+from ..privacy_filter import apply_list, apply_text, category_policy
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,7 @@ class DriveConnector(Connector):
                 params=[
                     ToolParam("query", "str"),
                     ToolParam("max_results", "int", required=False, default=20),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -78,7 +80,7 @@ class DriveConnector(Connector):
                     "Fetch metadata for a single Drive file by id "
                     "(name, owners, times, sharing status). Auto-approved."
                 ),
-                params=[ToolParam("file_id", "str")],
+                params=[ToolParam("file_id", "str"), ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
                 read_only=True,
             ),
             ToolSpec(
@@ -87,6 +89,7 @@ class DriveConnector(Connector):
                 params=[
                     ToolParam("folder_id", "str"),
                     ToolParam("max_results", "int", required=False, default=50),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -97,6 +100,7 @@ class DriveConnector(Connector):
                     ToolParam("name", "str"),
                     ToolParam("mime_type", "str"),
                     ToolParam("parent_folder_id", "str", required=False, default=""),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -104,7 +108,7 @@ class DriveConnector(Connector):
                 description=(
                     "Fetch the content of a Drive file by id. Requires user approval."
                 ),
-                params=[ToolParam("file_id", "str")],
+                params=[ToolParam("file_id", "str"), ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
                 read_only=True,
             ),
             ToolSpec(
@@ -113,6 +117,7 @@ class DriveConnector(Connector):
                 params=[
                     ToolParam("file_id", "str"),
                     ToolParam("content", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -133,6 +138,7 @@ class DriveConnector(Connector):
                     ToolParam("content_base64", "str", required=False, default=""),
                     ToolParam("name", "str", required=False, default=""),
                     ToolParam("parent_folder_id", "str", required=False, default=""),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -141,6 +147,7 @@ class DriveConnector(Connector):
                 params=[
                     ToolParam("file_id", "str"),
                     ToolParam("destination_folder_id", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -149,6 +156,7 @@ class DriveConnector(Connector):
                 params=[
                     ToolParam("file_id", "str"),
                     ToolParam("comment", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -159,15 +167,21 @@ class DriveConnector(Connector):
                 ),
                 params=[
                     ToolParam("max_results", "int", required=False, default=50),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
             ToolSpec(
                 name="drive_write_doc_content",
                 description=(
-                    "Write Markdown content to a Google Doc with rich formatting "
-                    "(headings, bold, italic, ==highlight==, links, bullet and "
-                    "numbered lists). Clears the existing document content "
+                    "Write Markdown content to a Google Doc with rich formatting: "
+                    "headings (# through ######), **bold**, *italic*, "
+                    "***bold-italic***, ~~strikethrough~~, __underline__, `code`, "
+                    "==highlight==, [link](url), bullet/numbered lists (indent a "
+                    "sub-list 2 spaces per nesting level), and GFM pipe tables "
+                    "(a '| --- |' separator row under the header; ':---'/'---:'/"
+                    "':---:' for left/right/center column alignment). "
+                    "Clears the existing document content "
                     "before writing — use drive_docs_edit_content or "
                     "drive_docs_format_content instead for a change that "
                     "shouldn't touch the rest of the document. "
@@ -178,6 +192,7 @@ class DriveConnector(Connector):
                 params=[
                     ToolParam("file_id", "str"),
                     ToolParam("markdown", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -191,8 +206,9 @@ class DriveConnector(Connector):
                     "context to make it unique, the same way a unique-match "
                     "text editor requires; set replace_all=true to replace "
                     "every occurrence instead. replace_markdown supports the "
-                    "same inline syntax as drive_write_doc_content, including "
-                    "==highlight==. Requires user approval."
+                    "same Markdown syntax as drive_write_doc_content except "
+                    "tables, which aren't supported for a partial edit. "
+                    "Requires user approval."
                 ),
                 params=[
                     ToolParam("file_id", "str"),
@@ -202,6 +218,7 @@ class DriveConnector(Connector):
                         description="Markdown to insert in its place",
                     ),
                     ToolParam("replace_all", "bool", required=False, default=False),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -227,6 +244,7 @@ class DriveConnector(Connector):
                     ToolParam("text_color", "str", required=False, default="",
                               description="hex color e.g. '#000000'; omit to leave unchanged"),
                     ToolParam("replace_all", "bool", required=False, default=False),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -246,6 +264,7 @@ class DriveConnector(Connector):
                         required=False,
                         default="",
                     ),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -265,6 +284,7 @@ class DriveConnector(Connector):
                         ),
                     ),
                     ToolParam("parent_folder_id", "str", required=False, default=""),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -273,7 +293,7 @@ class DriveConnector(Connector):
                     "List the tabs in a spreadsheet (id, title, index, row/column "
                     "count). Auto-approved."
                 ),
-                params=[ToolParam("spreadsheet_id", "str")],
+                params=[ToolParam("spreadsheet_id", "str"), ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
                 read_only=True,
             ),
             ToolSpec(
@@ -285,6 +305,7 @@ class DriveConnector(Connector):
                         "range_a1", "str",
                         description="A1 notation range, e.g. 'Sheet1!A1:C10'",
                     ),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -310,6 +331,7 @@ class DriveConnector(Connector):
                             '["Alice","=B2*2"]]'
                         ),
                     ),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -320,6 +342,7 @@ class DriveConnector(Connector):
                     ToolParam("title", "str"),
                     ToolParam("rows", "int", required=False, default=1000),
                     ToolParam("cols", "int", required=False, default=26),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -334,6 +357,7 @@ class DriveConnector(Connector):
                     ToolParam("spreadsheet_id", "str"),
                     ToolParam("sheet_id", "int", description="Numeric tab id, from drive_sheets_get_metadata"),
                     ToolParam("new_title", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -376,6 +400,7 @@ class DriveConnector(Connector):
                               description="Pixel width for the range's columns; omit (-1) to leave unchanged"),
                     ToolParam("merge_type", "str", required=False, default="KEEP",
                               description="KEEP (default) / NONE (unmerge) / MERGE_ALL / MERGE_COLUMNS / MERGE_ROWS"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -397,6 +422,7 @@ class DriveConnector(Connector):
                         "inherit_from_before", "bool", required=False, default=True,
                         description="Copy formatting from the row/column before the insertion point (Sheets UI default)",
                     ),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -414,6 +440,7 @@ class DriveConnector(Connector):
                     ToolParam("dimension", "str", description="'ROWS' or 'COLUMNS'"),
                     ToolParam("start_index", "int", description="0-based, inclusive of the first row/column removed"),
                     ToolParam("count", "int", required=False, default=1),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
         ]
@@ -476,7 +503,8 @@ class DriveConnector(Connector):
         files = await self._fetch(self._drive.list_files, query, max_results)
         self._auto_audit("drive_list_files", "Search Drive Files",
                          f"List files: query={query!r}", f"{len(files)} result(s)", t0)
-        return files if isinstance(files, list) else (files.to_dict() if hasattr(files, "to_dict") else files)
+        result = files if isinstance(files, list) else (files.to_dict() if hasattr(files, "to_dict") else files)
+        return apply_list("drive_privacy", "file_list", result) if isinstance(result, list) else result
 
     async def _get_file_metadata(self, file_id: str) -> Any:
         t0 = time.time()
@@ -484,14 +512,20 @@ class DriveConnector(Connector):
         self._auto_audit("drive_get_file_metadata", "Get Drive File Info",
                          f"Get metadata: {getattr(drive_file, 'name', file_id)}",
                          ", ".join(getattr(drive_file, "owners", [])) or "(unknown)", t0)
-        return drive_file.to_dict() if hasattr(drive_file, "to_dict") else drive_file
+        # file_metadata has no single "the whole record" shape to redact --
+        # unlike apply_list's collection-of-records case, this is one
+        # record, so block collapses it to just the id (still needed to
+        # correlate the call), not an empty value.
+        if category_policy("drive_privacy", "file_metadata") == "allow":
+            return drive_file.to_dict() if hasattr(drive_file, "to_dict") else drive_file
+        return {"id": getattr(drive_file, "id", file_id)}
 
     async def _list_folder(self, folder_id: str, max_results: int = 50) -> Any:
         t0 = time.time()
         files = await self._fetch(self._drive.list_folder, folder_id, max_results)
         self._auto_audit("drive_list_folder", "List Drive Folder",
                          f"List folder: {folder_id}", f"{len(files)} item(s)", t0)
-        return files
+        return apply_list("drive_privacy", "folder_structure", files)
 
     async def _list_shared_drives(self, max_results: int = 50) -> Any:
         t0 = time.time()
@@ -544,17 +578,41 @@ class DriveConnector(Connector):
         size = getattr(drive_file, "size", "")
         modified = getattr(drive_file, "modified_time", "")
         content_bytes = getattr(content, "content_bytes", b"") or b""
-        text = getattr(content, "content_text", "") or (
+        raw_text = getattr(content, "content_text", "") or (
             f"[binary content — {len(content_bytes)} bytes; use drive_download_file to save it]"
             if content_bytes else "(no content)"
         )
+        text = apply_text("drive_privacy", "file_content", raw_text)
+        # Native PDFView embed instead of the placeholder text above.
+        # Gated on category_policy == "allow", the same condition
+        # raw_text/text already require to
+        # flow through unredacted -- a reviewer must never see a rendered
+        # PDF that's richer than what the "AI will receive" checklist
+        # already discloses Claude gets for this same call (see gate.py's
+        # gated_call docstring). Also requires the fetch to be untruncated:
+        # a partial PDF stream (get_file_content's max_bytes cap) almost
+        # always fails to parse as a valid document anyway, and a page
+        # silently missing its back half is worse than the plain-text
+        # fallback, not better.
+        pdf_bytes = b""
+        if (
+            content_bytes
+            and not getattr(content, "truncated", False)
+            and getattr(drive_file, "mime_type", "") == "application/pdf"
+            and category_policy("drive_privacy", "file_content") == "allow"
+        ):
+            pdf_bytes = content_bytes
+        file_display = apply_text("drive_privacy", "file_metadata", name)
+        owner_display = apply_text("drive_privacy", "file_metadata", ", ".join(owners) if owners else "")
+        size_display = apply_text("drive_privacy", "file_metadata", str(size) if size else "")
+        modified_display = apply_text("drive_privacy", "file_metadata", str(modified) if modified else "")
         preview = {
-            "File": name,
-            "Owner": ", ".join(owners) if owners else "(unknown)",
-            "Size": str(size) if size else "(unknown)",
-            "Modified": str(modified) if modified else "(unknown)",
+            "File": file_display or "(unknown)",
+            "Owner": owner_display or "(unknown)",
+            "Size": size_display or "(unknown)",
+            "Modified": modified_display or "(unknown)",
         }
-        filtered = content.to_dict() if hasattr(content, "to_dict") else {"file_id": file_id, "content": text}
+        filtered = {"file_id": file_id, "content": text}
         return await gated_call(
             connector=self.name,
             tool="drive_get_file_content",
@@ -567,6 +625,11 @@ class DriveConnector(Connector):
             preview=preview,
             details_text=text[:2000],
             pii_scan_text=text[:2000],
+            visibility={
+                "File metadata": category_policy("drive_privacy", "file_metadata"),
+                "Document content": category_policy("drive_privacy", "file_content"),
+            },
+            pdf_bytes=pdf_bytes,
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={"file_id": file_id},
@@ -576,7 +639,8 @@ class DriveConnector(Connector):
         drive_file = await self._fetch(self._drive.get_file_metadata, spreadsheet_id)
         name = getattr(drive_file, "name", spreadsheet_id)
         owners = getattr(drive_file, "owners", [])
-        values = await self._fetch(self._drive.get_sheet_values, spreadsheet_id, range_a1)
+        raw_values = await self._fetch(self._drive.get_sheet_values, spreadsheet_id, range_a1)
+        values = apply_list("drive_privacy", "file_content", raw_values)
         preview = {"Spreadsheet": name, "Owner": ", ".join(owners) or "(unknown)", "Range": range_a1}
         rows_preview = _format_sheet_rows(values)
         return await gated_call(
@@ -585,12 +649,13 @@ class DriveConnector(Connector):
             tool_name="Read Sheet Values",
             summary=f"Read {range_a1} from \"{name}\"",
             sender=", ".join(owners) or "(unknown)",
-            raw_data={"file": drive_file, "values": values},
+            raw_data={"file": drive_file, "values": raw_values},
             filtered_data=values,
             gate="review",
             preview=preview,
             details_text=rows_preview,
             pii_scan_text=rows_preview,
+            visibility={"Cell values": category_policy("drive_privacy", "file_content")},
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={"spreadsheet_id": spreadsheet_id, "range_a1": range_a1},
@@ -1149,6 +1214,7 @@ class DriveConnector(Connector):
                 decision="auto_accepted",
                 auto_accept_rule="auto",
                 latency_seconds=time.time() - created_at,
+                claude_reason=current_reason(),
             ))
         except Exception as exc:
             logger.warning("Audit log write failed: %s", exc)

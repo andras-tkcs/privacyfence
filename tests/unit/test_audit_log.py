@@ -58,6 +58,30 @@ class TestPiiDetectedField:
         assert entry.pii_detected is False
 
 
+class TestClaudeReasonField:
+    def test_defaults_to_empty_string(self):
+        assert make_entry().claude_reason == ""
+
+    def test_round_trips_through_jsonl(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry(claude_reason="Summarizing the Q3 budget for the user."))
+
+        line = (tmp_path / "2026-W28.jsonl").read_text(encoding="utf-8").splitlines()[0]
+        assert json.loads(line)["claude_reason"] == "Summarizing the Q3 budget for the user."
+
+    def test_old_jsonl_lines_without_the_field_still_parse(self):
+        # Same backward-compatibility need as pii_detected above -- entries
+        # written before this field existed have no "claude_reason" key.
+        legacy = dict(
+            timestamp="2026-07-06T12:00:00+00:00", week="2026-W28", request_id="",
+            connector="gmail", tool="gmail_get_message", tool_name="Read Gmail message",
+            summary="s", sender="a@example.com", decision="approved",
+            auto_accept_rule="", latency_seconds=1.0,
+        )
+        entry = AuditEntry(**legacy)
+        assert entry.claude_reason == ""
+
+
 class TestCurrentWeek:
     @freeze_time("2026-07-06")  # a Monday, ISO week 28 of 2026
     def test_format(self):
@@ -114,7 +138,7 @@ class TestExportWeekToExcel:
         openpyxl = pytest.importorskip("openpyxl")
 
         logger = AuditLogger(str(tmp_path))
-        logger.record(make_entry(decision="approved", pii_detected=True))
+        logger.record(make_entry(decision="approved", pii_detected=True, claude_reason="Summarizing for the user."))
         logger.record(make_entry(decision="auto_accepted", auto_accept_rule="i_am_sender"))
         logger.record(make_entry(decision="rejected"))
 
@@ -132,6 +156,10 @@ class TestExportWeekToExcel:
         assert ws.cell(row=1, column=11).value == "PII Detected"
         pii_col = [ws.cell(row=r, column=11).value for r in range(2, 5)]
         assert pii_col == ["Yes", None, None]  # openpyxl reads back "" cells as None
+
+        assert ws.cell(row=1, column=12).value == "Claude's Reason (unverified)"
+        reason_col = [ws.cell(row=r, column=12).value for r in range(2, 5)]
+        assert reason_col == ["Summarizing for the user.", None, None]
 
         summary = wb["Summary"]
         summary_rows = {row[0].value: row[1].value for row in summary.iter_rows(min_row=2) if row[0].value}
@@ -159,6 +187,70 @@ class TestExportWeekToExcel:
         week_file = tmp_path / "2026-W28.jsonl"
         week_file.write_text("", encoding="utf-8")
         assert logger.export_week_to_excel("2026-W28") is None
+
+
+class TestRecentMatches:
+    """The request-fingerprint feature: (connector, tool, summary) counted
+    against one week's approved-like decisions."""
+
+    def test_counts_matching_approved_entries(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        for _ in range(3):
+            logger.record(make_entry(week="2026-W28", decision="approved"))
+
+        assert logger.recent_matches("gmail", "gmail_get_message", "Message from alice@example.com", week="2026-W28") == 3
+
+    def test_different_summary_does_not_match(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry(week="2026-W28", summary="Message from alice@example.com"))
+        logger.record(make_entry(week="2026-W28", summary="Message from bob@example.com"))
+
+        assert logger.recent_matches("gmail", "gmail_get_message", "Message from alice@example.com", week="2026-W28") == 1
+
+    def test_different_tool_does_not_match(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry(week="2026-W28", tool="gmail_get_message"))
+        logger.record(make_entry(week="2026-W28", tool="gmail_get_thread"))
+
+        assert logger.recent_matches("gmail", "gmail_get_message", "Message from alice@example.com", week="2026-W28") == 1
+
+    def test_rejected_decision_does_not_count(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry(week="2026-W28", decision="rejected"))
+
+        assert logger.recent_matches("gmail", "gmail_get_message", "Message from alice@example.com", week="2026-W28") == 0
+
+    def test_auto_accepted_and_accept_all_and_temp_session_all_count(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        for decision in ("approved", "auto_accepted", "accepted_via_accept_all", "accepted_via_temp_session"):
+            logger.record(make_entry(week="2026-W28", decision=decision))
+
+        assert logger.recent_matches("gmail", "gmail_get_message", "Message from alice@example.com", week="2026-W28") == 4
+
+    def test_policy_check_and_error_do_not_count(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry(week="2026-W28", decision="policy_check"))
+        logger.record(make_entry(week="2026-W28", decision="error"))
+
+        assert logger.recent_matches("gmail", "gmail_get_message", "Message from alice@example.com", week="2026-W28") == 0
+
+    def test_no_matching_file_returns_zero(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        assert logger.recent_matches("gmail", "gmail_get_message", "anything", week="2026-W99") == 0
+
+    def test_defaults_to_current_week(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry(week=current_week(), decision="approved"))
+
+        assert logger.recent_matches("gmail", "gmail_get_message", "Message from alice@example.com") == 1
+
+    def test_malformed_line_is_skipped_not_fatal(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry(week="2026-W28", decision="approved"))
+        with open(tmp_path / "2026-W28.jsonl", "a", encoding="utf-8") as fh:
+            fh.write("not valid json\n")
+
+        assert logger.recent_matches("gmail", "gmail_get_message", "Message from alice@example.com", week="2026-W28") == 1
 
 
 class TestExportAllPending:

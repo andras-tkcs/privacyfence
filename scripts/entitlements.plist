@@ -12,5 +12,14 @@
   <!-- Spawn child processes (bridge spawns daemon) -->
   <key>com.apple.security.inherit</key>
   <true/>
+  <!-- WKWebView's JavaScriptCore needs to JIT-compile JS under Hardened
+       Runtime (approval_window.py's details pane, docs/security-review-ui-
+       redesign.md §7 Phase 3) -- standard, Apple-documented entitlement,
+       same one Safari/Xcode/every Electron app ships with; does not trip
+       notarization review. Only load-bearing if that pane ever runs
+       JavaScript, which it doesn't today (WKWebViewConfiguration disables
+       it explicitly) -- added proactively per §10 Q3's investigation. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
 </dict>
 </plist>

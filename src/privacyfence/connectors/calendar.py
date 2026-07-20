@@ -10,7 +10,7 @@ from typing import Any
 from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..calendar_client import VALID_VISIBILITIES, CalendarClient, CalendarClientError
 from ..connector import Connector, ToolParam, ToolSpec
-from ..gate import gated_call
+from ..gate import current_reason, gated_call
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ class CalendarConnector(Connector):
             ToolSpec(
                 name="calendar_list_calendars",
                 description="List all Google Calendars for the authenticated user. Auto-approved.",
-                params=[],
+                params=[ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
                 read_only=True,
             ),
             ToolSpec(
@@ -57,6 +57,7 @@ class CalendarConnector(Connector):
                     ToolParam("time_min", "str", required=False, default=""),
                     ToolParam("time_max", "str", required=False, default=""),
                     ToolParam("query", "str", required=False, default=""),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -73,6 +74,7 @@ class CalendarConnector(Connector):
                     ToolParam("emails", "str", description="Comma-separated list of email addresses"),
                     ToolParam("time_min", "str", description="ISO 8601 datetime"),
                     ToolParam("time_max", "str", description="ISO 8601 datetime"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -88,6 +90,7 @@ class CalendarConnector(Connector):
                 params=[
                     ToolParam("calendar_id", "str"),
                     ToolParam("event_id", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -101,6 +104,7 @@ class CalendarConnector(Connector):
                 params=[
                     ToolParam("calendar_id", "str"),
                     ToolParam("event_id", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -118,6 +122,7 @@ class CalendarConnector(Connector):
                     ToolParam("calendar_id", "str"),
                     ToolParam("event_id", "str"),
                     ToolParam("visibility", "str", description="'default', 'public', 'private', or 'confidential'"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -131,6 +136,7 @@ class CalendarConnector(Connector):
                 params=[
                     ToolParam("query", "str", required=False, default="",
                               description="Optional search query to filter rooms by name or building"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -150,6 +156,7 @@ class CalendarConnector(Connector):
                               description="Set to true to add a Google Meet video conference link"),
                     ToolParam("rooms", "str", required=False, default="",
                               description="Comma-separated room resource email addresses to book"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -167,6 +174,7 @@ class CalendarConnector(Connector):
                               description="Set to true to add a Google Meet link (skipped if one already exists)"),
                     ToolParam("rooms", "str", required=False, default="",
                               description="Comma-separated room resource email addresses to book"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -182,6 +190,7 @@ class CalendarConnector(Connector):
                     ToolParam("title", "str", required=False, default="Out of Office"),
                     ToolParam("decline_message", "str", required=False, default="",
                               description="Message sent to organizers of auto-declined invitations"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
             ToolSpec(
@@ -198,6 +207,7 @@ class CalendarConnector(Connector):
                               description="Workspace building id (office only; see calendar_list_rooms)"),
                     ToolParam("label", "str", required=False, default="",
                               description="Office label shown on Calendar (office only)"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
         ]
@@ -669,6 +679,7 @@ class CalendarConnector(Connector):
                 decision="auto_accepted",
                 auto_accept_rule="auto",
                 latency_seconds=time.time() - created_at,
+                claude_reason=current_reason(),
             ))
         except Exception as exc:
             logger.warning("Audit log write failed: %s", exc)

@@ -9,7 +9,8 @@ from typing import Any
 
 from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
-from ..gate import gated_call
+from ..gate import current_reason, gated_call
+from ..privacy_filter import apply_list, apply_text, category_policy
 from ..slack_client import SlackClient, SlackClientError
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,21 @@ def _message_to_dict(m: Any) -> dict[str, Any]:
         "thread_ts": m.thread_ts,
         "reply_count": m.reply_count,
     }
+
+
+def _apply_message_privacy(dicts: list[dict[str, Any]], content_category: str) -> list[dict[str, Any]]:
+    """Apply slack_privacy's content_category (message_content or
+    thread_content) and user_identity policy to already-dict-shaped
+    messages, once, in place -- lines/details/pii_scan_text/filtered_data
+    below are all derived from this one filtered representation so a
+    block/redact decision can't accidentally apply to some but not others.
+    See privacy_filter.py's module docstring for allow/redact/block semantics.
+    """
+    for d in dicts:
+        d["text"] = apply_text("slack_privacy", content_category, d["text"] or "")
+        d["user_name"] = apply_text("slack_privacy", "user_identity", d["user_name"] or "")
+        d["user_id"] = apply_text("slack_privacy", "user_identity", d["user_id"] or "")
+    return dicts
 
 
 class SlackConnector(Connector):
@@ -52,6 +68,7 @@ class SlackConnector(Connector):
                 params=[
                     ToolParam("exclude_archived", "bool", required=False, default=True),
                     ToolParam("max_results", "int", required=False, default=100),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -61,6 +78,7 @@ class SlackConnector(Connector):
                 params=[
                     ToolParam("channel_id", "str"),
                     ToolParam("limit", "int", required=False, default=50),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -70,6 +88,7 @@ class SlackConnector(Connector):
                 params=[
                     ToolParam("channel_id", "str"),
                     ToolParam("thread_ts", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -79,6 +98,7 @@ class SlackConnector(Connector):
                 params=[
                     ToolParam("query", "str"),
                     ToolParam("count", "int", required=False, default=20),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -95,6 +115,7 @@ class SlackConnector(Connector):
                     ToolParam("text", "str"),
                     ToolParam("thread_ts", "str", required=False, default=""),
                     ToolParam("mark_unread", "bool", required=False, default=False),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
         ]
@@ -121,7 +142,7 @@ class SlackConnector(Connector):
         channels = await self._fetch(self._slack.list_channels, exclude_archived, max_results)
         self._auto_audit("slack_list_channels", "List Slack Channels",
                          f"List channels (max {max_results})", f"{len(channels)} channel(s)", t0)
-        return [
+        result = [
             {
                 "id": c.id,
                 "name": c.name,
@@ -132,6 +153,7 @@ class SlackConnector(Connector):
             }
             for c in channels
         ]
+        return apply_list("slack_privacy", "channel_list", result)
 
     # ------------------------------------------------------------------ #
     # Review gate (reads)
@@ -141,18 +163,18 @@ class SlackConnector(Connector):
         messages = await self._fetch(self._slack.get_channel_history, channel_id, limit)
         n = len(messages)
         channel_display = await self._channel_display(channel_id, messages)
-        first_preview = (messages[0].text or "")[:80] if messages else ""
+        filtered = _apply_message_privacy([_message_to_dict(m) for m in messages], "message_content")
+        first_preview = (filtered[0]["text"] or "")[:80] if filtered else ""
         preview = {
             "Channel": channel_display,
             "Messages": str(n),
             "First message": first_preview or "(empty)",
         }
         lines = [
-            f"[{m.id}] {m.user_name or m.user_id or 'unknown'}: {m.text}"
-            for m in messages
+            f"[{d['ts']}] {d['user_name'] or d['user_id'] or 'unknown'}: {d['text']}"
+            for d in filtered
         ]
         details = "\n".join(lines)
-        filtered = [_message_to_dict(m) for m in messages]
         return await gated_call(
             connector=self.name,
             tool="slack_get_channel_history",
@@ -164,7 +186,11 @@ class SlackConnector(Connector):
             gate="review",
             preview=preview,
             details_text=details,
-            pii_scan_text="\n".join(m.text or "" for m in messages),
+            pii_scan_text="\n".join(d["text"] or "" for d in filtered),
+            visibility={
+                "Message text": category_policy("slack_privacy", "message_content"),
+                "Usernames": category_policy("slack_privacy", "user_identity"),
+            },
             my_email=self.my_email,
             args={"channel_id": channel_id},
         )
@@ -173,18 +199,18 @@ class SlackConnector(Connector):
         messages = await self._fetch(self._slack.get_thread_replies, channel_id, thread_ts)
         n = len(messages)
         channel_display = await self._channel_display(channel_id, messages)
-        starter = (messages[0].text or "")[:80] if messages else ""
+        filtered = _apply_message_privacy([_message_to_dict(m) for m in messages], "thread_content")
+        starter = (filtered[0]["text"] or "")[:80] if filtered else ""
         preview = {
             "Channel": channel_display,
             "Thread starter": starter or "(empty)",
             "Replies": str(max(0, n - 1)),
         }
         lines = [
-            f"[{m.id}] {m.user_name or m.user_id or 'unknown'}: {m.text}"
-            for m in messages
+            f"[{d['ts']}] {d['user_name'] or d['user_id'] or 'unknown'}: {d['text']}"
+            for d in filtered
         ]
         details = f"Thread: {thread_ts}\n\n" + "\n".join(lines)
-        filtered = [_message_to_dict(m) for m in messages]
         return await gated_call(
             connector=self.name,
             tool="slack_get_thread_replies",
@@ -196,7 +222,11 @@ class SlackConnector(Connector):
             gate="review",
             preview=preview,
             details_text=details,
-            pii_scan_text="\n".join(m.text or "" for m in messages),
+            pii_scan_text="\n".join(d["text"] or "" for d in filtered),
+            visibility={
+                "Reply text": category_policy("slack_privacy", "thread_content"),
+                "Usernames": category_policy("slack_privacy", "user_identity"),
+            },
             my_email=self.my_email,
             args={"channel_id": channel_id, "thread_ts": thread_ts},
         )
@@ -204,16 +234,16 @@ class SlackConnector(Connector):
     async def _search_messages(self, query: str, count: int = 20) -> Any:
         messages = await self._fetch(self._slack.search_messages, query, count)
         n = len(messages)
+        filtered = _apply_message_privacy([_message_to_dict(m) for m in messages], "message_content")
         preview = {
             "Query": query,
             "Results": str(n),
         }
         lines = [
-            f"[{m.channel_name}] {m.user_name or m.user_id or 'unknown'}: {m.text}"
-            for m in messages
+            f"[{d['channel_name']}] {d['user_name'] or d['user_id'] or 'unknown'}: {d['text']}"
+            for d in filtered
         ]
         details = "\n".join(lines)
-        filtered = [_message_to_dict(m) for m in messages]
         return await gated_call(
             connector=self.name,
             tool="slack_search_messages",
@@ -225,7 +255,11 @@ class SlackConnector(Connector):
             gate="review",
             preview=preview,
             details_text=details,
-            pii_scan_text="\n".join(m.text or "" for m in messages),
+            pii_scan_text="\n".join(d["text"] or "" for d in filtered),
+            visibility={
+                "Message text": category_policy("slack_privacy", "message_content"),
+                "Usernames": category_policy("slack_privacy", "user_identity"),
+            },
             my_email=self.my_email,
             args={"query": query},
         )
@@ -309,6 +343,7 @@ class SlackConnector(Connector):
                 decision="auto_accepted",
                 auto_accept_rule="auto",
                 latency_seconds=time.time() - created_at,
+                claude_reason=current_reason(),
             ))
         except Exception as exc:
             logger.warning("Audit log write failed: %s", exc)

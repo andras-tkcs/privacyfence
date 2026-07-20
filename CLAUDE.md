@@ -23,6 +23,13 @@ version. If a bump commit's branch ends up merging after another release already
 number, revert the bump (see `d929510`, "Revert version bump — will release together with other
 pending CRs") and let the version get bumped once, at actual release time, not per-branch.
 
+`bridge/package.json`'s `version` field is **not** a third place to bump — leave it as
+`0.0.0-dev`. `scripts/build_mcpb.sh` (and `scripts/dev_start.sh`) read the real version out of
+`pyproject.toml` and inject it into the bundled `bridge.js` at build time via esbuild's `define`
+(see `bridge/build.mjs`). If you find yourself editing
+`bridge/package.json`'s version by hand during a bump, that's a sign something upstream of it broke
+the injection, not a file to add to the bump commit.
+
 ## Branching & PRs
 
 - Branch names are `<type>/<kebab-case-description>`. Standard types: `feature/` for new

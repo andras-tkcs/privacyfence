@@ -15,11 +15,12 @@ logger = logging.getLogger(__name__)
 
 # Write operations expected to be called repeatedly against the same file in
 # quick succession (e.g. an agent filling in a sheet cell-by-cell, or building
-# up formatting one range at a time). These get a lightweight "Accept for 5
+# up formatting one range at a time). These get a lightweight "Allow for 5
 # min" popup button, scoped to one file and never persisted to settings.yaml
-# — unlike Accept All, it disappears with the daemon and with wall-clock time,
-# so it's a much smaller commitment than a standing rule. Maps operation key
-# -> the args field that identifies "the same file" for that operation.
+# — unlike Always allow, it disappears with the daemon and with wall-clock
+# time, so it's a much smaller commitment than a standing rule. Maps
+# operation key -> the args field that identifies "the same file" for that
+# operation.
 TEMP_ACCEPT_ELIGIBLE_OPERATIONS: dict[str, str] = {
     "sheets.write_range": "spreadsheet_id",
     "sheets.format_range": "spreadsheet_id",
@@ -372,7 +373,7 @@ class AutoAcceptEvaluator:
 
         file_key = temp_accept_key(operation_key, ctx)
         if self._is_temp_accepted(operation_key, file_key):
-            return "auto_accept", "session_temp_accept", "Matched an active \"Accept for 5 min\" window."
+            return "auto_accept", "session_temp_accept", "Matched an active \"Allow for 5 min\" window."
 
         configured = self._rules.get(operation_key) or []
         if not configured:
@@ -783,7 +784,7 @@ class AutoAcceptEvaluator:
         return bool(source) and bool(destination) and source in allowed and destination in allowed
 
 
-# ── Rule suggestion for the popup's "Accept All" button ─────────────────────
+# ── Rule suggestion for the popup's "Always allow" button ────────────────────
 
 def _domain_of(sender: str) -> str:
     email_part = sender
@@ -811,7 +812,7 @@ def _sheet_tab_of(ctx: "ReviewContext") -> str:
 def temp_accept_key(operation_key: str, ctx: "ReviewContext") -> str | None:
     """The file identity a temp accept for this operation would be scoped to.
 
-    Returns None when the operation isn't eligible for "Accept for 5 min"
+    Returns None when the operation isn't eligible for "Allow for 5 min"
     (see TEMP_ACCEPT_ELIGIBLE_OPERATIONS) or the expected arg is missing —
     either way, gate.py takes that as "don't offer the button."
     """
@@ -842,7 +843,7 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
 
     Returns (rule_name, value) — value is None for rules that take none —
     or None if nothing sensible can be suggested for this operation. The
-    popup only offers "Accept All" when this returns a suggestion, so the
+    popup only offers "Always allow" when this returns a suggestion, so the
     button never proposes a rule broader than what the item itself supports.
     """
     if operation_key in ("gmail.read_message", "gmail.read_thread", "gmail.download_attachment", "gmail.archive_message"):
@@ -971,7 +972,7 @@ def describe_rule(rule_name: str, value: Any) -> str:
     return "Auto-accept future " + template.format(value=value_str)
 
 
-# ── Rule persistence (used by the "Accept All" popup button) ────────────────
+# ── Rule persistence (used by the "Always allow" popup button) ──────────────
 
 _config_path: str | None = None
 _write_lock = threading.Lock()
@@ -987,8 +988,8 @@ def add_auto_accept_rule(operation_key: str, rule_name: str, value: Any) -> None
     """Append a rule to the config file on disk and hot-reload the evaluator.
 
     No-ops if an identical rule (same name and value) is already present for
-    this operation, so confirming the same "Accept All" suggestion more than
-    once doesn't pile up duplicate entries.
+    this operation, so confirming the same "Always allow" suggestion more
+    than once doesn't pile up duplicate entries.
     """
     if _config_path is None:
         raise RuntimeError("auto_accept config path not initialized")

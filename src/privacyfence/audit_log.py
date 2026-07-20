@@ -17,6 +17,13 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# Decisions where the AI actually received the data or the write went
+# through -- used by AuditLogger.recent_matches() below to count how many
+# times a request has already been let through, not merely asked about.
+_APPROVED_LIKE_DECISIONS = frozenset({
+    "approved", "auto_accepted", "accepted_via_accept_all", "accepted_via_temp_session",
+})
+
 
 @dataclass
 class AuditEntry:
@@ -45,6 +52,16 @@ class AuditEntry:
     auto_accept_rule: str   # rule name if auto_accepted, else ""
     latency_seconds: float
     pii_detected: bool = False  # True if pii_detector.py flagged the content before this decision
+    claude_reason: str = ""  # Claude's self-reported reason for the call, from the mandatory
+                              # "reason" ToolSpec param every gated/auto tool now declares (see
+                              # gate.py's reason_scope), or the "reason" param on the three
+                              # privacyfence_* meta-tools for "policy_check"/
+                              # "unattended_session_started"/"_ended" entries, which have no
+                              # underlying gated tool call to take it from otherwise (see
+                              # ipc_server.py's _audit_policy_check/_audit_unattended_session_event).
+                              # Self-reported and unverified -- never treated as fact. Empty for
+                              # the automatic session-end-on-disconnect path, which has no reason
+                              # to attribute.
 
 
 class AuditLogger:
@@ -101,9 +118,9 @@ class AuditLogger:
         HEADERS = [
             "Timestamp", "Week", "Connector", "Tool", "Human-Readable Name",
             "Summary", "Sender / Context", "Decision", "Auto-Accept Rule", "Latency (s)",
-            "PII Detected",
+            "PII Detected", "Claude's Reason (unverified)",
         ]
-        COL_WIDTHS = [22, 10, 12, 30, 22, 55, 30, 14, 22, 12, 12]
+        COL_WIDTHS = [22, 10, 12, 30, 22, 55, 30, 14, 22, 12, 12, 55]
 
         hdr_font  = Font(bold=True, color="FFFFFF")
         hdr_fill  = PatternFill("solid", fgColor="2D4A6B")
@@ -132,7 +149,7 @@ class AuditLogger:
                 entry.timestamp, entry.week, entry.connector, entry.tool,
                 entry.tool_name, entry.summary, entry.sender, entry.decision,
                 entry.auto_accept_rule or "", round(entry.latency_seconds, 2),
-                "Yes" if entry.pii_detected else "",
+                "Yes" if entry.pii_detected else "", entry.claude_reason or "",
             ])
             fill = decision_fills.get(entry.decision, PatternFill())
             for col in range(1, len(HEADERS) + 1):
@@ -152,8 +169,8 @@ class AuditLogger:
         counts = Counter(e.decision for e in entries)
         ws2.append(["Approved (manual)", counts.get("approved", 0)])
         ws2.append(["Auto-accepted", counts.get("auto_accepted", 0)])
-        ws2.append(["Accepted via Accept All (new rule)", counts.get("accepted_via_accept_all", 0)])
-        ws2.append(["Accepted via \"Accept for 5 min\"", counts.get("accepted_via_temp_session", 0)])
+        ws2.append(["Accepted via Always allow (new rule)", counts.get("accepted_via_accept_all", 0)])
+        ws2.append(["Accepted via \"Allow for 5 min\"", counts.get("accepted_via_temp_session", 0)])
         ws2.append(["Rejected", counts.get("rejected", 0)])
         ws2.append(["Denied unattended (no human asked)", counts.get("denied_unattended", 0)])
         ws2.append(["Preflight checks (privacyfence_check_policy)", counts.get("policy_check", 0)])
@@ -176,6 +193,43 @@ class AuditLogger:
             xlsx = self._log_dir / f"{week}.xlsx"
             if not xlsx.exists():
                 self.export_week_to_excel(week)
+
+    def recent_matches(self, connector: str, tool: str, summary: str, *, week: str | None = None) -> int:
+        """Count prior approved-like decisions (see _APPROVED_LIKE_DECISIONS)
+        for the same (connector, tool, summary) in one week's log --
+        defaults to the current week. The request-fingerprint feature:
+        "you've approved this exact request N times this week," so a
+        reviewer can spot an unusually novel request versus a routine
+        repeat at a glance.
+
+        (connector, tool, summary) is a practical proxy for "the same
+        request" -- AuditEntry carries neither an operation_key nor the
+        full preview dict, and summary already names the specific resource
+        for most tools (e.g. "Read email: Confidential Q3 numbers", 'Read
+        "Budget.xlsx"'). A coarser or finer fingerprint can replace this
+        later without changing the caller-facing count semantics.
+        """
+        week_file = self._log_dir / f"{week or current_week()}.jsonl"
+        if not week_file.exists():
+            return 0
+        count = 0
+        with open(week_file, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    data.get("connector") == connector
+                    and data.get("tool") == tool
+                    and data.get("summary") == summary
+                    and data.get("decision") in _APPROVED_LIKE_DECISIONS
+                ):
+                    count += 1
+        return count
 
 
 def current_week() -> str:

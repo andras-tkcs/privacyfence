@@ -12,7 +12,7 @@ Methods
 health        {} → {"version": "<str>", "connectors": ["gmail", …]}
 manifest      {} → {"version": "<str>", "connectors": [{"name": "<str>", "tools": [{ToolSpec.to_dict()}]}]}
 call          {"connector": "<str>", "tool": "<str>", "args": {…}} → <tool result>
-check_policy  {"connector": "<str>", "tool": "<str>", "args": {…}} →
+check_policy  {"connector": "<str>", "tool": "<str>", "args": {…}, "reason": "<str>"} →
               {"gate": "auto"|"review"|"popup",
                "verdict": "auto_accept"|"requires_review"|"unknown",
                "matched_rule": <str|null>, "reason": "<str>",
@@ -20,7 +20,12 @@ check_policy  {"connector": "<str>", "tool": "<str>", "args": {…}} →
               Preflight only -- never reaches a connector, makes no external
               API call, opens no popup, and never blocks. Backs
               privacyfence_check_policy (see auto_accept.preflight_from_args).
-begin_unattended_session  {} → {"unattended": true}
+              "reason" (like "call"'s -- see _call_connector's docstring) is
+              Claude's self-reported reason for the check, recorded on the
+              resulting "policy_check" audit entry; optional at this layer
+              (defaults to "") even though the bridge's tool schema requires
+              it, so an old bridge talking to a new daemon doesn't break.
+begin_unattended_session  {"reason": "<str>"} → {"unattended": true}
               Marks THIS connection as running an unattended/scheduled task:
               until end_unattended_session (or disconnect), any "call" on
               this connection that would otherwise open a native review/popup
@@ -30,12 +35,18 @@ begin_unattended_session  {} → {"unattended": true}
               settings.yaml (off by default -- an administrator opts in).
               Never changes what auto-accepts, only what happens when
               nothing does. See docs/TECHNICAL_REFERENCE.md's "Scheduled /
-              unattended Cowork tasks" section.
-end_unattended_session    {} → {"unattended": false}
+              unattended Cowork tasks" section. "reason" is recorded on the
+              "unattended_session_started" audit entry -- the only record of
+              why for calls this session denies without ever showing a
+              popup; optional at this layer, same reasoning as check_policy's.
+end_unattended_session    {"reason": "<str>"} → {"unattended": false}
               Clears the flag set by begin_unattended_session on this
               connection. Also cleared automatically if the connection drops
               (the bridge is one process per Cowork task, so this normally
-              happens anyway when the task ends).
+              happens anyway when the task ends) -- that automatic path has
+              no "reason" to record. "reason" is recorded on the
+              "unattended_session_ended" audit entry when called explicitly;
+              optional at this layer, same reasoning as check_policy's.
 
 The bridge and the daemon are built and distributed independently (the bridge
 ships in PrivacyFence.mcpb, the daemon in PrivacyFenceApp.app) so they can end

@@ -8,7 +8,7 @@ from typing import Any
 
 from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
-from ..gate import gated_call
+from ..gate import current_reason, gated_call
 from ..telegram_client import TelegramClientError, TelegramPrivacyFenceClient
 
 logger = logging.getLogger(__name__)
@@ -33,6 +33,7 @@ class TelegramConnector(Connector):
                 description="List Telegram chats (id, name, type, unread count). Auto-approved.",
                 params=[
                     ToolParam("limit", "int", required=False, default=50),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -45,6 +46,7 @@ class TelegramConnector(Connector):
                 params=[
                     ToolParam("chat_id", "int"),
                     ToolParam("limit", "int", required=False, default=50),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -57,6 +59,7 @@ class TelegramConnector(Connector):
                 params=[
                     ToolParam("query", "str"),
                     ToolParam("limit", "int", required=False, default=30),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
             ),
@@ -66,6 +69,7 @@ class TelegramConnector(Connector):
                 params=[
                     ToolParam("chat_id", "int"),
                     ToolParam("text", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
             ),
         ]
@@ -229,6 +233,7 @@ class TelegramConnector(Connector):
                 decision="auto_accepted",
                 auto_accept_rule="auto",
                 latency_seconds=time.time() - created_at,
+                claude_reason=current_reason(),
             ))
         except Exception as exc:
             logger.warning("Audit log write failed: %s", exc)

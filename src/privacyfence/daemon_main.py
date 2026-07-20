@@ -44,6 +44,7 @@ from .app_credentials import telegram_app_credentials
 from .audit_log import init_audit_logger
 from .auto_accept import init_config_path, reload_rules
 from .pii_detector import init_pii_detection
+from .privacy_filter import init_privacy_filter
 from .resource_grants import build_effective_rules, migrate_rules_to_grants
 from .connectors.calendar import CalendarConnector
 from .connectors.confluence import ConfluenceConnector
@@ -609,6 +610,7 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
 
     reload_rules(build_effective_rules(config))
     init_pii_detection((config.get("pii_detection", {}) or {}).get("enabled", True))
+    init_privacy_filter(config)
 
     audit_logger = init_audit_logger(str(Path(data_dir()) / "logs" / "audit"))
     audit_logger.export_all_pending()

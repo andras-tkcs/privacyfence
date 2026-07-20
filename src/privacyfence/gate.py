@@ -8,28 +8,29 @@ in the same call that fetched it, so Claude never holds a tool that can
 release gated data on its own.
 
   gate="review"  (read tools)
-    Popup offers Deny / Accept / and — when a plausible auto-accept rule can
-    be derived from the item's attributes — Accept All, which proposes (with
-    a second confirmation dialog) a standing rule for similar future reads.
+    Popup offers Deny / Allow once / and — when a plausible auto-accept rule
+    can be derived from the item's attributes — Always allow, which proposes
+    (with a second confirmation dialog) a standing rule for similar future
+    reads.
 
   gate="popup"   (write tools)
-    Popup offers Deny / Accept only. Auto-accepting writes silently is a
-    materially bigger blast radius than auto-accepting reads, so Accept All
-    is not offered here. A small set of operations expected to be called
-    repeatedly against the same file in quick succession (see
-    auto_accept.TEMP_ACCEPT_ELIGIBLE_OPERATIONS) get a narrower "Accept for
+    Popup offers Deny / Allow once only. Auto-accepting writes silently is a
+    materially bigger blast radius than auto-accepting reads, so Always
+    allow is not offered here. A small set of operations expected to be
+    called repeatedly against the same file in quick succession (see
+    auto_accept.TEMP_ACCEPT_ELIGIBLE_OPERATIONS) get a narrower "Allow for
     5 min" button instead: it auto-accepts further calls of the same
     operation against that same file for 5 minutes, in memory only (never
     written to settings.yaml, gone on daemon restart) -- a much smaller
-    commitment than a standing Accept All rule.
+    commitment than a standing Always allow rule.
 
 PII gate: read tools only (``gate="review"``). Before any auto-accept check,
 the scan text (``pii_scan_text`` if the caller provided one, otherwise the
 same ``details`` shown in the popup) is scanned by pii_detector.py for
 likely Hungarian/English/German personal data. A match overrides a matching
 auto-accept rule — the call is routed to the normal interactive popup
-regardless — which is then tinted, and after the user clicks Accept (or
-Accept All), one more explicit "Are you sure?" dialog is required before the
+regardless — which is then tinted, and after the user clicks Allow once (or
+Always allow), one more explicit "Are you sure?" dialog is required before the
 decision is finalized. Declining it is treated the same as denying the
 original request. Auto-accept rules are typically scoped to metadata (sender
 domain, folder, "I am the organizer") rather than content, so a rule that
@@ -124,6 +125,44 @@ class unattended_scope:  # noqa: N801 (context-manager-style name, like `freeze_
             _unattended_ctx.reset(self._token)
 
 
+# Every gated tool's ToolSpec declares a required "reason" param so Claude
+# must state, in one sentence, why it's calling the tool -- enforced at the
+# MCP schema
+# level, not by convention. Carried the same way is_unattended() is: a
+# contextvar set once, centrally, in ipc_server.py._call_connector() (which
+# pops "reason" out of args before it reaches _dedupe_key -- see that
+# module's docstring on why args must stay retry-stable, and its own
+# comment at the pop site), not threaded through all ~95 tool call sites
+# individually. No connector method signature needs to change for this to
+# work; gated_call() and every connector's _auto_audit() read it directly.
+_reason_ctx: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "privacyfence_reason", default=""
+)
+
+
+def current_reason() -> str:
+    return _reason_ctx.get()
+
+
+class reason_scope:  # noqa: N801 (context-manager-style name, like `freeze_time`)
+    """Run the wrapped code with Claude's stated reason for the current tool
+    call available via current_reason(). Self-reported and unverified --
+    see gated_call()'s claude_reason handling for why it must never be
+    rendered or logged as fact."""
+
+    def __init__(self, reason: str) -> None:
+        self._reason = reason
+        self._token: contextvars.Token | None = None
+
+    def __enter__(self) -> "reason_scope":
+        self._token = _reason_ctx.set(self._reason)
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        if self._token is not None:
+            _reason_ctx.reset(self._token)
+
+
 async def gated_call(
     *,
     connector: str,
@@ -137,6 +176,25 @@ async def gated_call(
     preview: dict | None = None,  # fields shown in the review-gate dialog
     details_text: str = "",       # full text shown inline or via TextEdit
     pii_scan_text: str | None = None,  # content-only text for the PII scan; defaults to details_text
+    visibility: dict[str, str] | None = None,  # {label: "allow"|"redact"|"block"} -- the review
+        # gate's "AI will receive" checklist, from privacy_filter.category_policy(). Read-only
+        # (gate="review") calls only: a popup-gate write already shows exactly what's being sent,
+        # since the human is looking at content Claude itself just drafted, not something read
+        # from an external source and potentially filtered on the way in.
+    content_kind: str = "generic",  # "generic" | "email" -- selects a per-surface body-pane
+        # rendering in approval_window.py's WKWebView. Explicit, connector-set hint rather than
+        # guessed from preview's shape, so a
+        # future connector that happens to reuse label names like "From"/"Subject" can't
+        # accidentally get styled as an email. Read-only (gate="review") calls only, same
+        # reasoning as visibility above -- a write is Claude's own drafted content, not something
+        # this pane needs a per-surface reading affordance for.
+    pdf_bytes: bytes = b"",  # Raw PDF bytes for a native PDFView embed, instead of the
+        # "[binary content...]" placeholder text.
+        # Read-only (gate="review") calls only. The caller (drive.py's _get_file_content) must
+        # only ever pass this when category_policy(..., "file_content") == "allow" for the same
+        # item -- exactly the one case where details_text/filtered_data's own content already
+        # flows through unredacted -- so the human reviewer is never shown a rendered PDF that's
+        # richer than what "AI will receive" already discloses Claude gets for this same call.
     my_email: str = "",
     session_created_ids: set | None = None,
     args: dict | None = None,
@@ -144,6 +202,11 @@ async def gated_call(
     created_at = time.time()
     request_id = uuid.uuid4().hex[:12]
     operation_key = TOOL_TO_OPERATION.get(tool, f"{connector}.{tool}")
+    # Set by ipc_server.py._call_connector() via reason_scope(), from the
+    # mandatory "reason" param every gated ToolSpec now declares -- see
+    # gate.py's reason_scope docstring. Self-reported, never verified;
+    # rendered as such (see approval_window.py's "Claude says" block).
+    claude_reason = current_reason()
 
     ctx = ReviewContext(
         connector=connector,
@@ -160,6 +223,25 @@ async def gated_call(
         detect_pii_categories(details if pii_scan_text is None else pii_scan_text)
         if gate == "review" else []
     )
+    # A separate, deliberately weaker signal for the popup (write) gate:
+    # the same local detector, run over Claude's own drafted content, but
+    # informational only -- unlike pii_categories above, this never routes
+    # through _confirm_pii_or_deny (there is no "possible PII flowed in
+    # from an external source" here, so no second confirmation is owed),
+    # is never folded into the audit log's pii_detected field (that field's
+    # established meaning is specifically about the read-gate scan -- see
+    # its docstring in audit_log.py), and renders in the popup with a
+    # neutral/informational style, not the red tint+banner that implies a
+    # confirmation is coming. Exists as its own signal rather than reusing
+    # pii_categories's machinery.
+    write_content_flags = detect_pii_categories(details) if gate == "popup" else []
+    # Request fingerprint: "you've approved this exact (connector, tool,
+    # summary) N times this week" -- read directly from the audit log,
+    # same synchronous-call
+    # pattern _audit()/AuditLogger.record() already use elsewhere in this
+    # function rather than asyncio.to_thread (this file's own established
+    # precedent for small local JSONL reads/writes on the request path).
+    seen_count = get_audit_logger().recent_matches(connector, tool, summary)
 
     # Every exit from this function -- including one triggered by an
     # exception nobody anticipated below (a native popup call raising, a
@@ -178,6 +260,7 @@ async def gated_call(
             created_at=created_at, request_id=request_id, connector=connector, tool=tool,
             tool_name=tool_name, summary=summary, sender=sender,
             decision=decision, auto_accept_rule=auto_accept_rule, pii_detected=pii_detected,
+            claude_reason=claude_reason,
         )
 
     try:
@@ -192,15 +275,15 @@ async def gated_call(
         if gate == "review":
             suggestion = suggest_rule(operation_key, ctx)
             # Everything interactive for this item — including the PII
-            # confirmation, the "Accept All" confirmation, and persisting the
-            # resulting rule — stays inside one continuous lock acquisition.
-            # Releasing and re-acquiring the lock between popups would open a
-            # window where a request queued behind this one slips through with
-            # the pre-rule rule set and pops up its own dialog for something the
-            # user just approved.
+            # confirmation, the "Always allow" confirmation, and persisting
+            # the resulting rule — stays inside one continuous lock
+            # acquisition. Releasing and re-acquiring the lock between
+            # popups would open a window where a request queued behind this
+            # one slips through with the pre-rule rule set and pops up its
+            # own dialog for something the user just approved.
             async with _popup_lock:
                 # Re-check: while this call was queued behind another popup, that
-                # popup's "Accept All" may have just created a rule that now
+                # popup's "Always allow" may have just created a rule that now
                 # covers this item too. A PII match still overrides it either way.
                 auto_ok, matched_rule = evaluator.should_auto_accept(operation_key, ctx)
                 if auto_ok and not pii_categories:
@@ -217,7 +300,9 @@ async def gated_call(
                     _deny_unattended(audit, connector, tool, pii_categories=pii_categories)
 
                 decision = await asyncio.to_thread(
-                    show_read_popup, popup_title, preview or {}, details, suggestion is not None, pii_categories
+                    show_read_popup, popup_title, preview or {}, details, suggestion is not None,
+                    pii_categories, visibility, claude_reason, seen_count, content_kind, pdf_bytes,
+                    connector,
                 )
 
                 if decision in ("accept", "accept_all") and pii_categories:
@@ -233,7 +318,7 @@ async def gated_call(
                             decision="accepted_via_accept_all", auto_accept_rule=rule_name,
                             pii_detected=bool(pii_categories),
                         )
-                        logger.info("Accept All: created rule %r for %s", rule_name, operation_key)
+                        logger.info("Always allow: created rule %r for %s", rule_name, operation_key)
                         return filtered_data
                     # Cancelled rule creation — this item is still accepted, just once.
                     decision = "accept"
@@ -263,7 +348,8 @@ async def gated_call(
                     _deny_unattended(audit, connector, tool, pii_categories=[])
 
                 decision = await asyncio.to_thread(
-                    show_popup, popup_title, preview or {}, details, file_key is not None
+                    show_popup, popup_title, preview or {}, details, file_key is not None,
+                    claude_reason, write_content_flags, seen_count, connector,
                 )
 
             if decision == "accept_temp":
@@ -274,7 +360,7 @@ async def gated_call(
                         pii_detected=False,
                     )
                     logger.info(
-                        "Accept for 5 min: op=%s file=%s (%s, %s)", operation_key, file_key, connector, tool
+                        "Allow for 5 min: op=%s file=%s (%s, %s)", operation_key, file_key, connector, tool
                     )
                     return filtered_data
                 # Button shouldn't have been offered without a file_key -- fall
@@ -320,7 +406,7 @@ def _deny_unattended(audit, connector: str, tool: str, *, pii_categories: list[s
 
 async def _confirm_pii_or_deny(decision: str, pii_categories: list[str]) -> str:
     """Extra gate for content the PII detector flagged: forces one more
-    explicit confirmation on top of the popup's own Accept/Accept All,
+    explicit confirmation on top of the popup's own Allow once/Always allow,
     declining which is treated as a deny of the whole request."""
     confirmed = await asyncio.to_thread(show_pii_confirmation_popup, pii_categories)
     return decision if confirmed else "deny"
@@ -337,7 +423,7 @@ def _default_details(raw_data: Any) -> str:
 
 def _audit(
     *, created_at, request_id, connector, tool, tool_name, summary, sender, decision, auto_accept_rule,
-    pii_detected=False,
+    pii_detected=False, claude_reason="",
 ) -> None:
     try:
         get_audit_logger().record(AuditEntry(
@@ -353,6 +439,7 @@ def _audit(
             auto_accept_rule=auto_accept_rule,
             latency_seconds=time.time() - created_at,
             pii_detected=pii_detected,
+            claude_reason=claude_reason,
         ))
     except Exception as exc:
         logger.warning("Audit log write failed: %s", exc)

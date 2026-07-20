@@ -38,8 +38,8 @@ method has already caught that no unit test did.
 - `privacyfence-app` (the daemon) running, with every connector you want to
   test already authenticated from the menu bar.
 - The `privacyfence` MCP server attached to a Claude Cowork/Desktop
-  conversation — `scripts/dev_start.sh` registers `privacyfence-bridge` from
-  this checkout's venv for you.
+  conversation — `scripts/dev_start.sh` builds the bridge from this
+  checkout's `bridge/` and registers it for you.
 - **Claude Cowork's project/working folder (set in Cowork's UI — the folder
   picker for the conversation) must be this repo's root**, the same folder
   `dev_start.sh` was run from. This is what gives Claude filesystem access
@@ -142,13 +142,13 @@ Ground rules:
 - After each numbered phase, pause and give me a one-line status ("Phase 3 done,
   4 tool calls, 2 required approval") before moving to the next phase, so I'm not
   flooded with 40 popups back to back.
-- **Whenever a step expects something other than a plain Accept — Deny, "Show
-  Details," "Accept All," or "Accept for 5 min" — send that instruction as its own message and stop.
+- **Whenever a step expects something other than a plain Allow once — Deny, "Show
+  Details," "Always allow," or "Allow for 5 min" — send that instruction as its own message and stop.
   Don't make the tool call in the same turn.** Wait for me to reply (e.g. "go" or
   "ready") before calling the tool. The native approval popup can appear on top
   of this chat window the instant the tool call fires, so if the instruction and
   the call land in the same turn I may only see the popup, not what I was
-  supposed to do with it, and default to clicking Accept out of habit. A step
+  supposed to do with it, and default to clicking Allow once out of habit. A step
   marked "pause here" below means: stop, wait for my go-ahead, then call it.
 - **The PII detection gate can fire on any `review` (read) dialog, in any
   phase, not just the dedicated steps in Phase 2** — it scans whatever
@@ -159,7 +159,7 @@ Ground rules:
   file, etc.) — that content is something Claude itself just generated, not
   external data newly reaching Claude, so there's nothing for this gate to
   check on the write side. If a *read* popup renders tinted red with a
-  category banner: Accept it as the step normally instructs, then a second
+  category banner: Allow once it as the step normally instructs, then a second
   **"Are you sure?"** dialog appears — click **Proceed** to continue as
   planned (or **Cancel** only if the step's *own* instruction was to Deny).
   Note "PII gate fired" plus the categories shown in that step's row of the
@@ -191,8 +191,8 @@ Ground rules:
   "cleaned up in Phase 12" vs. "needs manual deletion."
 
 I (the human) will be watching for the approval prompts as they appear. Most
-steps expect a plain Accept and you can just make the call. The ones marked
-**"pause here"** expect something else (Deny / Accept All) —
+steps expect a plain Allow once and you can just make the call. The ones marked
+**"pause here"** expect something else (Deny / Always allow) —
 for those, stop and wait for my go-ahead as the ground rules above describe,
 *then* call the tool, then report back what actually happened in the tool
 result and write it into the table as provisional — Phase 13's audit-log
@@ -287,7 +287,7 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
 1. `gmail_list_messages` and `gmail_list_threads` (expect: silent, no prompt).
 2. Pick any recent message — call it the **label-test message**, you'll reuse
    it in steps 9–12 — and call `gmail_get_message` on it. **I will click
-   Accept.** Confirm you received the body.
+   Allow once.** Confirm you received the body.
 3. Pick a **short** message with no large attachments (this matters — a big one
    makes a Deny indistinguishable from a size-truncation error). **Pause here**:
    tell me you're about to call `gmail_get_message` on it and that **I will
@@ -298,11 +298,11 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
    with a different underlying cause isn't decidable from the tool result
    alone, so don't guess it now.
 4. Pick a message that has a thread with 2+ messages. Call `gmail_get_thread`
-   on it. **I will click Accept.** Confirm the response includes all messages
+   on it. **I will click Allow once.** Confirm the response includes all messages
    in the thread, not just one.
 5. `gmail_list_message_attachments` on any message with attachments (expect:
    silent). Then `gmail_download_attachment` on one — this is `review` gated,
-   I'll Accept.
+   I'll Allow once.
 6. Auto-accept rule check: using whatever `gmail.read_message` /
    `trusted_sender_domain` value you read from `settings.yaml` in Phase 0, find
    a message from that domain and call `gmail_get_message` on it. This should
@@ -313,14 +313,14 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
    value is available, prefer it for this check so the subdomain behavior
    gets exercised, not just exact-domain matches.
 7. `gmail_create_draft` — draft to myself, subject `PrivacyFence QA test [{RUN_ID}]
-   — safe to delete`. This is popup-gated, I'll Accept. Add it to the manifest.
+   — safe to delete`. This is popup-gated, I'll Allow once. Add it to the manifest.
 8. `gmail_reply_draft` on the thread from step 4, again clearly marked as a test
-   with `{RUN_ID}`. Popup, I'll Accept. Add it to the manifest.
+   with `{RUN_ID}`. Popup, I'll Allow once. Add it to the manifest.
 9. `gmail_add_label` on the **label-test message from step 2** — use a fresh
    label named exactly `PrivacyFence QA {RUN_ID}` (the tool creates it if it
    doesn't already exist, per `_get_or_create_label` in `gmail_client.py`).
-   Popup, Accept.
-10. `gmail_archive_message` on the same message. Popup, Accept. Then
+   Popup, Allow once.
+10. `gmail_archive_message` on the same message. Popup, Allow once. Then
     `gmail_list_messages` (silent, no prompt) with query
     `in:inbox label:"PrivacyFence QA {RUN_ID}"` and confirm it comes back
     empty — that's archiving's entire visible effect: `archive_message` in
@@ -330,10 +330,10 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
     just adding it back: `gmail_add_label` on the same message again, this
     time with label name `INBOX` (the literal system label, not a new one —
     `_get_or_create_label` resolves it to Gmail's existing `INBOX` label by
-    name instead of creating a duplicate). Popup, Accept. Then repeat the same
+    name instead of creating a duplicate). Popup, Allow once. Then repeat the same
     `gmail_list_messages` query from step 10 and confirm the message is back.
 12. `gmail_remove_label` on the same message, removing the
-    `PrivacyFence QA {RUN_ID}` label added in step 9. Popup, Accept. Then
+    `PrivacyFence QA {RUN_ID}` label added in step 9. Popup, Allow once. Then
     `gmail_list_messages` (silent) with query `label:"PrivacyFence QA {RUN_ID}"`
     and confirm zero results. After this step the label-test message is back
     exactly where it started — still in the inbox, with no leftover label —
@@ -342,7 +342,7 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
     includes both system labels (e.g. `INBOX`) and any user labels, each with
     an `id`/`name`/`type`.
 14. `gmail_create_label` with a **nested** name:
-    `PrivacyFence QA {RUN_ID}/Nested`. Popup, I'll Accept. Since Gmail has no
+    `PrivacyFence QA {RUN_ID}/Nested`. Popup, I'll Allow once. Since Gmail has no
     parent-id field, `create_label` in `gmail_client.py` creates the missing
     `PrivacyFence QA {RUN_ID}` parent segment first, then the child — call
     `gmail_list_labels` again (silent) and confirm **both** segments now
@@ -356,14 +356,14 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
 16. `gmail_list_filters` (expect: silent, no prompt). Note the current count.
 17. `gmail_create_filter` — criteria `subject="PrivacyFence QA {RUN_ID}"`,
     action `add_label_names="PrivacyFence QA {RUN_ID}/Nested"` (reusing the
-    label from step 14) plus `archive=true`. Popup, I'll Accept. Record the
+    label from step 14) plus `archive=true`. Popup, I'll Allow once. Record the
     returned filter `id` and add it to the manifest (no delete tool — see
     Phase 12).
 18. `gmail_list_filters` (silent) and confirm the new filter appears with the
     `id` from step 17 and the criteria/action you set.
 19. `gmail_update_filter` on that `id`, changing `archive` to `false` and
     `mark_as_read` to `true` (same `subject`/`add_label_names` as step 17).
-    Popup, I'll Accept — the details popup should explicitly say the old
+    Popup, I'll Allow once — the details popup should explicitly say the old
     filter is being deleted and replaced. Record the **new** `id` returned
     (Gmail has no update endpoint, so `update_filter` deletes the old filter
     and creates a fresh one — the id changes). Update the manifest entry from
@@ -384,58 +384,58 @@ in step 3, if you configured it.
 3. `drive_get_file_content` on that new file. If `drive.read_file_contents` has an
    `approved_folder` rule matching the QA Sandbox folder, this should NOT prompt —
    tell me either way. If no such rule exists, expect the normal review gate,
-   Accept.
-4. `drive_write_file_content` on it, write a short test sentence — popup, Accept.
+   Allow once.
+4. `drive_write_file_content` on it, write a short test sentence — popup, Allow once.
 5. `drive_add_comment` on it, any test comment. This is one of six write ops
    with a temp-accept shortcut on its popup (the others are steps 13, 16, 24,
    27, and 28 below — see the Technical Reference's
    [Auto-accept rules](TECHNICAL_REFERENCE.md#auto-accept-rules)).
    **Pause here**: tell me you're about to call it and that **I will click
-   "Accept for 5 min"** this time, then wait for me to say go. Once I do, make
+   "Allow for 5 min"** this time, then wait for me to say go. Once I do, make
    the call, then immediately call `drive_add_comment` on the same file again
    with a different test comment — this second call should NOT prompt (silent,
    logged `auto_accepted` with rule `session_temp_accept`). Tell me whether the
    second call prompted or not.
 6. `drive_upload_file` — upload any small local text file into the QA Sandbox
-   folder. Popup, Accept. Add to manifest.
+   folder. Popup, Allow once. Add to manifest.
 7. `drive_write_doc_content` — create/write a short Google Doc in the QA Sandbox
    folder, title `PrivacyFence QA test doc [{RUN_ID}] — safe to delete`. Popup,
-   Accept. Add to manifest.
-8. `drive_download_file` on the file from step 2 — popup, Accept. Save it
+   Allow once. Add to manifest.
+8. `drive_download_file` on the file from step 2 — popup, Allow once. Save it
    somewhere obviously temporary and tell me the path.
 9. `drive_move_file` — create one more throwaway blank file, then move it into a
    subfolder of the QA Sandbox folder (create the subfolder first if needed).
-   Popup, Accept.
+   Popup, Allow once.
 10. `drive_sheets_create` named `PrivacyFence QA test sheet [{RUN_ID}] — safe to
     delete`, inside the QA Sandbox folder (expect: silent, auto). Add to manifest.
 11. `drive_sheets_get_metadata` on it (expect: silent).
 12. `drive_sheets_get_values` on a small range like `Sheet1!A1:B2` — review gate.
     **Pause here**: tell me you're about to call it and that **I will click
-    "Accept All"** this time, then wait for me to say go. Once I do, make the
+    "Always allow"** this time, then wait for me to say go. Once I do, make the
     call and tell me exactly what rule text/scope it proposes (expect: scoped
     to this spreadsheet + tab, not a broad rule).
 13. `drive_sheets_write_range` — write `A1: "hello"`, `A2: "=1+1"` to prove
     formulas evaluate. **Pause here**: tell me you're about to call it and
-    that **I will click "Accept for 5 min"** this time, then wait for me to
+    that **I will click "Allow for 5 min"** this time, then wait for me to
     say go. Once I do, make the call, then immediately call
     `drive_sheets_write_range` again on the same spreadsheet, a different
     range like `A3: "world"` — this second call should NOT prompt (silent,
     logged `auto_accepted` with rule `session_temp_accept`). Tell me whether
     the second call prompted or not.
-14. `drive_sheets_add_sheet` — add a tab named `Extra`. Popup, Accept. Unlike
+14. `drive_sheets_add_sheet` — add a tab named `Extra`. Popup, Allow once. Unlike
     step 13, this one has no temp-accept shortcut (it's a one-shot action, not
-    something called repeatedly against the same file) — plain Accept only.
+    something called repeatedly against the same file) — plain Allow once only.
 15. `drive_sheets_rename_sheet` — rename `Extra` to `TO BE DELETED - Extra`.
     Same as step 14: no temp-accept shortcut here either. If you configured
     the **optional** `sheets.rename_sheet` → `approved_sandbox_folder`
     fixture (`qa-environment-setup.md` §2 step 6) matching the QA Sandbox
     folder, this should NOT prompt — tell me either way. If you didn't
-    configure it (the default), expect the normal popup, Accept.
+    configure it (the default), expect the normal popup, Allow once.
 16. `drive_sheets_format_range` — bold `A1:B2`. If you configured the
     **optional** `sheets.format_range` → `approved_sandbox_folder` fixture
     (same place as step 15's), this should NOT prompt — tell me either way,
     and skip the rest of this step. Otherwise (the default), **pause here**:
-    tell me you're about to call it and that **I will click "Accept for 5
+    tell me you're about to call it and that **I will click "Allow once for 5
     min"** this time, then wait for me to say go. Once I do, make the call,
     then immediately call `drive_sheets_format_range` again on the same
     spreadsheet, a different range like `A3:B3` (italic instead of bold) —
@@ -489,7 +489,7 @@ read of that same write's content) exist specifically to contrast the two.
     you're about to call it and that, even though the body above contains
     synthetic PII spanning all three supported languages, you expect a
     **plain, untinted** popup with no category banner and no second "Are you
-    sure?" dialog, since writes are never scanned. I'll click **Accept**.
+    sure?" dialog, since writes are never scanned. I'll click **Allow once**.
     Wait for me to say go. Once I do, make the call and report back: confirm
     the popup was plain (no tint, no banner, no second dialog). If it renders
     tinted or shows a category banner, that's a bug — flag it. Add the doc to
@@ -501,7 +501,7 @@ read of that same write's content) exist specifically to contrast the two.
     you're about to call it and that, because the content contains synthetic
     PII spanning all three supported languages, you expect the popup to
     render tinted red with a category-listing banner covering the eight
-    non-email/phone lines, and that after I click **Accept** a second **"Are
+    non-email/phone lines, and that after I click **Allow once** a second **"Are
     you sure?"** dialog should appear — I'll click **Proceed** on that one.
     The Email/Phone lines are a deliberate **negative** check, not a typo —
     `pii_detector.py` intentionally never flags email addresses or phone
@@ -540,7 +540,7 @@ configured it per `qa-environment-setup.md`.
     popup-gated regardless of any rule (writes never auto-accept via
     `approved_folder`, and — same as step 18 — writes are never PII-scanned
     either), so nothing to prove here — expect a plain, untinted popup with
-    no second confirmation, just Accept. Add the doc to the manifest.
+    no second confirmation, just Allow once. Add the doc to the manifest.
 22. `drive_get_file_content` on that doc. This file's parent *is*
     `{FIXTURES}.drive_qa_folder_id` — if `drive.read_file_contents` →
     `approved_folder` is configured, this read would normally auto-accept
@@ -573,7 +573,7 @@ manifest entries needed, both are already tracked.
     sheet from step 10. This is one of the temp-accept-eligible write ops
     (see the Technical Reference's [Auto-accept rules](TECHNICAL_REFERENCE.md#auto-accept-rules)).
     **Pause here**: tell me you're about to call it and that **I will click
-    "Accept for 5 min"** this time, then wait for me to say go. Once I do,
+    "Allow for 5 min"** this time, then wait for me to say go. Once I do,
     make the call, then immediately call `drive_sheets_insert_dimensions`
     again on the same spreadsheet, this time inserting 1 column — this
     second call should NOT prompt (silent, logged `auto_accepted` with rule
@@ -582,7 +582,7 @@ manifest entries needed, both are already tracked.
     Unlike step 24, this one has **no** temp-accept shortcut at all —
     deleting rows/columns removes cell content with no undo path through
     PrivacyFence, so it only ever gets a plain popup or a standing rule, not
-    "Accept for 5 min". Plain popup, Accept.
+    "Allow for 5 min". Plain popup, Allow once.
 26. Invalid-dimension check: call `drive_sheets_insert_dimensions` with
     `dimension="sideways"` — expect a clear error naming `ROWS`/`COLUMNS` as
     the valid values, raised **before** any popup appears. Confirm no popup
@@ -590,7 +590,7 @@ manifest entries needed, both are already tracked.
 27. `drive_docs_edit_content` on the Doc from step 7 — find a short, unique
     phrase already in its body and replace it with new text tagged
     `{RUN_ID}`. Also temp-accept-eligible. **Pause here**: tell me you're
-    about to call it and that **I will click "Accept for 5 min"**, then wait
+    about to call it and that **I will click "Allow for 5 min"**, then wait
     for go. Once I do, make the call, then immediately call
     `drive_docs_edit_content` again on the **same Doc**, replacing a
     different short phrase — this second call should NOT prompt (silent,
@@ -600,7 +600,7 @@ manifest entries needed, both are already tracked.
     and its own separate 5-minute window (temp-accept is scoped per
     operation, not per file — accepting it for `docs_edit_content` in step
     27 does **not** cover this call): **pause here**, tell me you're about
-    to call it and that **I will click "Accept for 5 min"**, wait for go,
+    to call it and that **I will click "Allow for 5 min"**, wait for go,
     call it, then immediately call it again on the same Doc with `bold`
     instead — should NOT prompt the second time. Open the Doc in Google
     Docs and confirm the highlighted span actually renders highlighted.
@@ -619,7 +619,7 @@ manifest entries needed, both are already tracked.
     behavior for `drive_write_doc_content` itself.
 31. Highlight-syntax check: `drive_write_doc_content` again on the same
     Doc, with a body containing `==highlighted text==` somewhere. Popup,
-    Accept. Open the Doc in Google Docs and confirm that span renders with
+    Allow once. Open the Doc in Google Docs and confirm that span renders with
     a highlight background, the same as step 28's did.
 
 ## Phase 3 — Slack
@@ -627,14 +627,14 @@ manifest entries needed, both are already tracked.
 2. Auto-accept rule check: `slack_get_channel_history` on
    `{FIXTURES}.slack_approved_channel`. This should NOT prompt me. Confirm.
 3. `slack_get_channel_history` on `{FIXTURES}.slack_control_channel` (the
-   non-approved one) — should prompt for review. I'll Accept.
-4. `slack_search_messages` with any query — review gate, Accept.
+   non-approved one) — should prompt for review. I'll Allow once.
+4. `slack_search_messages` with any query — review gate, Allow once.
 5. `slack_get_thread_replies` on the thread that already exists in
-   `slack_control_channel` — review gate, Accept. (This fixture exists precisely
+   `slack_control_channel` — review gate, Allow once. (This fixture exists precisely
    so this step always has something to find, instead of depending on step 3/4
    having surfaced a threaded message.)
 6. `slack_send_message` to my own self-DM only, test text tagged `{RUN_ID}`.
-   Popup, Accept.
+   Popup, Allow once.
 
 ## Phase 4 — Calendar
 Every step below targets `{FIXTURES}.calendar_pfqa_id` (pass it as `calendar_id`), not primary —
@@ -649,11 +649,11 @@ regardless of `calendar_id`), each called out again where they occur.
    limitation, not a new finding, so don't report it as a regression each run.
 2. Pick any existing event on `calendar_pfqa_id` (the seed event from
    `qa-environment-setup.md` §4 works if nothing else is on it yet),
-   `calendar_get_event_details` — review gate, Accept.
+   `calendar_get_event_details` — review gate, Allow once.
 3. `calendar_create_event` on `calendar_pfqa_id` — title `PrivacyFence QA test event
    [{RUN_ID}] — safe to delete`, date far in the future, no attendees, no Meet link.
-   Popup, Accept. Add to manifest (not deletable via tool).
-4. `calendar_update_event` on the event you just created. Popup, Accept.
+   Popup, Allow once. Add to manifest (not deletable via tool).
+4. `calendar_update_event` on the event you just created. Popup, Allow once.
 5. `calendar_get_event_details` again on that same event — you're its organizer,
    so if `calendar.read_event_details` has an `i_am_organizer` rule this should
    NOT prompt. Tell me either way.
@@ -664,7 +664,7 @@ regardless of `calendar_id`), each called out again where they occur.
    used works — this isn't something the test prompt can fabricate, since
    `calendar_create_event` has no way to attach a file, and a brand-new PFQA
    calendar has no meeting history to draw one from). If you find one:
-   - `calendar_get_event_details` on it — review gate, Accept. Confirm the
+   - `calendar_get_event_details` on it — review gate, Allow once. Confirm the
      result's `attachments` list is non-empty and each entry has `file_id`,
      `title`, `mime_type`, `file_url`.
    - `drive_get_file_content` using one of those `file_id` values — confirm it
@@ -678,14 +678,14 @@ regardless of `calendar_id`), each called out again where they occur.
    operates on primary regardless of any `calendar_id` passed, so there's no
    PFQA-calendar equivalent to use instead. Title `PrivacyFence QA OOO
    [{RUN_ID}] — safe to delete`, a two-hour window far in the future, no decline
-   message. Popup, Accept. Add to manifest (not deletable via tool). Confirm the
+   message. Popup, Allow once. Add to manifest (not deletable via tool). Confirm the
    created event's details in Google Calendar show it as an Out of Office entry
    that auto-declines only new conflicting invitations (not existing ones) —
    this is fixed behavior, not something the tool call can override.
 8. `calendar_create_out_of_office` again, this time with a `decline_message`.
-   Popup, Accept. Confirm the decline message appears on the created event.
+   Popup, Allow once. Confirm the decline message appears on the created event.
 9. `calendar_set_working_location` for today's date, `location="office"` —
-   also always primary, same as steps 7–8. Popup, Accept. Confirm your presence
+   also always primary, same as steps 7–8. Popup, Allow once. Confirm your presence
    shows as "In the office" in Google Calendar's web UI for that day (not
    deletable via tool — calling it again for the same day overwrites the prior
    value, so no separate cleanup is needed beyond noting it in the manifest).
@@ -702,7 +702,7 @@ regardless of `calendar_id`), each called out again where they occur.
     `calendar.set_visibility` → `non_private_event` per
     `qa-environment-setup.md` §4, this call must **still** prompt regardless:
     the rule checks the visibility being *requested*, and `"private"` never
-    matches it. Confirm that's what happened. Popup, Accept.
+    matches it. Confirm that's what happened. Popup, Allow once.
 13. `calendar_get_event_visibility` again on the same event (silent). Confirm
     it now returns `"private"`.
 14. `calendar_set_event_visibility` again, this time to `"public"`. If
@@ -733,18 +733,18 @@ regardless of `calendar_id`), each called out again where they occur.
    `source="directory"` — expect this to fail with a clear "source mismatch"
    error rather than silently returning the contact.
 4. `contacts_create` — display name `PrivacyFence QA test contact [{RUN_ID}] —
-   safe to delete`. Popup, Accept. Add to manifest (not deletable via tool).
+   safe to delete`. Popup, Allow once. Add to manifest (not deletable via tool).
 5. `contacts_update` on the contact you just created — append
    ` (edited [{RUN_ID}])` to its name/note only, no email/phone change. If
    `contacts.edit` has a `no_contact_info_change` rule, this should NOT prompt —
    tell me either way.
 6. `contacts_update` on the same contact again, this time changing its phone or
    email — even with that rule configured, this must still prompt (the rule only
-   covers non-contact-info fields). Popup, Accept. Tell me the exact before/after
+   covers non-contact-info fields). Popup, Allow once. Tell me the exact before/after
    for both updates.
 7. `contacts_add_label` on the contact, label `PrivacyFence QA test`. Popup,
-   Accept. Confirm the label appears on the contact in Google Contacts.
-8. `contacts_remove_label` on the same contact/label. Popup, Accept. Confirm
+   Allow once. Confirm the label appears on the contact in Google Contacts.
+8. `contacts_remove_label` on the same contact/label. Popup, Allow once. Confirm
    the label is gone.
 
 ## Phase 6 — Google Tasks
@@ -753,7 +753,7 @@ other connector's writes, each independently configurable via the
 `approved_task_list` auto-accept rule:
 1. `tasks_list_task_lists`, `tasks_list_tasks` (expect: silent).
 2. `tasks_create_task` in `{FIXTURES}.tasks_qa_list_id` — title
-   `PrivacyFence QA test task [{RUN_ID}] — safe to delete`. Popup, Accept.
+   `PrivacyFence QA test task [{RUN_ID}] — safe to delete`. Popup, Allow once.
    Add to manifest.
 3. `tasks_get_task` on it (expect: silent).
 4. `tasks_update_task` (change the title slightly, keep the `{RUN_ID}` tag).
@@ -763,16 +763,16 @@ other connector's writes, each independently configurable via the
    "should NOT prompt if configured" check, against `tasks.complete_task` /
    `tasks.uncomplete_task` respectively.
 6. `tasks_move_task` (move it within the same list — a no-op move, just to
-   exercise the tool). Popup, Accept.
+   exercise the tool). Popup, Allow once.
 7. Auto-accept contrast check (skip if `tasks_contrast_list_id` wasn't
    resolved in Phase 0): `tasks_create_task` in `tasks_contrast_list_id`,
    title `PrivacyFence QA contrast task [{RUN_ID}] — safe to delete`. This
    MUST prompt regardless of any `approved_task_list` rule, since that list
-   is deliberately never added to one. Popup, Accept. Add to manifest.
+   is deliberately never added to one. Popup, Allow once. Add to manifest.
 8. `tasks_update_task` on the contrast task, appending
    ` (edited [{RUN_ID}])` to its title — same "must still prompt" expectation
    as step 7, even if `tasks.update_task` has a rule configured for the QA
-   list. Popup, Accept.
+   list. Popup, Allow once.
 
 ## Phase 7 — Telegram
 1. `telegram_list_chats` (expect: silent — the only genuinely unconditional one).
@@ -780,18 +780,18 @@ other connector's writes, each independently configurable via the
    results.
 2. `telegram_get_messages` on `{FIXTURES}.telegram_approved_chat_id` — **watch
    for a native approval popup and tell me explicitly whether you see one before I
-   respond**, don't infer it from the tool result; I'll Accept if it appears.
+   respond**, don't infer it from the tool result; I'll Allow once if it appears.
    Flag this row for Phase 13: the audit log's decision (`auto_accepted` vs
    `accepted`) is what settles it if my own observation of the popup was
    ambiguous — check that once the log is attached, not now.
 3. `telegram_get_messages` on `{FIXTURES}.telegram_control_chat_id` (not in
    `approved_chats`) — same explicit "did a popup appear?" question, same
-   Phase 13 flag. I'll Accept.
+   Phase 13 flag. I'll Allow once.
 4. `telegram_search_messages` with a query that matches the seed message from
    setup — same explicit popup check, same Phase 13 flag.
 5. `telegram_send_message` to "Saved Messages"
    (`telegram_saved_messages_chat_id`), test text tagged `{RUN_ID}`. Popup,
-   Accept.
+   Allow once.
 
 ## Phase 8 — Salesforce
 1. `salesforce_list_reports` (expect: silent).
@@ -800,14 +800,14 @@ other connector's writes, each independently configurable via the
    should NOT prompt. Tell me either way. Confirm you get actual data rows back,
    not an empty result.
 3. `salesforce_run_report` on any *other* report you can access — should still
-   prompt for review regardless of the rule above. Accept.
+   prompt for review regardless of the rule above. Allow once.
 4. From the QA report's rows, pick a record and call `salesforce_get_record`
    with `object_type` set to `{FIXTURES}.salesforce_qa_object_type`. If
    `salesforce.read_record` has an `approved_object_types` rule matching it, this
    should NOT prompt — tell me either way. Confirm you get real field data back,
    not `NOT_FOUND`.
 5. `salesforce_get_record` on a record of a *different* object type — should
-   still prompt. Accept. (No write tools exist for Salesforce in this build.)
+   still prompt. Allow once. (No write tools exist for Salesforce in this build.)
 6. `salesforce_search` — search for `PrivacyFence QA` scoped to
    `object_types="Account"` (or `{FIXTURES}.salesforce_qa_object_type` if
    that's `Account`). If you configured `salesforce.search` →
@@ -821,7 +821,7 @@ other connector's writes, each independently configurable via the
    (unscoped — searches Salesforce's default globally-searchable objects).
    This must still prompt regardless of the rule above: `approved_object_types`
    only matches when every requested object type is on the allowlist, and an
-   unscoped search requests none in particular, so it never matches. Accept.
+   unscoped search requests none in particular, so it never matches. Allow once.
 8. Validation check: call `salesforce_search` with `account_id` set to any
    valid-looking Salesforce ID but `object_types` left empty — expect a
    clear error (`account_id requires object_types to be specified`), raised
@@ -838,19 +838,19 @@ other connector's writes, each independently configurable via the
    If `jira.read_issue` has an `approved_project_keys` rule matching it, this
    should NOT prompt — tell me either way.
 3. `jira_get_issue` on any issue in `jira_contrast_project_key` — should still
-   prompt regardless of that rule. Accept.
+   prompt regardless of that rule. Allow once.
 4. `jira_create_issue` in `jira_qa_project_key` — summary `PrivacyFence QA test
-   issue [{RUN_ID}] — safe to delete/close`. Popup, Accept. Add to manifest.
+   issue [{RUN_ID}] — safe to delete/close`. Popup, Allow once. Add to manifest.
 5. `jira_get_issue` on the issue you just created — you're both its reporter and
    assignee, so if `i_am_reporter`/`i_am_assignee` rules are configured for
    `jira.read_issue` this should NOT prompt either, independent of the project
    rule. Tell me which rule (if any) actually matched.
-6. `jira_add_comment` on it, test comment. Popup, Accept.
-7. `jira_update_issue` on it (e.g. change description). Popup, Accept.
+6. `jira_add_comment` on it, test comment. Popup, Allow once.
+7. `jira_update_issue` on it (e.g. change description). Popup, Allow once.
 8. `jira_update_issue` with `custom_fields` targeting one custom field already
    configured on `jira_qa_project_key`'s issue screen (any type works — check
    the issue's "..." menu in Jira's web UI for available custom fields), by its
-   exact display name (e.g. `{"Story Points": 5}`). Popup, Accept. Confirm the
+   exact display name (e.g. `{"Story Points": 5}`). Popup, Allow once. Confirm the
    value is set correctly in Jira. If the QA project has no custom field
    configured, note that and skip this step — it's a fixture-availability
    limitation, not a regression.
@@ -858,7 +858,7 @@ other connector's writes, each independently configurable via the
    least one transition name and target status reachable from the issue's
    current status.
 10. `jira_transition_issue` to one of the transition names from step 9. Popup,
-    Accept. Confirm the issue's status actually changed in Jira, and that the
+    Allow once. Confirm the issue's status actually changed in Jira, and that the
     tool's result reflects the new status.
 11. `jira_transition_issue` again with a transition name that is *not* in the
     list from a fresh `jira_get_transitions` call on the now-transitioned issue
@@ -873,13 +873,13 @@ other connector's writes, each independently configurable via the
    `approved_space_keys` rule matching it, this should NOT prompt. Tell me
    either way.
 3. Same call against a page in `confluence_contrast_space_key` — should still
-   prompt regardless. Accept.
+   prompt regardless. Allow once.
 4. `confluence_create_page` in `confluence_qa_space_key`, titled `PrivacyFence
-   QA test page [{RUN_ID}] — safe to delete`. Popup, Accept. Add to manifest.
+   QA test page [{RUN_ID}] — safe to delete`. Popup, Allow once. Add to manifest.
 5. `confluence_get_page` on the page you just created — you're its author, so if
    an `i_am_author` rule is configured for `confluence.read_page` this should NOT
    prompt, independent of the space rule. Tell me which rule (if any) matched.
-6. `confluence_update_page` on it, minor edit. Popup, Accept.
+6. `confluence_update_page` on it, minor edit. Popup, Allow once.
 
 ## Phase 11 — Scheduled / unattended Cowork tasks
 
@@ -917,7 +917,7 @@ administrator makes, not a live daemon toggle).
    a popup and **not** a partial success. Confirm the menu bar's top item still reads plain
    "PrivacyFence is running" (no session count).
 8. Set `unattended_sessions.enabled: true` in `settings.yaml` and **restart the daemon** (not just
-   an "Accept All" hot-reload — see the note above). Reconnect the Cowork/Desktop session so its
+   an "Always allow" hot-reload — see the note above). Reconnect the Cowork/Desktop session so its
    bridge process talks to the freshly restarted daemon.
 9. `privacyfence_begin_unattended_session` again — expect `{"unattended": true}`, no popup. Check
    the PrivacyFence menu bar now: the top item should read "PrivacyFence is running — 1 unattended
