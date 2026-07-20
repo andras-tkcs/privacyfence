@@ -96,6 +96,9 @@ _DETAILS_HEIGHT_EXPANDED = 520.0
 _ICON_SIZE = 51.0  # 150% of the original 34pt
 _ICON_TITLE_GAP = 14.0
 _TITLE_RIGHT_RESERVE = _ICON_SIZE + _ICON_TITLE_GAP
+# Connector brand icon, top-left alongside the kicker -- a secondary
+# indicator, deliberately smaller than the shield's primary brand mark.
+_CONNECTOR_ICON_SIZE = 28.0
 _KICKER_HEIGHT = 22.0
 _SUMMARY_LABEL_WIDTH = 84.0
 _SUMMARY_ROW_GAP = 9.0
@@ -264,6 +267,20 @@ def _icon_path() -> str | None:
     return None
 
 
+def _connector_icon_path(connector: str) -> str | None:
+    """Real per-service brand icon (Gmail/Drive/Slack/etc.), top-left,
+    alongside the "PrivacyFence" kicker -- a secondary "which service is
+    this" indicator, distinct from the shield's "this is PrivacyFence"
+    mark at top-right. Same silent-skip fallback as _icon_path(): missing
+    or unrecognized connector just renders no icon, never an error --
+    real logo assets aren't bundled by this change (see
+    resources/connector_icons/README, if/when one exists)."""
+    if not connector:
+        return None
+    p = Path(__file__).parent / "resources" / "connector_icons" / f"{connector}.png"
+    return str(p) if p.exists() else None
+
+
 def _text_height(text: str, width: float, font) -> float:
     ns = NSString.stringWithString_(text)
     rect = ns.boundingRectWithSize_options_attributes_(
@@ -381,6 +398,7 @@ class ApprovalWindowController(NSObject):
         self.seen_count: int = 0
         self.content_kind: str = "generic"
         self.pdf_bytes: bytes = b""
+        self.connector: str = ""
         self.result = "deny"
         self.panel = None
         self._details_view = None
@@ -860,8 +878,25 @@ class ApprovalWindowController(NSObject):
 
         y = 22.0
 
+        # Connector brand icon (Gmail/Drive/Slack/etc.), top-left --
+        # "which service is this," distinct from the shield's "this is
+        # PrivacyFence" mark at top-right, which stays exactly where it
+        # is below. Silently absent (no icon, no reserved space) until a
+        # real logo asset exists for this connector -- see
+        # _connector_icon_path()'s docstring.
+        connector_icon_path = _connector_icon_path(self.connector)
+        kicker_x = _MARGIN
+        if connector_icon_path:
+            connector_image = NSImage.alloc().initWithContentsOfFile_(connector_icon_path)
+            connector_icon_view = NSImageView.alloc().initWithFrame_(
+                NSMakeRect(_MARGIN, y, _CONNECTOR_ICON_SIZE, _CONNECTOR_ICON_SIZE)
+            )
+            connector_icon_view.setImage_(connector_image)
+            content.addSubview_(connector_icon_view)
+            kicker_x = _MARGIN + _CONNECTOR_ICON_SIZE + _ICON_TITLE_GAP
+
         kicker = _make_label("PrivacyFence", size=12, color=NSColor.secondaryLabelColor())
-        kicker.setFrame_(NSMakeRect(_MARGIN, y, 200.0, _KICKER_HEIGHT))
+        kicker.setFrame_(NSMakeRect(kicker_x, y, 200.0, _KICKER_HEIGHT))
         content.addSubview_(kicker)
 
         icon_path = _icon_path()
@@ -1116,6 +1151,7 @@ def show_native_approval(
     seen_count: int = 0,
     content_kind: str = "generic",
     pdf_bytes: bytes = b"",
+    connector: str = "",
 ) -> str:
     """Show the approval window and block until the user picks a button.
 
@@ -1138,6 +1174,7 @@ def show_native_approval(
         controller.seen_count = seen_count or 0
         controller.content_kind = content_kind or "generic"
         controller.pdf_bytes = pdf_bytes or b""
+        controller.connector = connector or ""
 
         controller.performSelectorOnMainThread_withObject_waitUntilDone_(
             "runApproval:", None, True

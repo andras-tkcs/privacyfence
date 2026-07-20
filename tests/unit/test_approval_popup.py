@@ -147,6 +147,7 @@ class TestShowPopupAndShowReadPopup:
         assert captured == {
             "title": "Title", "preview": {"Field": "Value"}, "details_text": "details", "allow_accept_all": False,
             "allow_temp_accept": False, "claude_reason": "", "write_content_flags": None, "seen_count": 0,
+            "connector": "",
         }
         assert result == "accept"
 

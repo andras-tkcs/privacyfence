@@ -302,6 +302,7 @@ async def gated_call(
                 decision = await asyncio.to_thread(
                     show_read_popup, popup_title, preview or {}, details, suggestion is not None,
                     pii_categories, visibility, claude_reason, seen_count, content_kind, pdf_bytes,
+                    connector,
                 )
 
                 if decision in ("accept", "accept_all") and pii_categories:
@@ -348,7 +349,7 @@ async def gated_call(
 
                 decision = await asyncio.to_thread(
                     show_popup, popup_title, preview or {}, details, file_key is not None,
-                    claude_reason, write_content_flags, seen_count,
+                    claude_reason, write_content_flags, seen_count, connector,
                 )
 
             if decision == "accept_temp":

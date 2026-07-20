@@ -85,6 +85,7 @@ def show_popup(
     claude_reason: str = "",
     write_content_flags: list[str] | None = None,
     seen_count: int = 0,
+    connector: str = "",
 ) -> str:
     """Approval popup for write tools. No PII *gate* applies here -- see
     gate.py's module docstring for why the PII confirmation flow is
@@ -112,6 +113,10 @@ def show_popup(
     summary) was already approved this week, shown here too since it
     applies to writes as much as reads.
 
+    ``connector`` (e.g. "gmail", "slack") selects the top-left brand icon
+    -- see approval_window.py's _connector_icon_path() docstring for the
+    silent-skip fallback when no asset exists yet for it.
+
     Returns 'accept', 'deny', or 'accept_temp' (only offered when
     allow_temp_accept is True -- see gate.py's TEMP_ACCEPT_ELIGIBLE_OPERATIONS
     for which write operations get that button).
@@ -119,7 +124,7 @@ def show_popup(
     return show_native_approval(
         title=title, preview=preview, details_text=details_text, allow_accept_all=False,
         allow_temp_accept=allow_temp_accept, claude_reason=claude_reason,
-        write_content_flags=write_content_flags, seen_count=seen_count,
+        write_content_flags=write_content_flags, seen_count=seen_count, connector=connector,
     )
 
 
@@ -138,6 +143,7 @@ def show_read_popup(
     seen_count: int = 0,
     content_kind: str = "generic",
     pdf_bytes: bytes = b"",
+    connector: str = "",
 ) -> str:
     """Approval popup for read tools. Full content is always shown before the
     decision, in a scrollable pane — the user never has to click through to
@@ -158,6 +164,9 @@ def show_read_popup(
     body pane's usual WKWebView text -- see gate.py's gated_call docstring
     for the privacy-policy condition its only caller (drive.py) must check
     before ever setting it.
+    ``connector`` (e.g. "gmail", "drive") selects the top-left brand icon
+    -- see approval_window.py's _connector_icon_path() docstring for the
+    silent-skip fallback when no asset exists yet for it.
 
     Returns 'accept', 'deny', or 'accept_all' (only offered when
     allow_accept_all is True).
@@ -165,7 +174,7 @@ def show_read_popup(
     return show_native_approval(
         title=title, preview=preview, details_text=details_text, allow_accept_all=allow_accept_all,
         pii_categories=pii_categories, visibility=visibility, claude_reason=claude_reason,
-        seen_count=seen_count, content_kind=content_kind, pdf_bytes=pdf_bytes,
+        seen_count=seen_count, content_kind=content_kind, pdf_bytes=pdf_bytes, connector=connector,
     )
 
 

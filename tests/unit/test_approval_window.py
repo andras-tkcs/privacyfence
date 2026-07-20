@@ -27,7 +27,7 @@ from __future__ import annotations
 import sys
 
 import pytest
-from AppKit import NSBox, NSButton, NSTextField
+from AppKit import NSBox, NSButton, NSImageView, NSTextField
 from Quartz import PDFView
 from WebKit import WKWebView
 
@@ -41,6 +41,7 @@ from privacyfence.approval_window import (
     ApprovalWindowController,
     _badge_kind,
     _badge_rows,
+    _connector_icon_path,
     _details_html,
     _email_header_html,
 )
@@ -64,6 +65,7 @@ def make_controller(
     seen_count=0,
     content_kind="generic",
     pdf_bytes=b"",
+    connector="",
 ):
     c = ApprovalWindowController.alloc().init()
     c.title = title
@@ -78,6 +80,7 @@ def make_controller(
     c.seen_count = seen_count
     c.content_kind = content_kind
     c.pdf_bytes = pdf_bytes
+    c.connector = connector
     return c
 
 
@@ -454,6 +457,34 @@ class TestRequestFingerprint:
         views = build_views(make_controller(seen_count=1))
         values = text_field_values(views)
         assert "Seen 1 time this week" in values
+
+
+class TestConnectorIcon:
+    """Per-connector brand icon (Gmail/Drive/Slack/etc.), top-left --
+    degrades gracefully (no icon, no reserved layout space) until a real
+    logo asset actually exists for a given connector; see
+    _connector_icon_path()'s docstring. No real assets are bundled by
+    this change, so every case here exercises the "missing asset" path."""
+
+    def test_empty_connector_has_no_icon_path(self):
+        assert _connector_icon_path("") is None
+
+    def test_unknown_connector_has_no_icon_path(self):
+        assert _connector_icon_path("not-a-real-connector") is None
+
+    def test_connector_round_trips_onto_the_controller(self):
+        controller = make_controller(connector="slack")
+        assert controller.connector == "slack"
+
+    def test_missing_asset_renders_the_same_view_tree_as_no_connector(self):
+        # No real logo assets are bundled yet -- naming a connector with
+        # no matching file must never change what's on screen (no extra
+        # NSImageView, no shifted kicker).
+        no_connector_views = build_views(make_controller(connector=""))
+        with_connector_views = build_views(make_controller(connector="gmail"))
+        no_connector_images = [v for v in no_connector_views if isinstance(v, NSImageView)]
+        with_connector_images = [v for v in with_connector_views if isinstance(v, NSImageView)]
+        assert len(no_connector_images) == len(with_connector_images)
 
 
 class TestSummaryBox:
