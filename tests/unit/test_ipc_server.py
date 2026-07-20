@@ -740,6 +740,203 @@ class TestCheckPolicyDispatch:
         assert entries[0]["claude_reason"] == ""
 
 
+class TestListRulesDispatch:
+    """list_rules -- see ipc.py's module docstring. Read-only: must never
+    open a popup or touch a connector, and always records a lightweight
+    "rules_listed" audit entry since it discloses the full current
+    auto_accept_rules/auto_accept_grants config."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path):
+        from privacyfence import auto_accept
+
+        init_audit_logger(str(tmp_path / "audit"))
+        self._audit_dir = tmp_path / "audit"
+        self._config_path = tmp_path / "settings.yaml"
+        self._config_path.write_text("auto_accept_rules: {}\n", encoding="utf-8")
+        auto_accept.init_config_path(str(self._config_path))
+
+    def _read_entries(self):
+        week_file = self._audit_dir / f"{current_week()}.jsonl"
+        if not week_file.exists():
+            return []
+        return [json.loads(line) for line in week_file.read_text(encoding="utf-8").splitlines()]
+
+    async def test_returns_current_rules_and_grants_straight_from_disk(self, running_server):
+        self._config_path.write_text(
+            "auto_accept_rules:\n"
+            "  gmail.read_message:\n"
+            "  - rule: i_am_sender\n"
+            "auto_accept_grants:\n"
+            "  drive:\n"
+            "    sandbox_folders:\n"
+            "    - id: f1\n"
+            "      write: true\n",
+            encoding="utf-8",
+        )
+        server, socket_path = running_server
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({"id": "1", "method": "list_rules", "params": {"reason": "auditing"}})
+            resp = await client.recv()
+        finally:
+            await client.close()
+        assert resp["result"] == {
+            "auto_accept_rules": {"gmail.read_message": [{"rule": "i_am_sender"}]},
+            "auto_accept_grants": {"drive": {"sandbox_folders": [{"id": "f1", "write": True}]}},
+        }
+
+    async def test_records_a_rules_listed_audit_entry_with_reason(self, running_server):
+        server, socket_path = running_server
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send(
+                {"id": "1", "method": "list_rules", "params": {"reason": "Auditing before cleanup."}}
+            )
+            await client.recv()
+        finally:
+            await client.close()
+        entries = self._read_entries()
+        assert len(entries) == 1
+        assert entries[0]["decision"] == "rules_listed"
+        assert entries[0]["claude_reason"] == "Auditing before cleanup."
+
+    async def test_missing_reason_defaults_to_empty_string(self, running_server):
+        server, socket_path = running_server
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({"id": "1", "method": "list_rules", "params": {}})
+            await client.recv()
+        finally:
+            await client.close()
+        entries = self._read_entries()
+        assert entries[0]["claude_reason"] == ""
+
+
+class TestProposeRuleChangeDispatch:
+    """propose_rule_change -- see ipc.py's module docstring and
+    gate.propose_rule_change()'s own docstring. Confirms the daemon-side
+    wiring (unattended_scope, param translation) end to end over a real
+    socket; gate.propose_rule_change()'s own branch logic is covered in
+    test_gate.py."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path, monkeypatch):
+        from privacyfence import auto_accept, gate
+
+        init_audit_logger(str(tmp_path / "audit"))
+        self._audit_dir = tmp_path / "audit"
+        self._config_path = tmp_path / "settings.yaml"
+        self._config_path.write_text("auto_accept_rules: {}\n", encoding="utf-8")
+        auto_accept.init_config_path(str(self._config_path))
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
+
+    def _read_entries(self):
+        week_file = self._audit_dir / f"{current_week()}.jsonl"
+        if not week_file.exists():
+            return []
+        return [json.loads(line) for line in week_file.read_text(encoding="utf-8").splitlines()]
+
+    async def test_confirmed_rule_add_is_persisted_to_disk(self, running_server):
+        server, socket_path = running_server
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "propose_rule_change",
+                "params": {
+                    "target": "rule", "operation": "add", "reason": "Trusting example.com.",
+                    "operation_key": "gmail.read_message", "rule_name": "trusted_sender_domain",
+                    "value": ["example.com"],
+                },
+            })
+            resp = await client.recv()
+        finally:
+            await client.close()
+        assert resp["result"]["confirmed"] is True
+        on_disk = self._config_path.read_text(encoding="utf-8")
+        assert "trusted_sender_domain" in on_disk
+
+    async def test_declined_confirmation_returns_an_error_response(self, running_server, monkeypatch):
+        from privacyfence import gate
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: False)
+        server, socket_path = running_server
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "propose_rule_change",
+                "params": {
+                    "target": "rule", "operation": "add", "reason": "x",
+                    "operation_key": "gmail.read_message", "rule_name": "i_am_sender",
+                },
+            })
+            resp = await client.recv()
+        finally:
+            await client.close()
+        assert "denied" in resp["error"]
+
+    async def test_unattended_connection_is_denied_without_a_popup(self, short_socket_path, monkeypatch):
+        from privacyfence import gate
+        popup_calls = []
+        monkeypatch.setattr(
+            gate, "show_rule_confirmation_popup", lambda description: popup_calls.append(1) or True
+        )
+        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+        server = IPCServer([], unattended_sessions_enabled=True)
+        await server.start()
+        socket_path = short_socket_path
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "begin_unattended_session", "params": {"reason": "Scheduled run."},
+            })
+            await client.recv()
+            await client.send({
+                "id": "2", "method": "propose_rule_change",
+                "params": {
+                    "target": "rule", "operation": "add", "reason": "x",
+                    "operation_key": "gmail.read_message", "rule_name": "i_am_sender",
+                },
+            })
+            resp = await client.recv()
+        finally:
+            await client.close()
+            await server.stop()
+        assert "unattended session" in resp["error"]
+        assert popup_calls == []
+
+    async def test_grant_target_add_is_persisted_to_disk(self, running_server):
+        server, socket_path = running_server
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "propose_rule_change",
+                "params": {
+                    "target": "grant", "operation": "add", "reason": "Trusting the sandbox folder.",
+                    "connector": "drive", "config_key": "sandbox_folders", "resource_id": "folder1",
+                    "capabilities": {"write": True},
+                },
+            })
+            resp = await client.recv()
+        finally:
+            await client.close()
+        assert resp["result"]["confirmed"] is True
+        on_disk = self._config_path.read_text(encoding="utf-8")
+        assert "folder1" in on_disk
+
+    async def test_missing_target_returns_an_error_response(self, running_server):
+        server, socket_path = running_server
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "propose_rule_change",
+                "params": {"operation": "add", "reason": "x"},
+            })
+            resp = await client.recv()
+        finally:
+            await client.close()
+        assert "error" in resp
+
+
 class UnattendedAwareConnector(Connector):
     """Records gate.is_unattended() at the moment call() runs, so tests can
     confirm the daemon actually flips the flag for the right connection and

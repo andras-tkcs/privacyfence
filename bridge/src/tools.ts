@@ -173,6 +173,106 @@ export function registerMetaTools(server: McpServer, ipc: IPCClientLike): void {
   );
 
   server.registerTool(
+    "privacyfence_list_auto_accept_rules",
+    {
+      description:
+        "List the auto-accept rules and grants currently configured in PrivacyFence's " +
+        "settings.yaml -- both the auto_accept_rules section (per-operation rule entries) and " +
+        "the auto_accept_grants section (resource-scoped grants, e.g. a trusted Drive sandbox " +
+        "folder that covers several sheets.*/drive.* operations at once). Call this before " +
+        "privacyfence_propose_auto_accept_rule_change: update/remove target an existing entry " +
+        "by its exact identifying fields (operation_key/rule_name/value for a rule; " +
+        "connector/config_key/resource_id for a grant), and those fields only match something " +
+        "if you listed it first rather than guessed. Read-only, no popup -- reason: one " +
+        "sentence on why you're listing the current rules right now (logged, self-reported, " +
+        "same as every other gated/meta tool's reason param, since this discloses the full " +
+        "current rule set).",
+      inputSchema: { reason: z.string() },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+    },
+    async ({ reason }): Promise<CallToolResult> => {
+      try {
+        const result = await ipc.listRules(reason);
+        return toCallToolResult(result);
+      } catch (exc) {
+        if (exc instanceof IPCError) throw new Error(exc.message);
+        throw exc;
+      }
+    }
+  );
+
+  server.registerTool(
+    "privacyfence_propose_auto_accept_rule_change",
+    {
+      description:
+        "Propose adding, updating, or removing an auto-accept rule or grant in PrivacyFence's " +
+        "settings.yaml. This ALWAYS blocks on a native confirmation dialog a human must " +
+        "approve -- there is no way to change this config without one, even if an identical " +
+        "entry already exists. If declined, or if this connection is in an unattended " +
+        "session, the call throws -- never assume success without checking the result. Call " +
+        "privacyfence_list_auto_accept_rules first so update/remove target an entry that " +
+        "actually exists rather than guessing identifiers.\n\n" +
+        "target='rule' edits the auto_accept_rules section (one list of {rule, value} entries " +
+        "per operation_key): operation_key (e.g. 'sheets.format_range'), rule_name (e.g. " +
+        "'trusted_sender_domain' -- must be one of the real rule names PrivacyFence's rule engine " +
+        "knows, see privacyfence_list_auto_accept_rules' output or the Auto-accept rules tables in " +
+        "the docs; an unrecognized name is rejected before any popup is shown, not silently " +
+        "persisted as a dead rule), value (required for add/update -- often a list), old_value " +
+        "(update only -- the prior value being replaced; omit to add alongside the existing " +
+        "value instead of replacing it).\n\n" +
+        "target='grant' edits the auto_accept_grants section (one resource trusted once, " +
+        "covering several operations at a time -- e.g. a Drive sandbox folder): connector " +
+        "(e.g. 'drive'), config_key (e.g. 'sandbox_folders'), resource_id (required), name " +
+        "(optional cosmetic label), tab (spreadsheets only), capabilities (add/update only -- " +
+        "a map of capability key, e.g. 'write', to true/false; see " +
+        "privacyfence_list_auto_accept_rules' auto_accept_grants output for which capability " +
+        "keys apply to which resource type).\n\n" +
+        "reason: one sentence on why you're proposing this change -- logged, self-reported, " +
+        "unverified, same as every other gated tool's reason param.",
+      inputSchema: {
+        target: z.enum(["rule", "grant"]),
+        operation: z.enum(["add", "update", "remove"]),
+        reason: z.string(),
+        operation_key: z.string().optional(),
+        rule_name: z.string().optional(),
+        value: z.unknown().optional(),
+        old_value: z.unknown().optional(),
+        connector: z.string().optional(),
+        config_key: z.string().optional(),
+        resource_id: z.string().optional(),
+        name: z.string().optional(),
+        tab: z.string().optional(),
+        capabilities: z.record(z.string(), z.boolean()).optional(),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+    },
+    async ({
+      target, operation, reason, operation_key, rule_name, value, old_value,
+      connector, config_key, resource_id, name, tab, capabilities,
+    }): Promise<CallToolResult> => {
+      try {
+        const result = await ipc.proposeRuleChange({
+          target, operation, reason,
+          operationKey: operation_key,
+          ruleName: rule_name,
+          value,
+          oldValue: old_value,
+          connector,
+          configKey: config_key,
+          resourceId: resource_id,
+          name,
+          tab,
+          capabilities,
+        });
+        return toCallToolResult(result);
+      } catch (exc) {
+        if (exc instanceof IPCError) throw new Error(exc.message);
+        throw exc;
+      }
+    }
+  );
+
+  server.registerTool(
     "privacyfence_begin_unattended_session",
     {
       description:
@@ -227,7 +327,8 @@ export function registerMetaTools(server: McpServer, ipc: IPCClientLike): void {
   );
 
   console.error(
-    "Registered meta-tools: privacyfence_check_policy, privacyfence_begin_unattended_session, " +
+    "Registered meta-tools: privacyfence_check_policy, privacyfence_list_auto_accept_rules, " +
+      "privacyfence_propose_auto_accept_rule_change, privacyfence_begin_unattended_session, " +
       "privacyfence_end_unattended_session"
   );
 }

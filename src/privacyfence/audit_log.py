@@ -37,18 +37,32 @@ class AuditEntry:
     sender: str
     decision: str           # "approved" | "rejected" | "auto_accepted" | "accepted_via_accept_all" |
                             # "accepted_via_temp_session" | "denied_unattended" | "policy_check" |
-                            # "unattended_session_started" | "unattended_session_ended" | "error"
+                            # "rules_listed" |
+                            # "unattended_session_started" | "unattended_session_ended" |
+                            # "rule_changed_via_bridge_proposal" | "rule_removed_via_bridge_proposal" |
+                            # "grant_changed_via_bridge_proposal" | "grant_removed_via_bridge_proposal" |
+                            # "error"
                             # ("error": gate.py's gated_call exited without reaching a normal decision
                             #  branch -- a fallback so an unanticipated failure still leaves a trail)
                             # ("denied_unattended": gate.py denied the call without ever prompting,
                             #  because the connection was in an unattended session and no auto-accept
-                            #  rule matched -- distinct from "rejected", which is a human's own Deny)
+                            #  rule matched -- distinct from "rejected", which is a human's own Deny.
+                            #  Also used by gate.py's propose_rule_change() for the same reason)
                             # ("policy_check": ipc_server.py's check_policy handler -- a preflight
                             #  question, not a real decision; recorded for pattern-spotting only)
+                            # ("rules_listed": ipc_server.py's list_rules handler -- not a decision
+                            #  either, but the full current rule/grant set was disclosed, worth its
+                            #  own record for the same pattern-spotting reason as "policy_check")
                             # ("unattended_session_started"/"_ended": ipc_server.py's begin/end_
                             #  unattended_session handlers, and the same on disconnect cleanup --
                             #  this connection's gate posture changed, which is worth a record of
                             #  its own even though no specific tool call was involved)
+                            # ("rule_changed_via_bridge_proposal"/"rule_removed_via_bridge_proposal"/
+                            #  "grant_changed_via_bridge_proposal"/"grant_removed_via_bridge_proposal":
+                            #  gate.py's propose_rule_change() -- a bridge-initiated auto_accept_rules/
+                            #  auto_accept_grants edit that a human confirmed via the same
+                            #  show_rule_confirmation_popup() the "Always allow" flow uses. "rejected"
+                            #  is reused, not a new value, when the human declines instead)
     auto_accept_rule: str   # rule name if auto_accepted, else ""
     latency_seconds: float
     pii_detected: bool = False  # True if pii_detector.py flagged the content before this decision
@@ -134,6 +148,11 @@ class AuditLogger:
             "rejected":              PatternFill("solid", fgColor="FFEBEE"),
             "denied_unattended":     PatternFill("solid", fgColor="FFD8A8"),
             "policy_check":          PatternFill("solid", fgColor="F1F3F5"),
+            "rules_listed":          PatternFill("solid", fgColor="F1F3F5"),
+            "rule_changed_via_bridge_proposal":   PatternFill("solid", fgColor="FFF3CD"),
+            "rule_removed_via_bridge_proposal":   PatternFill("solid", fgColor="FFF3CD"),
+            "grant_changed_via_bridge_proposal":  PatternFill("solid", fgColor="FFF3CD"),
+            "grant_removed_via_bridge_proposal":  PatternFill("solid", fgColor="FFF3CD"),
             "error":                 PatternFill("solid", fgColor="FF6B6B"),
         }
 

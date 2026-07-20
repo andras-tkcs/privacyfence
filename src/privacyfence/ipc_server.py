@@ -38,9 +38,9 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from .audit_log import AuditEntry, current_week, get_audit_logger
-from .auto_accept import TOOL_TO_GATE, TOOL_TO_OPERATION, get_auto_accept_evaluator
+from .auto_accept import TOOL_TO_GATE, TOOL_TO_OPERATION, get_auto_accept_evaluator, get_current_config
 from .connector import Connector, ToolSpec
-from .gate import reason_scope, unattended_scope
+from .gate import propose_rule_change, reason_scope, unattended_scope
 from .ipc import LINE_LIMIT, SOCKET_PATH, VERSION
 
 logger = logging.getLogger(__name__)
@@ -169,6 +169,11 @@ class IPCServer:
                     result = await self._call_connector(params)
             elif method == "check_policy":
                 result = self._check_policy(params)
+            elif method == "list_rules":
+                result = self._list_rules(params)
+            elif method == "propose_rule_change":
+                with unattended_scope(id(writer) in self._unattended_connections):
+                    result = await self._propose_rule_change(params)
             elif method == "begin_unattended_session":
                 result = self._begin_unattended_session(writer, params.get("reason", ""))
             elif method == "end_unattended_session":
@@ -297,6 +302,55 @@ class IPCServer:
             ))
         except Exception as exc:
             logger.warning("Audit log write failed for policy check: %s", exc)
+
+    @staticmethod
+    def _list_rules(params: dict) -> dict:
+        """list_rules -- see ipc.py's module docstring. Records a lightweight
+        "rules_listed" audit entry (like _check_policy's "policy_check")
+        since it discloses the full current rule/grant set."""
+        result = get_current_config()
+        try:
+            get_audit_logger().record(AuditEntry(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                week=current_week(),
+                request_id=uuid.uuid4().hex[:12],
+                connector="",
+                tool="",
+                tool_name="",
+                summary="Listed current auto-accept rules/grants",
+                sender="",
+                decision="rules_listed",
+                auto_accept_rule="",
+                latency_seconds=0.0,
+                pii_detected=False,
+                claude_reason=params.get("reason", ""),
+            ))
+        except Exception as exc:
+            logger.warning("Audit log write failed for list_rules: %s", exc)
+        return result
+
+    @staticmethod
+    async def _propose_rule_change(params: dict) -> dict:
+        """propose_rule_change -- see ipc.py's module docstring and
+        gate.propose_rule_change()'s own docstring for the full field list
+        and the "gate only" write guarantee. Wrapped in unattended_scope by
+        _dispatch the same way "call" is, since gate.py's is_unattended()
+        check applies here too."""
+        return await propose_rule_change(
+            target=params["target"],
+            operation=params["operation"],
+            reason=params.get("reason", ""),
+            operation_key=params.get("operation_key", ""),
+            rule_name=params.get("rule_name", ""),
+            value=params.get("value"),
+            old_value=params.get("old_value"),
+            connector=params.get("connector", ""),
+            config_key=params.get("config_key", ""),
+            resource_id=params.get("resource_id", ""),
+            name=params.get("name"),
+            tab=params.get("tab"),
+            capabilities=params.get("capabilities"),
+        )
 
     @staticmethod
     def _audit_unattended_session_event(decision: str, claude_reason: str = "") -> None:

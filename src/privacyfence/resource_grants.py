@@ -405,6 +405,82 @@ def set_grant_entries(grants_cfg: dict[str, Any], rt: GrantResourceType, entries
             grants_cfg.pop(rt.connector, None)
 
 
+def _grant_matches(rt: GrantResourceType, entry: dict[str, Any], resource_id: str, tab: str | None) -> bool:
+    if rt.id_of(entry) != resource_id:
+        return False
+    return rt.config_key != "spreadsheets" or entry.get("tab") == (tab or None)
+
+
+def apply_grant_upsert(
+    cfg: dict[str, Any], rt: GrantResourceType, resource_id: str, *,
+    name: str | None = None, tab: str | None = None,
+    capabilities: dict[str, bool] | None = None,
+) -> bool:
+    """Add a new grant entry, or update an existing one's cosmetic name
+    and/or capability flags (matched by id, plus tab for spreadsheets).
+    Mutates `cfg["auto_accept_grants"]` in place. Always returns True --
+    see auto_accept.mutate_grants -- since even re-confirming the same
+    capabilities is a proposal that already went through a human
+    confirmation, not a no-op worth silently skipping the write for.
+
+    Shared by menu_bar.py's "+ Add <resource>…" flow and gate.py's
+    propose_rule_change() (the bridge-facing counterpart with a
+    confirmation popup instead of a menu prompt) -- one place owns what a
+    grant entry looks like on disk.
+    """
+    grants_cfg = cfg.setdefault("auto_accept_grants", {})
+    entries = get_grant_entries(grants_cfg, rt)
+    existing = next((e for e in entries if _grant_matches(rt, e, resource_id, tab)), None)
+    if existing is None:
+        existing = {rt.id_field: resource_id}
+        if tab:
+            existing["tab"] = tab
+        entries.append(existing)
+    if name:
+        existing["name"] = name
+    for key, enabled in (capabilities or {}).items():
+        if key not in rt.capabilities:
+            raise ValueError(f"Unknown capability {key!r} for {rt.connector}.{rt.config_key}")
+        existing[key] = bool(enabled)
+    set_grant_entries(grants_cfg, rt, entries)
+    return True
+
+
+def apply_grant_removal(
+    cfg: dict[str, Any], rt: GrantResourceType, resource_id: str, tab: str | None = None
+) -> bool:
+    """Remove a grant entry (matched by id, plus tab for spreadsheets).
+    Mutates `cfg["auto_accept_grants"]` in place. Returns False (no write
+    needed) if no entry matched."""
+    grants_cfg = cfg.setdefault("auto_accept_grants", {})
+    entries = get_grant_entries(grants_cfg, rt)
+    remaining = [e for e in entries if not _grant_matches(rt, e, resource_id, tab)]
+    if len(remaining) == len(entries):
+        return False
+    set_grant_entries(grants_cfg, rt, remaining)
+    return True
+
+
+def describe_grant_change(
+    operation: str, rt: GrantResourceType, resource_id: str, *,
+    name: str | None = None, tab: str | None = None, capabilities: dict[str, bool] | None = None,
+) -> str:
+    """Human-readable description of a bridge-proposed add/update/remove to
+    an auto_accept_grants entry, shown in gate.propose_rule_change()'s
+    confirmation popup."""
+    label = name or resource_id
+    target_desc = f"{rt.singular} {label!r}" + (f" (tab: {tab})" if tab else "")
+    if operation == "remove":
+        return f"Remove {target_desc} from {rt.label}"
+    enabled_labels = [
+        rt.capabilities[key].label for key, enabled in (capabilities or {}).items()
+        if enabled and key in rt.capabilities
+    ]
+    cap_str = ", ".join(enabled_labels) if enabled_labels else "no capabilities enabled"
+    verb = "Add" if operation == "add" else "Update"
+    return f"{verb} {target_desc} in {rt.label} ({cap_str})"
+
+
 # ── Compiler: grants -> legacy per-operation rule shape ─────────────────
 
 
