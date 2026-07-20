@@ -273,8 +273,8 @@ def _connector_icon_path(connector: str) -> str | None:
     this" indicator, distinct from the shield's "this is PrivacyFence"
     mark at top-right. Same silent-skip fallback as _icon_path(): missing
     or unrecognized connector just renders no icon, never an error --
-    real logo assets aren't bundled by this change (see
-    resources/connector_icons/README, if/when one exists)."""
+    see resources/connector_icons/README for where the bundled assets
+    come from."""
     if not connector:
         return None
     p = Path(__file__).parent / "resources" / "connector_icons" / f"{connector}.png"
