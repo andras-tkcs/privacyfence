@@ -11,12 +11,13 @@ this document is about which ones run automatically versus which ones a human ha
 `.github/workflows/tests.yml` runs on every push to `main` and every pull request:
 
 ```bash
+npm test              # bridge/, Node's built-in test runner
 pytest -v --cov=src/privacyfence --cov-report=term-missing
 ```
 
 on a `macos-latest` runner (this app depends on real AppKit/PyObjC behavior, so it can't run on
-Linux CI). A 100% pass rate is required to merge; the coverage report is informational only —
-nothing gates on a specific percentage.
+Linux CI). A 100% pass rate is required to merge, for both suites; the coverage report is
+informational only — nothing gates on a specific percentage.
 
 This tier is fully self-contained: no network calls to Gmail/Slack/Jira/etc., no credentials, no
 manual steps. It includes:
@@ -36,6 +37,16 @@ manual steps. It includes:
   asserts on its content (buttons, PII tint/banner, summary rows, details text), without ever
   calling the real modal loop (`runApproval_()`/`NSApplication.runModalForWindow_()`). See
   [§2.2](#22-qa_popup_smokepy) for the one thing this construction-only coverage doesn't reach.
+- `bridge/test/*.test.ts` (`npm test`, run from `bridge/`) — the Node/TypeScript MCP bridge's own
+  suite: IPC framing, error propagation, and tool dispatch, run against `bridge/src/*.ts` directly
+  (no build step) via hand-written Node fakes of the daemon (`bridge/test/testDaemon.ts`).
+- `tests/integration/test_bridge_daemon_contract.py` — spawns the real built `bridge/dist/bridge.js`
+  against a real `privacyfence.ipc_server.IPCServer` and drives it with the official `mcp` Python
+  client over real MCP-over-stdio, proving the two independently-maintained protocol
+  implementations above (bridge's own suite against Node fakes, `test_ipc_server.py` against a
+  hand-rolled Python client) actually agree with each other, not just with their own mocks. Skips
+  automatically if Node isn't on `PATH`; CI installs it, so this runs there. Needs the `mcp` package
+  (test-only, see `pyproject.toml`'s `[project.optional-dependencies].test`).
 
 ## 2. Local-only checks — run manually before opening/updating a relevant PR, never in CI
 
@@ -124,7 +135,8 @@ log end to end — none of tiers 1 or 2 do. Run it before a release, or after an
 
 | Check | Runs in CI? | When |
 |---|---|---|
-| `pytest` (full suite) | Yes, every PR | Always — this is the merge gate |
+| `pytest` (full suite, incl. the bridge/daemon contract test) | Yes, every PR | Always — this is the merge gate |
+| `npm test` (bridge/'s own suite) | Yes, every PR | Always — this is the merge gate |
 | `qa_fixture_recorder.py --check` | No | PR touches a `*_client.py`/`connectors/**` file |
 | `qa_popup_smoke.py` | No | PR touches `approval_window.py`'s modal-loop plumbing |
 | `connector-qa-testing.md`'s live Cowork pass | No | Before a release, or a broad gate/auto-accept change |

@@ -266,6 +266,7 @@ Continue with the organization configuration and connector authentication steps 
 - [Atlassian setup](docs/atlassian-setup.md)
 - [Telegram setup](docs/telegram-setup.md)
 - [Connector QA testing](docs/connector-qa-testing.md)
+- [Approval window content reference](docs/approval-window-content-reference.md) — what each approval dialog shows, grouped by dialog shape
 - [Development vs. installed configuration](docs/dev-vs-live-setup.md)
 - [Contributing](CONTRIBUTING.md)
 

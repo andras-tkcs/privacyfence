@@ -516,15 +516,6 @@ class DriveFileContent:
     truncated: bool = False
 
 
-@dataclass
-class DriveFolder:
-    """A normalized Drive folder."""
-
-    id: str
-    name: str
-    parents: list[str] = field(default_factory=list)
-
-
 class DriveClient:
     """Read-only Google Drive client with OAuth2 token caching."""
 
