@@ -38,7 +38,12 @@ where = ["src"]
 "" = "src"
 
 [tool.setuptools.package-data]
-privacyfence = ["resources/*.png", "resources/settings.yaml.example"]
+privacyfence = [
+    "resources/*.png",
+    "resources/settings.yaml.example",
+    "resources/connector_icons/*.png",
+    "resources/connector_icons/README.md",
+]
 
 [project.optional-dependencies]
 dev = [

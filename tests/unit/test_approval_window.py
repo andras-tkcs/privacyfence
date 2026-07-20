@@ -27,17 +27,21 @@ from __future__ import annotations
 import sys
 
 import pytest
-from AppKit import NSBox, NSButton, NSTextField
+from AppKit import NSBox, NSButton, NSImageView, NSTextField
 from Quartz import PDFView
 from WebKit import WKWebView
 
 from privacyfence.approval_window import (
     _CONTENT_FLAG_FILL_ALPHA,
+    _MARGIN,
     _PII_BACKGROUND_ALPHA,
     _PII_BANNER_FILL_ALPHA,
+    _RISK_SPINE_WIDTH,
+    _WINDOW_WIDTH,
     ApprovalWindowController,
     _badge_kind,
     _badge_rows,
+    _connector_icon_path,
     _details_html,
     _email_header_html,
 )
@@ -61,6 +65,7 @@ def make_controller(
     seen_count=0,
     content_kind="generic",
     pdf_bytes=b"",
+    connector="",
 ):
     c = ApprovalWindowController.alloc().init()
     c.title = title
@@ -75,6 +80,7 @@ def make_controller(
     c.seen_count = seen_count
     c.content_kind = content_kind
     c.pdf_bytes = pdf_bytes
+    c.connector = connector
     return c
 
 
@@ -149,6 +155,31 @@ class TestButtonSet:
         panel = controller.build_panel()
         assert panel.initialFirstResponder() is controller._details_view
 
+    def test_always_allow_and_allow_for_5_min_are_borderless_deny_and_allow_once_are_not(self):
+        # Always allow / Allow for 5 min are standing-rule actions taken
+        # rarely; Deny/Allow once are the two things people do constantly.
+        # The former render as small borderless/link-style controls, the
+        # latter keep their full pill-button styling -- see
+        # _build_link_button()'s docstring for why.
+        titles = buttons_by_title(build_views(make_controller(allow_accept_all=True, allow_temp_accept=True)))
+        assert titles["Always allow"].isBordered() is False
+        assert titles["Allow for 5 min"].isBordered() is False
+        assert titles["Allow once"].isBordered() is True
+        assert titles["Deny"].isBordered() is True
+
+    def test_always_allow_and_allow_for_5_min_sit_left_of_allow_once_near_deny(self):
+        # Separated from Allow once by both size and position so a fast,
+        # confident click aimed at the primary action can't land on a
+        # standing-rule action by accident -- Allow once stays alone at
+        # the far right.
+        titles = buttons_by_title(build_views(make_controller(allow_accept_all=True, allow_temp_accept=True)))
+        deny_right_edge = titles["Deny"].frame().origin.x + titles["Deny"].frame().size.width
+        allow_once_left_edge = titles["Allow once"].frame().origin.x
+        for name in ("Always allow", "Allow for 5 min"):
+            x = titles[name].frame().origin.x
+            assert x >= deny_right_edge
+            assert x < allow_once_left_edge
+
 
 class TestPiiTintAndBanner:
     """connector-qa-testing.md Phase 2 steps 18-19/21-23: a read popup with
@@ -158,10 +189,10 @@ class TestPiiTintAndBanner:
 
     def _boxes_with_alpha(self, views, alpha, tolerance=1e-6):
         # Matches on the box's own fillColor() alpha -- the one property
-        # gate.py/approval_window.py's PII wash and banner actually control
-        # (_PII_BACKGROUND_ALPHA / _PII_BANNER_FILL_ALPHA). Not matching on
-        # RGB components: systemRedColor() is a dynamic, appearance-aware
-        # color, so its resolved components can vary by light/dark mode and
+        # gate.py/approval_window.py's PII banner actually controls
+        # (_PII_BANNER_FILL_ALPHA). Not matching on RGB components:
+        # systemRedColor() is a dynamic, appearance-aware color, so its
+        # resolved components can vary by light/dark mode and
         # accessibility settings -- alpha is the stable, code-controlled
         # signal to assert on.
         matches = []
@@ -175,23 +206,41 @@ class TestPiiTintAndBanner:
                 matches.append(v)
         return matches
 
-    def test_no_pii_categories_renders_no_red_tint_anywhere(self):
-        views = build_views(make_controller(pii_categories=[]))
-        assert self._boxes_with_alpha(views, _PII_BACKGROUND_ALPHA) == []
-        assert self._boxes_with_alpha(views, _PII_BANNER_FILL_ALPHA) == []
+    def _spine_boxes(self, views, tolerance=0.5):
+        # The left-edge risk spine that replaced the old full-window wash
+        # -- matched on frame geometry (flush with the window's left edge,
+        # _RISK_SPINE_WIDTH wide) rather than color/alpha, since both the
+        # PII and content-flag spines share this same shape.
+        return [
+            v for v in views
+            if isinstance(v, NSBox)
+            and abs(v.frame().origin.x) < tolerance
+            and abs(v.frame().size.width - _RISK_SPINE_WIDTH) < tolerance
+        ]
 
-    def test_pii_categories_render_a_full_window_wash_and_a_banner_box(self):
+    def test_no_pii_categories_renders_no_spine_or_banner(self):
+        views = build_views(make_controller(pii_categories=[]))
+        assert self._boxes_with_alpha(views, _PII_BANNER_FILL_ALPHA) == []
+        assert self._spine_boxes(views) == []
+
+    def test_pii_categories_render_a_left_edge_spine_and_a_banner_box(self):
         views = build_views(make_controller(pii_categories=["US Social Security Number"]))
-        assert len(self._boxes_with_alpha(views, _PII_BACKGROUND_ALPHA)) >= 1
+        assert len(self._spine_boxes(views)) >= 1
         assert len(self._boxes_with_alpha(views, _PII_BANNER_FILL_ALPHA)) >= 1
 
-    def test_banner_text_names_every_detected_category(self):
+    def test_banner_text_is_framing_only_categories_live_in_the_badges(self):
+        # The banner sentence used to repeat every category inline
+        # ("...review carefully: X, Y") right above a badge row that named
+        # them again -- see TestSensitivityBadges's docstring for why that
+        # duplication was removed. The banner is now just the framing
+        # sentence; category coverage is TestSensitivityBadges's job.
         controller = make_controller(pii_categories=["US Social Security Number", "IBAN (bank account number)"])
         views = build_views(controller)
         values = text_field_values(views)
         assert controller._pii_banner_text() in values
-        assert "US Social Security Number" in controller._pii_banner_text()
-        assert "IBAN (bank account number)" in controller._pii_banner_text()
+        assert controller._pii_banner_text().endswith(":")
+        assert "US Social Security Number" not in controller._pii_banner_text()
+        assert "IBAN (bank account number)" not in controller._pii_banner_text()
 
     def test_write_style_popup_with_pii_shaped_text_in_details_still_has_no_tint(self):
         # gate.py never populates pii_categories for a popup (write) gate in
@@ -204,6 +253,7 @@ class TestPiiTintAndBanner:
         ))
         assert self._boxes_with_alpha(views, _PII_BACKGROUND_ALPHA) == []
         assert self._boxes_with_alpha(views, _PII_BANNER_FILL_ALPHA) == []
+        assert self._spine_boxes(views) == []
 
 
 class TestContentFlagBanner:
@@ -223,25 +273,37 @@ class TestContentFlagBanner:
                 matches.append(v)
         return matches
 
+    def _spine_boxes(self, views, tolerance=0.5):
+        return [
+            v for v in views
+            if isinstance(v, NSBox)
+            and abs(v.frame().origin.x) < tolerance
+            and abs(v.frame().size.width - _RISK_SPINE_WIDTH) < tolerance
+        ]
+
     def test_no_flags_renders_no_amber_banner(self):
         views = build_views(make_controller(write_content_flags=[]))
         assert self._boxes_with_alpha(views, _CONTENT_FLAG_FILL_ALPHA) == []
+        assert self._spine_boxes(views) == []
 
-    def test_flags_render_a_banner_box_but_no_full_window_wash(self):
-        # Unlike the PII banner, this never gets the full-window red wash
-        # (_PII_BACKGROUND_ALPHA) -- it's informational, not "confirm this
-        # before proceeding".
+    def test_flags_render_a_banner_box_and_a_left_edge_spine(self):
+        # Content flags get the same glanceable left-edge spine treatment
+        # as the PII case now (amber, not red) -- never the old
+        # full-window wash (_PII_BACKGROUND_ALPHA), which neither case
+        # produces anymore.
         views = build_views(make_controller(write_content_flags=["IBAN (bank account number)"]))
         assert len(self._boxes_with_alpha(views, _CONTENT_FLAG_FILL_ALPHA)) >= 1
+        assert len(self._spine_boxes(views)) >= 1
         assert self._boxes_with_alpha(views, _PII_BACKGROUND_ALPHA) == []
 
-    def test_banner_text_names_every_flagged_category(self):
+    def test_banner_text_is_framing_only_categories_live_in_the_badges(self):
         controller = make_controller(write_content_flags=["IBAN (bank account number)", "Salary/compensation information"])
         views = build_views(controller)
         values = text_field_values(views)
         assert controller._content_flag_banner_text() in values
-        assert "IBAN (bank account number)" in controller._content_flag_banner_text()
-        assert "Salary/compensation information" in controller._content_flag_banner_text()
+        assert controller._content_flag_banner_text().endswith(":")
+        assert "IBAN (bank account number)" not in controller._content_flag_banner_text()
+        assert "Salary/compensation information" not in controller._content_flag_banner_text()
 
     def test_flags_and_pii_categories_use_visually_distinct_alphas(self):
         # Not the same banner styling reused for both directions -- a
@@ -253,8 +315,10 @@ class TestContentFlagBanner:
 class TestSensitivityBadges:
     """Sensitivity badges ("🟠 Contains financial figures",
     "🔴 Possible personal data: IBAN") -- a compact badge per category,
-    rendered below whichever banner (PII or content-flag) is present, in
-    addition to that banner's existing text."""
+    nested inside the same card as whichever banner (PII or content-flag)
+    is present, right below its now category-free framing sentence -- see
+    TestRiskSectionMerge for the "one shared card" structure this and the
+    banner text render inside."""
 
     def test_financial_categories_get_the_financial_kind(self):
         assert _badge_kind("Financial figures (currency amounts)") == "financial"
@@ -304,6 +368,46 @@ class TestSensitivityBadges:
         assert not any("\U0001f7e0" in v or "\U0001f534" in v for v in values)
 
 
+class TestRiskSectionMerge:
+    """The risk banner's framing text and its category badges now render
+    inside one shared card (_build_risk_section()) instead of two
+    differently-styled elements stacked with a small gap between them --
+    the box behind the banner text must be tall enough to also hold the
+    badge row, not just the text alone, and the badges sit inset to match
+    the card's own padding."""
+
+    def _card_box(self, views, alpha, tolerance=1e-6):
+        matches = [
+            v for v in views
+            if isinstance(v, NSBox) and v.fillColor() is not None
+            and abs(v.fillColor().alphaComponent() - alpha) < tolerance
+        ]
+        assert len(matches) == 1, f"expected exactly one card box at alpha={alpha}, found {len(matches)}"
+        return matches[0]
+
+    def test_pii_card_box_spans_both_banner_text_and_badges(self):
+        controller = make_controller(
+            pii_categories=["US Social Security Number", "IBAN (bank account number)"],
+        )
+        views = build_views(controller)
+        card_box = self._card_box(views, _PII_BANNER_FILL_ALPHA)
+        content_width = _WINDOW_WIDTH - 2 * _MARGIN
+        expected_h = controller._risk_section_height(
+            controller._pii_banner_text(), controller.pii_categories, content_width,
+        )
+        assert abs(card_box.frame().size.height - expected_h) < 1.0
+
+    def test_content_flag_card_box_spans_both_banner_text_and_badges(self):
+        controller = make_controller(write_content_flags=["IBAN (bank account number)"])
+        views = build_views(controller)
+        card_box = self._card_box(views, _CONTENT_FLAG_FILL_ALPHA)
+        content_width = _WINDOW_WIDTH - 2 * _MARGIN
+        expected_h = controller._risk_section_height(
+            controller._content_flag_banner_text(), controller.write_content_flags, content_width,
+        )
+        assert abs(card_box.frame().size.height - expected_h) < 1.0
+
+
 class TestClaudeSaysBlock:
     """Claude's self-reported, unverified reason for the call -- see
     gate.py's reason_scope docstring. Present for both read and write
@@ -319,6 +423,19 @@ class TestClaudeSaysBlock:
         values = text_field_values(views)
         assert "Claude says (unverified)" in values
         assert "Summarizing the Q3 budget for the user." in values
+
+    def test_reason_present_adds_no_new_background_box(self):
+        # The label/text used to sit on a bordered card, borrowing the
+        # same visual weight as the verified WHAT/AI-visibility sections
+        # above it -- dropped so "(unverified)" isn't fighting its own
+        # container. No box should appear just because claude_reason is
+        # set.
+        no_reason = len([v for v in build_views(make_controller(claude_reason="")) if isinstance(v, NSBox)])
+        with_reason = len([
+            v for v in build_views(make_controller(claude_reason="Summarizing the Q3 budget for the user."))
+            if isinstance(v, NSBox)
+        ])
+        assert with_reason == no_reason
 
 
 class TestRequestFingerprint:
@@ -340,6 +457,34 @@ class TestRequestFingerprint:
         views = build_views(make_controller(seen_count=1))
         values = text_field_values(views)
         assert "Seen 1 time this week" in values
+
+
+class TestConnectorIcon:
+    """Per-connector brand icon (Gmail/Drive/Slack/etc.), top-left --
+    degrades gracefully (no icon, no reserved layout space) until a real
+    logo asset actually exists for a given connector; see
+    _connector_icon_path()'s docstring. No real assets are bundled by
+    this change, so every case here exercises the "missing asset" path."""
+
+    def test_empty_connector_has_no_icon_path(self):
+        assert _connector_icon_path("") is None
+
+    def test_unknown_connector_has_no_icon_path(self):
+        assert _connector_icon_path("not-a-real-connector") is None
+
+    def test_connector_round_trips_onto_the_controller(self):
+        controller = make_controller(connector="slack")
+        assert controller.connector == "slack"
+
+    def test_missing_asset_renders_the_same_view_tree_as_no_connector(self):
+        # No real logo assets are bundled yet -- naming a connector with
+        # no matching file must never change what's on screen (no extra
+        # NSImageView, no shifted kicker).
+        no_connector_views = build_views(make_controller(connector=""))
+        with_connector_views = build_views(make_controller(connector="gmail"))
+        no_connector_images = [v for v in no_connector_views if isinstance(v, NSImageView)]
+        with_connector_images = [v for v in with_connector_views if isinstance(v, NSImageView)]
+        assert len(no_connector_images) == len(with_connector_images)
 
 
 class TestSummaryBox:

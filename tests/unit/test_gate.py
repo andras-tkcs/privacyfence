@@ -180,7 +180,7 @@ class TestReviewGateDecisions:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: ("i_am_sender", None))
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b""):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector=""):
             captured["allow_accept_all"] = allow_accept_all
             return "deny"
 
@@ -196,7 +196,7 @@ class TestReviewGateDecisions:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b""):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector=""):
             captured["allow_accept_all"] = allow_accept_all
             return "deny"
 
@@ -304,7 +304,7 @@ class TestPopupGateWrites:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0):
+        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
             captured["details"] = details
             return "accept"
 
@@ -334,7 +334,7 @@ class TestRequestFingerprint:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b""):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector=""):
             captured["seen_count"] = seen_count
             return "accept"
 
@@ -355,7 +355,7 @@ class TestRequestFingerprint:
 
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b""):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector=""):
             captured["seen_count"] = seen_count
             return "accept"
 
@@ -373,7 +373,7 @@ class TestRequestFingerprint:
 
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b""):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector=""):
             captured["seen_count"] = seen_count
             return "accept"
 
@@ -390,7 +390,7 @@ class TestRequestFingerprint:
 
         captured = {}
 
-        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0):
+        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
             captured["seen_count"] = seen_count
             return "accept"
 
@@ -409,7 +409,7 @@ class TestRequestFingerprint:
 
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b""):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector=""):
             captured["seen_count"] = seen_count
             return "accept"
 
@@ -429,7 +429,7 @@ class TestWriteContentFlags:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0):
+        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
             captured["write_content_flags"] = write_content_flags
             return "accept"
 
@@ -446,7 +446,7 @@ class TestWriteContentFlags:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0):
+        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
             captured["write_content_flags"] = write_content_flags
             return "accept"
 
@@ -467,7 +467,7 @@ class TestWriteContentFlags:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b""):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector=""):
             return "accept"
 
         monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
@@ -499,7 +499,7 @@ class TestWriteContentFlags:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0):
+        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
             captured["write_content_flags"] = write_content_flags
             return "accept"
 
@@ -528,7 +528,7 @@ class TestTempAccept:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0):
+        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
             captured["allow_temp_accept"] = allow_temp_accept
             return "deny"
 
@@ -547,7 +547,7 @@ class TestTempAccept:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0):
+        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
             captured["allow_temp_accept"] = allow_temp_accept
             return "deny"
 
@@ -564,7 +564,7 @@ class TestTempAccept:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0):
+        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
             captured["allow_temp_accept"] = allow_temp_accept
             return "deny"
 
@@ -691,7 +691,7 @@ class TestPIIGate:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b""):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector=""):
             captured["pii_categories"] = pii_categories
             return "deny"
 
@@ -707,7 +707,7 @@ class TestPIIGate:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b""):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector=""):
             captured["pii_categories"] = pii_categories
             return "deny"
 
@@ -877,7 +877,7 @@ class TestPiiScanText:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b""):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector=""):
             captured["pii_categories"] = pii_categories
             return "deny"
 
@@ -897,7 +897,7 @@ class TestPiiScanText:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b""):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector=""):
             captured["pii_categories"] = pii_categories
             return "deny"
 
@@ -917,7 +917,7 @@ class TestPiiScanText:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b""):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector=""):
             captured["pii_categories"] = pii_categories
             return "deny"
 
@@ -939,7 +939,7 @@ class TestPiiScanText:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b""):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector=""):
             captured["pii_categories"] = pii_categories
             return "deny"
 
@@ -959,7 +959,7 @@ class TestPopupSerialization:
         concurrent = 0
         max_concurrent = 0
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b""):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector=""):
             nonlocal concurrent, max_concurrent
             concurrent += 1
             max_concurrent = max(max_concurrent, concurrent)
@@ -1010,7 +1010,7 @@ class TestQueuedRequestReCheck:
 
         popup_calls = []
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b""):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector=""):
             popup_calls.append(title)
             return "accept_all"
 
@@ -1067,7 +1067,7 @@ class TestQueuedRequestReCheck:
 
         popup_calls = []
 
-        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0):
+        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
             popup_calls.append(title)
             wait_until(lambda: len(check_calls) >= 3, timeout=1.0)
             # Simulate a rule appearing (e.g. added from the menu bar) while
@@ -1401,7 +1401,7 @@ class TestClaudeReason:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b""):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector=""):
             captured["claude_reason"] = claude_reason
             return "accept"
 
@@ -1416,7 +1416,7 @@ class TestClaudeReason:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0):
+        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
             captured["claude_reason"] = claude_reason
             return "accept"
 

@@ -18,12 +18,14 @@ Never present for a write (show_popup never sets self.visibility; see its
 docstring for why).
 
 When gate.py's PII detector (pii_detector.py) flags categories in the
-content of a read (review-gate) popup, the window renders a light-red wash
-over the whole panel plus a warning banner naming what was found — the
+content of a read (review-gate) popup, the window renders a slim red accent
+bar along its left edge plus a warning card naming what was found — the
 visual cue that a second, explicit "Are you sure?" confirmation (approval_
 popup.show_pii_confirmation_popup) is coming after Allow once, not a
 decision by itself. Write (popup-gate) approvals never carry pii_categories,
-so this never renders for them.
+so this never renders for them. (A full-window red wash used to stand in
+for the accent bar; it was dropped for diluting the Allow once/Deny
+buttons' own contrast along with everything else on screen.)
 
 Allow once has no "\\r" keyEquivalent and the details pane is the panel's
 initial first responder — hitting Enter the moment the window appears
@@ -59,6 +61,7 @@ from AppKit import (
     NSFloatingWindowLevel,
     NSFont,
     NSFontAttributeName,
+    NSForegroundColorAttributeName,
     NSImage,
     NSImageView,
     NSLineBreakByWordWrapping,
@@ -69,11 +72,13 @@ from AppKit import (
     NSScreen,
     NSStringDrawingUsesLineFragmentOrigin,
     NSTextField,
+    NSUnderlineStyleAttributeName,
+    NSUnderlineStyleSingle,
     NSView,
     NSWindowStyleMaskClosable,
     NSWindowStyleMaskTitled,
 )
-from Foundation import NSData, NSObject, NSString
+from Foundation import NSAttributedString, NSData, NSObject, NSString
 from Quartz import PDFDocument, PDFView
 from WebKit import WKWebView, WKWebViewConfiguration
 
@@ -91,11 +96,15 @@ _DETAILS_HEIGHT_EXPANDED = 520.0
 _ICON_SIZE = 51.0  # 150% of the original 34pt
 _ICON_TITLE_GAP = 14.0
 _TITLE_RIGHT_RESERVE = _ICON_SIZE + _ICON_TITLE_GAP
+# Connector brand icon, top-left alongside the kicker -- a secondary
+# indicator, deliberately smaller than the shield's primary brand mark.
+_CONNECTOR_ICON_SIZE = 28.0
 _KICKER_HEIGHT = 22.0
 _SUMMARY_LABEL_WIDTH = 84.0
 _SUMMARY_ROW_GAP = 9.0
 _SUMMARY_PAD = 14.0
 _BUTTON_ROW_HEIGHT = 66.0
+_RISK_SPINE_WIDTH = 5.0  # slim left-edge accent bar, shared by both risk signals below
 
 # Brand colors sampled from resources/icon_512.png — a fixed identity, not a
 # themed value, so these stay literal rather than following light/dark mode.
@@ -105,6 +114,9 @@ _BLUE = NSColor.colorWithSRGBRed_green_blue_alpha_(0x5B / 255, 0xA4 / 255, 0xFF 
 # a low-alpha wash of it reads as "light red" in light mode and a muted red
 # tint in dark mode, rather than a literal color that fights the OS theme.
 _PII_RED = NSColor.systemRedColor()
+# No longer produced anywhere -- kept only so tests can assert this alpha
+# never reappears (it used to be a full-window wash; see _RISK_SPINE_WIDTH
+# and the risk-spine blocks in _build_content_view() for what replaced it).
 _PII_BACKGROUND_ALPHA = 0.10
 _PII_BANNER_FILL_ALPHA = 0.16
 
@@ -112,8 +124,10 @@ _PII_BANNER_FILL_ALPHA = 0.16
 # an informational signal (Claude's own drafted content, no second
 # confirmation gate attached), not the "possible PII flowed in from an
 # external source, confirm before proceeding" signal the red tint means.
-# No full-window wash either, only this banner's own fill -- see gate.py's
-# write_content_flags comment and approval_popup.show_popup's docstring.
+# Gets the same left-edge spine treatment as the PII case (amber instead
+# of red) for glanceability -- see gate.py's write_content_flags comment
+# and approval_popup.show_popup's docstring for the no-second-confirmation
+# distinction that still holds.
 _CONTENT_FLAG_AMBER = NSColor.systemOrangeColor()
 _CONTENT_FLAG_FILL_ALPHA = 0.12
 
@@ -253,6 +267,20 @@ def _icon_path() -> str | None:
     return None
 
 
+def _connector_icon_path(connector: str) -> str | None:
+    """Real per-service brand icon (Gmail/Drive/Slack/etc.), top-left,
+    alongside the "PrivacyFence" kicker -- a secondary "which service is
+    this" indicator, distinct from the shield's "this is PrivacyFence"
+    mark at top-right. Same silent-skip fallback as _icon_path(): missing
+    or unrecognized connector just renders no icon, never an error --
+    real logo assets aren't bundled by this change (see
+    resources/connector_icons/README, if/when one exists)."""
+    if not connector:
+        return None
+    p = Path(__file__).parent / "resources" / "connector_icons" / f"{connector}.png"
+    return str(p) if p.exists() else None
+
+
 def _text_height(text: str, width: float, font) -> float:
     ns = NSString.stringWithString_(text)
     rect = ns.boundingRectWithSize_options_attributes_(
@@ -370,6 +398,7 @@ class ApprovalWindowController(NSObject):
         self.seen_count: int = 0
         self.content_kind: str = "generic"
         self.pdf_bytes: bytes = b""
+        self.connector: str = ""
         self.result = "deny"
         self.panel = None
         self._details_view = None
@@ -488,15 +517,7 @@ class ApprovalWindowController(NSObject):
     # ------------------------------------------------------------------ #
 
     def _pii_banner_text(self) -> str:
-        return "\u26a0 Possible PII detected — review carefully: " + ", ".join(self.pii_categories)
-
-    def _pii_banner_height(self, width: float) -> float:
-        if not self.pii_categories:
-            return 0.0
-        text_h = _text_height(
-            self._pii_banner_text(), width - 2 * _SUMMARY_PAD, NSFont.boldSystemFontOfSize_(13)
-        )
-        return max(20.0, text_h) + _SUMMARY_PAD
+        return "\u26a0 Possible PII detected — review carefully:"
 
     # ------------------------------------------------------------------ #
     # Write-gate content-flag banner -- informational, no confirmation
@@ -506,56 +527,89 @@ class ApprovalWindowController(NSObject):
     # ------------------------------------------------------------------ #
 
     def _content_flag_banner_text(self) -> str:
-        return "ⓘ This message appears to contain: " + ", ".join(self.write_content_flags)
-
-    def _content_flag_banner_height(self, width: float) -> float:
-        if not self.write_content_flags:
-            return 0.0
-        text_h = _text_height(
-            self._content_flag_banner_text(), width - 2 * _SUMMARY_PAD, NSFont.boldSystemFontOfSize_(13)
-        )
-        return max(20.0, text_h) + _SUMMARY_PAD
+        return "ⓘ This message appears to contain:"
 
     # ------------------------------------------------------------------ #
-    # Sensitivity badges -- a compact, colored chip per detected category,
-    # rendered right below whichever banner above is present. Both callers
-    # pass their own categories list explicitly (pii_categories / write_content_flags)
-    # rather than this reading self.-state itself, matching the banners'
-    # own "coded independently... nothing here assumes they're mutually
-    # exclusive" convention (see the class-level comment above
-    # _content_flag_banner_height) -- these two lists could in principle
-    # both be non-empty at once, and each must render its own badges. The
-    # banner text stays the detailed explanation; badges are the
-    # at-a-glance summary the design mockup shows.
+    # Risk section: banner framing text plus its category badges, nested
+    # inside one shared background box -- not two differently-styled
+    # elements stacked with a gap between them (that duplicated the same
+    # category names twice: once in the banner sentence, once per badge).
+    # Both callers pass their own categories list explicitly (pii_categories
+    # / write_content_flags) rather than this reading self.-state itself,
+    # matching the two banners' own "coded independently... nothing here
+    # assumes they're mutually exclusive" convention -- these two lists
+    # could in principle both be non-empty at once, and each gets its own
+    # card.
     # ------------------------------------------------------------------ #
 
     def _badges_height(self, categories: list[str], width: float) -> float:
         _, total_h = _badge_rows(categories, width)
         return total_h
 
-    def _build_badges_view(self, categories: list[str], y: float, width: float) -> tuple[NSView, float]:
+    def _build_badges_view(
+        self, categories: list[str], y: float, width: float, *, x: float = _MARGIN
+    ) -> tuple[NSView, float]:
         rows, total_h = _badge_rows(categories, width)
-        container = _FlippedView.alloc().initWithFrame_(NSMakeRect(_MARGIN, y, width, total_h))
+        container = _FlippedView.alloc().initWithFrame_(NSMakeRect(x, y, width, total_h))
         row_y = 0.0
         for row in rows:
-            x = 0.0
+            row_x = 0.0
             for label, kind, badge_w in row:
                 color = _BADGE_COLOR[kind]
                 badge_box = _background_box(
-                    NSMakeRect(x, row_y, badge_w, _BADGE_ROW_HEIGHT),
+                    NSMakeRect(row_x, row_y, badge_w, _BADGE_ROW_HEIGHT),
                     fill=color.colorWithAlphaComponent_(0.18),
                     corner_radius=_BADGE_ROW_HEIGHT / 2.0,
                 )
                 container.addSubview_(badge_box)
                 label_field = _make_label(label, size=_BADGE_FONT_SIZE, bold=True, color=color)
                 label_field.setFrame_(NSMakeRect(
-                    x + _BADGE_PAD_X, (_BADGE_ROW_HEIGHT - 14.0) / 2.0,
+                    row_x + _BADGE_PAD_X, (_BADGE_ROW_HEIGHT - 14.0) / 2.0,
                     badge_w - 2 * _BADGE_PAD_X, 14.0,
                 ))
                 container.addSubview_(label_field)
-                x += badge_w + _BADGE_GAP
+                row_x += badge_w + _BADGE_GAP
             row_y += _BADGE_ROW_HEIGHT + _BADGE_ROW_GAP
         return container, total_h
+
+    def _risk_section_height(self, banner_text: str, categories: list[str], width: float) -> float:
+        """Combined height of one risk card: framing banner text plus its
+        inset category badges. Shared by _compute_layout() and
+        _build_risk_section() so layout and the real render can never
+        disagree about how tall the merged card is -- the same "must
+        mirror the real render" contract _badge_rows()'s own docstring
+        already calls out."""
+        if not categories:
+            return 0.0
+        inset_width = width - 2 * _SUMMARY_PAD
+        text_h = max(20.0, _text_height(banner_text, inset_width, NSFont.boldSystemFontOfSize_(13)))
+        badges_h = self._badges_height(categories, inset_width)
+        return text_h + _BADGE_ROW_GAP + badges_h + _SUMMARY_PAD
+
+    def _build_risk_section(
+        self, banner_text: str, categories: list[str], color, fill_alpha: float, y: float, width: float,
+    ) -> tuple[NSView, float]:
+        """One shared card: the risk banner's framing text (the detailed
+        "review carefully"/"appears to contain" sentence, minus the
+        category list it used to repeat), then its category badges nested
+        directly below -- inside the same bordered/tinted box, not a
+        separately-styled element underneath it."""
+        inset_width = width - 2 * _SUMMARY_PAD
+        text_h = max(20.0, _text_height(banner_text, inset_width, NSFont.boldSystemFontOfSize_(13)))
+        card_h = self._risk_section_height(banner_text, categories, width)
+
+        card = _FlippedView.alloc().initWithFrame_(NSMakeRect(_MARGIN, y, width, card_h))
+        bg = _background_box(NSMakeRect(0, 0, width, card_h), fill=color.colorWithAlphaComponent_(fill_alpha))
+        card.addSubview_(bg)
+
+        label = _make_label(banner_text, size=13, bold=True, color=color)
+        label.setFrame_(NSMakeRect(_SUMMARY_PAD, _SUMMARY_PAD / 2, inset_width, text_h))
+        card.addSubview_(label)
+
+        badges_view, _ = self._build_badges_view(categories, text_h + _BADGE_ROW_GAP, inset_width, x=_SUMMARY_PAD)
+        card.addSubview_(badges_view)
+
+        return card, card_h
 
     # ------------------------------------------------------------------ #
     # "Claude says" -- self-reported, unverified. See gate.py's
@@ -672,6 +726,30 @@ class ApprovalWindowController(NSObject):
                 btn.setContentTintColor_(NSColor.systemRedColor())
         return btn
 
+    def _build_link_button(self, title: str) -> NSButton:
+        """Small, borderless "link"-style control for the low-frequency,
+        high-consequence standing-rule actions (Always allow / Allow for
+        5 min) -- deliberately not the same pill styling as Deny/Allow
+        once, so a fast, confident click aimed at the primary action
+        can't land on one of these by accident. No existing precedent for
+        a link-style NSButton in this codebase: built via an attributed
+        title rather than a bezel style, since NSBezelStyleRounded has no
+        "no border, small, underlined" variant. Dispatch is unaffected --
+        buttonClicked_ keys on sender.title(), which stays the plain
+        string even with an attributed title set."""
+        btn = NSButton.alloc().init()
+        btn.setBordered_(False)
+        btn.setTarget_(self)
+        btn.setAction_("buttonClicked:")
+        attrs = {
+            NSFontAttributeName: NSFont.systemFontOfSize_(11),
+            NSForegroundColorAttributeName: NSColor.secondaryLabelColor(),
+            NSUnderlineStyleAttributeName: NSUnderlineStyleSingle,
+        }
+        btn.setAttributedTitle_(NSAttributedString.alloc().initWithString_attributes_(title, attrs))
+        btn.sizeToFit()
+        return btn
+
     def _build_expand_toggle_button(self) -> NSButton:
         """"Show more"/"Show less" -- the details pane's progressive-
         disclosure toggle. Its own action (toggleDetailsExpanded_), not
@@ -706,11 +784,11 @@ class ApprovalWindowController(NSObject):
             y += 20.0  # "AI will receive" label row
             y += self._visibility_height(content_width) + 18.0
         if self.pii_categories:
-            y += self._pii_banner_height(content_width) + _BADGE_ROW_GAP
-            y += self._badges_height(self.pii_categories, content_width) + 18.0
+            y += self._risk_section_height(self._pii_banner_text(), self.pii_categories, content_width) + 18.0
         if self.write_content_flags:
-            y += self._content_flag_banner_height(content_width) + _BADGE_ROW_GAP
-            y += self._badges_height(self.write_content_flags, content_width) + 18.0
+            y += self._risk_section_height(
+                self._content_flag_banner_text(), self.write_content_flags, content_width
+            ) + 18.0
         if self.claude_reason:
             y += 20.0  # "Claude says (unverified)" label row
             y += self._claude_reason_height(content_width) + 18.0
@@ -774,20 +852,51 @@ class ApprovalWindowController(NSObject):
         content = _FlippedView.alloc().initWithFrame_(NSMakeRect(0, 0, _WINDOW_WIDTH, window_height))
 
         if self.pii_categories:
-            # Full-window wash, added first so every other subview draws on
-            # top of it — this is the "the popup window becomes light red"
-            # signal, independent of the more specific banner text below.
-            tint = _background_box(
-                NSMakeRect(0, 0, _WINDOW_WIDTH, window_height),
-                fill=_PII_RED.colorWithAlphaComponent_(_PII_BACKGROUND_ALPHA),
-                corner_radius=0.0,
+            # Slim, full-strength (not alpha-washed) accent bar along the
+            # left edge -- replaces the old full-window red wash, which
+            # diluted the Allow/Deny buttons' own contrast along with
+            # everything else. The actual "what was detected" detail
+            # still lives in the banner card below, unchanged by this.
+            spine = _background_box(
+                NSMakeRect(0, 0, _RISK_SPINE_WIDTH, window_height),
+                fill=_PII_RED, corner_radius=0.0,
             )
-            content.addSubview_(tint)
+            content.addSubview_(spine)
+
+        if self.write_content_flags:
+            # Same slim-spine treatment as the PII case above, for visual
+            # consistency between the two risk signals -- amber, not red,
+            # per the existing distinction. Coded independently, not
+            # if/elif, matching the pattern already used for the two risk
+            # cards further down (gate.py never populates both at once,
+            # but nothing here assumes that).
+            spine = _background_box(
+                NSMakeRect(0, 0, _RISK_SPINE_WIDTH, window_height),
+                fill=_CONTENT_FLAG_AMBER, corner_radius=0.0,
+            )
+            content.addSubview_(spine)
 
         y = 22.0
 
+        # Connector brand icon (Gmail/Drive/Slack/etc.), top-left --
+        # "which service is this," distinct from the shield's "this is
+        # PrivacyFence" mark at top-right, which stays exactly where it
+        # is below. Silently absent (no icon, no reserved space) until a
+        # real logo asset exists for this connector -- see
+        # _connector_icon_path()'s docstring.
+        connector_icon_path = _connector_icon_path(self.connector)
+        kicker_x = _MARGIN
+        if connector_icon_path:
+            connector_image = NSImage.alloc().initWithContentsOfFile_(connector_icon_path)
+            connector_icon_view = NSImageView.alloc().initWithFrame_(
+                NSMakeRect(_MARGIN, y, _CONNECTOR_ICON_SIZE, _CONNECTOR_ICON_SIZE)
+            )
+            connector_icon_view.setImage_(connector_image)
+            content.addSubview_(connector_icon_view)
+            kicker_x = _MARGIN + _CONNECTOR_ICON_SIZE + _ICON_TITLE_GAP
+
         kicker = _make_label("PrivacyFence", size=12, color=NSColor.secondaryLabelColor())
-        kicker.setFrame_(NSMakeRect(_MARGIN, y, 200.0, _KICKER_HEIGHT))
+        kicker.setFrame_(NSMakeRect(kicker_x, y, 200.0, _KICKER_HEIGHT))
         content.addSubview_(kicker)
 
         icon_path = _icon_path()
@@ -844,57 +953,37 @@ class ApprovalWindowController(NSObject):
             content.addSubview_(overlay)
             y += box_h + 18.0
 
-        # RISK: the PII banner, relabeled in framing (not literal text) as
-        # the risk section per the design -- content unchanged from before.
+        # RISK: the PII banner (framing text + inset category badges, one
+        # shared card -- see _build_risk_section()'s docstring for why
+        # these aren't two separately-styled elements).
         if self.pii_categories:
-            banner_h = self._pii_banner_height(content_width)
-            banner_bg = _background_box(
-                NSMakeRect(_MARGIN, y, content_width, banner_h),
-                fill=_PII_RED.colorWithAlphaComponent_(_PII_BANNER_FILL_ALPHA),
+            card, card_h = self._build_risk_section(
+                self._pii_banner_text(), self.pii_categories, _PII_RED, _PII_BANNER_FILL_ALPHA,
+                y, content_width,
             )
-            content.addSubview_(banner_bg)
-            banner_label = _make_label(self._pii_banner_text(), size=13, bold=True, color=_PII_RED)
-            banner_label.setFrame_(NSMakeRect(
-                _MARGIN + _SUMMARY_PAD, y + _SUMMARY_PAD / 2,
-                content_width - 2 * _SUMMARY_PAD, banner_h - _SUMMARY_PAD,
-            ))
-            content.addSubview_(banner_label)
-            y += banner_h + _BADGE_ROW_GAP
-
-            badges_view, badges_h = self._build_badges_view(self.pii_categories, y, content_width)
-            content.addSubview_(badges_view)
-            y += badges_h + 18.0
+            content.addSubview_(card)
+            y += card_h + 18.0
 
         # RISK (write side): content-flag banner -- informational only, no
         # confirmation gate, deliberately amber not red (see class-level
-        # comment above _content_flag_banner_height). In practice never
+        # comment above _content_flag_banner_text). In practice never
         # renders alongside the PII banner above (gate.py only populates
         # one or the other depending on gate direction), but coded
         # independently rather than as an if/elif -- nothing here assumes
         # they're mutually exclusive.
         if self.write_content_flags:
-            flag_h = self._content_flag_banner_height(content_width)
-            flag_bg = _background_box(
-                NSMakeRect(_MARGIN, y, content_width, flag_h),
-                fill=_CONTENT_FLAG_AMBER.colorWithAlphaComponent_(_CONTENT_FLAG_FILL_ALPHA),
+            card, card_h = self._build_risk_section(
+                self._content_flag_banner_text(), self.write_content_flags,
+                _CONTENT_FLAG_AMBER, _CONTENT_FLAG_FILL_ALPHA, y, content_width,
             )
-            content.addSubview_(flag_bg)
-            flag_label = _make_label(self._content_flag_banner_text(), size=13, bold=True, color=_CONTENT_FLAG_AMBER)
-            flag_label.setFrame_(NSMakeRect(
-                _MARGIN + _SUMMARY_PAD, y + _SUMMARY_PAD / 2,
-                content_width - 2 * _SUMMARY_PAD, flag_h - _SUMMARY_PAD,
-            ))
-            content.addSubview_(flag_label)
-            y += flag_h + _BADGE_ROW_GAP
-
-            badges_view, badges_h = self._build_badges_view(self.write_content_flags, y, content_width)
-            content.addSubview_(badges_view)
-            y += badges_h + 18.0
+            content.addSubview_(card)
+            y += card_h + 18.0
 
         # "Claude says" -- self-reported, unverified (see class-level
         # comment above _claude_reason_height). Its own label, its own
-        # (unbolded, secondary-colored) text -- deliberately not styled
-        # like the verified sections above it.
+        # (unbolded, secondary-colored) text, no card/border behind it --
+        # deliberately not styled like the verified sections above it,
+        # which would lend it a weight it hasn't earned.
         if self.claude_reason:
             reason_label = _make_label("Claude says (unverified)", size=12, color=NSColor.secondaryLabelColor())
             reason_label.setFrame_(NSMakeRect(_MARGIN, y, 300.0, 16.0))
@@ -902,8 +991,6 @@ class ApprovalWindowController(NSObject):
             y += 20.0
 
             box_h = self._claude_reason_height(content_width)
-            bg = _background_box(NSMakeRect(_MARGIN, y, content_width, box_h))
-            content.addSubview_(bg)
             overlay, _ = self._build_claude_reason_overlay(y, content_width)
             content.addSubview_(overlay)
             y += box_h + 18.0
@@ -944,16 +1031,25 @@ class ApprovalWindowController(NSObject):
         accept_btn.setFrameOrigin_((right_x, button_y))
         content.addSubview_(accept_btn)
 
+        # Always allow / Allow for 5 min: small link-style controls
+        # anchored near Deny on the left -- separated from Allow once by
+        # both size and position so a fast, confident click aimed at the
+        # primary action can't land on one of these standing-rule actions
+        # by accident. Allow once itself keeps its far-right position,
+        # untouched.
+        link_x = _MARGIN + deny_btn.frame().size.width + 16.0
+
         if self.allow_accept_all:
-            accept_all_btn = self._build_button("Always allow")
-            right_x -= accept_all_btn.frame().size.width + 8.0
-            accept_all_btn.setFrameOrigin_((right_x, button_y))
+            accept_all_btn = self._build_link_button("Always allow")
+            link_y = content_height + (_BUTTON_ROW_HEIGHT - accept_all_btn.frame().size.height) / 2.0
+            accept_all_btn.setFrameOrigin_((link_x, link_y))
             content.addSubview_(accept_all_btn)
+            link_x += accept_all_btn.frame().size.width + 10.0
 
         if self.allow_temp_accept:
-            temp_accept_btn = self._build_button("Allow for 5 min")
-            right_x -= temp_accept_btn.frame().size.width + 8.0
-            temp_accept_btn.setFrameOrigin_((right_x, button_y))
+            temp_accept_btn = self._build_link_button("Allow for 5 min")
+            link_y = content_height + (_BUTTON_ROW_HEIGHT - temp_accept_btn.frame().size.height) / 2.0
+            temp_accept_btn.setFrameOrigin_((link_x, link_y))
             content.addSubview_(temp_accept_btn)
 
         return content
@@ -1055,6 +1151,7 @@ def show_native_approval(
     seen_count: int = 0,
     content_kind: str = "generic",
     pdf_bytes: bytes = b"",
+    connector: str = "",
 ) -> str:
     """Show the approval window and block until the user picks a button.
 
@@ -1077,6 +1174,7 @@ def show_native_approval(
         controller.seen_count = seen_count or 0
         controller.content_kind = content_kind or "generic"
         controller.pdf_bytes = pdf_bytes or b""
+        controller.connector = connector or ""
 
         controller.performSelectorOnMainThread_withObject_waitUntilDone_(
             "runApproval:", None, True
