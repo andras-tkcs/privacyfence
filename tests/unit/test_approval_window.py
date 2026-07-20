@@ -53,7 +53,7 @@ pytestmark = pytest.mark.skipif(
 
 def make_controller(
     *,
-    title="PrivacyFence — Read Gmail message",
+    title="Read Gmail message",
     preview=None,
     details_text="ordinary, non-sensitive content",
     allow_accept_all=False,
@@ -461,10 +461,11 @@ class TestRequestFingerprint:
 
 class TestConnectorIcon:
     """Per-connector brand icon (Gmail/Drive/Slack/etc.), top-left --
-    degrades gracefully (no icon, no reserved layout space) until a real
-    logo asset actually exists for a given connector; see
-    _connector_icon_path()'s docstring. No real assets are bundled by
-    this change, so every case here exercises the "missing asset" path."""
+    degrades gracefully (no icon, no reserved layout space) for a
+    connector with no matching asset; see _connector_icon_path()'s
+    docstring. Real logo assets are bundled for all ALL_CONNECTORS
+    entries (resources/connector_icons/), so "missing asset" is
+    exercised via a connector name that isn't a real one."""
 
     def test_empty_connector_has_no_icon_path(self):
         assert _connector_icon_path("") is None
@@ -477,14 +478,24 @@ class TestConnectorIcon:
         assert controller.connector == "slack"
 
     def test_missing_asset_renders_the_same_view_tree_as_no_connector(self):
-        # No real logo assets are bundled yet -- naming a connector with
-        # no matching file must never change what's on screen (no extra
-        # NSImageView, no shifted kicker).
+        # A connector name with no matching file must never change what's
+        # on screen (no extra NSImageView, no shifted kicker).
+        no_connector_views = build_views(make_controller(connector=""))
+        unknown_connector_views = build_views(make_controller(connector="not-a-real-connector"))
+        no_connector_images = [v for v in no_connector_views if isinstance(v, NSImageView)]
+        unknown_connector_images = [
+            v for v in unknown_connector_views if isinstance(v, NSImageView)
+        ]
+        assert len(no_connector_images) == len(unknown_connector_images)
+
+    def test_real_connector_asset_adds_an_extra_image_view(self):
+        # gmail.png is a bundled real asset -- naming that connector must
+        # add exactly one NSImageView versus no connector at all.
         no_connector_views = build_views(make_controller(connector=""))
         with_connector_views = build_views(make_controller(connector="gmail"))
         no_connector_images = [v for v in no_connector_views if isinstance(v, NSImageView)]
         with_connector_images = [v for v in with_connector_views if isinstance(v, NSImageView)]
-        assert len(no_connector_images) == len(with_connector_images)
+        assert len(with_connector_images) == len(no_connector_images) + 1
 
 
 class TestSummaryBox:
