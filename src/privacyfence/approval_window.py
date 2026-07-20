@@ -919,8 +919,9 @@ class ApprovalWindowController(NSObject):
 
         # "Claude says" -- self-reported, unverified (see class-level
         # comment above _claude_reason_height). Its own label, its own
-        # (unbolded, secondary-colored) text -- deliberately not styled
-        # like the verified sections above it.
+        # (unbolded, secondary-colored) text, no card/border behind it --
+        # deliberately not styled like the verified sections above it,
+        # which would lend it a weight it hasn't earned.
         if self.claude_reason:
             reason_label = _make_label("Claude says (unverified)", size=12, color=NSColor.secondaryLabelColor())
             reason_label.setFrame_(NSMakeRect(_MARGIN, y, 300.0, 16.0))
@@ -928,8 +929,6 @@ class ApprovalWindowController(NSObject):
             y += 20.0
 
             box_h = self._claude_reason_height(content_width)
-            bg = _background_box(NSMakeRect(_MARGIN, y, content_width, box_h))
-            content.addSubview_(bg)
             overlay, _ = self._build_claude_reason_overlay(y, content_width)
             content.addSubview_(overlay)
             y += box_h + 18.0

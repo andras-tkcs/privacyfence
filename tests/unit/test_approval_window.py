@@ -396,6 +396,19 @@ class TestClaudeSaysBlock:
         assert "Claude says (unverified)" in values
         assert "Summarizing the Q3 budget for the user." in values
 
+    def test_reason_present_adds_no_new_background_box(self):
+        # The label/text used to sit on a bordered card, borrowing the
+        # same visual weight as the verified WHAT/AI-visibility sections
+        # above it -- dropped so "(unverified)" isn't fighting its own
+        # container. No box should appear just because claude_reason is
+        # set.
+        no_reason = len([v for v in build_views(make_controller(claude_reason="")) if isinstance(v, NSBox)])
+        with_reason = len([
+            v for v in build_views(make_controller(claude_reason="Summarizing the Q3 budget for the user."))
+            if isinstance(v, NSBox)
+        ])
+        assert with_reason == no_reason
+
 
 class TestRequestFingerprint:
     """The "Seen N times this week" caption -- AuditLogger.recent_matches
