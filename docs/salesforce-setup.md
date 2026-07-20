@@ -52,7 +52,7 @@ Use `--salesforce-login-url https://test.salesforce.com` if your users authentic
 
 ## For users
 
-1. Get `org_config.json` from your IT team and install it via **Organization Config → Install/Update Organization Config…** in the PrivacyFence menu bar (if you haven't already for another service).
+1. Get `org_config.json` from your IT team and install it via **Organization Config…** in the PrivacyFence menu bar (if you haven't already for another service — if a config is already installed, click **Update…** in the status prompt).
 2. **Connectors → Salesforce → Authenticate…**. Your browser opens to Salesforce's login page — sign in and click **Allow**.
 3. Quit and reopen PrivacyFence to activate the connector.
 

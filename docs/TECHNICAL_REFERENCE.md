@@ -375,8 +375,8 @@ Trusting a specific resource — a Drive folder, a Google Tasks list, a Slack ch
 project, ... — is configured **once per resource**, under `auto_accept_grants` in
 `config/settings.yaml`, rather than by adding the same ID to every operation key that resource
 happens to touch (see [Auto-accept rules](#auto-accept-rules) below for what that used to require).
-This is also what the menu bar's **Auto-accept Rules → \<Connector\> → Trusted \<Resource\>**
-submenus read and write — editing the YAML directly and editing from the menu are equivalent.
+This is also what the menu bar's **Manage Auto-accept Rules… → \<Connector\> → Trusted \<Resource\>**
+sections read and write — editing the YAML directly and editing from that window are equivalent.
 
 ```yaml
 auto_accept_grants:
@@ -425,12 +425,12 @@ the evaluator never reads it, only `id`/`key` and the capability booleans decide
 the `folders`/`sandbox_folders` grants above — upload-destination and move-both-ends are different
 enough semantics from "read this folder" / "write into this sandbox" that folding them in would
 misrepresent what a capability checkbox grants. They stay configured under `auto_accept_rules`
-(see below), in the connector's **Filters** submenu.
+(see below), in the connector's per-operation sections.
 
 ### Menu bar UX
 
-Under **Auto-accept Rules → \<Connector\>**, each resource type above gets its own **Trusted
-\<Resource\>** submenu: every currently-granted resource is its own row, labeled with its
+Under **Manage Auto-accept Rules… → \<Connector\>**, each resource type above gets its own **Trusted
+\<Resource\>** section: every currently-granted resource is its own row, labeled with its
 **resolved name** (not the raw ID — see below), with one checkbox per capability, a **Copy ID**
 action, and its own **✕ Remove**. Adding one is a single **+ Add …** action:
 
@@ -868,8 +868,7 @@ the only download you need:
    cp com.privacyfence.app.plist ~/Library/LaunchAgents/
    launchctl load ~/Library/LaunchAgents/com.privacyfence.app.plist
    ```
-5. From the menu bar: **Organization Config → Install/Update Organization Config…**, and select
-   the bundle your IT team sent you.
+5. From the menu bar: **Organization Config…**, and select the bundle your IT team sent you.
 6. **Connectors → \<service\> → Authenticate…** for each connector you want, then quit and reopen
    PrivacyFence to activate them.
 7. Still in the mounted DMG, double-click **PrivacyFence.mcpb** — Claude Desktop installs the

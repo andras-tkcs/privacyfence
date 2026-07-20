@@ -1027,9 +1027,10 @@ def init_auto_accept_evaluator(rules_config: dict) -> AutoAcceptEvaluator:
 def set_rules_changed_listener(callback: Callable[[], None] | None) -> None:
     """Register a callback fired whenever the live rule set changes.
 
-    The menu bar uses this to refresh its "Auto-accept Rules" submenu when a
-    rule is created from the approval popup, which runs on the IPC server's
-    own thread rather than the menu bar's main thread.
+    The menu bar uses this to refresh its menu (and the "Manage Auto-accept
+    Rules…" window, if open) when a rule is created from the approval popup,
+    which runs on the IPC server's own thread rather than the menu bar's
+    main thread.
     """
     global _rules_changed_listener
     _rules_changed_listener = callback

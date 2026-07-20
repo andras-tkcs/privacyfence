@@ -46,7 +46,7 @@ logic. Its per-connector manifest lives in `tests/fixtures/qa_environment.yaml` 
 it from [`qa_environment.yaml.example`](../tests/fixtures/qa_environment.yaml.example) first); every
 "For the recorder" step below says which field(s) to fill in there.
 
-Every grant below can also be added from the menu bar — **Auto-accept Rules → \<Connector\> →
+Every grant below can also be added from the menu bar — **Manage Auto-accept Rules… → \<Connector\> →
 Trusted \<Resource\> → + Add…** — instead of editing YAML by hand; both are equivalent, and the older
 per-operation form under `auto_accept_rules` (e.g. `approved_folder`, `approved_channel`) still
 works too. Only the YAML form is shown below. See [Auto-accept
