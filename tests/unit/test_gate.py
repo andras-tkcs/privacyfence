@@ -257,6 +257,146 @@ class TestAcceptAll:
         assert entries[0]["decision"] == "approved"  # accepted once, not via a rule
 
 
+class TestProposeRuleChange:
+    """gate.propose_rule_change() -- the bridge-facing counterpart to the
+    popup's own "Always allow" flow (see its docstring in gate.py). Every
+    proposal reaches the same show_rule_confirmation_popup() dialog; there
+    is no auto-accept short-circuit and no silent no-op for a duplicate
+    proposal -- confirming again is cheap, unlike gated_call's regular path."""
+
+    async def test_confirmed_rule_add_persists_and_audits(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
+        added = []
+        monkeypatch.setattr(gate, "add_auto_accept_rule", lambda op, name, value: added.append((op, name, value)))
+
+        result = await gate.propose_rule_change(
+            target="rule", operation="add", reason="Trusting example.com.",
+            operation_key="gmail.read_message", rule_name="trusted_sender_domain", value=["example.com"],
+        )
+
+        assert result == {
+            "confirmed": True, "changed": True,
+            "description": "Add auto-accept rule 'trusted_sender_domain' = example.com to 'gmail.read_message'",
+        }
+        assert added == [("gmail.read_message", "trusted_sender_domain", ["example.com"])]
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "rule_changed_via_bridge_proposal"
+        assert entries[0]["claude_reason"] == "Trusting example.com."
+
+    async def test_confirmed_rule_remove_persists_and_audits(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
+        removed = []
+        monkeypatch.setattr(gate, "remove_auto_accept_rule", lambda op, name, value=None: removed.append((op, name, value)) or True)
+
+        result = await gate.propose_rule_change(
+            target="rule", operation="remove", reason="Cleaning up.",
+            operation_key="sheets.format_range", rule_name="approved_sandbox_folder", value=["folder1"],
+        )
+
+        assert result["confirmed"] is True
+        assert removed == [("sheets.format_range", "approved_sandbox_folder", ["folder1"])]
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "rule_removed_via_bridge_proposal"
+
+    async def test_rule_update_removes_old_value_then_adds_new_one(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
+        calls = []
+        monkeypatch.setattr(gate, "remove_auto_accept_rule", lambda op, name, value=None: calls.append(("remove", op, name, value)) or True)
+        monkeypatch.setattr(gate, "add_auto_accept_rule", lambda op, name, value: calls.append(("add", op, name, value)))
+
+        await gate.propose_rule_change(
+            target="rule", operation="update", reason="Replacing.",
+            operation_key="gmail.read_message", rule_name="trusted_sender_domain",
+            value=["b.com"], old_value=["a.com"],
+        )
+
+        assert calls == [
+            ("remove", "gmail.read_message", "trusted_sender_domain", ["a.com"]),
+            ("add", "gmail.read_message", "trusted_sender_domain", ["b.com"]),
+        ]
+
+    async def test_confirmed_grant_add_persists_via_mutate_grants_and_audits(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
+        mutate_calls = []
+        monkeypatch.setattr(gate, "mutate_grants", lambda mutator: mutate_calls.append(mutator) or True)
+
+        result = await gate.propose_rule_change(
+            target="grant", operation="add", reason="Trusting the sandbox folder.",
+            connector="drive", config_key="sandbox_folders", resource_id="folder1",
+            name="Team sandbox", capabilities={"write": True},
+        )
+
+        assert result["confirmed"] is True
+        assert len(mutate_calls) == 1
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "grant_changed_via_bridge_proposal"
+        assert entries[0]["auto_accept_rule"] == "folder1"
+
+    async def test_confirmed_grant_remove_persists_via_mutate_grants_and_audits(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
+        monkeypatch.setattr(gate, "mutate_grants", lambda mutator: True)
+
+        result = await gate.propose_rule_change(
+            target="grant", operation="remove", reason="No longer needed.",
+            connector="drive", config_key="sandbox_folders", resource_id="folder1",
+        )
+
+        assert result["confirmed"] is True
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "grant_removed_via_bridge_proposal"
+
+    async def test_unknown_grant_resource_type_raises_value_error(self):
+        with pytest.raises(ValueError, match="Unknown grant resource type"):
+            await gate.propose_rule_change(
+                target="grant", operation="add", reason="x",
+                connector="nope", config_key="nope", resource_id="x",
+            )
+
+    async def test_unknown_target_raises_value_error(self):
+        with pytest.raises(ValueError, match="Unknown target"):
+            await gate.propose_rule_change(target="nope", operation="add", reason="x")
+
+    async def test_unknown_operation_raises_value_error(self):
+        with pytest.raises(ValueError, match="Unknown operation"):
+            await gate.propose_rule_change(
+                target="rule", operation="destroy", reason="x",
+                operation_key="gmail.read_message", rule_name="i_am_sender",
+            )
+
+    async def test_declined_confirmation_raises_and_audits_rejected_without_applying(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: False)
+        added = []
+        monkeypatch.setattr(gate, "add_auto_accept_rule", lambda *a: added.append(a))
+
+        with pytest.raises(RuntimeError, match="denied by user"):
+            await gate.propose_rule_change(
+                target="rule", operation="add", reason="x",
+                operation_key="gmail.read_message", rule_name="i_am_sender",
+            )
+
+        assert added == []
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "rejected"
+
+    async def test_unattended_connection_denies_without_showing_a_popup(self, monkeypatch, audit_dir):
+        called = []
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: called.append(1) or True)
+        added = []
+        monkeypatch.setattr(gate, "add_auto_accept_rule", lambda *a: added.append(a))
+
+        with gate.unattended_scope(True):
+            with pytest.raises(RuntimeError, match="unattended session"):
+                await gate.propose_rule_change(
+                    target="rule", operation="add", reason="x",
+                    operation_key="gmail.read_message", rule_name="i_am_sender",
+                )
+
+        assert called == []
+        assert added == []
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "denied_unattended"
+
+
 class TestPopupGateWrites:
     async def test_accept_returns_filtered_and_audits_approved(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())

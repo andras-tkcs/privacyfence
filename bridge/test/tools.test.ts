@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import type { IPCClientLike } from "../src/ipcClient.js";
+import type { IPCClientLike, ProposeRuleChangeParams } from "../src/ipcClient.js";
 import { IPCError } from "../src/ipcClient.js";
 import type { ToolSpecDict } from "../src/manifest.js";
 import { registerMetaTools, registerTools } from "../src/tools.js";
@@ -29,6 +29,16 @@ class FakeIPC implements IPCClientLike {
     reason?: string
   ): Promise<unknown> {
     this.calls.push({ method: "checkPolicy", args: [connector, tool, args, reason] });
+    if (this.callError) throw this.callError;
+    return this.callResult;
+  }
+  async listRules(reason?: string): Promise<unknown> {
+    this.calls.push({ method: "listRules", args: [reason] });
+    if (this.callError) throw this.callError;
+    return this.callResult;
+  }
+  async proposeRuleChange(params: ProposeRuleChangeParams): Promise<unknown> {
+    this.calls.push({ method: "proposeRuleChange", args: [params] });
     if (this.callError) throw this.callError;
     return this.callResult;
   }
@@ -222,7 +232,7 @@ describe("registerTools", () => {
 });
 
 describe("registerMetaTools", () => {
-  it("registers all three meta-tools without needing a manifest", async () => {
+  it("registers all five meta-tools without needing a manifest", async () => {
     const server = new McpServer({ name: "test", version: "0.0.0" });
     registerMetaTools(server, new FakeIPC());
     const { client, close } = await connectedClient(server);
@@ -234,6 +244,8 @@ describe("registerMetaTools", () => {
           "privacyfence_begin_unattended_session",
           "privacyfence_check_policy",
           "privacyfence_end_unattended_session",
+          "privacyfence_list_auto_accept_rules",
+          "privacyfence_propose_auto_accept_rule_change",
         ]
       );
     } finally {
@@ -241,22 +253,17 @@ describe("registerMetaTools", () => {
     }
   });
 
-  it("reason is a required param on all three meta-tools", async () => {
+  it("reason is a required param on all five meta-tools", async () => {
     const server = new McpServer({ name: "test", version: "0.0.0" });
     registerMetaTools(server, new FakeIPC());
     const { client, close } = await connectedClient(server);
     try {
       const { tools } = await client.listTools();
       for (const t of tools) {
-        assert.deepEqual(t.inputSchema.required, expectedRequired(t.name));
+        assert.ok(t.inputSchema.required?.includes("reason"), `${t.name} should require reason`);
       }
     } finally {
       await close();
-    }
-
-    function expectedRequired(name: string): string[] {
-      if (name === "privacyfence_check_policy") return ["connector", "tool", "reason"];
-      return ["reason"];
     }
   });
 
@@ -364,6 +371,177 @@ describe("registerMetaTools", () => {
       assert.deepEqual(ipc.calls, [
         { method: "endUnattendedSession", args: ["Nightly digest Routine finished."] },
       ]);
+    } finally {
+      await close();
+    }
+  });
+
+  it("privacyfence_list_auto_accept_rules is advertised read-only and forwards reason", async () => {
+    const server = new McpServer({ name: "test", version: "0.0.0" });
+    const ipc = new FakeIPC();
+    ipc.callResult = { auto_accept_rules: {}, auto_accept_grants: {} };
+    registerMetaTools(server, ipc);
+    const { client, close } = await connectedClient(server);
+    try {
+      const { tools } = await client.listTools();
+      const tool = tools.find((t) => t.name === "privacyfence_list_auto_accept_rules");
+      assert.deepEqual(tool?.annotations, { readOnlyHint: true, destructiveHint: false, idempotentHint: true });
+
+      const result = await client.callTool({
+        name: "privacyfence_list_auto_accept_rules",
+        arguments: { reason: "Auditing Sheets sandbox rules before cleanup." },
+      });
+      assert.equal(result.isError, undefined);
+      assert.deepEqual(ipc.calls, [
+        { method: "listRules", args: ["Auditing Sheets sandbox rules before cleanup."] },
+      ]);
+      assert.deepEqual(result.structuredContent, { auto_accept_rules: {}, auto_accept_grants: {} });
+    } finally {
+      await close();
+    }
+  });
+
+  it("privacyfence_propose_auto_accept_rule_change is NOT advertised read-only (it has a real side effect)", async () => {
+    const server = new McpServer({ name: "test", version: "0.0.0" });
+    registerMetaTools(server, new FakeIPC());
+    const { client, close } = await connectedClient(server);
+    try {
+      const { tools } = await client.listTools();
+      const tool = tools.find((t) => t.name === "privacyfence_propose_auto_accept_rule_change");
+      assert.equal(tool?.annotations?.readOnlyHint, false);
+    } finally {
+      await close();
+    }
+  });
+
+  it("privacyfence_propose_auto_accept_rule_change forwards a rule-target proposal to the IPC client", async () => {
+    const server = new McpServer({ name: "test", version: "0.0.0" });
+    const ipc = new FakeIPC();
+    ipc.callResult = { confirmed: true, changed: true, description: "Add rule..." };
+    registerMetaTools(server, ipc);
+    const { client, close } = await connectedClient(server);
+    try {
+      const result = await client.callTool({
+        name: "privacyfence_propose_auto_accept_rule_change",
+        arguments: {
+          target: "rule",
+          operation: "remove",
+          reason: "Consolidating sandbox folder rules into a grant.",
+          operation_key: "sheets.format_range",
+          rule_name: "approved_sandbox_folder",
+          value: ["folder123"],
+        },
+      });
+      assert.equal(result.isError, undefined);
+      assert.deepEqual(ipc.calls, [
+        {
+          method: "proposeRuleChange",
+          args: [
+            {
+              target: "rule",
+              operation: "remove",
+              reason: "Consolidating sandbox folder rules into a grant.",
+              operationKey: "sheets.format_range",
+              ruleName: "approved_sandbox_folder",
+              value: ["folder123"],
+              oldValue: undefined,
+              connector: undefined,
+              configKey: undefined,
+              resourceId: undefined,
+              name: undefined,
+              tab: undefined,
+              capabilities: undefined,
+            },
+          ],
+        },
+      ]);
+    } finally {
+      await close();
+    }
+  });
+
+  it("privacyfence_propose_auto_accept_rule_change forwards a grant-target proposal to the IPC client", async () => {
+    const server = new McpServer({ name: "test", version: "0.0.0" });
+    const ipc = new FakeIPC();
+    ipc.callResult = { confirmed: true, changed: true, description: "Add grant..." };
+    registerMetaTools(server, ipc);
+    const { client, close } = await connectedClient(server);
+    try {
+      await client.callTool({
+        name: "privacyfence_propose_auto_accept_rule_change",
+        arguments: {
+          target: "grant",
+          operation: "add",
+          reason: "Trusting the shared sandbox folder for Sheets writes.",
+          connector: "drive",
+          config_key: "sandbox_folders",
+          resource_id: "folder123",
+          name: "Team sandbox",
+          capabilities: { write: true },
+        },
+      });
+      assert.deepEqual(ipc.calls[0], {
+        method: "proposeRuleChange",
+        args: [
+          {
+            target: "grant",
+            operation: "add",
+            reason: "Trusting the shared sandbox folder for Sheets writes.",
+            operationKey: undefined,
+            ruleName: undefined,
+            value: undefined,
+            oldValue: undefined,
+            connector: "drive",
+            configKey: "sandbox_folders",
+            resourceId: "folder123",
+            name: "Team sandbox",
+            tab: undefined,
+            capabilities: { write: true },
+          },
+        ],
+      });
+    } finally {
+      await close();
+    }
+  });
+
+  it("privacyfence_propose_auto_accept_rule_change: a declined proposal surfaces as isError", async () => {
+    const server = new McpServer({ name: "test", version: "0.0.0" });
+    const ipc = new FakeIPC();
+    ipc.callError = new IPCError("Request denied by user");
+    registerMetaTools(server, ipc);
+    const { client, close } = await connectedClient(server);
+    try {
+      const result = await client.callTool({
+        name: "privacyfence_propose_auto_accept_rule_change",
+        arguments: {
+          target: "rule",
+          operation: "add",
+          reason: "Trying to add a rule.",
+          operation_key: "gmail.read_message",
+          rule_name: "i_am_sender",
+        },
+      });
+      assert.equal(result.isError, true);
+      const content = result.content as Array<{ type: string; text: string }>;
+      assert.match(content[0]!.text, /denied by user/);
+    } finally {
+      await close();
+    }
+  });
+
+  it("rejects an invalid target/operation before reaching the IPC client", async () => {
+    const server = new McpServer({ name: "test", version: "0.0.0" });
+    const ipc = new FakeIPC();
+    registerMetaTools(server, ipc);
+    const { client, close } = await connectedClient(server);
+    try {
+      const result = await client.callTool({
+        name: "privacyfence_propose_auto_accept_rule_change",
+        arguments: { target: "rule", operation: "destroy", reason: "x" },
+      });
+      assert.equal(result.isError, true);
+      assert.deepEqual(ipc.calls, []);
     } finally {
       await close();
     }

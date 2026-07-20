@@ -10,6 +10,7 @@ For the product overview, governance model, screenshots, supported systems, and 
 - [Connectors & privacy matrix](#connectors--privacy-matrix)
 - [Auto-accept grants](#auto-accept-grants)
 - [Auto-accept rules](#auto-accept-rules)
+- [Reading and proposing auto-accept changes from the bridge](#reading-and-proposing-auto-accept-changes-from-the-bridge)
 - [Scheduled / unattended Cowork tasks](#scheduled--unattended-cowork-tasks)
 - [Audit log](#audit-log)
 - [Security, privacy & compliance](#security-privacy--compliance)
@@ -726,6 +727,71 @@ edits within a personal list while still requiring review for creates.
 
 ---
 
+## Reading and proposing auto-accept changes from the bridge
+
+Until now, `auto_accept_rules`/`auto_accept_grants` were only readable/writable from the daemon
+side — the menu bar's Rules Manager window (`rules_manager_window.py`) or the "Always allow"
+confirmation described above. Two more bridge meta-tools close that gap, so Claude can inspect and
+propose changes to this config directly:
+
+### `privacyfence_list_auto_accept_rules` — read
+
+```
+privacyfence_list_auto_accept_rules(reason) -> {
+    "auto_accept_rules": {<operation_key>: [{"rule": <str>, "value": <any>}, ...]},
+    "auto_accept_grants": {<connector>: {<config_key>: [{...grant entry...}, ...]}},
+}
+```
+
+The raw, addressable config sections straight from `settings.yaml` — not the compiled/merged view
+the evaluator uses internally — so a caller can identify an existing entry by its exact fields
+before proposing a change to it. No popup, no mutation, no external API call; records a lightweight
+`rules_listed` audit entry (see [Audit log](#audit-log)) since it discloses the full current rule
+set, the same reasoning as `privacyfence_check_policy`'s `policy_check` entry.
+
+### `privacyfence_propose_auto_accept_rule_change` — write, always gated
+
+```
+privacyfence_propose_auto_accept_rule_change(target, operation, reason, ...) -> {
+    "confirmed": true, "changed": <bool>, "description": "<str>",
+}
+```
+
+`target` is `"rule"` (an `auto_accept_rules` entry) or `"grant"` (an `auto_accept_grants` entry);
+`operation` is `"add"`, `"update"`, or `"remove"`. This is the one write path a bridge connection
+has into `settings.yaml`, and there is no way to reach it without a human confirming: every call
+blocks on the same native confirmation dialog the "Always allow" button uses
+(`show_rule_confirmation_popup`) — even if an identical rule/grant already exists. A decline (or a
+call from a connection in an [unattended session](#scheduled--unattended-cowork-tasks)) makes the
+call throw rather than return a false-y result, the same "deny == exception" contract every other
+gated tool call already follows.
+
+- `target="rule"` fields: `operation_key`, `rule_name`, `value` (required for add/update — often a
+  list, matching the shape shown under [Auto-accept rules](#auto-accept-rules)), `old_value`
+  (update only — the prior value being replaced; omit to add alongside the existing value instead
+  of replacing it).
+- `target="grant"` fields: `connector`, `config_key`, `resource_id` (required), `name` (optional
+  cosmetic label), `tab` (spreadsheets only), `capabilities` (add/update only — a map of capability
+  key, e.g. `"write"`, to `true`/`false`; see the capability tables under
+  [Auto-accept grants](#auto-accept-grants) for which keys apply to which resource type).
+
+Applying the change reuses the exact same persistence functions the menu bar's editor and the
+"Always allow" flow already use (`auto_accept.add_auto_accept_rule`/`remove_auto_accept_rule`,
+`resource_grants.apply_grant_upsert`/`apply_grant_removal`), so a bridge-proposed change hot-reloads
+the live evaluator the same way. It's recorded as one of four new audit decisions —
+`rule_changed_via_bridge_proposal`, `rule_removed_via_bridge_proposal`,
+`grant_changed_via_bridge_proposal`, `grant_removed_via_bridge_proposal` — distinguishable from a
+UI-originated change; a decline reuses the existing `rejected` decision rather than a new value.
+
+Motivating example: a user's config can accumulate many individual `sheets.*` operations each
+hand-pinned to `approved_sandbox_folder` (see the callout under
+[Auto-accept rules](#auto-accept-rules)) when what's actually wanted is one
+`auto_accept_grants.drive.sandbox_folders` grant. With these two tools, Claude can list the current
+rules, identify the duplicates, and propose removing them and adding the equivalent grant instead —
+each step still confirmed by a human, same as if they'd done it by hand in the Rules Manager.
+
+---
+
 ## Scheduled / unattended Cowork tasks
 
 A scheduled Claude Cowork Routine can run with nobody at the keyboard. If it calls a `review`- or
@@ -815,6 +881,15 @@ unattended session and no auto-accept rule matched — kept distinct from a huma
 and `policy_check` (a `privacyfence_check_policy` preflight call — not a real decision, recorded
 for pattern-spotting only). Both get their own row on the Summary sheet and their own colour on
 the Decisions sheet.
+
+Five more relate to
+[reading/proposing auto-accept changes from the bridge](#reading-and-proposing-auto-accept-changes-from-the-bridge):
+`rules_listed` (a `privacyfence_list_auto_accept_rules` call — like `policy_check`, not a real
+decision, recorded because it discloses the full current rule set) and, once a
+`privacyfence_propose_auto_accept_rule_change` proposal is confirmed,
+`rule_changed_via_bridge_proposal` / `rule_removed_via_bridge_proposal` /
+`grant_changed_via_bridge_proposal` / `grant_removed_via_bridge_proposal`. A declined proposal
+reuses the existing `rejected` decision rather than a new value.
 
 See [connector-qa-testing.md](connector-qa-testing.md) for a Claude Cowork prompt that drives every connector's tools end to end against real accounts — the fastest way to catch a gate, auto-accept rule, or connector client that's drifted from what's documented here.
 

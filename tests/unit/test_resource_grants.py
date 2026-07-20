@@ -654,6 +654,92 @@ class TestMigrateRulesToGrants:
         assert entries == [{"key": "ENG", "read": True}]
 
 
+class TestApplyGrantUpsert:
+    """apply_grant_upsert/apply_grant_removal -- shared by menu_bar.py-style
+    editing and gate.propose_rule_change()'s bridge-facing counterpart (see
+    that function's docstring in gate.py). Both mutate the full config dict
+    in place, the shape auto_accept.mutate_grants() expects a mutator to
+    receive."""
+
+    def test_add_new_entry_with_capabilities(self):
+        rt = rg.resource_type("drive", "sandbox_folders")
+        cfg: dict = {}
+        changed = rg.apply_grant_upsert(cfg, rt, "folder1", name="Team sandbox", capabilities={"write": True})
+        assert changed is True
+        assert cfg["auto_accept_grants"]["drive"]["sandbox_folders"] == [
+            {"id": "folder1", "name": "Team sandbox", "write": True}
+        ]
+
+    def test_upsert_updates_an_existing_entry_in_place_rather_than_duplicating(self):
+        rt = rg.resource_type("drive", "sandbox_folders")
+        cfg = {"auto_accept_grants": {"drive": {"sandbox_folders": [{"id": "folder1", "write": False}]}}}
+        rg.apply_grant_upsert(cfg, rt, "folder1", capabilities={"write": True})
+        assert cfg["auto_accept_grants"]["drive"]["sandbox_folders"] == [{"id": "folder1", "write": True}]
+
+    def test_upsert_on_spreadsheets_matches_by_id_and_tab_together(self):
+        rt = rg.resource_type("drive", "spreadsheets")
+        cfg = {
+            "auto_accept_grants": {
+                "drive": {"spreadsheets": [{"id": "sheet1", "tab": "Sheet1", "read": True}]}
+            }
+        }
+        # Same id, different tab -- must be a new entry, not an update of Sheet1's.
+        rg.apply_grant_upsert(cfg, rt, "sheet1", tab="Sheet2", capabilities={"read": True})
+        entries = cfg["auto_accept_grants"]["drive"]["spreadsheets"]
+        assert {"id": "sheet1", "tab": "Sheet1", "read": True} in entries
+        assert {"id": "sheet1", "tab": "Sheet2", "read": True} in entries
+        assert len(entries) == 2
+
+    def test_unknown_capability_key_raises(self):
+        rt = rg.resource_type("drive", "sandbox_folders")
+        cfg: dict = {}
+        try:
+            rg.apply_grant_upsert(cfg, rt, "folder1", capabilities={"nonexistent": True})
+            assert False, "expected ValueError"
+        except ValueError:
+            pass
+
+    def test_remove_existing_entry(self):
+        rt = rg.resource_type("drive", "sandbox_folders")
+        cfg = {"auto_accept_grants": {"drive": {"sandbox_folders": [{"id": "folder1", "write": True}]}}}
+        changed = rg.apply_grant_removal(cfg, rt, "folder1")
+        assert changed is True
+        assert cfg["auto_accept_grants"] == {}
+
+    def test_remove_nonexistent_entry_is_a_no_op_reported_as_unchanged(self):
+        rt = rg.resource_type("drive", "sandbox_folders")
+        cfg = {"auto_accept_grants": {"drive": {"sandbox_folders": [{"id": "folder1", "write": True}]}}}
+        changed = rg.apply_grant_removal(cfg, rt, "does-not-exist")
+        assert changed is False
+        assert cfg["auto_accept_grants"]["drive"]["sandbox_folders"] == [{"id": "folder1", "write": True}]
+
+
+class TestDescribeGrantChange:
+    def test_add_lists_enabled_capability_labels(self):
+        rt = rg.resource_type("drive", "sandbox_folders")
+        description = rg.describe_grant_change(
+            "add", rt, "folder1", name="Team sandbox", capabilities={"write": True}
+        )
+        assert "Team sandbox" in description
+        assert "Write auto-accept" in description
+        assert description.startswith("Add ")
+
+    def test_update_uses_update_verb(self):
+        rt = rg.resource_type("drive", "sandbox_folders")
+        description = rg.describe_grant_change("update", rt, "folder1", capabilities={"write": True})
+        assert description.startswith("Update ")
+
+    def test_remove_names_the_resource_and_group_label(self):
+        rt = rg.resource_type("drive", "sandbox_folders")
+        description = rg.describe_grant_change("remove", rt, "folder1", name="Team sandbox")
+        assert description == "Remove folder 'Team sandbox' from Sandbox Folders"
+
+    def test_falls_back_to_resource_id_when_no_name_given(self):
+        rt = rg.resource_type("drive", "sandbox_folders")
+        description = rg.describe_grant_change("remove", rt, "folder1")
+        assert "folder1" in description
+
+
 def _normalize(rules: dict) -> dict:
     """Order-independent comparison key for a compiled/effective rules dict."""
     def _value_key(v):

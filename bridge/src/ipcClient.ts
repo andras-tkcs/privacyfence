@@ -22,6 +22,28 @@ interface Pending {
 }
 
 /**
+ * Params for proposeRuleChange() — mirrors ipc.py's propose_rule_change
+ * field list (see that module's docstring and gate.propose_rule_change()'s
+ * own docstring for what each field means per target). camelCase here,
+ * translated to the wire protocol's snake_case in IPCClient.proposeRuleChange.
+ */
+export interface ProposeRuleChangeParams {
+  target: "rule" | "grant";
+  operation: "add" | "update" | "remove";
+  reason: string;
+  operationKey?: string | undefined;
+  ruleName?: string | undefined;
+  value?: unknown;
+  oldValue?: unknown;
+  connector?: string | undefined;
+  configKey?: string | undefined;
+  resourceId?: string | undefined;
+  name?: string | undefined;
+  tab?: string | undefined;
+  capabilities?: Record<string, boolean> | undefined;
+}
+
+/**
  * The subset of IPCClient that tool handlers (tools.ts) depend on. Declared
  * separately so tests can substitute a fake IPC client (a plain object) for
  * registerTools/registerMetaTools without needing a real Unix socket
@@ -36,6 +58,8 @@ export interface IPCClientLike {
     args: Record<string, unknown>,
     reason?: string
   ): Promise<unknown>;
+  listRules(reason?: string): Promise<unknown>;
+  proposeRuleChange(params: ProposeRuleChangeParams): Promise<unknown>;
   beginUnattendedSession(reason?: string): Promise<unknown>;
   endUnattendedSession(reason?: string): Promise<unknown>;
 }
@@ -86,6 +110,28 @@ export class IPCClient implements IPCClientLike {
     reason = ""
   ): Promise<unknown> {
     return this.request("check_policy", { connector, tool, args, reason });
+  }
+
+  async listRules(reason = ""): Promise<unknown> {
+    return this.request("list_rules", { reason });
+  }
+
+  async proposeRuleChange(params: ProposeRuleChangeParams): Promise<unknown> {
+    return this.request("propose_rule_change", {
+      target: params.target,
+      operation: params.operation,
+      reason: params.reason,
+      operation_key: params.operationKey ?? "",
+      rule_name: params.ruleName ?? "",
+      value: params.value ?? null,
+      old_value: params.oldValue ?? null,
+      connector: params.connector ?? "",
+      config_key: params.configKey ?? "",
+      resource_id: params.resourceId ?? "",
+      name: params.name ?? null,
+      tab: params.tab ?? null,
+      capabilities: params.capabilities ?? null,
+    });
   }
 
   async beginUnattendedSession(reason = ""): Promise<unknown> {

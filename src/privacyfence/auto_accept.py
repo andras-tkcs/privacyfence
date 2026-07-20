@@ -960,16 +960,40 @@ def _format_spreadsheet_entry(entry: Any) -> str:
     return f"{entry.get('spreadsheet_id', '')}" + (f" (tab: {tab})" if tab else "")
 
 
+def _format_rule_value(value: Any) -> str:
+    if isinstance(value, list) and value and isinstance(value[0], dict):
+        return ", ".join(_format_spreadsheet_entry(v) for v in value)
+    if isinstance(value, list):
+        return ", ".join(value)
+    return str(value)
+
+
 def describe_rule(rule_name: str, value: Any) -> str:
     """Human-readable description of a proposed auto-accept rule."""
     template = _RULE_DESCRIPTIONS.get(rule_name, rule_name)
-    if isinstance(value, list) and value and isinstance(value[0], dict):
-        value_str = ", ".join(_format_spreadsheet_entry(v) for v in value)
-    elif isinstance(value, list):
-        value_str = ", ".join(value)
-    else:
-        value_str = str(value)
-    return "Auto-accept future " + template.format(value=value_str)
+    return "Auto-accept future " + template.format(value=_format_rule_value(value))
+
+
+def describe_rule_change(
+    operation: str, operation_key: str, rule_name: str, value: Any = None, old_value: Any = None
+) -> str:
+    """Human-readable description of a bridge-proposed add/update/remove to
+    ``auto_accept_rules``, shown in the confirmation popup gate.propose_rule_change()
+    drives -- see that function's docstring. Unlike describe_rule() (used by
+    the existing "Always allow" flow), this always names operation_key
+    explicitly, since there's no popup already on screen for a specific item
+    to supply that context.
+    """
+    if operation == "remove":
+        suffix = f" = {_format_rule_value(value)}" if value is not None else " (every value)"
+        return f"Remove auto-accept rule {rule_name!r}{suffix} from {operation_key!r}"
+    if operation == "update":
+        old_str = _format_rule_value(old_value) if old_value is not None else "(any existing value)"
+        return (
+            f"Replace auto-accept rule {rule_name!r} on {operation_key!r}: "
+            f"{old_str} -> {_format_rule_value(value)}"
+        )
+    return f"Add auto-accept rule {rule_name!r} = {_format_rule_value(value)} to {operation_key!r}"
 
 
 # ── Rule persistence (used by the "Always allow" popup button) ──────────────
@@ -1006,6 +1030,85 @@ def add_auto_accept_rule(operation_key: str, rule_name: str, value: Any) -> None
         with open(_config_path, "w", encoding="utf-8") as f:
             yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
         reload_rules(build_effective_rules(cfg))
+
+
+def remove_auto_accept_rule(operation_key: str, rule_name: str, value: Any = None) -> bool:
+    """Remove auto-accept rule entries under operation_key matching rule_name.
+
+    With value given, only removes an entry whose value matches exactly
+    (mirroring add_auto_accept_rule's own equality check). With value left
+    as None, removes every entry for this rule_name under operation_key
+    regardless of its value. Returns True if anything was removed; only
+    persists to disk and hot-reloads the evaluator when it does.
+    """
+    if _config_path is None:
+        raise RuntimeError("auto_accept config path not initialized")
+    with _write_lock:
+        with open(_config_path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        rules = cfg.get("auto_accept_rules", {}).get(operation_key, [])
+        if value is None:
+            remaining = [r for r in rules if r.get("rule") != rule_name]
+        else:
+            target = {"rule": rule_name, "value": value}
+            remaining = [r for r in rules if r != target]
+        if len(remaining) == len(rules):
+            return False
+        if remaining:
+            cfg["auto_accept_rules"][operation_key] = remaining
+        else:
+            cfg.get("auto_accept_rules", {}).pop(operation_key, None)
+        with open(_config_path, "w", encoding="utf-8") as f:
+            yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
+        reload_rules(build_effective_rules(cfg))
+        return True
+
+
+def get_current_config() -> dict[str, Any]:
+    """Read-only snapshot of the persisted ``auto_accept_rules``/
+    ``auto_accept_grants`` sections, straight from disk -- not the compiled/
+    merged view build_effective_rules() produces. Callers that need to
+    identify an existing entry to update or remove (e.g. the bridge's
+    privacyfence_list_auto_accept_rules meta tool) want the raw, addressable
+    shape, the same one add_auto_accept_rule/remove_auto_accept_rule and the
+    menu bar's rule editor operate on.
+    """
+    if _config_path is None:
+        raise RuntimeError("auto_accept config path not initialized")
+    with _write_lock:
+        with open(_config_path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+    return {
+        "auto_accept_rules": cfg.get("auto_accept_rules") or {},
+        "auto_accept_grants": cfg.get("auto_accept_grants") or {},
+    }
+
+
+def mutate_grants(mutator: Callable[[dict[str, Any]], bool]) -> bool:
+    """Read settings.yaml, let `mutator` update it in place (typically its
+    auto_accept_grants section via resource_grants.apply_grant_upsert/
+    apply_grant_removal), and persist + hot-reload only if it reports an
+    actual change.
+
+    Shared plumbing for gate.py's propose_rule_change() grant add/update/
+    remove paths -- keeps the read-modify-write-reload sequence and the
+    write lock in one place rather than duplicating it per grant operation,
+    the same way add_auto_accept_rule/remove_auto_accept_rule own that
+    sequence for the auto_accept_rules side. `mutator` receives the full
+    parsed config (not just the grants section) since resource_grants'
+    helpers operate on it via cfg.setdefault("auto_accept_grants", {}).
+    """
+    if _config_path is None:
+        raise RuntimeError("auto_accept config path not initialized")
+    with _write_lock:
+        with open(_config_path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        changed = mutator(cfg)
+        if changed:
+            with open(_config_path, "w", encoding="utf-8") as f:
+                yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
+            reload_rules(build_effective_rules(cfg))
+        return changed
 
 
 _INSTANCE: AutoAcceptEvaluator | None = None

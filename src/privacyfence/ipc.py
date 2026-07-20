@@ -25,6 +25,36 @@ check_policy  {"connector": "<str>", "tool": "<str>", "args": {…}, "reason": "
               resulting "policy_check" audit entry; optional at this layer
               (defaults to "") even though the bridge's tool schema requires
               it, so an old bridge talking to a new daemon doesn't break.
+list_rules    {"reason": "<str>"} → {"auto_accept_rules": {...}, "auto_accept_grants": {...}}
+              Read-only snapshot of the persisted auto_accept_rules/auto_accept_grants
+              config sections (auto_accept.get_current_config()) -- the raw,
+              addressable shape a caller needs to identify an existing entry
+              before proposing an update/removal via propose_rule_change, not
+              the compiled/merged view build_effective_rules() produces for the
+              evaluator itself. No popup, no mutation, no external API call.
+              Records a lightweight "rules_listed" audit entry (like
+              check_policy's "policy_check") since it discloses the full
+              current rule set; "reason" is Claude's self-reported reason for
+              asking, same handling as check_policy's -- optional at this
+              layer even though the bridge's tool schema requires it.
+propose_rule_change  {"target": "rule"|"grant", "operation": "add"|"update"|"remove",
+              "reason": "<str>", ...target-specific fields} →
+              {"confirmed": true, "changed": <bool>, "description": "<str>"}
+              Propose an add/update/remove to auto_accept_rules (target="rule")
+              or auto_accept_grants (target="grant"), gated behind the same
+              native confirmation dialog the "Always allow" popup button
+              uses -- see gate.propose_rule_change()'s docstring for the full
+              field list per target and for why declining (or an unattended
+              connection) raises rather than returning a false-y result, same
+              as any other gated write. This is the one write path a bridge
+              connection has into settings.yaml; there is no way to skip the
+              popup from here.
+              target="rule" fields: operation_key, rule_name, value (required
+              for add/update), old_value (optional, update only -- the prior
+              value to remove before adding the new one).
+              target="grant" fields: connector, config_key, resource_id
+              (required), name/tab (optional, cosmetic/spreadsheet-tab),
+              capabilities (dict of capability_key -> bool, add/update only).
 begin_unattended_session  {"reason": "<str>"} → {"unattended": true}
               Marks THIS connection as running an unattended/scheduled task:
               until end_unattended_session (or disconnect), any "call" on
