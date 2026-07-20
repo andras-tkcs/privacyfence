@@ -33,8 +33,10 @@ from WebKit import WKWebView
 
 from privacyfence.approval_window import (
     _CONTENT_FLAG_FILL_ALPHA,
+    _MARGIN,
     _PII_BACKGROUND_ALPHA,
     _PII_BANNER_FILL_ALPHA,
+    _WINDOW_WIDTH,
     ApprovalWindowController,
     _badge_kind,
     _badge_rows,
@@ -185,13 +187,19 @@ class TestPiiTintAndBanner:
         assert len(self._boxes_with_alpha(views, _PII_BACKGROUND_ALPHA)) >= 1
         assert len(self._boxes_with_alpha(views, _PII_BANNER_FILL_ALPHA)) >= 1
 
-    def test_banner_text_names_every_detected_category(self):
+    def test_banner_text_is_framing_only_categories_live_in_the_badges(self):
+        # The banner sentence used to repeat every category inline
+        # ("...review carefully: X, Y") right above a badge row that named
+        # them again -- see TestSensitivityBadges's docstring for why that
+        # duplication was removed. The banner is now just the framing
+        # sentence; category coverage is TestSensitivityBadges's job.
         controller = make_controller(pii_categories=["US Social Security Number", "IBAN (bank account number)"])
         views = build_views(controller)
         values = text_field_values(views)
         assert controller._pii_banner_text() in values
-        assert "US Social Security Number" in controller._pii_banner_text()
-        assert "IBAN (bank account number)" in controller._pii_banner_text()
+        assert controller._pii_banner_text().endswith(":")
+        assert "US Social Security Number" not in controller._pii_banner_text()
+        assert "IBAN (bank account number)" not in controller._pii_banner_text()
 
     def test_write_style_popup_with_pii_shaped_text_in_details_still_has_no_tint(self):
         # gate.py never populates pii_categories for a popup (write) gate in
@@ -235,13 +243,14 @@ class TestContentFlagBanner:
         assert len(self._boxes_with_alpha(views, _CONTENT_FLAG_FILL_ALPHA)) >= 1
         assert self._boxes_with_alpha(views, _PII_BACKGROUND_ALPHA) == []
 
-    def test_banner_text_names_every_flagged_category(self):
+    def test_banner_text_is_framing_only_categories_live_in_the_badges(self):
         controller = make_controller(write_content_flags=["IBAN (bank account number)", "Salary/compensation information"])
         views = build_views(controller)
         values = text_field_values(views)
         assert controller._content_flag_banner_text() in values
-        assert "IBAN (bank account number)" in controller._content_flag_banner_text()
-        assert "Salary/compensation information" in controller._content_flag_banner_text()
+        assert controller._content_flag_banner_text().endswith(":")
+        assert "IBAN (bank account number)" not in controller._content_flag_banner_text()
+        assert "Salary/compensation information" not in controller._content_flag_banner_text()
 
     def test_flags_and_pii_categories_use_visually_distinct_alphas(self):
         # Not the same banner styling reused for both directions -- a
@@ -253,8 +262,10 @@ class TestContentFlagBanner:
 class TestSensitivityBadges:
     """Sensitivity badges ("🟠 Contains financial figures",
     "🔴 Possible personal data: IBAN") -- a compact badge per category,
-    rendered below whichever banner (PII or content-flag) is present, in
-    addition to that banner's existing text."""
+    nested inside the same card as whichever banner (PII or content-flag)
+    is present, right below its now category-free framing sentence -- see
+    TestRiskSectionMerge for the "one shared card" structure this and the
+    banner text render inside."""
 
     def test_financial_categories_get_the_financial_kind(self):
         assert _badge_kind("Financial figures (currency amounts)") == "financial"
@@ -302,6 +313,46 @@ class TestSensitivityBadges:
         views = build_views(make_controller(pii_categories=[], write_content_flags=[]))
         values = text_field_values(views)
         assert not any("\U0001f7e0" in v or "\U0001f534" in v for v in values)
+
+
+class TestRiskSectionMerge:
+    """The risk banner's framing text and its category badges now render
+    inside one shared card (_build_risk_section()) instead of two
+    differently-styled elements stacked with a small gap between them --
+    the box behind the banner text must be tall enough to also hold the
+    badge row, not just the text alone, and the badges sit inset to match
+    the card's own padding."""
+
+    def _card_box(self, views, alpha, tolerance=1e-6):
+        matches = [
+            v for v in views
+            if isinstance(v, NSBox) and v.fillColor() is not None
+            and abs(v.fillColor().alphaComponent() - alpha) < tolerance
+        ]
+        assert len(matches) == 1, f"expected exactly one card box at alpha={alpha}, found {len(matches)}"
+        return matches[0]
+
+    def test_pii_card_box_spans_both_banner_text_and_badges(self):
+        controller = make_controller(
+            pii_categories=["US Social Security Number", "IBAN (bank account number)"],
+        )
+        views = build_views(controller)
+        card_box = self._card_box(views, _PII_BANNER_FILL_ALPHA)
+        content_width = _WINDOW_WIDTH - 2 * _MARGIN
+        expected_h = controller._risk_section_height(
+            controller._pii_banner_text(), controller.pii_categories, content_width,
+        )
+        assert abs(card_box.frame().size.height - expected_h) < 1.0
+
+    def test_content_flag_card_box_spans_both_banner_text_and_badges(self):
+        controller = make_controller(write_content_flags=["IBAN (bank account number)"])
+        views = build_views(controller)
+        card_box = self._card_box(views, _CONTENT_FLAG_FILL_ALPHA)
+        content_width = _WINDOW_WIDTH - 2 * _MARGIN
+        expected_h = controller._risk_section_height(
+            controller._content_flag_banner_text(), controller.write_content_flags, content_width,
+        )
+        assert abs(card_box.frame().size.height - expected_h) < 1.0
 
 
 class TestClaudeSaysBlock:

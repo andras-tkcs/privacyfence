@@ -488,15 +488,7 @@ class ApprovalWindowController(NSObject):
     # ------------------------------------------------------------------ #
 
     def _pii_banner_text(self) -> str:
-        return "\u26a0 Possible PII detected — review carefully: " + ", ".join(self.pii_categories)
-
-    def _pii_banner_height(self, width: float) -> float:
-        if not self.pii_categories:
-            return 0.0
-        text_h = _text_height(
-            self._pii_banner_text(), width - 2 * _SUMMARY_PAD, NSFont.boldSystemFontOfSize_(13)
-        )
-        return max(20.0, text_h) + _SUMMARY_PAD
+        return "\u26a0 Possible PII detected — review carefully:"
 
     # ------------------------------------------------------------------ #
     # Write-gate content-flag banner -- informational, no confirmation
@@ -506,56 +498,89 @@ class ApprovalWindowController(NSObject):
     # ------------------------------------------------------------------ #
 
     def _content_flag_banner_text(self) -> str:
-        return "ⓘ This message appears to contain: " + ", ".join(self.write_content_flags)
-
-    def _content_flag_banner_height(self, width: float) -> float:
-        if not self.write_content_flags:
-            return 0.0
-        text_h = _text_height(
-            self._content_flag_banner_text(), width - 2 * _SUMMARY_PAD, NSFont.boldSystemFontOfSize_(13)
-        )
-        return max(20.0, text_h) + _SUMMARY_PAD
+        return "ⓘ This message appears to contain:"
 
     # ------------------------------------------------------------------ #
-    # Sensitivity badges -- a compact, colored chip per detected category,
-    # rendered right below whichever banner above is present. Both callers
-    # pass their own categories list explicitly (pii_categories / write_content_flags)
-    # rather than this reading self.-state itself, matching the banners'
-    # own "coded independently... nothing here assumes they're mutually
-    # exclusive" convention (see the class-level comment above
-    # _content_flag_banner_height) -- these two lists could in principle
-    # both be non-empty at once, and each must render its own badges. The
-    # banner text stays the detailed explanation; badges are the
-    # at-a-glance summary the design mockup shows.
+    # Risk section: banner framing text plus its category badges, nested
+    # inside one shared background box -- not two differently-styled
+    # elements stacked with a gap between them (that duplicated the same
+    # category names twice: once in the banner sentence, once per badge).
+    # Both callers pass their own categories list explicitly (pii_categories
+    # / write_content_flags) rather than this reading self.-state itself,
+    # matching the two banners' own "coded independently... nothing here
+    # assumes they're mutually exclusive" convention -- these two lists
+    # could in principle both be non-empty at once, and each gets its own
+    # card.
     # ------------------------------------------------------------------ #
 
     def _badges_height(self, categories: list[str], width: float) -> float:
         _, total_h = _badge_rows(categories, width)
         return total_h
 
-    def _build_badges_view(self, categories: list[str], y: float, width: float) -> tuple[NSView, float]:
+    def _build_badges_view(
+        self, categories: list[str], y: float, width: float, *, x: float = _MARGIN
+    ) -> tuple[NSView, float]:
         rows, total_h = _badge_rows(categories, width)
-        container = _FlippedView.alloc().initWithFrame_(NSMakeRect(_MARGIN, y, width, total_h))
+        container = _FlippedView.alloc().initWithFrame_(NSMakeRect(x, y, width, total_h))
         row_y = 0.0
         for row in rows:
-            x = 0.0
+            row_x = 0.0
             for label, kind, badge_w in row:
                 color = _BADGE_COLOR[kind]
                 badge_box = _background_box(
-                    NSMakeRect(x, row_y, badge_w, _BADGE_ROW_HEIGHT),
+                    NSMakeRect(row_x, row_y, badge_w, _BADGE_ROW_HEIGHT),
                     fill=color.colorWithAlphaComponent_(0.18),
                     corner_radius=_BADGE_ROW_HEIGHT / 2.0,
                 )
                 container.addSubview_(badge_box)
                 label_field = _make_label(label, size=_BADGE_FONT_SIZE, bold=True, color=color)
                 label_field.setFrame_(NSMakeRect(
-                    x + _BADGE_PAD_X, (_BADGE_ROW_HEIGHT - 14.0) / 2.0,
+                    row_x + _BADGE_PAD_X, (_BADGE_ROW_HEIGHT - 14.0) / 2.0,
                     badge_w - 2 * _BADGE_PAD_X, 14.0,
                 ))
                 container.addSubview_(label_field)
-                x += badge_w + _BADGE_GAP
+                row_x += badge_w + _BADGE_GAP
             row_y += _BADGE_ROW_HEIGHT + _BADGE_ROW_GAP
         return container, total_h
+
+    def _risk_section_height(self, banner_text: str, categories: list[str], width: float) -> float:
+        """Combined height of one risk card: framing banner text plus its
+        inset category badges. Shared by _compute_layout() and
+        _build_risk_section() so layout and the real render can never
+        disagree about how tall the merged card is -- the same "must
+        mirror the real render" contract _badge_rows()'s own docstring
+        already calls out."""
+        if not categories:
+            return 0.0
+        inset_width = width - 2 * _SUMMARY_PAD
+        text_h = max(20.0, _text_height(banner_text, inset_width, NSFont.boldSystemFontOfSize_(13)))
+        badges_h = self._badges_height(categories, inset_width)
+        return text_h + _BADGE_ROW_GAP + badges_h + _SUMMARY_PAD
+
+    def _build_risk_section(
+        self, banner_text: str, categories: list[str], color, fill_alpha: float, y: float, width: float,
+    ) -> tuple[NSView, float]:
+        """One shared card: the risk banner's framing text (the detailed
+        "review carefully"/"appears to contain" sentence, minus the
+        category list it used to repeat), then its category badges nested
+        directly below -- inside the same bordered/tinted box, not a
+        separately-styled element underneath it."""
+        inset_width = width - 2 * _SUMMARY_PAD
+        text_h = max(20.0, _text_height(banner_text, inset_width, NSFont.boldSystemFontOfSize_(13)))
+        card_h = self._risk_section_height(banner_text, categories, width)
+
+        card = _FlippedView.alloc().initWithFrame_(NSMakeRect(_MARGIN, y, width, card_h))
+        bg = _background_box(NSMakeRect(0, 0, width, card_h), fill=color.colorWithAlphaComponent_(fill_alpha))
+        card.addSubview_(bg)
+
+        label = _make_label(banner_text, size=13, bold=True, color=color)
+        label.setFrame_(NSMakeRect(_SUMMARY_PAD, _SUMMARY_PAD / 2, inset_width, text_h))
+        card.addSubview_(label)
+
+        badges_view, _ = self._build_badges_view(categories, text_h + _BADGE_ROW_GAP, inset_width, x=_SUMMARY_PAD)
+        card.addSubview_(badges_view)
+
+        return card, card_h
 
     # ------------------------------------------------------------------ #
     # "Claude says" -- self-reported, unverified. See gate.py's
@@ -706,11 +731,11 @@ class ApprovalWindowController(NSObject):
             y += 20.0  # "AI will receive" label row
             y += self._visibility_height(content_width) + 18.0
         if self.pii_categories:
-            y += self._pii_banner_height(content_width) + _BADGE_ROW_GAP
-            y += self._badges_height(self.pii_categories, content_width) + 18.0
+            y += self._risk_section_height(self._pii_banner_text(), self.pii_categories, content_width) + 18.0
         if self.write_content_flags:
-            y += self._content_flag_banner_height(content_width) + _BADGE_ROW_GAP
-            y += self._badges_height(self.write_content_flags, content_width) + 18.0
+            y += self._risk_section_height(
+                self._content_flag_banner_text(), self.write_content_flags, content_width
+            ) + 18.0
         if self.claude_reason:
             y += 20.0  # "Claude says (unverified)" label row
             y += self._claude_reason_height(content_width) + 18.0
@@ -844,52 +869,31 @@ class ApprovalWindowController(NSObject):
             content.addSubview_(overlay)
             y += box_h + 18.0
 
-        # RISK: the PII banner, relabeled in framing (not literal text) as
-        # the risk section per the design -- content unchanged from before.
+        # RISK: the PII banner (framing text + inset category badges, one
+        # shared card -- see _build_risk_section()'s docstring for why
+        # these aren't two separately-styled elements).
         if self.pii_categories:
-            banner_h = self._pii_banner_height(content_width)
-            banner_bg = _background_box(
-                NSMakeRect(_MARGIN, y, content_width, banner_h),
-                fill=_PII_RED.colorWithAlphaComponent_(_PII_BANNER_FILL_ALPHA),
+            card, card_h = self._build_risk_section(
+                self._pii_banner_text(), self.pii_categories, _PII_RED, _PII_BANNER_FILL_ALPHA,
+                y, content_width,
             )
-            content.addSubview_(banner_bg)
-            banner_label = _make_label(self._pii_banner_text(), size=13, bold=True, color=_PII_RED)
-            banner_label.setFrame_(NSMakeRect(
-                _MARGIN + _SUMMARY_PAD, y + _SUMMARY_PAD / 2,
-                content_width - 2 * _SUMMARY_PAD, banner_h - _SUMMARY_PAD,
-            ))
-            content.addSubview_(banner_label)
-            y += banner_h + _BADGE_ROW_GAP
-
-            badges_view, badges_h = self._build_badges_view(self.pii_categories, y, content_width)
-            content.addSubview_(badges_view)
-            y += badges_h + 18.0
+            content.addSubview_(card)
+            y += card_h + 18.0
 
         # RISK (write side): content-flag banner -- informational only, no
         # confirmation gate, deliberately amber not red (see class-level
-        # comment above _content_flag_banner_height). In practice never
+        # comment above _content_flag_banner_text). In practice never
         # renders alongside the PII banner above (gate.py only populates
         # one or the other depending on gate direction), but coded
         # independently rather than as an if/elif -- nothing here assumes
         # they're mutually exclusive.
         if self.write_content_flags:
-            flag_h = self._content_flag_banner_height(content_width)
-            flag_bg = _background_box(
-                NSMakeRect(_MARGIN, y, content_width, flag_h),
-                fill=_CONTENT_FLAG_AMBER.colorWithAlphaComponent_(_CONTENT_FLAG_FILL_ALPHA),
+            card, card_h = self._build_risk_section(
+                self._content_flag_banner_text(), self.write_content_flags,
+                _CONTENT_FLAG_AMBER, _CONTENT_FLAG_FILL_ALPHA, y, content_width,
             )
-            content.addSubview_(flag_bg)
-            flag_label = _make_label(self._content_flag_banner_text(), size=13, bold=True, color=_CONTENT_FLAG_AMBER)
-            flag_label.setFrame_(NSMakeRect(
-                _MARGIN + _SUMMARY_PAD, y + _SUMMARY_PAD / 2,
-                content_width - 2 * _SUMMARY_PAD, flag_h - _SUMMARY_PAD,
-            ))
-            content.addSubview_(flag_label)
-            y += flag_h + _BADGE_ROW_GAP
-
-            badges_view, badges_h = self._build_badges_view(self.write_content_flags, y, content_width)
-            content.addSubview_(badges_view)
-            y += badges_h + 18.0
+            content.addSubview_(card)
+            y += card_h + 18.0
 
         # "Claude says" -- self-reported, unverified (see class-level
         # comment above _claude_reason_height). Its own label, its own
