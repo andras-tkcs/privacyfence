@@ -3,15 +3,27 @@ normalization. The refresh-on-expired-session behavior (_call/_try_refresh)
 is the most bug-prone part of this client -- it's what keeps a long-running
 daemon from forcing re-authentication every time a session token expires --
 so it gets the deepest coverage here.
+
+``authorize_interactive`` (the browser-loopback Web Server + PKCE flow, a
+different shape from the Google clients' InstalledAppFlow) is tested by
+mocking ``run_browser_oauth`` -- the ``oauth_loopback`` module boundary --
+rather than mocking ``authorize_interactive`` itself or skipping straight to
+a canned token response. The fake ``run_browser_oauth`` invokes the real
+``exchange`` closure it was given, so the code-exchange HTTP call and the
+``SalesforceClientError`` wrapping around a failed exchange (lines ~122-139)
+are exercised for real, with only ``requests.post`` mocked underneath.
 """
 from __future__ import annotations
 
 import json
+import stat
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+import requests
 
+from privacyfence.oauth_loopback import OAuthLoopbackError
 from privacyfence.salesforce_client import (
     SalesforceClient,
     SalesforceClientError,
@@ -21,6 +33,7 @@ from privacyfence.salesforce_client import (
     _is_expired_session_error,
     _validate_object_type_name,
     _validate_salesforce_id,
+    authorize_interactive,
     load_token_file,
 )
 
@@ -51,6 +64,127 @@ class TestLoadTokenFile:
         path = tmp_path / "token.json"
         path.write_text('{"access_token": "t", "instance_url": "https://x.com"}')
         assert load_token_file(str(path)) == {"access_token": "t", "instance_url": "https://x.com"}
+
+
+# ---------------------------------------------------------------------------- #
+# authorize_interactive: browser-loopback Web Server + PKCE flow.
+# ``run_browser_oauth`` (the oauth_loopback module boundary) is mocked; the
+# fake implementation invokes the real ``exchange``/``build_authorize_url``
+# closures it receives so the code-exchange HTTP call and error wrapping run
+# for real, with only ``requests.post`` mocked below that.
+# ---------------------------------------------------------------------------- #
+
+def _invoke_exchange(build_authorize_url, exchange, port, path, redirect_host):
+    """Fake run_browser_oauth: skip the real browser/HTTP server, and just
+    call the exchange closure with a fake authorization code -- this is what
+    drives the exchange()'s own requests.post + error-wrapping logic."""
+    redirect_uri = f"http://{redirect_host}:{port}{path}"
+    return exchange("auth-code-123", redirect_uri, "code-verifier-abc")
+
+
+class TestAuthorizeInteractive:
+    def test_code_exchange_http_failure_becomes_salesforce_client_error(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("privacyfence.salesforce_client.run_browser_oauth", _invoke_exchange)
+        def raise_it(*a, **kw):
+            raise requests.RequestException("network error")
+        monkeypatch.setattr("requests.post", raise_it)
+
+        with pytest.raises(SalesforceClientError, match="Salesforce OAuth exchange failed: network error"):
+            authorize_interactive("ck", "cs", str(tmp_path / "token.json"))
+
+    def test_code_exchange_http_error_status_becomes_salesforce_client_error(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("privacyfence.salesforce_client.run_browser_oauth", _invoke_exchange)
+        response = MagicMock()
+        response.raise_for_status.side_effect = requests.HTTPError("400 Client Error: invalid_grant")
+        monkeypatch.setattr("requests.post", lambda *a, **kw: response)
+
+        with pytest.raises(SalesforceClientError, match="Salesforce OAuth exchange failed.*invalid_grant"):
+            authorize_interactive("ck", "cs", str(tmp_path / "token.json"))
+
+    def test_loopback_failure_becomes_salesforce_client_error(self, monkeypatch, tmp_path):
+        def raiser(*a, **kw):
+            raise OAuthLoopbackError("timed out waiting for sign-in")
+        monkeypatch.setattr("privacyfence.salesforce_client.run_browser_oauth", raiser)
+
+        with pytest.raises(SalesforceClientError, match="Salesforce sign-in failed.*timed out"):
+            authorize_interactive("ck", "cs", str(tmp_path / "token.json"))
+
+    def test_response_missing_access_token_raises(self, monkeypatch, tmp_path):
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"instance_url": "https://my.salesforce.com"}  # no access_token
+        monkeypatch.setattr("requests.post", lambda *a, **kw: response)
+        monkeypatch.setattr("privacyfence.salesforce_client.run_browser_oauth", _invoke_exchange)
+
+        with pytest.raises(SalesforceClientError, match="did not return a usable token"):
+            authorize_interactive("ck", "cs", str(tmp_path / "token.json"))
+
+    def test_response_missing_instance_url_raises(self, monkeypatch, tmp_path):
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"access_token": "tok"}  # no instance_url
+        monkeypatch.setattr("requests.post", lambda *a, **kw: response)
+        monkeypatch.setattr("privacyfence.salesforce_client.run_browser_oauth", _invoke_exchange)
+
+        with pytest.raises(SalesforceClientError, match="did not return a usable token"):
+            authorize_interactive("ck", "cs", str(tmp_path / "token.json"))
+
+    def test_exchange_posts_expected_params_to_login_url(self, monkeypatch, tmp_path):
+        captured = {}
+        def fake_post(url, data=None, timeout=None):
+            captured["url"] = url
+            captured["data"] = data
+            captured["timeout"] = timeout
+            response = MagicMock()
+            response.raise_for_status.return_value = None
+            response.json.return_value = {"access_token": "tok", "instance_url": "https://my.salesforce.com"}
+            return response
+        monkeypatch.setattr("requests.post", fake_post)
+        monkeypatch.setattr("privacyfence.salesforce_client.run_browser_oauth", _invoke_exchange)
+
+        authorize_interactive("ck", "cs", str(tmp_path / "token.json"), login_url="https://test.salesforce.com/")
+
+        assert captured["url"] == "https://test.salesforce.com/services/oauth2/token"
+        assert captured["data"]["grant_type"] == "authorization_code"
+        assert captured["data"]["code"] == "auth-code-123"
+        assert captured["data"]["client_id"] == "ck"
+        assert captured["data"]["client_secret"] == "cs"
+        assert captured["data"]["code_verifier"] == "code-verifier-abc"
+        assert captured["data"]["redirect_uri"] == "http://localhost:53683/callback"
+
+    def test_successful_flow_saves_token_with_restricted_permissions(self, monkeypatch, tmp_path):
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "access_token": "tok", "refresh_token": "rt", "instance_url": "https://my.salesforce.com",
+        }
+        monkeypatch.setattr("requests.post", lambda *a, **kw: response)
+        monkeypatch.setattr("privacyfence.salesforce_client.run_browser_oauth", _invoke_exchange)
+        token_file = tmp_path / "nested" / "token.json"
+
+        result = authorize_interactive("ck", "cs", str(token_file))
+
+        assert result == {"access_token": "tok", "refresh_token": "rt", "instance_url": "https://my.salesforce.com"}
+        saved = json.loads(token_file.read_text(encoding="utf-8"))
+        assert saved == result
+        assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
+
+    def test_authorize_url_includes_pkce_challenge_and_scopes(self, monkeypatch, tmp_path):
+        captured = {}
+        def fake_run_browser_oauth(build_authorize_url, exchange, port, path, redirect_host):
+            captured["url"] = build_authorize_url("http://localhost:53683/callback", "state-xyz", "challenge-xyz")
+            return {"access_token": "tok", "instance_url": "https://my.salesforce.com"}
+        monkeypatch.setattr("privacyfence.salesforce_client.run_browser_oauth", fake_run_browser_oauth)
+
+        authorize_interactive("my-client-id", "cs", str(tmp_path / "token.json"))
+
+        url = captured["url"]
+        assert url.startswith("https://login.salesforce.com/services/oauth2/authorize?")
+        assert "client_id=my-client-id" in url
+        assert "code_challenge=challenge-xyz" in url
+        assert "code_challenge_method=S256" in url
+        assert "state=state-xyz" in url
+        assert "scope=api+refresh_token" in url
 
 
 # ---------------------------------------------------------------------------- #
