@@ -58,6 +58,7 @@ from AppKit import (
     NSBoxCustom,
     NSButton,
     NSColor,
+    NSControlSizeSmall,
     NSFloatingWindowLevel,
     NSFont,
     NSFontAttributeName,
@@ -100,6 +101,11 @@ _TITLE_RIGHT_RESERVE = _ICON_SIZE + _ICON_TITLE_GAP
 # indicator, deliberately smaller than the shield's primary brand mark.
 _CONNECTOR_ICON_SIZE = 28.0
 _KICKER_HEIGHT = 22.0
+# The "Preview" label row: taller than the 16pt label alone because the
+# "Show more"/"Show less" toggle sharing the row is a small-control-size
+# NSButton (27pt, not the label's 16pt) -- without the extra room the button
+# ran into the details pane immediately below it, leaving no visible gap.
+_PREVIEW_ROW_HEIGHT = 28.0
 _SUMMARY_LABEL_WIDTH = 84.0
 _SUMMARY_ROW_GAP = 9.0
 _SUMMARY_PAD = 14.0
@@ -273,8 +279,8 @@ def _connector_icon_path(connector: str) -> str | None:
     this" indicator, distinct from the shield's "this is PrivacyFence"
     mark at top-right. Same silent-skip fallback as _icon_path(): missing
     or unrecognized connector just renders no icon, never an error --
-    real logo assets aren't bundled by this change (see
-    resources/connector_icons/README, if/when one exists)."""
+    see resources/connector_icons/README for where the bundled assets
+    come from."""
     if not connector:
         return None
     p = Path(__file__).parent / "resources" / "connector_icons" / f"{connector}.png"
@@ -758,6 +764,7 @@ class ApprovalWindowController(NSObject):
         btn = NSButton.alloc().init()
         btn.setTitle_("Show less" if self._details_expanded else "Show more")
         btn.setBezelStyle_(NSBezelStyleRounded)
+        btn.setControlSize_(NSControlSizeSmall)
         btn.setFont_(NSFont.systemFontOfSize_(11))
         btn.setTarget_(self)
         btn.setAction_("toggleDetailsExpanded:")
@@ -792,7 +799,9 @@ class ApprovalWindowController(NSObject):
         if self.claude_reason:
             y += 20.0  # "Claude says (unverified)" label row
             y += self._claude_reason_height(content_width) + 18.0
-        y += 20.0  # "Preview" label row
+        y += _PREVIEW_ROW_HEIGHT  # "Preview" label row -- taller than the label alone to
+        # clear the "Show more"/"Show less" button's real (small-control-size) height; see
+        # its use in build_panel() just below the matching real render.
         y += self._details_height
         return y, title_h
 
@@ -1011,7 +1020,7 @@ class ApprovalWindowController(NSObject):
         content.addSubview_(details_label)
         expand_btn.setFrameOrigin_((_MARGIN + content_width - expand_w, y - 4.0))
         content.addSubview_(expand_btn)
-        y += 20.0
+        y += _PREVIEW_ROW_HEIGHT
 
         details_view = self._build_details_view(y, content_width)
         content.addSubview_(details_view)
