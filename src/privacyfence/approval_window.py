@@ -18,12 +18,14 @@ Never present for a write (show_popup never sets self.visibility; see its
 docstring for why).
 
 When gate.py's PII detector (pii_detector.py) flags categories in the
-content of a read (review-gate) popup, the window renders a light-red wash
-over the whole panel plus a warning banner naming what was found — the
+content of a read (review-gate) popup, the window renders a slim red accent
+bar along its left edge plus a warning card naming what was found — the
 visual cue that a second, explicit "Are you sure?" confirmation (approval_
 popup.show_pii_confirmation_popup) is coming after Allow once, not a
 decision by itself. Write (popup-gate) approvals never carry pii_categories,
-so this never renders for them.
+so this never renders for them. (A full-window red wash used to stand in
+for the accent bar; it was dropped for diluting the Allow once/Deny
+buttons' own contrast along with everything else on screen.)
 
 Allow once has no "\\r" keyEquivalent and the details pane is the panel's
 initial first responder — hitting Enter the moment the window appears
@@ -96,6 +98,7 @@ _SUMMARY_LABEL_WIDTH = 84.0
 _SUMMARY_ROW_GAP = 9.0
 _SUMMARY_PAD = 14.0
 _BUTTON_ROW_HEIGHT = 66.0
+_RISK_SPINE_WIDTH = 5.0  # slim left-edge accent bar, shared by both risk signals below
 
 # Brand colors sampled from resources/icon_512.png — a fixed identity, not a
 # themed value, so these stay literal rather than following light/dark mode.
@@ -105,6 +108,9 @@ _BLUE = NSColor.colorWithSRGBRed_green_blue_alpha_(0x5B / 255, 0xA4 / 255, 0xFF 
 # a low-alpha wash of it reads as "light red" in light mode and a muted red
 # tint in dark mode, rather than a literal color that fights the OS theme.
 _PII_RED = NSColor.systemRedColor()
+# No longer produced anywhere -- kept only so tests can assert this alpha
+# never reappears (it used to be a full-window wash; see _RISK_SPINE_WIDTH
+# and the risk-spine blocks in _build_content_view() for what replaced it).
 _PII_BACKGROUND_ALPHA = 0.10
 _PII_BANNER_FILL_ALPHA = 0.16
 
@@ -112,8 +118,10 @@ _PII_BANNER_FILL_ALPHA = 0.16
 # an informational signal (Claude's own drafted content, no second
 # confirmation gate attached), not the "possible PII flowed in from an
 # external source, confirm before proceeding" signal the red tint means.
-# No full-window wash either, only this banner's own fill -- see gate.py's
-# write_content_flags comment and approval_popup.show_popup's docstring.
+# Gets the same left-edge spine treatment as the PII case (amber instead
+# of red) for glanceability -- see gate.py's write_content_flags comment
+# and approval_popup.show_popup's docstring for the no-second-confirmation
+# distinction that still holds.
 _CONTENT_FLAG_AMBER = NSColor.systemOrangeColor()
 _CONTENT_FLAG_FILL_ALPHA = 0.12
 
@@ -799,15 +807,29 @@ class ApprovalWindowController(NSObject):
         content = _FlippedView.alloc().initWithFrame_(NSMakeRect(0, 0, _WINDOW_WIDTH, window_height))
 
         if self.pii_categories:
-            # Full-window wash, added first so every other subview draws on
-            # top of it — this is the "the popup window becomes light red"
-            # signal, independent of the more specific banner text below.
-            tint = _background_box(
-                NSMakeRect(0, 0, _WINDOW_WIDTH, window_height),
-                fill=_PII_RED.colorWithAlphaComponent_(_PII_BACKGROUND_ALPHA),
-                corner_radius=0.0,
+            # Slim, full-strength (not alpha-washed) accent bar along the
+            # left edge -- replaces the old full-window red wash, which
+            # diluted the Allow/Deny buttons' own contrast along with
+            # everything else. The actual "what was detected" detail
+            # still lives in the banner card below, unchanged by this.
+            spine = _background_box(
+                NSMakeRect(0, 0, _RISK_SPINE_WIDTH, window_height),
+                fill=_PII_RED, corner_radius=0.0,
             )
-            content.addSubview_(tint)
+            content.addSubview_(spine)
+
+        if self.write_content_flags:
+            # Same slim-spine treatment as the PII case above, for visual
+            # consistency between the two risk signals -- amber, not red,
+            # per the existing distinction. Coded independently, not
+            # if/elif, matching the pattern already used for the two risk
+            # cards further down (gate.py never populates both at once,
+            # but nothing here assumes that).
+            spine = _background_box(
+                NSMakeRect(0, 0, _RISK_SPINE_WIDTH, window_height),
+                fill=_CONTENT_FLAG_AMBER, corner_radius=0.0,
+            )
+            content.addSubview_(spine)
 
         y = 22.0
 

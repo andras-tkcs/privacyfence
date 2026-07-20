@@ -36,6 +36,7 @@ from privacyfence.approval_window import (
     _MARGIN,
     _PII_BACKGROUND_ALPHA,
     _PII_BANNER_FILL_ALPHA,
+    _RISK_SPINE_WIDTH,
     _WINDOW_WIDTH,
     ApprovalWindowController,
     _badge_kind,
@@ -160,10 +161,10 @@ class TestPiiTintAndBanner:
 
     def _boxes_with_alpha(self, views, alpha, tolerance=1e-6):
         # Matches on the box's own fillColor() alpha -- the one property
-        # gate.py/approval_window.py's PII wash and banner actually control
-        # (_PII_BACKGROUND_ALPHA / _PII_BANNER_FILL_ALPHA). Not matching on
-        # RGB components: systemRedColor() is a dynamic, appearance-aware
-        # color, so its resolved components can vary by light/dark mode and
+        # gate.py/approval_window.py's PII banner actually controls
+        # (_PII_BANNER_FILL_ALPHA). Not matching on RGB components:
+        # systemRedColor() is a dynamic, appearance-aware color, so its
+        # resolved components can vary by light/dark mode and
         # accessibility settings -- alpha is the stable, code-controlled
         # signal to assert on.
         matches = []
@@ -177,14 +178,26 @@ class TestPiiTintAndBanner:
                 matches.append(v)
         return matches
 
-    def test_no_pii_categories_renders_no_red_tint_anywhere(self):
-        views = build_views(make_controller(pii_categories=[]))
-        assert self._boxes_with_alpha(views, _PII_BACKGROUND_ALPHA) == []
-        assert self._boxes_with_alpha(views, _PII_BANNER_FILL_ALPHA) == []
+    def _spine_boxes(self, views, tolerance=0.5):
+        # The left-edge risk spine that replaced the old full-window wash
+        # -- matched on frame geometry (flush with the window's left edge,
+        # _RISK_SPINE_WIDTH wide) rather than color/alpha, since both the
+        # PII and content-flag spines share this same shape.
+        return [
+            v for v in views
+            if isinstance(v, NSBox)
+            and abs(v.frame().origin.x) < tolerance
+            and abs(v.frame().size.width - _RISK_SPINE_WIDTH) < tolerance
+        ]
 
-    def test_pii_categories_render_a_full_window_wash_and_a_banner_box(self):
+    def test_no_pii_categories_renders_no_spine_or_banner(self):
+        views = build_views(make_controller(pii_categories=[]))
+        assert self._boxes_with_alpha(views, _PII_BANNER_FILL_ALPHA) == []
+        assert self._spine_boxes(views) == []
+
+    def test_pii_categories_render_a_left_edge_spine_and_a_banner_box(self):
         views = build_views(make_controller(pii_categories=["US Social Security Number"]))
-        assert len(self._boxes_with_alpha(views, _PII_BACKGROUND_ALPHA)) >= 1
+        assert len(self._spine_boxes(views)) >= 1
         assert len(self._boxes_with_alpha(views, _PII_BANNER_FILL_ALPHA)) >= 1
 
     def test_banner_text_is_framing_only_categories_live_in_the_badges(self):
@@ -212,6 +225,7 @@ class TestPiiTintAndBanner:
         ))
         assert self._boxes_with_alpha(views, _PII_BACKGROUND_ALPHA) == []
         assert self._boxes_with_alpha(views, _PII_BANNER_FILL_ALPHA) == []
+        assert self._spine_boxes(views) == []
 
 
 class TestContentFlagBanner:
@@ -231,16 +245,27 @@ class TestContentFlagBanner:
                 matches.append(v)
         return matches
 
+    def _spine_boxes(self, views, tolerance=0.5):
+        return [
+            v for v in views
+            if isinstance(v, NSBox)
+            and abs(v.frame().origin.x) < tolerance
+            and abs(v.frame().size.width - _RISK_SPINE_WIDTH) < tolerance
+        ]
+
     def test_no_flags_renders_no_amber_banner(self):
         views = build_views(make_controller(write_content_flags=[]))
         assert self._boxes_with_alpha(views, _CONTENT_FLAG_FILL_ALPHA) == []
+        assert self._spine_boxes(views) == []
 
-    def test_flags_render_a_banner_box_but_no_full_window_wash(self):
-        # Unlike the PII banner, this never gets the full-window red wash
-        # (_PII_BACKGROUND_ALPHA) -- it's informational, not "confirm this
-        # before proceeding".
+    def test_flags_render_a_banner_box_and_a_left_edge_spine(self):
+        # Content flags get the same glanceable left-edge spine treatment
+        # as the PII case now (amber, not red) -- never the old
+        # full-window wash (_PII_BACKGROUND_ALPHA), which neither case
+        # produces anymore.
         views = build_views(make_controller(write_content_flags=["IBAN (bank account number)"]))
         assert len(self._boxes_with_alpha(views, _CONTENT_FLAG_FILL_ALPHA)) >= 1
+        assert len(self._spine_boxes(views)) >= 1
         assert self._boxes_with_alpha(views, _PII_BACKGROUND_ALPHA) == []
 
     def test_banner_text_is_framing_only_categories_live_in_the_badges(self):
