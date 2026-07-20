@@ -879,18 +879,25 @@ class TestAddRule:
         cfg = app._load_config()
         assert cfg["auto_accept_rules"]["gmail.read_message"] == [{"rule": "i_am_sender"}]
 
-    def test_calendar_set_visibility_offers_non_private_event(self, app, monkeypatch):
-        # Regression: calendar.set_visibility was entirely absent from
-        # OPERATION_LABELS/RULES_BY_OPERATION, so non_private_event -- which
-        # auto_accept.py's _rule_non_private_event docstring explicitly
-        # names this operation as supporting -- had no path to be added
-        # short of hand-editing settings.yaml.
-        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: "non_private_event")
+    def test_calendar_set_visibility_offers_the_same_rules_as_other_event_updates(self, app, monkeypatch):
+        # calendar.set_visibility is a write like calendar.create_modify_event, so it
+        # offers the same rule set rather than the visibility-of-the-request-itself
+        # check non_private_event used to apply here -- that check never made sense
+        # for a write, since it just measured the value the call was asking to set.
+        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: "i_am_organizer")
 
         app._add_rule("calendar.set_visibility")
 
         cfg = app._load_config()
-        assert cfg["auto_accept_rules"]["calendar.set_visibility"] == [{"rule": "non_private_event"}]
+        assert cfg["auto_accept_rules"]["calendar.set_visibility"] == [{"rule": "i_am_organizer"}]
+
+    def test_calendar_read_event_details_offers_non_private_event(self, app, monkeypatch):
+        monkeypatch.setattr(menu_bar, "_osascript_pick", lambda **kw: "non_private_event")
+
+        app._add_rule("calendar.read_event_details")
+
+        cfg = app._load_config()
+        assert cfg["auto_accept_rules"]["calendar.read_event_details"] == [{"rule": "non_private_event"}]
 
     def test_rule_with_list_value_starts_empty_no_prompt(self, app, monkeypatch):
         # List-value rules no longer prompt immediately for a (multi-line)

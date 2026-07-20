@@ -218,8 +218,9 @@ should target the PFQA calendar instead.
         4. PrivacyFence menu bar → **Connectors → Calendar → Reconnect…** so the token picks up the
            new scope
 - [ ] (Optional) Trust the PFQA calendar as a resource-scoped grant — covers
-      `calendar.read_event_details` (`read`) and `calendar.create_modify_event` (`write`) for events
-      on it, regardless of who organized them (an alternative to the per-rule options below):
+      `calendar.read_event_details` (`read`) and `calendar.create_modify_event`/
+      `calendar.set_visibility` (`write`) for events on it, regardless of who organized them (an
+      alternative to the per-rule options below):
       ```yaml
       auto_accept_grants:
         calendar:
@@ -236,17 +237,16 @@ should target the PFQA calendar instead.
         calendar.read_event_details:
           - rule: i_am_organizer
       ```
-- [ ] (Optional) Add `non_private_event`, to also exercise `calendar_get_event_details` and
-      `calendar_set_event_visibility` auto-accepting for a non-private event:
+- [ ] (Optional) Add `non_private_event`, to also exercise `calendar_get_event_details`
+      auto-accepting for a non-private event:
       ```yaml
       auto_accept_rules:
         calendar.read_event_details:
           - rule: non_private_event
-        calendar.set_visibility:
-          - rule: non_private_event
       ```
-      Any event set to `private` still prompts regardless — the rule checks the visibility being
-      *requested*, not the event's prior state.
+      This only applies to reads — `calendar_set_event_visibility` (`calendar.set_visibility`) is a
+      write, gated by the same rules as `calendar.create_modify_event` instead (`i_am_organizer`,
+      `no_external_attendees`, `personal_calendar`).
 - [ ] For the recorder: create one dedicated seed event on the PFQA calendar, far enough in the
       future that it won't need recreating, no real attendees:
       ```

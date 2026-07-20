@@ -352,21 +352,6 @@ class TestCalendarRules:
         ctx = make_ctx(args={}, raw_data=SimpleNamespace())
         assert ev._rule_non_private_event(None, ctx) is True
 
-    def test_non_private_event_prefers_requested_visibility_from_args(self):
-        # calendar_set_event_visibility's args always carry the visibility
-        # being requested -- that's the state being approved, not the
-        # event's prior visibility (which could differ and would be the
-        # wrong signal for "is the action about to make this private").
-        ev = AutoAcceptEvaluator({})
-        setting_private = make_ctx(
-            args={"visibility": "private"}, raw_data=SimpleNamespace(visibility="default"),
-        )
-        setting_public = make_ctx(
-            args={"visibility": "public"}, raw_data=SimpleNamespace(visibility="private"),
-        )
-        assert ev._rule_non_private_event(None, setting_private) is False
-        assert ev._rule_non_private_event(None, setting_public) is True
-
 
 # --------------------------------------------------------------------------- #
 # Salesforce rules
