@@ -31,6 +31,7 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import objc
 import rumps
 import yaml
 from AppKit import (
@@ -40,6 +41,7 @@ from AppKit import (
     NSForegroundColorAttributeName,
     NSMutableAttributedString,
 )
+from Foundation import NSObject
 from PyObjCTools import AppHelper
 
 from . import __version__
@@ -304,6 +306,36 @@ def _google_client_config(org_config: dict[str, Any]) -> dict[str, Any]:
     return {"installed": google}
 
 
+class _MenuTrackingDelegate(NSObject):
+    """NSMenuDelegate that tracks whether the status-bar dropdown is
+    currently open on screen.
+
+    Mutating an NSMenu's items (rumps' self.menu.clear()/self.menu = [...])
+    while AppKit is tracking that same menu (i.e. the dropdown is visibly
+    open) crashes the process with EXC_BAD_ACCESS deep inside AppKit's
+    tracking loop -- it's left holding pointers into NSMenuItem objects
+    that just got released. PrivacyFenceMenuBar._rebuild() consults
+    ``app._menu_is_open`` (kept up to date by this delegate) to defer such
+    rebuilds until the dropdown closes instead of mutating it live.
+    """
+
+    def init(self):
+        self = objc.super(_MenuTrackingDelegate, self).init()
+        if self is None:
+            return None
+        self.app = None
+        return self
+
+    def menuWillOpen_(self, _menu: Any) -> None:
+        self.app._menu_is_open = True
+
+    def menuDidClose_(self, _menu: Any) -> None:
+        self.app._menu_is_open = False
+        if self.app._rebuild_pending:
+            self.app._rebuild_pending = False
+            self.app._rebuild()
+
+
 # ---------------------------------------------------------------------------- #
 # App
 # ---------------------------------------------------------------------------- #
@@ -336,6 +368,11 @@ class PrivacyFenceMenuBar(rumps.App):
             quit_button=None,
             template=True,
         )
+        self._menu_is_open = False
+        self._rebuild_pending = False
+        self._menu_tracking_delegate = _MenuTrackingDelegate.alloc().init()
+        self._menu_tracking_delegate.app = self
+        self.menu._menu.setDelegate_(self._menu_tracking_delegate)
         self._rebuild()
         set_rules_changed_listener(self._on_rules_changed)
         self._ipc_server.set_unattended_changed_listener(self._on_unattended_changed)
@@ -370,6 +407,13 @@ class PrivacyFenceMenuBar(rumps.App):
     # ------------------------------------------------------------------ #
 
     def _rebuild(self) -> None:
+        # Rebuilding mutates the live NSMenu the status-bar item shares with
+        # AppKit's tracking loop -- if the dropdown is currently open,
+        # mutating it now crashes the process (see _MenuTrackingDelegate).
+        # Defer instead; menuDidClose_ replays the rebuild once it's safe.
+        if self._menu_is_open:
+            self._rebuild_pending = True
+            return
         cfg = self._load_config()
         org_config = load_org_config()
         connectors_cfg: dict[str, dict] = cfg.get("connectors", {}) or {}
