@@ -61,6 +61,7 @@ from AppKit import (
     NSFloatingWindowLevel,
     NSFont,
     NSFontAttributeName,
+    NSForegroundColorAttributeName,
     NSImage,
     NSImageView,
     NSLineBreakByWordWrapping,
@@ -71,11 +72,13 @@ from AppKit import (
     NSScreen,
     NSStringDrawingUsesLineFragmentOrigin,
     NSTextField,
+    NSUnderlineStyleAttributeName,
+    NSUnderlineStyleSingle,
     NSView,
     NSWindowStyleMaskClosable,
     NSWindowStyleMaskTitled,
 )
-from Foundation import NSData, NSObject, NSString
+from Foundation import NSAttributedString, NSData, NSObject, NSString
 from Quartz import PDFDocument, PDFView
 from WebKit import WKWebView, WKWebViewConfiguration
 
@@ -705,6 +708,30 @@ class ApprovalWindowController(NSObject):
                 btn.setContentTintColor_(NSColor.systemRedColor())
         return btn
 
+    def _build_link_button(self, title: str) -> NSButton:
+        """Small, borderless "link"-style control for the low-frequency,
+        high-consequence standing-rule actions (Always allow / Allow for
+        5 min) -- deliberately not the same pill styling as Deny/Allow
+        once, so a fast, confident click aimed at the primary action
+        can't land on one of these by accident. No existing precedent for
+        a link-style NSButton in this codebase: built via an attributed
+        title rather than a bezel style, since NSBezelStyleRounded has no
+        "no border, small, underlined" variant. Dispatch is unaffected --
+        buttonClicked_ keys on sender.title(), which stays the plain
+        string even with an attributed title set."""
+        btn = NSButton.alloc().init()
+        btn.setBordered_(False)
+        btn.setTarget_(self)
+        btn.setAction_("buttonClicked:")
+        attrs = {
+            NSFontAttributeName: NSFont.systemFontOfSize_(11),
+            NSForegroundColorAttributeName: NSColor.secondaryLabelColor(),
+            NSUnderlineStyleAttributeName: NSUnderlineStyleSingle,
+        }
+        btn.setAttributedTitle_(NSAttributedString.alloc().initWithString_attributes_(title, attrs))
+        btn.sizeToFit()
+        return btn
+
     def _build_expand_toggle_button(self) -> NSButton:
         """"Show more"/"Show less" -- the details pane's progressive-
         disclosure toggle. Its own action (toggleDetailsExpanded_), not
@@ -969,16 +996,25 @@ class ApprovalWindowController(NSObject):
         accept_btn.setFrameOrigin_((right_x, button_y))
         content.addSubview_(accept_btn)
 
+        # Always allow / Allow for 5 min: small link-style controls
+        # anchored near Deny on the left -- separated from Allow once by
+        # both size and position so a fast, confident click aimed at the
+        # primary action can't land on one of these standing-rule actions
+        # by accident. Allow once itself keeps its far-right position,
+        # untouched.
+        link_x = _MARGIN + deny_btn.frame().size.width + 16.0
+
         if self.allow_accept_all:
-            accept_all_btn = self._build_button("Always allow")
-            right_x -= accept_all_btn.frame().size.width + 8.0
-            accept_all_btn.setFrameOrigin_((right_x, button_y))
+            accept_all_btn = self._build_link_button("Always allow")
+            link_y = content_height + (_BUTTON_ROW_HEIGHT - accept_all_btn.frame().size.height) / 2.0
+            accept_all_btn.setFrameOrigin_((link_x, link_y))
             content.addSubview_(accept_all_btn)
+            link_x += accept_all_btn.frame().size.width + 10.0
 
         if self.allow_temp_accept:
-            temp_accept_btn = self._build_button("Allow for 5 min")
-            right_x -= temp_accept_btn.frame().size.width + 8.0
-            temp_accept_btn.setFrameOrigin_((right_x, button_y))
+            temp_accept_btn = self._build_link_button("Allow for 5 min")
+            link_y = content_height + (_BUTTON_ROW_HEIGHT - temp_accept_btn.frame().size.height) / 2.0
+            temp_accept_btn.setFrameOrigin_((link_x, link_y))
             content.addSubview_(temp_accept_btn)
 
         return content

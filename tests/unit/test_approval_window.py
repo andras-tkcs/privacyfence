@@ -152,6 +152,31 @@ class TestButtonSet:
         panel = controller.build_panel()
         assert panel.initialFirstResponder() is controller._details_view
 
+    def test_always_allow_and_allow_for_5_min_are_borderless_deny_and_allow_once_are_not(self):
+        # Always allow / Allow for 5 min are standing-rule actions taken
+        # rarely; Deny/Allow once are the two things people do constantly.
+        # The former render as small borderless/link-style controls, the
+        # latter keep their full pill-button styling -- see
+        # _build_link_button()'s docstring for why.
+        titles = buttons_by_title(build_views(make_controller(allow_accept_all=True, allow_temp_accept=True)))
+        assert titles["Always allow"].isBordered() is False
+        assert titles["Allow for 5 min"].isBordered() is False
+        assert titles["Allow once"].isBordered() is True
+        assert titles["Deny"].isBordered() is True
+
+    def test_always_allow_and_allow_for_5_min_sit_left_of_allow_once_near_deny(self):
+        # Separated from Allow once by both size and position so a fast,
+        # confident click aimed at the primary action can't land on a
+        # standing-rule action by accident -- Allow once stays alone at
+        # the far right.
+        titles = buttons_by_title(build_views(make_controller(allow_accept_all=True, allow_temp_accept=True)))
+        deny_right_edge = titles["Deny"].frame().origin.x + titles["Deny"].frame().size.width
+        allow_once_left_edge = titles["Allow once"].frame().origin.x
+        for name in ("Always allow", "Allow for 5 min"):
+            x = titles[name].frame().origin.x
+            assert x >= deny_right_edge
+            assert x < allow_once_left_edge
+
 
 class TestPiiTintAndBanner:
     """connector-qa-testing.md Phase 2 steps 18-19/21-23: a read popup with
