@@ -21,11 +21,17 @@
 
 import os
 import sys
+import tomllib
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 
 SRC = str(Path("src").resolve())
 sys.path.insert(0, SRC)
+
+# Single source of truth per CLAUDE.md's version-bump policy -- read, never
+# hardcoded here, so this file never becomes a third place that needs bumping.
+with open("pyproject.toml", "rb") as _f:
+    VERSION = tomllib.load(_f)["project"]["version"]
 
 # Use .icns built by build_dmg.sh; fall back to PNG (will error on macOS, but
 # lets you run pyinstaller directly for quick dev iteration on Linux/CI).
@@ -59,11 +65,19 @@ hidden_imports = [
     # salesforce (imported lazily inside a try/except ImportError, so
     # PyInstaller's static analysis needs an explicit nudge to bundle it)
     "simple_salesforce",
+    # atlassian-python-api (Jira/Confluence) -- same defensive-listing pattern
+    # as the other third-party clients above.
+    "atlassian",
     # cryptography (google-auth dependency)
     "cryptography",
+    # openpyxl (imported lazily inside a try/except ImportError by
+    # audit_log.py's weekly Excel export, so needs the same explicit nudge)
+    "openpyxl",
     # telethon (optional – Telegram; bundled so the connector works)
     "telethon",
-    # privacyfence connectors (all loaded at runtime from _build_connectors)
+    # privacyfence connectors -- all ten, imported directly by daemon_main.py;
+    # listed explicitly anyway as a defensive backstop against PyInstaller's
+    # static analysis missing one.
     "privacyfence.connectors.gmail",
     "privacyfence.connectors.drive",
     "privacyfence.connectors.calendar",
@@ -72,6 +86,8 @@ hidden_imports = [
     "privacyfence.connectors.tasks",
     "privacyfence.connectors.telegram",
     "privacyfence.connectors.salesforce",
+    "privacyfence.connectors.jira",
+    "privacyfence.connectors.confluence",
 ]
 
 # ── daemon (main .app entry point) ────────────────────────────────────────────
@@ -126,10 +142,10 @@ app = BUNDLE(
     name="PrivacyFenceApp.app",
     icon=ICON,
     bundle_identifier="com.privacyfence.app",
-    version="0.1.0",
+    version=VERSION,
     info_plist={
         "CFBundleDisplayName": "PrivacyFence",
-        "CFBundleShortVersionString": "0.1.0",
+        "CFBundleShortVersionString": VERSION,
         "CFBundleVersion": "1",
         "LSUIElement": True,          # menu bar app — no Dock icon
         "NSHighResolutionCapable": True,

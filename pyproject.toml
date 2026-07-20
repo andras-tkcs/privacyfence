@@ -26,6 +26,7 @@ dependencies = [
     "pyobjc-framework-Cocoa>=10.0",
     "pyobjc-framework-WebKit>=10.0",
     "pyobjc-framework-Quartz>=10.0",
+    "openpyxl>=3.1",
 ]
 
 [project.scripts]
@@ -60,7 +61,6 @@ test = [
     # the bridge (see docs on dropping fastmcp/mcp from the MCP side).
     "mcp>=1.0.0",
     "freezegun>=1.5",
-    "openpyxl>=3.1",
 ]
 
 [tool.pytest.ini_options]

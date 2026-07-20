@@ -4,10 +4,17 @@ handling on create/update, room listing, and the events->free/busy fallback
 logic in get_colleagues_schedule. As with the Gmail/Drive client tests, these
 call real CalendarClient methods against a MagicMock stand-in for the
 googleapiclient service object.
+
+Also covers the OAuth2 token lifecycle (authorize_interactive /
+_load_credentials / _save_token), mocking at the google-auth library
+boundary (Credentials.from_authorized_user_file /
+InstalledAppFlow.from_client_config) rather than at _load_credentials
+itself -- see test_tasks_client.py's module docstring for why.
 """
 from __future__ import annotations
 
 import json
+import stat
 import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -15,6 +22,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from privacyfence.calendar_client import (
+    SCOPES,
     CalendarAttachment,
     CalendarAttendee,
     CalendarClient,
@@ -44,6 +52,166 @@ def http_error(status: int = 404, body: bytes = b'{"error": "nope"}') -> HttpErr
     resp.status = status
     resp.reason = "error"
     return HttpError(resp, body)
+
+
+# ---------------------------------------------------------------------------- #
+# authorize_interactive
+# ---------------------------------------------------------------------------- #
+
+class TestAuthorizeInteractive:
+    def test_missing_client_config_raises(self, tmp_path):
+        client = CalendarClient(client_config={}, token_file=str(tmp_path / "token.json"))
+        with pytest.raises(CalendarClientError, match="No Google organization config installed"):
+            client.authorize_interactive()
+
+    def test_runs_local_server_flow_and_persists_returned_credentials(self, tmp_path, monkeypatch):
+        token_file = tmp_path / "nested" / "token.json"
+        client = CalendarClient(client_config={"installed": {"client_id": "cid"}}, token_file=str(token_file))
+
+        fake_creds = MagicMock()
+        fake_creds.to_json.return_value = '{"token": "abc"}'
+        fake_flow = MagicMock()
+        fake_flow.run_local_server.return_value = fake_creds
+        mock_from_client_config = MagicMock(return_value=fake_flow)
+        monkeypatch.setattr(
+            "privacyfence.calendar_client.InstalledAppFlow.from_client_config", mock_from_client_config
+        )
+
+        client.authorize_interactive()
+
+        mock_from_client_config.assert_called_once_with({"installed": {"client_id": "cid"}}, SCOPES)
+        fake_flow.run_local_server.assert_called_once_with(port=0)
+        assert token_file.read_text(encoding="utf-8") == '{"token": "abc"}'
+
+
+# ---------------------------------------------------------------------------- #
+# _load_credentials: no-token / valid / expired-refresh-succeeds /
+# expired-refresh-fails / expired-unrefreshable. Mocks
+# Credentials.from_authorized_user_file (the google-auth library boundary),
+# not _load_credentials itself.
+# ---------------------------------------------------------------------------- #
+
+class TestLoadCredentials:
+    def test_missing_token_file_raises(self, tmp_path):
+        client = CalendarClient(client_config={}, token_file=str(tmp_path / "does-not-exist.json"))
+        with pytest.raises(CalendarClientError, match="No OAuth token found"):
+            client._load_credentials()
+
+    def test_valid_token_is_returned_without_refresh_or_network(self, tmp_path, monkeypatch):
+        token_file = tmp_path / "token.json"
+        token_file.write_text("{}", encoding="utf-8")
+        fake_creds = MagicMock()
+        fake_creds.valid = True
+        monkeypatch.setattr(
+            "privacyfence.calendar_client.Credentials.from_authorized_user_file",
+            MagicMock(return_value=fake_creds),
+        )
+        client = CalendarClient(client_config={}, token_file=str(token_file))
+
+        result = client._load_credentials()
+
+        assert result is fake_creds
+        fake_creds.refresh.assert_not_called()
+
+    def test_expired_token_with_refresh_token_is_refreshed_and_saved_back(self, tmp_path, monkeypatch):
+        token_file = tmp_path / "token.json"
+        token_file.write_text("{}", encoding="utf-8")
+        fake_creds = MagicMock()
+        fake_creds.valid = False
+        fake_creds.expired = True
+        fake_creds.refresh_token = "refresh-me"
+        fake_creds.to_json.return_value = '{"token": "refreshed"}'
+        monkeypatch.setattr(
+            "privacyfence.calendar_client.Credentials.from_authorized_user_file",
+            MagicMock(return_value=fake_creds),
+        )
+        client = CalendarClient(client_config={}, token_file=str(token_file))
+
+        result = client._load_credentials()
+
+        assert result is fake_creds
+        fake_creds.refresh.assert_called_once()
+        assert token_file.read_text(encoding="utf-8") == '{"token": "refreshed"}'
+
+    def test_expired_token_refresh_failure_raises_clear_error(self, tmp_path, monkeypatch):
+        token_file = tmp_path / "token.json"
+        token_file.write_text("{}", encoding="utf-8")
+        fake_creds = MagicMock()
+        fake_creds.valid = False
+        fake_creds.expired = True
+        fake_creds.refresh_token = "refresh-me"
+        fake_creds.refresh.side_effect = Exception("token has been revoked")
+        monkeypatch.setattr(
+            "privacyfence.calendar_client.Credentials.from_authorized_user_file",
+            MagicMock(return_value=fake_creds),
+        )
+        client = CalendarClient(client_config={}, token_file=str(token_file))
+
+        with pytest.raises(CalendarClientError, match="Failed to refresh Calendar OAuth token.*revoked"):
+            client._load_credentials()
+
+    def test_expired_token_without_refresh_token_raises_invalid_cached_token(self, tmp_path, monkeypatch):
+        token_file = tmp_path / "token.json"
+        token_file.write_text("{}", encoding="utf-8")
+        fake_creds = MagicMock()
+        fake_creds.valid = False
+        fake_creds.expired = True
+        fake_creds.refresh_token = ""
+        monkeypatch.setattr(
+            "privacyfence.calendar_client.Credentials.from_authorized_user_file",
+            MagicMock(return_value=fake_creds),
+        )
+        client = CalendarClient(client_config={}, token_file=str(token_file))
+
+        with pytest.raises(CalendarClientError, match="Cached Calendar OAuth token is invalid"):
+            client._load_credentials()
+
+
+# ---------------------------------------------------------------------------- #
+# _save_token: file permissions
+# ---------------------------------------------------------------------------- #
+
+class TestSaveToken:
+    def test_writes_credentials_json_with_owner_only_permissions(self, tmp_path):
+        token_file = tmp_path / "nested" / "token.json"
+        client = CalendarClient(client_config={}, token_file=str(token_file))
+        fake_creds = MagicMock()
+        fake_creds.to_json.return_value = '{"token": "abc"}'
+
+        client._save_token(fake_creds)
+
+        assert token_file.read_text(encoding="utf-8") == '{"token": "abc"}'
+        assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
+
+    def test_chmod_failure_is_non_fatal(self, tmp_path, monkeypatch):
+        token_file = tmp_path / "token.json"
+        client = CalendarClient(client_config={}, token_file=str(token_file))
+        fake_creds = MagicMock()
+        fake_creds.to_json.return_value = "{}"
+        monkeypatch.setattr("os.chmod", MagicMock(side_effect=OSError("read-only filesystem")))
+
+        client._save_token(fake_creds)  # must not raise
+
+        assert token_file.exists()
+
+
+# ---------------------------------------------------------------------------- #
+# check_connection
+# ---------------------------------------------------------------------------- #
+
+class TestCheckConnection:
+    def test_returns_primary_calendar_email(self):
+        service = MagicMock()
+        service.calendars.return_value.get.return_value.execute.return_value = {"id": "me@example.com"}
+        client = make_client(service)
+        assert client.check_connection() == "me@example.com"
+
+    def test_http_error_becomes_calendar_client_error(self):
+        service = MagicMock()
+        service.calendars.return_value.get.return_value.execute.side_effect = http_error(500)
+        client = make_client(service)
+        with pytest.raises(CalendarClientError, match="Calendar connection check failed"):
+            client.check_connection()
 
 
 # ---------------------------------------------------------------------------- #

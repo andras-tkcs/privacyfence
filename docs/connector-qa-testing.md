@@ -371,6 +371,11 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
 20. `gmail_list_filters` (silent) and confirm the `id` from step 17 is now
     **gone** and the `id` from step 19 is present with the updated action
     (`mark_as_read` instead of `archive`).
+21. `gmail_reply_all_draft` on the thread from step 4 — same `{RUN_ID}`-tagged
+    test body as step 8, but this drafts to every participant (the expanded
+    to/cc audience), not just the original sender. Popup, I'll Allow once.
+    Confirm the popup's recipient list actually shows every thread
+    participant, not a single address like step 8's. Add it to the manifest.
 
 ## Phase 2 — Drive & Sheets
 All of this run's Drive/Sheets artifacts go inside `{FIXTURES}.drive_qa_folder_id`
@@ -621,6 +626,27 @@ manifest entries needed, both are already tracked.
     Doc, with a body containing `==highlighted text==` somewhere. Popup,
     Allow once. Open the Doc in Google Docs and confirm that span renders with
     a highlight background, the same as step 28's did.
+32. Rich-Markdown formatting check: `drive_write_doc_content` again on the
+    same Doc, replacing its content with a body that exercises every syntax
+    the Technical Reference's privacy matrix claims this tool renders as real
+    Google Docs formatting, not literal Markdown characters — a `#`/`##`
+    heading, a paragraph mixing `**bold**`, `*italic*`, `~~strikethrough~~`,
+    `__underline__` (a deliberate non-CommonMark spelling — see the note atop
+    `_INLINE_RE` in [`drive_client.py`](../src/privacyfence/drive_client.py)
+    — this parser has only one bold spelling, `**`, so `__..__` is free to
+    mean underline instead of CommonMark's alternate-bold), and
+    `` `inline code` ``, a `[link](https://example.com)`, a nested bullet
+    list (at least two levels, 2-space indent per level), and a small
+    Markdown table (header row + one data row). Popup, Allow once. Open the
+    Doc in Google Docs and confirm every element above rendered as real
+    formatting (heading style, bold/italic/strikethrough/underline/monospace
+    runs, a clickable link, actually-nested bullets, an actual Docs table
+    with the right cell count) — not literal `#`/`**`/`|` characters left in
+    the text. This is the one thing the unit suite can't prove:
+    `test_drive_client.py` checks the Docs API `batchUpdate` requests built
+    for each syntax are correct in isolation, but only a live run confirms
+    Google Docs actually renders the end result the way a person reading the
+    doc would expect.
 
 ## Phase 3 — Slack
 1. `slack_list_channels` (expect: silent).

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import uuid
 
@@ -1029,3 +1030,303 @@ class TestConnectionHandling:
             assert resp["result"] == "ok"
         finally:
             await healthy_client.close()
+
+
+class _RaisingReader:
+    """Stand-in for asyncio.StreamReader whose readline() raises immediately
+    -- simulates a bridge connection that dies mid-read (process killed,
+    network reset) without needing to force a real OS-level RST on an actual
+    socket."""
+
+    def __init__(self, exc: Exception):
+        self._exc = exc
+
+    async def readline(self) -> bytes:
+        raise self._exc
+
+
+class _FakeWriter:
+    """Stand-in for asyncio.StreamWriter with no real socket underneath, so
+    write()/drain() failure can be forced deterministically -- used to test
+    _handle_connection and _send in isolation from a real socket's actual
+    failure modes."""
+
+    def __init__(self):
+        self.closed = False
+        self.written: list[bytes] = []
+        self.write_exc: Exception | None = None
+        self.drain_exc: Exception | None = None
+
+    def get_extra_info(self, name, default=None):
+        return "test-peer" if name == "peername" else default
+
+    def write(self, data: bytes) -> None:
+        if self.write_exc:
+            raise self.write_exc
+        self.written.append(data)
+
+    async def drain(self) -> None:
+        if self.drain_exc:
+            raise self.drain_exc
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class TestConnectionDiesMidRead:
+    """_handle_connection's read loop -- a bridge connection can die
+    mid-read (process killed, network reset) at any point, not just between
+    requests. Confirm that's caught and the connection is torn down cleanly
+    rather than propagating out of the connection task (which would be an
+    unhandled exception logged by asyncio's default handler, not a graceful
+    disconnect, and would leak the socket)."""
+
+    async def test_connection_reset_error_is_caught_and_connection_closed(self, caplog):
+        server = IPCServer([])
+        reader = _RaisingReader(ConnectionResetError("peer reset the connection"))
+        writer = _FakeWriter()
+        with caplog.at_level(logging.WARNING):
+            await server._handle_connection(reader, writer)  # must not raise
+        assert writer.closed
+        assert "terminated" in caplog.text
+
+    async def test_incomplete_read_error_is_caught_and_connection_closed(self, caplog):
+        server = IPCServer([])
+        reader = _RaisingReader(asyncio.IncompleteReadError(partial=b"", expected=None))
+        writer = _FakeWriter()
+        with caplog.at_level(logging.WARNING):
+            await server._handle_connection(reader, writer)  # must not raise
+        assert writer.closed
+        assert "terminated" in caplog.text
+
+    async def test_mid_read_failure_while_unattended_still_cleans_up_and_audits(self, tmp_path):
+        # A connection can die mid-read while it's marked unattended -- the
+        # same cleanup-on-disconnect path in the `finally` block must still
+        # run, same as a clean EOF disconnect.
+        init_audit_logger(str(tmp_path))
+        server = IPCServer([], unattended_sessions_enabled=True)
+        fired = []
+        server.set_unattended_changed_listener(lambda: fired.append(True))
+        writer = _FakeWriter()
+        server._unattended_connections.add(id(writer))
+        reader = _RaisingReader(ConnectionResetError())
+
+        await server._handle_connection(reader, writer)  # must not raise
+
+        assert id(writer) not in server._unattended_connections
+        assert fired == [True]
+        week_file = tmp_path / f"{current_week()}.jsonl"
+        entries = [json.loads(line) for line in week_file.read_text(encoding="utf-8").splitlines()]
+        assert entries[0]["decision"] == "unattended_session_ended"
+
+
+class TestSendFailureOnDroppedSocket:
+    """_send()'s try/except -- by the time a response is ready, the bridge
+    may have already dropped the socket (process killed, connection reset).
+    That failure must be caught and logged, not propagate out of _dispatch
+    and take other in-flight requests -- on this connection or any other --
+    down with it."""
+
+    async def test_write_raising_is_caught_and_logged(self, caplog):
+        writer = _FakeWriter()
+        writer.write_exc = BrokenPipeError("write past a closed socket")
+        with caplog.at_level(logging.WARNING):
+            await IPCServer._send(writer, {"id": "1", "result": "ok"})  # must not raise
+        assert "Failed to send IPC response" in caplog.text
+
+    async def test_drain_raising_is_caught_and_logged(self, caplog):
+        writer = _FakeWriter()
+        writer.drain_exc = ConnectionResetError("peer already gone")
+        with caplog.at_level(logging.WARNING):
+            await IPCServer._send(writer, {"id": "1", "result": "ok"})  # must not raise
+        assert "Failed to send IPC response" in caplog.text
+
+    async def test_send_failure_on_one_connection_does_not_affect_another(self, running_server):
+        server, socket_path = running_server
+        server.set_connectors([FakeConnector("gmail", result="ok")])
+
+        dying_writer = _FakeWriter()
+        dying_writer.drain_exc = ConnectionResetError("peer already gone")
+        await server._send(dying_writer, {"id": "1", "result": "should not raise"})
+
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "call",
+                "params": {"connector": "gmail", "tool": "x", "args": {}},
+            })
+            resp = await client.recv()
+            assert resp["result"] == "ok"
+        finally:
+            await client.close()
+
+
+class _RaisingAuditLogger:
+    """Stand-in for AuditLogger whose record() always raises -- simulates
+    the audit log write itself failing (disk full, permissions, whatever),
+    independent of anything the request itself did."""
+
+    def record(self, entry) -> None:
+        raise RuntimeError("simulated audit log write failure")
+
+
+class TestAuditLogWriteFailureDoesNotBlockTheResponse:
+    """_audit_policy_check and _audit_unattended_session_event each wrap
+    their audit_log write in its own try/except (coding-and-testing
+    guidelines 1.4: non-critical side effects never block the primary
+    operation) -- confirm a failure there is swallowed with a warning log
+    rather than the bridge's response silently hanging or the whole
+    request dying with an unrelated-looking error."""
+
+    async def test_check_policy_response_still_sent_when_audit_write_raises(
+        self, running_server, monkeypatch, caplog
+    ):
+        server, socket_path = running_server
+        server.set_connectors([FakeConnector("gmail")])
+        monkeypatch.setattr(ipc_server_module, "get_audit_logger", lambda: _RaisingAuditLogger())
+        client = await _RawClient.connect(socket_path)
+        try:
+            with caplog.at_level(logging.WARNING):
+                await client.send({
+                    "id": "1", "method": "check_policy",
+                    "params": {"connector": "gmail", "tool": "gmail_list_messages", "args": {}},
+                })
+                resp = await client.recv()
+            assert resp["result"]["verdict"] == "auto_accept"
+            assert "Audit log write failed for policy check" in caplog.text
+        finally:
+            await client.close()
+
+    async def test_begin_unattended_session_response_still_sent_when_audit_write_raises(
+        self, short_socket_path, monkeypatch, caplog
+    ):
+        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+        server = IPCServer([], unattended_sessions_enabled=True)
+        await server.start()
+        monkeypatch.setattr(ipc_server_module, "get_audit_logger", lambda: _RaisingAuditLogger())
+        client = await _RawClient.connect(short_socket_path)
+        try:
+            with caplog.at_level(logging.WARNING):
+                await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
+                resp = await client.recv()
+            assert resp["result"] == {"unattended": True}
+            assert server.unattended_session_count() == 1
+            assert "Audit log write failed for unattended-session event" in caplog.text
+        finally:
+            await client.close()
+            await server.stop()
+
+    async def test_end_unattended_session_response_still_sent_when_audit_write_raises(
+        self, short_socket_path, monkeypatch, caplog
+    ):
+        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+        server = IPCServer([], unattended_sessions_enabled=True)
+        await server.start()
+        client = await _RawClient.connect(short_socket_path)
+        try:
+            await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
+            await client.recv()
+
+            monkeypatch.setattr(ipc_server_module, "get_audit_logger", lambda: _RaisingAuditLogger())
+            with caplog.at_level(logging.WARNING):
+                await client.send({"id": "2", "method": "end_unattended_session", "params": {}})
+                resp = await client.recv()
+            assert resp["result"] == {"unattended": False}
+            assert server.unattended_session_count() == 0
+            assert "Audit log write failed for unattended-session event" in caplog.text
+        finally:
+            await client.close()
+            await server.stop()
+
+
+class TestFireUnattendedChangedListener:
+    """set_unattended_changed_listener's callback -- the menu bar's live
+    unattended-session indicator relies on this firing exactly when
+    membership of _unattended_connections actually changes, not on every
+    begin/end call (a redundant end on a connection that was never marked
+    unattended must not fire it)."""
+
+    async def test_listener_fires_on_begin(self, short_socket_path, monkeypatch):
+        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+        server = IPCServer([], unattended_sessions_enabled=True)
+        await server.start()
+        fired = []
+        server.set_unattended_changed_listener(lambda: fired.append(server.unattended_session_count()))
+        client = await _RawClient.connect(short_socket_path)
+        try:
+            await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
+            await client.recv()
+            assert fired == [1]
+        finally:
+            await client.close()
+            await server.stop()
+
+    async def test_listener_fires_on_end(self, short_socket_path, monkeypatch):
+        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+        server = IPCServer([], unattended_sessions_enabled=True)
+        await server.start()
+        client = await _RawClient.connect(short_socket_path)
+        try:
+            await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
+            await client.recv()
+
+            fired = []
+            server.set_unattended_changed_listener(lambda: fired.append(server.unattended_session_count()))
+            await client.send({"id": "2", "method": "end_unattended_session", "params": {}})
+            await client.recv()
+            assert fired == [0]
+        finally:
+            await client.close()
+            await server.stop()
+
+    async def test_listener_fires_on_disconnect_while_unattended(self, short_socket_path, monkeypatch):
+        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+        server = IPCServer([], unattended_sessions_enabled=True)
+        await server.start()
+        client = await _RawClient.connect(short_socket_path)
+        await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
+        await client.recv()
+
+        fired = []
+        server.set_unattended_changed_listener(lambda: fired.append(server.unattended_session_count()))
+        client.writer.close()
+        await asyncio.sleep(0.05)
+
+        try:
+            assert fired == [0]
+        finally:
+            await server.stop()
+
+    async def test_listener_does_not_fire_on_redundant_end(self, short_socket_path, monkeypatch):
+        # end_unattended_session on a connection that was never marked
+        # unattended is a no-op -- membership didn't change, so there is
+        # nothing for the menu bar to rebuild for.
+        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+        server = IPCServer([], unattended_sessions_enabled=True)
+        await server.start()
+        fired = []
+        server.set_unattended_changed_listener(lambda: fired.append(True))
+        client = await _RawClient.connect(short_socket_path)
+        try:
+            await client.send({"id": "1", "method": "end_unattended_session", "params": {}})
+            await client.recv()
+            assert fired == []
+        finally:
+            await client.close()
+            await server.stop()
+
+    async def test_no_listener_registered_does_not_raise(self, short_socket_path, monkeypatch):
+        # Default state (menu bar not wired up yet, e.g. in tests): firing
+        # with no listener registered must be a silent no-op, not an
+        # AttributeError that would take the whole call down.
+        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+        server = IPCServer([], unattended_sessions_enabled=True)
+        await server.start()
+        client = await _RawClient.connect(short_socket_path)
+        try:
+            await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
+            resp = await client.recv()
+            assert resp["result"] == {"unattended": True}
+        finally:
+            await client.close()
+            await server.stop()
