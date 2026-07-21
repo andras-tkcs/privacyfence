@@ -30,7 +30,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from privacyfence import auto_accept, menu_bar
+from privacyfence import auto_accept, menu_bar, resource_names
 
 
 def wait_until(predicate, timeout=2.0, interval=0.005) -> bool:
@@ -47,6 +47,11 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setattr(menu_bar, "_find_icon", lambda: None)
     monkeypatch.setattr(menu_bar, "load_org_config", lambda: {})
     monkeypatch.setattr(menu_bar.rumps, "alert", lambda *a, **k: None)
+    # get_resolver() is a process-wide singleton whose on-disk cache
+    # defaults to paths.data_dir() (the repo root outside a bundled app) --
+    # redirect it into this test's own tmp_path so a test that resolves a
+    # name doesn't write resource_name_cache.json into the real checkout.
+    monkeypatch.setattr(resource_names, "_cache_file", lambda: tmp_path / "resource_name_cache.json")
 
     config_path = tmp_path / "settings.yaml"
     config_path.write_text("auto_accept_rules: {}\nconnectors: {}\n", encoding="utf-8")
@@ -640,6 +645,49 @@ class TestGatherConnectorSections:
         sections = app._gather_connector_sections("drive")
         folders = next(s for s in sections if s.title == "Sandbox Folders")
         assert menu_bar._short_id(long_id) in folders.rows[0].text
+
+    def test_hand_authored_rule_value_for_grant_covered_name_shows_resolved_name(self, app):
+        # A rule value under a rule name a Trusted-resource grant also
+        # covers (e.g. approved_sandbox_folder) is the same kind of opaque
+        # Drive folder ID a grant entry stores -- it should resolve to a
+        # real name too, not stay a raw ID forever just because this
+        # particular folder was hand-authored (or only partially migrated --
+        # see resource_grants.migrate_rules_to_grants) instead of added via
+        # "+ Add folder…".
+        # Fresh resolver instance, not the process-wide get_resolver()
+        # singleton -- keeps this test's cached name from leaking into any
+        # other test that happens to run in the same process.
+        app._resolver = resource_names.ResourceNameResolver()
+        rt = menu_bar.grant_resource_type("drive", "sandbox_folders")
+        client = SimpleNamespace(get_file_metadata=lambda file_id: SimpleNamespace(name="Scratch"))
+        app._resolver.resolve(rt, "SBX1", client)
+
+        cfg = {"auto_accept_rules": {"drive.write_file": [
+            {"rule": "approved_sandbox_folder", "value": ["SBX1"]},
+        ]}}
+        config_path = app._config_path
+        with open(config_path, "w", encoding="utf-8") as f:
+            menu_bar.yaml.dump(cfg, f)
+
+        sections = app._gather_connector_sections("drive")
+        write_file = next(s for s in sections if s.title == "Write file")
+        value_row = next(r for r in write_file.rows if r.indent)
+        assert value_row.text == "Scratch"
+        assert "SBX1" not in value_row.text
+
+    def test_hand_authored_rule_value_for_grant_covered_name_falls_back_to_short_id(self, app):
+        long_id = "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms"
+        cfg = {"auto_accept_rules": {"drive.write_file": [
+            {"rule": "approved_sandbox_folder", "value": [long_id]},
+        ]}}
+        config_path = app._config_path
+        with open(config_path, "w", encoding="utf-8") as f:
+            menu_bar.yaml.dump(cfg, f)
+
+        sections = app._gather_connector_sections("drive")
+        write_file = next(s for s in sections if s.title == "Write file")
+        value_row = next(r for r in write_file.rows if r.indent)
+        assert menu_bar._short_id(long_id) in value_row.text
 
     def test_grant_add_action_is_always_present(self, app):
         sections = app._gather_connector_sections("drive")

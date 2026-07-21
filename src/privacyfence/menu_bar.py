@@ -291,6 +291,19 @@ GRANT_COVERED_RULE_NAMES: set[str] = {
     for _op_key, rule_name in capability.targets
 }
 
+# Same rule names, but mapping back to the resource type that knows how to
+# resolve one of its values to a display name -- these rule names' values are
+# opaque resource IDs (a Drive folder ID, a Jira project key, ...), not plain
+# strings, so a hand-authored/partially-migrated rule entry (see
+# GRANT_COVERED_RULE_NAMES above) should still show a real name instead of the
+# raw ID, the same way a grant entry does.
+RULE_NAME_TO_RESOURCE_TYPE: dict[str, GrantResourceType] = {
+    rule_name: rt
+    for rt in GRANT_RESOURCE_TYPES
+    for capability in rt.capabilities.values()
+    for _op_key, rule_name in capability.targets
+}
+
 # Drive/Sheets URLs paste-able into "+ Add folder…" / "+ Add spreadsheet…",
 # so the user can copy the browser address bar instead of hand-extracting
 # the ID segment. Order matters: a spreadsheet URL also contains "/d/" so
@@ -540,7 +553,7 @@ class PrivacyFenceMenuBar(rumps.App):
                 actions.append(("✕ Remove", partial(self._remove_grant, cname, rt.config_key, idx)))
                 rows.append(Row(label, False, actions))
             sections.append(Section(rt.label, rows, f"+ Add {rt.singular}…", partial(self._add_grant, cname, rt.config_key)))
-            self._resolve_grant_names_async(rt, entries, client)
+            self._resolve_names_async(rt, [rt.id_of(e) for e in entries], client)
 
         for op_key in op_keys:
             label = OPERATION_LABELS[op_key]
@@ -548,7 +561,7 @@ class PrivacyFenceMenuBar(rumps.App):
             op_rules = rules_cfg.get(op_key) or []
             rows = []
             for idx, rule_cfg in enumerate(op_rules):
-                rows.extend(self._rule_rows_for(op_key, idx, rule_cfg))
+                rows.extend(self._rule_rows_for(op_key, idx, rule_cfg, client))
             sections.append(Section(short_label, rows, "+ Add rule…", partial(self._add_rule, op_key)))
 
         if not resource_types and not op_keys:
@@ -556,7 +569,7 @@ class PrivacyFenceMenuBar(rumps.App):
 
         return sections
 
-    def _rule_rows_for(self, op_key: str, idx: int, rule_cfg: dict[str, Any]) -> list[Row]:
+    def _rule_rows_for(self, op_key: str, idx: int, rule_cfg: dict[str, Any], client: Any | None) -> list[Row]:
         rule_name = rule_cfg.get("rule", "")
         value = rule_cfg.get("value")
 
@@ -567,10 +580,31 @@ class PrivacyFenceMenuBar(rumps.App):
 
         if rule_name in RULES_LIST_VALUE or rule_name in RULES_PAIR_VALUE:
             is_pair = rule_name in RULES_PAIR_VALUE
+            # A hand-authored/partially-migrated rule under one of the
+            # resource-scoped rule names (see GRANT_COVERED_RULE_NAMES) holds
+            # the same kind of opaque resource ID a grant entry does -- show
+            # its resolved name instead of the raw ID, the same way the grant
+            # section above does (see resource_names.py).
+            rt = RULE_NAME_TO_RESOURCE_TYPE.get(rule_name)
             rows = [Row(rule_name, False, [("+ Add value…", partial(self._add_rule_value, op_key, idx))])]
             values = value if isinstance(value, list) else ([value] if value else [])
+            if rt is not None:
+                ids = [v.get("spreadsheet_id", "") if is_pair else str(v) for v in values]
+                self._resolve_names_async(rt, ids, client)
             for v_idx, v in enumerate(values):
-                v_label = _format_pair_line(v) if is_pair else str(v)
+                if rt is not None:
+                    resource_id = v.get("spreadsheet_id", "") if is_pair else str(v)
+                    name = self._resolver.cached_name(rt, resource_id)
+                    v_label = name or _short_id(resource_id)
+                    if is_pair and v.get("tab"):
+                        v_label += f" — {v['tab']}"
+                    if name is None:
+                        v_label += (
+                            "  (resolving…)" if client is not None
+                            else f"  (connect {rt.connector.capitalize()} to see its name)"
+                        )
+                else:
+                    v_label = _format_pair_line(v) if is_pair else str(v)
                 rows.append(Row(v_label, True, [("✕ Remove", partial(self._remove_rule_value, op_key, idx, v_idx))]))
             return rows
 
@@ -584,15 +618,17 @@ class PrivacyFenceMenuBar(rumps.App):
         # else to configure, so there's no separate toggle-vs-remove split.
         return [Row(f"✓ {rule_name}", False, [("✕ Remove", partial(self._remove_rule, op_key, idx))])]
 
-    def _resolve_grant_names_async(
-        self, rt: GrantResourceType, entries: list[dict[str, Any]], client: Any | None
+    def _resolve_names_async(
+        self, rt: GrantResourceType, resource_ids: list[str], client: Any | None
     ) -> None:
-        """Kick off a background name lookup for any entry with no cached
-        name yet, then rebuild the menu once done. No-ops (and doesn't loop)
-        once every entry has a cached name — see resource_names.py's TTL."""
+        """Kick off a background name lookup for any of these IDs with no
+        cached name yet (a grant entry's ID, or a hand-authored rule value's
+        -- see _rule_rows_for), then rebuild the menu once done. No-ops (and
+        doesn't loop) once every ID has a cached name — see
+        resource_names.py's TTL."""
         if client is None:
             return
-        missing = [rt.id_of(e) for e in entries if self._resolver.cached_name(rt, rt.id_of(e)) is None]
+        missing = [rid for rid in resource_ids if rid and self._resolver.cached_name(rt, rid) is None]
         if not missing:
             return
 
