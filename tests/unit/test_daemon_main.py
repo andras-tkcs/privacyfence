@@ -1004,7 +1004,20 @@ class TestRunApp:
 
         assert _FakeIPCServerThread.instances[0].server.unattended_sessions_enabled is False
 
-    def test_unattended_sessions_enabled_flag_passed_through_from_config(self, monkeypatch):
+    def test_unattended_sessions_enabled_flag_passed_through_from_org_config(self, monkeypatch):
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        self._patch_common(monkeypatch)
+        monkeypatch.setattr(daemon_main, "load_org_config", lambda: {"unattended_sessions": {"enabled": True}})
+        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
+
+        daemon_main.run_app({}, "config.yaml")
+
+        assert _FakeIPCServerThread.instances[0].server.unattended_sessions_enabled is True
+
+    def test_unattended_sessions_enabled_in_settings_yaml_is_ignored(self, monkeypatch):
+        """unattended_sessions.enabled lives in org_config.json, not settings.yaml -- a
+        stray copy in settings.yaml (e.g. left over pre-migration) must not enable it."""
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         self._patch_common(monkeypatch)
@@ -1012,7 +1025,7 @@ class TestRunApp:
 
         daemon_main.run_app({"unattended_sessions": {"enabled": True}}, "config.yaml")
 
-        assert _FakeIPCServerThread.instances[0].server.unattended_sessions_enabled is True
+        assert _FakeIPCServerThread.instances[0].server.unattended_sessions_enabled is False
 
     def test_exports_pending_audit_entries_on_startup(self, monkeypatch):
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)

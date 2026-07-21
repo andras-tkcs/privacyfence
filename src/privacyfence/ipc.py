@@ -62,7 +62,8 @@ begin_unattended_session  {"reason": "<str>"} → {"unattended": true}
               dialog and no auto-accept rule already covers is denied
               immediately (audited as "denied_unattended") instead of
               blocking. Errors if unattended_sessions.enabled is false in
-              settings.yaml (off by default -- an administrator opts in).
+              the organization config bundle (org_config.json; off by
+              default -- an administrator opts in).
               Never changes what auto-accepts, only what happens when
               nothing does. See docs/TECHNICAL_REFERENCE.md's "Scheduled /
               unattended Cowork tasks" section. "reason" is recorded on the

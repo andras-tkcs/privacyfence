@@ -16,7 +16,9 @@ Configuration is split into two files (see paths.py):
     Optional per service; a connector is offered only if its section is
     present. Telegram's api_id/api_hash are the one exception: they identify
     the PrivacyFence app itself (not an organization) and are baked into the
-    release build — see app_credentials.py.
+    release build — see app_credentials.py. Also carries
+    ``unattended_sessions.enabled`` — a deliberate per-organization opt-in,
+    not a per-user setting, so it lives here rather than settings.yaml.
   - ``config/settings.yaml``   — per-user settings: privacy policy,
     connectors{enabled}, auto_accept_rules, pii_detection{enabled}. No
     secrets live here.
@@ -620,7 +622,7 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
     if not connectors:
         logger.warning("No connectors could be initialized; daemon still starting for IPC.")
 
-    unattended_enabled = bool((config.get("unattended_sessions", {}) or {}).get("enabled", False))
+    unattended_enabled = bool((org_config.get("unattended_sessions", {}) or {}).get("enabled", False))
     ipc_server = IPCServer(connectors, unattended_sessions_enabled=unattended_enabled)
     ipc_thread = IPCServerThread(ipc_server)
     ipc_thread.start()

@@ -852,19 +852,24 @@ routed the call to a human. Nothing that would auto-accept today stops auto-acce
 changes the failure mode for calls that would otherwise open an unanswered dialog and hold up
 every other approval behind it.
 
-**Off by default.** Set in `config/settings.yaml`:
+**Off by default.** Set in the organization config bundle (`org_config.json`, installed via
+"Install/Update Organization Config…" in the menu bar — see
+[scripts/build_org_bundle.py](../scripts/build_org_bundle.py)'s `--enable-unattended-sessions`
+flag), not in `settings.yaml`:
 
-```yaml
-unattended_sessions:
-  enabled: true
+```json
+{
+  "unattended_sessions": { "enabled": true }
+}
 ```
 
 `privacyfence_begin_unattended_session` errors until an administrator opts in — a Claude session
 gaining the ability to switch its own connection into fail-fast mode is a deliberate
-per-organization choice. The unattended flag is connection-scoped (the bridge is one process per
-Cowork task) and clears automatically if the connection drops, so there's no persistent state to
-clean up. While one or more connections are in this state, the menu bar's top item shows a live
-count (e.g. "PrivacyFence is running — 1 unattended session active").
+per-organization choice, not a per-user setting, so it isn't exposed as a menu bar toggle. The
+unattended flag is connection-scoped (the bridge is one process per Cowork task) and clears
+automatically if the connection drops, so there's no persistent state to clean up. While one or
+more connections are in this state, the menu bar's top item shows a live count (e.g. "PrivacyFence
+is running — 1 unattended session active").
 
 ---
 

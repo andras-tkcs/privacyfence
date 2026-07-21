@@ -64,7 +64,7 @@ class IPCServer:
         self._server: asyncio.AbstractServer | None = None
         self._inflight: dict[str, tuple[asyncio.Future, float]] = {}
         # Opt-in gate for privacyfence_begin_unattended_session -- see
-        # settings.yaml.example's unattended_sessions.enabled. Off by
+        # org_config.json's unattended_sessions.enabled. Off by
         # default: a Claude session gaining the ability to switch its own
         # connection into fail-fast mode is a deliberate per-organization
         # choice.
@@ -377,15 +377,15 @@ class IPCServer:
             logger.warning("Audit log write failed for unattended-session event: %s", exc)
 
     def _begin_unattended_session(self, writer: asyncio.StreamWriter, claude_reason: str = "") -> dict:
-        """privacyfence_begin_unattended_session -- see settings.yaml.example's
+        """privacyfence_begin_unattended_session -- see org_config.json's
         unattended_sessions.enabled and docs/TECHNICAL_REFERENCE.md's
         "Scheduled / unattended Cowork tasks" section.
         """
         if not self._unattended_sessions_enabled:
             raise ValueError(
                 "Unattended sessions are disabled. An administrator must set "
-                "unattended_sessions.enabled: true in settings.yaml before this connection "
-                "can be marked unattended."
+                "unattended_sessions.enabled: true in the organization config bundle "
+                "(org_config.json) before this connection can be marked unattended."
             )
         self._unattended_connections.add(id(writer))
         logger.warning(
