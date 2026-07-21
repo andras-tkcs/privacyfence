@@ -509,6 +509,50 @@ class TestDedupeRetries:
         finally:
             await client.close()
 
+    async def test_read_only_tool_does_not_reuse_completed_result(self, running_server):
+        """A read repeated with identical args must see the effect of any
+        write that happened to the same resource in between (e.g. checking
+        an event's visibility right after setting it) -- so completed-result
+        reuse is dropped for every read_only ToolSpec, not just the tools
+        explicitly listed in _DEDUPE_EXEMPT_TOOLS."""
+        server, socket_path = running_server
+        connector = FakeConnector("drive", result="ok")
+        server.set_connectors([connector])
+        client = await _RawClient.connect(socket_path)
+        try:
+            # FakeConnector.tool_specs() declares "drive_tool" as read_only=True.
+            params = {"connector": "drive", "tool": "drive_tool", "args": {"file_id": "f1"}}
+            await client.send({"id": "1", "method": "call", "params": params})
+            await client.recv()
+
+            await client.send({"id": "2", "method": "call", "params": params})
+            await client.recv()
+
+            assert len(connector.calls) == 2  # not deduped, despite identical args
+        finally:
+            await client.close()
+
+    async def test_read_only_tool_still_coalesces_concurrent_in_flight_calls(self, running_server):
+        """The read_only exemption only drops completed-result reuse -- two
+        calls that are genuinely concurrent (nothing has completed yet for
+        either) are still coalesced into one connector invocation."""
+        server, socket_path = running_server
+        connector = FakeConnector("drive", result="ok", delay=0.1)
+        server.set_connectors([connector])
+        client = await _RawClient.connect(socket_path)
+        try:
+            params = {"connector": "drive", "tool": "drive_tool", "args": {"file_id": "f1"}}
+            await client.send({"id": "1", "method": "call", "params": params})
+            await client.send({"id": "2", "method": "call", "params": params})
+            first = await client.recv()
+            second = await client.recv()
+
+            assert first["result"] == "ok"
+            assert second["result"] == "ok"
+            assert len(connector.calls) == 1
+        finally:
+            await client.close()
+
 
 class TestLineLimit:
     """Regression coverage for the v0.4.10 fix: asyncio's default
