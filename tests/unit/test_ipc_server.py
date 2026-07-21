@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import uuid
 
@@ -508,6 +509,50 @@ class TestDedupeRetries:
         finally:
             await client.close()
 
+    async def test_read_only_tool_does_not_reuse_completed_result(self, running_server):
+        """A read repeated with identical args must see the effect of any
+        write that happened to the same resource in between (e.g. checking
+        an event's visibility right after setting it) -- so completed-result
+        reuse is dropped for every read_only ToolSpec, not just the tools
+        explicitly listed in _DEDUPE_EXEMPT_TOOLS."""
+        server, socket_path = running_server
+        connector = FakeConnector("drive", result="ok")
+        server.set_connectors([connector])
+        client = await _RawClient.connect(socket_path)
+        try:
+            # FakeConnector.tool_specs() declares "drive_tool" as read_only=True.
+            params = {"connector": "drive", "tool": "drive_tool", "args": {"file_id": "f1"}}
+            await client.send({"id": "1", "method": "call", "params": params})
+            await client.recv()
+
+            await client.send({"id": "2", "method": "call", "params": params})
+            await client.recv()
+
+            assert len(connector.calls) == 2  # not deduped, despite identical args
+        finally:
+            await client.close()
+
+    async def test_read_only_tool_still_coalesces_concurrent_in_flight_calls(self, running_server):
+        """The read_only exemption only drops completed-result reuse -- two
+        calls that are genuinely concurrent (nothing has completed yet for
+        either) are still coalesced into one connector invocation."""
+        server, socket_path = running_server
+        connector = FakeConnector("drive", result="ok", delay=0.1)
+        server.set_connectors([connector])
+        client = await _RawClient.connect(socket_path)
+        try:
+            params = {"connector": "drive", "tool": "drive_tool", "args": {"file_id": "f1"}}
+            await client.send({"id": "1", "method": "call", "params": params})
+            await client.send({"id": "2", "method": "call", "params": params})
+            first = await client.recv()
+            second = await client.recv()
+
+            assert first["result"] == "ok"
+            assert second["result"] == "ok"
+            assert len(connector.calls) == 1
+        finally:
+            await client.close()
+
 
 class TestLineLimit:
     """Regression coverage for the v0.4.10 fix: asyncio's default
@@ -737,6 +782,203 @@ class TestCheckPolicyDispatch:
             await client.close()
         entries = self._read_entries()
         assert entries[0]["claude_reason"] == ""
+
+
+class TestListRulesDispatch:
+    """list_rules -- see ipc.py's module docstring. Read-only: must never
+    open a popup or touch a connector, and always records a lightweight
+    "rules_listed" audit entry since it discloses the full current
+    auto_accept_rules/auto_accept_grants config."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path):
+        from privacyfence import auto_accept
+
+        init_audit_logger(str(tmp_path / "audit"))
+        self._audit_dir = tmp_path / "audit"
+        self._config_path = tmp_path / "settings.yaml"
+        self._config_path.write_text("auto_accept_rules: {}\n", encoding="utf-8")
+        auto_accept.init_config_path(str(self._config_path))
+
+    def _read_entries(self):
+        week_file = self._audit_dir / f"{current_week()}.jsonl"
+        if not week_file.exists():
+            return []
+        return [json.loads(line) for line in week_file.read_text(encoding="utf-8").splitlines()]
+
+    async def test_returns_current_rules_and_grants_straight_from_disk(self, running_server):
+        self._config_path.write_text(
+            "auto_accept_rules:\n"
+            "  gmail.read_message:\n"
+            "  - rule: i_am_sender\n"
+            "auto_accept_grants:\n"
+            "  drive:\n"
+            "    sandbox_folders:\n"
+            "    - id: f1\n"
+            "      write: true\n",
+            encoding="utf-8",
+        )
+        server, socket_path = running_server
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({"id": "1", "method": "list_rules", "params": {"reason": "auditing"}})
+            resp = await client.recv()
+        finally:
+            await client.close()
+        assert resp["result"] == {
+            "auto_accept_rules": {"gmail.read_message": [{"rule": "i_am_sender"}]},
+            "auto_accept_grants": {"drive": {"sandbox_folders": [{"id": "f1", "write": True}]}},
+        }
+
+    async def test_records_a_rules_listed_audit_entry_with_reason(self, running_server):
+        server, socket_path = running_server
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send(
+                {"id": "1", "method": "list_rules", "params": {"reason": "Auditing before cleanup."}}
+            )
+            await client.recv()
+        finally:
+            await client.close()
+        entries = self._read_entries()
+        assert len(entries) == 1
+        assert entries[0]["decision"] == "rules_listed"
+        assert entries[0]["claude_reason"] == "Auditing before cleanup."
+
+    async def test_missing_reason_defaults_to_empty_string(self, running_server):
+        server, socket_path = running_server
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({"id": "1", "method": "list_rules", "params": {}})
+            await client.recv()
+        finally:
+            await client.close()
+        entries = self._read_entries()
+        assert entries[0]["claude_reason"] == ""
+
+
+class TestProposeRuleChangeDispatch:
+    """propose_rule_change -- see ipc.py's module docstring and
+    gate.propose_rule_change()'s own docstring. Confirms the daemon-side
+    wiring (unattended_scope, param translation) end to end over a real
+    socket; gate.propose_rule_change()'s own branch logic is covered in
+    test_gate.py."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path, monkeypatch):
+        from privacyfence import auto_accept, gate
+
+        init_audit_logger(str(tmp_path / "audit"))
+        self._audit_dir = tmp_path / "audit"
+        self._config_path = tmp_path / "settings.yaml"
+        self._config_path.write_text("auto_accept_rules: {}\n", encoding="utf-8")
+        auto_accept.init_config_path(str(self._config_path))
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
+
+    def _read_entries(self):
+        week_file = self._audit_dir / f"{current_week()}.jsonl"
+        if not week_file.exists():
+            return []
+        return [json.loads(line) for line in week_file.read_text(encoding="utf-8").splitlines()]
+
+    async def test_confirmed_rule_add_is_persisted_to_disk(self, running_server):
+        server, socket_path = running_server
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "propose_rule_change",
+                "params": {
+                    "target": "rule", "operation": "add", "reason": "Trusting example.com.",
+                    "operation_key": "gmail.read_message", "rule_name": "trusted_sender_domain",
+                    "value": ["example.com"],
+                },
+            })
+            resp = await client.recv()
+        finally:
+            await client.close()
+        assert resp["result"]["confirmed"] is True
+        on_disk = self._config_path.read_text(encoding="utf-8")
+        assert "trusted_sender_domain" in on_disk
+
+    async def test_declined_confirmation_returns_an_error_response(self, running_server, monkeypatch):
+        from privacyfence import gate
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: False)
+        server, socket_path = running_server
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "propose_rule_change",
+                "params": {
+                    "target": "rule", "operation": "add", "reason": "x",
+                    "operation_key": "gmail.read_message", "rule_name": "i_am_sender",
+                },
+            })
+            resp = await client.recv()
+        finally:
+            await client.close()
+        assert "denied" in resp["error"]
+
+    async def test_unattended_connection_is_denied_without_a_popup(self, short_socket_path, monkeypatch):
+        from privacyfence import gate
+        popup_calls = []
+        monkeypatch.setattr(
+            gate, "show_rule_confirmation_popup", lambda description: popup_calls.append(1) or True
+        )
+        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+        server = IPCServer([], unattended_sessions_enabled=True)
+        await server.start()
+        socket_path = short_socket_path
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "begin_unattended_session", "params": {"reason": "Scheduled run."},
+            })
+            await client.recv()
+            await client.send({
+                "id": "2", "method": "propose_rule_change",
+                "params": {
+                    "target": "rule", "operation": "add", "reason": "x",
+                    "operation_key": "gmail.read_message", "rule_name": "i_am_sender",
+                },
+            })
+            resp = await client.recv()
+        finally:
+            await client.close()
+            await server.stop()
+        assert "unattended session" in resp["error"]
+        assert popup_calls == []
+
+    async def test_grant_target_add_is_persisted_to_disk(self, running_server):
+        server, socket_path = running_server
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "propose_rule_change",
+                "params": {
+                    "target": "grant", "operation": "add", "reason": "Trusting the sandbox folder.",
+                    "connector": "drive", "config_key": "sandbox_folders", "resource_id": "folder1",
+                    "capabilities": {"write": True},
+                },
+            })
+            resp = await client.recv()
+        finally:
+            await client.close()
+        assert resp["result"]["confirmed"] is True
+        on_disk = self._config_path.read_text(encoding="utf-8")
+        assert "folder1" in on_disk
+
+    async def test_missing_target_returns_an_error_response(self, running_server):
+        server, socket_path = running_server
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "propose_rule_change",
+                "params": {"operation": "add", "reason": "x"},
+            })
+            resp = await client.recv()
+        finally:
+            await client.close()
+        assert "error" in resp
 
 
 class UnattendedAwareConnector(Connector):
@@ -1029,3 +1271,303 @@ class TestConnectionHandling:
             assert resp["result"] == "ok"
         finally:
             await healthy_client.close()
+
+
+class _RaisingReader:
+    """Stand-in for asyncio.StreamReader whose readline() raises immediately
+    -- simulates a bridge connection that dies mid-read (process killed,
+    network reset) without needing to force a real OS-level RST on an actual
+    socket."""
+
+    def __init__(self, exc: Exception):
+        self._exc = exc
+
+    async def readline(self) -> bytes:
+        raise self._exc
+
+
+class _FakeWriter:
+    """Stand-in for asyncio.StreamWriter with no real socket underneath, so
+    write()/drain() failure can be forced deterministically -- used to test
+    _handle_connection and _send in isolation from a real socket's actual
+    failure modes."""
+
+    def __init__(self):
+        self.closed = False
+        self.written: list[bytes] = []
+        self.write_exc: Exception | None = None
+        self.drain_exc: Exception | None = None
+
+    def get_extra_info(self, name, default=None):
+        return "test-peer" if name == "peername" else default
+
+    def write(self, data: bytes) -> None:
+        if self.write_exc:
+            raise self.write_exc
+        self.written.append(data)
+
+    async def drain(self) -> None:
+        if self.drain_exc:
+            raise self.drain_exc
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class TestConnectionDiesMidRead:
+    """_handle_connection's read loop -- a bridge connection can die
+    mid-read (process killed, network reset) at any point, not just between
+    requests. Confirm that's caught and the connection is torn down cleanly
+    rather than propagating out of the connection task (which would be an
+    unhandled exception logged by asyncio's default handler, not a graceful
+    disconnect, and would leak the socket)."""
+
+    async def test_connection_reset_error_is_caught_and_connection_closed(self, caplog):
+        server = IPCServer([])
+        reader = _RaisingReader(ConnectionResetError("peer reset the connection"))
+        writer = _FakeWriter()
+        with caplog.at_level(logging.WARNING):
+            await server._handle_connection(reader, writer)  # must not raise
+        assert writer.closed
+        assert "terminated" in caplog.text
+
+    async def test_incomplete_read_error_is_caught_and_connection_closed(self, caplog):
+        server = IPCServer([])
+        reader = _RaisingReader(asyncio.IncompleteReadError(partial=b"", expected=None))
+        writer = _FakeWriter()
+        with caplog.at_level(logging.WARNING):
+            await server._handle_connection(reader, writer)  # must not raise
+        assert writer.closed
+        assert "terminated" in caplog.text
+
+    async def test_mid_read_failure_while_unattended_still_cleans_up_and_audits(self, tmp_path):
+        # A connection can die mid-read while it's marked unattended -- the
+        # same cleanup-on-disconnect path in the `finally` block must still
+        # run, same as a clean EOF disconnect.
+        init_audit_logger(str(tmp_path))
+        server = IPCServer([], unattended_sessions_enabled=True)
+        fired = []
+        server.set_unattended_changed_listener(lambda: fired.append(True))
+        writer = _FakeWriter()
+        server._unattended_connections.add(id(writer))
+        reader = _RaisingReader(ConnectionResetError())
+
+        await server._handle_connection(reader, writer)  # must not raise
+
+        assert id(writer) not in server._unattended_connections
+        assert fired == [True]
+        week_file = tmp_path / f"{current_week()}.jsonl"
+        entries = [json.loads(line) for line in week_file.read_text(encoding="utf-8").splitlines()]
+        assert entries[0]["decision"] == "unattended_session_ended"
+
+
+class TestSendFailureOnDroppedSocket:
+    """_send()'s try/except -- by the time a response is ready, the bridge
+    may have already dropped the socket (process killed, connection reset).
+    That failure must be caught and logged, not propagate out of _dispatch
+    and take other in-flight requests -- on this connection or any other --
+    down with it."""
+
+    async def test_write_raising_is_caught_and_logged(self, caplog):
+        writer = _FakeWriter()
+        writer.write_exc = BrokenPipeError("write past a closed socket")
+        with caplog.at_level(logging.WARNING):
+            await IPCServer._send(writer, {"id": "1", "result": "ok"})  # must not raise
+        assert "Failed to send IPC response" in caplog.text
+
+    async def test_drain_raising_is_caught_and_logged(self, caplog):
+        writer = _FakeWriter()
+        writer.drain_exc = ConnectionResetError("peer already gone")
+        with caplog.at_level(logging.WARNING):
+            await IPCServer._send(writer, {"id": "1", "result": "ok"})  # must not raise
+        assert "Failed to send IPC response" in caplog.text
+
+    async def test_send_failure_on_one_connection_does_not_affect_another(self, running_server):
+        server, socket_path = running_server
+        server.set_connectors([FakeConnector("gmail", result="ok")])
+
+        dying_writer = _FakeWriter()
+        dying_writer.drain_exc = ConnectionResetError("peer already gone")
+        await server._send(dying_writer, {"id": "1", "result": "should not raise"})
+
+        client = await _RawClient.connect(socket_path)
+        try:
+            await client.send({
+                "id": "1", "method": "call",
+                "params": {"connector": "gmail", "tool": "x", "args": {}},
+            })
+            resp = await client.recv()
+            assert resp["result"] == "ok"
+        finally:
+            await client.close()
+
+
+class _RaisingAuditLogger:
+    """Stand-in for AuditLogger whose record() always raises -- simulates
+    the audit log write itself failing (disk full, permissions, whatever),
+    independent of anything the request itself did."""
+
+    def record(self, entry) -> None:
+        raise RuntimeError("simulated audit log write failure")
+
+
+class TestAuditLogWriteFailureDoesNotBlockTheResponse:
+    """_audit_policy_check and _audit_unattended_session_event each wrap
+    their audit_log write in its own try/except (coding-and-testing
+    guidelines 1.4: non-critical side effects never block the primary
+    operation) -- confirm a failure there is swallowed with a warning log
+    rather than the bridge's response silently hanging or the whole
+    request dying with an unrelated-looking error."""
+
+    async def test_check_policy_response_still_sent_when_audit_write_raises(
+        self, running_server, monkeypatch, caplog
+    ):
+        server, socket_path = running_server
+        server.set_connectors([FakeConnector("gmail")])
+        monkeypatch.setattr(ipc_server_module, "get_audit_logger", lambda: _RaisingAuditLogger())
+        client = await _RawClient.connect(socket_path)
+        try:
+            with caplog.at_level(logging.WARNING):
+                await client.send({
+                    "id": "1", "method": "check_policy",
+                    "params": {"connector": "gmail", "tool": "gmail_list_messages", "args": {}},
+                })
+                resp = await client.recv()
+            assert resp["result"]["verdict"] == "auto_accept"
+            assert "Audit log write failed for policy check" in caplog.text
+        finally:
+            await client.close()
+
+    async def test_begin_unattended_session_response_still_sent_when_audit_write_raises(
+        self, short_socket_path, monkeypatch, caplog
+    ):
+        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+        server = IPCServer([], unattended_sessions_enabled=True)
+        await server.start()
+        monkeypatch.setattr(ipc_server_module, "get_audit_logger", lambda: _RaisingAuditLogger())
+        client = await _RawClient.connect(short_socket_path)
+        try:
+            with caplog.at_level(logging.WARNING):
+                await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
+                resp = await client.recv()
+            assert resp["result"] == {"unattended": True}
+            assert server.unattended_session_count() == 1
+            assert "Audit log write failed for unattended-session event" in caplog.text
+        finally:
+            await client.close()
+            await server.stop()
+
+    async def test_end_unattended_session_response_still_sent_when_audit_write_raises(
+        self, short_socket_path, monkeypatch, caplog
+    ):
+        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+        server = IPCServer([], unattended_sessions_enabled=True)
+        await server.start()
+        client = await _RawClient.connect(short_socket_path)
+        try:
+            await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
+            await client.recv()
+
+            monkeypatch.setattr(ipc_server_module, "get_audit_logger", lambda: _RaisingAuditLogger())
+            with caplog.at_level(logging.WARNING):
+                await client.send({"id": "2", "method": "end_unattended_session", "params": {}})
+                resp = await client.recv()
+            assert resp["result"] == {"unattended": False}
+            assert server.unattended_session_count() == 0
+            assert "Audit log write failed for unattended-session event" in caplog.text
+        finally:
+            await client.close()
+            await server.stop()
+
+
+class TestFireUnattendedChangedListener:
+    """set_unattended_changed_listener's callback -- the menu bar's live
+    unattended-session indicator relies on this firing exactly when
+    membership of _unattended_connections actually changes, not on every
+    begin/end call (a redundant end on a connection that was never marked
+    unattended must not fire it)."""
+
+    async def test_listener_fires_on_begin(self, short_socket_path, monkeypatch):
+        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+        server = IPCServer([], unattended_sessions_enabled=True)
+        await server.start()
+        fired = []
+        server.set_unattended_changed_listener(lambda: fired.append(server.unattended_session_count()))
+        client = await _RawClient.connect(short_socket_path)
+        try:
+            await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
+            await client.recv()
+            assert fired == [1]
+        finally:
+            await client.close()
+            await server.stop()
+
+    async def test_listener_fires_on_end(self, short_socket_path, monkeypatch):
+        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+        server = IPCServer([], unattended_sessions_enabled=True)
+        await server.start()
+        client = await _RawClient.connect(short_socket_path)
+        try:
+            await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
+            await client.recv()
+
+            fired = []
+            server.set_unattended_changed_listener(lambda: fired.append(server.unattended_session_count()))
+            await client.send({"id": "2", "method": "end_unattended_session", "params": {}})
+            await client.recv()
+            assert fired == [0]
+        finally:
+            await client.close()
+            await server.stop()
+
+    async def test_listener_fires_on_disconnect_while_unattended(self, short_socket_path, monkeypatch):
+        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+        server = IPCServer([], unattended_sessions_enabled=True)
+        await server.start()
+        client = await _RawClient.connect(short_socket_path)
+        await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
+        await client.recv()
+
+        fired = []
+        server.set_unattended_changed_listener(lambda: fired.append(server.unattended_session_count()))
+        client.writer.close()
+        await asyncio.sleep(0.05)
+
+        try:
+            assert fired == [0]
+        finally:
+            await server.stop()
+
+    async def test_listener_does_not_fire_on_redundant_end(self, short_socket_path, monkeypatch):
+        # end_unattended_session on a connection that was never marked
+        # unattended is a no-op -- membership didn't change, so there is
+        # nothing for the menu bar to rebuild for.
+        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+        server = IPCServer([], unattended_sessions_enabled=True)
+        await server.start()
+        fired = []
+        server.set_unattended_changed_listener(lambda: fired.append(True))
+        client = await _RawClient.connect(short_socket_path)
+        try:
+            await client.send({"id": "1", "method": "end_unattended_session", "params": {}})
+            await client.recv()
+            assert fired == []
+        finally:
+            await client.close()
+            await server.stop()
+
+    async def test_no_listener_registered_does_not_raise(self, short_socket_path, monkeypatch):
+        # Default state (menu bar not wired up yet, e.g. in tests): firing
+        # with no listener registered must be a silent no-op, not an
+        # AttributeError that would take the whole call down.
+        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+        server = IPCServer([], unattended_sessions_enabled=True)
+        await server.start()
+        client = await _RawClient.connect(short_socket_path)
+        try:
+            await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
+            resp = await client.recv()
+            assert resp["result"] == {"unattended": True}
+        finally:
+            await client.close()
+            await server.stop()

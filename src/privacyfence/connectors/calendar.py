@@ -620,6 +620,7 @@ class CalendarConnector(Connector):
         raw_data = {
             "calendar_id": calendar_id, "event_id": event_id, "visibility": visibility,
             "organizer_email": event.organizer_email,
+            "attendees": [a.email for a in (event.attendees or [])],
         }
         await gated_call(
             connector=self.name,

@@ -11,7 +11,7 @@ Main thread only, except where noted. Provides:
     for Telegram, the phone+code(+2FA) flow) directly, no Terminal window
   - PII Detection Gate: on/off toggle for the extra confirmation gate in
     pii_detector.py, persisted to settings.yaml and hot-reloaded live
-  - Open Audit Log / About panel
+  - Export Audit Log / About panel
 
 Long-running auth flows (anything that waits on a browser) run on a
 background thread; results are marshaled back to the main thread via
@@ -27,11 +27,21 @@ import os
 import re
 import subprocess
 import threading
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import objc
 import rumps
 import yaml
+from AppKit import (
+    NSColor,
+    NSFont,
+    NSFontAttributeName,
+    NSForegroundColorAttributeName,
+    NSMutableAttributedString,
+)
+from Foundation import NSObject
 from PyObjCTools import AppHelper
 
 from . import __version__
@@ -56,6 +66,7 @@ from .resource_grants import (
     set_grant_entries,
 )
 from .resource_names import get_resolver
+from .rules_manager_window import RulesManagerWindowController, Row, Section
 from .salesforce_client import authorize_interactive as salesforce_authorize_interactive
 from .slack_client import authorize_interactive as slack_authorize_interactive
 from .tasks_client import TasksClient
@@ -80,6 +91,7 @@ OPERATION_LABELS: dict[str, str] = {
     "gmail.add_label":             "Gmail – Add label",
     "gmail.remove_label":          "Gmail – Remove label",
     "gmail.archive_message":       "Gmail – Archive message",
+    "gmail.create_label":          "Gmail – Create label",
     "drive.read_file_contents":    "Drive – Read file",
     "drive.download_file":         "Drive – Download file",
     "drive.write_file":            "Drive – Write file",
@@ -92,17 +104,27 @@ OPERATION_LABELS: dict[str, str] = {
     "sheets.add_sheet":            "Sheets – Add tab",
     "sheets.rename_sheet":         "Sheets – Rename tab",
     "sheets.format_range":         "Sheets – Format range",
+    "sheets.insert_dimensions":    "Sheets – Insert rows/columns",
+    "sheets.delete_dimensions":    "Sheets – Delete rows/columns",
+    "docs.edit_content":           "Docs – Edit content",
+    "docs.format_content":         "Docs – Format content",
     "slack.read_messages":         "Slack – Read messages",
     "slack.send_message":          "Slack – Send message",
     "calendar.read_event_details": "Calendar – Read event",
     "calendar.create_modify_event":"Calendar – Create/modify event",
+    "calendar.set_visibility":     "Calendar – Set event visibility",
     "salesforce.read_record":      "Salesforce – Read record",
     "salesforce.run_report":       "Salesforce – Run report",
+    "salesforce.search":           "Salesforce – Search",
     "contacts.edit":               "Contacts – Update contact",
+    "contacts.create":             "Contacts – Create contact",
+    "contacts.add_label":          "Contacts – Add label",
+    "contacts.remove_label":       "Contacts – Remove label",
     "jira.read_issue":             "Jira – Read issue",
     "jira.create_issue":           "Jira – Create issue",
     "jira.add_comment":            "Jira – Add comment",
     "jira.update_issue":           "Jira – Update issue",
+    "jira.transition_issue":       "Jira – Transition issue",
     "confluence.read_page":        "Confluence – Read page",
     "confluence.create_page":      "Confluence – Create page",
     "confluence.update_page":      "Confluence – Update page",
@@ -124,6 +146,7 @@ RULES_BY_OPERATION: dict[str, list[str]] = {
     "gmail.add_label":              ["label_name_allowlist", "i_am_sender", "trusted_sender_domain"],
     "gmail.remove_label":           ["label_name_allowlist", "i_am_sender", "trusted_sender_domain"],
     "gmail.archive_message":        ["i_am_sender", "trusted_sender_domain", "label_match"],
+    "gmail.create_label":           ["label_name_allowlist"],
     "drive.read_file_contents":     ["i_am_owner", "created_by_me", "approved_folder", "file_type_allowlist", "created_this_session", "shared_drive_exclusion"],
     "drive.download_file":          ["i_am_owner", "approved_folder", "file_type_allowlist", "created_this_session", "shared_drive_exclusion"],
     "drive.write_file":             ["i_am_owner", "approved_sandbox_folder", "file_type_allowlist", "created_this_session"],
@@ -136,17 +159,27 @@ RULES_BY_OPERATION: dict[str, list[str]] = {
     "sheets.add_sheet":             ["approved_spreadsheet", "i_am_owner", "approved_sandbox_folder", "created_this_session"],
     "sheets.rename_sheet":          ["approved_spreadsheet", "i_am_owner", "approved_sandbox_folder", "created_this_session"],
     "sheets.format_range":          ["approved_spreadsheet", "i_am_owner", "approved_sandbox_folder", "created_this_session"],
+    "sheets.insert_dimensions":     ["approved_spreadsheet", "i_am_owner", "approved_sandbox_folder", "created_this_session"],
+    "sheets.delete_dimensions":     ["approved_spreadsheet", "i_am_owner", "approved_sandbox_folder", "created_this_session"],
+    "docs.edit_content":            ["i_am_owner", "approved_sandbox_folder", "created_this_session"],
+    "docs.format_content":          ["i_am_owner", "approved_sandbox_folder", "created_this_session"],
     "slack.read_messages":          ["dm_with_myself", "approved_channel", "public_channels_only", "no_file_attachments"],
     "slack.send_message":           ["dm_with_myself", "send_to_myself", "approved_channel", "approved_recipient", "reply_in_existing_thread"],
-    "calendar.read_event_details":  ["i_am_organizer", "no_external_attendees", "personal_calendar", "past_event", "time_window_days", "no_conferencing_link"],
+    "calendar.read_event_details":  ["i_am_organizer", "no_external_attendees", "personal_calendar", "past_event", "time_window_days", "no_conferencing_link", "non_private_event"],
     "calendar.create_modify_event": ["i_am_organizer", "no_external_attendees", "personal_calendar"],
+    "calendar.set_visibility":      ["i_am_organizer", "no_external_attendees", "personal_calendar"],
     "salesforce.read_record":       ["approved_object_types"],
     "salesforce.run_report":        ["approved_report_ids"],
+    "salesforce.search":            ["approved_object_types"],
     "contacts.edit":                ["no_contact_info_change"],
+    "contacts.create":              ["no_contact_info_change"],
+    "contacts.add_label":           ["label_name_allowlist"],
+    "contacts.remove_label":        ["label_name_allowlist"],
     "jira.read_issue":              ["i_am_reporter", "i_am_assignee", "approved_project_keys"],
     "jira.create_issue":            ["approved_project_keys"],
     "jira.add_comment":             ["approved_project_keys"],
     "jira.update_issue":            ["approved_project_keys"],
+    "jira.transition_issue":        ["approved_project_keys"],
     "confluence.read_page":         ["i_am_author", "approved_space_keys"],
     "confluence.create_page":       ["approved_space_keys"],
     "confluence.update_page":       ["approved_space_keys"],
@@ -182,16 +215,17 @@ ALL_CONNECTORS: list[str] = [
 ]
 
 # Top-level groups shown in the "Auto-accept Rules" menu specifically --
-# distinct from ALL_CONNECTORS because "sheets" isn't a connector (it has no
-# separate auth, org-config section, or entry in GOOGLE_CONNECTORS/
-# _GOOGLE_CLIENTS/ORG_CONFIG_SERVICE -- it rides on Drive's OAuth grant), but
-# its rules live under their own "sheets.*" operation keys (see
-# TOOL_TO_OPERATION in auto_accept.py) rather than nested under "drive.*", so
-# _build_rules_menu's connector-prefix grouping needs it listed here or the
-# whole sheets.* rule bucket is silently dropped (never iterated, so never
-# rendered) -- exactly what happened before this constant existed.
+# distinct from ALL_CONNECTORS because "sheets" and "docs" aren't connectors
+# (neither has a separate auth, org-config section, or entry in
+# GOOGLE_CONNECTORS/_GOOGLE_CLIENTS/ORG_CONFIG_SERVICE -- both ride on
+# Drive's OAuth grant), but their rules live under their own "sheets.*"/
+# "docs.*" operation keys (see TOOL_TO_OPERATION in auto_accept.py) rather
+# than nested under "drive.*", so _build_rules_menu's connector-prefix
+# grouping needs them listed here or the whole bucket is silently dropped
+# (never iterated, so never rendered) -- exactly what happened before this
+# constant existed.
 RULES_MENU_GROUPS: list[str] = [
-    "gmail", "drive", "sheets", "contacts", "calendar", "tasks",
+    "gmail", "drive", "sheets", "docs", "contacts", "calendar", "tasks",
     "slack", "jira", "confluence", "salesforce", "telegram",
 ]
 
@@ -295,6 +329,36 @@ def _google_client_config(org_config: dict[str, Any]) -> dict[str, Any]:
     return {"installed": google}
 
 
+class _MenuTrackingDelegate(NSObject):
+    """NSMenuDelegate that tracks whether the status-bar dropdown is
+    currently open on screen.
+
+    Mutating an NSMenu's items (rumps' self.menu.clear()/self.menu = [...])
+    while AppKit is tracking that same menu (i.e. the dropdown is visibly
+    open) crashes the process with EXC_BAD_ACCESS deep inside AppKit's
+    tracking loop -- it's left holding pointers into NSMenuItem objects
+    that just got released. PrivacyFenceMenuBar._rebuild() consults
+    ``app._menu_is_open`` (kept up to date by this delegate) to defer such
+    rebuilds until the dropdown closes instead of mutating it live.
+    """
+
+    def init(self):
+        self = objc.super(_MenuTrackingDelegate, self).init()
+        if self is None:
+            return None
+        self.app = None
+        return self
+
+    def menuWillOpen_(self, _menu: Any) -> None:
+        self.app._menu_is_open = True
+
+    def menuDidClose_(self, _menu: Any) -> None:
+        self.app._menu_is_open = False
+        if self.app._rebuild_pending:
+            self.app._rebuild_pending = False
+            self.app._rebuild()
+
+
 # ---------------------------------------------------------------------------- #
 # App
 # ---------------------------------------------------------------------------- #
@@ -316,6 +380,10 @@ class PrivacyFenceMenuBar(rumps.App):
         # _refresh_connectors() re-authenticates/toggles one.
         self._connector_objs: dict[str, Any] = {c.name: c for c in (connector_objs or [])}
         self._resolver = get_resolver()
+        # Lazily created on first "Manage Auto-accept Rules…" click (see
+        # _open_rules_manager) -- one long-lived window reused for the app's
+        # whole lifetime, unlike the modal one-shot approval windows.
+        self._rules_manager: RulesManagerWindowController | None = None
         icon_path = _find_icon()
         super().__init__(
             name="PrivacyFence",
@@ -323,6 +391,11 @@ class PrivacyFenceMenuBar(rumps.App):
             quit_button=None,
             template=True,
         )
+        self._menu_is_open = False
+        self._rebuild_pending = False
+        self._menu_tracking_delegate = _MenuTrackingDelegate.alloc().init()
+        self._menu_tracking_delegate.app = self
+        self.menu._menu.setDelegate_(self._menu_tracking_delegate)
         self._rebuild()
         set_rules_changed_listener(self._on_rules_changed)
         self._ipc_server.set_unattended_changed_listener(self._on_unattended_changed)
@@ -357,15 +430,21 @@ class PrivacyFenceMenuBar(rumps.App):
     # ------------------------------------------------------------------ #
 
     def _rebuild(self) -> None:
+        # Rebuilding mutates the live NSMenu the status-bar item shares with
+        # AppKit's tracking loop -- if the dropdown is currently open,
+        # mutating it now crashes the process (see _MenuTrackingDelegate).
+        # Defer instead; menuDidClose_ replays the rebuild once it's safe.
+        if self._menu_is_open:
+            self._rebuild_pending = True
+            return
         cfg = self._load_config()
         org_config = load_org_config()
         connectors_cfg: dict[str, dict] = cfg.get("connectors", {}) or {}
         pii_enabled: bool = (cfg.get("pii_detection", {}) or {}).get("enabled", True)
 
-        rules_parent = self._build_rules_menu(cfg)
-
-        org_parent = self._build_org_menu(org_config)
+        org_item = self._build_org_menu(org_config)
         connectors_parent = self._build_connectors_menu(org_config, connectors_cfg)
+        rules_item = rumps.MenuItem("Manage Auto-accept Rules…", callback=self._open_rules_manager)
 
         pii_item = rumps.MenuItem("PII Detection Gate", callback=self._toggle_pii_detection)
         pii_item.state = pii_enabled
@@ -376,95 +455,134 @@ class PrivacyFenceMenuBar(rumps.App):
             rumps.separator,
             pii_item,
             rumps.separator,
-            org_parent,
-            rules_parent,
             connectors_parent,
+            rules_item,
+            org_item,
             rumps.separator,
-            rumps.MenuItem("Open Audit Log", callback=self.open_audit_log),
+            rumps.MenuItem("Export Audit Log…", callback=self.export_audit_log),
             rumps.MenuItem("About PrivacyFence", callback=self.show_about),
             rumps.separator,
             rumps.MenuItem("Quit PrivacyFence", callback=self.quit_app),
         ]
+        # The rules-manager window (if open) shows the same connector/rule
+        # state as the menu -- refresh it on every path that gets here,
+        # rather than duplicating this call at each of _rebuild()'s many
+        # callers (see _save_and_reload, _refresh_connectors, auth-flow
+        # done() callbacks, ...).
+        if self._rules_manager is not None:
+            self._rules_manager._refresh_window()
 
-    def _build_rules_menu(self, cfg: dict[str, Any]) -> rumps.MenuItem:
-        rules_parent = rumps.MenuItem("Auto-accept Rules")
+    def _open_rules_manager(self, _sender: Any = None) -> None:
+        if self._rules_manager is None:
+            self._rules_manager = RulesManagerWindowController.alloc().init()
+            self._rules_manager._configure_window(self._list_rule_connectors, self._gather_connector_sections)
+        self._rules_manager._show_window()
+
+    def _list_rule_connectors(self) -> list[tuple[str, str, int]]:
+        cfg = self._load_config()
         rules_cfg: dict[str, list[dict]] = cfg.get("auto_accept_rules", {}) or {}
         grants_cfg: dict[str, Any] = cfg.get("auto_accept_grants", {}) or {}
-
         ops_by_connector: dict[str, list[str]] = {}
         for op_key in OPERATION_LABELS:
             ops_by_connector.setdefault(op_key.split(".", 1)[0], []).append(op_key)
 
+        result: list[tuple[str, str, int]] = []
         for cname in RULES_MENU_GROUPS:
-            op_keys = ops_by_connector.get(cname)
-            resource_types = resource_types_for_connector(cname)
-            connector_item = rumps.MenuItem(cname.capitalize())
+            count = sum(len(get_grant_entries(grants_cfg, rt)) for rt in resource_types_for_connector(cname))
+            count += sum(len(rules_cfg.get(op_key) or []) for op_key in ops_by_connector.get(cname, []))
+            result.append((cname, cname.capitalize(), count))
+        return result
 
-            if not op_keys and not resource_types:
-                connector_item.add(rumps.MenuItem("  All operations always auto-approved — no rules needed"))
-                rules_parent.add(connector_item)
-                continue
+    def _gather_connector_sections(self, cname: str) -> list[Section]:
+        """Data for the rules-manager window's main pane -- the same
+        connector/grant/rule iteration the old cascading "Auto-accept Rules"
+        NSMenu used to do, just producing Section/Row data instead of
+        rumps.MenuItem objects. Every
+        row action below is one of this class's own existing mutation
+        methods (see "Rule actions"/"Grant actions"), unchanged -- only how
+        they're triggered (a window row's link button, not a menu click)
+        and how the result gets back on screen (see _rebuild's
+        _refresh_window() call) is new."""
+        cfg = self._load_config()
+        rules_cfg: dict[str, list[dict]] = cfg.get("auto_accept_rules", {}) or {}
+        grants_cfg: dict[str, Any] = cfg.get("auto_accept_grants", {}) or {}
+        ops_by_connector: dict[str, list[str]] = {}
+        for op_key in OPERATION_LABELS:
+            ops_by_connector.setdefault(op_key.split(".", 1)[0], []).append(op_key)
 
-            for rt in resource_types:
-                connector_item.add(self._build_grant_resource_menu(rt, grants_cfg))
+        resource_types = resource_types_for_connector(cname)
+        op_keys = ops_by_connector.get(cname, [])
+        client = self._client_for(cname)
+        sections: list[Section] = []
 
-            if op_keys:
-                filters_item = rumps.MenuItem("Filters")
-                for op_key in op_keys:
-                    label = OPERATION_LABELS[op_key]
-                    short_label = label.split(" – ", 1)[1] if " – " in label else label
-                    filters_item.add(self._build_operation_menu(op_key, short_label, rules_cfg.get(op_key) or []))
-                connector_item.add(filters_item)
+        for rt in resource_types:
+            entries = get_grant_entries(grants_cfg, rt)
+            rows: list[Row] = []
+            for idx, entry in enumerate(entries):
+                resource_id = rt.id_of(entry)
+                name = entry.get("name") or self._resolver.cached_name(rt, resource_id)
+                label = name or _short_id(resource_id)
+                if entry.get("tab"):
+                    label += f" — {entry['tab']}"
+                if name is None:
+                    label += (
+                        "  (resolving…)" if client is not None
+                        else f"  (connect {cname.capitalize()} to see its name)"
+                    )
+                actions: list[tuple[str, Any]] = [
+                    (
+                        f"{'☑' if entry.get(cap_key) else '☐'} {capability.label}",
+                        partial(self._toggle_grant_capability, cname, rt.config_key, idx),
+                    )
+                    for cap_key, capability in rt.capabilities.items()
+                ]
+                actions.append(("Copy ID", partial(self._copy_to_clipboard, resource_id)))
+                actions.append(("✕ Remove", partial(self._remove_grant, cname, rt.config_key, idx)))
+                rows.append(Row(label, False, actions))
+            sections.append(Section(rt.label, rows, f"+ Add {rt.singular}…", partial(self._add_grant, cname, rt.config_key)))
+            self._resolve_grant_names_async(rt, entries, client)
 
-            rules_parent.add(connector_item)
+        for op_key in op_keys:
+            label = OPERATION_LABELS[op_key]
+            short_label = label.split(" – ", 1)[1] if " – " in label else label
+            op_rules = rules_cfg.get(op_key) or []
+            rows = []
+            for idx, rule_cfg in enumerate(op_rules):
+                rows.extend(self._rule_rows_for(op_key, idx, rule_cfg))
+            sections.append(Section(short_label, rows, "+ Add rule…", partial(self._add_rule, op_key)))
 
-        return rules_parent
+        if not resource_types and not op_keys:
+            sections.append(Section("", [Row("All operations always auto-approved — no rules needed", False, [])]))
 
-    def _build_grant_resource_menu(self, rt: GrantResourceType, grants_cfg: dict[str, Any]) -> rumps.MenuItem:
-        """One "Trusted <Resource>" submenu: every currently-granted resource
-        as its own named row (capability checkboxes, Copy ID, Remove), plus a
-        single "+ Add …" action — see resource_grants.py for what a
-        capability toggle actually compiles to."""
-        group_item = rumps.MenuItem(rt.label)
-        entries = get_grant_entries(grants_cfg, rt)
-        client = self._client_for(rt.connector)
+        return sections
 
-        for idx, entry in enumerate(entries):
-            group_item.add(self._build_grant_entry_menu(rt, idx, entry, client))
+    def _rule_rows_for(self, op_key: str, idx: int, rule_cfg: dict[str, Any]) -> list[Row]:
+        rule_name = rule_cfg.get("rule", "")
+        value = rule_cfg.get("value")
 
-        if entries:
-            group_item.add(rumps.MenuItem("  ─────────────────"))
-        add_item = rumps.MenuItem(f"  + Add {rt.singular}…")
-        add_item.set_callback(_bind(self._add_grant, rt.connector, rt.config_key))
-        group_item.add(add_item)
+        if rule_cfg.get("_grant"):
+            # Compiled from a Trusted-resource grant, not a hand-authored
+            # rule — nothing to edit here, only where it actually lives.
+            return [Row(f"{rule_name}  (via grant above)", False, [])]
 
-        self._resolve_grant_names_async(rt, entries, client)
-        return group_item
+        if rule_name in RULES_LIST_VALUE or rule_name in RULES_PAIR_VALUE:
+            is_pair = rule_name in RULES_PAIR_VALUE
+            rows = [Row(rule_name, False, [("+ Add value…", partial(self._add_rule_value, op_key, idx))])]
+            values = value if isinstance(value, list) else ([value] if value else [])
+            for v_idx, v in enumerate(values):
+                v_label = _format_pair_line(v) if is_pair else str(v)
+                rows.append(Row(v_label, True, [("✕ Remove", partial(self._remove_rule_value, op_key, idx, v_idx))]))
+            return rows
 
-    def _build_grant_entry_menu(
-        self, rt: GrantResourceType, idx: int, entry: dict[str, Any], client: Any | None
-    ) -> rumps.MenuItem:
-        resource_id = rt.id_of(entry)
-        name = entry.get("name") or self._resolver.cached_name(rt, resource_id)
-        label = name or _short_id(resource_id)
-        if entry.get("tab"):
-            label += f" — {entry['tab']}"
-        if name is None:
-            label += "  (resolving…)" if client is not None else f"  (connect {rt.connector.capitalize()} to see its name)"
+        if rule_name in RULES_INT_VALUE:
+            return [Row(f"{rule_name}: {value}", False, [
+                ("Edit…", partial(self._edit_rule_value, op_key, idx)),
+                ("✕ Remove", partial(self._remove_rule, op_key, idx)),
+            ])]
 
-        row = rumps.MenuItem(f"  {label}")
-        for cap_key, capability in rt.capabilities.items():
-            mark = "☑" if entry.get(cap_key) else "☐"
-            toggle = rumps.MenuItem(f"    {mark} {capability.label}")
-            toggle.set_callback(_bind(self._toggle_grant_capability, rt.connector, rt.config_key, idx, cap_key))
-            row.add(toggle)
-        copy_item = rumps.MenuItem(f"    Copy ID ({_short_id(resource_id)})")
-        copy_item.set_callback(_bind(self._copy_to_clipboard, resource_id))
-        row.add(copy_item)
-        remove_item = rumps.MenuItem("    ✕ Remove")
-        remove_item.set_callback(_bind(self._remove_grant, rt.connector, rt.config_key, idx))
-        row.add(remove_item)
-        return row
+        # Boolean rule (no value) — one action removes it; there's nothing
+        # else to configure, so there's no separate toggle-vs-remove split.
+        return [Row(f"✓ {rule_name}", False, [("✕ Remove", partial(self._remove_rule, op_key, idx))])]
 
     def _resolve_grant_names_async(
         self, rt: GrantResourceType, entries: list[dict[str, Any]], client: Any | None
@@ -493,82 +611,33 @@ class PrivacyFenceMenuBar(rumps.App):
 
         self._run_async(work, done)
 
-    def _build_operation_menu(self, op_key: str, label: str, op_rules: list[dict]) -> rumps.MenuItem:
-        op_item = rumps.MenuItem(label)
-
-        add_item = rumps.MenuItem("  + Add rule…")
-        add_item.set_callback(_bind(self._add_rule, op_key))
-        op_item.add(add_item)
-
-        if op_rules:
-            op_item.add(rumps.MenuItem("  ─────────────────"))
-
-        for idx, rule_cfg in enumerate(op_rules):
-            op_item.add(self._build_rule_row(op_key, idx, rule_cfg))
-
-        return op_item
-
-    def _build_rule_row(self, op_key: str, idx: int, rule_cfg: dict[str, Any]) -> rumps.MenuItem:
-        rule_name = rule_cfg.get("rule", "")
-        value = rule_cfg.get("value")
-
-        if rule_cfg.get("_grant"):
-            # Compiled from a Trusted-resource grant, not a hand-authored
-            # rule — nothing to edit here, only where it actually lives.
-            row = rumps.MenuItem(f"  {rule_name}  (via grant — edit above)")
-            return row
-
-        if rule_name in RULES_LIST_VALUE or rule_name in RULES_PAIR_VALUE:
-            is_pair = rule_name in RULES_PAIR_VALUE
-            row = rumps.MenuItem(f"  {rule_name}")
-            values = value if isinstance(value, list) else ([value] if value else [])
-            for v_idx, v in enumerate(values):
-                v_label = _format_pair_line(v) if is_pair else str(v)
-                entry_item = rumps.MenuItem(f"    {v_label}")
-                remove = rumps.MenuItem("      ✕ Remove")
-                remove.set_callback(_bind(self._remove_rule_value, op_key, idx, v_idx))
-                entry_item.add(remove)
-                row.add(entry_item)
-            if values:
-                row.add(rumps.MenuItem("    ─────────────────"))
-            add_value = rumps.MenuItem("    + Add value…")
-            add_value.set_callback(_bind(self._add_rule_value, op_key, idx))
-            row.add(add_value)
-            return row
-
-        if rule_name in RULES_INT_VALUE:
-            row = rumps.MenuItem(f"  {rule_name}: {value}")
-            edit = rumps.MenuItem("    Edit…")
-            edit.set_callback(_bind(self._edit_rule_value, op_key, idx))
-            row.add(edit)
-            remove = rumps.MenuItem("    ✕ Remove")
-            remove.set_callback(_bind(self._remove_rule, op_key, idx))
-            row.add(remove)
-            return row
-
-        # Boolean rule (no value) — one click removes it; there's nothing
-        # else to configure, so there's no separate toggle-vs-remove split.
-        row = rumps.MenuItem(f"  ✓ {rule_name}")
-        row.set_callback(_bind(self._remove_rule, op_key, idx))
-        return row
-
     def _build_org_menu(self, org_config: dict[str, Any]) -> rumps.MenuItem:
-        org_parent = rumps.MenuItem("Organization Config")
+        """Single top-level item, not a submenu -- the old version held only
+        two static status lines plus one action, exactly the kind of shallow
+        "menu wearing a data-browser's clothes" the menu bar redesign review
+        flagged (see that review's item 1, generalized). Clicking shows
+        status first (if any config is installed) before handing off to the
+        unchanged install/update flow."""
+        label = "Organization Config…" if org_config else "Install Organization Config…"
+        item = rumps.MenuItem(label)
+        item.set_callback(self._open_org_config)
+        return item
+
+    def _open_org_config(self, _sender: Any = None) -> None:
+        org_config = load_org_config()
         if org_config:
             org_name = org_config.get("org_name", "")
             installed = [s for s in ORG_BUNDLE_SERVICES if org_config.get(s)]
             header = f"Installed: {org_name}" if org_name else "Installed"
-            org_parent.add(rumps.MenuItem(header))
-            org_parent.add(rumps.MenuItem("  Services: " + (", ".join(installed) or "none")))
-        else:
-            org_parent.add(rumps.MenuItem("No organization config installed"))
-        org_parent.add(rumps.separator)
-        install_item = rumps.MenuItem(
-            "Install/Update Organization Config…" if org_config else "Install Organization Config…"
-        )
-        install_item.set_callback(self._install_org_config)
-        org_parent.add(install_item)
-        return org_parent
+            resp = rumps.alert(
+                title="Organization Config",
+                message=f"{header}\nServices: {', '.join(installed) or 'none'}",
+                ok="Update…",
+                cancel="Close",
+            )
+            if resp != 1:
+                return
+        self._install_org_config()
 
     def _build_connectors_menu(
         self, org_config: dict[str, Any], connectors_cfg: dict[str, dict]
@@ -584,15 +653,16 @@ class PrivacyFenceMenuBar(rumps.App):
                 has_org = bool(org_config.get(ORG_CONFIG_SERVICE[cname]))
 
             if connected:
-                status = "●"  # connected
+                status, status_color = "●", NSColor.systemGreenColor()  # connected
             elif not enabled:
-                status = "✕"  # disabled
+                status, status_color = "✕", NSColor.secondaryLabelColor()  # disabled
             elif not has_org:
-                status = "○"  # org config / app credentials missing
+                status, status_color = "○", NSColor.systemRedColor()  # org config / app credentials missing
             else:
-                status = "◐"  # org config present, needs authentication
+                status, status_color = "◐", NSColor.systemOrangeColor()  # org config present, needs auth
 
             conn_item = rumps.MenuItem(f"{status} {cname.capitalize()}")
+            _colorize_status_glyph(conn_item, status, status_color)
 
             toggle_label = "  Disable" if enabled else "  Enable"
             toggle = rumps.MenuItem(toggle_label)
@@ -632,14 +702,27 @@ class PrivacyFenceMenuBar(rumps.App):
             )
             return
 
-        rule_name = _osascript_pick(
-            title="Add Auto-accept Rule",
-            prompt=f"Select a rule to add to:\n{OPERATION_LABELS.get(op_key, op_key)}",
-            options=available,
-        )
-        if not rule_name:
-            return
+        # _osascript_pick blocks on a subprocess without pumping the run
+        # loop -- calling it straight from this button's action handler
+        # segfaulted AppKit (an in-flight window-activation animation lost
+        # its object while the main thread sat blocked in subprocess.run,
+        # see git history). Off the main thread, like every other
+        # subprocess-backed picker in this file (e.g. _authenticate_atlassian's
+        # pick_resource).
+        def work() -> str | None:
+            return _osascript_pick(
+                title="Add Auto-accept Rule",
+                prompt=f"Select a rule to add to:\n{OPERATION_LABELS.get(op_key, op_key)}",
+                options=available,
+            )
 
+        def done(ok: bool, result: Any) -> None:
+            if ok and result:
+                self._finish_add_rule(op_key, result)
+
+        self._run_async(work, done)
+
+    def _finish_add_rule(self, op_key: str, rule_name: str) -> None:
         new_rule: dict[str, Any] = {"rule": rule_name}
 
         if rule_name in RULES_LIST_VALUE or rule_name in RULES_PAIR_VALUE:
@@ -902,14 +985,22 @@ class PrivacyFenceMenuBar(rumps.App):
             rumps.alert("PrivacyFence", f"No {rt.label.lower()} found.")
             return
         options = [f"{name} ({_short_id(resource_id)})" for resource_id, name in candidates]
-        choice = _osascript_pick(
-            title=f"Add {rt.singular}", prompt=f"Select a {rt.singular} to trust:", options=options
-        )
-        if not choice:
-            return
-        chosen_idx = options.index(choice)
-        resource_id, name = candidates[chosen_idx]
-        self._confirm_and_save_grant(rt, resource_id, name, "")
+
+        # See _add_rule's comment -- _osascript_pick must not block the main
+        # thread directly from an AppKit callback.
+        def work() -> str | None:
+            return _osascript_pick(
+                title=f"Add {rt.singular}", prompt=f"Select a {rt.singular} to trust:", options=options
+            )
+
+        def done(ok: bool, choice: Any) -> None:
+            if not ok or not choice:
+                return
+            chosen_idx = options.index(choice)
+            resource_id, name = candidates[chosen_idx]
+            self._confirm_and_save_grant(rt, resource_id, name, "")
+
+        self._run_async(work, done)
 
     def _confirm_and_save_grant(
         self, rt: GrantResourceType, resource_id: str, name: str | None, tab: str
@@ -1285,7 +1376,7 @@ class PrivacyFenceMenuBar(rumps.App):
     # Misc actions
     # ------------------------------------------------------------------ #
 
-    def open_audit_log(self, _: Any = None) -> None:
+    def export_audit_log(self, _: Any = None) -> None:
         log_dir = Path(data_dir()) / "logs" / "audit"
         if not log_dir.exists():
             rumps.alert("PrivacyFence", "No audit log found yet.")
@@ -1347,6 +1438,23 @@ class PrivacyFenceMenuBar(rumps.App):
 # ---------------------------------------------------------------------------- #
 # Helpers
 # ---------------------------------------------------------------------------- #
+
+def _colorize_status_glyph(item: rumps.MenuItem, glyph: str, color: NSColor) -> None:
+    """Color just the leading status glyph (● ✕ ○ ◐) in an otherwise
+    plain-text menu item title -- item.title stays untouched (tests and
+    VoiceOver still see the same plain "glyph name" string; see
+    _build_connectors_menu), this only changes what's drawn. One color per
+    state (green/gray/red/amber) instead of four uncolored glyphs sharing no
+    visual language with the native checkmark PII Detection Gate already
+    uses for on/off."""
+    title = item.title
+    font = NSFont.menuFontOfSize_(0)
+    attributed = NSMutableAttributedString.alloc().initWithString_attributes_(
+        title, {NSFontAttributeName: font, NSForegroundColorAttributeName: NSColor.labelColor()}
+    )
+    attributed.addAttribute_value_range_(NSForegroundColorAttributeName, color, (0, len(glyph)))
+    item._menuitem.setAttributedTitle_(attributed)
+
 
 def _bind(fn, *bound_args):
     """Return a rumps-compatible callback with pre-bound positional args."""

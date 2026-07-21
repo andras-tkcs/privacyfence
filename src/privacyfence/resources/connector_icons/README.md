@@ -25,3 +25,23 @@ official brand/press kit (most publish explicit guidelines for showing their log
 integration — Google's Identity brand guidelines, Slack's, Atlassian's for Jira/Confluence,
 Salesforce's, and Telegram's all do). Follow each one's usage rules (minimum size, clear space,
 don't recolor/distort) rather than editing the asset to fit.
+
+## Current sources
+
+| File | Source |
+| --- | --- |
+| `gmail.png`, `drive.png`, `calendar.png` | Google's official Workspace branding CDN (`ssl.gstatic.com/images/branding/product/2x/<product>_2020q4_512dp.png`) — the flat mark, no background, matching Google's own brand-kit asset |
+| `tasks.png`, `contacts.png` | The official Google Tasks / Google Contacts apps' own Play Store listing icons — not covered by the Workspace brand kit, so the app icon each is the closest first-party asset |
+| `slack.png` | Slack's own App Store listing icon (publisher: Slack Technologies L.L.C.) |
+| `jira.png`, `confluence.png` | Atlassian's own App Store listing icons for Jira Cloud / Confluence Cloud (publisher: Atlassian Pty Ltd) |
+| `salesforce.png` | Salesforce's own App Store listing icon (publisher: salesforce.com) |
+| `telegram.png` | Telegram's own App Store listing icon (publisher: Telegram FZ-LLC) |
+
+All are square, ~512×512 (Google's three are 1024×1024), pulled directly from each company's own
+CDN or app-store listing — not third-party icon aggregators.
+
+`contacts.png`, `slack.png`, `tasks.png`, `salesforce.png`, and `telegram.png` came from their
+app-store listings with an opaque white square behind the mark (the listing-icon convention, not
+part of the brand mark itself). That square has been flood-filled to transparent so the icon sits
+directly on the dialog background like the others, matching each mark's own outline rather than a
+white tile — no other edit to the logo artwork.

@@ -95,19 +95,19 @@ PrivacyFence translates MCP tool calls into operation-specific review dialogs. U
 
 ### PII-aware review
 
-![PrivacyFence warning about likely personal data before a Drive file is returned to the AI](docs/images/screenshots/drive-read-file-pii.png)
+<img src="docs/images/screenshots/gmail-read-thread.png" alt="PrivacyFence review dialog for a Gmail thread, showing the AI-visibility checklist, a detected-PII warning, and Claude's stated reason for the request" width="311">
 
-The PII gate runs locally before a read is approved. When likely personal data is detected, PrivacyFence highlights the categories found and requires an additional confirmation.
+The PII gate runs locally before a read is approved. When likely personal data is detected, PrivacyFence highlights the categories found and requires an additional confirmation. Every review dialog also discloses exactly what the AI will receive, how often the item has come up recently, and the reason Claude gave for the request.
 
 ### Review before an AI action
 
-![PrivacyFence review dialog for writing a spreadsheet range](docs/images/screenshots/sheets-write.png)
+<img src="docs/images/screenshots/sheets-write.png" alt="PrivacyFence review dialog for writing a spreadsheet range, showing a detected content warning and Claude's stated reason for the request" width="311">
 
-Write operations show exactly which object will change and what values will be written. Selected high-frequency operations can receive a narrowly scoped, in-memory **Accept for 5 min** approval.
+Write operations show exactly which object will change and what values will be written, including an informational warning when Claude's own drafted content appears to contain sensitive figures. Selected high-frequency operations can receive a narrowly scoped, in-memory **Accept for 5 min** approval.
 
 ### Local administration
 
-![PrivacyFence macOS menu bar controls](docs/images/screenshots/menubar.png)
+<img src="docs/images/screenshots/menubar.png" alt="PrivacyFence macOS menu bar controls" width="216">
 
 The menu bar provides access to:
 
@@ -116,6 +116,10 @@ The menu bar provides access to:
 - Auto-accept rules
 - Connector authentication and status
 - The local audit log
+
+Auto-accept rules and trusted-resource grants are managed from a single searchable window, organized by connector:
+
+<img src="docs/images/screenshots/menubar-auto-accept-rules.png" alt="PrivacyFence Auto-accept Rules window, showing a sidebar of connectors and a searchable list of that connector's grants and rules" width="215">
 
 ---
 
@@ -267,6 +271,7 @@ Continue with the organization configuration and connector authentication steps 
 - [Atlassian setup](docs/atlassian-setup.md)
 - [Telegram setup](docs/telegram-setup.md)
 - [Connector QA testing](docs/connector-qa-testing.md)
+- [Approval window content reference](docs/approval-window-content-reference.md) — what each approval dialog shows, grouped by dialog shape
 - [Development vs. installed configuration](docs/dev-vs-live-setup.md)
 - [Contributing](CONTRIBUTING.md)
 

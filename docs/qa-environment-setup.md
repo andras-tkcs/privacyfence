@@ -46,7 +46,7 @@ logic. Its per-connector manifest lives in `tests/fixtures/qa_environment.yaml` 
 it from [`qa_environment.yaml.example`](../tests/fixtures/qa_environment.yaml.example) first); every
 "For the recorder" step below says which field(s) to fill in there.
 
-Every grant below can also be added from the menu bar — **Auto-accept Rules → \<Connector\> →
+Every grant below can also be added from the menu bar — **Manage Auto-accept Rules… → \<Connector\> →
 Trusted \<Resource\> → + Add…** — instead of editing YAML by hand; both are equivalent, and the older
 per-operation form under `auto_accept_rules` (e.g. `approved_folder`, `approved_channel`) still
 works too. Only the YAML form is shown below. See [Auto-accept
@@ -218,8 +218,9 @@ should target the PFQA calendar instead.
         4. PrivacyFence menu bar → **Connectors → Calendar → Reconnect…** so the token picks up the
            new scope
 - [ ] (Optional) Trust the PFQA calendar as a resource-scoped grant — covers
-      `calendar.read_event_details` (`read`) and `calendar.create_modify_event` (`write`) for events
-      on it, regardless of who organized them (an alternative to the per-rule options below):
+      `calendar.read_event_details` (`read`) and `calendar.create_modify_event`/
+      `calendar.set_visibility` (`write`) for events on it, regardless of who organized them (an
+      alternative to the per-rule options below):
       ```yaml
       auto_accept_grants:
         calendar:
@@ -236,17 +237,16 @@ should target the PFQA calendar instead.
         calendar.read_event_details:
           - rule: i_am_organizer
       ```
-- [ ] (Optional) Add `non_private_event`, to also exercise `calendar_get_event_details` and
-      `calendar_set_event_visibility` auto-accepting for a non-private event:
+- [ ] (Optional) Add `non_private_event`, to also exercise `calendar_get_event_details`
+      auto-accepting for a non-private event:
       ```yaml
       auto_accept_rules:
         calendar.read_event_details:
           - rule: non_private_event
-        calendar.set_visibility:
-          - rule: non_private_event
       ```
-      Any event set to `private` still prompts regardless — the rule checks the visibility being
-      *requested*, not the event's prior state.
+      This only applies to reads — `calendar_set_event_visibility` (`calendar.set_visibility`) is a
+      write, gated by the same rules as `calendar.create_modify_event` instead (`i_am_organizer`,
+      `no_external_attendees`, `personal_calendar`).
 - [ ] For the recorder: create one dedicated seed event on the PFQA calendar, far enough in the
       future that it won't need recreating, no real attendees:
       ```
@@ -489,8 +489,9 @@ a failure.
 - [ ] No new fixture — `connector-qa-testing.md`'s Phase 11 reuses the Slack channels from §3
 - [ ] Know how to restart your daemon (`privacyfence-app`, or `scripts/dev_start.sh` from source —
       see [`dev-vs-live-setup.md`](dev-vs-live-setup.md)): `unattended_sessions.enabled` in
-      `settings.yaml` is off by default, has no menu-bar toggle, and isn't hot-reloaded — Phase 11
-      toggles it and restarts the daemon twice as part of the phase itself. See
+      `org_config.json` is off by default, has no menu-bar toggle, and isn't hot-reloaded — Phase 11
+      toggles it (via `scripts/build_org_bundle.py --merge --enable/disable-unattended-sessions`)
+      and restarts the daemon twice as part of the phase itself. See
       [TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md#scheduled--unattended-cowork-tasks).
 
 ---

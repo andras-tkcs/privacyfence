@@ -58,6 +58,88 @@ describe("IPCClient request framing", () => {
     }
   });
 
+  it("listRules() sends the method with a reason param", async () => {
+    const { daemon, client, teardown } = await setup();
+    try {
+      const task = client.listRules("Auditing rules before cleanup.");
+      await daemon.waitForNRequests(1);
+      assert.equal(daemon.received[0]?.method, "list_rules");
+      assert.deepEqual(daemon.received[0]?.params, { reason: "Auditing rules before cleanup." });
+      daemon.sendResponse(daemon.received[0]!.id, { result: { auto_accept_rules: {}, auto_accept_grants: {} } });
+      assert.deepEqual(await task, { auto_accept_rules: {}, auto_accept_grants: {} });
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("listRules() defaults reason to an empty string", async () => {
+    const { daemon, client, teardown } = await setup();
+    try {
+      const task = client.listRules();
+      await daemon.waitForNRequests(1);
+      assert.deepEqual(daemon.received[0]?.params, { reason: "" });
+      daemon.sendResponse(daemon.received[0]!.id, { result: {} });
+      await task;
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("proposeRuleChange() sends camelCase params translated to the wire's snake_case", async () => {
+    const { daemon, client, teardown } = await setup();
+    try {
+      const task = client.proposeRuleChange({
+        target: "grant",
+        operation: "add",
+        reason: "Trusting the shared sandbox folder.",
+        connector: "drive",
+        configKey: "sandbox_folders",
+        resourceId: "folder123",
+        name: "Team sandbox",
+        capabilities: { write: true },
+      });
+      await daemon.waitForNRequests(1);
+      assert.equal(daemon.received[0]?.method, "propose_rule_change");
+      assert.deepEqual(daemon.received[0]?.params, {
+        target: "grant",
+        operation: "add",
+        reason: "Trusting the shared sandbox folder.",
+        operation_key: "",
+        rule_name: "",
+        value: null,
+        old_value: null,
+        connector: "drive",
+        config_key: "sandbox_folders",
+        resource_id: "folder123",
+        name: "Team sandbox",
+        tab: null,
+        capabilities: { write: true },
+      });
+      daemon.sendResponse(daemon.received[0]!.id, { result: { confirmed: true, changed: true } });
+      assert.deepEqual(await task, { confirmed: true, changed: true });
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("proposeRuleChange() rejects with IPCError when the daemon reports a decline", async () => {
+    const { daemon, client, teardown } = await setup();
+    try {
+      const task = client.proposeRuleChange({
+        target: "rule",
+        operation: "add",
+        reason: "x",
+        operationKey: "gmail.read_message",
+        ruleName: "i_am_sender",
+      });
+      await daemon.waitForNRequests(1);
+      daemon.sendResponse(daemon.received[0]!.id, { error: "Request denied by user" });
+      await assert.rejects(task, /Request denied by user/);
+    } finally {
+      await teardown();
+    }
+  });
+
   it("request ids are unique and increment", async () => {
     const { daemon, client, teardown } = await setup();
     try {

@@ -15,6 +15,10 @@ Only pass the flags for services you've set up; a connector is offered to
 users only if its section is present in the bundle. Stdlib only — no
 PrivacyFence install required to run this.
 
+--enable-unattended-sessions turns on privacyfence_begin_unattended_session
+for every install of this bundle — a deliberate per-organization choice, see
+docs/TECHNICAL_REFERENCE.md's "Scheduled / unattended Cowork tasks" section.
+
 Example:
     python3 scripts/build_org_bundle.py \\
         --org-name "Acme Corp" \\
@@ -95,6 +99,20 @@ def build_parser() -> argparse.ArgumentParser:
     atlassian.add_argument("--atlassian-client-id")
     atlassian.add_argument("--atlassian-client-secret")
 
+    unattended = parser.add_argument_group("Unattended / scheduled Cowork tasks")
+    unattended_toggle = unattended.add_mutually_exclusive_group()
+    unattended_toggle.add_argument(
+        "--enable-unattended-sessions", action="store_true",
+        help="Let Claude Cowork declare a connection unattended (privacyfence_"
+             "begin_unattended_session) for scheduled/triggered runs with no human "
+             "present. Off by default -- a deliberate per-organization opt-in, see "
+             "docs/TECHNICAL_REFERENCE.md's \"Scheduled / unattended Cowork tasks\" section.",
+    )
+    unattended_toggle.add_argument(
+        "--disable-unattended-sessions", action="store_true",
+        help="Explicitly turn unattended sessions back off (useful with --merge).",
+    )
+
     return parser
 
 
@@ -137,12 +155,22 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit("--atlassian-client-id and --atlassian-client-secret must be given together.")
         bundle["atlassian"] = {"client_id": args.atlassian_client_id, "client_secret": args.atlassian_client_secret}
 
+    if args.enable_unattended_sessions:
+        bundle["unattended_sessions"] = {"enabled": True}
+    elif args.disable_unattended_sessions:
+        bundle["unattended_sessions"] = {"enabled": False}
+
     services = [k for k in ("google", "slack", "salesforce", "atlassian") if k in bundle]
-    if not services:
-        raise SystemExit("No service flags given — nothing to write. Pass at least one service's credentials.")
+    if not services and "unattended_sessions" not in bundle:
+        raise SystemExit(
+            "No service or --enable/disable-unattended-sessions flags given — nothing to write."
+        )
 
     out_path.write_text(json.dumps(bundle, indent=2) + "\n", encoding="utf-8")
-    print(f"Wrote {out_path} with: {', '.join(services)}")
+    summary = ", ".join(services) or "none"
+    if "unattended_sessions" in bundle:
+        summary += f", unattended_sessions.enabled={bundle['unattended_sessions']['enabled']}"
+    print(f"Wrote {out_path} with: {summary}")
     print(
         'Distribute this file to your users. They install it via "Install/Update '
         'Organization Config…" in the PrivacyFence menu bar.'

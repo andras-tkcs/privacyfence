@@ -19,8 +19,33 @@ jobs:
         with:
           python-version: '3.13'
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Install dependencies
         run: pip install -e ".[test]"
+
+      - name: Install bridge dependencies
+        run: npm ci
+        working-directory: bridge
+
+      # bridge/'s own suite (IPC framing, error propagation, tool dispatch —
+      # see docs/testing-policy.md) runs against bridge/src/*.ts directly via
+      # tsx, no build step needed. Node's built-in test runner already fails
+      # the step on the first failing test.
+      - name: Run bridge test suite
+        run: npm test
+        working-directory: bridge
+
+      # tests/integration/test_bridge_daemon_contract.py spawns the real
+      # built bridge.js against a real IPCServer, so the bridge needs to be
+      # built before pytest runs (the test builds it lazily on a cache miss
+      # too, but building here keeps that cost out of the timed test step
+      # and fails fast on a build error instead of a confusing test skip).
+      - name: Build bridge
+        run: npm run build
+        working-directory: bridge
 
       # Plain `pytest` already fails the step (non-zero exit) on the first
       # failing test — no extra flags needed to enforce a 100% pass rate.

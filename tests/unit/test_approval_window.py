@@ -32,6 +32,7 @@ from Quartz import PDFView
 from WebKit import WKWebView
 
 from privacyfence.approval_window import (
+    _BADGE_ROW_HEIGHT,
     _CONTENT_FLAG_FILL_ALPHA,
     _MARGIN,
     _PII_BACKGROUND_ALPHA,
@@ -53,7 +54,7 @@ pytestmark = pytest.mark.skipif(
 
 def make_controller(
     *,
-    title="PrivacyFence — Read Gmail message",
+    title="Read Gmail message",
     preview=None,
     details_text="ordinary, non-sensitive content",
     allow_accept_all=False,
@@ -347,6 +348,32 @@ class TestSensitivityBadges:
         rows, _ = _badge_rows(["IBAN (bank account number)"], width=300.0)
         assert len(rows) == 1
 
+    def test_labels_track_row_y_the_same_way_their_pill_background_does(self):
+        # Regression: _build_badges_view once positioned every label's y
+        # from (_BADGE_ROW_HEIGHT - 14.0) / 2.0 alone, never adding row_y --
+        # so every label (whichever row it logically belonged to) rendered
+        # stacked at row 0, illegible, while every pill background past row
+        # 0 was correctly positioned but got no label at all. Calls
+        # _build_badges_view directly and pairs each pill box with the
+        # label added right after it (container.subviews() preserves
+        # insertion order: box, label, box, label, ...) rather than matching
+        # by geometry, since same-width badges across rows can otherwise
+        # make a mispositioned label land inside the wrong row's box by
+        # coincidence.
+        long_categories = [f"Category number {i} with a fairly long label" for i in range(10)]
+        controller = make_controller(pii_categories=long_categories)
+        container, _ = controller._build_badges_view(long_categories, y=0.0, width=300.0)
+        subviews = list(container.subviews())
+        pairs = list(zip(subviews[0::2], subviews[1::2]))
+        assert len(pairs) == len(long_categories)
+
+        row_ys = {round(box.frame().origin.y, 3) for box, _ in pairs}
+        assert len(row_ys) > 1  # sanity: this really wraps to multiple rows
+
+        for box, label in pairs:
+            expected_y = box.frame().origin.y + (_BADGE_ROW_HEIGHT - 14.0) / 2.0
+            assert abs(label.frame().origin.y - expected_y) < 1e-6
+
     def test_pii_categories_render_one_badge_per_category(self):
         controller = make_controller(
             pii_categories=["US Social Security Number", "Financial figures (currency amounts)"],
@@ -461,10 +488,11 @@ class TestRequestFingerprint:
 
 class TestConnectorIcon:
     """Per-connector brand icon (Gmail/Drive/Slack/etc.), top-left --
-    degrades gracefully (no icon, no reserved layout space) until a real
-    logo asset actually exists for a given connector; see
-    _connector_icon_path()'s docstring. No real assets are bundled by
-    this change, so every case here exercises the "missing asset" path."""
+    degrades gracefully (no icon, no reserved layout space) for a
+    connector with no matching asset; see _connector_icon_path()'s
+    docstring. Real logo assets are bundled for all ALL_CONNECTORS
+    entries (resources/connector_icons/), so "missing asset" is
+    exercised via a connector name that isn't a real one."""
 
     def test_empty_connector_has_no_icon_path(self):
         assert _connector_icon_path("") is None
@@ -477,14 +505,24 @@ class TestConnectorIcon:
         assert controller.connector == "slack"
 
     def test_missing_asset_renders_the_same_view_tree_as_no_connector(self):
-        # No real logo assets are bundled yet -- naming a connector with
-        # no matching file must never change what's on screen (no extra
-        # NSImageView, no shifted kicker).
+        # A connector name with no matching file must never change what's
+        # on screen (no extra NSImageView, no shifted kicker).
+        no_connector_views = build_views(make_controller(connector=""))
+        unknown_connector_views = build_views(make_controller(connector="not-a-real-connector"))
+        no_connector_images = [v for v in no_connector_views if isinstance(v, NSImageView)]
+        unknown_connector_images = [
+            v for v in unknown_connector_views if isinstance(v, NSImageView)
+        ]
+        assert len(no_connector_images) == len(unknown_connector_images)
+
+    def test_real_connector_asset_adds_an_extra_image_view(self):
+        # gmail.png is a bundled real asset -- naming that connector must
+        # add exactly one NSImageView versus no connector at all.
         no_connector_views = build_views(make_controller(connector=""))
         with_connector_views = build_views(make_controller(connector="gmail"))
         no_connector_images = [v for v in no_connector_views if isinstance(v, NSImageView)]
         with_connector_images = [v for v in with_connector_views if isinstance(v, NSImageView)]
-        assert len(no_connector_images) == len(with_connector_images)
+        assert len(with_connector_images) == len(no_connector_images) + 1
 
 
 class TestSummaryBox:

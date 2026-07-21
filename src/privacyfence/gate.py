@@ -74,11 +74,16 @@ from .auto_accept import (
     ReviewContext,
     add_auto_accept_rule,
     describe_rule,
+    describe_rule_change,
     get_auto_accept_evaluator,
+    known_rule_names,
+    mutate_grants,
+    remove_auto_accept_rule,
     suggest_rule,
     temp_accept_key,
 )
 from .pii_detector import detect_pii_categories
+from .resource_grants import apply_grant_removal, apply_grant_upsert, describe_grant_change, resource_type
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +222,12 @@ async def gated_call(
         session_created_ids=session_created_ids or set(),
     )
     details = details_text or _default_details(raw_data)
-    popup_title = f"PrivacyFence — {tool_name}"
+    # No "PrivacyFence — " prefix here -- the "PrivacyFence" kicker line
+    # directly above this title in approval_window.py already says that;
+    # repeating it in the title itself was the redundant "before" state a
+    # design review (see the menu bar/approval pane redesign session) called
+    # out, never actually fixed until now.
+    popup_title = tool_name
     # Only the review (read) gate scans for PII -- see module docstring.
     pii_categories = (
         detect_pii_categories(details if pii_scan_text is None else pii_scan_text)
@@ -382,6 +392,114 @@ async def gated_call(
                 connector, tool, request_id,
             )
             audit(decision="error", auto_accept_rule="", pii_detected=bool(pii_categories))
+
+
+async def propose_rule_change(
+    *,
+    target: str,          # "rule" | "grant"
+    operation: str,        # "add" | "update" | "remove"
+    reason: str,
+    operation_key: str = "",
+    rule_name: str = "",
+    value: Any = None,
+    old_value: Any = None,
+    connector: str = "",
+    config_key: str = "",
+    resource_id: str = "",
+    name: str | None = None,
+    tab: str | None = None,
+    capabilities: dict[str, bool] | None = None,
+) -> dict[str, Any]:
+    """Bridge-facing counterpart to the popup's own "Always allow" flow:
+    propose an add/update/remove to auto_accept_rules or auto_accept_grants,
+    but never apply it without a human confirming via the same
+    show_rule_confirmation_popup() dialog gated_call() uses for "Always
+    allow" -- this is the "gate only" write path issue #61 asks for. Unlike
+    gated_call(), there's no underlying tool call or auto-accept
+    short-circuit here: every proposal reaches a human (or is denied
+    outright in an unattended session, same as gated_call), even if an
+    identical rule/grant already exists -- confirming again is cheap,
+    silently no-op'ing a request Claude explicitly made is more surprising.
+
+    Raises RuntimeError if the user declines, or if called on an unattended
+    connection (see is_unattended()) -- mirroring gated_call's own "deny ==
+    exception" contract so a declined proposal surfaces to Claude as a clear
+    tool error rather than a result it has to remember to check.
+    """
+    if target == "rule":
+        if rule_name not in known_rule_names():
+            raise ValueError(
+                f"Unknown auto-accept rule: {rule_name!r}. See privacyfence_list_auto_accept_rules "
+                "or docs/TECHNICAL_REFERENCE.md's Auto-accept rules tables for valid rule names."
+            )
+        description = describe_rule_change(operation, operation_key, rule_name, value, old_value)
+    elif target == "grant":
+        rt = resource_type(connector, config_key)
+        if rt is None:
+            raise ValueError(f"Unknown grant resource type: {connector}.{config_key}")
+        description = describe_grant_change(
+            operation, rt, resource_id, name=name, tab=tab, capabilities=capabilities
+        )
+    else:
+        raise ValueError(f"Unknown target: {target!r}")
+    if operation not in ("add", "update", "remove"):
+        raise ValueError(f"Unknown operation: {operation!r}")
+
+    created_at = time.time()
+    request_id = uuid.uuid4().hex[:12]
+    summary = f"Proposed {operation} ({target}): {description}"
+
+    if is_unattended():
+        _audit(
+            created_at=created_at, request_id=request_id, connector=connector or target, tool="",
+            tool_name="", summary=summary, sender="", decision="denied_unattended",
+            auto_accept_rule="", pii_detected=False, claude_reason=reason,
+        )
+        raise RuntimeError(
+            "Request denied: this connection is in an unattended session, so a config change "
+            "can't be confirmed without a human present."
+        )
+
+    async with _popup_lock:
+        confirmed = await asyncio.to_thread(show_rule_confirmation_popup, description)
+
+    if not confirmed:
+        _audit(
+            created_at=created_at, request_id=request_id, connector=connector or target, tool="",
+            tool_name="", summary=summary, sender="", decision="rejected",
+            auto_accept_rule="", pii_detected=False, claude_reason=reason,
+        )
+        raise RuntimeError("Request denied by user")
+
+    if target == "rule":
+        if operation == "remove":
+            changed = remove_auto_accept_rule(operation_key, rule_name, value)
+        else:
+            if operation == "update" and old_value is not None:
+                remove_auto_accept_rule(operation_key, rule_name, old_value)
+            add_auto_accept_rule(operation_key, rule_name, value)
+            changed = True
+        decision = "rule_removed_via_bridge_proposal" if operation == "remove" else "rule_changed_via_bridge_proposal"
+        applied_rule_name = rule_name
+    else:
+        if operation == "remove":
+            changed = mutate_grants(lambda cfg: apply_grant_removal(cfg, rt, resource_id, tab))
+        else:
+            changed = mutate_grants(
+                lambda cfg: apply_grant_upsert(
+                    cfg, rt, resource_id, name=name, tab=tab, capabilities=capabilities
+                )
+            )
+        decision = "grant_removed_via_bridge_proposal" if operation == "remove" else "grant_changed_via_bridge_proposal"
+        applied_rule_name = resource_id
+
+    _audit(
+        created_at=created_at, request_id=request_id, connector=connector or target, tool="",
+        tool_name="", summary=summary, sender="", decision=decision,
+        auto_accept_rule=applied_rule_name, pii_detected=False, claude_reason=reason,
+    )
+    logger.info("Bridge-proposed %s %s confirmed and applied: %s", operation, target, description)
+    return {"confirmed": True, "changed": changed, "description": description}
 
 
 def _deny_unattended(audit, connector: str, tool: str, *, pii_categories: list[str]) -> None:

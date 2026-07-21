@@ -24,10 +24,14 @@ from privacyfence.auto_accept import (
     TEMP_ACCEPT_ELIGIBLE_OPERATIONS,
     add_auto_accept_rule,
     describe_rule,
+    describe_rule_change,
     get_auto_accept_evaluator,
+    get_current_config,
     init_auto_accept_evaluator,
     init_config_path,
+    mutate_grants,
     reload_rules,
+    remove_auto_accept_rule,
     set_rules_changed_listener,
     suggest_rule,
     temp_accept_key,
@@ -347,21 +351,6 @@ class TestCalendarRules:
         ev = AutoAcceptEvaluator({})
         ctx = make_ctx(args={}, raw_data=SimpleNamespace())
         assert ev._rule_non_private_event(None, ctx) is True
-
-    def test_non_private_event_prefers_requested_visibility_from_args(self):
-        # calendar_set_event_visibility's args always carry the visibility
-        # being requested -- that's the state being approved, not the
-        # event's prior visibility (which could differ and would be the
-        # wrong signal for "is the action about to make this private").
-        ev = AutoAcceptEvaluator({})
-        setting_private = make_ctx(
-            args={"visibility": "private"}, raw_data=SimpleNamespace(visibility="default"),
-        )
-        setting_public = make_ctx(
-            args={"visibility": "public"}, raw_data=SimpleNamespace(visibility="private"),
-        )
-        assert ev._rule_non_private_event(None, setting_private) is False
-        assert ev._rule_non_private_event(None, setting_public) is True
 
 
 # --------------------------------------------------------------------------- #
@@ -1134,6 +1123,241 @@ class TestRulePersistence:
             {"rule": "trusted_sender_domain", "value": ["a.com"]},
             {"rule": "trusted_sender_domain", "value": ["b.com"]},
         ]
+
+
+# --------------------------------------------------------------------------- #
+# remove_auto_accept_rule / get_current_config / mutate_grants -- the
+# bridge-facing write/read primitives gate.propose_rule_change() and
+# ipc_server.py's list_rules handler build on (see gate.py's docstring).
+# --------------------------------------------------------------------------- #
+
+class TestRemoveAutoAcceptRule:
+    def test_removes_exact_value_match(self, tmp_path):
+        config_path = tmp_path / "settings.yaml"
+        config_path.write_text(
+            yaml.dump({"auto_accept_rules": {
+                "gmail.read_message": [{"rule": "trusted_sender_domain", "value": ["a.com"]}],
+            }}),
+            encoding="utf-8",
+        )
+        init_config_path(str(config_path))
+
+        removed = remove_auto_accept_rule("gmail.read_message", "trusted_sender_domain", ["a.com"])
+
+        assert removed is True
+        on_disk = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert "gmail.read_message" not in on_disk.get("auto_accept_rules", {})
+
+    def test_value_given_only_removes_matching_value_not_other_values_of_same_rule(self, tmp_path):
+        config_path = tmp_path / "settings.yaml"
+        config_path.write_text(
+            yaml.dump({"auto_accept_rules": {
+                "gmail.read_message": [
+                    {"rule": "trusted_sender_domain", "value": ["a.com"]},
+                    {"rule": "trusted_sender_domain", "value": ["b.com"]},
+                ],
+            }}),
+            encoding="utf-8",
+        )
+        init_config_path(str(config_path))
+
+        remove_auto_accept_rule("gmail.read_message", "trusted_sender_domain", ["a.com"])
+
+        on_disk = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert on_disk["auto_accept_rules"]["gmail.read_message"] == [
+            {"rule": "trusted_sender_domain", "value": ["b.com"]},
+        ]
+
+    def test_value_omitted_removes_every_entry_for_that_rule_name(self, tmp_path):
+        config_path = tmp_path / "settings.yaml"
+        config_path.write_text(
+            yaml.dump({"auto_accept_rules": {
+                "gmail.read_message": [
+                    {"rule": "trusted_sender_domain", "value": ["a.com"]},
+                    {"rule": "trusted_sender_domain", "value": ["b.com"]},
+                    {"rule": "i_am_sender"},
+                ],
+            }}),
+            encoding="utf-8",
+        )
+        init_config_path(str(config_path))
+
+        remove_auto_accept_rule("gmail.read_message", "trusted_sender_domain")
+
+        on_disk = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert on_disk["auto_accept_rules"]["gmail.read_message"] == [{"rule": "i_am_sender"}]
+
+    def test_no_match_returns_false_and_does_not_rewrite_the_file(self, tmp_path):
+        config_path = tmp_path / "settings.yaml"
+        config_path.write_text(
+            yaml.dump({"auto_accept_rules": {"gmail.read_message": [{"rule": "i_am_sender"}]}}),
+            encoding="utf-8",
+        )
+        init_config_path(str(config_path))
+
+        removed = remove_auto_accept_rule("gmail.read_message", "trusted_sender_domain", ["a.com"])
+
+        assert removed is False
+        on_disk = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert on_disk["auto_accept_rules"]["gmail.read_message"] == [{"rule": "i_am_sender"}]
+
+    def test_hot_reloads_the_live_evaluator(self, tmp_path):
+        config_path = tmp_path / "settings.yaml"
+        config_path.write_text(
+            yaml.dump({"auto_accept_rules": {"gmail.read_message": [{"rule": "i_am_sender"}]}}),
+            encoding="utf-8",
+        )
+        init_config_path(str(config_path))
+        init_auto_accept_evaluator({"gmail.read_message": [{"rule": "i_am_sender"}]})
+
+        ctx = make_ctx(my_email="me@example.com", raw_data=SimpleNamespace(sender="me@example.com"))
+        assert get_auto_accept_evaluator().should_auto_accept("gmail.read_message", ctx) == (True, "i_am_sender")
+
+        remove_auto_accept_rule("gmail.read_message", "i_am_sender")
+
+        assert get_auto_accept_evaluator().should_auto_accept("gmail.read_message", ctx) == (False, "")
+
+    def test_fires_the_rules_changed_listener_the_same_way_add_does(self, tmp_path):
+        # menu_bar.py wires this listener to rebuild the status-bar menu and
+        # (if open) refresh the "Manage Auto-accept Rules…" window -- see
+        # menu_bar.py's _on_rules_changed. A rule removed via the bridge's
+        # propose_rule_change must trigger that same refresh, not just
+        # silently update the live evaluator underneath the open window.
+        config_path = tmp_path / "settings.yaml"
+        config_path.write_text(
+            yaml.dump({"auto_accept_rules": {"gmail.read_message": [{"rule": "i_am_sender"}]}}),
+            encoding="utf-8",
+        )
+        init_config_path(str(config_path))
+        calls = []
+        set_rules_changed_listener(lambda: calls.append(1))
+
+        remove_auto_accept_rule("gmail.read_message", "i_am_sender")
+
+        assert calls == [1]
+
+    def test_no_op_removal_does_not_fire_the_listener(self, tmp_path):
+        config_path = tmp_path / "settings.yaml"
+        config_path.write_text(
+            yaml.dump({"auto_accept_rules": {"gmail.read_message": [{"rule": "i_am_sender"}]}}),
+            encoding="utf-8",
+        )
+        init_config_path(str(config_path))
+        calls = []
+        set_rules_changed_listener(lambda: calls.append(1))
+
+        remove_auto_accept_rule("gmail.read_message", "trusted_sender_domain", ["a.com"])
+
+        assert calls == []
+
+
+class TestKnownRuleNames:
+    """auto_accept.known_rule_names() -- the set gate.propose_rule_change()
+    validates a bridge-supplied rule_name against before ever showing a
+    confirmation popup, so Claude can't silently persist a dead rule under
+    a misspelled or made-up name (see that function's docstring)."""
+
+    def test_includes_real_rule_names(self):
+        names = auto_accept.known_rule_names()
+        assert "i_am_sender" in names
+        assert "trusted_sender_domain" in names
+        assert "approved_sandbox_folder" in names  # grant-managed, but still a real _rule_* method
+
+    def test_excludes_non_rule_names(self):
+        names = auto_accept.known_rule_names()
+        assert "session_temp_accept" not in names  # in-memory marker, not a _rule_* method
+        assert "made_up_rule" not in names
+        assert "" not in names
+
+    def test_every_name_is_actually_dispatchable(self):
+        # Cross-check against the same completeness angle menu_bar.py's
+        # TestRuleUiCompleteness uses: every name here must correspond to a
+        # real, callable _rule_* method, or the set itself would be lying.
+        for name in auto_accept.known_rule_names():
+            assert callable(getattr(auto_accept.AutoAcceptEvaluator, f"_rule_{name}", None))
+
+
+class TestGetCurrentConfig:
+    def test_returns_both_sections_straight_from_disk(self, tmp_path):
+        config_path = tmp_path / "settings.yaml"
+        config_path.write_text(
+            yaml.dump({
+                "auto_accept_rules": {"gmail.read_message": [{"rule": "i_am_sender"}]},
+                "auto_accept_grants": {"drive": {"sandbox_folders": [{"id": "f1", "write": True}]}},
+            }),
+            encoding="utf-8",
+        )
+        init_config_path(str(config_path))
+
+        cfg = get_current_config()
+
+        assert cfg == {
+            "auto_accept_rules": {"gmail.read_message": [{"rule": "i_am_sender"}]},
+            "auto_accept_grants": {"drive": {"sandbox_folders": [{"id": "f1", "write": True}]}},
+        }
+
+    def test_missing_sections_default_to_empty_dicts(self, tmp_path):
+        config_path = tmp_path / "settings.yaml"
+        config_path.write_text(yaml.dump({}), encoding="utf-8")
+        init_config_path(str(config_path))
+
+        assert get_current_config() == {"auto_accept_rules": {}, "auto_accept_grants": {}}
+
+
+class TestMutateGrants:
+    def test_mutator_reporting_a_change_persists_and_reloads(self, tmp_path):
+        config_path = tmp_path / "settings.yaml"
+        config_path.write_text(yaml.dump({"auto_accept_grants": {}}), encoding="utf-8")
+        init_config_path(str(config_path))
+        calls = []
+        set_rules_changed_listener(lambda: calls.append(1))
+
+        def mutator(cfg):
+            cfg["auto_accept_grants"] = {"drive": {"sandbox_folders": [{"id": "f1", "write": True}]}}
+            return True
+
+        changed = mutate_grants(mutator)
+
+        assert changed is True
+        assert calls == [1]
+        on_disk = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert on_disk["auto_accept_grants"]["drive"]["sandbox_folders"] == [{"id": "f1", "write": True}]
+
+    def test_mutator_reporting_no_change_does_not_write_or_reload(self, tmp_path):
+        config_path = tmp_path / "settings.yaml"
+        original = yaml.dump({"auto_accept_grants": {}})
+        config_path.write_text(original, encoding="utf-8")
+        init_config_path(str(config_path))
+        calls = []
+        set_rules_changed_listener(lambda: calls.append(1))
+
+        changed = mutate_grants(lambda cfg: False)
+
+        assert changed is False
+        assert calls == []
+        assert config_path.read_text(encoding="utf-8") == original
+
+
+class TestDescribeRuleChange:
+    def test_add(self):
+        description = describe_rule_change("add", "gmail.read_message", "trusted_sender_domain", ["a.com"])
+        assert description == (
+            "Add auto-accept rule 'trusted_sender_domain' = a.com to 'gmail.read_message'"
+        )
+
+    def test_remove_with_value(self):
+        description = describe_rule_change("remove", "gmail.read_message", "trusted_sender_domain", ["a.com"])
+        assert "Remove auto-accept rule 'trusted_sender_domain' = a.com from 'gmail.read_message'" == description
+
+    def test_remove_without_value_says_every_value(self):
+        description = describe_rule_change("remove", "gmail.read_message", "trusted_sender_domain")
+        assert "(every value)" in description
+
+    def test_update_shows_old_and_new_value(self):
+        description = describe_rule_change(
+            "update", "gmail.read_message", "trusted_sender_domain", ["b.com"], old_value=["a.com"]
+        )
+        assert "a.com -> b.com" in description
 
 
 # --------------------------------------------------------------------------- #

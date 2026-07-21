@@ -24,6 +24,16 @@ silently replay the first call's success). Those are listed in
 ``_DEDUPE_EXEMPT_TOOLS`` and only lose the completed-result reuse -- a
 genuinely concurrent in-flight retry is still coalesced, since nothing has
 taken effect yet there.
+
+Read-only tools (``ToolSpec.read_only``) lose completed-result reuse
+unconditionally, for the same reason but the opposite direction: a read
+repeated with identical args shortly after an *unrelated* write to the same
+resource (e.g. checking an event's visibility right after setting it) must
+see the write's effect, not a cached pre-write result. Reads are either
+silent or independently gated per call, so there's no popup to double-fire
+in the first place -- the only thing completed-result reuse would buy a read
+is staleness. A genuinely concurrent in-flight duplicate read is still
+coalesced, since no result exists yet to be stale.
 """
 
 from __future__ import annotations
@@ -38,9 +48,9 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from .audit_log import AuditEntry, current_week, get_audit_logger
-from .auto_accept import TOOL_TO_GATE, TOOL_TO_OPERATION, get_auto_accept_evaluator
+from .auto_accept import TOOL_TO_GATE, TOOL_TO_OPERATION, get_auto_accept_evaluator, get_current_config
 from .connector import Connector, ToolSpec
-from .gate import reason_scope, unattended_scope
+from .gate import propose_rule_change, reason_scope, unattended_scope
 from .ipc import LINE_LIMIT, SOCKET_PATH, VERSION
 
 logger = logging.getLogger(__name__)
@@ -64,7 +74,7 @@ class IPCServer:
         self._server: asyncio.AbstractServer | None = None
         self._inflight: dict[str, tuple[asyncio.Future, float]] = {}
         # Opt-in gate for privacyfence_begin_unattended_session -- see
-        # settings.yaml.example's unattended_sessions.enabled. Off by
+        # org_config.json's unattended_sessions.enabled. Off by
         # default: a Claude session gaining the ability to switch its own
         # connection into fail-fast mode is a deliberate per-organization
         # choice.
@@ -169,6 +179,11 @@ class IPCServer:
                     result = await self._call_connector(params)
             elif method == "check_policy":
                 result = self._check_policy(params)
+            elif method == "list_rules":
+                result = self._list_rules(params)
+            elif method == "propose_rule_change":
+                with unattended_scope(id(writer) in self._unattended_connections):
+                    result = await self._propose_rule_change(params)
             elif method == "begin_unattended_session":
                 result = self._begin_unattended_session(writer, params.get("reason", ""))
             elif method == "end_unattended_session":
@@ -210,7 +225,11 @@ class IPCServer:
         if entry is not None:
             fut, recorded_at = entry
             still_fresh = (now - recorded_at) < self._DEDUPE_TTL_SECONDS
-            reusable = not fut.done() or (still_fresh and tool not in self._DEDUPE_EXEMPT_TOOLS)
+            reusable = not fut.done() or (
+                still_fresh
+                and tool not in self._DEDUPE_EXEMPT_TOOLS
+                and not self._is_read_only(connector, tool)
+            )
             if reusable:
                 logger.info(
                     "Deduping repeat call to %s/%s: reusing in-flight/recent result",
@@ -299,6 +318,55 @@ class IPCServer:
             logger.warning("Audit log write failed for policy check: %s", exc)
 
     @staticmethod
+    def _list_rules(params: dict) -> dict:
+        """list_rules -- see ipc.py's module docstring. Records a lightweight
+        "rules_listed" audit entry (like _check_policy's "policy_check")
+        since it discloses the full current rule/grant set."""
+        result = get_current_config()
+        try:
+            get_audit_logger().record(AuditEntry(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                week=current_week(),
+                request_id=uuid.uuid4().hex[:12],
+                connector="",
+                tool="",
+                tool_name="",
+                summary="Listed current auto-accept rules/grants",
+                sender="",
+                decision="rules_listed",
+                auto_accept_rule="",
+                latency_seconds=0.0,
+                pii_detected=False,
+                claude_reason=params.get("reason", ""),
+            ))
+        except Exception as exc:
+            logger.warning("Audit log write failed for list_rules: %s", exc)
+        return result
+
+    @staticmethod
+    async def _propose_rule_change(params: dict) -> dict:
+        """propose_rule_change -- see ipc.py's module docstring and
+        gate.propose_rule_change()'s own docstring for the full field list
+        and the "gate only" write guarantee. Wrapped in unattended_scope by
+        _dispatch the same way "call" is, since gate.py's is_unattended()
+        check applies here too."""
+        return await propose_rule_change(
+            target=params["target"],
+            operation=params["operation"],
+            reason=params.get("reason", ""),
+            operation_key=params.get("operation_key", ""),
+            rule_name=params.get("rule_name", ""),
+            value=params.get("value"),
+            old_value=params.get("old_value"),
+            connector=params.get("connector", ""),
+            config_key=params.get("config_key", ""),
+            resource_id=params.get("resource_id", ""),
+            name=params.get("name"),
+            tab=params.get("tab"),
+            capabilities=params.get("capabilities"),
+        )
+
+    @staticmethod
     def _audit_unattended_session_event(decision: str, claude_reason: str = "") -> None:
         """Session-level audit entry for begin/end_unattended_session --
         this connection's gate posture just changed, which is a governance
@@ -323,15 +391,15 @@ class IPCServer:
             logger.warning("Audit log write failed for unattended-session event: %s", exc)
 
     def _begin_unattended_session(self, writer: asyncio.StreamWriter, claude_reason: str = "") -> dict:
-        """privacyfence_begin_unattended_session -- see settings.yaml.example's
+        """privacyfence_begin_unattended_session -- see org_config.json's
         unattended_sessions.enabled and docs/TECHNICAL_REFERENCE.md's
         "Scheduled / unattended Cowork tasks" section.
         """
         if not self._unattended_sessions_enabled:
             raise ValueError(
                 "Unattended sessions are disabled. An administrator must set "
-                "unattended_sessions.enabled: true in settings.yaml before this connection "
-                "can be marked unattended."
+                "unattended_sessions.enabled: true in the organization config bundle "
+                "(org_config.json) before this connection can be marked unattended."
             )
         self._unattended_connections.add(id(writer))
         logger.warning(
@@ -374,6 +442,13 @@ class IPCServer:
     @staticmethod
     def _dedupe_key(connector_name: str, tool: str, args: dict) -> str:
         return f"{connector_name}:{tool}:{json.dumps(args, sort_keys=True, default=str)}"
+
+    @staticmethod
+    def _is_read_only(connector: Connector, tool: str) -> bool:
+        for spec in connector.tool_specs():
+            if spec.name == tool:
+                return spec.read_only
+        return False
 
     def _build_manifest(self) -> dict:
         return {

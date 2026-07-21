@@ -68,7 +68,11 @@ class DriveConnector(Connector):
                     "(id, name, mime_type, owners, sharing status). Auto-approved."
                 ),
                 params=[
-                    ToolParam("query", "str"),
+                    ToolParam("query", "str", description=(
+                        "Drive API 'q' search query syntax, not a plain-text search "
+                        "string, e.g. \"name contains 'Foo'\" or \"fullText contains 'Foo'\". "
+                        "See https://developers.google.com/drive/api/guides/search-files"
+                    )),
                     ToolParam("max_results", "int", required=False, default=20),
                     ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],

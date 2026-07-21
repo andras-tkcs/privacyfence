@@ -72,6 +72,8 @@ describe("main() end-to-end orchestration", () => {
         "privacyfence_begin_unattended_session",
         "privacyfence_check_policy",
         "privacyfence_end_unattended_session",
+        "privacyfence_list_auto_accept_rules",
+        "privacyfence_propose_auto_accept_rule_change",
       ]
     );
 

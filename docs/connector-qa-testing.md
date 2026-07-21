@@ -371,6 +371,11 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
 20. `gmail_list_filters` (silent) and confirm the `id` from step 17 is now
     **gone** and the `id` from step 19 is present with the updated action
     (`mark_as_read` instead of `archive`).
+21. `gmail_reply_all_draft` on the thread from step 4 — same `{RUN_ID}`-tagged
+    test body as step 8, but this drafts to every participant (the expanded
+    to/cc audience), not just the original sender. Popup, I'll Allow once.
+    Confirm the popup's recipient list actually shows every thread
+    participant, not a single address like step 8's. Add it to the manifest.
 
 ## Phase 2 — Drive & Sheets
 All of this run's Drive/Sheets artifacts go inside `{FIXTURES}.drive_qa_folder_id`
@@ -621,6 +626,27 @@ manifest entries needed, both are already tracked.
     Doc, with a body containing `==highlighted text==` somewhere. Popup,
     Allow once. Open the Doc in Google Docs and confirm that span renders with
     a highlight background, the same as step 28's did.
+32. Rich-Markdown formatting check: `drive_write_doc_content` again on the
+    same Doc, replacing its content with a body that exercises every syntax
+    the Technical Reference's privacy matrix claims this tool renders as real
+    Google Docs formatting, not literal Markdown characters — a `#`/`##`
+    heading, a paragraph mixing `**bold**`, `*italic*`, `~~strikethrough~~`,
+    `__underline__` (a deliberate non-CommonMark spelling — see the note atop
+    `_INLINE_RE` in [`drive_client.py`](../src/privacyfence/drive_client.py)
+    — this parser has only one bold spelling, `**`, so `__..__` is free to
+    mean underline instead of CommonMark's alternate-bold), and
+    `` `inline code` ``, a `[link](https://example.com)`, a nested bullet
+    list (at least two levels, 2-space indent per level), and a small
+    Markdown table (header row + one data row). Popup, Allow once. Open the
+    Doc in Google Docs and confirm every element above rendered as real
+    formatting (heading style, bold/italic/strikethrough/underline/monospace
+    runs, a clickable link, actually-nested bullets, an actual Docs table
+    with the right cell count) — not literal `#`/`**`/`|` characters left in
+    the text. This is the one thing the unit suite can't prove:
+    `test_drive_client.py` checks the Docs API `batchUpdate` requests built
+    for each syntax are correct in isolation, but only a live run confirms
+    Google Docs actually renders the end result the way a person reading the
+    doc would expect.
 
 ## Phase 3 — Slack
 1. `slack_list_channels` (expect: silent).
@@ -698,17 +724,18 @@ regardless of `calendar_id`), each called out again where they occur.
     `"default"`.
 12. `calendar_set_event_visibility` on the same event, set to `"private"`.
     Popup-gated, and — unlike Phase 2's Sheets/Docs write tools — this one
-    never gets a temp-accept shortcut either. If you configured
-    `calendar.set_visibility` → `non_private_event` per
-    `qa-environment-setup.md` §4, this call must **still** prompt regardless:
-    the rule checks the visibility being *requested*, and `"private"` never
-    matches it. Confirm that's what happened. Popup, Allow once.
+    never gets a temp-accept shortcut either. It's a write, evaluated by the
+    same rules as `calendar_update_event` in step 4 (`i_am_organizer`,
+    `no_external_attendees`, `personal_calendar`, or the PFQA calendar grant's
+    `write` capability), not by the visibility value being requested — so it
+    should behave the same way step 4 did on this event (auto-accept if you
+    configured one of those rules there, otherwise prompt). Confirm that's
+    what happened. Allow once if it prompts.
 13. `calendar_get_event_visibility` again on the same event (silent). Confirm
     it now returns `"private"`.
-14. `calendar_set_event_visibility` again, this time to `"public"`. If
-    `calendar.set_visibility` → `non_private_event` is configured, this
-    should NOT prompt (the requested value isn't private) — tell me either
-    way.
+14. `calendar_set_event_visibility` again, this time to `"public"`. Same rules
+    as step 12 apply — expect identical accept/prompt behavior regardless of
+    the value being set this time. Confirm.
 15. `calendar_get_event_details` on the same event, now that it's back to
     `"public"`. You're still its organizer (from step 3), so `i_am_organizer`
     may already short-circuit this if configured; if not, and
@@ -889,11 +916,11 @@ scheduled Cowork Routines that may run with nobody watching. See
 [`TECHNICAL_REFERENCE.md`](TECHNICAL_REFERENCE.md#scheduled--unattended-cowork-tasks). Unlike
 every phase above, this one needs a **daemon restart partway through**: `unattended_sessions.enabled` is read once at
 `run_app()` startup, not hot-reloaded like `auto_accept_rules`/`pii_detection.enabled` — there is
-no menu-bar toggle for it (deliberately: enabling it is meant to be a config-file edit an
-administrator makes, not a live daemon toggle).
+no menu-bar toggle for it (deliberately: enabling it is meant to be an administrator's
+organization config bundle edit, not a live daemon toggle or a per-user settings.yaml edit).
 
-1. Confirm `unattended_sessions.enabled` is **absent or `false`** in `settings.yaml` right now (the
-   default). `privacyfence_check_policy` needs no such flag and works regardless — start there:
+1. Confirm `unattended_sessions.enabled` is **absent or `false`** in `org_config.json` right now
+   (the default). `privacyfence_check_policy` needs no such flag and works regardless — start there:
 2. `privacyfence_check_policy` on a tool you know is unconditionally `auto` (e.g.
    `connector="gmail", tool="gmail_list_messages", args={}`). Expect `{"gate": "auto", "verdict":
    "auto_accept", "matched_rule": null, ...}` with **no popup and no tool actually called**.
@@ -913,12 +940,13 @@ administrator makes, not a live daemon toggle).
    pure preflight. If you want to double-check, note the current audit log line count before step
    2 and after step 5: it should have grown by exactly 4 (one `policy_check` entry per call).
 7. `privacyfence_begin_unattended_session` — since `unattended_sessions.enabled` is still `false`/
-   absent, expect a clear error mentioning `unattended_sessions.enabled` in `settings.yaml`, **not**
-   a popup and **not** a partial success. Confirm the menu bar's top item still reads plain
-   "PrivacyFence is running" (no session count).
-8. Set `unattended_sessions.enabled: true` in `settings.yaml` and **restart the daemon** (not just
-   an "Always allow" hot-reload — see the note above). Reconnect the Cowork/Desktop session so its
-   bridge process talks to the freshly restarted daemon.
+   absent, expect a clear error mentioning `unattended_sessions.enabled` in the organization config
+   bundle (`org_config.json`), **not** a popup and **not** a partial success. Confirm the menu bar's
+   top item still reads plain "PrivacyFence is running" (no session count).
+8. Set `unattended_sessions.enabled: true` in `org_config.json` (e.g. `python3
+   scripts/build_org_bundle.py --merge --enable-unattended-sessions -o org/org_config.json`) and
+   **restart the daemon** (not just an "Always allow" hot-reload — see the note above). Reconnect
+   the Cowork/Desktop session so its bridge process talks to the freshly restarted daemon.
 9. `privacyfence_begin_unattended_session` again — expect `{"unattended": true}`, no popup. Check
    the PrivacyFence menu bar now: the top item should read "PrivacyFence is running — 1 unattended
    session active". **Pause here**: tell me you're about to call the next step's tool and that,
@@ -939,9 +967,10 @@ administrator makes, not a live daemon toggle).
     non-matching review call — the session is no longer unattended. Wait for me to say go, then
     make the call and confirm the popup actually appeared this time. I'll Deny it (it's not data
     this run needs to keep).
-14. Set `unattended_sessions.enabled` back to `false` (or leave it — your call, but note in the
-    final report which state you left it in) and restart the daemon once more so later runs of
-    this whole prompt start from the documented default.
+14. Set `unattended_sessions.enabled` back to `false` in `org_config.json` (e.g. `python3
+    scripts/build_org_bundle.py --merge --disable-unattended-sessions -o org/org_config.json`; or
+    leave it — your call, but note in the final report which state you left it in) and restart the
+    daemon once more so later runs of this whole prompt start from the documented default.
 
 No manifest entries from this phase — nothing persistent gets created (Slack reads, preflight
 checks, and session toggles leave no artifact behind), so Phase 12 (Teardown) has nothing to do for
@@ -1075,7 +1104,7 @@ table split into "cleaned up in Phase 12" vs. "needs manual deletion." Then:
   (`auto_accept`/`requires_review`/`unknown`)? Did step 10 actually deny
   without a popup, and step 13 actually prompt normally once the session
   ended? State plainly which `unattended_sessions.enabled` value you left
-  `settings.yaml` in at step 14, so a later run (or a human reading this
+  `org_config.json` in at step 14, so a later run (or a human reading this
   report) isn't surprised by its current state.
 ````
 
