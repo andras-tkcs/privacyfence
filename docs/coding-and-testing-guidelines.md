@@ -227,7 +227,7 @@ A new connector's test module should include, at minimum:
 - [ ] If this PR touches a `src/privacyfence/*_client.py` or `src/privacyfence/connectors/**` file:
       run `scripts/qa_fixture_recorder.py --check <connector>` locally against a real account per
       [`qa-environment-setup.md`](qa-environment-setup.md), and paste its report into the PR
-      description — see [`testing-policy.md` §2.1](testing-policy.md#21-qa_fixture_recorderpy---check---record).
+      description — see [`testing-policy.md` §2.1](testing-policy.md#21-qa_fixture_recorderpy---check----record).
 - [ ] If this PR touches `approval_window.py`'s modal-loop plumbing: run `scripts/qa_popup_smoke.py`
       locally and paste its report into the PR description — see
       [`testing-policy.md` §2.2](testing-policy.md#22-qa_popup_smokepy).

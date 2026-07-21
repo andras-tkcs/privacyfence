@@ -15,6 +15,11 @@ All changes to `main` go through pull requests. Direct pushes are blocked.
 2. Keep PRs focused — one logical change per PR.
 3. Describe *why* the change is needed, not just what it does.
 4. PRs require review and approval from the maintainer before merging.
+5. Before opening a PR, work through the checklist in
+   [`docs/coding-and-testing-guidelines.md` §2.7](docs/coding-and-testing-guidelines.md#27-definition-of-done-for-a-pr-touching-this-repo)
+   — it covers required test coverage and when a local QA check needs to be run and pasted into the
+   PR description. See [`docs/testing-policy.md`](docs/testing-policy.md) for which checks run in CI
+   versus which ones you run locally.
 
 ## Issues
 
@@ -30,6 +35,10 @@ Use GitHub Issues for bug reports and feature requests. Include:
   `.mcpb` extension ships without a bundled Python runtime
 - No comments unless the *why* is non-obvious
 - Match the surrounding code's style
+
+See [`docs/coding-and-testing-guidelines.md`](docs/coding-and-testing-guidelines.md) for the full,
+codebase-derived conventions this project follows — coding patterns, the gate's security
+invariants, and how to structure and write tests for `src/privacyfence/`.
 
 ## License
 
