@@ -570,7 +570,7 @@ class ApprovalWindowController(NSObject):
                 container.addSubview_(badge_box)
                 label_field = _make_label(label, size=_BADGE_FONT_SIZE, bold=True, color=color)
                 label_field.setFrame_(NSMakeRect(
-                    row_x + _BADGE_PAD_X, (_BADGE_ROW_HEIGHT - 14.0) / 2.0,
+                    row_x + _BADGE_PAD_X, row_y + (_BADGE_ROW_HEIGHT - 14.0) / 2.0,
                     badge_w - 2 * _BADGE_PAD_X, 14.0,
                 ))
                 container.addSubview_(label_field)

@@ -69,26 +69,12 @@ pii_detection:
   # when you use "PII Detection Gate" in the menu bar.
   enabled: true
 
-unattended_sessions:
-  # Lets Claude Cowork declare a connection "unattended" (privacyfence_
-  # begin_unattended_session, see docs/TECHNICAL_REFERENCE.md's "Scheduled /
-  # unattended Cowork tasks" section) — meant for scheduled/triggered runs
-  # with no human present. While a
-  # connection is in that state, any review/popup call that isn't already
-  # covered by an auto-accept rule below is DENIED immediately instead of
-  # opening a native approval dialog, so a scheduled task fails one step
-  # fast instead of hanging on a popup nobody will ever click (and, since
-  # every dialog shares one lock, blocking every other approval behind it
-  # too). It never approves anything an auto-accept rule wouldn't already
-  # approve on its own — this only changes what happens when nothing does.
-  #
-  # Off by default: a Claude session gaining the ability to switch its own
-  # connection into fail-fast mode is a deliberate per-organization choice,
-  # not something every install should get for free. Denied-while-unattended
-  # calls are logged with decision "denied_unattended" (distinct from a
-  # human's "rejected") and the menu bar shows a live count of connections
-  # currently in this state while they're active.
-  enabled: false
+# Note: unattended_sessions.enabled (privacyfence_begin_unattended_session's
+# opt-in gate) is NOT set here. It's a deliberate per-organization choice,
+# not a per-user setting, so it lives in the organization config bundle
+# (org_config.json, installed via "Install/Update Organization Config…" in
+# the menu bar) — see docs/TECHNICAL_REFERENCE.md's "Scheduled / unattended
+# Cowork tasks" section.
 
 # Trust a specific resource once — a folder, a task list, a channel, ... —
 # instead of adding the same ID to several operation keys under

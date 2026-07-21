@@ -489,8 +489,9 @@ a failure.
 - [ ] No new fixture — `connector-qa-testing.md`'s Phase 11 reuses the Slack channels from §3
 - [ ] Know how to restart your daemon (`privacyfence-app`, or `scripts/dev_start.sh` from source —
       see [`dev-vs-live-setup.md`](dev-vs-live-setup.md)): `unattended_sessions.enabled` in
-      `settings.yaml` is off by default, has no menu-bar toggle, and isn't hot-reloaded — Phase 11
-      toggles it and restarts the daemon twice as part of the phase itself. See
+      `org_config.json` is off by default, has no menu-bar toggle, and isn't hot-reloaded — Phase 11
+      toggles it (via `scripts/build_org_bundle.py --merge --enable/disable-unattended-sessions`)
+      and restarts the daemon twice as part of the phase itself. See
       [TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md#scheduled--unattended-cowork-tasks).
 
 ---
