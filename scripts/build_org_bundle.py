@@ -167,6 +167,10 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     out_path.write_text(json.dumps(bundle, indent=2) + "\n", encoding="utf-8")
+    try:
+        out_path.chmod(0o600)
+    except OSError:  # pragma: no cover - best effort on non-POSIX
+        pass
     summary = ", ".join(services) or "none"
     if "unattended_sessions" in bundle:
         summary += f", unattended_sessions.enabled={bundle['unattended_sessions']['enabled']}"
