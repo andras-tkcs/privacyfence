@@ -291,18 +291,25 @@ GRANT_COVERED_RULE_NAMES: set[str] = {
     for _op_key, rule_name in capability.targets
 }
 
-# Same rule names, but mapping back to the resource type that knows how to
-# resolve one of its values to a display name -- these rule names' values are
-# opaque resource IDs (a Drive folder ID, a Jira project key, ...), not plain
-# strings, so a hand-authored/partially-migrated rule entry (see
-# GRANT_COVERED_RULE_NAMES above) should still show a real name instead of the
-# raw ID, the same way a grant entry does.
+# Rule names whose value is the same kind of opaque resource ID a grant entry
+# stores (a Drive folder ID, a Jira project key, ...), mapped to the resource
+# type that knows how to resolve one to a display name -- so a hand-authored/
+# partially-migrated rule entry (see GRANT_COVERED_RULE_NAMES above) still
+# shows a real name instead of the raw ID, the same way a grant entry does.
+# Mostly the grant-covered rule names, plus a few that hold the same kind of
+# ID but aren't tied to any grant capability -- parent_folder_allowlist has
+# no "auto-accept uploads into this folder" toggle in the grants UI, it's a
+# hand-authored-only allowlist, but its values are still plain Drive folder
+# IDs worth resolving.
 RULE_NAME_TO_RESOURCE_TYPE: dict[str, GrantResourceType] = {
     rule_name: rt
     for rt in GRANT_RESOURCE_TYPES
     for capability in rt.capabilities.values()
     for _op_key, rule_name in capability.targets
 }
+_drive_folder_rt = grant_resource_type("drive", "folders")
+assert _drive_folder_rt is not None
+RULE_NAME_TO_RESOURCE_TYPE["parent_folder_allowlist"] = _drive_folder_rt
 
 # Drive/Sheets URLs paste-able into "+ Add folder…" / "+ Add spreadsheet…",
 # so the user can copy the browser address bar instead of hand-extracting

@@ -689,6 +689,30 @@ class TestGatherConnectorSections:
         value_row = next(r for r in write_file.rows if r.indent)
         assert menu_bar._short_id(long_id) in value_row.text
 
+    def test_parent_folder_allowlist_shows_resolved_name_too(self, app):
+        # parent_folder_allowlist (drive.upload_file) holds the same kind of
+        # Drive folder ID as approved_folder/approved_sandbox_folder, but
+        # isn't tied to any grant capability -- it's hand-authored only, with
+        # no "Trusted Folders"-style section of its own. Still worth a
+        # resolved name instead of a raw ID.
+        app._resolver = resource_names.ResourceNameResolver()
+        rt = menu_bar.grant_resource_type("drive", "folders")
+        client = SimpleNamespace(get_file_metadata=lambda file_id: SimpleNamespace(name="Uploads"))
+        app._resolver.resolve(rt, "PARENT1", client)
+
+        cfg = {"auto_accept_rules": {"drive.upload_file": [
+            {"rule": "parent_folder_allowlist", "value": ["PARENT1"]},
+        ]}}
+        config_path = app._config_path
+        with open(config_path, "w", encoding="utf-8") as f:
+            menu_bar.yaml.dump(cfg, f)
+
+        sections = app._gather_connector_sections("drive")
+        upload_file = next(s for s in sections if s.title == "Upload file")
+        value_row = next(r for r in upload_file.rows if r.indent)
+        assert value_row.text == "Uploads"
+        assert "PARENT1" not in value_row.text
+
     def test_grant_add_action_is_always_present(self, app):
         sections = app._gather_connector_sections("drive")
         folders = next(s for s in sections if s.title == "Sandbox Folders")
