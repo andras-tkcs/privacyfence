@@ -6,7 +6,10 @@
  * docstring for the full startup sequence description, which this mirrors:
  *
  * 1. Try to connect to the daemon socket.
- * 2. If the daemon is not running, launch it (privacyfence-app) and wait up to 10 s.
+ * 2. If the daemon is not running, launch it (privacyfence-app) and wait up to 10 s;
+ *    if it still isn't up by then, keep retrying instead of giving up (see
+ *    daemon.ts's waitForDaemonPatiently) — a slow app cold start shouldn't kill
+ *    the whole bridge process and force a Claude session restart.
  * 3. Fetch the connector manifest from the daemon.
  * 4. Register all connector tools with the MCP server dynamically.
  * 5. Run the MCP server on the stdio transport — Claude can now call tools.
@@ -23,7 +26,7 @@ import { pathToFileURL } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { ensureDaemonRunning } from "./daemon.js";
+import { waitForDaemonPatiently } from "./daemon.js";
 import { BridgeExitError } from "./errors.js";
 import { IPCClient } from "./ipcClient.js";
 import { checkVersionMatch, fetchManifest } from "./manifest.js";
@@ -80,7 +83,7 @@ export async function main(argv = process.argv.slice(2), opts: MainOptions = {})
   parseArgs(argv);
 
   const socketPath = opts.socketPath ?? SOCKET_PATH;
-  await ensureDaemonRunning({ socketPath });
+  await waitForDaemonPatiently({ socketPath });
 
   const manifest = await fetchManifest(socketPath);
   checkVersionMatch(manifest, VERSION);

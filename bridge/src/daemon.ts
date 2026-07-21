@@ -12,6 +12,7 @@ import { SOCKET_PATH } from "./protocol.js";
 
 const CONNECT_TIMEOUT_MS = 10_000; // time to wait for daemon startup
 const CONNECT_INTERVAL_MS = 400;
+const PATIENT_RETRY_INTERVAL_MS = 2_000; // polling interval once the initial window has elapsed
 const DEFAULT_APP_PATH = "/Applications/PrivacyFenceApp.app/Contents/MacOS/privacyfence-app";
 
 function isExecutable(candidate: string): boolean {
@@ -137,4 +138,47 @@ export async function ensureDaemonRunning(opts: EnsureDaemonRunningOptions = {})
       "Try running 'privacyfence-app' manually and check the logs.",
     1
   );
+}
+
+export interface WaitForDaemonPatientlyOptions extends EnsureDaemonRunningOptions {
+  /** Polling interval used once the initial launch-and-wait window has elapsed. */
+  retryIntervalMs?: number;
+}
+
+/**
+ * Like ensureDaemonRunning, but never gives up: if the daemon hasn't come up
+ * within the initial launch-and-wait window, keep polling the socket instead
+ * of throwing.
+ *
+ * Covers a privacyfence-app cold start (GUI launch, licensing checks, etc.)
+ * that takes longer than that window. Previously that raced against a hard
+ * timeout and killed the whole bridge process — since the bridge is an
+ * ephemeral MCP server Claude spawns once per session, that meant the user
+ * had to restart their Claude conversation even though the app was still
+ * mid-launch and would have come up fine seconds later.
+ *
+ * findDaemonCmd/spawn only happens once, inside the initial
+ * ensureDaemonRunning call — every retry after that just re-checks the
+ * socket, so a slow app start never launches a second instance.
+ */
+export async function waitForDaemonPatiently(opts: WaitForDaemonPatientlyOptions = {}): Promise<void> {
+  const socketPath = opts.socketPath ?? SOCKET_PATH;
+  const retryIntervalMs = opts.retryIntervalMs ?? PATIENT_RETRY_INTERVAL_MS;
+
+  try {
+    await ensureDaemonRunning(opts);
+    return;
+  } catch (exc) {
+    if (!(exc instanceof BridgeExitError)) throw exc;
+    console.error(`${exc.message}\nWill keep retrying instead of giving up.`);
+  }
+
+  for (;;) {
+    await sleep(retryIntervalMs);
+    if (await socketConnectable(socketPath)) {
+      console.error("Daemon is ready");
+      return;
+    }
+    console.error("Still waiting for the PrivacyFence daemon to come up...");
+  }
 }
