@@ -145,14 +145,15 @@ create-dmg \
   "dist/${APP_NAME}.app"
 
 # ── 8. Optional notarization ──────────────────────────────────────────────────
-# Uncomment and set NOTARIZE_PROFILE (name from `xcrun notarytool store-credentials`)
-# if [ -n "$SIGN_IDENTITY" ] && [ -n "${NOTARIZE_PROFILE:-}" ]; then
-#   echo "→ Submitting for notarization…"
-#   xcrun notarytool submit "$DMG_PATH" \
-#     --keychain-profile "$NOTARIZE_PROFILE" \
-#     --wait
-#   xcrun stapler staple "$DMG_PATH"
-# fi
+# Set NOTARIZE_PROFILE to a name registered via `xcrun notarytool store-credentials`
+# to submit the signed DMG to Apple and staple the resulting ticket.
+if [ -n "$SIGN_IDENTITY" ] && [ -n "${NOTARIZE_PROFILE:-}" ]; then
+  echo "→ Submitting for notarization…"
+  xcrun notarytool submit "$DMG_PATH" \
+    --keychain-profile "$NOTARIZE_PROFILE" \
+    --wait
+  xcrun stapler staple "$DMG_PATH"
+fi
 
 echo ""
 echo "✓ Done: ${DMG_PATH}"
