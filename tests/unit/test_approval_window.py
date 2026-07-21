@@ -32,6 +32,7 @@ from Quartz import PDFView
 from WebKit import WKWebView
 
 from privacyfence.approval_window import (
+    _BADGE_ROW_HEIGHT,
     _CONTENT_FLAG_FILL_ALPHA,
     _MARGIN,
     _PII_BACKGROUND_ALPHA,
@@ -346,6 +347,32 @@ class TestSensitivityBadges:
     def test_a_single_short_category_always_fits_on_one_row(self):
         rows, _ = _badge_rows(["IBAN (bank account number)"], width=300.0)
         assert len(rows) == 1
+
+    def test_labels_track_row_y_the_same_way_their_pill_background_does(self):
+        # Regression: _build_badges_view once positioned every label's y
+        # from (_BADGE_ROW_HEIGHT - 14.0) / 2.0 alone, never adding row_y --
+        # so every label (whichever row it logically belonged to) rendered
+        # stacked at row 0, illegible, while every pill background past row
+        # 0 was correctly positioned but got no label at all. Calls
+        # _build_badges_view directly and pairs each pill box with the
+        # label added right after it (container.subviews() preserves
+        # insertion order: box, label, box, label, ...) rather than matching
+        # by geometry, since same-width badges across rows can otherwise
+        # make a mispositioned label land inside the wrong row's box by
+        # coincidence.
+        long_categories = [f"Category number {i} with a fairly long label" for i in range(10)]
+        controller = make_controller(pii_categories=long_categories)
+        container, _ = controller._build_badges_view(long_categories, y=0.0, width=300.0)
+        subviews = list(container.subviews())
+        pairs = list(zip(subviews[0::2], subviews[1::2]))
+        assert len(pairs) == len(long_categories)
+
+        row_ys = {round(box.frame().origin.y, 3) for box, _ in pairs}
+        assert len(row_ys) > 1  # sanity: this really wraps to multiple rows
+
+        for box, label in pairs:
+            expected_y = box.frame().origin.y + (_BADGE_ROW_HEIGHT - 14.0) / 2.0
+            assert abs(label.frame().origin.y - expected_y) < 1e-6
 
     def test_pii_categories_render_one_badge_per_category(self):
         controller = make_controller(
