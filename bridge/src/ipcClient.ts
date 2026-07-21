@@ -9,6 +9,11 @@
  * responses back to their waiting promise. Node's single-threaded event loop
  * means writes from the same synchronous turn are already ordered, so unlike
  * the Python client there is no need for an explicit write lock.
+ *
+ * The daemon can restart or crash mid-conversation (e.g. PrivacyFenceApp.app
+ * updating or being relaunched). Rather than every subsequent tool call
+ * failing until the whole bridge process is restarted, request() transparently
+ * reconnects on demand — see ensureConnected().
  */
 
 import net from "node:net";
@@ -67,6 +72,7 @@ export interface IPCClientLike {
 export class IPCClient implements IPCClientLike {
   private readonly path: string;
   private socket: net.Socket | null = null;
+  private connecting: Promise<void> | null = null;
   private readonly pending = new Map<string, Pending>();
   private nextId = 0;
   private buffer = "";
@@ -77,22 +83,17 @@ export class IPCClient implements IPCClientLike {
 
   /** Open the connection. Must be called once before any request. */
   async connect(): Promise<void> {
-    this.socket = await new Promise<net.Socket>((resolve, reject) => {
-      const sock = net.createConnection(this.path);
-      sock.once("connect", () => resolve(sock));
-      sock.once("error", reject);
-    });
-    this.socket.setEncoding("utf8");
-    this.socket.on("data", (chunk: string) => this.onData(chunk));
-    this.socket.on("close", () => this.onClose());
-    this.socket.on("error", () => {
-      // Surfaced to in-flight requests via the "close" handler below; a bare
-      // "error" listener just prevents Node from throwing unhandled.
-    });
+    await this.ensureConnected();
+  }
+
+  /** True while a live socket is open to the daemon. */
+  isConnected(): boolean {
+    return this.socket !== null;
   }
 
   close(): void {
     this.socket?.destroy();
+    this.socket = null;
   }
 
   async manifest(): Promise<unknown> {
@@ -146,17 +147,53 @@ export class IPCClient implements IPCClientLike {
   // Internals
   // -------------------------------------------------------------------- //
 
-  private request(method: string, params: Record<string, unknown>): Promise<unknown> {
-    if (!this.socket) {
-      return Promise.reject(new IPCError("IPC client not connected"));
-    }
+  private async request(method: string, params: Record<string, unknown>): Promise<unknown> {
+    await this.ensureConnected();
     const id = String(this.nextId++);
     const promise = new Promise<unknown>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
     });
     const msg = JSON.stringify({ id, method, params }) + "\n";
-    this.socket.write(msg);
+    this.socket!.write(msg);
     return promise;
+  }
+
+  /**
+   * (Re)establish the connection on demand. Concurrent callers share the
+   * same in-flight attempt rather than each opening their own socket.
+   */
+  private async ensureConnected(): Promise<void> {
+    if (this.socket) return;
+    if (!this.connecting) {
+      this.connecting = this.doConnect().finally(() => {
+        this.connecting = null;
+      });
+    }
+    await this.connecting;
+  }
+
+  private async doConnect(): Promise<void> {
+    let sock: net.Socket;
+    try {
+      sock = await new Promise<net.Socket>((resolve, reject) => {
+        const s = net.createConnection(this.path);
+        s.once("connect", () => resolve(s));
+        s.once("error", reject);
+      });
+    } catch (exc) {
+      throw new IPCError(
+        `Could not connect to PrivacyFence daemon: ${exc instanceof Error ? exc.message : String(exc)}`
+      );
+    }
+    sock.setEncoding("utf8");
+    this.buffer = "";
+    sock.on("data", (chunk: string) => this.onData(chunk));
+    sock.once("close", () => this.onClose());
+    sock.on("error", () => {
+      // Surfaced to in-flight requests via the "close" handler below; a bare
+      // "error" listener just prevents Node from throwing unhandled.
+    });
+    this.socket = sock;
   }
 
   private onData(chunk: string): void {
@@ -205,6 +242,7 @@ export class IPCClient implements IPCClientLike {
   }
 
   private onClose(): void {
+    this.socket = null;
     for (const { reject } of this.pending.values()) {
       reject(new IPCError("IPC connection closed"));
     }

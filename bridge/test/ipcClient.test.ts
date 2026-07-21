@@ -3,6 +3,20 @@ import { after, before, describe, it } from "node:test";
 import { IPCClient, IPCError } from "../src/ipcClient.js";
 import { FakeDaemon, makeShortSocketPath } from "./testDaemon.js";
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitUntil(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error("timed out waiting for condition");
+    }
+    await sleep(5);
+  }
+}
+
 async function setup() {
   const { socketPath, cleanup } = makeShortSocketPath();
   const daemon = new FakeDaemon();
@@ -261,5 +275,47 @@ describe("IPCClient disconnect handling", () => {
   it("a request made before connect() rejects instead of hanging", async () => {
     const client = new IPCClient("/nonexistent/does-not-matter.sock");
     await assert.rejects(client.call("a", "x", {}), IPCError);
+  });
+});
+
+describe("IPCClient reconnection", () => {
+  it("reconnects automatically after the connection drops, so the next call succeeds", async () => {
+    const { daemon, client, teardown } = await setup();
+    try {
+      const t1 = client.call("a", "x", {});
+      await daemon.waitForNRequests(1);
+      daemon.sendResponse(daemon.received[0]!.id, { result: "first" });
+      assert.equal(await t1, "first");
+
+      daemon.disconnect(); // drops the connection; the fake server keeps listening
+      await waitUntil(() => !client.isConnected());
+
+      const t2 = client.call("a", "x", {});
+      await daemon.waitForNRequests(2);
+      daemon.sendResponse(daemon.received[1]!.id, { result: "second" });
+      assert.equal(await t2, "second");
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("connects lazily on the first request and recovers once the daemon comes up", async () => {
+    const { socketPath, cleanup } = makeShortSocketPath();
+    const daemon = new FakeDaemon();
+    const client = new IPCClient(socketPath);
+    try {
+      // Nothing is listening yet -- fails fast with a clear error instead of hanging.
+      await assert.rejects(client.call("a", "x", {}), IPCError);
+
+      await daemon.start(socketPath);
+      const task = client.call("a", "x", {});
+      await daemon.waitForNRequests(1);
+      daemon.sendResponse(daemon.received[0]!.id, { result: "ok" });
+      assert.equal(await task, "ok");
+    } finally {
+      client.close();
+      await daemon.stop();
+      cleanup();
+    }
   });
 });
