@@ -51,6 +51,12 @@ cp bridge/dist/bridge.js "${STAGE}/server/bridge.js"
 sed "s/__VERSION__/${VERSION}/" mcpb/manifest.json.tmpl > "${STAGE}/manifest.json"
 cp src/privacyfence/resources/icon_512.png "${STAGE}/icon.png"
 
+# No code signing needed here: bridge.js is plain JS with no Mach-O binaries
+# (see the file header — the PyInstaller-era Python runtime this used to
+# bundle, and the signing workarounds its packaging required, are gone as of
+# the Node bridge rewrite). Only PrivacyFenceApp.app, built and signed by
+# build_dmg.sh, needs a Developer ID signature and notarization.
+
 echo "→ Validating manifest…"
 npx --yes @anthropic-ai/mcpb validate "${STAGE}/manifest.json"
 

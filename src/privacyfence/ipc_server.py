@@ -24,6 +24,16 @@ silently replay the first call's success). Those are listed in
 ``_DEDUPE_EXEMPT_TOOLS`` and only lose the completed-result reuse -- a
 genuinely concurrent in-flight retry is still coalesced, since nothing has
 taken effect yet there.
+
+Read-only tools (``ToolSpec.read_only``) lose completed-result reuse
+unconditionally, for the same reason but the opposite direction: a read
+repeated with identical args shortly after an *unrelated* write to the same
+resource (e.g. checking an event's visibility right after setting it) must
+see the write's effect, not a cached pre-write result. Reads are either
+silent or independently gated per call, so there's no popup to double-fire
+in the first place -- the only thing completed-result reuse would buy a read
+is staleness. A genuinely concurrent in-flight duplicate read is still
+coalesced, since no result exists yet to be stale.
 """
 
 from __future__ import annotations
@@ -215,7 +225,11 @@ class IPCServer:
         if entry is not None:
             fut, recorded_at = entry
             still_fresh = (now - recorded_at) < self._DEDUPE_TTL_SECONDS
-            reusable = not fut.done() or (still_fresh and tool not in self._DEDUPE_EXEMPT_TOOLS)
+            reusable = not fut.done() or (
+                still_fresh
+                and tool not in self._DEDUPE_EXEMPT_TOOLS
+                and not self._is_read_only(connector, tool)
+            )
             if reusable:
                 logger.info(
                     "Deduping repeat call to %s/%s: reusing in-flight/recent result",
@@ -428,6 +442,13 @@ class IPCServer:
     @staticmethod
     def _dedupe_key(connector_name: str, tool: str, args: dict) -> str:
         return f"{connector_name}:{tool}:{json.dumps(args, sort_keys=True, default=str)}"
+
+    @staticmethod
+    def _is_read_only(connector: Connector, tool: str) -> bool:
+        for spec in connector.tool_specs():
+            if spec.name == tool:
+                return spec.read_only
+        return False
 
     def _build_manifest(self) -> dict:
         return {
