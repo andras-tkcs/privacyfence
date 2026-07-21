@@ -240,7 +240,8 @@ PrivacyFence is currently an open-source macOS implementation rather than a cert
 4. Authenticate the connectors you want from the PrivacyFence menu bar.
 5. Install **PrivacyFence.mcpb** into Claude Desktop.
 
-> Releases are not notarized yet. Current Gatekeeper instructions and full installation details are documented in [Technical Reference](docs/TECHNICAL_REFERENCE.md#installation).
+Releases are code-signed and notarized by Apple, so this just works — no Gatekeeper warnings, no
+manual quarantine step. Full installation details are in [Technical Reference](docs/TECHNICAL_REFERENCE.md#installation).
 
 ### Run from source
 
@@ -274,9 +275,8 @@ Continue with the organization configuration and connector authentication steps 
 ## Status and scope
 
 PrivacyFence has a stable connector and policy interface as of 1.0. It remains under active
-development, and you should review the limitations and security model (including the
-notarization gap noted earlier in this README) before using it with production or regulated
-data.
+development, and you should review the limitations and security model before using it with
+production or regulated data.
 
 Current implementation assumptions:
 

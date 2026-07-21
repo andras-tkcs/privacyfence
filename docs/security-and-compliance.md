@@ -220,7 +220,7 @@ oversight measure**, sitting in front of the AI system rather than being one:
 | Process isolation | Bridge (untrusted-facing, talks to Claude) and daemon (holds credentials) are separate processes; only the daemon can reach external APIs |
 | Secrets at rest | Local OS-level storage / local files under `credentials/`; never committed to source control (`.gitignore`'d), never transmitted off-device |
 | Auditability | Every decision logged with outcome (accepted/denied/auto_accepted), locally, in a human-readable format (JSONL + Excel) |
-| Code signing / notarization | **Not yet notarized** as of the current release — Gatekeeper requires a manual `xattr` step on first install (see [Technical Reference](TECHNICAL_REFERENCE.md#installation)). Treat this as an open item for endpoint security review, not a settled control. |
+| Code signing / notarization | Releases are code-signed with a Developer ID Application certificate and notarized by Apple; Gatekeeper accepts them with no manual steps (see [Technical Reference](TECHNICAL_REFERENCE.md#installation)). |
 | Third-party dependencies | Standard OAuth/SDK libraries per connector (google-auth, slack_sdk, telethon, atlassian-python-api); no PrivacyFence-operated backend dependency |
 
 ---
@@ -244,4 +244,4 @@ involved.
 | Is there a central admin console with visibility into every employee's approvals? | Not currently — audit logs are local per device. Plan for separate centralized log collection if your compliance program requires it. |
 | Who is the data controller/processor under GDPR? | Your organization remains the controller; PrivacyFence does not add a new processor since it operates entirely within your own infrastructure boundary. |
 | Does PrivacyFence make AI Act risk-tier determinations for us? | No. It's a deployer-side control (human oversight, access restriction, audit trail) — the risk classification of your AI use case is your organization's own determination. |
-| Is the app notarized by Apple? | Not yet as of the current release — see §8. |
+| Is the app notarized by Apple? | Yes — see §8. |
