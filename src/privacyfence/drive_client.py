@@ -341,7 +341,14 @@ def _extract_tables(markdown: str) -> tuple[str, list[TableBlock]]:
                 row = _split_table_row(lines[j])
                 rows.append((row + [""] * n_cols)[:n_cols])
                 j += 1
-            placeholder = f"\x00PRIVACYFENCE_TABLE_{len(tables)}\x00"
+            # A control-character-wrapped placeholder (e.g. "\x00...\x00")
+            # would be simpler to guarantee uniqueness for, but the Docs
+            # API's insertText silently strips control characters
+            # (U+0000-U+0008, U+000C-U+001F) and Private Use Area characters
+            # (U+E000-U+F8FF) from inserted text, so the placeholder actually
+            # written to the document would never match what's searched for
+            # here. Plain text it is.
+            placeholder = f"PRIVACYFENCE_TABLE_PLACEHOLDER_{len(tables)}"
             tables.append(TableBlock(rows=rows, alignments=alignments, placeholder=placeholder))
             out_lines.append(placeholder)
             i = j
