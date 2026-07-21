@@ -13,17 +13,21 @@ regression tests below pin the corrected behavior.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
+from privacyfence import drive_client as drive_client_module
 from privacyfence.audit_log import current_week, init_audit_logger
 from privacyfence.connectors import drive as drive_module
 from privacyfence.connectors.drive import DriveConnector
-from privacyfence.drive_client import DriveClientError, DriveFile, DriveFileContent
+from privacyfence.drive_client import DriveClient, DriveClientError, DriveFile, DriveFileContent
 from privacyfence.privacy_filter import init_privacy_filter
 
-from ...helpers import assert_all_tools_leave_an_audit_trail
+from ...helpers import assert_all_tools_leave_an_audit_trail, assert_no_placeholder_fields
+
+LIVE_FIXTURES_DIR = Path(__file__).parent.parent.parent / "fixtures" / "live" / "drive"
 
 
 def make_connector(my_email="me@example.com"):
@@ -902,6 +906,55 @@ class TestDocsEditAndFormatContent:
         await connector.call("drive_docs_format_content", {"file_id": "f1", "find_text": "x"})
 
         assert gated_call_spy[0]["preview"]["Format"] == "(no changes)"
+
+
+class TestFieldCompleteness:
+    """End to end: a fully-populated raw Drive API file -> the real
+    DriveClient._parse_file/get_file_content -> the real connector's popup
+    preview -- not a hand-built DriveFile, unlike every other test in this
+    file. Mirrors test_confluence_connector.py's TestFieldCompleteness -- the
+    shape of check that would catch a _parse_file field mapping silently
+    degrading to a fallback before it ships, not after.
+    """
+
+    async def test_get_file_content_preview_has_no_placeholder_fields(self, gated_call_spy, monkeypatch):
+        path = LIVE_FIXTURES_DIR / "get_file_metadata.json"
+        if not path.exists():
+            pytest.skip(f"{path} not recorded yet -- run `python3 scripts/qa_fixture_recorder.py --record drive` locally first")
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        # The recorded fixture is a folder (no content); force a plain-text
+        # file with real owners/size/timestamps so every preview field
+        # (File/Owner/Size/Modified) has something real to carry.
+        raw = dict(raw, mimeType="text/plain", size="42")
+
+        class _FakeDownloader:
+            def __init__(self, fd, request, chunksize=104857600):
+                self._fd = fd
+                self._written = False
+
+            def next_chunk(self):
+                if not self._written:
+                    self._fd.write(b"Real file content, not a placeholder.")
+                    self._written = True
+                return (None, True)
+
+        monkeypatch.setattr(drive_client_module, "MediaIoBaseDownload", _FakeDownloader)
+
+        service = MagicMock()
+        service.files.return_value.get.return_value.execute.return_value = raw
+        client = DriveClient(client_config={}, token_file="/tmp/unused-token.json")
+        # get_file_content() runs inside a worker thread (connector._fetch
+        # uses asyncio.to_thread), so client._local.service -- thread-local
+        # -- wouldn't be visible there; overriding _get_service directly is
+        # the thread-agnostic equivalent of test_drive_client.py's
+        # make_client().
+        client._get_service = lambda: service
+
+        connector = DriveConnector(client)
+        connector.my_email = "me@example.com"
+        await connector.call("drive_get_file_content", {"file_id": raw["id"]})
+
+        assert_no_placeholder_fields(gated_call_spy[0]["preview"])
 
 
 class TestEveryToolIsAudited:

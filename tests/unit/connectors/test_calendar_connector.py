@@ -8,6 +8,8 @@ review-gated calendar_get_event_details is allowed to expose those.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -16,6 +18,7 @@ from privacyfence.audit_log import current_week, init_audit_logger
 from privacyfence.calendar_client import (
     CalendarAttachment,
     CalendarAttendee,
+    CalendarClient,
     CalendarClientError,
     CalendarEvent,
     CalendarListEntry,
@@ -24,7 +27,9 @@ from privacyfence.calendar_client import (
 from privacyfence.connectors import calendar as calendar_module
 from privacyfence.connectors.calendar import CalendarConnector, _day_of_week
 
-from ...helpers import assert_all_tools_leave_an_audit_trail
+from ...helpers import assert_all_tools_leave_an_audit_trail, assert_no_placeholder_fields
+
+LIVE_FIXTURES_DIR = Path(__file__).parent.parent.parent / "fixtures" / "live" / "calendar"
 
 
 def make_connector(my_email="me@example.com"):
@@ -594,6 +599,42 @@ class TestSetEventVisibility:
         )
 
         assert gated_call_spy[0]["raw_data"]["attendees"] == ["bob@example.com"]
+
+
+class TestFieldCompleteness:
+    """End to end: a fully-populated raw Calendar API event -> the real
+    CalendarClient._parse_event -> the real connector's popup preview -- not
+    a hand-built CalendarEvent, unlike every other test in this file. Mirrors
+    test_confluence_connector.py's TestFieldCompleteness -- the shape of
+    check that would catch a _parse_event field mapping silently degrading
+    to a fallback before it ships, not after.
+    """
+
+    async def test_get_event_details_preview_has_no_placeholder_fields(self, gated_call_spy):
+        path = LIVE_FIXTURES_DIR / "get_event.json"
+        if not path.exists():
+            pytest.skip(f"{path} not recorded yet -- run `python3 scripts/qa_fixture_recorder.py --record calendar` locally first")
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        # The recorded fixture has no attendees -- add one so the Attendees
+        # preview field carries a real (non-zero) value too.
+        raw = dict(raw, attendees=[
+            {"email": "bob@example.com", "displayName": "Bob", "responseStatus": "accepted"},
+        ])
+
+        service = MagicMock()
+        service.events.return_value.get.return_value.execute.return_value = raw
+        client = CalendarClient(client_config={}, token_file="/tmp/unused-token.json")
+        # get_event() runs inside a worker thread (connector._fetch uses
+        # asyncio.to_thread), so client._local.service -- thread-local --
+        # wouldn't be visible there; overriding _get_service directly is the
+        # thread-agnostic equivalent of test_calendar_client.py's make_client().
+        client._get_service = lambda: service
+
+        connector = CalendarConnector(client)
+        connector.my_email = "me@example.com"
+        await connector.call("calendar_get_event_details", {"calendar_id": "primary", "event_id": raw["id"]})
+
+        assert_no_placeholder_fields(gated_call_spy[0]["preview"])
 
 
 class TestFetchErrorMapping:

@@ -5,6 +5,8 @@ gate.gated_call is stubbed to capture what's sent into the gate.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -13,9 +15,11 @@ from privacyfence.audit_log import current_week, init_audit_logger
 from privacyfence.connectors import slack as slack_module
 from privacyfence.connectors.slack import SlackConnector, _message_to_dict
 from privacyfence.privacy_filter import init_privacy_filter
-from privacyfence.slack_client import SlackChannel, SlackClientError, SlackMessage
+from privacyfence.slack_client import SlackChannel, SlackClient, SlackClientError, SlackMessage
 
-from ...helpers import assert_all_tools_leave_an_audit_trail
+from ...helpers import assert_all_tools_leave_an_audit_trail, assert_no_placeholder_fields
+
+LIVE_FIXTURES_DIR = Path(__file__).parent.parent.parent / "fixtures" / "live" / "slack"
 
 
 def make_connector(my_email="me@example.com"):
@@ -391,6 +395,47 @@ class TestSendMessage:
 
         assert result is None
         client.mark_channel_unread_before.assert_not_called()
+
+
+class TestFieldCompleteness:
+    """End to end: a fully-populated raw Slack API response -> the real
+    SlackClient._parse_message (plus channel/user resolution) -> the real
+    connector's popup preview -- not a hand-built SlackMessage, unlike every
+    other test in this file. Mirrors test_confluence_connector.py's
+    TestFieldCompleteness -- the shape of check that would catch a
+    _parse_message field mapping silently degrading to a fallback before it
+    ships, not after.
+    """
+
+    async def test_get_channel_history_preview_has_no_placeholder_fields(self, gated_call_spy):
+        path = LIVE_FIXTURES_DIR / "get_thread_replies.json"
+        if not path.exists():
+            pytest.skip(f"{path} not recorded yet -- run `python3 scripts/qa_fixture_recorder.py --record slack` locally first")
+        raw = json.loads(path.read_text(encoding="utf-8"))
+
+        web_client = MagicMock()
+        # conversations.history and conversations.replies return the same
+        # {"messages": [...]} shape -- the recorded thread-replies fixture
+        # (two real, fully-populated messages) works for either call.
+        web_client.conversations_history.return_value = raw
+        web_client.conversations_info.return_value = {"channel": {"name": "eng-team"}}
+        web_client.users_info.return_value = {
+            "user": {
+                "id": "U00QAPLACEHOLDER",
+                "name": "qa-bot",
+                "real_name": "PrivacyFence QA Bot",
+                "profile": {"real_name": "PrivacyFence QA Bot", "email": "qa-bot@example.com"},
+                "is_bot": True,
+            }
+        }
+        client = SlackClient(user_token="xoxp-fake-token")
+        client._client = web_client
+
+        connector = SlackConnector(client)
+        connector.my_email = "me@example.com"
+        await connector.call("slack_get_channel_history", {"channel_id": "C0QAPLACEHOLDER"})
+
+        assert_no_placeholder_fields(gated_call_spy[0]["preview"])
 
 
 class TestFetchErrorMapping:

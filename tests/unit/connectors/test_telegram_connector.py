@@ -8,16 +8,27 @@ the other connector tests to capture what's sent into the gate.
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+import json
+from datetime import datetime
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from privacyfence.audit_log import current_week, init_audit_logger
 from privacyfence.connectors import telegram as telegram_module
 from privacyfence.connectors.telegram import TelegramConnector
-from privacyfence.telegram_client import TelegramChat, TelegramClientError, TelegramMessage
+from privacyfence.telegram_client import (
+    TelegramChat,
+    TelegramClientError,
+    TelegramMessage,
+    TelegramPrivacyFenceClient,
+)
 
-from ...helpers import assert_all_tools_leave_an_audit_trail
+from ...helpers import assert_all_tools_leave_an_audit_trail, assert_no_placeholder_fields
+
+LIVE_FIXTURES_DIR = Path(__file__).parent.parent.parent / "fixtures" / "live" / "telegram"
 
 
 def make_connector():
@@ -213,6 +224,51 @@ class TestSendMessage:
 
         with pytest.raises(RuntimeError, match="chat write forbidden"):
             await connector.call("telegram_send_message", {"chat_id": 1, "text": "hi"})
+
+
+class TestFieldCompleteness:
+    """End to end: a fully-populated raw Telegram/Telethon message -> the
+    real TelegramPrivacyFenceClient.get_messages/_parse_message -> the real
+    connector's popup preview -- not a hand-built TelegramMessage, unlike
+    every other test in this file. Mirrors test_confluence_connector.py's
+    TestFieldCompleteness -- the shape of check that would catch a
+    _parse_message field mapping silently degrading to a fallback before it
+    ships, not after.
+
+    Unlike every other connector's fixture, _parse_message() reads
+    attributes off a real Telethon object (msg.sender, msg.date, ...), not
+    dict keys -- and msg.sender is a lazily-resolved Telethon property not
+    part of the recorded fixture's JSON at all (see
+    test_telegram_client.py's TestLiveFixtureParsing docstring for the same
+    structural limitation). So this replays the fixture's real id/date/text
+    fields and adds a synthetic-but-realistic sender, the same shape
+    test_telegram_client.py's own `_message_from_fixture` helper uses.
+    """
+
+    async def test_get_messages_preview_has_no_placeholder_fields(self, gated_call_spy):
+        path = LIVE_FIXTURES_DIR / "get_messages.json"
+        if not path.exists():
+            pytest.skip(f"{path} not recorded yet -- run `python3 scripts/qa_fixture_recorder.py --record telegram` locally first")
+        raw = json.loads(path.read_text(encoding="utf-8"))[0]
+
+        msg = SimpleNamespace(
+            id=raw["id"],
+            sender=SimpleNamespace(id=700000000, username="qa_placeholder", first_name="QA", last_name="Placeholder"),
+            date=datetime.fromisoformat(raw["date"]),
+            text=raw["message"], message=raw["message"],
+            out=raw["out"], media=None,
+        )
+        fake_telethon_client = MagicMock()
+        fake_telethon_client.get_messages = AsyncMock(return_value=[msg])
+        client = TelegramPrivacyFenceClient(api_id=123, api_hash="hash", session_file="/tmp/unused.session")
+        client._client = fake_telethon_client
+        client._connected = True
+        client._chat_name_cache[700000000] = "PrivacyFence QA Chat"
+
+        connector = TelegramConnector(client)
+        await connector.call("telegram_get_messages", {"chat_id": 700000000})
+
+        assert_no_placeholder_fields(gated_call_spy[0]["preview"])
 
 
 class TestEveryToolIsAudited:
