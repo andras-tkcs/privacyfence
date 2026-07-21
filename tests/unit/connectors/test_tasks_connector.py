@@ -14,6 +14,8 @@ client call from ever happening.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -21,9 +23,11 @@ import pytest
 from privacyfence.audit_log import current_week, init_audit_logger
 from privacyfence.connectors import tasks as tasks_module
 from privacyfence.connectors.tasks import TasksConnector
-from privacyfence.tasks_client import Task, TaskList, TasksClientError
+from privacyfence.tasks_client import Task, TaskList, TasksClient, TasksClientError
 
-from ...helpers import assert_all_tools_leave_an_audit_trail
+from ...helpers import assert_all_tools_leave_an_audit_trail, assert_no_placeholder_fields
+
+LIVE_FIXTURES_DIR = Path(__file__).parent.parent.parent / "fixtures" / "live" / "tasks"
 
 
 def make_connector():
@@ -267,6 +271,55 @@ class TestNonDataclassResultPassesThroughUnchanged:
         result = await connector.call("tasks_complete_task", {"task_list_id": "list1", "task_id": "t1"})
 
         assert result == {"ok": True}
+
+
+class TestFieldCompleteness:
+    """End to end: a fully-populated raw Tasks API task -> the real
+    TasksClient._parse_task -> the real connector's returned data -- not a
+    hand-built Task, unlike every other test in this file. Mirrors
+    test_confluence_connector.py's TestFieldCompleteness -- the shape of
+    check that would catch a _parse_task field mapping silently degrading
+    to a fallback before it ships, not after.
+
+    Unlike a connector with a gated read tool, tasks_get_task is
+    unconditionally auto-approved (see this module's docstring) and funnels
+    through _run()/_serialize() rather than gate.gated_call -- there's no
+    gate preview to inspect here, so the returned (serialized) dict is this
+    connector's closest analog to a preview for this purpose.
+    """
+
+    async def test_get_task_result_has_no_placeholder_fields(self):
+        path = LIVE_FIXTURES_DIR / "get_task.json"
+        if not path.exists():
+            pytest.skip(f"{path} not recorded yet -- run `python3 scripts/qa_fixture_recorder.py --record tasks` locally first")
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        # The recorded fixture is an incomplete top-level task (no due date,
+        # no completed timestamp, no parent) -- those are legitimately blank
+        # in that state, but every Task field needs something real here to
+        # actually exercise the mapping.
+        raw = dict(
+            raw,
+            due="2027-01-01T00:00:00.000Z",
+            status="completed",
+            completed="2026-12-31T00:00:00.000Z",
+            parent="qa-placeholder-parent-id",
+        )
+
+        service = MagicMock()
+        service.tasks.return_value.get.return_value.execute.return_value = raw
+        client = TasksClient(client_config={}, token_file="/tmp/unused-token.json")
+        # get_task() runs inside a worker thread (connector._fetch uses
+        # asyncio.to_thread), so client._local.service -- thread-local --
+        # wouldn't be visible there; overriding _get_service directly is the
+        # thread-agnostic equivalent of test_tasks_client.py's make_client().
+        client._get_service = lambda: service
+
+        connector = TasksConnector(client)
+        result = await connector.call(
+            "tasks_get_task", {"task_list_id": "list1", "task_id": raw["id"]}
+        )
+
+        assert_no_placeholder_fields(result)
 
 
 class TestErrorMapping:

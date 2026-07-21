@@ -10,6 +10,8 @@ connector.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -17,9 +19,11 @@ import pytest
 from privacyfence.audit_log import current_week, init_audit_logger
 from privacyfence.connectors import contacts as contacts_module
 from privacyfence.connectors.contacts import ContactsConnector, _parse_json_list
-from privacyfence.contacts_client import Contact, ContactEmail, ContactPhone, ContactsClientError
+from privacyfence.contacts_client import Contact, ContactEmail, ContactPhone, ContactsClient, ContactsClientError
 
-from ...helpers import assert_all_tools_leave_an_audit_trail
+from ...helpers import assert_all_tools_leave_an_audit_trail, assert_no_placeholder_fields
+
+LIVE_FIXTURES_DIR = Path(__file__).parent.parent.parent / "fixtures" / "live" / "contacts"
 
 
 def make_connector(my_email="me@example.com"):
@@ -317,6 +321,51 @@ class TestContactsRemoveLabel:
         assert kwargs["details_text"] == "Label will be removed from this contact; no other fields change."
         client.remove_label.assert_called_once_with("people/c1", "VIP")
         assert result == {"resource_name": "people/c1", "label_removed": "VIP"}
+
+
+class TestFieldCompleteness:
+    """End to end: a fully-populated raw People API person -> the real
+    ContactsClient._parse_person -> the real connector's returned data --
+    not a hand-built Contact, unlike every other test in this file. Mirrors
+    test_confluence_connector.py's TestFieldCompleteness -- the shape of
+    check that would catch a _parse_person field mapping silently degrading
+    to a fallback before it ships, not after.
+
+    Unlike every other connector's TestFieldCompleteness, this checks
+    contacts_get's *returned dict* rather than a gated_call preview: every
+    contacts read tool (list/search/get) is unconditionally auto-approved
+    (see this module's docstring) -- there's no gated read tool to exercise
+    -- so the returned dict is this connector's closest analog to a preview
+    for this purpose.
+    """
+
+    async def test_contacts_get_result_has_no_placeholder_fields(self):
+        path = LIVE_FIXTURES_DIR / "get_contact.json"
+        if not path.exists():
+            pytest.skip(f"{path} not recorded yet -- run `python3 scripts/qa_fixture_recorder.py --record contacts` locally first")
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        # The recorded fixture has no organization/job title/notes -- add
+        # them so every to_dict() field has something real to carry.
+        raw = dict(
+            raw,
+            organizations=[{"name": "Acme Corp", "title": "QA Engineer"}],
+            biographies=[{"value": "Met at the PrivacyFence QA sandbox."}],
+        )
+
+        service = MagicMock()
+        service.people.return_value.get.return_value.execute.return_value = raw
+        client = ContactsClient(client_config={}, token_file="/tmp/unused-token.json")
+        # get_contact() runs inside a worker thread (connector._fetch uses
+        # asyncio.to_thread), so client._local.service -- thread-local --
+        # wouldn't be visible there; overriding _get_service directly is the
+        # thread-agnostic equivalent of test_contacts_client.py's make_client().
+        client._get_service = lambda: service
+
+        connector = ContactsConnector(client)
+        connector.my_email = "me@example.com"
+        result = await connector.call("contacts_get", {"resource_name": raw["resourceName"]})
+
+        assert_no_placeholder_fields(result)
 
 
 class TestFetchErrorMapping:

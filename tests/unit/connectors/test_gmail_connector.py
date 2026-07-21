@@ -16,6 +16,8 @@ spawning a real approval popup. Two things matter most here:
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -23,10 +25,12 @@ import pytest
 from privacyfence.audit_log import current_week, init_audit_logger
 from privacyfence.connectors import gmail as gmail_module
 from privacyfence.connectors.gmail import GmailConnector
-from privacyfence.gmail_client import Attachment, GmailClientError, GmailMessage, GmailThread
+from privacyfence.gmail_client import Attachment, GmailClient, GmailClientError, GmailMessage, GmailThread
 from privacyfence.privacy_filter import init_privacy_filter
 
-from ...helpers import assert_all_tools_leave_an_audit_trail
+from ...helpers import assert_all_tools_leave_an_audit_trail, assert_no_placeholder_fields
+
+LIVE_FIXTURES_DIR = Path(__file__).parent.parent.parent / "fixtures" / "live" / "gmail"
 
 
 def make_connector(my_email="me@example.com"):
@@ -665,6 +669,37 @@ class TestWriteToolsGateAndPreview:
             await connector.call("gmail_create_label", {"label_name": "Receipts"})
 
         assert gated_call_spy == []
+
+
+class TestFieldCompleteness:
+    """End to end: a fully-populated raw Gmail API message -> the real
+    GmailClient._parse_message -> the real connector's popup preview -- not
+    a hand-built GmailMessage, unlike every other test in this file. Mirrors
+    test_confluence_connector.py's TestFieldCompleteness -- the shape of
+    check that would catch a _parse_message field mapping silently
+    degrading to a fallback before it ships, not after.
+    """
+
+    async def test_get_message_preview_has_no_placeholder_fields(self, gated_call_spy):
+        path = LIVE_FIXTURES_DIR / "get_message.json"
+        if not path.exists():
+            pytest.skip(f"{path} not recorded yet -- run `python3 scripts/qa_fixture_recorder.py --record gmail` locally first")
+        raw = json.loads(path.read_text(encoding="utf-8"))
+
+        service = MagicMock()
+        service.users.return_value.messages.return_value.get.return_value.execute.return_value = raw
+        client = GmailClient(client_config={}, token_file="/tmp/unused-token.json")
+        # get_message() runs inside a worker thread (connector._fetch uses
+        # asyncio.to_thread), so client._local.service -- thread-local --
+        # wouldn't be visible there; overriding _get_service directly is the
+        # thread-agnostic equivalent of test_gmail_client.py's make_client().
+        client._get_service = lambda: service
+
+        connector = GmailConnector(client)
+        connector.my_email = "me@example.com"
+        await connector.call("gmail_get_message", {"message_id": raw["id"]})
+
+        assert_no_placeholder_fields(gated_call_spy[0]["preview"])
 
 
 class TestFetchErrorMapping:
