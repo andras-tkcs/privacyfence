@@ -916,11 +916,11 @@ scheduled Cowork Routines that may run with nobody watching. See
 [`TECHNICAL_REFERENCE.md`](TECHNICAL_REFERENCE.md#scheduled--unattended-cowork-tasks). Unlike
 every phase above, this one needs a **daemon restart partway through**: `unattended_sessions.enabled` is read once at
 `run_app()` startup, not hot-reloaded like `auto_accept_rules`/`pii_detection.enabled` — there is
-no menu-bar toggle for it (deliberately: enabling it is meant to be a config-file edit an
-administrator makes, not a live daemon toggle).
+no menu-bar toggle for it (deliberately: enabling it is meant to be an administrator's
+organization config bundle edit, not a live daemon toggle or a per-user settings.yaml edit).
 
-1. Confirm `unattended_sessions.enabled` is **absent or `false`** in `settings.yaml` right now (the
-   default). `privacyfence_check_policy` needs no such flag and works regardless — start there:
+1. Confirm `unattended_sessions.enabled` is **absent or `false`** in `org_config.json` right now
+   (the default). `privacyfence_check_policy` needs no such flag and works regardless — start there:
 2. `privacyfence_check_policy` on a tool you know is unconditionally `auto` (e.g.
    `connector="gmail", tool="gmail_list_messages", args={}`). Expect `{"gate": "auto", "verdict":
    "auto_accept", "matched_rule": null, ...}` with **no popup and no tool actually called**.
@@ -940,12 +940,13 @@ administrator makes, not a live daemon toggle).
    pure preflight. If you want to double-check, note the current audit log line count before step
    2 and after step 5: it should have grown by exactly 4 (one `policy_check` entry per call).
 7. `privacyfence_begin_unattended_session` — since `unattended_sessions.enabled` is still `false`/
-   absent, expect a clear error mentioning `unattended_sessions.enabled` in `settings.yaml`, **not**
-   a popup and **not** a partial success. Confirm the menu bar's top item still reads plain
-   "PrivacyFence is running" (no session count).
-8. Set `unattended_sessions.enabled: true` in `settings.yaml` and **restart the daemon** (not just
-   an "Always allow" hot-reload — see the note above). Reconnect the Cowork/Desktop session so its
-   bridge process talks to the freshly restarted daemon.
+   absent, expect a clear error mentioning `unattended_sessions.enabled` in the organization config
+   bundle (`org_config.json`), **not** a popup and **not** a partial success. Confirm the menu bar's
+   top item still reads plain "PrivacyFence is running" (no session count).
+8. Set `unattended_sessions.enabled: true` in `org_config.json` (e.g. `python3
+   scripts/build_org_bundle.py --merge --enable-unattended-sessions -o org/org_config.json`) and
+   **restart the daemon** (not just an "Always allow" hot-reload — see the note above). Reconnect
+   the Cowork/Desktop session so its bridge process talks to the freshly restarted daemon.
 9. `privacyfence_begin_unattended_session` again — expect `{"unattended": true}`, no popup. Check
    the PrivacyFence menu bar now: the top item should read "PrivacyFence is running — 1 unattended
    session active". **Pause here**: tell me you're about to call the next step's tool and that,
@@ -966,9 +967,10 @@ administrator makes, not a live daemon toggle).
     non-matching review call — the session is no longer unattended. Wait for me to say go, then
     make the call and confirm the popup actually appeared this time. I'll Deny it (it's not data
     this run needs to keep).
-14. Set `unattended_sessions.enabled` back to `false` (or leave it — your call, but note in the
-    final report which state you left it in) and restart the daemon once more so later runs of
-    this whole prompt start from the documented default.
+14. Set `unattended_sessions.enabled` back to `false` in `org_config.json` (e.g. `python3
+    scripts/build_org_bundle.py --merge --disable-unattended-sessions -o org/org_config.json`; or
+    leave it — your call, but note in the final report which state you left it in) and restart the
+    daemon once more so later runs of this whole prompt start from the documented default.
 
 No manifest entries from this phase — nothing persistent gets created (Slack reads, preflight
 checks, and session toggles leave no artifact behind), so Phase 12 (Teardown) has nothing to do for
@@ -1102,7 +1104,7 @@ table split into "cleaned up in Phase 12" vs. "needs manual deletion." Then:
   (`auto_accept`/`requires_review`/`unknown`)? Did step 10 actually deny
   without a popup, and step 13 actually prompt normally once the session
   ended? State plainly which `unattended_sessions.enabled` value you left
-  `settings.yaml` in at step 14, so a later run (or a human reading this
+  `org_config.json` in at step 14, so a later run (or a human reading this
   report) isn't surprised by its current state.
 ````
 
