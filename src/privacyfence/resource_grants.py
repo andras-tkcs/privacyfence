@@ -533,7 +533,7 @@ def build_effective_rules(cfg: dict[str, Any]) -> dict[str, list[dict[str, Any]]
     checks every rule in the list regardless of position).
     """
     rules: dict[str, list[dict[str, Any]]] = {
-        op_key: [dict(r) for r in op_rules]
+        op_key: [dict(r) for r in (op_rules or [])]
         for op_key, op_rules in (cfg.get("auto_accept_rules") or {}).items()
     }
     for op_key, entries in expand_grants(cfg.get("auto_accept_grants") or {}).items():

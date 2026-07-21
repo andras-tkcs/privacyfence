@@ -445,6 +445,13 @@ class TestBuildEffectiveRules:
         rg.build_effective_rules(cfg)
         assert cfg == {"auto_accept_rules": {"contacts.edit": [{"rule": "no_contact_info_change"}]}}
 
+    def test_null_operation_value_is_treated_as_no_rules(self):
+        # A hand-edited settings.yaml with a bare "contacts.edit:" key (no
+        # list under it) parses to None for that operation, not []. Must not
+        # crash (regression for #81, 'NoneType' object is not iterable).
+        cfg = {"auto_accept_rules": {"contacts.edit": None}}
+        assert rg.build_effective_rules(cfg) == {"contacts.edit": []}
+
 
 # --------------------------------------------------------------------------- #
 # migrate_rules_to_grants
