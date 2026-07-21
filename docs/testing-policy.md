@@ -26,7 +26,7 @@ manual steps. It includes:
 - Each connector's `TestLiveFixtureParsing` class (in `tests/unit/test_<connector>_client.py`),
   which replays a **previously recorded** fixture from `tests/fixtures/live/<connector>/` through
   the real `_parse_*` method — still fully offline, since it's reading a committed JSON file, not
-  making a live API call. See [§2.1](#21-qa_fixture_recorderpy---check---record) below for how those
+  making a live API call. See [§2.1](#21-qa_fixture_recorderpy---check----record) below for how those
   fixtures get recorded in the first place. A connector with no recorded fixture yet has its
   `TestLiveFixtureParsing` tests skip (not fail) with a message pointing at the recorder.
 - `tests/unit/test_qa_fixture_recorder.py` — unit tests for the recorder script itself

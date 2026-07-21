@@ -3,7 +3,7 @@
 Standalone installation guide for the fixtures used by both
 [`connector-qa-testing.md`](connector-qa-testing.md) (the manual, live-Cowork QA pass) and
 `scripts/qa_fixture_recorder.py` (the local fixture recorder — see
-[`testing-policy.md` §2.1](testing-policy.md#21-qa_fixture_recorderpy---check---record)). Work
+[`testing-policy.md` §2.1](testing-policy.md#21-qa_fixture_recorderpy---check----record)). Work
 through it top to bottom on any machine/account where you want to run either one. It doesn't assume
 anything was set up before.
 

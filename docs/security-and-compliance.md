@@ -130,6 +130,19 @@ already uses; there is no code path from the bridge to `settings.yaml` that skip
 including when an identical entry already exists. This keeps the gate itself — not just what passes
 through it — under the same human-in-the-loop control described above.
 
+**Scheduled/unattended tasks — an explicit, opt-in exception to "always ask a human."** A scheduled
+Claude Cowork Routine can run with nobody at the keyboard, so a `review`/`popup` call with no
+matching auto-accept rule has no human available to answer a popup. An administrator can opt into
+**unattended-session mode** (off by default, set only in the organization config bundle — never a
+per-user or per-session setting) so that, for a connection explicitly marked as running such a task,
+an unmatched call is **denied immediately** rather than left as an unanswered popup. This never
+changes what auto-accepts — only what happens when nothing would have; the denial is logged
+distinctly (`denied_unattended`) from a human's own `rejected` decision. See
+[Scheduled / unattended Cowork tasks](TECHNICAL_REFERENCE.md#scheduled--unattended-cowork-tasks) for
+the full mechanism. Reviewers evaluating human-oversight guarantees (§4, Article 14 in §7) should
+treat this as the one deliberate, IT-gated carve-out from "every sensitive call waits for a human" —
+narrower calls still deny rather than silently proceed.
+
 ---
 
 ## 5. Data handling
