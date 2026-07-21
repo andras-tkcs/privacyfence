@@ -666,8 +666,40 @@ class TestMarkdownToDocsRequests:
         # bullet range spans the leading tab too, per the Docs API contract
         assert bullet_reqs[0]["createParagraphBullets"]["range"] == {"startIndex": 1, "endIndex": 14}
         style_reqs = [r for r in requests if "updateTextStyle" in r]
-        # inline-run positions start after the leading tab: "\t" + "nested " = 8 chars, so "bold" starts at 1+8=9
-        assert style_reqs[0]["updateTextStyle"]["range"] == {"startIndex": 9, "endIndex": 13}
+        # By the time this request runs, createParagraphBullets has already
+        # stripped the leading tab it counted, so "bold" (after "nested ",
+        # 7 chars) starts at the line's original start index, not after it.
+        assert style_reqs[0]["updateTextStyle"]["range"] == {"startIndex": 8, "endIndex": 12}
+
+    def test_consecutive_nested_bullets_both_get_correctly_shifted_ranges(self):
+        # Regression test: each createParagraphBullets request strips its own
+        # line's leading tabs as a side effect, shrinking the document that
+        # every later request in the same batchUpdate is interpreted against.
+        # A second (or third...) consecutive nested item must have its ranges
+        # shifted by every earlier list line's already-stripped tab count, or
+        # it silently lands on the wrong paragraph -- previously only the
+        # first nested line in a run got fixed up correctly.
+        requests = _markdown_to_docs_requests(
+            "- Top level item one\n  - Nested item one-a\n  - Nested item one-b"
+        )
+        assert requests[0]["insertText"]["text"] == (
+            "Top level item one\n\tNested item one-a\n\tNested item one-b\n"
+        )
+        bullet_reqs = [r["createParagraphBullets"]["range"] for r in requests if "createParagraphBullets" in r]
+
+        # Simulate the Docs API applying these requests in order against the
+        # inserted text, stripping each paragraph's leading tabs as it goes,
+        # to prove the final ranges land on paragraph boundaries.
+        text = requests[0]["insertText"]["text"]
+        for rng in bullet_reqs:
+            start, end = rng["startIndex"] - 1, rng["endIndex"] - 1
+            para = text[start:end]
+            stripped = para.lstrip("\t")
+            ntabs = len(para) - len(stripped)
+            assert para.startswith("\t" * ntabs), f"range {rng} does not start on a paragraph boundary: {para!r}"
+            text = text[:start] + stripped + text[end:]
+
+        assert text == "Top level item one\nNested item one-a\nNested item one-b\n"
 
     def test_deeply_nested_list_caps_at_max_nesting(self):
         huge_indent = " " * 40  # far beyond _MAX_LIST_NESTING levels
