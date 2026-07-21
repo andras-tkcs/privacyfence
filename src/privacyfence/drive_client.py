@@ -198,7 +198,19 @@ def _markdown_to_docs_requests(markdown: str, start_index: int = 1) -> list[dict
         {"insertText": {"location": {"index": start_index}, "text": full_text}}
     ]
 
+    # createParagraphBullets strips the leading nesting tabs it counts as a
+    # side effect of inferring nesting level, shrinking the document. Since
+    # every line's createParagraphBullets request in this same batchUpdate
+    # runs in order against the *live* result of every earlier request, a
+    # line's true position by the time its own request fires is offset by
+    # however many tabs every preceding list line's own request already
+    # stripped -- track that running total and shift every range by it, or
+    # later list lines silently land on the wrong paragraph.
+    tabs_stripped_so_far = 0
     for line_start, line_end, para_style, runs, list_preset, text_start in line_spans:
+        list_level = text_start - line_start
+        line_start -= tabs_stripped_so_far
+        line_end -= tabs_stripped_so_far
         if para_style != "NORMAL_TEXT":
             requests.append(
                 {
@@ -224,8 +236,11 @@ def _markdown_to_docs_requests(markdown: str, start_index: int = 1) -> list[dict
                     }
                 }
             )
-        # Inline styles (start after any leading nesting tabs)
-        pos = text_start
+            tabs_stripped_so_far += list_level
+        # Inline styles: by now this line's own leading tabs (if any) have
+        # already been stripped by the createParagraphBullets request above,
+        # so the real text starts at the (shifted) line start.
+        pos = line_start
         for run in runs:
             if not run.text:
                 continue
@@ -341,7 +356,14 @@ def _extract_tables(markdown: str) -> tuple[str, list[TableBlock]]:
                 row = _split_table_row(lines[j])
                 rows.append((row + [""] * n_cols)[:n_cols])
                 j += 1
-            placeholder = f"\x00PRIVACYFENCE_TABLE_{len(tables)}\x00"
+            # A control-character-wrapped placeholder (e.g. "\x00...\x00")
+            # would be simpler to guarantee uniqueness for, but the Docs
+            # API's insertText silently strips control characters
+            # (U+0000-U+0008, U+000C-U+001F) and Private Use Area characters
+            # (U+E000-U+F8FF) from inserted text, so the placeholder actually
+            # written to the document would never match what's searched for
+            # here. Plain text it is.
+            placeholder = f"PRIVACYFENCE_TABLE_PLACEHOLDER_{len(tables)}"
             tables.append(TableBlock(rows=rows, alignments=alignments, placeholder=placeholder))
             out_lines.append(placeholder)
             i = j
