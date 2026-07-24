@@ -31,7 +31,9 @@ from privacyfence.slack_client import (
     SlackChannel,
     SlackClient,
     SlackClientError,
+    SlackDirectMessage,
     SlackFile,
+    SlackGroupChat,
     SlackUser,
     authorize_interactive,
     load_token_file,
@@ -502,6 +504,132 @@ class TestListChannels:
         client = make_client(web_client)
         with pytest.raises(SlackClientError, match="list_channels failed"):
             client.list_channels()
+
+
+# ---------------------------------------------------------------------------- #
+# list_dms
+# ---------------------------------------------------------------------------- #
+
+class TestListDMs:
+    def test_single_page_resolves_participant_name(self):
+        web_client = MagicMock()
+        web_client.conversations_list.return_value = {
+            "channels": [{"id": "D1", "user": "U1"}], "response_metadata": {"next_cursor": ""}
+        }
+        web_client.users_info.return_value = {"user": {"id": "U1", "name": "jdoe", "real_name": "Jane Doe"}}
+        client = make_client(web_client)
+
+        dms = client.list_dms()
+
+        assert dms == [SlackDirectMessage(id="D1", user_id="U1", user_name="Jane Doe")]
+        kwargs = web_client.conversations_list.call_args.kwargs
+        assert kwargs["types"] == "im"
+
+    def test_paginates_until_cursor_exhausted(self):
+        web_client = MagicMock()
+        web_client.conversations_list.side_effect = [
+            {"channels": [{"id": "D1", "user": "U1"}], "response_metadata": {"next_cursor": "page2"}},
+            {"channels": [{"id": "D2", "user": "U2"}], "response_metadata": {"next_cursor": ""}},
+        ]
+        web_client.users_info.return_value = {"user": {"id": "U1", "name": "jdoe"}}
+        client = make_client(web_client)
+        dms = client.list_dms(max_results=100)
+        assert [d.id for d in dms] == ["D1", "D2"]
+        assert web_client.conversations_list.call_count == 2
+
+    def test_participant_filter_matches_by_id_or_name_case_insensitive(self):
+        web_client = MagicMock()
+        web_client.conversations_list.return_value = {
+            "channels": [{"id": "D1", "user": "U1"}, {"id": "D2", "user": "U2"}],
+            "response_metadata": {},
+        }
+        web_client.users_info.side_effect = [
+            {"user": {"id": "U1", "name": "jdoe", "real_name": "Jane Doe"}},
+            {"user": {"id": "U2", "name": "bsmith", "real_name": "Bob Smith"}},
+        ]
+        client = make_client(web_client)
+
+        assert [d.id for d in client.list_dms(participant="jane")] == ["D1"]
+        # U1/U2 are now cached from the call above, so this needs no further
+        # users_info calls -- proves id matching doesn't depend on re-resolving names.
+        assert [d.id for d in client.list_dms(participant="U2")] == ["D2"]
+
+    def test_api_error_becomes_slack_client_error(self):
+        web_client = MagicMock()
+        web_client.conversations_list.side_effect = slack_error("ratelimited")
+        client = make_client(web_client)
+        with pytest.raises(SlackClientError, match="list_dms failed"):
+            client.list_dms()
+
+
+# ---------------------------------------------------------------------------- #
+# list_group_chats
+# ---------------------------------------------------------------------------- #
+
+class TestListGroupChats:
+    def test_resolves_members_per_group_chat(self):
+        web_client = MagicMock()
+        web_client.conversations_list.return_value = {
+            "channels": [{"id": "G1", "name": "mpdm-jdoe--bsmith-1"}],
+            "response_metadata": {"next_cursor": ""},
+        }
+        web_client.conversations_members.return_value = {"members": ["U1", "U2"]}
+        web_client.users_info.side_effect = [
+            {"user": {"id": "U1", "name": "jdoe", "real_name": "Jane Doe"}},
+            {"user": {"id": "U2", "name": "bsmith", "real_name": "Bob Smith"}},
+        ]
+        client = make_client(web_client)
+
+        chats = client.list_group_chats()
+
+        assert chats == [
+            SlackGroupChat(
+                id="G1", name="mpdm-jdoe--bsmith-1",
+                member_ids=["U1", "U2"], member_names=["Jane Doe", "Bob Smith"],
+            )
+        ]
+        assert web_client.conversations_list.call_args.kwargs["types"] == "mpim"
+        web_client.conversations_members.assert_called_once_with(channel="G1", limit=1000)
+
+    def test_participant_filter_matches_any_member(self):
+        web_client = MagicMock()
+        web_client.conversations_list.return_value = {
+            "channels": [{"id": "G1", "name": "g1"}, {"id": "G2", "name": "g2"}],
+            "response_metadata": {},
+        }
+        web_client.conversations_members.side_effect = [
+            {"members": ["U1", "U2"]},
+            {"members": ["U3"]},
+        ]
+        web_client.users_info.side_effect = [
+            {"user": {"id": "U1", "name": "jdoe", "real_name": "Jane Doe"}},
+            {"user": {"id": "U2", "name": "bsmith", "real_name": "Bob Smith"}},
+            {"user": {"id": "U3", "name": "carol"}},
+        ]
+        client = make_client(web_client)
+
+        chats = client.list_group_chats(participant="bob")
+
+        assert [c.id for c in chats] == ["G1"]
+
+    def test_unresolvable_members_reads_as_empty_not_raising(self):
+        web_client = MagicMock()
+        web_client.conversations_list.return_value = {
+            "channels": [{"id": "G1", "name": "g1"}], "response_metadata": {},
+        }
+        web_client.conversations_members.side_effect = slack_error("channel_not_found")
+        client = make_client(web_client)
+
+        chats = client.list_group_chats()
+
+        assert chats == [SlackGroupChat(id="G1", name="g1", member_ids=[], member_names=[])]
+
+    def test_api_error_becomes_slack_client_error(self):
+        web_client = MagicMock()
+        web_client.conversations_list.side_effect = slack_error("ratelimited")
+        client = make_client(web_client)
+        with pytest.raises(SlackClientError, match="list_group_chats failed"):
+            client.list_group_chats()
 
 
 # ---------------------------------------------------------------------------- #

@@ -338,6 +338,8 @@ PRIVACY_CATEGORY_LABELS: dict[str, dict[str, str]] = {
         "user_identity": "User identity (names / emails)",
         "channel_list": "Channel list",
         "thread_content": "Thread replies",
+        "dm_list": "DM list",
+        "group_chat_list": "Group chat list",
     },
 }
 

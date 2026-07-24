@@ -73,6 +73,42 @@ class SlackConnector(Connector):
                 read_only=True,
             ),
             ToolSpec(
+                name="slack_list_dms",
+                description=(
+                    "List 1:1 direct-message conversations visible to the user "
+                    "(id, other participant). Optionally filter to the DM with a "
+                    "specific participant (user id, handle, or display name). "
+                    "Auto-approved."
+                ),
+                params=[
+                    ToolParam("max_results", "int", required=False, default=100),
+                    ToolParam(
+                        "participant", "str", required=False, default="",
+                        description="Filter to the DM with this participant (user id, handle, or name); empty returns all",
+                    ),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
+                ],
+                read_only=True,
+            ),
+            ToolSpec(
+                name="slack_list_group_chats",
+                description=(
+                    "List group-DM conversations visible to the user "
+                    "(id, name, participants). Optionally filter to group chats "
+                    "containing a specific participant (user id, handle, or "
+                    "display name). Auto-approved."
+                ),
+                params=[
+                    ToolParam("max_results", "int", required=False, default=100),
+                    ToolParam(
+                        "participant", "str", required=False, default="",
+                        description="Filter to group chats containing this participant (user id, handle, or name); empty returns all",
+                    ),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
+                ],
+                read_only=True,
+            ),
+            ToolSpec(
                 name="slack_get_channel_history",
                 description="Fetch recent messages in a Slack channel. Requires user approval.",
                 params=[
@@ -123,6 +159,10 @@ class SlackConnector(Connector):
     async def call(self, tool: str, args: dict[str, Any]) -> Any:
         if tool == "slack_list_channels":
             return await self._list_channels(**args)
+        if tool == "slack_list_dms":
+            return await self._list_dms(**args)
+        if tool == "slack_list_group_chats":
+            return await self._list_group_chats(**args)
         if tool == "slack_get_channel_history":
             return await self._get_channel_history(**args)
         if tool == "slack_get_thread_replies":
@@ -154,6 +194,41 @@ class SlackConnector(Connector):
             for c in channels
         ]
         return apply_list("slack_privacy", "channel_list", result)
+
+    async def _list_dms(self, max_results: int = 100, participant: str = "") -> Any:
+        t0 = time.time()
+        dms = await self._fetch(self._slack.list_dms, max_results, participant)
+        label = f"List DMs (max {max_results})"
+        if participant:
+            label += f" with {participant}"
+        self._auto_audit("slack_list_dms", "List Slack DMs", label, f"{len(dms)} DM(s)", t0)
+        result = [
+            {
+                "id": d.id,
+                "user_id": apply_text("slack_privacy", "user_identity", d.user_id or ""),
+                "user_name": apply_text("slack_privacy", "user_identity", d.user_name or ""),
+            }
+            for d in dms
+        ]
+        return apply_list("slack_privacy", "dm_list", result)
+
+    async def _list_group_chats(self, max_results: int = 100, participant: str = "") -> Any:
+        t0 = time.time()
+        chats = await self._fetch(self._slack.list_group_chats, max_results, participant)
+        label = f"List group chats (max {max_results})"
+        if participant:
+            label += f" with {participant}"
+        self._auto_audit("slack_list_group_chats", "List Slack Group Chats", label, f"{len(chats)} group chat(s)", t0)
+        result = [
+            {
+                "id": c.id,
+                "name": c.name,
+                "member_ids": [apply_text("slack_privacy", "user_identity", i or "") for i in c.member_ids],
+                "member_names": [apply_text("slack_privacy", "user_identity", n or "") for n in c.member_names],
+            }
+            for c in chats
+        ]
+        return apply_list("slack_privacy", "group_chat_list", result)
 
     # ------------------------------------------------------------------ #
     # Review gate (reads)

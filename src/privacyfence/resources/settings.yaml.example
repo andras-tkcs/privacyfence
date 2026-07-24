@@ -51,6 +51,8 @@ slack_privacy:
     user_identity: allow     # user names, emails, real names
     channel_list: allow      # channel names and metadata
     thread_content: allow    # thread reply content
+    dm_list: allow           # 1:1 DM listing (who you DM with)
+    group_chat_list: allow   # group-DM listing (id, name, participants)
 
 # Enable/disable individual connectors (all enabled by default — this section
 # is only needed to turn one off). Toggled automatically when you use
