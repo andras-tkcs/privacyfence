@@ -6,8 +6,10 @@ the same layout with only a few optional sections toggled on or off — which to
 [`TECHNICAL_REFERENCE.md`'s per-connector tool tables](TECHNICAL_REFERENCE.md#connectors--privacy-matrix),
 which list exact preview/details text per tool grouped by connector; this doc groups by dialog
 *shape* first, tool second, and adds the optional overlay sections (AI-visibility checklist,
-sensitivity badges, Gmail/PDF body rendering, etc.) that table doesn't cover. Source of truth for
-everything below: [`gate.py`](../src/privacyfence/gate.py),
+sensitivity badges, Gmail/PDF body rendering, etc.) that table doesn't cover. Neither this doc nor
+that table says what Claude *already knew* before a given call, from prior auto-approved calls —
+for that cut, see [`claude-knowledge-boundary.md`](claude-knowledge-boundary.md). Source of truth
+for everything below: [`gate.py`](../src/privacyfence/gate.py),
 [`approval_popup.py`](../src/privacyfence/approval_popup.py),
 [`approval_window.py`](../src/privacyfence/approval_window.py) — re-derive from there if this
 drifts, don't trust it blindly.

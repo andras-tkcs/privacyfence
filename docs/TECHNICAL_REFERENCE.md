@@ -142,6 +142,13 @@ silent auto-accept path exactly as before this gate existed.
 
 ## Connectors & privacy matrix
 
+This section lists preview/details text per tool, grouped by connector. For a cut across *what
+Claude already knows from prior auto-approved calls* before it ever reaches a given gated tool —
+i.e. how much of a "review" tool's return value is actually new information — see
+[`claude-knowledge-boundary.md`](claude-knowledge-boundary.md). For the approval dialog's own
+layout and optional sections (AI-visibility checklist, PII banner, etc.), see
+[`approval-window-content-reference.md`](approval-window-content-reference.md).
+
 ### Gmail
 
 **Auth:** OAuth2
