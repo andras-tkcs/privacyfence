@@ -435,7 +435,6 @@ the evaluator never reads it, only `id`/`key` and the capability booleans decide
 |---|---|---|
 | `drive` | `folders` | `read` → reading file contents/downloads in that folder, and `sheets.read_values` for spreadsheets in it |
 | `drive` | `sandbox_folders` | `write` → writing files/Docs in that folder (including `docs.edit_content`/`docs.format_content`), every `sheets.*` write operation for spreadsheets in it, commenting on a file already there, uploading into it, and moving a file out of it |
-| `drive` | `spreadsheets` (optionally scoped to one `tab`) | `read` → `sheets.read_values`; `write` → every `sheets.*` write operation (`write_range`/`add_sheet`/`rename_sheet`/`format_range`/`insert_dimensions`/`delete_dimensions`) |
 | `tasks` | `task_lists` | `create`, `edit`, `complete` (covers complete + uncomplete), `move` — one per Tasks write tool |
 | `slack` | `channels` | `read` → reading channel/thread history and search results in that channel; `send` → sending messages there |
 | `telegram` | `chats` | `read` → reading/searching that chat; `send` → sending messages there |
@@ -463,9 +462,9 @@ action, and its own **✕ Remove**. Adding one is a single **+ Add …** action:
 - For connectors with a cheap listing call (Tasks, Slack, Telegram, Jira, Confluence, Calendar,
   Salesforce reports), **+ Add …** opens a native picker of everything visible to that connector,
   by name — no ID entry needed at all.
-- For Drive folders and spreadsheets (no "list every folder I can see" API short of the heavier
-  Google Picker integration), **+ Add …** accepts a pasted ID **or** a full Drive/Sheets URL (the
-  ID is extracted automatically), resolves and shows the name back for confirmation before saving.
+- For Drive folders (no "list every folder I can see" API short of the heavier Google Picker
+  integration), **+ Add …** accepts a pasted ID **or** a full Drive/Sheets URL (the ID is extracted
+  automatically), resolves and shows the name back for confirmation before saving.
 
 Every existing rule under `auto_accept_rules` that isn't a resource grant (domain trust, label
 matching, file-type allowlists, and similar — see [Auto-accept rules](#auto-accept-rules)) lives
@@ -585,32 +584,10 @@ one of these `sheets.*` operations at once, instead of needing the same folder I
 separately (the old, still-fully-supported way — configure each rule independently under
 `auto_accept_rules`, as before grants existed).
 
-All seven `sheets.*` operations also accept `approved_spreadsheet`, which scopes a rule to one
-specific spreadsheet — optionally narrowed to one tab within it. This is also grant-managed (see
-[Auto-accept grants](#auto-accept-grants) → `drive.spreadsheets`); the underlying rule shape is:
-
-```yaml
-auto_accept_rules:
-  sheets.read_values:
-    - rule: approved_spreadsheet
-      value:
-        - spreadsheet_id: "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms"   # whole spreadsheet, any tab
-        - spreadsheet_id: "1AbCdEf..."
-          tab: "Budget"                                                   # only this tab
-```
-
-`spreadsheet_id` is the ID from the sheet's URL
-(`docs.google.com/spreadsheets/d/<spreadsheet_id>/edit`). `tab` is optional — omit it to approve
-every tab of that spreadsheet. When present, `tab` means the tab's **name** (e.g. `"Sheet1"`) for
-`sheets.read_values` / `sheets.write_range`, since that's all range_a1 carries (`"Sheet1!A1:C10"`);
-for `sheets.rename_sheet` / `sheets.format_range` / `sheets.insert_dimensions` /
-`sheets.delete_dimensions` it means the tab's **numeric** `sheet_id` (from
-`drive_sheets_get_metadata`) as a string, since those tools address the tab that way instead.
-`sheets.add_sheet` has no existing tab to scope to, so only bare `spreadsheet_id` entries apply
-there.
-
-Clicking **Always allow** on a "Read Sheet Values" prompt proposes exactly this rule — scoped to the
-spreadsheet and tab you just read — rather than a broader ownership- or folder-based rule.
+Clicking **Always allow** on a "Read Sheet Values" prompt proposes the same `i_am_owner`/
+`approved_folder` suggestion as `drive.read_file_contents`/`download_file` — see
+[Always-allow suggestion priority](#always-allow-suggestion-priority) below for how the popup
+chooses (or asks) between the two when both apply.
 
 `drive.comment_file` (`drive_add_comment` — also used for comments on Docs and Sheets, since those
 ride the Drive connector's OAuth grant) supports `i_am_owner`, `approved_sandbox_folder`, and
@@ -622,11 +599,12 @@ covered above — enabling its `write` capability auto-accepts `drive.comment_fi
 `docs.edit_content`/`docs.format_content`, `drive.upload_file`, and `drive.move_file` too, alongside
 `drive.write_file`/`drive.write_doc` and every `sheets.*` write.
 
-**None of Drive's write ops offer Always allow, but some get a temp-accept grace window instead.**
-(Unlike, e.g., Gmail/Calendar/Jira/Confluence/Tasks writes — see [Review model](#review-model)'s
-"Claude → Tool" section for the five operations that do.) All of the above (including the writes)
-are `popup`-gated, and a Drive write popup never offers to create a standing rule — see
-[PII detection gate](#pii-detection-gate) and the [review model](#review-model) above for why.
+**All of Drive's write ops now offer Always allow too** — see
+[Always allow for writes](#always-allow-for-writes) below for the full table; most propose
+`approved_sandbox_folder` from the file's current parent folder(s), `drive.upload_file` proposes
+`parent_folder_allowlist` from the upload's destination folder, and `drive.move_file` proposes
+`move_within_approved_folders` from the file's folder *before* the move. Some also still get a
+temp-accept grace window on top (see [Review model](#review-model)'s "Claude → Tool" section).
 `sheets.write_range`, `sheets.format_range`,
 `sheets.insert_dimensions`, `drive.comment_file`, `docs.edit_content`, and `docs.format_content`
 are the exception: clicking Allow once on one of these also arms an in-memory, non-persisted
@@ -820,40 +798,64 @@ already-configured `auto_accept_rules`/`auto_accept_grants` entries actually aut
 this feature introduces no new rule names, so it needs no `ARGS_ONLY_RULES`/`DATA_DEPENDENT_RULES`/
 `known_rule_names()` changes.
 
+**When 2+ candidates actually match the item you're looking at, Always allow asks which rule to
+create** instead of always silently picking the priority order's top match. `suggest_rule_choices()`
+returns every candidate that matches (in the same priority order `suggest_rule()` itself walks); if
+that's more than one, the review gate shows a "choose from list" popup (`show_rule_choice_popup()`)
+naming each candidate rule, and picking one both selects and confirms it — no separate confirmation
+dialog afterward, unlike the single-candidate case. Cancelling accepts the item once without
+creating any rule, same as cancelling the single-candidate confirmation does. If only one candidate
+matches, nothing changes — you still get today's plain "create this rule?" confirmation.
+
 ---
 
 ## Always allow for writes
 
-Write popups don't offer Always allow as a rule — auto-accepting a write silently is a materially
-bigger blast radius than auto-accepting a read (see [Review model](#review-model)). Five operations
-are a narrow, deliberate exception, declared in `auto_accept.WRITE_RULE_SUGGESTIONS`:
+Most write popups still don't offer Always allow as a rule — auto-accepting a write silently is a
+materially bigger blast radius than auto-accepting a read (see [Review model](#review-model)). The
+operations below are a deliberate, narrow set of exceptions, declared in
+`auto_accept.WRITE_RULE_SUGGESTIONS`:
 
 | Operation key | Rule proposed | Value derived from |
 |---|---|---|
+| `gmail.create_draft` | `always_allow` | nothing — unconditional (see below) |
 | `gmail.add_label` / `gmail.remove_label` | `label_name_allowlist` | the label just added/removed |
 | `calendar.create_modify_event` / `calendar.set_visibility` | `personal_calendar` | the event's own `calendar_id` |
+| `drive.write_file` / `write_doc` / `comment_file` | `approved_sandbox_folder` | the file's current parent folder(s) |
+| `drive.upload_file` | `parent_folder_allowlist` | the upload's own destination `parent_folder_id` |
+| `drive.move_file` | `move_within_approved_folders` | the file's parent folder(s) **before** the move (not the destination) |
+| `sheets.write_range` / `add_sheet` / `rename_sheet` / `format_range` / `insert_dimensions` / `delete_dimensions` | `approved_sandbox_folder` | the spreadsheet's current parent folder(s) |
+| `docs.edit_content` / `format_content` | `approved_sandbox_folder` | the doc's current parent folder(s) |
 | `jira.create_issue` / `add_comment` / `update_issue` / `transition_issue` | `approved_project_keys` | `project_key` if given, else parsed from `issue_key`'s `"PROJ-123"` prefix |
 | `confluence.create_page` / `update_page` | `approved_space_keys` | the page's own `space_key` |
 | `tasks.create_task` / `update_task` / `complete_task` / `uncomplete_task` / `move_task` | `approved_task_list` | the task's own `task_list_id` (`move_task`: **both** `source_list_id` and `destination_list_id`) |
 
-Every entry is resource-identity-scoped — one label, one calendar, one project, one space, one task
-list — never a bare "accept every future write of this type" toggle; that property is what keeps
-this exception narrow rather than reopening the no-Always-allow policy across the board. All five
-rule names already existed and were already configurable by hand or via a grant (see
+Every entry except `gmail.create_draft` is resource-identity-scoped — one folder, one label, one
+calendar, one project, one space, one task list — never a bare "accept every future write of this
+type" toggle; that property is what keeps this exception narrow rather than reopening the
+no-Always-allow policy across the board. `gmail.create_draft` is a deliberate exception to that
+exception: drafting has no recipient sent yet, unlike `gmail.send_message` (which stays out of this
+table entirely and is still reviewed via `to_is_myself`/`approved_recipient_domain` before it goes
+out), so an unconditional rule for drafting alone doesn't carry the blast radius a bare toggle would
+for an operation that actually delivers something. All of these rule names already existed and were
+already configurable by hand or via a grant (see
 [Auto-accept grants](#auto-accept-grants)/[Auto-accept rules](#auto-accept-rules) above) — this only
 adds a popup-time shortcut to create one on the spot, the same second-confirmation-dialog flow
 `suggest_rule()`'s Always allow already uses on the read side, reused here via
 `describe_rule_change()` (not `describe_rule()`, whose canned templates are read-direction-only
 English and would mislabel a write's own confirmation, since these same rule names are shared with
-a read operation key too).
+a read operation key too). A value-less rule like `always_allow` shows just "Add auto-accept rule
+'always_allow' to 'gmail.create_draft'" — no "= None" — since `WriteRuleSuggestion.value_of` uses a
+`_NO_SUGGESTION` sentinel to tell "nothing to suggest" apart from "the value is legitimately None".
 
 `gate.py`'s popup branch computes `suggest_write_rule(operation_key, ctx)` before acquiring
 `_popup_lock`, threads `suggestion is not None` into `show_popup()`'s `allow_accept_all` — the same
 flag `show_read_popup()` already uses to decide whether to render the button —
 and handles a resulting `"accept_all"` decision inside the same lock acquisition as the initial
 `should_auto_accept()` recheck, mirroring the review branch exactly. Every other write operation
-(~33 of them) gets `None` from `suggest_write_rule()` by construction — there's no fallback path, so
-they're structurally unaffected and their popups are visually unchanged (Deny / Allow once only).
+(roughly a dozen tools, e.g. `gmail_send_message`, `slack_send_message`) gets `None` from
+`suggest_write_rule()` by construction — there's no fallback path, so they're structurally
+unaffected and their popups are visually unchanged (Deny / Allow once only).
 
 ---
 
@@ -901,8 +903,9 @@ gated tool call already follows.
   (update only — the prior value being replaced; omit to add alongside the existing value instead
   of replacing it).
 - `target="grant"` fields: `connector`, `config_key`, `resource_id` (required), `name` (optional
-  cosmetic label), `tab` (spreadsheets only), `capabilities` (add/update only — a map of capability
-  key, e.g. `"write"`, to `true`/`false`; see the capability tables under
+  cosmetic label), `tab` (no current resource type uses this, but the field is supported generically
+  should a future one need it), `capabilities` (add/update only — a map of capability key, e.g.
+  `"write"`, to `true`/`false`; see the capability tables under
   [Auto-accept grants](#auto-accept-grants) for which keys apply to which resource type).
 
 Applying the change reuses the exact same persistence functions the menu bar's editor and the

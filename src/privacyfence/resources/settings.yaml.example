@@ -157,7 +157,7 @@ auto_accept_rules:
     # - rule: label_name_allowlist
     #   value: ["Receipts", "Travel/Bookings"]
   # Trusting a specific folder, task list, channel, project, space, chat,
-  # spreadsheet, calendar, or Salesforce report? Use auto_accept_grants
+  # calendar, or Salesforce report? Use auto_accept_grants
   # above instead — it's the same underlying mechanism (this is what it
   # compiles down to) but configured once per resource instead of once per
   # operation key.

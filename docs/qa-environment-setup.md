@@ -562,14 +562,14 @@ a failure.
       ```
 - [ ] Restart the daemon after editing by hand (or use "Always allow" once, which hot-reloads rules)
 
-`sheets.read_values` → `approved_spreadsheet` (grant-managed under `drive.spreadsheets`) isn't
-included above — it's created automatically the first time you click "Always allow" on a
-`drive_sheets_get_values` call. `sheets.rename_sheet`/`format_range`/`insert_dimensions`/
-`delete_dimensions` and `docs.edit_content`/`format_content` → `approved_sandbox_folder` (§2),
-`calendar.calendars`'s `write` capability (§4), and `salesforce.search` → `approved_object_types`
-(§8) are also left out of this block by default, since enabling them would make Phase 2/4/8 silently
-auto-accept operations meant to exercise the popup flow — add whichever you specifically want
-auto-accepted, individually.
+`sheets.read_values` → `i_am_owner`/`approved_folder` (same drive_read suggestion family as
+`drive.read_file_contents`/`download_file`) isn't included above — it's created automatically the
+first time you click "Always allow" on a `drive_sheets_get_values` call. `sheets.rename_sheet`/
+`format_range`/`insert_dimensions`/`delete_dimensions` and `docs.edit_content`/`format_content` →
+`approved_sandbox_folder` (§2), `calendar.calendars`'s `write` capability (§4), and
+`salesforce.search` → `approved_object_types` (§8) are also left out of this block by default, since
+enabling them would make Phase 2/4/8 silently auto-accept operations meant to exercise the popup
+flow — add whichever you specifically want auto-accepted, individually.
 
 ---
 
