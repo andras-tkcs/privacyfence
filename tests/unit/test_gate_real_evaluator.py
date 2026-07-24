@@ -777,3 +777,101 @@ class TestAcceptAllPersistsARealRule:
         assert len(entries) == 2
         assert entries[1]["decision"] == "auto_accepted"
         assert entries[1]["auto_accept_rule"] == "trusted_sender_domain"
+
+
+class TestAcceptAllPersistsARealRuleForWrites:
+    """Write-side counterpart to TestAcceptAllPersistsARealRule: confirming
+    Always allow on gmail_add_label must persist a real label_name_allowlist
+    rule that then silently covers a second call adding the same label,
+    against the real on-disk persistence path -- not just
+    test_gate.py::TestAcceptAllWrites's in-memory FakeEvaluator assertions."""
+
+    async def test_second_matching_label_add_is_silently_auto_accepted(self, monkeypatch, audit_dir, tmp_path):
+        config_path = tmp_path / "settings.yaml"
+        config_path.write_text("auto_accept_rules: {}\n", encoding="utf-8")
+        auto_accept.init_config_path(str(config_path))
+        init_auto_accept_evaluator({})
+
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
+
+        first = await gate.gated_call(**make_kwargs(
+            connector="gmail", tool="gmail_add_label", gate="popup",
+            raw_data=SimpleNamespace(sender="alice@example.com"),
+            args={"message_id": "m1", "label_name": "Newsletters"},
+        ))
+        assert first is FILTERED
+        first_entry = read_audit_entries(audit_dir)[0]
+        assert first_entry["decision"] == "accepted_via_accept_all"
+        assert first_entry["auto_accept_rule"] == "label_name_allowlist"
+
+        on_disk = config_path.read_text(encoding="utf-8")
+        assert "label_name_allowlist" in on_disk
+        assert "Newsletters" in on_disk
+
+        fail_if_popup_shown(monkeypatch)  # the newly created rule must cover this one silently
+        second = await gate.gated_call(**make_kwargs(
+            connector="gmail", tool="gmail_add_label", gate="popup",
+            raw_data=SimpleNamespace(sender="bob@example.com"),  # different message, same label
+            args={"message_id": "m2", "label_name": "Newsletters"},
+        ))
+
+        assert second is FILTERED
+        entries = read_audit_entries(audit_dir)
+        assert len(entries) == 2
+        assert entries[1]["decision"] == "auto_accepted"
+        assert entries[1]["auto_accept_rule"] == "label_name_allowlist"
+
+    async def test_a_request_queued_behind_an_in_progress_accept_all_sees_the_new_rule(
+        self, monkeypatch, audit_dir, tmp_path
+    ):
+        """Lock-ordering: the accept-all confirmation and rule persistence
+        happen inside the same _popup_lock acquisition as the initial
+        should_auto_accept() recheck, so a second gated_call for the same
+        label -- merely queued behind the first while _popup_lock is held --
+        must see the rule the first call just created, not show its own
+        dialog. Mirrors test_gate.py::TestQueuedRequestReCheck's read-side
+        equivalent: both calls are simply gathered together with a
+        synchronous fake popup (no manual thread synchronization needed --
+        asyncio's own scheduling plus the lock is what serializes them), and
+        the assertion that matters is that the dialog only ever shows once.
+        """
+        config_path = tmp_path / "settings.yaml"
+        config_path.write_text("auto_accept_rules: {}\n", encoding="utf-8")
+        auto_accept.init_config_path(str(config_path))
+        init_auto_accept_evaluator({})
+
+        popup_calls = []
+
+        def fake_show_popup(*a, **k):
+            popup_calls.append(1)
+            return "accept_all"
+
+        monkeypatch.setattr(gate, "show_popup", fake_show_popup)
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
+
+        # Both calls add the same label to different messages -- the first
+        # (which acquires _popup_lock first under asyncio's scheduling) shows
+        # a real popup and creates a standing label_name_allowlist rule via
+        # Always allow; the second is queued behind the lock the whole time.
+        first, second = await asyncio.gather(
+            gate.gated_call(**make_kwargs(
+                connector="gmail", tool="gmail_add_label", gate="popup",
+                raw_data=SimpleNamespace(sender="alice@example.com"),
+                args={"message_id": "m1", "label_name": "Newsletters"},
+            )),
+            gate.gated_call(**make_kwargs(
+                connector="gmail", tool="gmail_add_label", gate="popup",
+                raw_data=SimpleNamespace(sender="bob@example.com"),
+                args={"message_id": "m2", "label_name": "Newsletters"},
+            )),
+        )
+
+        assert first is FILTERED
+        assert second is FILTERED
+        # The dialog must have been shown exactly once -- the second caller
+        # was auto-accepted by the in-lock re-check, not popped up again.
+        assert len(popup_calls) == 1
+        entries = read_audit_entries(audit_dir)
+        decisions = sorted(e["decision"] for e in entries)
+        assert decisions == ["accepted_via_accept_all", "auto_accepted"]

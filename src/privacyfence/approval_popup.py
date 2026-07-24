@@ -86,6 +86,7 @@ def show_popup(
     write_content_flags: list[str] | None = None,
     seen_count: int = 0,
     connector: str = "",
+    allow_accept_all: bool = False,
 ) -> str:
     """Approval popup for write tools. No PII *gate* applies here -- see
     gate.py's module docstring for why the PII confirmation flow is
@@ -124,10 +125,18 @@ def show_popup(
     call, made from the same TEMP_ACCEPT_ELIGIBLE_OPERATIONS check that
     produced this flag.
 
-    Returns 'accept' or 'deny'.
+    ``allow_accept_all`` adds an "Always allow" button, same as
+    show_read_popup's -- offered only for the handful of write operations
+    with a resource-identity-scoped rule to propose (see auto_accept.py's
+    WRITE_RULE_SUGGESTIONS); gate.py sets this from whether
+    suggest_write_rule() returned anything for this call. False for every
+    other write, identical to today.
+
+    Returns 'accept', 'deny', or 'accept_all' (only offered when
+    allow_accept_all is True).
     """
     return show_native_approval(
-        title=title, preview=preview, details_text=details_text, allow_accept_all=False,
+        title=title, preview=preview, details_text=details_text, allow_accept_all=allow_accept_all,
         temp_accept_eligible=temp_accept_eligible, claude_reason=claude_reason,
         write_content_flags=write_content_flags, seen_count=seen_count, connector=connector,
     )

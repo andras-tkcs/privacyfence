@@ -37,6 +37,7 @@ from privacyfence.auto_accept import (
     set_rules_changed_listener,
     set_suggestion_priority,
     suggest_rule,
+    suggest_write_rule,
     suggestion_order,
     temp_accept_key,
 )
@@ -1254,6 +1255,75 @@ class TestSuggestRulePriorityIntegration:
             raw_data=SimpleNamespace(owners=["me@example.com"], parent_ids=[]),
         )
         assert suggest_rule("drive.read_file_contents", ctx) == ("i_am_owner", None)
+
+
+# --------------------------------------------------------------------------- #
+# Write-side "Always allow" suggestions (WRITE_RULE_SUGGESTIONS)
+# --------------------------------------------------------------------------- #
+
+class TestSuggestWriteRule:
+    def test_gmail_add_label_suggests_label_name_allowlist(self):
+        ctx = make_ctx(args={"message_id": "m1", "label_name": "Newsletters"})
+        assert suggest_write_rule("gmail.add_label", ctx) == ("label_name_allowlist", ["Newsletters"])
+
+    def test_gmail_remove_label_suggests_label_name_allowlist(self):
+        ctx = make_ctx(args={"message_id": "m1", "label_name": "Newsletters"})
+        assert suggest_write_rule("gmail.remove_label", ctx) == ("label_name_allowlist", ["Newsletters"])
+
+    def test_gmail_add_label_suggests_nothing_without_a_label_name(self):
+        assert suggest_write_rule("gmail.add_label", make_ctx(args={"message_id": "m1"})) is None
+
+    def test_calendar_create_modify_event_suggests_personal_calendar(self):
+        ctx = make_ctx(args={"calendar_id": "cal-1", "attendees": []})
+        assert suggest_write_rule("calendar.create_modify_event", ctx) == ("personal_calendar", ["cal-1"])
+
+    def test_calendar_set_visibility_suggests_personal_calendar(self):
+        ctx = make_ctx(args={"calendar_id": "cal-1", "event_id": "e1", "visibility": "private"})
+        assert suggest_write_rule("calendar.set_visibility", ctx) == ("personal_calendar", ["cal-1"])
+
+    def test_jira_create_issue_suggests_project_from_project_key_arg(self):
+        ctx = make_ctx(args={"project_key": "PFQA", "summary": "x"})
+        assert suggest_write_rule("jira.create_issue", ctx) == ("approved_project_keys", ["PFQA"])
+
+    def test_jira_add_comment_suggests_project_parsed_from_issue_key(self):
+        # jira_add_comment/update_issue/transition_issue carry issue_key, not
+        # project_key -- the project is parsed out of its "PROJ-123" prefix,
+        # same derivation _rule_approved_project_keys itself uses.
+        ctx = make_ctx(args={"issue_key": "PFQA-42", "body": "x"})
+        assert suggest_write_rule("jira.add_comment", ctx) == ("approved_project_keys", ["PFQA"])
+
+    def test_jira_suggests_nothing_without_a_derivable_project(self):
+        # No "-" in issue_key at all -- nothing to split a project key out of.
+        assert suggest_write_rule("jira.add_comment", make_ctx(args={"issue_key": "nokeyhere"})) is None
+
+    def test_confluence_create_page_suggests_approved_space_keys(self):
+        ctx = make_ctx(args={"space_key": "ENG", "title": "x"})
+        assert suggest_write_rule("confluence.create_page", ctx) == ("approved_space_keys", ["ENG"])
+
+    def test_confluence_update_page_suggests_approved_space_keys(self):
+        ctx = make_ctx(args={"page_id": "p1", "space_key": "ENG", "title": "x"})
+        assert suggest_write_rule("confluence.update_page", ctx) == ("approved_space_keys", ["ENG"])
+
+    def test_tasks_create_task_suggests_approved_task_list(self):
+        ctx = make_ctx(args={"task_list_id": "list1", "title": "x"})
+        assert suggest_write_rule("tasks.create_task", ctx) == ("approved_task_list", ["list1"])
+
+    def test_tasks_move_task_suggests_both_source_and_destination_lists(self):
+        # Both ends of the move must be in the suggested value -- a rule
+        # scoped to only one list would let a future move smuggle a task
+        # out of (or into) a list the user never approved.
+        ctx = make_ctx(args={"source_list_id": "list1", "destination_list_id": "list2", "task_id": "t1"})
+        assert suggest_write_rule("tasks.move_task", ctx) == ("approved_task_list", ["list1", "list2"])
+
+    def test_tasks_move_task_suggests_nothing_with_only_one_side(self):
+        assert suggest_write_rule("tasks.move_task", make_ctx(args={"source_list_id": "list1"})) is None
+
+    def test_unlisted_write_operation_suggests_nothing(self):
+        # The other ~33 write operations aren't in WRITE_RULE_SUGGESTIONS at
+        # all -- this is what keeps the mechanism's blast radius contained.
+        assert suggest_write_rule("gmail.create_draft", make_ctx(args={"to": "x@example.com"})) is None
+        assert suggest_write_rule("drive.write_file", make_ctx(args={})) is None
+        assert suggest_write_rule("calendar.out_of_office", make_ctx(args={})) is None
 
 
 # --------------------------------------------------------------------------- #

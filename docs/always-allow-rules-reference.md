@@ -223,26 +223,31 @@ searches of it alike, without a separate toggle.
 
 ## Write tools
 
-None of these ever offer **Always allow** — that button doesn't exist on a write's popup, and as of
-[the temp-accept redesign](#related-but-distinct-mechanisms) there's no third button of any kind on
-a write popup anymore, full stop. Every write tool below offers exactly Deny / Allow once, so the
-**Always allow rule created** column is empty for every row in this section — kept only so every
-table in this doc shares the same column, not because any write tool has one. A handful of these
-tools have a separate, non-persisted grace-window behavior tucked into their "Allow once" instead —
-see [Related but distinct mechanisms](#related-but-distinct-mechanisms) for what that is; it isn't
-an Always-allow rule and doesn't belong in this column.
+Most of these never offer **Always allow** — that button doesn't exist on most write popups, by
+design (`gate.py`'s module docstring: silently auto-accepting a write is a materially bigger blast
+radius than a read). Sixteen tools across five operation keys are a narrow, deliberate exception —
+see [Always allow for writes](TECHNICAL_REFERENCE.md#always-allow-for-writes)
+(`auto_accept.WRITE_RULE_SUGGESTIONS`) — each proposing an already-existing rule scoped to the item
+just acted on, never a bare "accept every future write of this type" toggle. Every other write tool
+below offers exactly Deny / Allow once, with an empty **Always allow rule created** column. A
+handful of tools also have a separate, non-persisted grace-window behavior tucked into their "Allow
+once" instead — see [Related but distinct mechanisms](#related-but-distinct-mechanisms) for what
+that is; it isn't an Always-allow rule and doesn't belong in this column.
 
-> 📋 **Cross-cutting finding, checked against `menu_bar.py`'s `RULES_BY_OPERATION`:** most of the
-> proposals below aren't missing rules — the rule already exists and is already configurable today,
-> from **Manage Auto-accept Rules…** in the menu bar (either as a plain filter or as a resource
-> grant). The actual, common gap is that the write popup itself never offers a one-click shortcut to
-> create one on the spot, by design (`gate.py`'s module docstring: silently auto-accepting a write is
-> a materially bigger blast radius than a read, so that shortcut was deliberately left off every
-> write popup, not just the ones below). Marked **✅ already supported** below wherever that's the
-> case, vs. **🆕 genuinely new** where the rule doesn't exist yet at all. Every **✅ already
-> supported** item below now also carries its own **📋 proposed design change**: surface *creating*
-> that already-existing rule from the approval window itself, the same Always-allow-style flow reads
-> already get, instead of leaving the only path through the menu bar's Filters/grant editor.
+> ✅ **Shipped, checked against `menu_bar.py`'s `RULES_BY_OPERATION`:** most of what was flagged
+> below weren't missing rules — the rule already existed and was already configurable, from
+> **Manage Auto-accept Rules…** in the menu bar (either as a plain filter or as a resource grant).
+> The actual, common gap was that the write popup itself never offered a one-click shortcut to
+> create one on the spot — deliberately, by design (`gate.py`'s module docstring: silently
+> auto-accepting a write is a materially bigger blast radius than a read). Five operations
+> (`gmail_add_label`/`gmail_remove_label`, `calendar_create_event`/`calendar_update_event`/
+> `calendar_set_event_visibility`, all four Jira write tools, both Confluence write tools, all five
+> Tasks write tools) are now a narrow, deliberate exception: an Always-allow button on the write
+> popup itself, proposing the same already-existing rule scoped to the item just acted on — never a
+> bare "accept every future write of this type" toggle, which is what keeps this narrow rather than
+> reopening the no-Always-allow policy across the board. See
+> [Always allow for writes](TECHNICAL_REFERENCE.md#always-allow-for-writes) for the full mechanism
+> (`auto_accept.WRITE_RULE_SUGGESTIONS`).
 
 ### Gmail
 
@@ -251,8 +256,8 @@ an Always-allow rule and doesn't belong in this column.
 | `gmail_create_draft` | |
 | `gmail_reply_draft` | |
 | `gmail_reply_all_draft` | |
-| `gmail_add_label` | |
-| `gmail_remove_label` | |
+| `gmail_add_label` | `label_name_allowlist` (that label) |
+| `gmail_remove_label` | `label_name_allowlist` (that label) |
 | `gmail_archive_message` | |
 | `gmail_create_filter` | |
 | `gmail_update_filter` | |
@@ -268,17 +273,11 @@ an Always-allow rule and doesn't belong in this column.
 > above; `always_allow` is deliberately excluded from that mechanism since it has no resource
 > identity to scope to.
 >
-> ✅ **Already supported — add/remove label:** `label_name_allowlist` already exists for both
-> `gmail.add_label` and `gmail.remove_label` (`menu_bar.py`'s `RULES_BY_OPERATION`), i.e. "auto
-> accept specific labels" can already be configured today from **Manage Auto-accept Rules… → Gmail →
-> Filters**. The only gap is the one in the cross-cutting note above: no shortcut to add it from the
-> write popup itself.
->
-> 📋 **Proposed design change:** it exists, but surface *creating* it from the approval window
-> itself — an Always-allow-style flow on the `gmail_add_label`/`gmail_remove_label` write popup
-> (propose `label_name_allowlist` scoped to the label just clicked, confirmed the same way
-> `show_rule_confirmation_popup` already confirms a read's Always allow), not only from the menu
-> bar days later.
+> ✅ **Shipped — add/remove label:** `label_name_allowlist` already existed for both
+> `gmail.add_label` and `gmail.remove_label` (configurable from **Manage Auto-accept Rules… →
+> Gmail → Filters**), and now has a popup-time shortcut too — clicking Always allow on
+> `gmail_add_label`/`gmail_remove_label` proposes it scoped to the label just clicked, confirmed the
+> same way `show_rule_confirmation_popup` already confirms a read's Always allow.
 
 ### Google Drive (incl. Sheets and Docs)
 
@@ -323,27 +322,27 @@ an Always-allow rule and doesn't belong in this column.
 
 | Tool | Always allow rule created |
 |---|---|
-| `calendar_create_event` | |
-| `calendar_update_event` | |
+| `calendar_create_event` | `personal_calendar` (that calendar) |
+| `calendar_update_event` | `personal_calendar` (that calendar) |
 | `calendar_create_out_of_office` | |
 | `calendar_set_working_location` | |
-| `calendar_set_event_visibility` | |
+| `calendar_set_event_visibility` | `personal_calendar` (that calendar) |
 
-> Status is split down the middle:
+> ✅ **Shipped** for `calendar_create_event`/`calendar_update_event` (`calendar.create_modify_event`)
+> and `calendar_set_event_visibility` (`calendar.set_visibility`) — `personal_calendar` already
+> existed for both operation keys (grant-managed, see
+> [Auto-accept grants](TECHNICAL_REFERENCE.md#auto-accept-grants) → `calendar.calendars`), and now
+> has a popup-time shortcut too — clicking Always allow on any of these three proposes it scoped to
+> the event's own calendar.
 >
-> - ✅ **Already supported** for `calendar_create_event`/`calendar_update_event` (`calendar.
->   create_modify_event`) and `calendar_set_event_visibility` (`calendar.set_visibility`) —
->   `personal_calendar` already exists for both operation keys and is grant-managed (see
->   [Auto-accept grants](TECHNICAL_REFERENCE.md#auto-accept-grants) → `calendar.calendars`). Same
->   popup-exposure gap as everywhere else in this section.
->   📋 **Proposed design change:** it exists, but surface *creating* it from the approval window
->   itself — an Always-allow-style flow on these three write popups (propose `personal_calendar`
->   scoped to the event's own calendar), not only from the menu bar. Not yet built.
-> - ✅ **Shipped** for `calendar_create_out_of_office`/`calendar_set_working_location`: neither tool
->   even takes a `calendar_id` (`calendar.py`'s `_create_out_of_office`/`_set_working_location` —
->   both always act on your own primary calendar), so `personal_calendar` had nothing to check
->   against here — genuinely new. Both now support the same unconditional `always_allow` toggle
->   shipped for Gmail drafts, configurable from **Manage Auto-accept Rules… → Calendar → Filters**.
+> `calendar_create_out_of_office`/`calendar_set_working_location` are a separate case: neither tool
+> even takes a `calendar_id` (`calendar.py`'s `_create_out_of_office`/`_set_working_location` — both
+> always act on your own primary calendar), so `personal_calendar` has nothing to check against
+> here, and they're not resource-identity-scoped the way `WRITE_RULE_SUGGESTIONS` requires. Both
+> instead support the same unconditional `always_allow` toggle shipped for Gmail drafts,
+> configurable from **Manage Auto-accept Rules… → Calendar → Filters** — no popup-time shortcut for
+> that one, deliberately (see [Related but distinct mechanisms](#related-but-distinct-mechanisms)'s
+> "always_allow" note).
 
 ### Google Contacts
 
@@ -364,56 +363,43 @@ an Always-allow rule and doesn't belong in this column.
 
 | Tool | Always allow rule created |
 |---|---|
-| `jira_create_issue` | |
-| `jira_add_comment` | |
-| `jira_update_issue` | |
-| `jira_transition_issue` | |
+| `jira_create_issue` | `approved_project_keys` (that project) |
+| `jira_add_comment` | `approved_project_keys` (issue's project) |
+| `jira_update_issue` | `approved_project_keys` (issue's project) |
+| `jira_transition_issue` | `approved_project_keys` (issue's project) |
 
-> ✅ **Already supported — allow project:** Jira doesn't have "spaces" (that's Confluence — see
-> below); its equivalent is a **project**, and `approved_project_keys` already exists for all four
-> write tools above, grant-managed via `jira.projects` (see
-> [Auto-accept grants](TECHNICAL_REFERENCE.md#auto-accept-grants)) — one project grant's
-> `create`/`comment`/`update`/`transition` capabilities already cover all four at once. Same
-> popup-exposure gap as everywhere else in this section.
->
-> 📋 **Proposed design change:** it exists, but surface *creating* it from the approval window
-> itself — an Always-allow-style flow on all four Jira write popups (propose `approved_project_keys`
-> scoped to the issue's own project), not only from the menu bar.
+> ✅ **Shipped — allow project:** Jira doesn't have "spaces" (that's Confluence — see below); its
+> equivalent is a **project**, and `approved_project_keys` already existed for all four write tools
+> above (grant-managed via `jira.projects`), and now has a popup-time shortcut too — clicking Always
+> allow on any of these four proposes it, deriving the project from `project_key` directly
+> (`jira_create_issue`) or parsed from `issue_key`'s `"PROJ-123"` prefix (the other three).
 
 ### Confluence
 
 | Tool | Always allow rule created |
 |---|---|
-| `confluence_create_page` | |
-| `confluence_update_page` | |
+| `confluence_create_page` | `approved_space_keys` (that space) |
+| `confluence_update_page` | `approved_space_keys` (page's space) |
 
-> ✅ **Already supported — allow space:** `approved_space_keys` already exists for both write tools
-> above, grant-managed via `confluence.spaces` — one space grant's `create`/`update` capabilities
-> cover both. Same popup-exposure gap as everywhere else in this section.
->
-> 📋 **Proposed design change:** it exists, but surface *creating* it from the approval window
-> itself — an Always-allow-style flow on both Confluence write popups (propose `approved_space_keys`
-> scoped to the page's own space), not only from the menu bar.
+> ✅ **Shipped — allow space:** `approved_space_keys` already existed for both write tools above
+> (grant-managed via `confluence.spaces`), and now has a popup-time shortcut too — clicking Always
+> allow on either proposes it scoped to the page's own space.
 
 ### Google Tasks
 
 | Tool | Always allow rule created |
 |---|---|
-| `tasks_create_task` | |
-| `tasks_update_task` | |
-| `tasks_complete_task` | |
-| `tasks_uncomplete_task` | |
-| `tasks_move_task` | |
+| `tasks_create_task` | `approved_task_list` (that list) |
+| `tasks_update_task` | `approved_task_list` (that list) |
+| `tasks_complete_task` | `approved_task_list` (that list) |
+| `tasks_uncomplete_task` | `approved_task_list` (that list) |
+| `tasks_move_task` | `approved_task_list` (**both** source and destination lists) |
 
-> ✅ **Already supported — allow task list:** `approved_task_list` already exists for all five write
-> tools above, grant-managed via `tasks.task_lists` — one task-list grant's
-> `create`/`edit`/`complete`/`move` capabilities cover all five at once (`complete` covers both
-> `tasks_complete_task` and `tasks_uncomplete_task`). Same popup-exposure gap as everywhere else in
-> this section.
->
-> 📋 **Proposed design change:** it exists, but surface *creating* it from the approval window
-> itself — an Always-allow-style flow on all five Tasks write popups (propose `approved_task_list`
-> scoped to the task's own list), not only from the menu bar.
+> ✅ **Shipped — allow task list:** `approved_task_list` already existed for all five write tools
+> above (grant-managed via `tasks.task_lists`), and now has a popup-time shortcut too — clicking
+> Always allow proposes it scoped to the task's own list; for `tasks_move_task`, the suggestion
+> covers **both** the source and destination list, since a rule scoped to only one end would let a
+> future move smuggle a task out of (or into) a list never approved.
 
 > `drive_create_blank_file` and `drive_sheets_create` are writes too, but both are unconditionally
 > `auto` — an empty file/spreadsheet with no content yet carries no disclosure risk — so, per the
@@ -444,13 +430,21 @@ no longer something the user picks up front via a distinct control. Deliberately
 `drive_sheets_rename_sheet` (one-shot per file, not called in a burst) — those still get a plain
 Deny/Allow once with no caption at all.
 
+**The `always_allow` rule is deliberately excluded from `WRITE_RULE_SUGGESTIONS`** (see
+[Always allow for writes](TECHNICAL_REFERENCE.md#always-allow-for-writes)) — it's the one
+unconditional, non-resource-scoped rule in the whole engine (Gmail drafts, Calendar
+out-of-office/working-location), and `WRITE_RULE_SUGGESTIONS`'s entire safety property rests on
+every entry being scoped to one specific label/calendar/project/space/list. Folding in a bare
+"just always accept" entry would break that invariant, so `always_allow` only exists as a
+menu-bar-configured rule, with no popup-time shortcut — a deliberate omission, not an oversight.
+
 **Bridge-proposed rule/grant changes** (`privacyfence_propose_auto_accept_rule_change`) — lets Claude
 itself propose adding/updating/removing an `auto_accept_rules` or `auto_accept_grants` entry for
-*any* operation, including write tools that never get an Always-allow button on their own popup.
-Every call still blocks on the same confirmation dialog Always allow uses
-(`show_rule_confirmation_popup`) — there's no way for a rule to land without a human confirming it —
-so writes can end up with a standing rule this way even though the popup itself never offers one
-directly. See [Reading and proposing auto-accept changes from the bridge](TECHNICAL_REFERENCE.md#reading-and-proposing-auto-accept-changes-from-the-bridge).
+*any* operation, including the ~33 write tools that never get an Always-allow button of their own
+(the sixteen in `WRITE_RULE_SUGGESTIONS` already have one directly on their popup). Every call still
+blocks on the same confirmation dialog Always allow uses (`show_rule_confirmation_popup`) — there's
+no way for a rule to land without a human confirming it. See
+[Reading and proposing auto-accept changes from the bridge](TECHNICAL_REFERENCE.md#reading-and-proposing-auto-accept-changes-from-the-bridge).
 
 **Auto-accept grants** (`auto_accept_grants` in `settings.yaml`, and the menu bar's **Manage
 Auto-accept Rules… → Trusted \*** submenus) — the resource-scoped alternative to a narrow

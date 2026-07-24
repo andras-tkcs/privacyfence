@@ -11,6 +11,7 @@ For the product overview, governance model, screenshots, supported systems, and 
 - [Auto-accept grants](#auto-accept-grants)
 - [Auto-accept rules](#auto-accept-rules)
 - [Always-allow suggestion priority](#always-allow-suggestion-priority)
+- [Always allow for writes](#always-allow-for-writes)
 - [Reading and proposing auto-accept changes from the bridge](#reading-and-proposing-auto-accept-changes-from-the-bridge)
 - [Scheduled / unattended Cowork tasks](#scheduled--unattended-cowork-tasks)
 - [Audit log](#audit-log)
@@ -73,8 +74,16 @@ content (e.g. the email body) up front, offering:
 **Claude → Tool (writes / actions) — gate `popup`**
 
 Claude already describes the action it is about to take in the chat. PrivacyFence opens a native
-popup showing the full action details with **Allow once** or **Deny** only — no **Always allow**, since
-auto-accepting a write silently is a materially bigger blast radius than auto-accepting a read.
+popup showing the full action details with **Allow once** or **Deny** — auto-accepting a write
+silently is a materially bigger blast radius than auto-accepting a read, so most write popups have
+no **Always allow** at all. Five operations are a narrow, deliberate exception: `gmail_add_label`/
+`gmail_remove_label`, `calendar_create_event`/`calendar_update_event`/`calendar_set_event_visibility`,
+all four Jira write tools, both Confluence write tools, and all five Tasks write tools each get an
+**Always allow** button too, proposing a rule scoped to the one label/calendar/project/space/task
+list the call just touched — never a bare "accept every future write of this type" toggle, which is
+what keeps this from reopening the no-Always-allow policy wholesale. See
+[Always-allow suggestion priority](#always-allow-suggestion-priority)'s sibling mechanism,
+`auto_accept.WRITE_RULE_SUGGESTIONS`, for the full list and how each rule's value is derived.
 
 For write operations expected to be called repeatedly against the same file in quick succession —
 `drive_sheets_write_range`, `drive_sheets_format_range`, `drive_sheets_insert_dimensions`,
@@ -613,10 +622,12 @@ covered above — enabling its `write` capability auto-accepts `drive.comment_fi
 `docs.edit_content`/`docs.format_content`, `drive.upload_file`, and `drive.move_file` too, alongside
 `drive.write_file`/`drive.write_doc` and every `sheets.*` write.
 
-**Write ops have no Always allow, but some get a temp-accept grace window instead.** All of the
-above (including the writes) are `popup`-gated, and unlike `review`-gated reads, a write popup
-never offers to create a standing rule — see [PII detection gate](#pii-detection-gate) and the
-[review model](#review-model) above for why. `sheets.write_range`, `sheets.format_range`,
+**None of Drive's write ops offer Always allow, but some get a temp-accept grace window instead.**
+(Unlike, e.g., Gmail/Calendar/Jira/Confluence/Tasks writes — see [Review model](#review-model)'s
+"Claude → Tool" section for the five operations that do.) All of the above (including the writes)
+are `popup`-gated, and a Drive write popup never offers to create a standing rule — see
+[PII detection gate](#pii-detection-gate) and the [review model](#review-model) above for why.
+`sheets.write_range`, `sheets.format_range`,
 `sheets.insert_dimensions`, `drive.comment_file`, `docs.edit_content`, and `docs.format_content`
 are the exception: clicking Allow once on one of these also arms an in-memory, non-persisted
 acceptance scoped to one spreadsheet/file for 5 minutes — disclosed in the popup with a plain
@@ -808,6 +819,41 @@ already-configured `auto_accept_rules`/`auto_accept_grants` entries actually aut
 `suggest_rule()` is outside `should_auto_accept()`'s and `preflight_from_args()`'s call graph, and
 this feature introduces no new rule names, so it needs no `ARGS_ONLY_RULES`/`DATA_DEPENDENT_RULES`/
 `known_rule_names()` changes.
+
+---
+
+## Always allow for writes
+
+Write popups don't offer Always allow as a rule — auto-accepting a write silently is a materially
+bigger blast radius than auto-accepting a read (see [Review model](#review-model)). Five operations
+are a narrow, deliberate exception, declared in `auto_accept.WRITE_RULE_SUGGESTIONS`:
+
+| Operation key | Rule proposed | Value derived from |
+|---|---|---|
+| `gmail.add_label` / `gmail.remove_label` | `label_name_allowlist` | the label just added/removed |
+| `calendar.create_modify_event` / `calendar.set_visibility` | `personal_calendar` | the event's own `calendar_id` |
+| `jira.create_issue` / `add_comment` / `update_issue` / `transition_issue` | `approved_project_keys` | `project_key` if given, else parsed from `issue_key`'s `"PROJ-123"` prefix |
+| `confluence.create_page` / `update_page` | `approved_space_keys` | the page's own `space_key` |
+| `tasks.create_task` / `update_task` / `complete_task` / `uncomplete_task` / `move_task` | `approved_task_list` | the task's own `task_list_id` (`move_task`: **both** `source_list_id` and `destination_list_id`) |
+
+Every entry is resource-identity-scoped — one label, one calendar, one project, one space, one task
+list — never a bare "accept every future write of this type" toggle; that property is what keeps
+this exception narrow rather than reopening the no-Always-allow policy across the board. All five
+rule names already existed and were already configurable by hand or via a grant (see
+[Auto-accept grants](#auto-accept-grants)/[Auto-accept rules](#auto-accept-rules) above) — this only
+adds a popup-time shortcut to create one on the spot, the same second-confirmation-dialog flow
+`suggest_rule()`'s Always allow already uses on the read side, reused here via
+`describe_rule_change()` (not `describe_rule()`, whose canned templates are read-direction-only
+English and would mislabel a write's own confirmation, since these same rule names are shared with
+a read operation key too).
+
+`gate.py`'s popup branch computes `suggest_write_rule(operation_key, ctx)` before acquiring
+`_popup_lock`, threads `suggestion is not None` into `show_popup()`'s `allow_accept_all` — the same
+flag `show_read_popup()` already uses to decide whether to render the button —
+and handles a resulting `"accept_all"` decision inside the same lock acquisition as the initial
+`should_auto_accept()` recheck, mirroring the review branch exactly. Every other write operation
+(~33 of them) gets `None` from `suggest_write_rule()` by construction — there's no fallback path, so
+they're structurally unaffected and their popups are visually unchanged (Deny / Allow once only).
 
 ---
 

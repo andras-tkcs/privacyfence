@@ -1100,6 +1100,95 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
     return None
 
 
+# ── Rule suggestion for writes ("Always allow" on the write popup) ──────────
+
+def _project_key_value(ctx: ReviewContext) -> Any | None:
+    """Derive a Jira project key the same way _rule_approved_project_keys
+    does: jira_create_issue's own args carry project_key directly; every
+    other Jira write op only carries issue_key, so the project is parsed
+    out of its "PROJ-123" prefix instead."""
+    project_key = ctx.args.get("project_key", "") or ""
+    if not project_key:
+        issue_key = ctx.args.get("issue_key", "") or ""
+        project_key = issue_key.split("-")[0] if "-" in issue_key else ""
+    return [project_key] if project_key else None
+
+
+def _task_list_value(ctx: ReviewContext) -> Any | None:
+    """Derive an approved_task_list value the same way _rule_approved_task_list
+    reads it: tasks_move_task carries source_list_id/destination_list_id
+    instead of a single task_list_id, and the suggestion has to cover both
+    ends of the move -- a rule scoped to only one list would silently let a
+    task move into (or out of) a list the user never approved."""
+    if "task_list_id" in ctx.args:
+        task_list_id = ctx.args.get("task_list_id") or ""
+        return [task_list_id] if task_list_id else None
+    source = ctx.args.get("source_list_id", "") or ""
+    destination = ctx.args.get("destination_list_id", "") or ""
+    return sorted({source, destination}) if source and destination else None
+
+
+@dataclass(frozen=True)
+class WriteRuleSuggestion:
+    rule_name: str
+    value_of: Callable[[ReviewContext], Any | None]  # None -> nothing to suggest for this call
+
+
+# Every entry here is deliberately resource-identity-scoped (one label, one
+# calendar, one project, one space, one task list) -- never a bare "accept
+# every future write of this type" toggle. That property is what keeps this
+# table's blast radius contained despite reopening the write gate's
+# "Always allow" button for these five operations: a `None`-for-everything-
+# else default means the other ~33 write operations are structurally
+# unaffected, and nothing here can ever propose an unconditional rule (see
+# auto_accept.ARGS_ONLY_RULES's "always_allow" -- deliberately absent from
+# this table for exactly that reason).
+WRITE_RULE_SUGGESTIONS: dict[str, WriteRuleSuggestion] = {
+    "gmail.add_label": WriteRuleSuggestion(
+        "label_name_allowlist", lambda ctx: [ctx.args["label_name"]] if ctx.args.get("label_name") else None
+    ),
+    "gmail.remove_label": WriteRuleSuggestion(
+        "label_name_allowlist", lambda ctx: [ctx.args["label_name"]] if ctx.args.get("label_name") else None
+    ),
+    "calendar.create_modify_event": WriteRuleSuggestion(
+        "personal_calendar", lambda ctx: [ctx.args["calendar_id"]] if ctx.args.get("calendar_id") else None
+    ),
+    "calendar.set_visibility": WriteRuleSuggestion(
+        "personal_calendar", lambda ctx: [ctx.args["calendar_id"]] if ctx.args.get("calendar_id") else None
+    ),
+    "jira.create_issue": WriteRuleSuggestion("approved_project_keys", _project_key_value),
+    "jira.add_comment": WriteRuleSuggestion("approved_project_keys", _project_key_value),
+    "jira.update_issue": WriteRuleSuggestion("approved_project_keys", _project_key_value),
+    "jira.transition_issue": WriteRuleSuggestion("approved_project_keys", _project_key_value),
+    "confluence.create_page": WriteRuleSuggestion(
+        "approved_space_keys", lambda ctx: [ctx.args["space_key"]] if ctx.args.get("space_key") else None
+    ),
+    "confluence.update_page": WriteRuleSuggestion(
+        "approved_space_keys", lambda ctx: [ctx.args["space_key"]] if ctx.args.get("space_key") else None
+    ),
+    "tasks.create_task": WriteRuleSuggestion("approved_task_list", _task_list_value),
+    "tasks.update_task": WriteRuleSuggestion("approved_task_list", _task_list_value),
+    "tasks.complete_task": WriteRuleSuggestion("approved_task_list", _task_list_value),
+    "tasks.uncomplete_task": WriteRuleSuggestion("approved_task_list", _task_list_value),
+    "tasks.move_task": WriteRuleSuggestion("approved_task_list", _task_list_value),
+}
+
+
+def suggest_write_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | None:
+    """Propose one auto-accept rule for a write's own "Always allow" button --
+    the write-gate counterpart to suggest_rule() above. Returns None for
+    every operation key not in WRITE_RULE_SUGGESTIONS (the other ~33 write
+    operations), by construction -- there is no fallback/generic path here,
+    which is what keeps this mechanism from ever proposing anything broader
+    than the five resource-identity-scoped rules the table declares.
+    """
+    entry = WRITE_RULE_SUGGESTIONS.get(operation_key)
+    if entry is None:
+        return None
+    value = entry.value_of(ctx)
+    return (entry.rule_name, value) if value is not None else None
+
+
 def known_rule_names() -> frozenset[str]:
     """Every rule name AutoAcceptEvaluator actually knows how to evaluate --
     the `_rule_*` methods it dispatches to in `_evaluate()`. `_evaluate()`

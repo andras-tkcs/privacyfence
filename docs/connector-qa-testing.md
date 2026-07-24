@@ -319,7 +319,20 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
 9. `gmail_add_label` on the **label-test message from step 2** — use a fresh
    label named exactly `PrivacyFence QA {RUN_ID}` (the tool creates it if it
    doesn't already exist, per `_get_or_create_label` in `gmail_client.py`).
-   Popup, Allow once.
+   The popup should now offer **Always allow** too (new — `gmail.add_label` is
+   one of the five write operations in `auto_accept.WRITE_RULE_SUGGESTIONS`
+   that get one). **Pause here**: tell me you're about to call it and that
+   **I will click "Always allow"** this time, then wait for me to say go. Once
+   I do, make the call and tell me exactly what rule text/scope it proposes
+   (expect: `label_name_allowlist` scoped to `PrivacyFence QA {RUN_ID}` — not a
+   broader rule). Note this creates a real, persisted rule — flag it for
+   Phase 13 teardown (remove it from **Manage Auto-accept Rules… → Gmail →
+   Filters** once this run is done, it isn't something you'd want to keep).
+   The other four `WRITE_RULE_SUGGESTIONS` operations
+   (`calendar_create_event`/`update_event`/`set_event_visibility`, all four
+   Jira write tools, both Confluence write tools, all five Tasks write tools)
+   work identically — this one demonstration is representative, no need to
+   repeat it in every later phase.
 10. `gmail_archive_message` on the same message. Popup, Allow once. Then
     `gmail_list_messages` (silent, no prompt) with query
     `in:inbox label:"PrivacyFence QA {RUN_ID}"` and confirm it comes back
@@ -1061,6 +1074,10 @@ a delete/remove/archive/close tool available, call it now:
 6. The Gmail label-test message from Phase 1 steps 2/9–12 needs nothing here —
    the archive/unarchive/remove-label sequence already restores it to exactly
    its starting state.
+6a. Remove the `label_name_allowlist` rule created via the write-popup Always
+    allow demo in Phase 1 step 9 (**Manage Auto-accept Rules… → Gmail →
+    Filters → ✕ Remove**) — it was created purely to demonstrate the button,
+    not something to leave standing after this run.
 7. For anything with **no delete tool at all** (Calendar event, the
    out-of-office and working-location entries from Phase 4 steps 7–10, Contact,
    Slack message, Telegram message, the Gmail filter from Phase 1 steps 17/19,

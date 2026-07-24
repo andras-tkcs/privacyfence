@@ -151,6 +151,18 @@ class TestShowPopupAndShowReadPopup:
         }
         assert result == "accept"
 
+    def test_show_popup_forwards_allow_accept_all_true(self, monkeypatch):
+        # The write-gate counterpart to show_read_popup's own allow_accept_all
+        # forwarding -- offered only for the handful of write ops with a
+        # resource-scoped rule to suggest (see auto_accept.WRITE_RULE_SUGGESTIONS).
+        captured = {}
+        monkeypatch.setattr(approval_popup, "show_native_approval", lambda **kw: captured.update(kw) or "accept_all")
+
+        result = approval_popup.show_popup("Title", {}, "details", allow_accept_all=True)
+
+        assert captured["allow_accept_all"] is True
+        assert result == "accept_all"
+
     def test_show_popup_forwards_temp_accept_eligible_true(self, monkeypatch):
         captured = {}
         monkeypatch.setattr(
