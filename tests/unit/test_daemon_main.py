@@ -1034,6 +1034,20 @@ class TestRunApp:
         # pre-migration one Claude/the caller originally passed in.
         assert len(reloaded) == 1
 
+    def test_rule_suggestion_priority_is_loaded_from_config(self, monkeypatch, tmp_path):
+        from privacyfence import auto_accept
+
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        self._patch_common(monkeypatch)
+        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
+
+        config = {"rule_suggestion_priority": {"drive_read": ["approved_folder", "i_am_owner"]}}
+        result = daemon_main.run_app(config, str(tmp_path / "settings.yaml"))
+
+        assert result == 0
+        assert auto_accept.suggestion_order("drive_read") == ["approved_folder", "i_am_owner"]
+
     def test_unattended_sessions_disabled_by_default(self, monkeypatch):
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)

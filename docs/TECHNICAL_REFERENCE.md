@@ -10,6 +10,7 @@ For the product overview, governance model, screenshots, supported systems, and 
 - [Connectors & privacy matrix](#connectors--privacy-matrix)
 - [Auto-accept grants](#auto-accept-grants)
 - [Auto-accept rules](#auto-accept-rules)
+- [Always-allow suggestion priority](#always-allow-suggestion-priority)
 - [Reading and proposing auto-accept changes from the bridge](#reading-and-proposing-auto-accept-changes-from-the-bridge)
 - [Scheduled / unattended Cowork tasks](#scheduled--unattended-cowork-tasks)
 - [Audit log](#audit-log)
@@ -779,6 +780,34 @@ edits within a personal list while still requiring review for creates.
 > all five task-write operations at once (`complete` covers both complete and uncomplete).
 
 > **Google Contacts**: `contacts_list`, `contacts_search`, and `contacts_get` are unconditionally auto-accepted. `contacts_update`, `contacts_create`, `contacts_add_label`, and `contacts_remove_label` are all `popup`-gated; `no_contact_info_change` above is the only configurable auto-accept rule, and it applies only to `contacts_update`. Contact deletion is not supported. **Google Tasks**: all three read tools plus `tasks_list_task_lists` are unconditionally auto-accepted; the five write tools (`tasks_create_task`, `tasks_update_task`, `tasks_complete_task`, `tasks_uncomplete_task`, `tasks_move_task`) are `popup`-gated, each independently configurable via `approved_task_list` above. **Telegram**: `telegram_list_chats` is unconditionally auto-accepted; `telegram_get_messages` and `telegram_search_messages` are `review`-gated by default but configurable via the rules above (sharing one operation key, `telegram.read_chat_messages`); `telegram_send_message` is `popup`-gated with no configurable rule. **Jira and Confluence** read tools (`jira_get_issue`, `confluence_get_page`, `confluence_get_page_by_title`) are `review`-gated by default but configurable via the rules above; their write tools remain `popup`-gated with no configurable rule, except `jira_transition_issue`, which accepts `approved_project_keys` as noted above.
+
+---
+
+## Always-allow suggestion priority
+
+Four operations can produce more than one plausible "Always allow" suggestion at once — e.g. a
+Drive read where you both own the file *and* it's in an approved folder. Which one the popup
+proposes is configurable, not hardcoded:
+
+| Family (`auto_accept.SUGGESTION_FAMILIES`) | Operations | Default order (first match wins) |
+|---|---|---|
+| `drive_read` | `drive.read_file_contents`, `drive.download_file` | `i_am_owner`, `approved_folder` |
+| `calendar_read_event` | `calendar.read_event_details` | `i_am_organizer`, `no_external_attendees`, `non_private_event` |
+| `jira_read_issue` | `jira.read_issue` | `i_am_reporter`, `i_am_assignee`, `approved_project_keys` |
+| `confluence_read_page` | `confluence.read_page` | `i_am_author`, `approved_space_keys` |
+
+Configure a family's order under `rule_suggestion_priority` in `settings.yaml` (see
+`settings.yaml.example`), or from each connector's **Always-allow Suggestion Order** section in
+**Manage Auto-accept Rules…** — **↑ Move up** / **↓ Move down** / **✕ Never suggest** per included
+rule, **+ Re-include** per excluded one. Listing only some of a family's rules **excludes** the rest
+from ever being suggested, not just deprioritizes them — there's one mechanism for both reordering
+and exclusion. Omitting a family entirely keeps the built-in default order shown above.
+
+This affects only what the popup's Always allow button *proposes* — it has no effect on which
+already-configured `auto_accept_rules`/`auto_accept_grants` entries actually auto-accept a call.
+`suggest_rule()` is outside `should_auto_accept()`'s and `preflight_from_args()`'s call graph, and
+this feature introduces no new rule names, so it needs no `ARGS_ONLY_RULES`/`DATA_DEPENDENT_RULES`/
+`known_rule_names()` changes.
 
 ---
 

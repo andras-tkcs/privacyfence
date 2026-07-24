@@ -842,6 +842,78 @@ class AutoAcceptEvaluator:
 
 # ── Rule suggestion for the popup's "Always allow" button ────────────────────
 
+# Some operations can produce more than one plausible suggestion -- e.g. a
+# Drive read where you both own the file *and* it's in an approved folder.
+# Each such case is a "family": the default priority order (first match
+# wins) is the tuple below, user-overridable per family via
+# rule_suggestion_priority in settings.yaml (init_suggestion_priority()).
+# Overriding is also how a rule gets excluded from ever being suggested --
+# an omitted name is simply never tried. This governs *only* which rule
+# suggest_rule() offers through "Always allow"; it has no effect on
+# should_auto_accept()'s evaluation of whatever rules are actually
+# configured, so it never needs ARGS_ONLY_RULES/DATA_DEPENDENT_RULES/
+# known_rule_names() changes -- no new rule names are introduced here.
+SUGGESTION_FAMILIES: dict[str, tuple[str, ...]] = {
+    "drive_read":           ("i_am_owner", "approved_folder"),
+    "calendar_read_event":  ("i_am_organizer", "no_external_attendees", "non_private_event"),
+    "jira_read_issue":      ("i_am_reporter", "i_am_assignee", "approved_project_keys"),
+    "confluence_read_page": ("i_am_author", "approved_space_keys"),
+}
+
+# Sentinel distinguishing "this candidate doesn't match" from "it matches
+# with a real value of None" (several suggestions, e.g. i_am_owner, take no
+# value at all) -- plain None can't do that job here.
+_NO_MATCH = object()
+
+# family -> configured priority order (from settings.yaml). A family absent
+# here falls back to SUGGESTION_FAMILIES' own order -- see suggestion_order().
+_suggestion_priority: dict[str, list[str]] = {}
+
+
+def init_suggestion_priority(cfg: dict[str, list[str]] | None) -> None:
+    """Load rule_suggestion_priority from settings.yaml at daemon startup."""
+    global _suggestion_priority
+    _suggestion_priority = {family: list(order) for family, order in (cfg or {}).items()}
+
+
+def set_suggestion_priority(family: str, order: list[str]) -> None:
+    """Hot-update one family's order (the menu bar's Move up/down/exclude actions)."""
+    _suggestion_priority[family] = list(order)
+
+
+def suggestion_order(family: str) -> list[str]:
+    """The priority order to try `family`'s candidates in -- configured order
+    if set, else SUGGESTION_FAMILIES' built-in default. An unrecognized
+    `family` (a typo'd or removed name) has no default to fall back to, so
+    it's treated as configured-empty rather than raising -- suggest_rule()
+    then simply never proposes anything for that family, the same as if
+    every candidate had failed to match.
+    """
+    if family in _suggestion_priority:
+        return _suggestion_priority[family]
+    return list(SUGGESTION_FAMILIES.get(family, ()))
+
+
+def _first_matching_suggestion(
+    family: str, candidates: dict[str, Callable[[], Any]]
+) -> tuple[str, Any] | None:
+    """Walk `family`'s priority order, returning the first candidate whose
+    zero-arg check doesn't return _NO_MATCH. A configured name with no
+    matching entry in `candidates` (removed from this operation's
+    possibilities, or a stale/misspelled config entry) is silently skipped,
+    not an error -- same "never crash a popup over a rule-suggestion detail"
+    posture as should_auto_accept()'s own rule-evaluation try/except.
+    """
+    for rule_name in suggestion_order(family):
+        check = candidates.get(rule_name)
+        if check is None:
+            continue
+        value = check()
+        if value is not _NO_MATCH:
+            return (rule_name, value)
+    return None
+
+
 def _domain_of(sender: str) -> str:
     email_part = sender
     if "<" in sender and ">" in sender:
@@ -913,10 +985,13 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
     if operation_key in ("drive.read_file_contents", "drive.download_file"):
         f = ctx.raw_data.file if hasattr(ctx.raw_data, "file") else ctx.raw_data
         owners = getattr(f, "owners", []) or []
-        if ctx.my_email and any(ctx.my_email.lower() in o.lower() for o in owners):
-            return ("i_am_owner", None)
         parents = list(getattr(f, "parent_ids", []) or [])
-        return ("approved_folder", parents) if parents else None
+        return _first_matching_suggestion("drive_read", {
+            "i_am_owner": lambda: None if (
+                ctx.my_email and any(ctx.my_email.lower() in o.lower() for o in owners)
+            ) else _NO_MATCH,
+            "approved_folder": lambda: parents if parents else _NO_MATCH,
+        })
 
     if operation_key == "sheets.read_values":
         spreadsheet_id = ctx.args.get("spreadsheet_id", "") or ""
@@ -946,17 +1021,22 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
 
     if operation_key == "calendar.read_event_details":
         organizer = getattr(ctx.raw_data, "organizer_email", "") or ""
-        if ctx.my_email and ctx.my_email.lower() == organizer.lower():
-            return ("i_am_organizer", None)
-        if ctx.my_domain:
-            attendees = getattr(ctx.raw_data, "attendees", []) or []
-            all_internal = all(ctx.my_domain in _attendee_email(a) for a in attendees)
-            if all_internal:
-                return ("no_external_attendees", None)
+        attendees = getattr(ctx.raw_data, "attendees", []) or []
         visibility = getattr(ctx.raw_data, "visibility", "default") or "default"
-        if visibility != "private":
-            return ("non_private_event", None)
-        return None
+
+        def _no_external_attendees_check():
+            if not ctx.my_domain:
+                return _NO_MATCH
+            all_internal = all(ctx.my_domain in _attendee_email(a) for a in attendees)
+            return None if all_internal else _NO_MATCH
+
+        return _first_matching_suggestion("calendar_read_event", {
+            "i_am_organizer": lambda: None if (
+                ctx.my_email and ctx.my_email.lower() == organizer.lower()
+            ) else _NO_MATCH,
+            "no_external_attendees": _no_external_attendees_check,
+            "non_private_event": lambda: None if visibility != "private" else _NO_MATCH,
+        })
 
     if operation_key == "salesforce.read_record":
         object_type = ctx.args.get("object_type", "")
@@ -976,25 +1056,34 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
     if operation_key == "jira.read_issue":
         raw = ctx.raw_data
         reporter = (raw.get("reporter") if isinstance(raw, dict) else getattr(raw, "reporter", "")) or ""
-        if ctx.my_email and ctx.my_email.lower() in reporter.lower():
-            return ("i_am_reporter", None)
         assignee = (raw.get("assignee") if isinstance(raw, dict) else getattr(raw, "assignee", "")) or ""
-        if ctx.my_email and ctx.my_email.lower() in assignee.lower():
-            return ("i_am_assignee", None)
         issue_key = ctx.args.get("issue_key", "") or ""
         project_key = issue_key.split("-")[0] if "-" in issue_key else ""
-        return ("approved_project_keys", [project_key]) if project_key else None
+
+        return _first_matching_suggestion("jira_read_issue", {
+            "i_am_reporter": lambda: None if (
+                ctx.my_email and ctx.my_email.lower() in reporter.lower()
+            ) else _NO_MATCH,
+            "i_am_assignee": lambda: None if (
+                ctx.my_email and ctx.my_email.lower() in assignee.lower()
+            ) else _NO_MATCH,
+            "approved_project_keys": lambda: [project_key] if project_key else _NO_MATCH,
+        })
 
     if operation_key == "confluence.read_page":
         raw = ctx.raw_data
         author = (raw.get("author") if isinstance(raw, dict) else getattr(raw, "author", "")) or ""
-        if ctx.my_email and ctx.my_email.lower() in author.lower():
-            return ("i_am_author", None)
         space_key = (
             (raw.get("space_key") if isinstance(raw, dict) else getattr(raw, "space_key", ""))
             or ctx.args.get("space_key", "")
         )
-        return ("approved_space_keys", [space_key]) if space_key else None
+
+        return _first_matching_suggestion("confluence_read_page", {
+            "i_am_author": lambda: None if (
+                ctx.my_email and ctx.my_email.lower() in author.lower()
+            ) else _NO_MATCH,
+            "approved_space_keys": lambda: [space_key] if space_key else _NO_MATCH,
+        })
 
     if operation_key == "telegram.read_chat_messages":
         chat_id = ctx.args.get("chat_id", "")

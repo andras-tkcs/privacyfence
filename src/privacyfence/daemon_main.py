@@ -51,7 +51,12 @@ import yaml
 from .paths import data_dir, org_dir
 from .app_credentials import telegram_app_credentials
 from .audit_log import init_audit_logger
-from .auto_accept import init_config_path, migrate_telegram_search_operation_key, reload_rules
+from .auto_accept import (
+    init_config_path,
+    init_suggestion_priority,
+    migrate_telegram_search_operation_key,
+    reload_rules,
+)
 from .pii_detector import init_pii_detection
 from .privacy_filter import init_privacy_filter
 from .resource_grants import build_effective_rules, migrate_rules_to_grants
@@ -625,6 +630,7 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
             logger.warning("Could not persist auto-accept config migration: %s", exc)
 
     reload_rules(build_effective_rules(config))
+    init_suggestion_priority(config.get("rule_suggestion_priority", {}) or {})
     pii_config = config.get("pii_detection", {}) or {}
     init_pii_detection(
         pii_config.get("enabled", True),

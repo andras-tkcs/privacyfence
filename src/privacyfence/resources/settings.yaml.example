@@ -80,6 +80,23 @@ pii_detection:
   detect_ip_addresses: true
   detect_financial_figures: true
 
+# Which rule the "Always allow" popup button proposes first, for the four
+# operations where more than one rule could plausibly match (e.g. a Drive
+# read where you both own the file *and* it's in an approved folder). Each
+# key is a "family" (see auto_accept.SUGGESTION_FAMILIES); the built-in
+# default order is used for any family omitted here. Listing only some of a
+# family's rules excludes the rest from ever being suggested, not just
+# deprioritizes them. This affects only which rule the button proposes --
+# it has no effect on which already-configured auto_accept_rules/
+# auto_accept_grants entries actually auto-accept. Toggled automatically
+# from each connector's "Always-allow Suggestion Order" section in
+# Manage Auto-accept Rules….
+# rule_suggestion_priority:
+#   drive_read: [approved_folder, i_am_owner]
+#   calendar_read_event: [i_am_organizer, no_external_attendees, non_private_event]
+#   jira_read_issue: [i_am_reporter, i_am_assignee, approved_project_keys]
+#   confluence_read_page: [i_am_author, approved_space_keys]
+
 # Note: unattended_sessions.enabled (privacyfence_begin_unattended_session's
 # opt-in gate) is NOT set here. It's a deliberate per-organization choice,
 # not a per-user setting, so it lives in the organization config bundle

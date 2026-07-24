@@ -46,7 +46,13 @@ from PyObjCTools import AppHelper
 
 from . import __version__
 from .audit_log import AuditLogger, current_week
-from .auto_accept import reload_rules, set_rules_changed_listener
+from .auto_accept import (
+    SUGGESTION_FAMILIES,
+    reload_rules,
+    set_rules_changed_listener,
+    set_suggestion_priority,
+    suggestion_order,
+)
 from .paths import data_dir, org_dir
 from .pii_detector import set_pii_category_enabled, set_pii_detection_enabled
 from .privacy_filter import _parse_group as _parse_privacy_group
@@ -236,6 +242,18 @@ RULES_MENU_GROUPS: list[str] = [
     "gmail", "drive", "sheets", "docs", "contacts", "calendar", "tasks",
     "slack", "jira", "confluence", "salesforce", "telegram",
 ]
+
+# Which connector's rules-manager section gets an "Always-allow Suggestion
+# Order" block -- one per auto_accept.SUGGESTION_FAMILIES entry. Drive's
+# family covers drive.read_file_contents/drive.download_file, both under
+# the "drive" connector, so this is a 1:1 connector->family map even though
+# a family could in principle span connectors.
+SUGGESTION_FAMILY_BY_CONNECTOR: dict[str, str] = {
+    "drive": "drive_read",
+    "calendar": "calendar_read_event",
+    "jira": "jira_read_issue",
+    "confluence": "confluence_read_page",
+}
 
 # Connectors authenticated via a shared Google OAuth client (org bundle's
 # "google" section).
@@ -663,10 +681,43 @@ class PrivacyFenceMenuBar(rumps.App):
                 rows.extend(self._rule_rows_for(op_key, idx, rule_cfg, client))
             sections.append(Section(short_label, rows, "+ Add rule…", partial(self._add_rule, op_key)))
 
+        suggestion_section = self._suggestion_priority_section(cname)
+        if suggestion_section is not None:
+            sections.append(suggestion_section)
+
         if not resource_types and not op_keys:
             sections.append(Section("", [Row("All operations always auto-approved — no rules needed", False, [])]))
 
         return sections
+
+    def _suggestion_priority_section(self, cname: str) -> Section | None:
+        """'Always-allow Suggestion Order' block: which rule Always allow
+        proposes first when a read could match more than one (e.g. Drive's
+        i_am_owner vs. approved_folder), user-reorderable, and excludable by
+        moving it out of the included list entirely. Purely about which
+        rule gets *suggested* -- doesn't affect which configured rules
+        actually auto-accept (see auto_accept.suggestion_order's docstring).
+        """
+        family = SUGGESTION_FAMILY_BY_CONNECTOR.get(cname)
+        if family is None:
+            return None
+        order = suggestion_order(family)
+        rows: list[Row] = []
+        for i, rule_name in enumerate(order):
+            actions: list[tuple[str, Any]] = []
+            if i > 0:
+                actions.append(("↑ Move up", partial(self._move_suggestion_priority, family, rule_name, -1)))
+            if i < len(order) - 1:
+                actions.append(("↓ Move down", partial(self._move_suggestion_priority, family, rule_name, 1)))
+            actions.append(("✕ Never suggest", partial(self._exclude_suggestion_rule, family, rule_name)))
+            rows.append(Row(rule_name, False, actions))
+        for rule_name in SUGGESTION_FAMILIES[family]:
+            if rule_name not in order:
+                rows.append(Row(
+                    f"{rule_name}  (excluded)", True,
+                    [("+ Re-include", partial(self._include_suggestion_rule, family, rule_name))],
+                ))
+        return Section("Always-allow Suggestion Order", rows)
 
     def _rule_rows_for(self, op_key: str, idx: int, rule_cfg: dict[str, Any], client: Any | None) -> list[Row]:
         rule_name = rule_cfg.get("rule", "")
@@ -1050,6 +1101,42 @@ class PrivacyFenceMenuBar(rumps.App):
             subprocess.run(["pbcopy"], input=text, text=True, check=False)
         except OSError:
             pass
+
+    # ------------------------------------------------------------------ #
+    # Suggestion-priority actions (Always-allow Suggestion Order — see
+    # auto_accept.SUGGESTION_FAMILIES)
+    # ------------------------------------------------------------------ #
+
+    def _set_suggestion_priority_and_refresh(self, family: str, order: list[str]) -> None:
+        cfg = self._load_config()
+        cfg.setdefault("rule_suggestion_priority", {})[family] = order
+        self._save_config(cfg)
+        set_suggestion_priority(family, order)
+        self._rebuild()
+
+    def _move_suggestion_priority(
+        self, family: str, rule_name: str, direction: int, _sender: Any = None
+    ) -> None:
+        order = list(suggestion_order(family))
+        if rule_name not in order:
+            return
+        idx = order.index(rule_name)
+        new_idx = idx + direction
+        if not (0 <= new_idx < len(order)):
+            return
+        order[idx], order[new_idx] = order[new_idx], order[idx]
+        self._set_suggestion_priority_and_refresh(family, order)
+
+    def _exclude_suggestion_rule(self, family: str, rule_name: str, _sender: Any = None) -> None:
+        order = [r for r in suggestion_order(family) if r != rule_name]
+        self._set_suggestion_priority_and_refresh(family, order)
+
+    def _include_suggestion_rule(self, family: str, rule_name: str, _sender: Any = None) -> None:
+        order = list(suggestion_order(family))
+        if rule_name in order:
+            return
+        order.append(rule_name)
+        self._set_suggestion_priority_and_refresh(family, order)
 
     def _add_grant(self, connector: str, config_key: str, _sender: Any = None) -> None:
         rt = grant_resource_type(connector, config_key)

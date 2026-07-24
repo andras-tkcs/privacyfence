@@ -1521,6 +1521,82 @@ class TestRemoveRuleValue:
         assert app._load_config() == before
 
 
+class TestSuggestionPrioritySection:
+    def test_drive_gets_a_suggestion_order_section_with_the_default_order(self, app):
+        sections = app._gather_connector_sections("drive")
+        section = next(s for s in sections if s.title == "Always-allow Suggestion Order")
+        assert [row.text for row in section.rows] == ["i_am_owner", "approved_folder"]
+
+    def test_first_row_has_no_move_up_last_row_has_no_move_down(self, app):
+        sections = app._gather_connector_sections("drive")
+        section = next(s for s in sections if s.title == "Always-allow Suggestion Order")
+        first_labels = [a[0] for a in section.rows[0].actions]
+        last_labels = [a[0] for a in section.rows[-1].actions]
+        assert "↑ Move up" not in first_labels
+        assert "↓ Move down" in first_labels
+        assert "↑ Move up" in last_labels
+        assert "↓ Move down" not in last_labels
+
+    def test_excluded_rule_shows_as_indented_with_re_include_only(self, app):
+        cfg = {"rule_suggestion_priority": {"drive_read": ["approved_folder"]}}
+        app._save_config(cfg)
+        menu_bar.set_suggestion_priority("drive_read", ["approved_folder"])
+
+        sections = app._gather_connector_sections("drive")
+        section = next(s for s in sections if s.title == "Always-allow Suggestion Order")
+        excluded_row = next(r for r in section.rows if "i_am_owner" in r.text)
+        assert excluded_row.indent is True
+        assert [a[0] for a in excluded_row.actions] == ["+ Re-include"]
+
+    def test_connector_without_a_family_gets_no_section(self, app):
+        sections = app._gather_connector_sections("gmail")
+        assert not any(s.title == "Always-allow Suggestion Order" for s in sections)
+
+
+class TestSuggestionPriorityMutators:
+    def test_move_up_swaps_with_the_previous_entry(self, app):
+        app._move_suggestion_priority("drive_read", "approved_folder", -1)
+        assert menu_bar.suggestion_order("drive_read") == ["approved_folder", "i_am_owner"]
+        assert app._load_config()["rule_suggestion_priority"]["drive_read"] == ["approved_folder", "i_am_owner"]
+
+    def test_move_down_swaps_with_the_next_entry(self, app):
+        app._move_suggestion_priority("drive_read", "i_am_owner", 1)
+        assert menu_bar.suggestion_order("drive_read") == ["approved_folder", "i_am_owner"]
+
+    def test_move_past_either_end_is_a_no_op(self, app):
+        app._move_suggestion_priority("drive_read", "i_am_owner", -1)  # already first
+        assert menu_bar.suggestion_order("drive_read") == ["i_am_owner", "approved_folder"]
+        app._move_suggestion_priority("drive_read", "approved_folder", 1)  # already last
+        assert menu_bar.suggestion_order("drive_read") == ["i_am_owner", "approved_folder"]
+
+    def test_move_unknown_rule_name_is_a_no_op(self, app):
+        app._move_suggestion_priority("drive_read", "not_a_real_rule", -1)
+        assert menu_bar.suggestion_order("drive_read") == ["i_am_owner", "approved_folder"]
+
+    def test_exclude_removes_the_rule_from_the_order(self, app):
+        app._exclude_suggestion_rule("drive_read", "i_am_owner")
+        assert menu_bar.suggestion_order("drive_read") == ["approved_folder"]
+
+    def test_include_appends_a_previously_excluded_rule(self, app):
+        app._exclude_suggestion_rule("drive_read", "i_am_owner")
+        app._include_suggestion_rule("drive_read", "i_am_owner")
+        assert menu_bar.suggestion_order("drive_read") == ["approved_folder", "i_am_owner"]
+
+    def test_include_an_already_included_rule_is_a_no_op(self, app):
+        app._include_suggestion_rule("drive_read", "i_am_owner")
+        assert menu_bar.suggestion_order("drive_read") == ["i_am_owner", "approved_folder"]
+
+    def test_mutator_persists_to_disk_and_hot_applies(self, app):
+        app._exclude_suggestion_rule("drive_read", "i_am_owner")
+
+        on_disk = app._load_config()
+        assert on_disk["rule_suggestion_priority"]["drive_read"] == ["approved_folder"]
+        # Hot-applied without needing a config reload -- suggestion_order()
+        # reads the live module state, same as should_auto_accept() does
+        # for auto_accept_rules via reload_rules().
+        assert menu_bar.suggestion_order("drive_read") == ["approved_folder"]
+
+
 class TestClientFor:
     def test_returns_the_connected_connector_s_client(self, app):
         fake_client = object()

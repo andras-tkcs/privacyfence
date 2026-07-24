@@ -55,14 +55,15 @@ the menu bar's Trusted-\* submenus — the popup button itself never writes ther
 | `drive_download_file` | `i_am_owner`, else `approved_folder` |
 | `drive_sheets_get_values` | `approved_spreadsheet` (scoped to that spreadsheet, and its tab if identifiable) |
 
-> 📋 **Proposed design change:** `i_am_owner` and `approved_folder` are mutually exclusive today —
-> owning the file always wins, so Always allow never offers folder-scoping for a file you happen to
-> own. Make this user-configurable: a setting the user picks (not a fixed priority order) for
-> whether Always allow should still propose `approved_folder` — narrower, tied to a specific folder
-> — even when `i_am_owner` would also match, for users who'd rather scope auto-accept to folders
-> than to "everything I own, wherever it lives." Applies to all three rows above
-> (`drive_get_file_content`, `drive_download_file`, `drive_sheets_get_values`). Needs a UI change: a
-> toggle in the connector's rule-editor settings, not just a one-off popup-time choice.
+> ✅ **Shipped:** `i_am_owner` and `approved_folder` used to be a fixed priority — owning the file
+> always won, so Always allow never offered folder-scoping for a file you happen to own. The
+> priority order for all three rows above is now user-configurable (a setting, not a one-off
+> popup-time choice): from **Manage Auto-accept Rules… → Drive → Always-allow Suggestion Order**
+> (**↑ Move up** / **↓ Move down** / **✕ Never suggest** / **+ Re-include**), or by hand under
+> `rule_suggestion_priority.drive_read` in `settings.yaml`. Listing only `approved_folder` there
+> makes Always allow propose it even when `i_am_owner` would also match — `i_am_owner` is simply
+> excluded from consideration, not deprioritized. See
+> [Always-allow suggestion priority](TECHNICAL_REFERENCE.md#always-allow-suggestion-priority).
 
 ### Slack
 
@@ -87,11 +88,11 @@ distinct channel across a search's results would need one lookup per channel per
 |---|---|
 | `calendar_get_event_details` | `i_am_organizer` (you organize it), else `no_external_attendees` (every attendee shares your domain), else `non_private_event` (event isn't marked private) |
 
-> 📋 **Proposed design change:** similarly to the Drive proposal above, make the
-> `i_am_organizer` / `no_external_attendees` / `non_private_event` priority order
-> user-configurable instead of fixed — e.g. let a user require `no_external_attendees` even when
-> they're the organizer, rather than `i_am_organizer` always winning outright. Same UI-change
-> requirement as the Drive proposal.
+> ✅ **Shipped:** same mechanism as Drive above — the `i_am_organizer` / `no_external_attendees` /
+> `non_private_event` priority order is now user-configurable via
+> **Calendar → Always-allow Suggestion Order** / `rule_suggestion_priority.calendar_read_event`, so
+> a user can require `no_external_attendees` even when they're the organizer, instead of
+> `i_am_organizer` always winning outright.
 
 ### Telegram
 
@@ -114,9 +115,10 @@ distinct channel across a search's results would need one lookup per channel per
 |---|---|
 | `jira_get_issue` | `i_am_reporter` (you filed it), else `i_am_assignee` (you're assigned), else `approved_project_keys` (issue's project) |
 
-> 📋 **Proposed design change:** same as Drive/Calendar above — make the `i_am_reporter` /
-> `i_am_assignee` / `approved_project_keys` priority order user-configurable, e.g. letting a user
-> require `approved_project_keys` even when they're the reporter or assignee, instead of one
+> ✅ **Shipped:** same mechanism as Drive/Calendar above — the `i_am_reporter` / `i_am_assignee` /
+> `approved_project_keys` priority order is now user-configurable via
+> **Jira → Always-allow Suggestion Order** / `rule_suggestion_priority.jira_read_issue`, so a user
+> can require `approved_project_keys` even when they're the reporter or assignee, instead of one
 > criterion always taking priority over the other two.
 
 ### Confluence
@@ -126,8 +128,9 @@ distinct channel across a search's results would need one lookup per channel per
 | `confluence_get_page` | `i_am_author` (you wrote it), else `approved_space_keys` (page's space) |
 | `confluence_get_page_by_title` | `i_am_author`, else `approved_space_keys` |
 
-> 📋 **Proposed design change:** same as Jira above — make the `i_am_author` / `approved_space_keys`
-> priority order user-configurable rather than fixed.
+> ✅ **Shipped:** same mechanism as Jira above — the `i_am_author` / `approved_space_keys` priority
+> order is now user-configurable via **Confluence → Always-allow Suggestion Order** /
+> `rule_suggestion_priority.confluence_read_page`, rather than fixed.
 
 > Google Contacts and Google Tasks have no `review`-gate tools at all — their only reads
 > (`contacts_list`/`contacts_search`/`contacts_get`, `tasks_list_task_lists`/`tasks_list_tasks`/
