@@ -51,7 +51,7 @@ import yaml
 from .paths import data_dir, org_dir
 from .app_credentials import telegram_app_credentials
 from .audit_log import init_audit_logger
-from .auto_accept import init_config_path, reload_rules
+from .auto_accept import init_config_path, migrate_telegram_search_operation_key, reload_rules
 from .pii_detector import init_pii_detection
 from .privacy_filter import init_privacy_filter
 from .resource_grants import build_effective_rules, migrate_rules_to_grants
@@ -606,16 +606,23 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
     init_config_path(_resolve_path(config_path))
 
     config, migration_summary = migrate_rules_to_grants(config)
-    if migration_summary:
+    config, telegram_search_migrated = migrate_telegram_search_operation_key(config)
+    if migration_summary or telegram_search_migrated:
         try:
             with open(_resolve_path(config_path), "w", encoding="utf-8") as fh:
                 yaml.dump(config, fh, default_flow_style=False, allow_unicode=True)
-            logger.info(
-                "Auto-accept config migrated to connector-scoped grants:\n  %s",
-                "\n  ".join(migration_summary),
-            )
+            if migration_summary:
+                logger.info(
+                    "Auto-accept config migrated to connector-scoped grants:\n  %s",
+                    "\n  ".join(migration_summary),
+                )
+            if telegram_search_migrated:
+                logger.info(
+                    "Auto-accept config migrated: telegram.search_messages rules "
+                    "moved onto telegram.read_chat_messages"
+                )
         except OSError as exc:
-            logger.warning("Could not persist auto-accept grants migration: %s", exc)
+            logger.warning("Could not persist auto-accept config migration: %s", exc)
 
     reload_rules(build_effective_rules(config))
     pii_config = config.get("pii_detection", {}) or {}

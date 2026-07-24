@@ -994,6 +994,46 @@ class TestRunApp:
 
         assert release_calls == [1]
 
+    def test_migrations_run_persist_and_log_then_reload_sees_new_keys(self, monkeypatch, tmp_path, caplog):
+        # Real migrate_rules_to_grants/migrate_telegram_search_operation_key
+        # (not mocked, unlike _patch_common's other collaborators) so this
+        # covers the actual persist-to-disk branch: a grant-eligible
+        # auto_accept_rules block (full match across drive.folders' one
+        # target) plus a legacy telegram.search_messages entry, both of
+        # which should be migrated and written back to config_path.
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        self._patch_common(monkeypatch)
+        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
+        reloaded = []
+        monkeypatch.setattr(daemon_main, "reload_rules", lambda rules: reloaded.append(rules))
+
+        config_path = str(tmp_path / "settings.yaml")
+        config = {
+            "auto_accept_rules": {
+                "drive.read_file_contents": [{"rule": "approved_folder", "value": ["F1"]}],
+                "drive.download_file": [{"rule": "approved_folder", "value": ["F1"]}],
+                "sheets.read_values": [{"rule": "approved_folder", "value": ["F1"]}],
+                "telegram.search_messages": [{"rule": "no_media_attachments"}],
+            }
+        }
+
+        with caplog.at_level(logging.INFO):
+            result = daemon_main.run_app(config, config_path)
+
+        assert result == 0
+        on_disk = yaml.safe_load(open(config_path, encoding="utf-8"))
+        assert on_disk["auto_accept_grants"]["drive"]["folders"] == [{"id": "F1", "read": True}]
+        assert "telegram.search_messages" not in on_disk.get("auto_accept_rules", {})
+        assert on_disk["auto_accept_rules"]["telegram.read_chat_messages"] == [
+            {"rule": "no_media_attachments"}
+        ]
+        assert "migrated to connector-scoped grants" in caplog.text
+        assert "telegram.search_messages rules" in caplog.text
+        # reload_rules() ran against the post-migration config, not the
+        # pre-migration one Claude/the caller originally passed in.
+        assert len(reloaded) == 1
+
     def test_unattended_sessions_disabled_by_default(self, monkeypatch):
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)

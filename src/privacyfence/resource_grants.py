@@ -280,6 +280,11 @@ GRANT_RESOURCE_TYPES: tuple[GrantResourceType, ...] = (
         capabilities={
             "read": GrantCapability("Read auto-accept", (
                 ("slack.read_messages", "approved_channel"),
+                # Same operation key, the data-dependent counterpart used
+                # for slack_search_messages (no single channel_id to check
+                # for a search) -- one "read" grant covers channel/thread
+                # reads and searches of this channel alike.
+                ("slack.read_messages", "approved_channel_all_results"),
             )),
             "send": GrantCapability("Send auto-accept", (
                 ("slack.send_message", "approved_recipient"),
@@ -295,6 +300,12 @@ GRANT_RESOURCE_TYPES: tuple[GrantResourceType, ...] = (
         capabilities={
             "read": GrantCapability("Read auto-accept", (
                 ("telegram.read_chat_messages", "approved_chats"),
+                # Same operation key, the data-dependent counterpart used
+                # for telegram_search_messages (no single chat_id to check
+                # for a search, and this tool shares telegram.read_chat_messages
+                # rather than its own operation key) -- one "read" grant
+                # covers chat reads and searches of this chat alike.
+                ("telegram.read_chat_messages", "approved_chats_all_results"),
             )),
             "send": GrantCapability("Send auto-accept", (
                 ("telegram.send_message", "approved_chats"),

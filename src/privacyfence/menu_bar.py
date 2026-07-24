@@ -131,8 +131,10 @@ OPERATION_LABELS: dict[str, str] = {
     "confluence.read_page":        "Confluence – Read page",
     "confluence.create_page":      "Confluence – Create page",
     "confluence.update_page":      "Confluence – Update page",
-    "telegram.read_chat_messages": "Telegram – Read chat messages",
-    "telegram.search_messages":    "Telegram – Search messages",
+    # telegram_search_messages shares this key with telegram_get_messages
+    # (see auto_accept.TOOL_TO_OPERATION) rather than its own
+    # "telegram.search_messages" -- one label covers both tools' rules.
+    "telegram.read_chat_messages": "Telegram – Read/search chat messages",
     "telegram.send_message":       "Telegram – Send message",
     "tasks.create_task":           "Tasks – Create task",
     "tasks.update_task":           "Tasks – Update task",
@@ -166,7 +168,7 @@ RULES_BY_OPERATION: dict[str, list[str]] = {
     "sheets.delete_dimensions":     ["approved_spreadsheet", "i_am_owner", "approved_sandbox_folder", "created_this_session"],
     "docs.edit_content":            ["i_am_owner", "approved_sandbox_folder", "created_this_session"],
     "docs.format_content":          ["i_am_owner", "approved_sandbox_folder", "created_this_session"],
-    "slack.read_messages":          ["dm_with_myself", "approved_channel", "public_channels_only", "no_file_attachments"],
+    "slack.read_messages":          ["dm_with_myself", "approved_channel", "approved_channel_all_results", "public_channels_only", "no_file_attachments"],
     "slack.send_message":           ["dm_with_myself", "send_to_myself", "approved_channel", "approved_recipient", "reply_in_existing_thread"],
     "calendar.read_event_details":  ["i_am_organizer", "no_external_attendees", "personal_calendar", "past_event", "time_window_days", "no_conferencing_link", "non_private_event"],
     "calendar.create_modify_event": ["i_am_organizer", "no_external_attendees", "personal_calendar"],
@@ -186,8 +188,7 @@ RULES_BY_OPERATION: dict[str, list[str]] = {
     "confluence.read_page":         ["i_am_author", "approved_space_keys"],
     "confluence.create_page":       ["approved_space_keys"],
     "confluence.update_page":       ["approved_space_keys"],
-    "telegram.read_chat_messages":  ["approved_chats", "no_media_attachments"],
-    "telegram.search_messages":     ["no_media_attachments"],
+    "telegram.read_chat_messages":  ["approved_chats", "approved_chats_all_results", "no_media_attachments"],
     "telegram.send_message":        ["approved_chats"],
     "tasks.create_task":            ["approved_task_list"],
     "tasks.update_task":            ["approved_task_list"],
@@ -199,12 +200,12 @@ RULES_BY_OPERATION: dict[str, list[str]] = {
 # Rules that take a list-of-strings value
 RULES_LIST_VALUE: set[str] = {
     "trusted_sender_domain", "label_match", "send_to_myself",
-    "approved_channel", "approved_recipient", "personal_calendar",
+    "approved_channel", "approved_channel_all_results", "approved_recipient", "personal_calendar",
     "approved_object_types", "approved_report_ids", "file_type_allowlist",
     "approved_folder", "approved_sandbox_folder",
     "approved_recipient_domain", "label_name_allowlist", "parent_folder_allowlist",
     "approved_project_keys", "approved_space_keys", "approved_chats",
-    "approved_task_list",
+    "approved_chats_all_results", "approved_task_list",
 }
 # Rules that take a single integer value
 RULES_INT_VALUE: set[str] = {"age_threshold_days", "time_window_days"}
@@ -271,6 +272,7 @@ RULE_HINTS: dict[str, str] = {
     "age_threshold_days":    "30",
     "send_to_myself":        "U0123456789",
     "approved_channel":      "C0123456789\nC9876543210",
+    "approved_channel_all_results": "C0123456789\nC9876543210",
     "approved_recipient":    "U0123456789",
     "personal_calendar":     "primary",
     "time_window_days":      "14",
@@ -285,6 +287,7 @@ RULE_HINTS: dict[str, str] = {
     "approved_project_keys": "MYPROJ\nOTHERPROJ",
     "approved_space_keys":   "TEAM\nDOCS",
     "approved_chats":        "123456789\n-100987654321",
+    "approved_chats_all_results": "123456789\n-100987654321",
     "approved_spreadsheet":  "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms\n1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms:Sheet1",
     "approved_task_list":    "MDAwMDAwMDAwMDAwMDAwMDAwMDA6MDow\nMTExMTExMTExMTExMTExMTExMTE6MDow",
 }

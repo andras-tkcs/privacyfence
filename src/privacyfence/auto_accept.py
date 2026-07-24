@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -93,7 +94,14 @@ TOOL_TO_OPERATION: dict[str, str] = {
     "confluence_create_page":         "confluence.create_page",
     "confluence_update_page":         "confluence.update_page",
     "telegram_get_messages":          "telegram.read_chat_messages",
-    "telegram_search_messages":       "telegram.search_messages",
+    # Shares telegram.read_chat_messages with telegram_get_messages (rather
+    # than its own telegram.search_messages key) so a "trusted chats" rule
+    # only needs configuring once per chat, not once per Telegram read tool
+    # -- matching slack.read_messages, which slack_search_messages already
+    # shares with slack_get_channel_history/slack_get_thread_replies. See
+    # migrate_telegram_search_operation_key() for the one-time settings.yaml
+    # migration this rename requires.
+    "telegram_search_messages":       "telegram.read_chat_messages",
     "telegram_send_message":          "telegram.send_message",
     "tasks_create_task":              "tasks.create_task",
     "tasks_update_task":              "tasks.update_task",
@@ -290,6 +298,11 @@ DATA_DEPENDENT_RULES: frozenset[str] = frozenset({
     "i_am_assignee",
     "i_am_author",
     "no_media_attachments",
+    # These two check every item in a multi-result raw_data list (a search's
+    # matches, spanning however many channels/chats), not a single arg --
+    # see their docstrings for why an args-only equivalent isn't possible.
+    "approved_channel_all_results",
+    "approved_chats_all_results",
     # non_private_event reads the event's current visibility off
     # ctx.raw_data (calendar.read_event_details is the only operation that
     # offers it) -- with raw_data=None that read silently defaults to
@@ -563,6 +576,21 @@ class AutoAcceptEvaluator:
     def _rule_approved_recipient(self, value, ctx):
         return self._rule_approved_channel(value, ctx)
 
+    def _rule_approved_channel_all_results(self, value, ctx):
+        """Data-dependent counterpart to approved_channel for a call that
+        spans multiple channels at once (slack_search_messages) rather than
+        reading a single channel_id out of ctx.args -- a search's results can
+        come from any number of channels, so there's no one arg to check.
+        Auto-accepts only when every returned message's channel is on the
+        allowlist; a single unapproved result gates the whole call, same as
+        every other all-or-nothing gated response.
+        """
+        if not value:
+            return False
+        allowed = set(value if isinstance(value, list) else [value])
+        items = ctx.raw_data if isinstance(ctx.raw_data, list) else [ctx.raw_data]
+        return bool(items) and all(getattr(m, "channel_id", None) in allowed for m in items)
+
     def _rule_public_channels_only(self, _v, ctx):
         raw = ctx.raw_data
         items = raw if isinstance(raw, list) else [raw]
@@ -743,6 +771,21 @@ class AutoAcceptEvaluator:
         allowed = {str(v) for v in (value if isinstance(value, list) else [value])}
         return str(ctx.args.get("chat_id", "")) in allowed
 
+    def _rule_approved_chats_all_results(self, value, ctx):
+        """Data-dependent counterpart to approved_chats for a call that spans
+        multiple chats at once (telegram_search_messages, which shares this
+        operation key with telegram_get_messages) rather than reading a
+        single chat_id out of ctx.args. Auto-accepts only when every returned
+        message's chat is on the allowlist -- see
+        _rule_approved_channel_all_results's docstring for the same reasoning
+        on the Slack side.
+        """
+        if not value:
+            return False
+        allowed = {str(v) for v in (value if isinstance(value, list) else [value])}
+        items = ctx.raw_data if isinstance(ctx.raw_data, list) else [ctx.raw_data]
+        return bool(items) and all(str(getattr(m, "chat_id", None)) in allowed for m in items)
+
     def _rule_no_media_attachments(self, _v, ctx):
         raw = ctx.raw_data
         items = raw if isinstance(raw, list) else [raw]
@@ -861,7 +904,15 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
         cid = ctx.args.get("channel_id", "") or ctx.args.get("channel", "") or ""
         if cid.startswith("D"):
             return ("dm_with_myself", None)
-        return ("approved_channel", [cid]) if cid else None
+        if cid:
+            return ("approved_channel", [cid])
+        # No single channel in args -- a search spanning multiple channels
+        # (slack_search_messages shares this operation key). Propose the
+        # union of channels actually present across these results, the
+        # data-dependent counterpart to approved_channel above.
+        items = ctx.raw_data if isinstance(ctx.raw_data, list) else [ctx.raw_data]
+        channel_ids = sorted({mcid for m in items if (mcid := getattr(m, "channel_id", None))})
+        return ("approved_channel_all_results", channel_ids) if channel_ids else None
 
     if operation_key == "calendar.read_event_details":
         organizer = getattr(ctx.raw_data, "organizer_email", "") or ""
@@ -913,7 +964,15 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
 
     if operation_key == "telegram.read_chat_messages":
         chat_id = ctx.args.get("chat_id", "")
-        return ("approved_chats", [str(chat_id)]) if chat_id != "" else None
+        if chat_id != "":
+            return ("approved_chats", [str(chat_id)])
+        # No single chat in args -- a search spanning multiple chats
+        # (telegram_search_messages shares this operation key). Propose the
+        # union of chats actually present across these results, the
+        # data-dependent counterpart to approved_chats above.
+        items = ctx.raw_data if isinstance(ctx.raw_data, list) else [ctx.raw_data]
+        chat_ids = sorted({str(mcid) for m in items if (mcid := getattr(m, "chat_id", None)) is not None})
+        return ("approved_chats_all_results", chat_ids) if chat_ids else None
 
     return None
 
@@ -1001,6 +1060,47 @@ def describe_rule_change(
             f"{old_str} -> {_format_rule_value(value)}"
         )
     return f"Add auto-accept rule {rule_name!r} = {_format_rule_value(value)} to {operation_key!r}"
+
+
+# ── One-time config migrations ───────────────────────────────────────────────
+
+TELEGRAM_SEARCH_OPERATION_KEY_MIGRATION_MARKER = "migrated_telegram_search_op_key_v1"
+
+
+def migrate_telegram_search_operation_key(cfg: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """One-time rename of any ``auto_accept_rules["telegram.search_messages"]``
+    entries onto ``"telegram.read_chat_messages"``, now that
+    ``telegram_search_messages`` shares that operation key (see
+    TOOL_TO_OPERATION) the same way ``slack_search_messages`` already shares
+    ``slack.read_messages`` with Slack's other read tools -- one "trusted
+    chats" rule then covers both Telegram read tools instead of needing
+    configuring twice.
+
+    Idempotent (checks/sets its own marker) and never runs twice, mirroring
+    resource_grants.migrate_rules_to_grants's own marker/idempotency shape.
+    Entries already present under the destination key are left as-is (no
+    duplicates); an old entry identical to an existing one is dropped rather
+    than duplicated. Returns the updated config and whether anything actually
+    moved, for a one-time log line.
+    """
+    if cfg.get(TELEGRAM_SEARCH_OPERATION_KEY_MIGRATION_MARKER):
+        return cfg, False
+    cfg = deepcopy(cfg)
+    rules_cfg: dict[str, list[dict[str, Any]]] = cfg.get("auto_accept_rules") or {}
+    old_entries = rules_cfg.pop("telegram.search_messages", None)
+    moved = False
+    if old_entries:
+        merged = rules_cfg.setdefault("telegram.read_chat_messages", [])
+        for entry in old_entries:
+            if entry not in merged:
+                merged.append(entry)
+                moved = True
+    if rules_cfg:
+        cfg["auto_accept_rules"] = rules_cfg
+    else:
+        cfg.pop("auto_accept_rules", None)
+    cfg[TELEGRAM_SEARCH_OPERATION_KEY_MIGRATION_MARKER] = True
+    return cfg, moved
 
 
 # ── Rule persistence (used by the "Always allow" popup button) ──────────────

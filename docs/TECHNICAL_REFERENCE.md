@@ -622,6 +622,7 @@ with no undo path through PrivacyFence, so it only ever gets the standing-rule t
 |------|--------------|
 | `dm_with_myself` / `send_to_myself` | Target channel is a self-DM |
 | `approved_channel` / `approved_recipient` | Channel ID is in the allowlist |
+| `approved_channel_all_results` | **Every** message returned is from a channel in the allowlist |
 | `public_channels_only` | All messages are from public channels |
 | `no_file_attachments` | Messages have no file attachments |
 | `reply_in_existing_thread` | Message is a reply (has `thread_ts`) |
@@ -629,6 +630,15 @@ with no undo path through PrivacyFence, so it only ever gets the standing-rule t
 > **`approved_channel`/`approved_recipient` are grant-managed** — see
 > [Auto-accept grants](#auto-accept-grants) → `slack.channels`. One channel grant's `read`/`send`
 > capabilities cover both rules above.
+
+`approved_channel` reads a single `channel_id` out of the call's own arguments, which
+`slack_get_channel_history`/`slack_get_thread_replies` always provide but `slack_search_messages`
+never does — a search can match messages across any number of channels, so there's no one channel
+to check against the allowlist. `approved_channel_all_results` is the counterpart for that case: it
+reads every message actually returned and only matches when **all** of them are on the allowlist,
+gating the whole search if even one result isn't. Configuring it (or `approved_channel`, since both
+share `slack.read_messages`) once covers reads, thread reads, *and* searches of the approved
+channel(s) alike.
 
 **Google Calendar**
 
@@ -714,11 +724,21 @@ the project from `issue_key` the same way `jira_get_issue`/`jira_update_issue` d
 | Rule | Matches when… |
 |------|--------------|
 | `approved_chats` | Chat ID is in the allowlist |
+| `approved_chats_all_results` | **Every** message returned is from a chat in the allowlist |
 | `no_media_attachments` | Messages have no media attachments |
 
 > **`approved_chats` is grant-managed** — see [Auto-accept grants](#auto-accept-grants) →
 > `telegram.chats`. One chat grant's `read`/`send` capabilities cover both
 > `telegram.read_chat_messages` and `telegram.send_message`.
+
+`telegram_search_messages` shares the `telegram.read_chat_messages` operation key with
+`telegram_get_messages` (it used to have its own `telegram.search_messages` key — upgrading
+migrates any existing rules onto the shared key automatically, see
+`auto_accept.migrate_telegram_search_operation_key()`), the same way `slack_search_messages`
+already shares `slack.read_messages`. `approved_chats` reads a single `chat_id` out of the call's
+arguments, which a search never provides (it can match across any number of chats); configuring it
+also covers `approved_chats_all_results`, the counterpart evaluated against every result a search
+actually returns, matching only when **all** of them are on the allowlist.
 
 **Google Tasks**
 
@@ -734,7 +754,7 @@ edits within a personal list while still requiring review for creates.
 > `tasks.task_lists`. One task-list grant's `create`/`edit`/`complete`/`move` capabilities cover
 > all five task-write operations at once (`complete` covers both complete and uncomplete).
 
-> **Google Contacts**: `contacts_list`, `contacts_search`, and `contacts_get` are unconditionally auto-accepted. `contacts_update`, `contacts_create`, `contacts_add_label`, and `contacts_remove_label` are all `popup`-gated; `no_contact_info_change` above is the only configurable auto-accept rule, and it applies only to `contacts_update`. Contact deletion is not supported. **Google Tasks**: all three read tools plus `tasks_list_task_lists` are unconditionally auto-accepted; the five write tools (`tasks_create_task`, `tasks_update_task`, `tasks_complete_task`, `tasks_uncomplete_task`, `tasks_move_task`) are `popup`-gated, each independently configurable via `approved_task_list` above. **Telegram**: `telegram_list_chats` is unconditionally auto-accepted; `telegram_get_messages` and `telegram_search_messages` are `review`-gated by default but configurable via the rules above; `telegram_send_message` is `popup`-gated with no configurable rule. **Jira and Confluence** read tools (`jira_get_issue`, `confluence_get_page`, `confluence_get_page_by_title`) are `review`-gated by default but configurable via the rules above; their write tools remain `popup`-gated with no configurable rule, except `jira_transition_issue`, which accepts `approved_project_keys` as noted above.
+> **Google Contacts**: `contacts_list`, `contacts_search`, and `contacts_get` are unconditionally auto-accepted. `contacts_update`, `contacts_create`, `contacts_add_label`, and `contacts_remove_label` are all `popup`-gated; `no_contact_info_change` above is the only configurable auto-accept rule, and it applies only to `contacts_update`. Contact deletion is not supported. **Google Tasks**: all three read tools plus `tasks_list_task_lists` are unconditionally auto-accepted; the five write tools (`tasks_create_task`, `tasks_update_task`, `tasks_complete_task`, `tasks_uncomplete_task`, `tasks_move_task`) are `popup`-gated, each independently configurable via `approved_task_list` above. **Telegram**: `telegram_list_chats` is unconditionally auto-accepted; `telegram_get_messages` and `telegram_search_messages` are `review`-gated by default but configurable via the rules above (sharing one operation key, `telegram.read_chat_messages`); `telegram_send_message` is `popup`-gated with no configurable rule. **Jira and Confluence** read tools (`jira_get_issue`, `confluence_get_page`, `confluence_get_page_by_title`) are `review`-gated by default but configurable via the rules above; their write tools remain `popup`-gated with no configurable rule, except `jira_transition_issue`, which accepts `approved_project_keys` as noted above.
 
 ---
 

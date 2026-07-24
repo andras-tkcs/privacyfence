@@ -241,6 +241,115 @@ class TestDriveTempAccept:
         assert entries[1]["decision"] == "accepted_via_temp_session"
 
 
+class TestSlackSearchAllResults:
+    """slack_search_messages carries no single channel_id in args (a search
+    can span any number of channels), so approved_channel/dm_with_myself can
+    never fire for it -- approved_channel_all_results is the fix, evaluated
+    against every result in raw_data instead of a single arg. Three scenarios
+    per the original bug report: every result approved (auto-accept), a
+    partial match (still gated, as one unit), and no match (gated)."""
+
+    RULES = {"slack.read_messages": [{"rule": "approved_channel_all_results", "value": ["C1", "C2"]}]}
+
+    async def test_all_results_in_approved_channels_auto_accepts(self, monkeypatch, audit_dir):
+        init_auto_accept_evaluator(self.RULES)
+        fail_if_popup_shown(monkeypatch)
+
+        result = await gate.gated_call(**make_kwargs(
+            connector="slack", tool="slack_search_messages", gate="review",
+            raw_data=[SimpleNamespace(channel_id="C1"), SimpleNamespace(channel_id="C2")],
+            args={"query": "hello world"},
+        ))
+
+        assert result is FILTERED
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "auto_accepted"
+        assert entries[0]["auto_accept_rule"] == "approved_channel_all_results"
+
+    async def test_one_unapproved_result_gates_the_whole_call(self, monkeypatch, audit_dir):
+        init_auto_accept_evaluator(self.RULES)
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+
+        result = await gate.gated_call(**make_kwargs(
+            connector="slack", tool="slack_search_messages", gate="review",
+            raw_data=[SimpleNamespace(channel_id="C1"), SimpleNamespace(channel_id="C-unapproved")],
+            args={"query": "hello world"},
+        ))
+
+        assert result is FILTERED
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "approved"
+        assert entries[0]["auto_accept_rule"] == ""
+
+    async def test_no_results_in_approved_channels_gates(self, monkeypatch, audit_dir):
+        init_auto_accept_evaluator(self.RULES)
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+
+        result = await gate.gated_call(**make_kwargs(
+            connector="slack", tool="slack_search_messages", gate="review",
+            raw_data=[SimpleNamespace(channel_id="C-other")],
+            args={"query": "hello world"},
+        ))
+
+        assert result is FILTERED
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "approved"
+
+
+class TestTelegramSearchAllResults:
+    """Same bug/fix as TestSlackSearchAllResults, for
+    telegram_search_messages -- which now shares telegram.read_chat_messages
+    with telegram_get_messages instead of its own operation key."""
+
+    RULES = {"telegram.read_chat_messages": [{"rule": "approved_chats_all_results", "value": ["111", "222"]}]}
+
+    async def test_all_results_in_approved_chats_auto_accepts(self, monkeypatch, audit_dir):
+        init_auto_accept_evaluator(self.RULES)
+        fail_if_popup_shown(monkeypatch)
+
+        result = await gate.gated_call(**make_kwargs(
+            connector="telegram", tool="telegram_search_messages", gate="review",
+            raw_data=[SimpleNamespace(chat_id=111), SimpleNamespace(chat_id=222)],
+            args={"query": "hello world"},
+        ))
+
+        assert result is FILTERED
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "auto_accepted"
+        assert entries[0]["auto_accept_rule"] == "approved_chats_all_results"
+
+    async def test_one_unapproved_chat_gates_the_whole_call(self, monkeypatch, audit_dir):
+        init_auto_accept_evaluator(self.RULES)
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+
+        result = await gate.gated_call(**make_kwargs(
+            connector="telegram", tool="telegram_search_messages", gate="review",
+            raw_data=[SimpleNamespace(chat_id=111), SimpleNamespace(chat_id=999)],
+            args={"query": "hello world"},
+        ))
+
+        assert result is FILTERED
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "approved"
+
+    async def test_configured_rule_still_covers_a_plain_chat_read(self, monkeypatch, audit_dir):
+        # The merged operation key must not break telegram_get_messages's
+        # existing single-chat approved_chats rule.
+        init_auto_accept_evaluator({"telegram.read_chat_messages": [{"rule": "approved_chats", "value": ["111"]}]})
+        fail_if_popup_shown(monkeypatch)
+
+        result = await gate.gated_call(**make_kwargs(
+            connector="telegram", tool="telegram_get_messages", gate="review",
+            raw_data=[SimpleNamespace(chat_id=111)],
+            args={"chat_id": 111},
+        ))
+
+        assert result is FILTERED
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "auto_accepted"
+        assert entries[0]["auto_accept_rule"] == "approved_chats"
+
+
 class TestCalendarIAmOrganizer:
     """connector-qa-testing.md Phase 4 step 5."""
 

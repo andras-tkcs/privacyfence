@@ -653,7 +653,17 @@ manifest entries needed, both are already tracked.
    `{FIXTURES}.slack_approved_channel`. This should NOT prompt me. Confirm.
 3. `slack_get_channel_history` on `{FIXTURES}.slack_control_channel` (the
    non-approved one) — should prompt for review. I'll Allow once.
-4. `slack_search_messages` with any query — review gate, Allow once.
+4. `slack_search_messages` with a query that only matches messages in
+   `slack_approved_channel` (reuse a phrase from step 2's history). If
+   `slack_approved_channel` came from `auto_accept_grants.slack.channels`
+   (`read: true`) in Phase 0 — the grant now compiles both `approved_channel`
+   and `approved_channel_all_results` for `slack.read_messages` — this should
+   NOT prompt me. If it came from the legacy `slack.read_messages` →
+   `approved_channel` rule only (no grant), it's expected to still prompt,
+   since `approved_channel_all_results` isn't configured in that form; Allow
+   once. Either way, follow with the same query broadened to also match
+   `slack_control_channel` — this should always prompt, approved-channel
+   fixture or not (one unapproved result gates the whole search). Allow once.
 5. `slack_get_thread_replies` on the thread that already exists in
    `slack_control_channel` — review gate, Allow once. (This fixture exists precisely
    so this step always has something to find, instead of depending on step 3/4
@@ -817,7 +827,16 @@ other connector's writes, each independently configurable via the
    `approved_chats`) — same explicit "did a popup appear?" question, same
    Phase 14 flag. I'll Allow once.
 4. `telegram_search_messages` with a query that matches the seed message from
-   setup — same explicit popup check, same Phase 14 flag.
+   setup, in `telegram_approved_chat_id` only — same explicit popup check,
+   same Phase 14 flag. `telegram_search_messages` now shares the
+   `telegram.read_chat_messages` operation key with `telegram_get_messages`
+   (it used to have its own key), so if `telegram_approved_chat_id` came from
+   `auto_accept_grants.telegram.chats` (`read: true`), the grant now compiles
+   both `approved_chats` and `approved_chats_all_results` and this should NOT
+   prompt; from the legacy rule-only form, expect it to still prompt (Allow
+   once). Repeat with a query broadened to also reach
+   `telegram_control_chat_id` — should always prompt, same reasoning as
+   Phase 3 step 4.
 5. `telegram_send_message` to "Saved Messages"
    (`telegram_saved_messages_chat_id`), test text tagged `{RUN_ID}`. Popup,
    Allow once.

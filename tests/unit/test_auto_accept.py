@@ -270,6 +270,23 @@ class TestSlackRules:
         assert ev._rule_reply_in_existing_thread(None, make_ctx(args={"thread_ts": "123.45"})) is True
         assert ev._rule_reply_in_existing_thread(None, make_ctx(args={})) is False
 
+    def test_approved_channel_all_results(self):
+        ev = AutoAcceptEvaluator({})
+        all_approved = make_ctx(raw_data=[SimpleNamespace(channel_id="C1"), SimpleNamespace(channel_id="C2")])
+        one_unapproved = make_ctx(raw_data=[SimpleNamespace(channel_id="C1"), SimpleNamespace(channel_id="C9")])
+        empty = make_ctx(raw_data=[])
+        assert ev._rule_approved_channel_all_results(["C1", "C2"], all_approved) is True
+        assert ev._rule_approved_channel_all_results(["C1", "C2"], one_unapproved) is False
+        assert ev._rule_approved_channel_all_results(["C1", "C2"], empty) is False
+        assert ev._rule_approved_channel_all_results([], all_approved) is False
+
+    def test_approved_channel_all_results_single_item_not_a_list(self):
+        # A non-list raw_data (a single message, not search results) is
+        # treated as a one-item list, same as the other all()-over-list rules.
+        ev = AutoAcceptEvaluator({})
+        single = make_ctx(raw_data=SimpleNamespace(channel_id="C1"))
+        assert ev._rule_approved_channel_all_results(["C1"], single) is True
+
 
 # --------------------------------------------------------------------------- #
 # Calendar rules
@@ -741,6 +758,17 @@ class TestTelegramRules:
         assert ev._rule_no_media_attachments(None, clean) is True
         assert ev._rule_no_media_attachments(None, dirty) is False
 
+    def test_approved_chats_all_results(self):
+        ev = AutoAcceptEvaluator({})
+        all_approved = make_ctx(raw_data=[SimpleNamespace(chat_id=111), SimpleNamespace(chat_id=222)])
+        one_unapproved = make_ctx(raw_data=[SimpleNamespace(chat_id=111), SimpleNamespace(chat_id=999)])
+        empty = make_ctx(raw_data=[])
+        assert ev._rule_approved_chats_all_results(["111", "222"], all_approved) is True
+        assert ev._rule_approved_chats_all_results([111, 222], all_approved) is True  # string comparison
+        assert ev._rule_approved_chats_all_results(["111", "222"], one_unapproved) is False
+        assert ev._rule_approved_chats_all_results(["111", "222"], empty) is False
+        assert ev._rule_approved_chats_all_results([], all_approved) is False
+
 
 # --------------------------------------------------------------------------- #
 # Tasks rules
@@ -895,6 +923,18 @@ class TestSuggestRule:
         channel = make_ctx(args={"channel_id": "C1"})
         assert suggest_rule("slack.read_messages", channel) == ("approved_channel", ["C1"])
 
+    def test_slack_search_suggests_union_of_result_channels(self):
+        # No channel_id in args -- a search spanning multiple channels.
+        ctx = make_ctx(
+            args={"query": "hello world"},
+            raw_data=[SimpleNamespace(channel_id="C2"), SimpleNamespace(channel_id="C1")],
+        )
+        assert suggest_rule("slack.read_messages", ctx) == ("approved_channel_all_results", ["C1", "C2"])
+
+    def test_slack_search_suggests_nothing_with_no_results(self):
+        ctx = make_ctx(args={"query": "hello world"}, raw_data=[])
+        assert suggest_rule("slack.read_messages", ctx) is None
+
     def test_sheets_read_values_suggests_spreadsheet_and_tab(self):
         ctx = make_ctx(args={"spreadsheet_id": "sheet1", "range_a1": "Sheet1!A1:B2"})
         assert suggest_rule("sheets.read_values", ctx) == (
@@ -1026,6 +1066,19 @@ class TestSuggestRule:
 
     def test_telegram_suggests_nothing_without_chat_id(self):
         assert suggest_rule("telegram.read_chat_messages", make_ctx(args={})) is None
+
+    def test_telegram_search_suggests_union_of_result_chats(self):
+        # No chat_id in args -- a search spanning multiple chats (shares
+        # this operation key with telegram_get_messages).
+        ctx = make_ctx(
+            args={"query": "hello world"},
+            raw_data=[SimpleNamespace(chat_id=222), SimpleNamespace(chat_id=111)],
+        )
+        assert suggest_rule("telegram.read_chat_messages", ctx) == ("approved_chats_all_results", ["111", "222"])
+
+    def test_telegram_search_suggests_nothing_with_no_results(self):
+        ctx = make_ctx(args={"query": "hello world"}, raw_data=[])
+        assert suggest_rule("telegram.read_chat_messages", ctx) is None
 
     def test_describe_rule_formats_value(self):
         assert describe_rule("i_am_sender", None) == "Auto-accept future Gmail message/thread reads where you are the sender"
@@ -1727,3 +1780,75 @@ class TestToolToGate:
 
     def test_popup_tool(self):
         assert TOOL_TO_GATE["gmail_create_draft"] == "popup"
+
+
+class TestMigrateTelegramSearchOperationKey:
+    """telegram_search_messages now shares telegram.read_chat_messages with
+    telegram_get_messages (see TOOL_TO_OPERATION) instead of its own
+    telegram.search_messages key -- this one-time migration moves any
+    existing hand-authored rules onto the new key. Mirrors
+    resource_grants.TestMigrateRulesToGrants's marker/idempotency coverage."""
+
+    def test_entries_move_onto_the_shared_key(self):
+        cfg = {
+            "auto_accept_rules": {
+                "telegram.search_messages": [{"rule": "no_media_attachments"}],
+                "telegram.read_chat_messages": [{"rule": "approved_chats", "value": ["111"]}],
+            }
+        }
+        new_cfg, moved = auto_accept.migrate_telegram_search_operation_key(cfg)
+        assert moved is True
+        assert "telegram.search_messages" not in new_cfg["auto_accept_rules"]
+        assert new_cfg["auto_accept_rules"]["telegram.read_chat_messages"] == [
+            {"rule": "approved_chats", "value": ["111"]},
+            {"rule": "no_media_attachments"},
+        ]
+
+    def test_no_op_when_no_search_messages_key_present(self):
+        cfg = {"auto_accept_rules": {"telegram.read_chat_messages": [{"rule": "approved_chats", "value": ["111"]}]}}
+        new_cfg, moved = auto_accept.migrate_telegram_search_operation_key(cfg)
+        assert moved is False
+        assert new_cfg["auto_accept_rules"] == cfg["auto_accept_rules"]
+
+    def test_duplicate_entry_is_dropped_not_duplicated(self):
+        cfg = {
+            "auto_accept_rules": {
+                "telegram.search_messages": [{"rule": "approved_chats", "value": ["111"]}],
+                "telegram.read_chat_messages": [{"rule": "approved_chats", "value": ["111"]}],
+            }
+        }
+        new_cfg, moved = auto_accept.migrate_telegram_search_operation_key(cfg)
+        assert moved is False
+        assert new_cfg["auto_accept_rules"]["telegram.read_chat_messages"] == [
+            {"rule": "approved_chats", "value": ["111"]},
+        ]
+
+    def test_empty_config_has_no_rules_key_afterward(self):
+        new_cfg, moved = auto_accept.migrate_telegram_search_operation_key({})
+        assert moved is False
+        assert "auto_accept_rules" not in new_cfg
+
+    def test_migration_marker_is_set(self):
+        new_cfg, _ = auto_accept.migrate_telegram_search_operation_key({})
+        assert new_cfg[auto_accept.TELEGRAM_SEARCH_OPERATION_KEY_MIGRATION_MARKER] is True
+
+    def test_already_marked_config_is_returned_unchanged(self):
+        cfg = {
+            auto_accept.TELEGRAM_SEARCH_OPERATION_KEY_MIGRATION_MARKER: True,
+            "auto_accept_rules": {"telegram.search_messages": [{"rule": "no_media_attachments"}]},
+        }
+        new_cfg, moved = auto_accept.migrate_telegram_search_operation_key(cfg)
+        assert new_cfg is cfg
+        assert moved is False
+
+    def test_idempotent_second_run_is_a_no_op(self):
+        cfg = {
+            "auto_accept_rules": {
+                "telegram.search_messages": [{"rule": "no_media_attachments"}],
+                "telegram.read_chat_messages": [{"rule": "approved_chats", "value": ["111"]}],
+            }
+        }
+        migrated_once, _ = auto_accept.migrate_telegram_search_operation_key(cfg)
+        migrated_twice, moved_twice = auto_accept.migrate_telegram_search_operation_key(migrated_once)
+        assert moved_twice is False
+        assert migrated_twice == migrated_once
