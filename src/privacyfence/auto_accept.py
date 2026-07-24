@@ -167,6 +167,8 @@ TOOL_TO_GATE: dict[str, str] = {
     "drive_docs_format_content":       "popup",
     # Slack
     "slack_list_channels":             "auto",
+    "slack_list_dms":                  "auto",
+    "slack_list_group_chats":          "auto",
     "slack_get_channel_history":       "review",
     "slack_get_thread_replies":        "review",
     "slack_search_messages":           "review",

@@ -160,7 +160,7 @@ mode denies unmatched requests immediately instead of leaving a popup open for n
 | Google Sheets | Read ranges, write and format ranges, add and rename tabs, insert and delete rows/columns |
 | Google Calendar | Read event details, get/set event visibility, create and update events, create out-of-office entries, set working location |
 | Google Contacts | Read, create, update, and label contacts |
-| Slack | Read channels and threads, search messages, send messages |
+| Slack | List channels, DMs, and group chats (filterable by participant), read channels and threads, search messages, send messages |
 | Salesforce | Read records, search by name or id, and run reports |
 | Jira | Read, create, update, comment on, and transition issues |
 | Confluence | Read, create, and update pages |

@@ -201,6 +201,35 @@ class SlackChannel:
 
 
 @dataclass
+class SlackDirectMessage:
+    """A normalized 1:1 Slack DM (Slack's "im" conversation type)."""
+
+    id: str
+    user_id: str
+    user_name: str = ""
+
+    def short_summary(self) -> str:
+        return f"DM with {self.user_name or self.user_id}"
+
+
+@dataclass
+class SlackGroupChat:
+    """A normalized Slack group DM (Slack's "mpim" conversation type -- a
+    private multi-person conversation, distinct from a 1:1 DM and from a
+    private channel). ``conversations.list`` doesn't return members for
+    this type, so ``member_ids``/``member_names`` come from a separate
+    ``conversations.members`` call per chat (see ``list_group_chats``)."""
+
+    id: str
+    name: str
+    member_ids: list[str] = field(default_factory=list)
+    member_names: list[str] = field(default_factory=list)
+
+    def short_summary(self) -> str:
+        return f"Group DM with {', '.join(self.member_names or self.member_ids)}"
+
+
+@dataclass
 class SlackUser:
     """A normalized Slack user."""
 
@@ -286,6 +315,93 @@ class SlackClient:
         channels = channels[:max_results]
         logger.info("list_channels returned %d channel(s)", len(channels))
         return channels
+
+    def list_dms(
+        self, max_results: int = 100, participant: str = ""
+    ) -> list[SlackDirectMessage]:
+        """List 1:1 direct messages visible to the user via
+        ``conversations.list(types="im")``.
+
+        Each ``im`` conversation exposes a single ``user`` field (the other
+        party), so unlike group chats no extra per-conversation call is
+        needed to know who's on the other end -- filtering by ``participant``
+        (a user id, handle, or display name, case-insensitive) is a plain
+        client-side match against that one field.
+        """
+        max_results = self._clamp(max_results, default=100, hi=1000)
+        dms: list[SlackDirectMessage] = []
+        cursor: str | None = None
+        try:
+            while len(dms) < max_results:
+                page_size = min(200, max_results - len(dms))
+                response = self._client.conversations_list(
+                    types="im",
+                    limit=page_size,
+                    cursor=cursor,
+                )
+                for raw in response.get("channels", []):
+                    dms.append(self._parse_dm(raw))
+                cursor = (response.get("response_metadata") or {}).get("next_cursor")
+                if not cursor:
+                    break
+        except SlackApiError as exc:
+            raise SlackClientError(
+                f"list_dms failed: {self._describe_error(exc)}"
+            ) from exc
+
+        if participant:
+            dms = [
+                d for d in dms
+                if self._matches_participant(participant, [d.user_id], [d.user_name])
+            ]
+
+        dms = dms[:max_results]
+        logger.info("list_dms returned %d DM(s)", len(dms))
+        return dms
+
+    def list_group_chats(
+        self, max_results: int = 100, participant: str = ""
+    ) -> list[SlackGroupChat]:
+        """List group DMs ("mpim") visible to the user via
+        ``conversations.list(types="mpim")``.
+
+        Unlike channels/DMs, the list response carries no member info for
+        group DMs, so resolving (and hence filtering by) ``participant``
+        costs one extra ``conversations.members`` call per group chat --
+        O(n) Slack API calls where n is the number of group chats returned,
+        not O(1) like ``list_channels``/``list_dms``.
+        """
+        max_results = self._clamp(max_results, default=100, hi=1000)
+        raw_chats: list[dict[str, Any]] = []
+        cursor: str | None = None
+        try:
+            while len(raw_chats) < max_results:
+                page_size = min(200, max_results - len(raw_chats))
+                response = self._client.conversations_list(
+                    types="mpim",
+                    limit=page_size,
+                    cursor=cursor,
+                )
+                raw_chats.extend(response.get("channels", []))
+                cursor = (response.get("response_metadata") or {}).get("next_cursor")
+                if not cursor:
+                    break
+        except SlackApiError as exc:
+            raise SlackClientError(
+                f"list_group_chats failed: {self._describe_error(exc)}"
+            ) from exc
+
+        raw_chats = raw_chats[:max_results]
+        chats = [self._parse_group_chat(raw) for raw in raw_chats]
+
+        if participant:
+            chats = [
+                c for c in chats
+                if self._matches_participant(participant, c.member_ids, c.member_names)
+            ]
+
+        logger.info("list_group_chats returned %d group chat(s)", len(chats))
+        return chats
 
     def get_channel_history(
         self,
@@ -498,6 +614,48 @@ class SlackClient:
         except SlackClientError as exc:
             logger.debug("Could not resolve user name for %s: %s", user_id, exc)
             return ""
+
+    def _resolve_members(self, channel_id: str) -> list[str]:
+        """Fetch a conversation's member user ids via ``conversations.members``
+        (best-effort, never raises -- an unresolvable channel reads as having
+        no members rather than blocking the whole listing)."""
+        try:
+            response = self._client.conversations_members(channel=channel_id, limit=1000)
+            return list(response.get("members", []) or [])
+        except SlackApiError as exc:
+            logger.debug("Could not resolve members for %s: %s", channel_id, exc)
+            return []
+
+    @staticmethod
+    def _matches_participant(participant: str, ids: list[str], names: list[str]) -> bool:
+        """Case-insensitive match of ``participant`` against a conversation's
+        member ids (exact) and resolved display names (substring) -- lets
+        callers filter by Slack user id, handle, or real name without
+        needing the exact id."""
+        needle = participant.strip().lower()
+        if not needle:
+            return True
+        if any(needle == i.lower() for i in ids if i):
+            return True
+        return any(needle in n.lower() for n in names if n)
+
+    def _parse_dm(self, raw: dict[str, Any]) -> SlackDirectMessage:
+        user_id = raw.get("user", "")
+        return SlackDirectMessage(
+            id=raw.get("id", ""),
+            user_id=user_id,
+            user_name=self._resolve_user_name(user_id) if user_id else "",
+        )
+
+    def _parse_group_chat(self, raw: dict[str, Any]) -> SlackGroupChat:
+        channel_id = raw.get("id", "")
+        member_ids = self._resolve_members(channel_id)
+        return SlackGroupChat(
+            id=channel_id,
+            name=raw.get("name", ""),
+            member_ids=member_ids,
+            member_names=[self._resolve_user_name(uid) for uid in member_ids],
+        )
 
     def _parse_channel(self, raw: dict[str, Any]) -> SlackChannel:
         return SlackChannel(
