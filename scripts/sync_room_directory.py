@@ -132,8 +132,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Wrote {out_path} with {len(rooms)} room(s).")
     print(
         'Distribute the updated org_config.json to your users as usual (via "Install/Update '
-        'Organization Config…" in the PrivacyFence menu bar). Do NOT distribute '
-        f"{args.admin_client_secret} or {args.token_file} — those are yours to keep private."
+        'Organization Config…" in the PrivacyFence menu bar). Do NOT distribute the '
+        "--admin-client-secret file or --token-file you passed in — keep those private."
     )
     return 0
 
