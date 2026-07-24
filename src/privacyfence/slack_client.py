@@ -232,6 +232,7 @@ class SlackClient:
         # users.info call each time within a single fetch.
         self._user_cache: dict[str, SlackUser] = {}
         self._channel_name_cache: dict[str, str] = {}
+        self._channel_is_mpim_cache: dict[str, bool] = {}
 
     # ------------------------------------------------------------------ #
     # Connection
@@ -465,6 +466,28 @@ class SlackClient:
             name = ""
         self._channel_name_cache[channel_id] = name
         return name
+
+    def resolve_is_group_dm(self, channel_id: str) -> bool:
+        """Whether `channel_id` is a group DM (Slack's "mpim" conversation
+        type -- a private multi-person conversation, distinct from a 1:1 DM
+        (`im`) and from a private *channel*, both of which can also surface
+        as `G`-prefixed IDs, so the id alone doesn't tell them apart).
+        Best-effort (cached, never raises) -- an unresolvable channel reads
+        as not-a-group-DM rather than blocking the caller on a lookup that
+        can't succeed.
+        """
+        if not channel_id:
+            return False
+        if channel_id in self._channel_is_mpim_cache:
+            return self._channel_is_mpim_cache[channel_id]
+        try:
+            response = self._client.conversations_info(channel=channel_id)
+            is_mpim = bool((response.get("channel") or {}).get("is_mpim", False))
+        except SlackApiError as exc:
+            logger.debug("Could not resolve channel type for %s: %s", channel_id, exc)
+            is_mpim = False
+        self._channel_is_mpim_cache[channel_id] = is_mpim
+        return is_mpim
 
     def _resolve_user_name(self, user_id: str) -> str:
         """Best-effort user display-name lookup (cached, never raises)."""

@@ -375,44 +375,6 @@ class TestConcurrentAuthAndRuleChangeDoNotLoseUpdates:
 # test's approach of not popping up real modal dialogs in a test run.
 # ============================================================================ #
 
-class TestFormatPairLine:
-    def test_with_tab(self):
-        assert menu_bar._format_pair_line({"spreadsheet_id": "sheet1", "tab": "Sheet1"}) == "sheet1:Sheet1"
-
-    def test_without_tab(self):
-        assert menu_bar._format_pair_line({"spreadsheet_id": "sheet1"}) == "sheet1"
-
-    def test_non_dict_falls_back_to_str(self):
-        assert menu_bar._format_pair_line("sheet1") == "sheet1"
-
-
-class TestParsePairLines:
-    def test_parses_id_only_lines(self):
-        assert menu_bar._parse_pair_lines("sheet1\nsheet2") == [
-            {"spreadsheet_id": "sheet1"}, {"spreadsheet_id": "sheet2"},
-        ]
-
-    def test_parses_id_colon_tab_lines(self):
-        assert menu_bar._parse_pair_lines("sheet1:Sheet1\nsheet2:My Tab") == [
-            {"spreadsheet_id": "sheet1", "tab": "Sheet1"},
-            {"spreadsheet_id": "sheet2", "tab": "My Tab"},
-        ]
-
-    def test_strips_whitespace_around_id_and_tab(self):
-        assert menu_bar._parse_pair_lines("  sheet1 : Sheet1  ") == [{"spreadsheet_id": "sheet1", "tab": "Sheet1"}]
-
-    def test_blank_lines_are_skipped(self):
-        assert menu_bar._parse_pair_lines("sheet1\n\n\nsheet2") == [
-            {"spreadsheet_id": "sheet1"}, {"spreadsheet_id": "sheet2"},
-        ]
-
-    def test_trailing_colon_with_empty_tab_omits_tab_key(self):
-        assert menu_bar._parse_pair_lines("sheet1:") == [{"spreadsheet_id": "sheet1"}]
-
-    def test_empty_text_yields_empty_list(self):
-        assert menu_bar._parse_pair_lines("") == []
-
-
 class TestBind:
     def test_forwards_bound_args_and_sender(self):
         calls = []
@@ -1241,21 +1203,6 @@ class TestAddRule:
         assert len(alerts) == 1
         assert app._load_config().get("auto_accept_rules", {}) == {}
 
-    def test_pair_value_rule_starts_empty_no_prompt(self, app, monkeypatch):
-        # approved_spreadsheet is normally offered via a grant now (see
-        # resource_grants.py's drive.spreadsheets); this exercises _add_rule's
-        # generic pair-value handling regardless of what the picker returned.
-        window_calls = []
-        monkeypatch.setattr(menu_bar.rumps, "Window", lambda **kw: window_calls.append(kw))
-
-        _run_add_rule(app, monkeypatch, "sheets.read_values", "approved_spreadsheet")
-
-        assert window_calls == []
-        cfg = app._load_config()
-        assert cfg["auto_accept_rules"]["sheets.read_values"] == [
-            {"rule": "approved_spreadsheet", "value": []}
-        ]
-
     def test_add_rule_int_prompt_starts_empty_not_prefilled_with_hint(self, app, monkeypatch):
         # Regression: the "Add rule" dialog used to pre-fill the text field with
         # the RULE_HINTS example value, so the first line looked like garbage
@@ -1453,15 +1400,6 @@ class TestAddRuleValue:
         assert captured["default_text"] == ""
         assert "Example:" in captured["message"]
 
-    def test_pair_value_parses_id_and_id_colon_tab(self, app, monkeypatch):
-        self._seed(app, "sheets.read_values", [{"rule": "approved_spreadsheet", "value": []}])
-        monkeypatch.setattr(menu_bar.rumps, "Window", _fake_window(clicked=True, text="sheet1:Sheet1"))
-
-        app._add_rule_value("sheets.read_values", 0)
-
-        rules = app._load_config()["auto_accept_rules"]["sheets.read_values"]
-        assert rules[0]["value"] == [{"spreadsheet_id": "sheet1", "tab": "Sheet1"}]
-
     def test_cancelled_prompt_makes_no_change(self, app, monkeypatch):
         self._seed(app, "gmail.read_message", [{"rule": "trusted_sender_domain", "value": ["a.com"]}])
         monkeypatch.setattr(menu_bar.rumps, "Window", _fake_window(clicked=False))
@@ -1519,6 +1457,82 @@ class TestRemoveRuleValue:
         app._remove_rule_value("gmail.read_message", 0, 9)
 
         assert app._load_config() == before
+
+
+class TestSuggestionPrioritySection:
+    def test_drive_gets_a_suggestion_order_section_with_the_default_order(self, app):
+        sections = app._gather_connector_sections("drive")
+        section = next(s for s in sections if s.title == "Always-allow Suggestion Order")
+        assert [row.text for row in section.rows] == ["i_am_owner", "approved_folder"]
+
+    def test_first_row_has_no_move_up_last_row_has_no_move_down(self, app):
+        sections = app._gather_connector_sections("drive")
+        section = next(s for s in sections if s.title == "Always-allow Suggestion Order")
+        first_labels = [a[0] for a in section.rows[0].actions]
+        last_labels = [a[0] for a in section.rows[-1].actions]
+        assert "↑ Move up" not in first_labels
+        assert "↓ Move down" in first_labels
+        assert "↑ Move up" in last_labels
+        assert "↓ Move down" not in last_labels
+
+    def test_excluded_rule_shows_as_indented_with_re_include_only(self, app):
+        cfg = {"rule_suggestion_priority": {"drive_read": ["approved_folder"]}}
+        app._save_config(cfg)
+        menu_bar.set_suggestion_priority("drive_read", ["approved_folder"])
+
+        sections = app._gather_connector_sections("drive")
+        section = next(s for s in sections if s.title == "Always-allow Suggestion Order")
+        excluded_row = next(r for r in section.rows if "i_am_owner" in r.text)
+        assert excluded_row.indent is True
+        assert [a[0] for a in excluded_row.actions] == ["+ Re-include"]
+
+    def test_connector_without_a_family_gets_no_section(self, app):
+        sections = app._gather_connector_sections("gmail")
+        assert not any(s.title == "Always-allow Suggestion Order" for s in sections)
+
+
+class TestSuggestionPriorityMutators:
+    def test_move_up_swaps_with_the_previous_entry(self, app):
+        app._move_suggestion_priority("drive_read", "approved_folder", -1)
+        assert menu_bar.suggestion_order("drive_read") == ["approved_folder", "i_am_owner"]
+        assert app._load_config()["rule_suggestion_priority"]["drive_read"] == ["approved_folder", "i_am_owner"]
+
+    def test_move_down_swaps_with_the_next_entry(self, app):
+        app._move_suggestion_priority("drive_read", "i_am_owner", 1)
+        assert menu_bar.suggestion_order("drive_read") == ["approved_folder", "i_am_owner"]
+
+    def test_move_past_either_end_is_a_no_op(self, app):
+        app._move_suggestion_priority("drive_read", "i_am_owner", -1)  # already first
+        assert menu_bar.suggestion_order("drive_read") == ["i_am_owner", "approved_folder"]
+        app._move_suggestion_priority("drive_read", "approved_folder", 1)  # already last
+        assert menu_bar.suggestion_order("drive_read") == ["i_am_owner", "approved_folder"]
+
+    def test_move_unknown_rule_name_is_a_no_op(self, app):
+        app._move_suggestion_priority("drive_read", "not_a_real_rule", -1)
+        assert menu_bar.suggestion_order("drive_read") == ["i_am_owner", "approved_folder"]
+
+    def test_exclude_removes_the_rule_from_the_order(self, app):
+        app._exclude_suggestion_rule("drive_read", "i_am_owner")
+        assert menu_bar.suggestion_order("drive_read") == ["approved_folder"]
+
+    def test_include_appends_a_previously_excluded_rule(self, app):
+        app._exclude_suggestion_rule("drive_read", "i_am_owner")
+        app._include_suggestion_rule("drive_read", "i_am_owner")
+        assert menu_bar.suggestion_order("drive_read") == ["approved_folder", "i_am_owner"]
+
+    def test_include_an_already_included_rule_is_a_no_op(self, app):
+        app._include_suggestion_rule("drive_read", "i_am_owner")
+        assert menu_bar.suggestion_order("drive_read") == ["i_am_owner", "approved_folder"]
+
+    def test_mutator_persists_to_disk_and_hot_applies(self, app):
+        app._exclude_suggestion_rule("drive_read", "i_am_owner")
+
+        on_disk = app._load_config()
+        assert on_disk["rule_suggestion_priority"]["drive_read"] == ["approved_folder"]
+        # Hot-applied without needing a config reload -- suggestion_order()
+        # reads the live module state, same as should_auto_accept() does
+        # for auto_accept_rules via reload_rules().
+        assert menu_bar.suggestion_order("drive_read") == ["approved_folder"]
 
 
 class TestClientFor:
@@ -1634,14 +1648,23 @@ class TestConfirmAndSaveGrant:
         assert entries == [{"id": "F1", "write": True}]  # unchanged, not duplicated
         assert len(alerts) == 2  # the "already trusted" alert, on top of the initial confirmation
 
-    def test_spreadsheet_tab_is_stored_on_the_entry(self, app, monkeypatch):
+    def test_tab_is_stored_on_the_entry(self, app, monkeypatch):
+        # No current resource type uses "tab", but _confirm_and_save_grant
+        # still supports it generically for the bridge-facing
+        # propose_rule_change() contract -- a fake resource type exercises
+        # that path without depending on one being wired into the manifest.
         monkeypatch.setattr(menu_bar.rumps, "alert", lambda **kw: 1)
-        rt = menu_bar.grant_resource_type("drive", "spreadsheets")
+        fake_rt = menu_bar.GrantResourceType(
+            connector="fake", config_key="things", id_field="id",
+            label="Fake Things", singular="thing",
+            capabilities={},
+            resolver=lambda client, resource_id: None,
+        )
 
-        app._confirm_and_save_grant(rt, "S1", "Budget Sheet", "Q3")
+        app._confirm_and_save_grant(fake_rt, "T1", "My Thing", "Q3")
 
-        entries = app._load_config()["auto_accept_grants"]["drive"]["spreadsheets"]
-        assert entries == [{"id": "S1", "name": "Budget Sheet", "tab": "Q3"}]
+        entries = app._load_config()["auto_accept_grants"]["fake"]["things"]
+        assert entries == [{"id": "T1", "name": "My Thing", "tab": "Q3"}]
 
 
 def _run_on_candidates_listed(app, monkeypatch, rt, candidates, pick):

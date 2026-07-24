@@ -13,6 +13,7 @@ import asyncio
 import json
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -257,6 +258,263 @@ class TestAcceptAll:
         assert entries[0]["decision"] == "approved"  # accepted once, not via a rule
 
 
+class TestAcceptAllMultipleChoices:
+    """When suggest_rule_choices() returns 2+ candidates for the same item
+    (e.g. a Drive file you own that's also in an approved folder), Always
+    allow must offer an explicit choice instead of always silently creating
+    the top-priority one suggest_rule() itself picked."""
+
+    async def test_multiple_choices_shows_choice_popup_and_creates_the_chosen_rule(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: ("i_am_owner", None))
+        monkeypatch.setattr(
+            gate, "suggest_rule_choices",
+            lambda *a, **k: [("i_am_owner", None), ("approved_folder", ["f1"])],
+        )
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept_all")
+
+        confirm_calls = []
+        monkeypatch.setattr(
+            gate, "show_rule_confirmation_popup",
+            lambda description: confirm_calls.append(description) or True,
+        )
+        choice_calls = []
+        monkeypatch.setattr(
+            gate, "show_rule_choice_popup",
+            lambda descriptions: choice_calls.append(descriptions) or 1,  # picks approved_folder
+        )
+        added = []
+        monkeypatch.setattr(gate, "add_auto_accept_rule", lambda op, name, value: added.append((op, name, value)))
+
+        result = await gate.gated_call(**base_kwargs(gate="review"))
+
+        assert result is FILTERED
+        assert len(choice_calls) == 1  # the choice popup was shown ...
+        assert confirm_calls == []     # ... and the single-choice confirm popup was not
+        assert added == [("gmail.read_message", "approved_folder", ["f1"])]
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "accepted_via_accept_all"
+        assert entries[0]["auto_accept_rule"] == "approved_folder"
+
+    async def test_multiple_choices_cancelled_still_accepts_once_but_no_rule(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: ("i_am_owner", None))
+        monkeypatch.setattr(
+            gate, "suggest_rule_choices",
+            lambda *a, **k: [("i_am_owner", None), ("approved_folder", ["f1"])],
+        )
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(gate, "show_rule_choice_popup", lambda descriptions: None)  # cancelled
+        added = []
+        monkeypatch.setattr(gate, "add_auto_accept_rule", lambda *a: added.append(a))
+
+        result = await gate.gated_call(**base_kwargs(gate="review"))
+
+        assert result is FILTERED
+        assert added == []
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "approved"  # accepted once, not via a rule
+
+    async def test_single_matching_candidate_uses_the_plain_confirm_popup_not_the_choice_one(
+        self, monkeypatch, audit_dir,
+    ):
+        # Regression guard: suggest_rule_choices() returning exactly one
+        # entry must fall back to today's single-item confirm dialog, not
+        # pop up a one-option "choose from list".
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: ("i_am_sender", None))
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [("i_am_sender", None)])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
+        choice_calls = []
+        monkeypatch.setattr(gate, "show_rule_choice_popup", lambda descriptions: choice_calls.append(descriptions))
+        added = []
+        monkeypatch.setattr(gate, "add_auto_accept_rule", lambda op, name, value: added.append((op, name, value)))
+
+        result = await gate.gated_call(**base_kwargs(gate="review"))
+
+        assert result is FILTERED
+        assert choice_calls == []
+        assert added == [("gmail.read_message", "i_am_sender", None)]
+
+
+class TestAcceptAllWrites:
+    """The write-gate counterpart to TestAcceptAll -- gate.suggest_write_rule()
+    drives an "Always allow" button on the write operations listed in
+    auto_accept.WRITE_RULE_SUGGESTIONS, using the same accept_all/
+    show_rule_confirmation_popup/add_auto_accept_rule machinery the review
+    branch already uses, not a separate mechanism."""
+
+    async def test_accept_all_confirmed_creates_rule_and_audits(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_write_rule", lambda *a, **k: ("label_name_allowlist", ["Newsletters"]))
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
+        added = []
+        monkeypatch.setattr(gate, "add_auto_accept_rule", lambda op, name, value: added.append((op, name, value)))
+
+        result = await gate.gated_call(**base_kwargs(gate="popup", connector="gmail", tool="gmail_add_label"))
+
+        assert result is FILTERED
+        assert added == [("gmail.add_label", "label_name_allowlist", ["Newsletters"])]
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "accepted_via_accept_all"
+        assert entries[0]["auto_accept_rule"] == "label_name_allowlist"
+
+    async def test_confirmation_description_uses_describe_rule_change_not_describe_rule(self, monkeypatch, audit_dir):
+        # describe_rule()'s canned templates are read-direction-only English
+        # ("... reads ...") and would mislabel a write's own confirmation --
+        # describe_rule_change() names operation_key explicitly instead.
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_write_rule", lambda *a, **k: ("approved_project_keys", ["PFQA"]))
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept_all")
+        captured = {}
+
+        def fake_confirm(description):
+            captured["description"] = description
+            return True
+
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", fake_confirm)
+        monkeypatch.setattr(gate, "add_auto_accept_rule", lambda *a: None)
+
+        await gate.gated_call(**base_kwargs(gate="popup", connector="jira", tool="jira_create_issue"))
+
+        assert captured["description"] == (
+            "Add auto-accept rule 'approved_project_keys' = PFQA to 'jira.create_issue'"
+        )
+
+    async def test_accept_all_without_suggestion_falls_back_to_plain_approve(self, monkeypatch, audit_dir):
+        # gmail_send_message has no entry in WRITE_RULE_SUGGESTIONS at all --
+        # even if the (real) popup somehow returned "accept_all", there's no
+        # suggestion to act on, so this must behave like a plain accept.
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_write_rule", lambda *a, **k: None)
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept_all")
+        added = []
+        monkeypatch.setattr(gate, "add_auto_accept_rule", lambda *a: added.append(a))
+
+        result = await gate.gated_call(**base_kwargs(gate="popup", connector="gmail", tool="gmail_send_message"))
+
+        assert result is FILTERED
+        assert added == []
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "approved"
+
+    async def test_accept_all_cancelled_confirmation_still_accepts_once_but_no_rule(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_write_rule", lambda *a, **k: ("label_name_allowlist", ["Newsletters"]))
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: False)
+        added = []
+        monkeypatch.setattr(gate, "add_auto_accept_rule", lambda *a: added.append(a))
+
+        result = await gate.gated_call(**base_kwargs(gate="popup", connector="gmail", tool="gmail_add_label"))
+
+        assert result is FILTERED
+        assert added == []
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "approved"
+
+    async def test_drive_write_offers_approved_sandbox_folder_end_to_end(self, monkeypatch, audit_dir):
+        # End-to-end through the real (unmocked) suggest_write_rule, for one
+        # of the 13 Drive/Sheets/Docs write operations that now share the
+        # sandbox-folder suggestion.
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
+        added = []
+        monkeypatch.setattr(gate, "add_auto_accept_rule", lambda op, name, value: added.append((op, name, value)))
+
+        result = await gate.gated_call(**base_kwargs(
+            gate="popup", connector="drive", tool="drive_write_file_content",
+            raw_data={"file": SimpleNamespace(parent_ids=["folder1"]), "content_preview": "x"},
+        ))
+
+        assert result is FILTERED
+        assert added == [("drive.write_file", "approved_sandbox_folder", ["folder1"])]
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "accepted_via_accept_all"
+        assert entries[0]["auto_accept_rule"] == "approved_sandbox_folder"
+
+    async def test_gmail_create_draft_offers_the_unconditional_always_allow_rule(self, monkeypatch, audit_dir):
+        # End-to-end through the real (unmocked) suggest_write_rule -- unlike
+        # every other write suggestion, always_allow has no recipient/value
+        # to scope it to, so this also exercises describe_rule_change's
+        # "no value" formatting for the confirmation popup.
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept_all")
+        captured = {}
+        monkeypatch.setattr(
+            gate, "show_rule_confirmation_popup",
+            lambda description: captured.setdefault("description", description) or True,
+        )
+        added = []
+        monkeypatch.setattr(gate, "add_auto_accept_rule", lambda op, name, value: added.append((op, name, value)))
+
+        result = await gate.gated_call(**base_kwargs(
+            gate="popup", connector="gmail", tool="gmail_create_draft",
+            args={"to": "anyone@example.com"},
+        ))
+
+        assert result is FILTERED
+        assert added == [("gmail.create_draft", "always_allow", None)]
+        assert captured["description"] == "Add auto-accept rule 'always_allow' to 'gmail.create_draft'"
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "accepted_via_accept_all"
+        assert entries[0]["auto_accept_rule"] == "always_allow"
+
+    async def test_show_popup_receives_allow_accept_all_true_when_suggestion_exists(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_write_rule", lambda *a, **k: ("label_name_allowlist", ["Newsletters"]))
+        captured = {}
+
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False):
+            captured["allow_accept_all"] = allow_accept_all
+            return "accept"
+
+        monkeypatch.setattr(gate, "show_popup", fake_show_popup)
+
+        await gate.gated_call(**base_kwargs(gate="popup", connector="gmail", tool="gmail_add_label"))
+
+        assert captured["allow_accept_all"] is True
+
+    async def test_show_popup_receives_allow_accept_all_false_without_suggestion(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_write_rule", lambda *a, **k: None)
+        captured = {}
+
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False):
+            captured["allow_accept_all"] = allow_accept_all
+            return "accept"
+
+        monkeypatch.setattr(gate, "show_popup", fake_show_popup)
+
+        await gate.gated_call(**base_kwargs(gate="popup", connector="gmail", tool="gmail_create_draft"))
+
+        assert captured["allow_accept_all"] is False
+
+    async def test_pii_gate_never_applies_to_a_write_accept_all(self, monkeypatch, audit_dir):
+        # Sanity check on the module docstring's own claim: the popup branch
+        # never touches pii_categories/show_pii_confirmation_popup at all,
+        # accept_all included -- there's no "possible PII flowed in from an
+        # external source" to confirm on a write.
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_write_rule", lambda *a, **k: ("label_name_allowlist", ["Newsletters"]))
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
+        monkeypatch.setattr(gate, "add_auto_accept_rule", lambda *a: None)
+
+        def boom(*a, **k):
+            raise AssertionError("show_pii_confirmation_popup must never be called for a write")
+        monkeypatch.setattr(gate, "show_pii_confirmation_popup", boom)
+
+        result = await gate.gated_call(**base_kwargs(
+            gate="popup", connector="gmail", tool="gmail_add_label",
+            details_text="His SSN is 123-45-6789 on file.",
+        ))
+        assert result is FILTERED
+
+
 class TestProposeRuleChange:
     """gate.propose_rule_change() -- the bridge-facing counterpart to the
     popup's own "Always allow" flow (see its docstring in gate.py). Every
@@ -460,7 +718,7 @@ class TestPopupGateWrites:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False):
             captured["details"] = details
             return "accept"
 
@@ -546,7 +804,7 @@ class TestRequestFingerprint:
 
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False):
             captured["seen_count"] = seen_count
             return "accept"
 
@@ -585,7 +843,7 @@ class TestWriteContentFlags:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False):
             captured["write_content_flags"] = write_content_flags
             return "accept"
 
@@ -602,7 +860,7 @@ class TestWriteContentFlags:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False):
             captured["write_content_flags"] = write_content_flags
             return "accept"
 
@@ -655,7 +913,7 @@ class TestWriteContentFlags:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False):
             captured["write_content_flags"] = write_content_flags
             return "accept"
 
@@ -688,7 +946,7 @@ class TestTempAccept:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False):
             captured["temp_accept_eligible"] = temp_accept_eligible
             return "deny"
 
@@ -707,7 +965,7 @@ class TestTempAccept:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False):
             captured["temp_accept_eligible"] = temp_accept_eligible
             return "deny"
 
@@ -724,7 +982,7 @@ class TestTempAccept:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False):
             captured["temp_accept_eligible"] = temp_accept_eligible
             return "deny"
 
@@ -1226,7 +1484,7 @@ class TestQueuedRequestReCheck:
 
         popup_calls = []
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False):
             popup_calls.append(title)
             wait_until(lambda: len(check_calls) >= 3, timeout=1.0)
             # Simulate a rule appearing (e.g. added from the menu bar) while
@@ -1575,7 +1833,7 @@ class TestClaudeReason:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False):
             captured["claude_reason"] = claude_reason
             return "accept"
 

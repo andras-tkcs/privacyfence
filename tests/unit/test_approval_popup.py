@@ -137,6 +137,39 @@ class TestShowRuleConfirmationPopup:
         assert any("trusted_sender_domain: a.com" in line for line in captured["lines"])
 
 
+class TestShowRuleChoicePopup:
+    def test_returns_the_index_of_the_chosen_description(self, monkeypatch):
+        monkeypatch.setattr(approval_popup, "_run", lambda script: "approved_folder: f1")
+
+        result = approval_popup.show_rule_choice_popup(["i_am_owner", "approved_folder: f1"])
+
+        assert result == 1
+
+    def test_cancelled_choice_returns_none(self, monkeypatch):
+        monkeypatch.setattr(approval_popup, "_run", lambda script: None)
+        assert approval_popup.show_rule_choice_popup(["i_am_owner", "approved_folder: f1"]) is None
+
+    def test_unrecognized_returned_text_returns_none(self, monkeypatch):
+        # Shouldn't happen against the real "choose from list" (it can only
+        # return one of the options given), but degrade safely rather than
+        # raising if it somehow does.
+        monkeypatch.setattr(approval_popup, "_run", lambda script: "not one of the options")
+        assert approval_popup.show_rule_choice_popup(["i_am_owner", "approved_folder: f1"]) is None
+
+    def test_script_lists_every_description_as_an_option(self, monkeypatch):
+        captured = {}
+        def fake_run(script):
+            captured["script"] = script
+            return "i_am_owner"
+        monkeypatch.setattr(approval_popup, "_run", fake_run)
+
+        approval_popup.show_rule_choice_popup(["i_am_owner", "approved_folder: f1"])
+
+        assert '"i_am_owner"' in captured["script"]
+        assert '"approved_folder: f1"' in captured["script"]
+        assert "choose from list" in captured["script"]
+
+
 class TestShowPopupAndShowReadPopup:
     def test_show_popup_forwards_with_allow_accept_all_false(self, monkeypatch):
         captured = {}
@@ -150,6 +183,18 @@ class TestShowPopupAndShowReadPopup:
             "connector": "",
         }
         assert result == "accept"
+
+    def test_show_popup_forwards_allow_accept_all_true(self, monkeypatch):
+        # The write-gate counterpart to show_read_popup's own allow_accept_all
+        # forwarding -- offered only for the handful of write ops with a
+        # resource-scoped rule to suggest (see auto_accept.WRITE_RULE_SUGGESTIONS).
+        captured = {}
+        monkeypatch.setattr(approval_popup, "show_native_approval", lambda **kw: captured.update(kw) or "accept_all")
+
+        result = approval_popup.show_popup("Title", {}, "details", allow_accept_all=True)
+
+        assert captured["allow_accept_all"] is True
+        assert result == "accept_all"
 
     def test_show_popup_forwards_temp_accept_eligible_true(self, monkeypatch):
         captured = {}

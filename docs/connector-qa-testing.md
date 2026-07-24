@@ -314,12 +314,32 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
    gets exercised, not just exact-domain matches.
 7. `gmail_create_draft` — draft to myself, subject `PrivacyFence QA test [{RUN_ID}]
    — safe to delete`. This is popup-gated, I'll Allow once. Add it to the manifest.
+   The popup also offers **Always allow** now, proposing the unconditional `always_allow`
+   rule (`gmail.create_draft`) — no recipient check at all, since drafting has no
+   recipient sent yet. Don't click it here (it'd silently skip the popup for every draft
+   in later phases); it's exercised the same way step 9 exercises `gmail_add_label`'s
+   button, just not repeated per-step.
 8. `gmail_reply_draft` on the thread from step 4, again clearly marked as a test
    with `{RUN_ID}`. Popup, I'll Allow once. Add it to the manifest.
 9. `gmail_add_label` on the **label-test message from step 2** — use a fresh
    label named exactly `PrivacyFence QA {RUN_ID}` (the tool creates it if it
    doesn't already exist, per `_get_or_create_label` in `gmail_client.py`).
-   Popup, Allow once.
+   The popup should now offer **Always allow** too (new — `gmail.add_label` is
+   one of the operations in `auto_accept.WRITE_RULE_SUGGESTIONS`
+   that get one). **Pause here**: tell me you're about to call it and that
+   **I will click "Always allow"** this time, then wait for me to say go. Once
+   I do, make the call and tell me exactly what rule text/scope it proposes
+   (expect: `label_name_allowlist` scoped to `PrivacyFence QA {RUN_ID}` — not a
+   broader rule). Note this creates a real, persisted rule — flag it for
+   Phase 13 teardown (remove it from **Manage Auto-accept Rules… → Gmail →
+   Filters** once this run is done, it isn't something you'd want to keep).
+   The other `WRITE_RULE_SUGGESTIONS` operations
+   (`calendar_create_event`/`update_event`/`set_event_visibility`, all four
+   Jira write tools, both Confluence write tools, all five Tasks write tools,
+   `gmail_create_draft`/its two reply variants, and all 13 Drive/Sheets/Docs
+   write tools — see [Phase 2](#phase-2--drive--sheets)) work identically —
+   this one demonstration is representative, no need to repeat it in every
+   later phase.
 10. `gmail_archive_message` on the same message. Popup, Allow once. Then
     `gmail_list_messages` (silent, no prompt) with query
     `in:inbox label:"PrivacyFence QA {RUN_ID}"` and confirm it comes back
@@ -382,6 +402,16 @@ All of this run's Drive/Sheets artifacts go inside `{FIXTURES}.drive_qa_folder_i
 (pass it as `parent_folder_id` everywhere that accepts one) — that's also what
 should trigger the `drive.read_file_contents` / `approved_folder` auto-accept rule
 in step 3, if you configured it.
+
+Every write popup below (`drive_write_file_content`, `drive_upload_file`,
+`drive_write_doc_content`, `drive_move_file`, `drive_add_comment`, all six
+`drive_sheets_*` writes, `drive_docs_edit_content`/`format_content`) now also shows an
+**Always allow** button proposing `approved_sandbox_folder`/`parent_folder_allowlist`/
+`move_within_approved_folders` scoped to the folder in play (see
+[always-allow-rules-reference.md](always-allow-rules-reference.md#google-drive-incl-sheets-and-docs)).
+The steps below still say "Allow once" throughout since that's what exercises the
+one-off popup path each step is actually testing — clicking Always allow instead would
+create a standing rule and silently change every later step in this phase.
 1. `drive_list_files`, `drive_get_file_metadata`, `drive_list_folder`,
    `drive_list_shared_drives` (expect: all silent).
 2. `drive_create_blank_file` named `PrivacyFence QA test file [{RUN_ID}] — safe to
@@ -419,8 +449,13 @@ in step 3, if you configured it.
 12. `drive_sheets_get_values` on a small range like `Sheet1!A1:B2` — review gate.
     **Pause here**: tell me you're about to call it and that **I will click
     "Always allow"** this time, then wait for me to say go. Once I do, make the
-    call and tell me exactly what rule text/scope it proposes (expect: scoped
-    to this spreadsheet + tab, not a broad rule).
+    call and tell me exactly what rule text/scope it proposes — this shares
+    the same `i_am_owner`/`approved_folder` suggestion as `drive_get_file_content`
+    (expect `i_am_owner`, since you created this sheet yourself, unless you've
+    reordered `rule_suggestion_priority.drive_read` to prefer
+    `approved_folder`; if both apply and you haven't excluded one, expect a
+    "choose from list" popup asking which to create instead of one silently
+    winning — see [Multiple matching candidates](always-allow-rules-reference.md#multiple-matching-candidates)).
 13. `drive_sheets_write_range` — write `A1: "hello"`, `A2: "=1+1"` to prove
     formulas evaluate. Popup, Allow once — check for the temp-accept
     disclosure caption above the buttons (same wording as step 5). Once you
@@ -653,7 +688,17 @@ manifest entries needed, both are already tracked.
    `{FIXTURES}.slack_approved_channel`. This should NOT prompt me. Confirm.
 3. `slack_get_channel_history` on `{FIXTURES}.slack_control_channel` (the
    non-approved one) — should prompt for review. I'll Allow once.
-4. `slack_search_messages` with any query — review gate, Allow once.
+4. `slack_search_messages` with a query that only matches messages in
+   `slack_approved_channel` (reuse a phrase from step 2's history). If
+   `slack_approved_channel` came from `auto_accept_grants.slack.channels`
+   (`read: true`) in Phase 0 — the grant now compiles both `approved_channel`
+   and `approved_channel_all_results` for `slack.read_messages` — this should
+   NOT prompt me. If it came from the legacy `slack.read_messages` →
+   `approved_channel` rule only (no grant), it's expected to still prompt,
+   since `approved_channel_all_results` isn't configured in that form; Allow
+   once. Either way, follow with the same query broadened to also match
+   `slack_control_channel` — this should always prompt, approved-channel
+   fixture or not (one unapproved result gates the whole search). Allow once.
 5. `slack_get_thread_replies` on the thread that already exists in
    `slack_control_channel` — review gate, Allow once. (This fixture exists precisely
    so this step always has something to find, instead of depending on step 3/4
@@ -817,7 +862,16 @@ other connector's writes, each independently configurable via the
    `approved_chats`) — same explicit "did a popup appear?" question, same
    Phase 14 flag. I'll Allow once.
 4. `telegram_search_messages` with a query that matches the seed message from
-   setup — same explicit popup check, same Phase 14 flag.
+   setup, in `telegram_approved_chat_id` only — same explicit popup check,
+   same Phase 14 flag. `telegram_search_messages` now shares the
+   `telegram.read_chat_messages` operation key with `telegram_get_messages`
+   (it used to have its own key), so if `telegram_approved_chat_id` came from
+   `auto_accept_grants.telegram.chats` (`read: true`), the grant now compiles
+   both `approved_chats` and `approved_chats_all_results` and this should NOT
+   prompt; from the legacy rule-only form, expect it to still prompt (Allow
+   once). Repeat with a query broadened to also reach
+   `telegram_control_chat_id` — should always prompt, same reasoning as
+   Phase 3 step 4.
 5. `telegram_send_message` to "Saved Messages"
    (`telegram_saved_messages_chat_id`), test text tagged `{RUN_ID}`. Popup,
    Allow once.
@@ -1042,6 +1096,10 @@ a delete/remove/archive/close tool available, call it now:
 6. The Gmail label-test message from Phase 1 steps 2/9–12 needs nothing here —
    the archive/unarchive/remove-label sequence already restores it to exactly
    its starting state.
+6a. Remove the `label_name_allowlist` rule created via the write-popup Always
+    allow demo in Phase 1 step 9 (**Manage Auto-accept Rules… → Gmail →
+    Filters → ✕ Remove**) — it was created purely to demonstrate the button,
+    not something to leave standing after this run.
 7. For anything with **no delete tool at all** (Calendar event, the
    out-of-office and working-location entries from Phase 4 steps 7–10, Contact,
    Slack message, Telegram message, the Gmail filter from Phase 1 steps 17/19,
