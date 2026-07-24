@@ -18,11 +18,17 @@ release gated data on its own.
     materially bigger blast radius than auto-accepting reads, so Always
     allow is not offered here. A small set of operations expected to be
     called repeatedly against the same file in quick succession (see
-    auto_accept.TEMP_ACCEPT_ELIGIBLE_OPERATIONS) get a narrower "Allow for
-    5 min" button instead: it auto-accepts further calls of the same
-    operation against that same file for 5 minutes, in memory only (never
-    written to settings.yaml, gone on daemon restart) -- a much smaller
-    commitment than a standing Always allow rule.
+    auto_accept.TEMP_ACCEPT_ELIGIBLE_OPERATIONS) get a lighter-weight
+    concession instead of a standing Always allow rule: clicking Allow once
+    on one of these also auto-accepts further calls of the same operation
+    against that same file for 5 minutes, in memory only (never written to
+    settings.yaml, gone on daemon restart). This used to be a distinct
+    "Allow for 5 min" button the user had to choose instead of Allow once;
+    it's now folded into Allow once itself -- the popup only discloses it
+    with a plain caption (approval_window.py's temp_accept_eligible), not a
+    separate control, so approving a formatting-style task doesn't require
+    picking a duration up front. See the popup-gate branch below for where
+    the grace window actually gets armed.
 
 PII gate: read tools only (``gate="review"``). Before any auto-accept check,
 the scan text (``pii_scan_text`` if the caller provided one, otherwise the
@@ -362,24 +368,24 @@ async def gated_call(
                     claude_reason, write_content_flags, seen_count, connector,
                 )
 
-            if decision == "accept_temp":
+            if decision == "accept":
                 if file_key is not None:
+                    # Eligible for the same-file grace window (see module
+                    # docstring) -- no separate "Allow for 5 min" click
+                    # anymore, a plain Allow once on one of these operations
+                    # arms it too, so Claude's follow-up calls against this
+                    # same file don't reprompt for the next 5 minutes.
                     evaluator.register_temp_accept(operation_key, file_key)
                     audit(
                         decision="accepted_via_temp_session", auto_accept_rule="session_temp_accept",
                         pii_detected=False,
                     )
                     logger.info(
-                        "Allow for 5 min: op=%s file=%s (%s, %s)", operation_key, file_key, connector, tool
+                        "Allow once (also armed 5 min grace window): op=%s file=%s (%s, %s)",
+                        operation_key, file_key, connector, tool,
                     )
-                    return filtered_data
-                # Button shouldn't have been offered without a file_key -- fall
-                # back to a plain, once-only accept rather than denying a click
-                # the user clearly meant as approval.
-                decision = "accept"
-
-            if decision == "accept":
-                audit(decision="approved", auto_accept_rule="", pii_detected=False)
+                else:
+                    audit(decision="approved", auto_accept_rule="", pii_detected=False)
                 return filtered_data
 
             audit(decision="rejected", auto_accept_rule="", pii_detected=False)

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Local-only smoke test for approval_window.py's real modal loop: does a
-real click on a real, on-screen "Allow once" / "Deny" / "Always allow" /
-"Allow for 5 min" button actually resolve show_native_approval() to the
-value its docstring promises?
+real click on a real, on-screen "Allow once" / "Deny" / "Always allow"
+button actually resolve show_native_approval() to the value its docstring
+promises?
 
 tests/unit/test_approval_window.py already builds the real AppKit view tree
 for every popup shape and asserts on its content -- buttons, PII
@@ -39,10 +39,11 @@ responses -- see scripts/qa_fixture_recorder.py) and docs/qa-environment-setup.m
 [QATEST] naming conventions, rather than generic placeholder strings -- see that doc's "one rule
 this doc follows wherever it creates content" for why identity fields can look like a real
 project/folder name but content never is. Cross-cutting mechanics this reference doc calls
-"automatic on every group" (Deny, Always allow, Allow for 5 min, the PII/content-flag banners,
-the visibility checklist, seen-count + Claude's reason together, progressive disclosure, the
-Gmail-style header, native PDFView) are folded into specific tool scenarios rather than kept as
-separate generic ones -- see the inline comment at each such scenario in _scenarios().
+"automatic on every group" (Deny, Always allow, the temp-accept disclosure caption, the
+PII/content-flag banners, the visibility checklist, seen-count + Claude's reason together,
+progressive disclosure, the Gmail-style header, native PDFView) are folded into specific tool
+scenarios rather than kept as separate generic ones -- see the inline comment at each such
+scenario in _scenarios().
 
 One more, non-tool scenario runs last: the actual menu bar status item and, from it, the "Manage
 Auto-accept Rules…" window (see _run_menu_bar_scenario's docstring) -- the menu bar redesign (PR
@@ -605,9 +606,9 @@ def _scenarios(
     """One scenario per tool in docs/approval-window-content-reference.md's RG-1/RG-2/RG-3/RG-4/
     WG-1/WG-2 tables (61 tools total) -- every dialog *shape* that reference doc documents, not
     just a representative handful. Cross-cutting mechanics that doc calls "automatic on every
-    group" (Deny, Always allow, Allow for 5 min, the PII/content-flag banners, the visibility
-    checklist, seen-count + Claude's reason together, progressive disclosure, the Gmail-style
-    header, native PDFView) are folded into specific tool scenarios below rather than kept as
+    group" (Deny, Always allow, the temp-accept disclosure caption, the PII/content-flag banners,
+    the visibility checklist, seen-count + Claude's reason together, progressive disclosure, the
+    Gmail-style header, native PDFView) are folded into specific tool scenarios below rather than kept as
     separate generic ones -- see the inline notes at each such scenario for which mechanic it
     carries. This means every button, every banner/card shape, and every tool's exact preview
     field set all get a real on-screen click at least once, with no redundant duplicate coverage
@@ -1320,29 +1321,32 @@ def _scenarios(
     ))
 
     # ================================================================== #
-    # WG-2 -- popup-gate, Deny / Allow once / Allow for 5 min (6 tools)
+    # WG-2 -- popup-gate, Deny / Allow once (temp-accept-eligible: Allow
+    # once also arms a 5-minute same-file grace window, disclosed via a
+    # caption above the buttons rather than a separate button -- there is
+    # no "Allow for 5 min" click to test anymore, see gate.py) (6 tools)
     # ================================================================== #
 
     results.append(run(
         # The write-side "kitchen sink": every row a popup-gate dialog can
         # legally show, all rendered together -- summary box, seen-count,
-        # amber content-flag banner, and Claude's reason (rows 1-2 and 6-7
-        # in docs/approval-window-content-reference.md's anatomy table) --
-        # plus the Allow-for-5-min button riding along on the same click.
-        # A write never gets the AI-visibility checklist or the red PII
-        # banner (review-gate only -- see that doc's "Cross-cutting"
-        # section), so this is the actual ceiling for a write dialog: the
-        # write-side counterpart to the RG-2 gmail_get_thread "all cards"
-        # scenario above. Also the one scenario meant to be captured on
-        # its own via --scenario for a README screenshot showing a write
-        # dialog's full card set.
-        "WG-2 · drive_sheets_write_range (+ reason, seen-count, content-flag banner, Allow for 5 min -- all cards)",
-        click_title="Allow for 5 min", expected="accept_temp",
+        # amber content-flag banner, Claude's reason (rows 1-2 and 6-7 in
+        # docs/approval-window-content-reference.md's anatomy table), and
+        # the temp-accept disclosure caption riding along on the same
+        # Allow-once click. A write never gets the AI-visibility checklist
+        # or the red PII banner (review-gate only -- see that doc's
+        # "Cross-cutting" section), so this is the actual ceiling for a
+        # write dialog: the write-side counterpart to the RG-2
+        # gmail_get_thread "all cards" scenario above. Also the one
+        # scenario meant to be captured on its own via --scenario for a
+        # README screenshot showing a write dialog's full card set.
+        "WG-2 · drive_sheets_write_range (+ reason, seen-count, content-flag banner, temp-accept disclosure -- all cards)",
+        click_title="Allow once", expected="accept",
         title="Write Sheet Range",
         preview={"Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Range": "A1:C10"},
         details_text="Synthetic PrivacyFence QA sheet write: Q2 budget figures, $12,400.00 [QATEST].",
         allow_accept_all=False,
-        allow_temp_accept=True,
+        temp_accept_eligible=True,
         write_content_flags=["Financial figures (currency amounts)"],
         claude_reason="Filling in the QA budget row as requested.",
         seen_count=3,
@@ -1358,7 +1362,7 @@ def _scenarios(
         },
         details_text="Synthetic PrivacyFence QA sheet formatting. No real information.",
         allow_accept_all=False,
-        allow_temp_accept=True,
+        temp_accept_eligible=True,
         connector="drive",
     ))
 
@@ -1372,7 +1376,7 @@ def _scenarios(
         },
         details_text="Synthetic PrivacyFence QA dimension insert. No real information.",
         allow_accept_all=False,
-        allow_temp_accept=True,
+        temp_accept_eligible=True,
         connector="drive",
     ))
 
@@ -1383,7 +1387,7 @@ def _scenarios(
         preview={"File": QA_DRIVE_FILE, "Owner": QA_EMAIL},
         details_text="Synthetic PrivacyFence QA comment. No real information. [QATEST]",
         allow_accept_all=False,
-        allow_temp_accept=True,
+        temp_accept_eligible=True,
         connector="drive",
     ))
 
@@ -1394,7 +1398,7 @@ def _scenarios(
         preview={"File": QA_DRIVE_DOC, "Owner": QA_EMAIL, "Match": "the one matching occurrence"},
         details_text="Synthetic PrivacyFence QA doc edit. No real information.",
         allow_accept_all=False,
-        allow_temp_accept=True,
+        temp_accept_eligible=True,
         connector="drive",
     ))
 
@@ -1405,7 +1409,7 @@ def _scenarios(
         preview={"File": QA_DRIVE_DOC, "Owner": QA_EMAIL, "Format": "Italic selection"},
         details_text="Synthetic PrivacyFence QA doc formatting. No real information.",
         allow_accept_all=False,
-        allow_temp_accept=True,
+        temp_accept_eligible=True,
         connector="drive",
     ))
 

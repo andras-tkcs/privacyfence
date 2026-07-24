@@ -1479,9 +1479,10 @@ class TestConcurrentRulePersistence:
 
 
 # --------------------------------------------------------------------------- #
-# Session temp accept ("Allow for 5 min") -- gate.py's lighter alternative
-# to a standing Always allow rule for write ops expected to be called
-# repeatedly against the same file (sheets writes/formats, drive comments).
+# Session temp accept -- gate.py's lighter alternative to a standing Always
+# allow rule for write ops expected to be called repeatedly against the
+# same file (sheets writes/formats, drive comments): an Allow once on one
+# of these operations also arms this window, with no separate button.
 # Unlike the YAML-backed rules above, this state is in-memory only and never
 # persisted.
 # --------------------------------------------------------------------------- #
@@ -1509,8 +1510,9 @@ class TestTempAcceptKey:
 
     def test_covers_every_declared_eligible_operation(self):
         # Every entry in TEMP_ACCEPT_ELIGIBLE_OPERATIONS must actually resolve
-        # a key when its arg is present -- otherwise the popup would offer
-        # "Allow for 5 min" for an operation that can never register one.
+        # a key when its arg is present -- otherwise the popup would show the
+        # temp-accept disclosure caption for an operation that can never
+        # actually register one.
         for op_key, arg_name in TEMP_ACCEPT_ELIGIBLE_OPERATIONS.items():
             ctx = make_ctx(args={arg_name: "some-id"})
             assert temp_accept_key(op_key, ctx) == "some-id"
@@ -1523,7 +1525,7 @@ class TestTempAcceptKey:
         # Resolved design decision: unlike format_range/insert_dimensions,
         # deleting rows/columns is destructive with no undo path through
         # PrivacyFence, so it only ever gets the standing-rule treatment, not
-        # a lightweight "Allow for 5 min" button.
+        # the lighter-weight temp-accept grace window.
         assert "sheets.delete_dimensions" not in TEMP_ACCEPT_ELIGIBLE_OPERATIONS
         ctx = make_ctx(args={"spreadsheet_id": "sheet-1", "dimension": "ROWS"})
         assert temp_accept_key("sheets.delete_dimensions", ctx) is None

@@ -29,7 +29,7 @@ method has already caught that no unit test did.
   provider's API itself has moved out from under it.
 - Whenever you want to sanity-check that the *documented* gate for a tool
   (the Technical Reference's connector tables) still matches its *actual* gate in source.
-- After any change to `privacyfence_check_policy` or unattended-session mode (Phase 11) — these
+- After any change to `privacyfence_check_policy` or unattended-session mode (Phase 12) — these
   bypass connector clients entirely, so a connector-client mock can't catch a regression there
   either; only a live daemon actually proves a call denies without ever opening a popup.
 
@@ -127,7 +127,7 @@ Ground rules:
   "safe to ignore/delete" somewhere in the body. Never edit or send anything real.
 - Everything durable this run creates (drafts, files, events, issues, pages,
   contacts, tasks…) must go in the running manifest table described below, tagged
-  with `{RUN_ID}` — Phase 12 (teardown) depends on that manifest to find and remove
+  with `{RUN_ID}` — Phase 13 (teardown) depends on that manifest to find and remove
   them, and future runs depend on it to tell "this run's" artifacts apart from a
   previous run's leftovers.
 - Prefer QA-owned destinations over guessing at real ones: the Drive "PrivacyFence
@@ -143,7 +143,7 @@ Ground rules:
   4 tool calls, 2 required approval") before moving to the next phase, so I'm not
   flooded with 40 popups back to back.
 - **Whenever a step expects something other than a plain Allow once — Deny, "Show
-  Details," "Always allow," or "Allow for 5 min" — send that instruction as its own message and stop.
+  Details," or "Always allow" — send that instruction as its own message and stop.
   Don't make the tool call in the same turn.** Wait for me to reply (e.g. "go" or
   "ready") before calling the tool. The native approval popup can appear on top
   of this chat window the instant the tool call fires, so if the instruction and
@@ -179,23 +179,23 @@ Ground rules:
   popup) | my decision | audit-log decision | notes`. Leave
   the `audit-log decision` column blank for now — don't guess it, don't ask me
   for it mid-run, and don't try to read the log file yourself during the run.
-  Phase 13, the very last phase, is where that column gets filled in: I'll
+  Phase 14, the very last phase, is where that column gets filled in: I'll
   attach the current week's audit log to the conversation at that point, and
   you'll go back through this table and fill in every row's actual logged
   `accepted` / `denied` / `auto_accepted` value from the attached file, matching
   entries by timestamp and tool/operation name. Print the full table (still
   with the column blank) at the end of each phase as normal; the populated
-  version only appears once, in the Phase 13 / final report.
+  version only appears once, in the Phase 14 / final report.
 - Keep a second running table, the manifest: `connector | artifact | id | {RUN_ID}
   tag | deletable via tool? (yes/no)`. Print it at the very end too, split into
-  "cleaned up in Phase 12" vs. "needs manual deletion."
+  "cleaned up in Phase 13" vs. "needs manual deletion."
 
 I (the human) will be watching for the approval prompts as they appear. Most
 steps expect a plain Allow once and you can just make the call. The ones marked
 **"pause here"** expect something else (Deny / Always allow) —
 for those, stop and wait for my go-ahead as the ground rules above describe,
 *then* call the tool, then report back what actually happened in the tool
-result and write it into the table as provisional — Phase 13's audit-log
+result and write it into the table as provisional — Phase 14's audit-log
 reconciliation, not this step, is what turns it from "reported" into
 "settled."
 
@@ -294,7 +294,7 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
    click Deny this time**, then wait for me to say go. Once I do, make the
    call and confirm you get an error, not data — and don't fabricate a
    fallback answer. Record the raw error in the table and flag this row for
-   Phase 13: whether it was actually `denied` versus a size-truncation error
+   Phase 14: whether it was actually `denied` versus a size-truncation error
    with a different underlying cause isn't decidable from the tool result
    alone, so don't guess it now.
 4. Pick a message that has a thread with 2+ messages. Call `gmail_get_thread`
@@ -337,7 +337,7 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
     `gmail_list_messages` (silent) with query `label:"PrivacyFence QA {RUN_ID}"`
     and confirm zero results. After this step the label-test message is back
     exactly where it started — still in the inbox, with no leftover label —
-    so there's nothing to add to the manifest or clean up for it in Phase 12.
+    so there's nothing to add to the manifest or clean up for it in Phase 13.
 13. `gmail_list_labels` (expect: silent, no prompt). Confirm the response
     includes both system labels (e.g. `INBOX`) and any user labels, each with
     an `id`/`name`/`type`.
@@ -347,7 +347,7 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
     `PrivacyFence QA {RUN_ID}` parent segment first, then the child — call
     `gmail_list_labels` again (silent) and confirm **both** segments now
     exist as separate labels. Add the parent label name to the manifest
-    (no delete tool — see Phase 12).
+    (no delete tool — see Phase 13).
 15. `gmail_create_label` again with the **exact same** nested name from step
     14. This should fail with a "label already exists" error rather than
     prompting a popup — `create_label` raises before ever reaching the gate,
@@ -358,7 +358,7 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
     action `add_label_names="PrivacyFence QA {RUN_ID}/Nested"` (reusing the
     label from step 14) plus `archive=true`. Popup, I'll Allow once. Record the
     returned filter `id` and add it to the manifest (no delete tool — see
-    Phase 12).
+    Phase 13).
 18. `gmail_list_filters` (silent) and confirm the new filter appears with the
     `id` from step 17 and the criteria/action you set.
 19. `gmail_update_filter` on that `id`, changing `archive` to `false` and
@@ -392,15 +392,17 @@ in step 3, if you configured it.
    Allow once.
 4. `drive_write_file_content` on it, write a short test sentence — popup, Allow once.
 5. `drive_add_comment` on it, any test comment. This is one of six write ops
-   with a temp-accept shortcut on its popup (the others are steps 13, 16, 24,
-   27, and 28 below — see the Technical Reference's
-   [Auto-accept rules](TECHNICAL_REFERENCE.md#auto-accept-rules)).
-   **Pause here**: tell me you're about to call it and that **I will click
-   "Allow for 5 min"** this time, then wait for me to say go. Once I do, make
-   the call, then immediately call `drive_add_comment` on the same file again
-   with a different test comment — this second call should NOT prompt (silent,
-   logged `auto_accepted` with rule `session_temp_accept`). Tell me whether the
-   second call prompted or not.
+   whose popup arms a 5-minute temp-accept grace window on Allow once (the
+   others are steps 13, 16, 24, 27, and 28 below — see the Technical
+   Reference's [Auto-accept rules](TECHNICAL_REFERENCE.md#auto-accept-rules)).
+   Popup, Allow once — check that a plain disclosure caption ("Approving this
+   also allows further calls like this to the same file for a few minutes
+   without asking again") appears above the buttons, not a separate button.
+   Once you click Allow once, immediately call `drive_add_comment` on the
+   same file again with a different test comment — this second call should
+   NOT prompt (silent, logged `auto_accepted` with rule `session_temp_accept`).
+   Tell me whether the second call prompted or not, and whether the
+   disclosure caption was present on the first popup.
 6. `drive_upload_file` — upload any small local text file into the QA Sandbox
    folder. Popup, Allow once. Add to manifest.
 7. `drive_write_doc_content` — create/write a short Google Doc in the QA Sandbox
@@ -420,16 +422,16 @@ in step 3, if you configured it.
     call and tell me exactly what rule text/scope it proposes (expect: scoped
     to this spreadsheet + tab, not a broad rule).
 13. `drive_sheets_write_range` — write `A1: "hello"`, `A2: "=1+1"` to prove
-    formulas evaluate. **Pause here**: tell me you're about to call it and
-    that **I will click "Allow for 5 min"** this time, then wait for me to
-    say go. Once I do, make the call, then immediately call
-    `drive_sheets_write_range` again on the same spreadsheet, a different
-    range like `A3: "world"` — this second call should NOT prompt (silent,
-    logged `auto_accepted` with rule `session_temp_accept`). Tell me whether
-    the second call prompted or not.
+    formulas evaluate. Popup, Allow once — check for the temp-accept
+    disclosure caption above the buttons (same wording as step 5). Once you
+    click Allow once, immediately call `drive_sheets_write_range` again on
+    the same spreadsheet, a different range like `A3: "world"` — this second
+    call should NOT prompt (silent, logged `auto_accepted` with rule
+    `session_temp_accept`). Tell me whether the second call prompted or not.
 14. `drive_sheets_add_sheet` — add a tab named `Extra`. Popup, Allow once. Unlike
-    step 13, this one has no temp-accept shortcut (it's a one-shot action, not
-    something called repeatedly against the same file) — plain Allow once only.
+    step 13, this one has no temp-accept grace window (it's a one-shot action,
+    not something called repeatedly against the same file) — plain Allow once
+    only, no disclosure caption.
 15. `drive_sheets_rename_sheet` — rename `Extra` to `TO BE DELETED - Extra`.
     Same as step 14: no temp-accept shortcut here either. If you configured
     the **optional** `sheets.rename_sheet` → `approved_sandbox_folder`
@@ -439,20 +441,19 @@ in step 3, if you configured it.
 16. `drive_sheets_format_range` — bold `A1:B2`. If you configured the
     **optional** `sheets.format_range` → `approved_sandbox_folder` fixture
     (same place as step 15's), this should NOT prompt — tell me either way,
-    and skip the rest of this step. Otherwise (the default), **pause here**:
-    tell me you're about to call it and that **I will click "Allow once for 5
-    min"** this time, then wait for me to say go. Once I do, make the call,
-    then immediately call `drive_sheets_format_range` again on the same
-    spreadsheet, a different range like `A3:B3` (italic instead of bold) —
-    this second call should NOT prompt (silent, logged `auto_accepted` with
-    rule `session_temp_accept`). Tell me whether the second call prompted or
-    not.
+    and skip the rest of this step. Otherwise (the default): popup, Allow
+    once — check for the temp-accept disclosure caption above the buttons.
+    Once you click Allow once, immediately call `drive_sheets_format_range`
+    again on the same spreadsheet, a different range like `A3:B3` (italic
+    instead of bold) — this second call should NOT prompt (silent, logged
+    `auto_accepted` with rule `session_temp_accept`). Tell me whether the
+    second call prompted or not.
 
 ### PII detection gate check (steps 17–20)
 
 Self-contained: this doesn't depend on any fixture from Phase 0 or
 `qa-environment-setup.md` — it creates its own throwaway subfolder and Google
-Doc, and Phase 12 tears both down. It deliberately does **not** reuse
+Doc, and Phase 13 tears both down. It deliberately does **not** reuse
 `{FIXTURES}.drive_qa_folder_id` as the doc's direct parent: that folder is
 what `drive.read_file_contents` → `approved_folder` (if you configured it)
 matches against, and an auto-accepted read never shows a popup at all — which
@@ -520,7 +521,7 @@ read of that same write's content) exist specifically to contrast the two.
     banner in step 19) against what `src/privacyfence/pii_detector.py`
     documents as supported, and flag anything that should have matched but
     didn't (or vice versa) as a finding, not something to silently reconcile.
-    Flag both rows for Phase 13: confirming `"pii_detected": false` for
+    Flag both rows for Phase 14: confirming `"pii_detected": false` for
     step 18's write and `"pii_detected": true` for step 19's read in the
     audit log is the one field-level proof of the write/read split,
     independent of the popup banner — do it there, not now.
@@ -559,7 +560,7 @@ configured it per `qa-environment-setup.md`.
     configured in this environment, say so plainly — this step can't
     distinguish "the override worked" from "there was no rule to override"
     in that case, so don't claim the override was proven either way.
-23. Flag step 22 for Phase 13: the field-level proof that the override fired,
+23. Flag step 22 for Phase 14: the field-level proof that the override fired,
     independent of whether the popup was visually confirmed, is its audit
     entry showing `"decision": "approved"` (not `"auto_accepted"`),
     `"auto_accept_rule": ""`, and `"pii_detected": true` — contrasted against
@@ -577,26 +578,25 @@ manifest entries needed, both are already tracked.
 24. `drive_sheets_insert_dimensions` — insert 1 row before index 0 in the
     sheet from step 10. This is one of the temp-accept-eligible write ops
     (see the Technical Reference's [Auto-accept rules](TECHNICAL_REFERENCE.md#auto-accept-rules)).
-    **Pause here**: tell me you're about to call it and that **I will click
-    "Allow for 5 min"** this time, then wait for me to say go. Once I do,
-    make the call, then immediately call `drive_sheets_insert_dimensions`
-    again on the same spreadsheet, this time inserting 1 column — this
-    second call should NOT prompt (silent, logged `auto_accepted` with rule
-    `session_temp_accept`). Tell me whether the second call prompted or not.
+    Popup, Allow once — check for the temp-accept disclosure caption above
+    the buttons. Once you click Allow once, immediately call
+    `drive_sheets_insert_dimensions` again on the same spreadsheet, this time
+    inserting 1 column — this second call should NOT prompt (silent, logged
+    `auto_accepted` with rule `session_temp_accept`). Tell me whether the
+    second call prompted or not.
 25. `drive_sheets_delete_dimensions` — delete the row inserted in step 24.
-    Unlike step 24, this one has **no** temp-accept shortcut at all —
+    Unlike step 24, this one has **no** temp-accept grace window at all —
     deleting rows/columns removes cell content with no undo path through
-    PrivacyFence, so it only ever gets a plain popup or a standing rule, not
-    "Allow for 5 min". Plain popup, Allow once.
+    PrivacyFence, so it only ever gets a plain popup or a standing rule.
+    Plain popup, Allow once, no disclosure caption.
 26. Invalid-dimension check: call `drive_sheets_insert_dimensions` with
     `dimension="sideways"` — expect a clear error naming `ROWS`/`COLUMNS` as
     the valid values, raised **before** any popup appears. Confirm no popup
     showed.
 27. `drive_docs_edit_content` on the Doc from step 7 — find a short, unique
     phrase already in its body and replace it with new text tagged
-    `{RUN_ID}`. Also temp-accept-eligible. **Pause here**: tell me you're
-    about to call it and that **I will click "Allow for 5 min"**, then wait
-    for go. Once I do, make the call, then immediately call
+    `{RUN_ID}`. Also temp-accept-eligible. Popup, Allow once — check for the
+    disclosure caption. Once you click Allow once, immediately call
     `drive_docs_edit_content` again on the **same Doc**, replacing a
     different short phrase — this second call should NOT prompt (silent,
     `auto_accepted`, `session_temp_accept`). Tell me whether it prompted.
@@ -604,11 +604,10 @@ manifest entries needed, both are already tracked.
     (e.g. `#fff59d`) to a short existing phrase. Same temp-accept pattern,
     and its own separate 5-minute window (temp-accept is scoped per
     operation, not per file — accepting it for `docs_edit_content` in step
-    27 does **not** cover this call): **pause here**, tell me you're about
-    to call it and that **I will click "Allow for 5 min"**, wait for go,
-    call it, then immediately call it again on the same Doc with `bold`
-    instead — should NOT prompt the second time. Open the Doc in Google
-    Docs and confirm the highlighted span actually renders highlighted.
+    27 does **not** cover this call): popup, Allow once, then immediately
+    call it again on the same Doc with `bold` instead — should NOT prompt
+    the second time. Open the Doc in Google Docs and confirm the highlighted
+    span actually renders highlighted.
 29. Ambiguous-match check: call `drive_docs_edit_content` (or
     `drive_docs_format_content`) on the same Doc with `find_text` set to
     something that now matches more than one location (e.g. a short common
@@ -741,7 +740,7 @@ regardless of `calendar_id`), each called out again where they occur.
     may already short-circuit this if configured; if not, and
     `calendar.read_event_details` → `non_private_event` is configured, it
     should still auto-accept via that rule instead. Tell me which rule (if
-    any) actually matched — check the audit log in Phase 13 if it's not
+    any) actually matched — check the audit log in Phase 14 if it's not
     obvious from the popup (or lack of one) alone.
 16. Invalid-visibility check: call `calendar_set_event_visibility` with
     `visibility="hidden"` — expect a clear error naming the valid values
@@ -808,14 +807,14 @@ other connector's writes, each independently configurable via the
 2. `telegram_get_messages` on `{FIXTURES}.telegram_approved_chat_id` — **watch
    for a native approval popup and tell me explicitly whether you see one before I
    respond**, don't infer it from the tool result; I'll Allow once if it appears.
-   Flag this row for Phase 13: the audit log's decision (`auto_accepted` vs
+   Flag this row for Phase 14: the audit log's decision (`auto_accepted` vs
    `accepted`) is what settles it if my own observation of the popup was
    ambiguous — check that once the log is attached, not now.
 3. `telegram_get_messages` on `{FIXTURES}.telegram_control_chat_id` (not in
    `approved_chats`) — same explicit "did a popup appear?" question, same
-   Phase 13 flag. I'll Allow once.
+   Phase 14 flag. I'll Allow once.
 4. `telegram_search_messages` with a query that matches the seed message from
-   setup — same explicit popup check, same Phase 13 flag.
+   setup — same explicit popup check, same Phase 14 flag.
 5. `telegram_send_message` to "Saved Messages"
    (`telegram_saved_messages_chat_id`), test text tagged `{RUN_ID}`. Popup,
    Allow once.
@@ -908,7 +907,46 @@ other connector's writes, each independently configurable via the
    prompt, independent of the space rule. Tell me which rule (if any) matched.
 6. `confluence_update_page` on it, minor edit. Popup, Allow once.
 
-## Phase 11 — Scheduled / unattended Cowork tasks
+## Phase 11 — Temp-accept window expiry check
+
+Not a new connector — revisits two of Phase 2's temp-accept-eligible operations
+(`drive_sheets_write_range` step 13, `drive_sheets_format_range` step 16) purely to prove the
+5-minute grace window is actually time-boxed, not just "doesn't apply across different files."
+Phases 3–10 in between mean several minutes and dozens of tool calls (plus every "pause here"
+wait) have elapsed since Phase 2 ran — comfortably past the 5-minute TTL
+(`auto_accept.TEMP_ACCEPT_TTL_SECONDS`) — so this is a live test of expiry, not a guess.
+Deliberately placed **before** Phase 12's daemon restart: that restart clears the in-memory window
+on its own (it's never persisted — see `auto_accept.py`'s module docstring), which would prove
+nothing about the wall-clock timer specifically. Running this check first isolates "the window
+expired on its own" from "the window was wiped by a restart."
+
+1. Note the current time and compare it against Phase 2 step 13's timestamp (from the Cowork
+   conversation's own history) — confirm at least 5 minutes have actually passed. If Phases 2–10
+   somehow ran in under 5 minutes, wait here until the 5-minute mark before continuing — otherwise
+   this phase would false-pass by accident (a same-window auto-accept looks identical to a fresh
+   popup from the outside).
+2. `drive_sheets_write_range` on the **same spreadsheet** from Phase 2 step 10, a new range like
+   `A5: "still here"`. **Pause here**: tell me you expect a normal popup this time — Deny, Allow
+   once, with the temp-accept disclosure caption present — not a silent auto-accept, even though
+   this exact operation+file combination auto-accepted repeatedly back in Phase 2. Wait for me to
+   say go, then make the call and confirm a popup actually appeared. I'll click Allow once.
+3. If the **optional** `sheets.format_range` → `approved_sandbox_folder` fixture from Phase 2 step
+   16 is **not** configured in this environment (the default), repeat the same check for
+   `drive_sheets_format_range`: format a new range like `A5:B5` (e.g. italic) on the same
+   spreadsheet. **Pause here**, same as step 2 — I expect a fresh popup with the disclosure caption,
+   not an auto-accept. Wait for go, make the call, confirm the popup appeared. I'll click Allow
+   once. If the fixture *is* configured, skip this step and tell me why — format_range never went
+   through the temp-accept path in Phase 2 for this environment, so there's nothing here to prove
+   expired.
+4. Flag both rows for Phase 14: confirm the audit log shows `"decision": "accepted_via_temp_session"`
+   for step 2 (and step 3, if it ran) — not `"auto_accepted"` — proving each was a fresh grant
+   against an expired window, not a match against Phase 2's still-live one.
+
+No manifest entries from this phase — step 2 writes into an already-tracked spreadsheet cell and
+step 3 only changes formatting; neither creates a new artifact, so Phase 13 (Teardown) has nothing
+extra to do for it.
+
+## Phase 12 — Scheduled / unattended Cowork tasks
 
 Not a connector — this exercises `privacyfence_check_policy` and the unattended-session mode
 (`privacyfence_begin_unattended_session` / `privacyfence_end_unattended_session`), added for
@@ -973,14 +1011,14 @@ organization config bundle edit, not a live daemon toggle or a per-user settings
     daemon once more so later runs of this whole prompt start from the documented default.
 
 No manifest entries from this phase — nothing persistent gets created (Slack reads, preflight
-checks, and session toggles leave no artifact behind), so Phase 12 (Teardown) has nothing to do for
-it. Flag these rows for Phase 13 (Audit Log Reconciliation) instead of guessing them now:
+checks, and session toggles leave no artifact behind), so Phase 13 (Teardown) has nothing to do for
+it. Flag these rows for Phase 14 (Audit Log Reconciliation) instead of guessing them now:
 steps 2–5's `policy_check` entries (`decision: "policy_check"`, `auto_accept_rule` matching each
 step's `matched_rule`), step 10's entry (`decision: "denied_unattended"`), and steps 9/12's session
 entries (`decision: "unattended_session_started"` / `"unattended_session_ended"`, both with empty
 `connector`/`tool` fields since they're not tied to a specific tool call).
 
-## Phase 12 — Teardown
+## Phase 13 — Teardown
 Go through the manifest table and, for every artifact tagged `{RUN_ID}` that has
 a delete/remove/archive/close tool available, call it now:
 1. Delete/trash the Drive file, Doc, sheet, and the throwaway moved file from
@@ -1011,7 +1049,7 @@ a delete/remove/archive/close tool available, call it now:
    manual cleanup happens in Gmail's web UI (Settings → Filters and Blocked
    Addresses / Settings → Labels), not via any PrivacyFence tool.
 
-## Phase 13 — Audit Log Reconciliation
+## Phase 14 — Audit Log Reconciliation
 Everything above ran with the `audit-log decision` column blank and every
 audit-dependent question (Phase 1 step 3, Phase 2 steps 20/23, Phase 7 steps
 2–4) flagged rather than answered, on purpose — a live mid-run read from a
@@ -1042,15 +1080,15 @@ against a copy of the log I hand you directly.
    - Phase 7 steps 2–4: state the actual logged decision (`auto_accepted` vs
      `accepted`) for each — this is what settles it even where your own
      popup observation was already unambiguous.
-   - Phase 11 steps 2–5: confirm one `"decision": "policy_check"` entry per
+   - Phase 12 steps 2–5: confirm one `"decision": "policy_check"` entry per
      `privacyfence_check_policy` call, each `"auto_accept_rule"` matching that
      step's `matched_rule` (empty string for steps where it was `null`).
-   - Phase 11 step 10: confirm `"decision": "denied_unattended"` — distinct
+   - Phase 12 step 10: confirm `"decision": "denied_unattended"` — distinct
      from `"rejected"`, since no human was ever asked. Contrast this against
      step 13's entry for the identical call made outside an unattended
      session, which should show a normal `"rejected"` or `"approved"`
      depending on what you clicked.
-   - Phase 11 steps 9/12: confirm one `"decision": "unattended_session_started"`
+   - Phase 12 steps 9/12: confirm one `"decision": "unattended_session_started"`
      entry and one `"unattended_session_ended"` entry, both with empty
      `"connector"`/`"tool"` fields (these aren't tied to a specific tool call).
 4. Note any call in the table you couldn't find a matching audit-log entry
@@ -1062,20 +1100,20 @@ against a copy of the log I hand you directly.
 
 ## Final report
 Print the full running table (tool | gate observed | my decision | audit-log
-decision | notes), now fully reconciled from Phase 13, then the full manifest
-table split into "cleaned up in Phase 12" vs. "needs manual deletion." Then:
+decision | notes), now fully reconciled from Phase 14, then the full manifest
+table split into "cleaned up in Phase 13" vs. "needs manual deletion." Then:
 - Call out any tool whose observed gate, or whose audit-log decision, didn't
   match what I told you to expect — these are two independent checks now, so
   flag it even if only one of them disagrees.
 - Give the Phase 7 (Telegram) popup-visibility answers from steps 2–4
-  explicitly, each one backed by the matching audit-log entry from Phase 13 —
+  explicitly, each one backed by the matching audit-log entry from Phase 14 —
   don't let this collapse back into "I can't tell," since both your own
   observation and the log are available by this point.
 - Give the Phase 2 PII detection gate check (steps 17–20) its own explicit
   answer: confirm the write in step 18 stayed plain (no tint, no banner, no
   second dialog, `pii_detected: false`) and the read in step 19 got flagged
   (tint, category banner, second "Are you sure?" dialog, `pii_detected: true`)
-  — per the audit-log entries from Phase 13. If PrivacyFence's menu bar has
+  — per the audit-log entries from Phase 14. If PrivacyFence's menu bar has
   **PII Detection Gate** turned off, that changes step 19's expected result
   to "no tint, no second dialog, `pii_detected: false`" too (step 18 is
   unaffected by the toggle either way, since writes are never scanned
@@ -1085,7 +1123,7 @@ table split into "cleaned up in Phase 12" vs. "needs manual deletion." Then:
   too, separate from the above: was `approved_folder` actually configured
   for `drive.read_file_contents` in this environment (check what you read
   from `settings.yaml` in Phase 0)? If yes, did step 22 still prompt despite
-  the rule matching, and did step 22's audit entry (per Phase 13) show
+  the rule matching, and did step 22's audit entry (per Phase 14) show
   `"decision": "approved"` rather than `"auto_accepted"`? If the rule wasn't
   configured, say explicitly that this check only re-confirmed the plain
   PII-gate behavior and didn't exercise the override itself — don't report it
@@ -1099,7 +1137,7 @@ table split into "cleaned up in Phase 12" vs. "needs manual deletion." Then:
   carry a **different** `{RUN_ID}` (or no `{RUN_ID}` at all, from before this
   version of the prompt existed) — flag them as leftovers from a previous run,
   don't touch them, and don't count them as part of this run's manifest.
-- Give Phase 11 (scheduled/unattended tasks) its own explicit answer: did every
+- Give Phase 12 (scheduled/unattended tasks) its own explicit answer: did every
   `privacyfence_check_policy` verdict in steps 2–5 match what was expected
   (`auto_accept`/`requires_review`/`unknown`)? Did step 10 actually deny
   without a popup, and step 13 actually prompt normally once the session
@@ -1110,12 +1148,12 @@ table split into "cleaned up in Phase 12" vs. "needs manual deletion." Then:
 
 ## Reading the results
 
-Phase 13 is what fills in the `audit-log decision` column, once you've
+Phase 14 is what fills in the `audit-log decision` column, once you've
 attached the log file — the prompt no longer has Claude read it live during
 the run, since a Cowork/Desktop session reading the file mid-run isn't
 reliable (recently written entries can appear to lag or go missing depending
 on how the session reaches the file; attaching a fixed copy at the end avoids
-that entirely). Once Phase 13 has run, that column *is* ground truth, not a
+that entirely). Once Phase 14 has run, that column *is* ground truth, not a
 hypothesis, and you shouldn't need to reconcile `accepted` / `denied` /
 `auto_accepted` by hand afterward. What Claude still can't do is independently
 confirm the popup UI rendered correctly on your screen; it can only confirm
@@ -1126,7 +1164,7 @@ investigating — it means the popup and the logged decision disagreed, which
 the tool result and the log alone can't explain by themselves.
 
 Spot-check a handful of entries yourself against the attached file if you
-want an independent check on Claude's Phase 13 reconciliation, but treat a
+want an independent check on Claude's Phase 14 reconciliation, but treat a
 fully-populated `audit-log decision` column as the run having done its job,
 not as something to redo from scratch.
 

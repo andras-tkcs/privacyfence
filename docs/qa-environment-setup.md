@@ -131,7 +131,7 @@ picked for the first `gmail_get_message` call and restores it to its exact start
 - [ ] (Optional) Add `approved_sandbox_folder` to `sheets.rename_sheet` / `sheets.format_range`,
       scoped to this same folder — kept as raw per-operation rules rather than the
       `drive.sandbox_folders` grant's all-or-nothing `write` capability specifically so
-      `connector-qa-testing.md`'s Phase 2 can still exercise the plain popup / "Allow for 5 min"
+      `connector-qa-testing.md`'s Phase 2 can still exercise the plain popup / temp-accept
       flow for the *other* Sheets/Docs writes (`write_file`, `write_doc`, `add_sheet`) in the same
       folder:
       ```yaml

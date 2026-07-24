@@ -146,21 +146,21 @@ class TestShowPopupAndShowReadPopup:
 
         assert captured == {
             "title": "Title", "preview": {"Field": "Value"}, "details_text": "details", "allow_accept_all": False,
-            "allow_temp_accept": False, "claude_reason": "", "write_content_flags": None, "seen_count": 0,
+            "temp_accept_eligible": False, "claude_reason": "", "write_content_flags": None, "seen_count": 0,
             "connector": "",
         }
         assert result == "accept"
 
-    def test_show_popup_forwards_allow_temp_accept_true(self, monkeypatch):
+    def test_show_popup_forwards_temp_accept_eligible_true(self, monkeypatch):
         captured = {}
         monkeypatch.setattr(
-            approval_popup, "show_native_approval", lambda **kw: captured.update(kw) or "accept_temp"
+            approval_popup, "show_native_approval", lambda **kw: captured.update(kw) or "accept"
         )
 
-        result = approval_popup.show_popup("Title", {}, "details", allow_temp_accept=True)
+        result = approval_popup.show_popup("Title", {}, "details", temp_accept_eligible=True)
 
-        assert captured["allow_temp_accept"] is True
-        assert result == "accept_temp"
+        assert captured["temp_accept_eligible"] is True
+        assert result == "accept"
 
     def test_show_read_popup_forwards_allow_accept_all_true(self, monkeypatch):
         captured = {}

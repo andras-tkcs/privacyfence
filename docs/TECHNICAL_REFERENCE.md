@@ -77,9 +77,12 @@ auto-accepting a write silently is a materially bigger blast radius than auto-ac
 
 For write operations expected to be called repeatedly against the same file in quick succession —
 `drive_sheets_write_range`, `drive_sheets_format_range`, `drive_sheets_insert_dimensions`,
-`drive_add_comment`, `drive_docs_edit_content`, and `drive_docs_format_content` — the popup adds a
-third button, **Allow for 5 min**: it auto-accepts further calls of that same operation against
-that same file for 5 minutes, entirely in memory. Unlike a standing
+`drive_add_comment`, `drive_docs_edit_content`, and `drive_docs_format_content` — clicking
+**Allow once** also auto-accepts further calls of that same operation against that same file for 5
+minutes, entirely in memory. There's no separate button for this: the popup just shows a plain
+disclosure caption above the buttons for these six operations, since a burst of
+API-limitation-driven follow-up calls (e.g. formatting a sheet range by range) is the task the
+user is really approving, not a duration to pick up front. Unlike a standing
 [auto-accept rule](#auto-accept-rules), it's never written to `settings.yaml` and disappears on
 daemon restart — a much smaller commitment than Always allow, appropriate for writes where a
 standing rule isn't offered at all.
@@ -597,14 +600,15 @@ way plain Drive files do. `docs.edit_content` and `docs.format_content` (`drive_
 its `write` capability auto-accepts `docs.edit_content`/`docs.format_content` too, alongside
 `drive.write_file`/`drive.write_doc` and every `sheets.*` write.
 
-**Write ops have no Always allow, but some get "Allow for 5 min" instead.** All of the above
-(including the writes) are `popup`-gated, and unlike `review`-gated reads, a write popup never
-offers to create a standing rule — see [PII detection gate](#pii-detection-gate) and the
+**Write ops have no Always allow, but some get a temp-accept grace window instead.** All of the
+above (including the writes) are `popup`-gated, and unlike `review`-gated reads, a write popup
+never offers to create a standing rule — see [PII detection gate](#pii-detection-gate) and the
 [review model](#review-model) above for why. `sheets.write_range`, `sheets.format_range`,
 `sheets.insert_dimensions`, `drive.comment_file`, `docs.edit_content`, and `docs.format_content`
-are the exception: their popup additionally offers **Allow for 5 min**, an in-memory,
-non-persisted acceptance scoped to one spreadsheet/file for 5 minutes — see
-[Two flows by direction](#two-flows-by-direction). `sheets.add_sheet` and `sheets.rename_sheet`
+are the exception: clicking Allow once on one of these also arms an in-memory, non-persisted
+acceptance scoped to one spreadsheet/file for 5 minutes — disclosed in the popup with a plain
+caption, not a separate button — see [Two flows by direction](#two-flows-by-direction).
+`sheets.add_sheet` and `sheets.rename_sheet`
 get neither; they're one-shot per file rather than something called repeatedly in a burst, so a
 standing rule (configured as above) is the only way to skip their popup. `sheets.delete_dimensions`
 also deliberately gets neither, despite being called in the same kind of burst
@@ -835,7 +839,7 @@ It never calls a connector, opens a popup, or has any side effect beyond a light
 `policy_check` audit entry (see [Audit log](#audit-log)) — safe to call as often as needed while
 planning a task. The verdict is only ever as certain as the underlying rule allows:
 
-- `auto_accept` — a rule matched using only the call's arguments (or an active "Allow for 5 min"
+- `auto_accept` — a rule matched using only the call's arguments (or an active temp-accept grace
   window); the real call will auto-accept identically.
 - `requires_review` — every rule configured for this operation only needs arguments, and none
   matched; fetching the real data cannot change that answer.

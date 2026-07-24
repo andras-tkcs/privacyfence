@@ -112,6 +112,16 @@ _SUMMARY_PAD = 14.0
 _BUTTON_ROW_HEIGHT = 66.0
 _RISK_SPINE_WIDTH = 5.0  # slim left-edge accent bar, shared by both risk signals below
 
+# Shown above the button row, in place of the old separate "Allow for 5 min"
+# button, for the operations auto_accept.TEMP_ACCEPT_ELIGIBLE_OPERATIONS
+# lists. Deliberately vague about the exact duration (gate.py/auto_accept.py
+# still enforce a precise 5-minute TTL) -- the point is disclosure that
+# Allow once covers more than this one call, not a number to remember.
+_TEMP_ACCEPT_DISCLOSURE_TEXT = (
+    "Approving this also allows further calls like this to the same file "
+    "for a few minutes without asking again."
+)
+
 # Brand colors sampled from resources/icon_512.png — a fixed identity, not a
 # themed value, so these stay literal rather than following light/dark mode.
 _BLUE = NSColor.colorWithSRGBRed_green_blue_alpha_(0x5B / 255, 0xA4 / 255, 0xFF / 255, 1.0)
@@ -396,7 +406,7 @@ class ApprovalWindowController(NSObject):
         self.preview: dict[str, str] = {}
         self.details_text = ""
         self.allow_accept_all = False
-        self.allow_temp_accept = False
+        self.temp_accept_eligible = False
         self.pii_categories: list[str] = []
         self.visibility: dict[str, str] = {}
         self.claude_reason: str = ""
@@ -734,15 +744,14 @@ class ApprovalWindowController(NSObject):
 
     def _build_link_button(self, title: str) -> NSButton:
         """Small, borderless "link"-style control for the low-frequency,
-        high-consequence standing-rule actions (Always allow / Allow for
-        5 min) -- deliberately not the same pill styling as Deny/Allow
-        once, so a fast, confident click aimed at the primary action
-        can't land on one of these by accident. No existing precedent for
-        a link-style NSButton in this codebase: built via an attributed
-        title rather than a bezel style, since NSBezelStyleRounded has no
-        "no border, small, underlined" variant. Dispatch is unaffected --
-        buttonClicked_ keys on sender.title(), which stays the plain
-        string even with an attributed title set."""
+        high-consequence standing-rule action (Always allow) -- deliberately
+        not the same pill styling as Deny/Allow once, so a fast, confident
+        click aimed at the primary action can't land on it by accident. No
+        existing precedent for a link-style NSButton in this codebase: built
+        via an attributed title rather than a bezel style, since
+        NSBezelStyleRounded has no "no border, small, underlined" variant.
+        Dispatch is unaffected -- buttonClicked_ keys on sender.title(),
+        which stays the plain string even with an attributed title set."""
         btn = NSButton.alloc().init()
         btn.setBordered_(False)
         btn.setTarget_(self)
@@ -803,6 +812,8 @@ class ApprovalWindowController(NSObject):
         # clear the "Show more"/"Show less" button's real (small-control-size) height; see
         # its use in build_panel() just below the matching real render.
         y += self._details_height
+        if self.temp_accept_eligible:
+            y += 18.0  # temp-accept disclosure caption row, just above the buttons
         return y, title_h
 
     # ------------------------------------------------------------------ #
@@ -1026,6 +1037,22 @@ class ApprovalWindowController(NSObject):
         content.addSubview_(details_view)
         y += self._details_height
 
+        # Temp-accept disclosure: no longer a chooseable button (see history
+        # of this file for the old "Allow for 5 min" link) -- for the small
+        # set of operations expected to repeat against the same file in
+        # quick succession (auto_accept.TEMP_ACCEPT_ELIGIBLE_OPERATIONS),
+        # clicking Allow once now silently arms that grace window too
+        # (gate.py). This caption is the whole disclosure of that: plain
+        # informational text, not a control, deliberately sitting just
+        # above the buttons rather than in the primary decision row.
+        if self.temp_accept_eligible:
+            disclosure_label = _make_label(
+                _TEMP_ACCEPT_DISCLOSURE_TEXT, size=11, color=NSColor.secondaryLabelColor(),
+            )
+            disclosure_label.setFrame_(NSMakeRect(_MARGIN, y, content_width, 16.0))
+            content.addSubview_(disclosure_label)
+            y += 18.0
+
         # Button row. content is flipped (y grows downward), so the row
         # sits in the band [content_height, content_height + row height].
         accept_btn = self._build_button("Allow once", primary=True)
@@ -1040,26 +1067,17 @@ class ApprovalWindowController(NSObject):
         accept_btn.setFrameOrigin_((right_x, button_y))
         content.addSubview_(accept_btn)
 
-        # Always allow / Allow for 5 min: small link-style controls
-        # anchored near Deny on the left -- separated from Allow once by
-        # both size and position so a fast, confident click aimed at the
-        # primary action can't land on one of these standing-rule actions
-        # by accident. Allow once itself keeps its far-right position,
-        # untouched.
-        link_x = _MARGIN + deny_btn.frame().size.width + 16.0
-
+        # Always allow: small link-style control anchored near Deny on the
+        # left -- separated from Allow once by both size and position so a
+        # fast, confident click aimed at the primary action can't land on
+        # this standing-rule action by accident. Allow once itself keeps
+        # its far-right position, untouched.
         if self.allow_accept_all:
+            link_x = _MARGIN + deny_btn.frame().size.width + 16.0
             accept_all_btn = self._build_link_button("Always allow")
             link_y = content_height + (_BUTTON_ROW_HEIGHT - accept_all_btn.frame().size.height) / 2.0
             accept_all_btn.setFrameOrigin_((link_x, link_y))
             content.addSubview_(accept_all_btn)
-            link_x += accept_all_btn.frame().size.width + 10.0
-
-        if self.allow_temp_accept:
-            temp_accept_btn = self._build_link_button("Allow for 5 min")
-            link_y = content_height + (_BUTTON_ROW_HEIGHT - temp_accept_btn.frame().size.height) / 2.0
-            temp_accept_btn.setFrameOrigin_((link_x, link_y))
-            content.addSubview_(temp_accept_btn)
 
         return content
 
@@ -1130,15 +1148,17 @@ class ApprovalWindowController(NSObject):
         panel.orderOut_(None)
 
     def buttonClicked_(self, sender) -> None:
-        # Internal result values ("accept"/"accept_all"/"accept_temp"/"deny")
-        # stay as-is -- gate.py/audit_log.py/tests key on them throughout.
-        # Only the button labels themselves ("Allow once" / "Allow for 5
-        # min" / "Always allow") are user-facing.
+        # Internal result values ("accept"/"accept_all"/"deny") stay as-is --
+        # gate.py/audit_log.py/tests key on them throughout. Only the button
+        # labels themselves ("Allow once" / "Always allow") are user-facing.
+        # There used to be a third "accept_temp" outcome from a distinct
+        # "Allow for 5 min" button; that choice is gone (see
+        # temp_accept_eligible above) -- clicking Allow once now silently
+        # covers it for the operations that need it, decided in gate.py, not
+        # here.
         title = str(sender.title())
         if title == "Always allow":
             self.result = "accept_all"
-        elif title == "Allow for 5 min":
-            self.result = "accept_temp"
         elif title == "Allow once":
             self.result = "accept"
         else:
@@ -1153,7 +1173,7 @@ def show_native_approval(
     details_text: str,
     allow_accept_all: bool,
     pii_categories: list[str] | None = None,
-    allow_temp_accept: bool = False,
+    temp_accept_eligible: bool = False,
     visibility: dict[str, str] | None = None,
     claude_reason: str = "",
     write_content_flags: list[str] | None = None,
@@ -1164,10 +1184,15 @@ def show_native_approval(
 ) -> str:
     """Show the approval window and block until the user picks a button.
 
-    Returns 'accept', 'deny', 'accept_all' (only reachable when
-    allow_accept_all is True), or 'accept_temp' (only reachable when
-    allow_temp_accept is True). Thread-safe: safe to call from any thread,
-    the window itself is always built and driven on the main thread.
+    Returns 'accept', 'deny', or 'accept_all' (only reachable when
+    allow_accept_all is True). ``temp_accept_eligible`` no longer changes
+    the button set -- it only adds an informational disclosure caption
+    above the buttons (see ApprovalWindowController._build_content_view).
+    Whether Allow once also arms auto_accept.py's 5-minute, same-file grace
+    window is decided by gate.py after the fact, from the same eligibility
+    check that produced this flag -- not from a distinct user choice here.
+    Thread-safe: safe to call from any thread, the window itself is always
+    built and driven on the main thread.
     """
     with _popup_lock:
         controller = ApprovalWindowController.alloc().init()
@@ -1175,7 +1200,7 @@ def show_native_approval(
         controller.preview = preview or {}
         controller.details_text = details_text
         controller.allow_accept_all = allow_accept_all
-        controller.allow_temp_accept = allow_temp_accept
+        controller.temp_accept_eligible = temp_accept_eligible
         controller.pii_categories = pii_categories or []
         controller.visibility = visibility or {}
         controller.claude_reason = claude_reason or ""

@@ -19,7 +19,7 @@ Every gated tool call resolves through exactly one of these:
 | Dialog | Built by | Used for | Buttons |
 |---|---|---|---|
 | **Review-gate window** | `approval_popup.show_read_popup` | `gate="review"` tools — reads | Deny, Allow once, *Always allow* (conditional) |
-| **Popup-gate window** | `approval_popup.show_popup` | `gate="popup"` tools — writes | Deny, Allow once, *Allow for 5 min* (conditional) |
+| **Popup-gate window** | `approval_popup.show_popup` | `gate="popup"` tools — writes | Deny, Allow once (*temp-accept disclosure caption shown above the buttons, conditional — see row 9 below; no separate button*) |
 | **PII confirmation** | `approval_popup.show_pii_confirmation_popup` | second-step check after Allow/Always-allow on a review-gate call whose content matched the PII detector | Cancel (default), Proceed |
 | **Rule confirmation** | `approval_popup.show_rule_confirmation_popup` | second-step check after clicking Always allow | Cancel (default), Confirm |
 
@@ -44,7 +44,8 @@ differs is which optional sections a given call populates. In display order:
 | 6 | Content-flag banner (amber, informational) | local PII-pattern detector flagged Claude's own drafted content | – | **yes** | **Automatic** — same detector run over every popup-gate call's `details_text` |
 | 7 | "Claude says (unverified)" reason box | `claude_reason` non-empty | no | no | **Automatic** — every gated tool's schema requires a `reason` param (Phase 1b); self-reported, never verified |
 | 8 | Details/"Preview" pane (reading-time estimate + Show more/less) | always | no | no | Body rendering varies — see `content_kind`/`pdf_bytes` below |
-| 9 | Buttons | always | – | – | Always-allow offered only when `auto_accept.suggest_rule()` can derive a rule from this item; Allow-for-5-min only for the six tools in View WG-2 below |
+| 9 | Temp-accept disclosure caption (plain text, not a control) | `temp_accept_eligible` | – | **yes** | **Automatic** — `gate.py` sets it from `auto_accept.temp_accept_key()` resolving for the six WG-2 tools below. Not offered as a button: clicking Allow once on one of these silently also arms the 5-minute same-file grace window this caption describes — see WG-2 below |
+| 10 | Buttons | always | – | – | Always-allow offered only when `auto_accept.suggest_rule()` can derive a rule from this item. No separate button is ever offered for the temp-accept window (row 9) |
 
 Row 8's body defaults to plain escaped text in a WKWebView. Two read-only tools override that:
 
@@ -116,9 +117,11 @@ above).
 All popup-gate dialogs share one shape: summary box, no AI-visibility checklist (ever — see
 `show_popup`'s docstring: a write is content Claude itself already drafted, there's nothing extra
 to disclose), optional amber content-flag banner, optional "Claude says" box, plain-text details
-pane. The only structural difference between write tools is the **button set**.
+pane. Every popup-gate dialog also shares the same **button set** now — Deny, Allow once, that's
+it. The only structural difference between write tools is whether the temp-accept disclosure
+caption (row 9 in the anatomy table above) appears above those buttons.
 
-### WG-1 — Deny / Allow once (no time-boxed accept)
+### WG-1 — Deny / Allow once (not temp-accept eligible)
 
 Every popup-gate tool *except* the six in WG-2 below — 38 tools. Preview fields are tool-specific;
 `[brackets]` mark a field that's only added to the dict when the corresponding argument was
@@ -165,11 +168,14 @@ actually provided (empty/default arguments don't produce an empty row).
 | `tasks_uncomplete_task` | Task list, Task |
 | `tasks_move_task` | Task, From list, To list |
 
-### WG-2 — Deny / Allow once / Allow for 5 min
+### WG-2 — Deny / Allow once, with the temp-accept disclosure caption
 
 The six operations in `auto_accept.TEMP_ACCEPT_ELIGIBLE_OPERATIONS` — repeat calls against the
 same file are common enough to warrant a narrower, memory-only 5-minute auto-accept instead of
-either a full standing rule or re-approving every single call:
+either a full standing rule or re-approving every single call. There used to be a separate "Allow
+for 5 min" button for these; clicking Allow once on one of them now silently arms the same grace
+window instead, and the dialog only discloses that with a plain caption above the buttons (row 9),
+not a distinct control:
 
 | Tool | Preview summary fields |
 |---|---|
@@ -180,9 +186,9 @@ either a full standing rule or re-approving every single call:
 | `drive_docs_edit_content` | File, Owner, Match ("every occurrence" / "the one matching occurrence") |
 | `drive_docs_format_content` | File, Owner, Format (summary of applied formatting) |
 
-"Allow for 5 min" auto-accepts further calls of the *same operation against the same file* for 5
-minutes, in memory only — never written to `settings.yaml`, gone on daemon restart. See
-`gate.py`'s module docstring for the full write-gate rationale.
+Allow once on one of these auto-accepts further calls of the *same operation against the same
+file* for 5 minutes, in memory only — never written to `settings.yaml`, gone on daemon restart.
+See `gate.py`'s module docstring for the full write-gate rationale.
 
 ## Cross-cutting: what's never in one but is in the other
 
