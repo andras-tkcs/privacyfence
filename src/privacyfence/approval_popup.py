@@ -81,7 +81,7 @@ def show_popup(
     title: str,
     preview: dict[str, str],
     details_text: str,
-    allow_temp_accept: bool = False,
+    temp_accept_eligible: bool = False,
     claude_reason: str = "",
     write_content_flags: list[str] | None = None,
     seen_count: int = 0,
@@ -117,13 +117,18 @@ def show_popup(
     -- see approval_window.py's _connector_icon_path() docstring for the
     silent-skip fallback when no asset exists yet for it.
 
-    Returns 'accept', 'deny', or 'accept_temp' (only offered when
-    allow_temp_accept is True -- see gate.py's TEMP_ACCEPT_ELIGIBLE_OPERATIONS
-    for which write operations get that button).
+    ``temp_accept_eligible`` no longer offers a separate button (there used
+    to be a distinct "Allow for 5 min" choice here) -- it only adds an
+    informational caption above Deny/Allow once. Whether clicking Allow once
+    also arms auto_accept.py's 5-minute, same-file grace window is gate.py's
+    call, made from the same TEMP_ACCEPT_ELIGIBLE_OPERATIONS check that
+    produced this flag.
+
+    Returns 'accept' or 'deny'.
     """
     return show_native_approval(
         title=title, preview=preview, details_text=details_text, allow_accept_all=False,
-        allow_temp_accept=allow_temp_accept, claude_reason=claude_reason,
+        temp_accept_eligible=temp_accept_eligible, claude_reason=claude_reason,
         write_content_flags=write_content_flags, seen_count=seen_count, connector=connector,
     )
 

@@ -460,7 +460,7 @@ class TestPopupGateWrites:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
             captured["details"] = details
             return "accept"
 
@@ -546,7 +546,7 @@ class TestRequestFingerprint:
 
         captured = {}
 
-        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
             captured["seen_count"] = seen_count
             return "accept"
 
@@ -585,7 +585,7 @@ class TestWriteContentFlags:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
             captured["write_content_flags"] = write_content_flags
             return "accept"
 
@@ -602,7 +602,7 @@ class TestWriteContentFlags:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
             captured["write_content_flags"] = write_content_flags
             return "accept"
 
@@ -655,7 +655,7 @@ class TestWriteContentFlags:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
             captured["write_content_flags"] = write_content_flags
             return "accept"
 
@@ -670,22 +670,26 @@ class TestWriteContentFlags:
 
 
 class TestTempAccept:
-    """"Allow for 5 min" -- a lighter, in-memory-only alternative to a
-    standing Always allow rule, offered on the write-gate popup only for
-    operations expected to be called repeatedly against the same file in
-    quick succession (auto_accept.TEMP_ACCEPT_ELIGIBLE_OPERATIONS).
+    """The 5-minute, in-memory-only grace window that used to require a
+    distinct "Allow for 5 min" popup button -- for the operations expected
+    to be called repeatedly against the same file in quick succession
+    (auto_accept.TEMP_ACCEPT_ELIGIBLE_OPERATIONS), it's now armed as a side
+    effect of a plain "accept" (Allow once) whenever a file_key resolves,
+    with no separate choice offered. show_popup itself only ever returns
+    'accept' or 'deny' now (see approval_window.py); gate.py is what decides
+    whether an 'accept' also registers the grace window.
     """
 
     SHEETS_ARGS = {"spreadsheet_id": "sheet-1", "range_a1": "A1:B2"}
 
-    async def test_show_popup_receives_allow_temp_accept_true_for_eligible_op_with_file_key(
+    async def test_show_popup_receives_temp_accept_eligible_true_for_eligible_op_with_file_key(
         self, monkeypatch, audit_dir
     ):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
-            captured["allow_temp_accept"] = allow_temp_accept
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
+            captured["temp_accept_eligible"] = temp_accept_eligible
             return "deny"
 
         monkeypatch.setattr(gate, "show_popup", fake_show_popup)
@@ -695,16 +699,16 @@ class TestTempAccept:
                 gate="popup", connector="drive", tool="drive_sheets_write_range", args=self.SHEETS_ARGS,
             ))
 
-        assert captured["allow_temp_accept"] is True
+        assert captured["temp_accept_eligible"] is True
 
-    async def test_show_popup_receives_allow_temp_accept_false_for_ineligible_op(
+    async def test_show_popup_receives_temp_accept_eligible_false_for_ineligible_op(
         self, monkeypatch, audit_dir
     ):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
-            captured["allow_temp_accept"] = allow_temp_accept
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
+            captured["temp_accept_eligible"] = temp_accept_eligible
             return "deny"
 
         monkeypatch.setattr(gate, "show_popup", fake_show_popup)
@@ -712,16 +716,16 @@ class TestTempAccept:
         with pytest.raises(RuntimeError):
             await gate.gated_call(**base_kwargs(gate="popup", tool="gmail_create_draft"))
 
-        assert captured["allow_temp_accept"] is False
+        assert captured["temp_accept_eligible"] is False
 
-    async def test_show_popup_receives_allow_temp_accept_false_when_file_key_missing(
+    async def test_show_popup_receives_temp_accept_eligible_false_when_file_key_missing(
         self, monkeypatch, audit_dir
     ):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
-            captured["allow_temp_accept"] = allow_temp_accept
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
+            captured["temp_accept_eligible"] = temp_accept_eligible
             return "deny"
 
         monkeypatch.setattr(gate, "show_popup", fake_show_popup)
@@ -731,12 +735,12 @@ class TestTempAccept:
                 gate="popup", connector="drive", tool="drive_sheets_write_range", args={"range_a1": "A1:B2"},
             ))
 
-        assert captured["allow_temp_accept"] is False
+        assert captured["temp_accept_eligible"] is False
 
-    async def test_accept_temp_registers_rule_and_audits(self, monkeypatch, audit_dir):
+    async def test_accept_on_eligible_op_registers_temp_accept_and_audits(self, monkeypatch, audit_dir):
         evaluator = FakeEvaluator()
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: evaluator)
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept_temp")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
 
         result = await gate.gated_call(**base_kwargs(
             gate="popup", connector="drive", tool="drive_sheets_write_range", args=self.SHEETS_ARGS,
@@ -756,7 +760,7 @@ class TestTempAccept:
         evaluator = AutoAcceptEvaluator({})
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: evaluator)
         popup_calls = []
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: popup_calls.append(1) or "accept_temp")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: popup_calls.append(1) or "accept")
 
         result1 = await gate.gated_call(**base_kwargs(
             gate="popup", connector="drive", tool="drive_sheets_write_range", args=self.SHEETS_ARGS,
@@ -779,7 +783,7 @@ class TestTempAccept:
         evaluator = AutoAcceptEvaluator({})
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: evaluator)
         popup_calls = []
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: popup_calls.append(1) or "accept_temp")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: popup_calls.append(1) or "accept")
 
         await gate.gated_call(**base_kwargs(
             gate="popup", connector="drive", tool="drive_sheets_write_range", args=self.SHEETS_ARGS,
@@ -791,15 +795,14 @@ class TestTempAccept:
 
         assert len(popup_calls) == 2
 
-    async def test_accept_temp_without_a_file_key_falls_back_to_a_plain_accept(
+    async def test_accept_for_ineligible_op_audits_as_plain_approved(
         self, monkeypatch, audit_dir
     ):
-        # Defensive path: the "Allow for 5 min" button is never offered for
-        # an ineligible operation, so accept_temp should never actually come
-        # back for one -- but if it somehow did, this must not be treated as
-        # a denial of a click the user clearly meant as approval.
+        # No file_key resolves for an ineligible operation, so a plain
+        # accept must never register a temp accept or use the
+        # accepted_via_temp_session decision -- it's an ordinary approval.
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept_temp")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
 
         result = await gate.gated_call(**base_kwargs(gate="popup", tool="gmail_create_draft"))
 
@@ -814,7 +817,7 @@ class TestTempAccept:
         # no confirmation popup and no "pii_detected" in the audit entry.
         evaluator = FakeEvaluator()
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: evaluator)
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept_temp")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
         confirm_calls = []
         monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda *a, **k: confirm_calls.append(1) or True)
 
@@ -1223,7 +1226,7 @@ class TestQueuedRequestReCheck:
 
         popup_calls = []
 
-        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
             popup_calls.append(title)
             wait_until(lambda: len(check_calls) >= 3, timeout=1.0)
             # Simulate a rule appearing (e.g. added from the menu bar) while
@@ -1572,7 +1575,7 @@ class TestClaudeReason:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, allow_temp_accept=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector=""):
             captured["claude_reason"] = claude_reason
             return "accept"
 

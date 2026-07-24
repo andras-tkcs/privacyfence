@@ -188,15 +188,15 @@ class TestDriveApprovedFolder:
 
 
 class TestDriveTempAccept:
-    """connector-qa-testing.md Phase 2 steps 5/13/16: 'Allow for 5 min' on
-    one call must silently auto-accept a second call for the same file,
-    against the real evaluator's own in-memory temp-accept store -- not
-    FakeEvaluator's canned register_temp_accept() list (see
+    """connector-qa-testing.md Phase 2 steps 5/13/16: accepting one
+    temp-accept-eligible call must silently auto-accept a second call for
+    the same file, against the real evaluator's own in-memory temp-accept
+    store -- not FakeEvaluator's canned register_temp_accept() list (see
     test_gate.py::TestTempAccept for that layer's coverage)."""
 
     async def test_second_call_for_the_same_file_auto_accepts(self, monkeypatch, audit_dir):
         init_auto_accept_evaluator({})
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept_temp")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
 
         first = await gate.gated_call(**make_kwargs(
             connector="drive", tool="drive_add_comment", gate="popup",
@@ -221,21 +221,24 @@ class TestDriveTempAccept:
 
     async def test_a_different_file_is_not_covered(self, monkeypatch, audit_dir):
         init_auto_accept_evaluator({})
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept_temp")
+        popup_calls = []
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: popup_calls.append(1) or "accept")
         await gate.gated_call(**make_kwargs(
             connector="drive", tool="drive_add_comment", gate="popup",
             args={"file_id": "file-abc"},
         ))
 
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
         result = await gate.gated_call(**make_kwargs(
             connector="drive", tool="drive_add_comment", gate="popup",
             args={"file_id": "file-different"},
         ))
 
         assert result is FILTERED
+        # The first file's grace window doesn't cover this one -- its own
+        # popup still has to show (no auto-accept skip).
+        assert len(popup_calls) == 2
         entries = read_audit_entries(audit_dir)
-        assert entries[1]["decision"] == "approved"
+        assert entries[1]["decision"] == "accepted_via_temp_session"
 
 
 class TestCalendarIAmOrganizer:

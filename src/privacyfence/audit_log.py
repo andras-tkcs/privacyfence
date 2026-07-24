@@ -189,7 +189,7 @@ class AuditLogger:
         ws2.append(["Approved (manual)", counts.get("approved", 0)])
         ws2.append(["Auto-accepted", counts.get("auto_accepted", 0)])
         ws2.append(["Accepted via Always allow (new rule)", counts.get("accepted_via_accept_all", 0)])
-        ws2.append(["Accepted via \"Allow for 5 min\"", counts.get("accepted_via_temp_session", 0)])
+        ws2.append(["Accepted (also armed temp-accept grace window)", counts.get("accepted_via_temp_session", 0)])
         ws2.append(["Rejected", counts.get("rejected", 0)])
         ws2.append(["Denied unattended (no human asked)", counts.get("denied_unattended", 0)])
         ws2.append(["Preflight checks (privacyfence_check_policy)", counts.get("policy_check", 0)])

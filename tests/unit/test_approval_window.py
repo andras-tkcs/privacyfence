@@ -38,6 +38,7 @@ from privacyfence.approval_window import (
     _PII_BACKGROUND_ALPHA,
     _PII_BANNER_FILL_ALPHA,
     _RISK_SPINE_WIDTH,
+    _TEMP_ACCEPT_DISCLOSURE_TEXT,
     _WINDOW_WIDTH,
     ApprovalWindowController,
     _badge_kind,
@@ -58,7 +59,7 @@ def make_controller(
     preview=None,
     details_text="ordinary, non-sensitive content",
     allow_accept_all=False,
-    allow_temp_accept=False,
+    temp_accept_eligible=False,
     pii_categories=None,
     visibility=None,
     claude_reason="",
@@ -73,7 +74,7 @@ def make_controller(
     c.preview = preview or {}
     c.details_text = details_text
     c.allow_accept_all = allow_accept_all
-    c.allow_temp_accept = allow_temp_accept
+    c.temp_accept_eligible = temp_accept_eligible
     c.pii_categories = pii_categories or []
     c.visibility = visibility or {}
     c.claude_reason = claude_reason
@@ -107,10 +108,13 @@ def text_field_values(views):
 
 class TestButtonSet:
     """Ground rule in connector-qa-testing.md: the popup offers exactly
-    Deny / Allow once / Always allow / Allow for 5 min, and only the last two
-    are conditional on the gate configuration. The underlying result
-    values ("accept"/"accept_all"/"accept_temp"/"deny") are unchanged
-    regardless of what the buttons are labeled."""
+    Deny / Allow once / Always allow, and only the last is conditional on
+    the gate configuration. There used to be a third, separately-clickable
+    "Allow for 5 min" button for temp-accept-eligible operations; that
+    choice is gone (see TestTempAcceptDisclosure below) -- eligibility now
+    only adds an informational caption, never a button. The underlying
+    result values ("accept"/"accept_all"/"deny") are unchanged regardless
+    of what the buttons are labeled."""
 
     def test_accept_and_deny_are_always_present(self):
         views = build_views(make_controller())
@@ -124,19 +128,13 @@ class TestButtonSet:
         assert "Always allow" in with_it
         assert "Always allow" not in without_it
 
-    def test_accept_for_5_min_present_only_when_allowed(self):
-        with_it = buttons_by_title(build_views(make_controller(allow_temp_accept=True)))
-        without_it = buttons_by_title(build_views(make_controller(allow_temp_accept=False)))
-        assert "Allow for 5 min" in with_it
-        assert "Allow for 5 min" not in without_it
-
-    def test_both_optional_buttons_can_appear_together(self):
-        # gate.py never actually requests both at once (review vs. popup
-        # gates are mutually exclusive), but the window itself places no
-        # such restriction -- this locks in that the two buttons don't
-        # collide or hide each other when combined.
-        titles = buttons_by_title(build_views(make_controller(allow_accept_all=True, allow_temp_accept=True)))
-        assert {"Allow once", "Deny", "Always allow", "Allow for 5 min"} <= titles.keys()
+    def test_temp_accept_eligible_never_adds_a_button(self):
+        with_it = buttons_by_title(build_views(make_controller(temp_accept_eligible=True)))
+        without_it = buttons_by_title(build_views(make_controller(temp_accept_eligible=False)))
+        # Same button set either way (Allow once/Deny/the "Show more" details
+        # toggle) -- eligibility never adds, removes, or relabels a button.
+        assert with_it.keys() == without_it.keys()
+        assert "Allow for 5 min" not in with_it
 
     def test_accept_has_no_enter_shortcut_but_deny_keeps_escape(self):
         # Changed deliberately (was "Accept defaults to Enter") -- see
@@ -156,30 +154,61 @@ class TestButtonSet:
         panel = controller.build_panel()
         assert panel.initialFirstResponder() is controller._details_view
 
-    def test_always_allow_and_allow_for_5_min_are_borderless_deny_and_allow_once_are_not(self):
-        # Always allow / Allow for 5 min are standing-rule actions taken
-        # rarely; Deny/Allow once are the two things people do constantly.
-        # The former render as small borderless/link-style controls, the
-        # latter keep their full pill-button styling -- see
-        # _build_link_button()'s docstring for why.
-        titles = buttons_by_title(build_views(make_controller(allow_accept_all=True, allow_temp_accept=True)))
+    def test_always_allow_is_borderless_deny_and_allow_once_are_not(self):
+        # Always allow is a standing-rule action taken rarely; Deny/Allow
+        # once are the two things people do constantly. The former renders
+        # as a small borderless/link-style control, the latter keep their
+        # full pill-button styling -- see _build_link_button()'s docstring
+        # for why.
+        titles = buttons_by_title(build_views(make_controller(allow_accept_all=True)))
         assert titles["Always allow"].isBordered() is False
-        assert titles["Allow for 5 min"].isBordered() is False
         assert titles["Allow once"].isBordered() is True
         assert titles["Deny"].isBordered() is True
 
-    def test_always_allow_and_allow_for_5_min_sit_left_of_allow_once_near_deny(self):
+    def test_always_allow_sits_left_of_allow_once_near_deny(self):
         # Separated from Allow once by both size and position so a fast,
-        # confident click aimed at the primary action can't land on a
+        # confident click aimed at the primary action can't land on the
         # standing-rule action by accident -- Allow once stays alone at
         # the far right.
-        titles = buttons_by_title(build_views(make_controller(allow_accept_all=True, allow_temp_accept=True)))
+        titles = buttons_by_title(build_views(make_controller(allow_accept_all=True)))
         deny_right_edge = titles["Deny"].frame().origin.x + titles["Deny"].frame().size.width
         allow_once_left_edge = titles["Allow once"].frame().origin.x
-        for name in ("Always allow", "Allow for 5 min"):
-            x = titles[name].frame().origin.x
-            assert x >= deny_right_edge
-            assert x < allow_once_left_edge
+        x = titles["Always allow"].frame().origin.x
+        assert x >= deny_right_edge
+        assert x < allow_once_left_edge
+
+
+class TestTempAcceptDisclosure:
+    """The replacement for the old "Allow for 5 min" button: a plain,
+    non-interactive caption above the button row, shown only for the
+    operations auto_accept.TEMP_ACCEPT_ELIGIBLE_OPERATIONS lists (gate.py
+    decides eligibility and arms the actual grace window on Allow once;
+    this window only discloses that, it never offers a separate choice)."""
+
+    def test_caption_present_only_when_eligible(self):
+        with_it = text_field_values(build_views(make_controller(temp_accept_eligible=True)))
+        without_it = text_field_values(build_views(make_controller(temp_accept_eligible=False)))
+        assert _TEMP_ACCEPT_DISCLOSURE_TEXT in with_it
+        assert _TEMP_ACCEPT_DISCLOSURE_TEXT not in without_it
+
+    def test_caption_coexists_with_always_allow(self):
+        # gate="popup" (temp-accept-eligible) and gate="review" (Always
+        # allow) are mutually exclusive in gate.py, but the window itself
+        # places no such restriction -- this locks in that the two don't
+        # collide when combined.
+        titles = buttons_by_title(
+            build_views(make_controller(allow_accept_all=True, temp_accept_eligible=True))
+        )
+        texts = text_field_values(
+            build_views(make_controller(allow_accept_all=True, temp_accept_eligible=True))
+        )
+        assert {"Allow once", "Deny", "Always allow"} <= titles.keys()
+        assert _TEMP_ACCEPT_DISCLOSURE_TEXT in texts
+
+    def test_caption_adds_layout_height(self):
+        base = make_controller()._compute_layout(560.0)[0]
+        with_caption = make_controller(temp_accept_eligible=True)._compute_layout(560.0)[0]
+        assert with_caption > base
 
 
 class TestPiiTintAndBanner:
@@ -882,13 +911,21 @@ class TestButtonClicked:
             ("Allow once", "accept"),
             ("Deny", "deny"),
             ("Always allow", "accept_all"),
-            ("Allow for 5 min", "accept_temp"),
         ],
     )
     def test_title_maps_to_the_documented_result(self, button_title, expected_result):
         controller = make_controller()
         controller.buttonClicked_(self._FakeSender(button_title))
         assert controller.result == expected_result
+
+    def test_old_allow_for_5_min_title_now_falls_through_to_deny(self):
+        # There's no button left that produces this title, but locking in
+        # the fallback matters: if some stale caller ever raced a click in
+        # with this title, it must resolve to the safe default (deny), not
+        # to a mysteriously-still-alive "accept_temp".
+        controller = make_controller()
+        controller.buttonClicked_(self._FakeSender("Allow for 5 min"))
+        assert controller.result == "deny"
 
     def test_unrecognized_title_defaults_to_deny(self):
         # Defensive default, not a reachable case with the fixed button set

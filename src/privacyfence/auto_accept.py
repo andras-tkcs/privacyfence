@@ -15,12 +15,12 @@ logger = logging.getLogger(__name__)
 
 # Write operations expected to be called repeatedly against the same file in
 # quick succession (e.g. an agent filling in a sheet cell-by-cell, or building
-# up formatting one range at a time). These get a lightweight "Allow for 5
-# min" popup button, scoped to one file and never persisted to settings.yaml
-# — unlike Always allow, it disappears with the daemon and with wall-clock
-# time, so it's a much smaller commitment than a standing rule. Maps
-# operation key -> the args field that identifies "the same file" for that
-# operation.
+# up formatting one range at a time). Allow once on one of these also arms a
+# lightweight, in-memory grace window scoped to one file (gate.py) -- there's
+# no separate button for it -- and never persisted to settings.yaml, unlike
+# Always allow, so it disappears with the daemon and with wall-clock time,
+# a much smaller commitment than a standing rule. Maps operation key -> the
+# args field that identifies "the same file" for that operation.
 TEMP_ACCEPT_ELIGIBLE_OPERATIONS: dict[str, str] = {
     "sheets.write_range": "spreadsheet_id",
     "sheets.format_range": "spreadsheet_id",
@@ -368,7 +368,7 @@ class AutoAcceptEvaluator:
 
         file_key = temp_accept_key(operation_key, ctx)
         if self._is_temp_accepted(operation_key, file_key):
-            return "auto_accept", "session_temp_accept", "Matched an active \"Allow for 5 min\" window."
+            return "auto_accept", "session_temp_accept", "Matched an active same-file temp-accept grace window."
 
         configured = self._rules.get(operation_key) or []
         if not configured:
@@ -797,9 +797,10 @@ def _sheet_tab_of(ctx: "ReviewContext") -> str:
 def temp_accept_key(operation_key: str, ctx: "ReviewContext") -> str | None:
     """The file identity a temp accept for this operation would be scoped to.
 
-    Returns None when the operation isn't eligible for "Allow for 5 min"
-    (see TEMP_ACCEPT_ELIGIBLE_OPERATIONS) or the expected arg is missing —
-    either way, gate.py takes that as "don't offer the button."
+    Returns None when the operation isn't in TEMP_ACCEPT_ELIGIBLE_OPERATIONS
+    or the expected arg is missing — either way, gate.py takes that as
+    "don't show the disclosure caption, and don't arm a grace window on
+    Allow once."
     """
     arg_name = TEMP_ACCEPT_ELIGIBLE_OPERATIONS.get(operation_key)
     if not arg_name:
