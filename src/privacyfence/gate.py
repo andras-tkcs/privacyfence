@@ -83,6 +83,7 @@ from .approval_popup import (
     show_pii_confirmation_popup,
     show_popup,
     show_read_popup,
+    show_rule_choice_popup,
     show_rule_confirmation_popup,
 )
 from .audit_log import AuditEntry, current_week, get_audit_logger
@@ -97,6 +98,7 @@ from .auto_accept import (
     mutate_grants,
     remove_auto_accept_rule,
     suggest_rule,
+    suggest_rule_choices,
     suggest_write_rule,
     temp_accept_key,
 )
@@ -337,10 +339,26 @@ async def gated_call(
                     decision = await _confirm_pii_or_deny(decision, pii_categories)
 
                 if decision == "accept_all" and suggestion is not None:
-                    rule_name, value = suggestion
-                    description = describe_rule(rule_name, value)
-                    confirmed = await asyncio.to_thread(show_rule_confirmation_popup, description)
-                    if confirmed:
+                    # Some operations (e.g. a Drive file you both own and
+                    # that lives in an approved folder) can suggest more than
+                    # one plausible rule for the same item -- ask which one
+                    # rather than always silently creating the top-priority
+                    # candidate suggest_rule() picked. Only ever 2+ entries
+                    # for the four families in SUGGESTION_FAMILIES; every
+                    # other operation gets back exactly `[suggestion]`, so
+                    # this is a no-op for them.
+                    choices = suggest_rule_choices(operation_key, ctx)
+                    if len(choices) > 1:
+                        descriptions = [describe_rule(rn, v) for rn, v in choices]
+                        chosen_idx = await asyncio.to_thread(show_rule_choice_popup, descriptions)
+                        chosen = choices[chosen_idx] if chosen_idx is not None else None
+                    else:
+                        description = describe_rule(*suggestion)
+                        confirmed = await asyncio.to_thread(show_rule_confirmation_popup, description)
+                        chosen = suggestion if confirmed else None
+
+                    if chosen is not None:
+                        rule_name, value = chosen
                         add_auto_accept_rule(operation_key, rule_name, value)
                         audit(
                             decision="accepted_via_accept_all", auto_accept_rule=rule_name,

@@ -884,6 +884,25 @@ def _first_matching_suggestion(
     return None
 
 
+def _all_matching_suggestions(
+    family: str, candidates: dict[str, Callable[[], Any]]
+) -> list[tuple[str, Any]]:
+    """Like `_first_matching_suggestion`, but returns every candidate that
+    matches, not just the first -- still walked in priority order. Used to
+    offer the user an explicit choice when an item matches more than one
+    candidate, instead of always silently picking the top-priority one.
+    """
+    matches = []
+    for rule_name in suggestion_order(family):
+        check = candidates.get(rule_name)
+        if check is None:
+            continue
+        value = check()
+        if value is not _NO_MATCH:
+            matches.append((rule_name, value))
+    return matches
+
+
 def _file_from(raw: Any) -> Any:
     """Unwrap a Drive file object out of whatever shape a call's raw_data
     carries it in -- a dict with a "file" key (e.g. {"file": drive_file,
@@ -932,6 +951,87 @@ def _attendee_email(attendee: Any) -> str:
     return getattr(attendee, "email", "") or ""
 
 
+# Candidate builders for the four "family" operations that can suggest more
+# than one rule for the same item -- shared between suggest_rule() (which
+# picks the top-priority match) and suggest_rule_choices() (which returns
+# every match, for the popup's "more than one applies" choice dialog).
+
+def _drive_read_candidates(ctx: ReviewContext) -> dict[str, Callable[[], Any]]:
+    f = _file_from(ctx.raw_data)
+    owners = getattr(f, "owners", []) or []
+    parents = list(getattr(f, "parent_ids", []) or [])
+    return {
+        "i_am_owner": lambda: None if (
+            ctx.my_email and any(ctx.my_email.lower() in o.lower() for o in owners)
+        ) else _NO_MATCH,
+        "approved_folder": lambda: parents if parents else _NO_MATCH,
+    }
+
+
+def _calendar_read_event_candidates(ctx: ReviewContext) -> dict[str, Callable[[], Any]]:
+    organizer = getattr(ctx.raw_data, "organizer_email", "") or ""
+    attendees = getattr(ctx.raw_data, "attendees", []) or []
+    visibility = getattr(ctx.raw_data, "visibility", "default") or "default"
+
+    def _no_external_attendees_check():
+        if not ctx.my_domain:
+            return _NO_MATCH
+        all_internal = all(ctx.my_domain in _attendee_email(a) for a in attendees)
+        return None if all_internal else _NO_MATCH
+
+    return {
+        "i_am_organizer": lambda: None if (
+            ctx.my_email and ctx.my_email.lower() == organizer.lower()
+        ) else _NO_MATCH,
+        "no_external_attendees": _no_external_attendees_check,
+        "non_private_event": lambda: None if visibility != "private" else _NO_MATCH,
+    }
+
+
+def _jira_read_issue_candidates(ctx: ReviewContext) -> dict[str, Callable[[], Any]]:
+    raw = ctx.raw_data
+    reporter = (raw.get("reporter") if isinstance(raw, dict) else getattr(raw, "reporter", "")) or ""
+    assignee = (raw.get("assignee") if isinstance(raw, dict) else getattr(raw, "assignee", "")) or ""
+    issue_key = ctx.args.get("issue_key", "") or ""
+    project_key = issue_key.split("-")[0] if "-" in issue_key else ""
+    return {
+        "i_am_reporter": lambda: None if (
+            ctx.my_email and ctx.my_email.lower() in reporter.lower()
+        ) else _NO_MATCH,
+        "i_am_assignee": lambda: None if (
+            ctx.my_email and ctx.my_email.lower() in assignee.lower()
+        ) else _NO_MATCH,
+        "approved_project_keys": lambda: [project_key] if project_key else _NO_MATCH,
+    }
+
+
+def _confluence_read_page_candidates(ctx: ReviewContext) -> dict[str, Callable[[], Any]]:
+    raw = ctx.raw_data
+    author = (raw.get("author") if isinstance(raw, dict) else getattr(raw, "author", "")) or ""
+    space_key = (
+        (raw.get("space_key") if isinstance(raw, dict) else getattr(raw, "space_key", ""))
+        or ctx.args.get("space_key", "")
+    )
+    return {
+        "i_am_author": lambda: None if (
+            ctx.my_email and ctx.my_email.lower() in author.lower()
+        ) else _NO_MATCH,
+        "approved_space_keys": lambda: [space_key] if space_key else _NO_MATCH,
+    }
+
+
+# operation_key -> (family, candidate builder), for the four multi-candidate
+# operations above -- shared lookup table for suggest_rule_choices() below.
+_MULTI_CANDIDATE_FAMILIES: dict[str, tuple[str, Callable[[ReviewContext], dict[str, Callable[[], Any]]]]] = {
+    "drive.read_file_contents": ("drive_read", _drive_read_candidates),
+    "drive.download_file": ("drive_read", _drive_read_candidates),
+    "sheets.read_values": ("drive_read", _drive_read_candidates),
+    "calendar.read_event_details": ("calendar_read_event", _calendar_read_event_candidates),
+    "jira.read_issue": ("jira_read_issue", _jira_read_issue_candidates),
+    "confluence.read_page": ("confluence_read_page", _confluence_read_page_candidates),
+}
+
+
 def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | None:
     """Propose one auto-accept rule from the current item's attributes.
 
@@ -948,15 +1048,7 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
         return ("trusted_sender_domain", [domain]) if domain else None
 
     if operation_key in ("drive.read_file_contents", "drive.download_file", "sheets.read_values"):
-        f = _file_from(ctx.raw_data)
-        owners = getattr(f, "owners", []) or []
-        parents = list(getattr(f, "parent_ids", []) or [])
-        return _first_matching_suggestion("drive_read", {
-            "i_am_owner": lambda: None if (
-                ctx.my_email and any(ctx.my_email.lower() in o.lower() for o in owners)
-            ) else _NO_MATCH,
-            "approved_folder": lambda: parents if parents else _NO_MATCH,
-        })
+        return _first_matching_suggestion("drive_read", _drive_read_candidates(ctx))
 
     if operation_key == "slack.read_messages":
         cid = ctx.args.get("channel_id", "") or ctx.args.get("channel", "") or ""
@@ -975,23 +1067,7 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
         return ("approved_channel_all_results", channel_ids) if channel_ids else None
 
     if operation_key == "calendar.read_event_details":
-        organizer = getattr(ctx.raw_data, "organizer_email", "") or ""
-        attendees = getattr(ctx.raw_data, "attendees", []) or []
-        visibility = getattr(ctx.raw_data, "visibility", "default") or "default"
-
-        def _no_external_attendees_check():
-            if not ctx.my_domain:
-                return _NO_MATCH
-            all_internal = all(ctx.my_domain in _attendee_email(a) for a in attendees)
-            return None if all_internal else _NO_MATCH
-
-        return _first_matching_suggestion("calendar_read_event", {
-            "i_am_organizer": lambda: None if (
-                ctx.my_email and ctx.my_email.lower() == organizer.lower()
-            ) else _NO_MATCH,
-            "no_external_attendees": _no_external_attendees_check,
-            "non_private_event": lambda: None if visibility != "private" else _NO_MATCH,
-        })
+        return _first_matching_suggestion("calendar_read_event", _calendar_read_event_candidates(ctx))
 
     if operation_key == "salesforce.read_record":
         object_type = ctx.args.get("object_type", "")
@@ -1009,36 +1085,10 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
         return ("approved_object_types", object_types) if object_types else None
 
     if operation_key == "jira.read_issue":
-        raw = ctx.raw_data
-        reporter = (raw.get("reporter") if isinstance(raw, dict) else getattr(raw, "reporter", "")) or ""
-        assignee = (raw.get("assignee") if isinstance(raw, dict) else getattr(raw, "assignee", "")) or ""
-        issue_key = ctx.args.get("issue_key", "") or ""
-        project_key = issue_key.split("-")[0] if "-" in issue_key else ""
-
-        return _first_matching_suggestion("jira_read_issue", {
-            "i_am_reporter": lambda: None if (
-                ctx.my_email and ctx.my_email.lower() in reporter.lower()
-            ) else _NO_MATCH,
-            "i_am_assignee": lambda: None if (
-                ctx.my_email and ctx.my_email.lower() in assignee.lower()
-            ) else _NO_MATCH,
-            "approved_project_keys": lambda: [project_key] if project_key else _NO_MATCH,
-        })
+        return _first_matching_suggestion("jira_read_issue", _jira_read_issue_candidates(ctx))
 
     if operation_key == "confluence.read_page":
-        raw = ctx.raw_data
-        author = (raw.get("author") if isinstance(raw, dict) else getattr(raw, "author", "")) or ""
-        space_key = (
-            (raw.get("space_key") if isinstance(raw, dict) else getattr(raw, "space_key", ""))
-            or ctx.args.get("space_key", "")
-        )
-
-        return _first_matching_suggestion("confluence_read_page", {
-            "i_am_author": lambda: None if (
-                ctx.my_email and ctx.my_email.lower() in author.lower()
-            ) else _NO_MATCH,
-            "approved_space_keys": lambda: [space_key] if space_key else _NO_MATCH,
-        })
+        return _first_matching_suggestion("confluence_read_page", _confluence_read_page_candidates(ctx))
 
     if operation_key == "telegram.read_chat_messages":
         chat_id = ctx.args.get("chat_id", "")
@@ -1053,6 +1103,25 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
         return ("approved_chats_all_results", chat_ids) if chat_ids else None
 
     return None
+
+
+def suggest_rule_choices(operation_key: str, ctx: ReviewContext) -> list[tuple[str, Any]]:
+    """Every rule suggest_rule() could plausibly propose for this item, in
+    priority order -- not just the highest-priority one.
+
+    Only the four "family" operations in _MULTI_CANDIDATE_FAMILIES can ever
+    have more than one entry here; every other operation has at most one
+    possible suggestion, so this just wraps suggest_rule()'s own result for
+    them. Used by the review-gate's "Always allow" flow to offer an explicit
+    choice when 2+ candidates actually match this item, instead of always
+    silently creating the top-priority one.
+    """
+    entry = _MULTI_CANDIDATE_FAMILIES.get(operation_key)
+    if entry is None:
+        single = suggest_rule(operation_key, ctx)
+        return [single] if single is not None else []
+    family, candidates_fn = entry
+    return _all_matching_suggestions(family, candidates_fn(ctx))
 
 
 # ── Rule suggestion for writes ("Always allow" on the write popup) ──────────

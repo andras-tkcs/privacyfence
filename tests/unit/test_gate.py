@@ -257,6 +257,86 @@ class TestAcceptAll:
         assert entries[0]["decision"] == "approved"  # accepted once, not via a rule
 
 
+class TestAcceptAllMultipleChoices:
+    """When suggest_rule_choices() returns 2+ candidates for the same item
+    (e.g. a Drive file you own that's also in an approved folder), Always
+    allow must offer an explicit choice instead of always silently creating
+    the top-priority one suggest_rule() itself picked."""
+
+    async def test_multiple_choices_shows_choice_popup_and_creates_the_chosen_rule(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: ("i_am_owner", None))
+        monkeypatch.setattr(
+            gate, "suggest_rule_choices",
+            lambda *a, **k: [("i_am_owner", None), ("approved_folder", ["f1"])],
+        )
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept_all")
+
+        confirm_calls = []
+        monkeypatch.setattr(
+            gate, "show_rule_confirmation_popup",
+            lambda description: confirm_calls.append(description) or True,
+        )
+        choice_calls = []
+        monkeypatch.setattr(
+            gate, "show_rule_choice_popup",
+            lambda descriptions: choice_calls.append(descriptions) or 1,  # picks approved_folder
+        )
+        added = []
+        monkeypatch.setattr(gate, "add_auto_accept_rule", lambda op, name, value: added.append((op, name, value)))
+
+        result = await gate.gated_call(**base_kwargs(gate="review"))
+
+        assert result is FILTERED
+        assert len(choice_calls) == 1  # the choice popup was shown ...
+        assert confirm_calls == []     # ... and the single-choice confirm popup was not
+        assert added == [("gmail.read_message", "approved_folder", ["f1"])]
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "accepted_via_accept_all"
+        assert entries[0]["auto_accept_rule"] == "approved_folder"
+
+    async def test_multiple_choices_cancelled_still_accepts_once_but_no_rule(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: ("i_am_owner", None))
+        monkeypatch.setattr(
+            gate, "suggest_rule_choices",
+            lambda *a, **k: [("i_am_owner", None), ("approved_folder", ["f1"])],
+        )
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(gate, "show_rule_choice_popup", lambda descriptions: None)  # cancelled
+        added = []
+        monkeypatch.setattr(gate, "add_auto_accept_rule", lambda *a: added.append(a))
+
+        result = await gate.gated_call(**base_kwargs(gate="review"))
+
+        assert result is FILTERED
+        assert added == []
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "approved"  # accepted once, not via a rule
+
+    async def test_single_matching_candidate_uses_the_plain_confirm_popup_not_the_choice_one(
+        self, monkeypatch, audit_dir,
+    ):
+        # Regression guard: suggest_rule_choices() returning exactly one
+        # entry must fall back to today's single-item confirm dialog, not
+        # pop up a one-option "choose from list".
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: ("i_am_sender", None))
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [("i_am_sender", None)])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
+        choice_calls = []
+        monkeypatch.setattr(gate, "show_rule_choice_popup", lambda descriptions: choice_calls.append(descriptions))
+        added = []
+        monkeypatch.setattr(gate, "add_auto_accept_rule", lambda op, name, value: added.append((op, name, value)))
+
+        result = await gate.gated_call(**base_kwargs(gate="review"))
+
+        assert result is FILTERED
+        assert choice_calls == []
+        assert added == [("gmail.read_message", "i_am_sender", None)]
+
+
 class TestAcceptAllWrites:
     """The write-gate counterpart to TestAcceptAll -- gate.suggest_write_rule()
     drives an "Always allow" button on the five write operations in

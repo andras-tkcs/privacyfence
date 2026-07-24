@@ -211,6 +211,37 @@ def show_pii_confirmation_popup(categories: list[str]) -> bool:
     return clicked == "Proceed"
 
 
+def show_rule_choice_popup(descriptions: list[str]) -> int | None:
+    """Chooser shown after "Always allow" is clicked when more than one rule
+    could be created from the same item (see auto_accept.py's
+    suggest_rule_choices()) -- e.g. a Drive file you own that also lives in
+    an approved folder could become either an i_am_owner or an
+    approved_folder rule. Returns the chosen index into ``descriptions``, or
+    None if cancelled.
+
+    Picking an option here doubles as the "yes, create this" confirmation --
+    there's no separate confirm step afterward, unlike the single-candidate
+    case (show_rule_confirmation_popup), since choosing from an explicit list
+    is already as deliberate an action as clicking Confirm.
+    """
+    opts_as = "{" + ", ".join(_as_str(d) for d in descriptions) + "}"
+    script = (
+        f"set opts to {opts_as}\n"
+        "set chosen to (choose from list opts "
+        'with title "PrivacyFence — Choose Auto-Accept Rule" '
+        'with prompt "More than one rule could be created from this item — choose one:")\n'
+        'if chosen is false then return ""\n'
+        "return item 1 of chosen"
+    )
+    text = _run(script)
+    if text is None:
+        return None
+    try:
+        return descriptions.index(text)
+    except ValueError:
+        return None
+
+
 def show_rule_confirmation_popup(description: str) -> bool:
     """Second-step confirmation shown after "Always allow" is clicked.
 

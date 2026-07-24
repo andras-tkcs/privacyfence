@@ -37,6 +37,7 @@ from privacyfence.auto_accept import (
     set_rules_changed_listener,
     set_suggestion_priority,
     suggest_rule,
+    suggest_rule_choices,
     suggest_write_rule,
     suggestion_order,
     temp_accept_key,
@@ -1144,6 +1145,88 @@ class TestSuggestRulePriorityIntegration:
             raw_data=SimpleNamespace(owners=["me@example.com"], parent_ids=[]),
         )
         assert suggest_rule("drive.read_file_contents", ctx) == ("i_am_owner", None)
+
+
+class TestSuggestRuleChoices:
+    """suggest_rule_choices() -- every candidate that matches, not just the
+    top-priority one suggest_rule() would pick. Only the four multi-candidate
+    families can ever return more than one entry; everything else just wraps
+    suggest_rule()'s own result."""
+
+    def test_drive_owner_and_folder_both_match_returns_both_in_priority_order(self):
+        ctx = make_ctx(
+            my_email="me@example.com",
+            raw_data=SimpleNamespace(owners=["me@example.com"], parent_ids=["f1"]),
+        )
+        assert suggest_rule_choices("drive.read_file_contents", ctx) == [
+            ("i_am_owner", None), ("approved_folder", ["f1"]),
+        ]
+
+    def test_drive_configured_order_changes_the_returned_order_too(self):
+        init_suggestion_priority({"drive_read": ["approved_folder", "i_am_owner"]})
+        ctx = make_ctx(
+            my_email="me@example.com",
+            raw_data=SimpleNamespace(owners=["me@example.com"], parent_ids=["f1"]),
+        )
+        assert suggest_rule_choices("drive.read_file_contents", ctx) == [
+            ("approved_folder", ["f1"]), ("i_am_owner", None),
+        ]
+
+    def test_drive_only_owner_matches_returns_single_entry_list(self):
+        ctx = make_ctx(
+            my_email="me@example.com",
+            raw_data=SimpleNamespace(owners=["me@example.com"], parent_ids=[]),
+        )
+        assert suggest_rule_choices("drive.read_file_contents", ctx) == [("i_am_owner", None)]
+
+    def test_drive_neither_matches_returns_empty_list(self):
+        ctx = make_ctx(
+            my_email="me@example.com",
+            raw_data=SimpleNamespace(owners=["other@example.com"], parent_ids=[]),
+        )
+        assert suggest_rule_choices("drive.read_file_contents", ctx) == []
+
+    def test_calendar_organizer_and_non_private_both_match(self):
+        # An external attendee rules out no_external_attendees, leaving
+        # exactly i_am_organizer and non_private_event as matches.
+        ctx = make_ctx(
+            my_email="me@example.com",
+            raw_data=SimpleNamespace(
+                organizer_email="me@example.com",
+                attendees=[{"email": "outsider@other.com"}],
+                visibility="default",
+            ),
+        )
+        assert suggest_rule_choices("calendar.read_event_details", ctx) == [
+            ("i_am_organizer", None), ("non_private_event", None),
+        ]
+
+    def test_jira_reporter_and_project_both_match(self):
+        ctx = make_ctx(
+            my_email="me@example.com",
+            args={"issue_key": "PFQA-1"},
+            raw_data=SimpleNamespace(reporter="me@example.com", assignee=""),
+        )
+        assert suggest_rule_choices("jira.read_issue", ctx) == [
+            ("i_am_reporter", None), ("approved_project_keys", ["PFQA"]),
+        ]
+
+    def test_confluence_author_and_space_both_match(self):
+        ctx = make_ctx(
+            my_email="me@example.com",
+            raw_data=SimpleNamespace(author="me@example.com", space_key="ENG"),
+        )
+        assert suggest_rule_choices("confluence.read_page", ctx) == [
+            ("i_am_author", None), ("approved_space_keys", ["ENG"]),
+        ]
+
+    def test_non_family_operation_wraps_suggest_rule_single_result(self):
+        ctx = make_ctx(my_email="me@example.com", raw_data=SimpleNamespace(sender="Me <me@example.com>"))
+        assert suggest_rule_choices("gmail.read_message", ctx) == [("i_am_sender", None)]
+
+    def test_non_family_operation_with_no_suggestion_returns_empty_list(self):
+        ctx = make_ctx(my_email="me@example.com", raw_data=SimpleNamespace(sender=""))
+        assert suggest_rule_choices("gmail.read_message", ctx) == []
 
 
 # --------------------------------------------------------------------------- #
