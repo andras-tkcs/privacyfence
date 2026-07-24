@@ -15,7 +15,14 @@ from privacyfence.audit_log import current_week, init_audit_logger
 from privacyfence.connectors import slack as slack_module
 from privacyfence.connectors.slack import SlackConnector, _message_to_dict
 from privacyfence.privacy_filter import init_privacy_filter
-from privacyfence.slack_client import SlackChannel, SlackClient, SlackClientError, SlackMessage
+from privacyfence.slack_client import (
+    SlackChannel,
+    SlackClient,
+    SlackClientError,
+    SlackDirectMessage,
+    SlackGroupChat,
+    SlackMessage,
+)
 
 from ...helpers import assert_all_tools_leave_an_audit_trail, assert_no_placeholder_fields
 
@@ -87,6 +94,40 @@ class TestListChannels:
         assert result == [{
             "id": "C1", "name": "general", "is_private": False,
             "topic": "chat", "purpose": "", "member_count": 42,
+        }]
+        entries = (tmp_path / f"{current_week()}.jsonl").read_text(encoding="utf-8").splitlines()
+        assert '"decision": "auto_accepted"' in entries[0]
+
+
+class TestListDMs:
+    async def test_auto_accepts_and_maps_fields(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        client.list_dms.return_value = [
+            SlackDirectMessage(id="D1", user_id="U1", user_name="Jane Doe"),
+        ]
+
+        result = await connector.call("slack_list_dms", {"participant": "jane"})
+
+        assert result == [{"id": "D1", "user_id": "U1", "user_name": "Jane Doe"}]
+        client.list_dms.assert_called_once_with(100, "jane")
+        entries = (tmp_path / f"{current_week()}.jsonl").read_text(encoding="utf-8").splitlines()
+        assert '"decision": "auto_accepted"' in entries[0]
+
+
+class TestListGroupChats:
+    async def test_auto_accepts_and_maps_fields(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        client.list_group_chats.return_value = [
+            SlackGroupChat(id="G1", name="mpdm-a--b-1", member_ids=["U1", "U2"], member_names=["Jane", "Bob"]),
+        ]
+
+        result = await connector.call("slack_list_group_chats", {})
+
+        assert result == [{
+            "id": "G1", "name": "mpdm-a--b-1",
+            "member_ids": ["U1", "U2"], "member_names": ["Jane", "Bob"],
         }]
         entries = (tmp_path / f"{current_week()}.jsonl").read_text(encoding="utf-8").splitlines()
         assert '"decision": "auto_accepted"' in entries[0]
@@ -234,6 +275,50 @@ class TestSlackPrivacyFilter:
         result = await connector.call("slack_list_channels", {})
 
         assert result == []
+
+    async def test_dm_list_blocked_empties_auto_accepted_result(self):
+        init_privacy_filter({"slack_privacy": {"categories": {"dm_list": "block"}}})
+        connector, client = make_connector()
+        client.list_dms.return_value = [SlackDirectMessage(id="D1", user_id="U1", user_name="Jane")]
+
+        result = await connector.call("slack_list_dms", {})
+
+        assert result == []
+
+    async def test_dm_list_user_identity_applies_to_participant_fields(self):
+        init_privacy_filter({"slack_privacy": {"categories": {"user_identity": "redact"}}})
+        connector, client = make_connector()
+        client.list_dms.return_value = [SlackDirectMessage(id="D1", user_id="U1", user_name="Jane Doe")]
+
+        result = await connector.call("slack_list_dms", {})
+
+        assert result[0]["id"] == "D1"
+        assert result[0]["user_id"].startswith("[REDACTED")
+        assert result[0]["user_name"].startswith("[REDACTED")
+
+    async def test_group_chat_list_blocked_empties_auto_accepted_result(self):
+        init_privacy_filter({"slack_privacy": {"categories": {"group_chat_list": "block"}}})
+        connector, client = make_connector()
+        client.list_group_chats.return_value = [
+            SlackGroupChat(id="G1", name="g1", member_ids=["U1"], member_names=["Jane"])
+        ]
+
+        result = await connector.call("slack_list_group_chats", {})
+
+        assert result == []
+
+    async def test_group_chat_list_user_identity_applies_to_member_fields(self):
+        init_privacy_filter({"slack_privacy": {"categories": {"user_identity": "redact"}}})
+        connector, client = make_connector()
+        client.list_group_chats.return_value = [
+            SlackGroupChat(id="G1", name="g1", member_ids=["U1"], member_names=["Jane Doe"])
+        ]
+
+        result = await connector.call("slack_list_group_chats", {})
+
+        assert result[0]["id"] == "G1"
+        assert result[0]["member_ids"][0].startswith("[REDACTED")
+        assert result[0]["member_names"][0].startswith("[REDACTED")
 
     async def test_allow_is_the_default_when_unconfigured(self, gated_call_spy):
         # No init_privacy_filter call in this test -- conftest's autouse

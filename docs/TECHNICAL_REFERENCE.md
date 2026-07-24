@@ -242,6 +242,8 @@ PrivacyFence for a delete.
 | Tool | Dir | Gate | Preview | Details popup |
 |------|-----|------|----------------|---------------|
 | `slack_list_channels` | read | auto | — | — |
+| `slack_list_dms` | read | auto | — | — (each entry is `id` + the other participant; optional `participant` filter matches by user id, handle, or display name) |
+| `slack_list_group_chats` | read | auto | — | — (each entry is `id`, `name`, and resolved `member_ids`/`member_names`; optional `participant` filter matches any member by user id, handle, or display name; one extra `conversations.members` call per group chat) |
 | `slack_get_channel_history` | read | review | channel name, message count, first message (80 chars) | All messages |
 | `slack_get_thread_replies` | read | review | channel name, thread starter (80 chars), reply count | All replies |
 | `slack_search_messages` | read | review | query, result count | All results |
