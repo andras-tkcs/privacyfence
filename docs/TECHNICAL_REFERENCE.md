@@ -76,14 +76,12 @@ content (e.g. the email body) up front, offering:
 Claude already describes the action it is about to take in the chat. PrivacyFence opens a native
 popup showing the full action details with **Allow once** or **Deny** — auto-accepting a write
 silently is a materially bigger blast radius than auto-accepting a read, so most write popups have
-no **Always allow** at all. Five operations are a narrow, deliberate exception: `gmail_add_label`/
-`gmail_remove_label`, `calendar_create_event`/`calendar_update_event`/`calendar_set_event_visibility`,
-all four Jira write tools, both Confluence write tools, and all five Tasks write tools each get an
-**Always allow** button too, proposing a rule scoped to the one label/calendar/project/space/task
-list the call just touched — never a bare "accept every future write of this type" toggle, which is
-what keeps this from reopening the no-Always-allow policy wholesale. See
-[Always-allow suggestion priority](#always-allow-suggestion-priority)'s sibling mechanism,
-`auto_accept.WRITE_RULE_SUGGESTIONS`, for the full list and how each rule's value is derived.
+no **Always allow** at all. 32 tools across 29 operation keys are a narrow, deliberate exception —
+each proposing a rule scoped to the one folder/label/calendar/project/space/task-list the call just
+touched, never a bare "accept every future write of this type" toggle (`gmail_create_draft` and its
+two reply variants are the sole exception to that). See
+[Always allow for writes](#always-allow-for-writes) for the full list and how each rule's value is
+derived.
 
 For write operations expected to be called repeatedly against the same file in quick succession —
 `drive_sheets_write_range`, `drive_sheets_format_range`, `drive_sheets_insert_dimensions`,
@@ -97,11 +95,13 @@ user is really approving, not a duration to pick up front. Unlike a standing
 daemon restart — a much smaller commitment than Always allow, appropriate for writes where a
 standing rule isn't offered at all.
 
-`drive_sheets_delete_dimensions` is deliberately excluded even though it's called in the same kind
-of burst `drive_sheets_insert_dimensions` is: unlike every operation above, it removes cell
-content (not just its appearance or position) with no undo path through PrivacyFence, so a
-5-minute silent-acceptance window is a bigger commitment than for the others. It only ever gets
-the standing-rule treatment described in [Auto-accept rules](#auto-accept-rules) below.
+`drive_sheets_delete_dimensions` is deliberately excluded from that grace window even though it's
+called in the same kind of burst `drive_sheets_insert_dimensions` is: unlike every operation above,
+it removes cell content (not just its appearance or position) with no undo path through
+PrivacyFence, so a 5-minute silent-acceptance window is a bigger commitment than for the others. It
+still gets the standing-rule **Always allow** shortcut described in
+[Always allow for writes](#always-allow-for-writes), same as any other sandbox-folder write — only
+the grace window is withheld.
 
 ### PII detection gate
 
@@ -113,20 +113,13 @@ write is content Claude itself already generated for an action it described in c
 data being newly exposed to it.
 
 On top of the normal Allow once/Deny popup, PrivacyFence can scan the message/document/spreadsheet
-content shown in every `review` dialog for likely personal data — in **Hungarian,
-English, and German** — before you approve it: IBANs, credit card numbers, IP addresses, and
-national identifiers (Hungarian TAJ/adóazonosító jel/ID card number, German
-Steuer-ID/Sozialversicherungsnummer, US SSN, UK National Insurance number), plus common
-labels like "date of birth" / "születési dátum" / "Geburtsdatum" and salary/compensation
-references ("salary" / "fizetés" / "Gehalt") that flag a nearby value even when its own format
-is too ambiguous to match structurally.
-
-**Email addresses and phone numbers are deliberately not detected.** Nearly everything this
-gate scans is email content, and nearly every email signature carries the sender's own address
-and phone number — matching on those formats meant almost every read popup got flagged
-regardless of whether the message actually contained anything sensitive, training users to
-click through the warning without reading it. The other categories above (IBANs, national IDs,
-etc.) are rare enough in ordinary correspondence that a hit is still a meaningful signal.
+content shown in every `review` dialog for likely personal data across **Hungarian, English, and
+German** before you approve it — IBANs, credit card numbers, national identifiers, IP addresses,
+financial figures, and common personal-data/salary phrases per language. Email addresses and phone
+numbers are deliberately excluded (matching those formats flagged nearly every read popup, since
+almost every email signature carries the sender's own). See
+[`pii-detection-keywords.md`](pii-detection-keywords.md) for the exact categories, patterns, and
+the full reasoning behind what is and isn't matched.
 
 When something is flagged:
 
@@ -154,12 +147,9 @@ silent auto-accept path exactly as before this gate existed.
 **IP address** and **Financial figures (currency amounts)** can also be toggled off individually,
 independent of the gate as a whole — from the same **PII Detection Gate** submenu in the menu bar,
 or via `pii_detection.detect_ip_addresses` / `detect_financial_figures` in `config/settings.yaml`
-(both `true` by default). Unlike the other categories, these two show up constantly in ordinary
-business correspondence (server logs, invoices, budgets) without being personal data about anyone,
-so they're the two most likely to be worth muting on their own rather than disabling the whole
-gate. The remaining categories are always on whenever the gate itself is enabled. See
-[`pii-detection-keywords.md`](pii-detection-keywords.md) for the full category × language keyword
-reference.
+(both `true` by default); every other category is on whenever the gate itself is enabled. See
+[`pii-detection-keywords.md`](pii-detection-keywords.md#individually-optional-categories) for why
+these two specifically get their own toggle.
 
 ---
 
@@ -262,7 +252,7 @@ PrivacyFence for a delete.
 |------|-----|------|----------------|---------------|
 | `calendar_list_calendars` | read | auto | — | — |
 | `calendar_list_events` | read | auto | — | — |
-| `calendar_get_free_busy` | read | auto | — | — (returns full events when calendar access is available; falls back to busy-slot list otherwise) |
+| `calendar_get_free_busy` | read | auto | — | — (returns full events when calendar access is available; falls back to busy-slot list otherwise — set `calendar.free_busy_full_event_details: false` in `settings.yaml` to always fall back regardless of access) |
 | `calendar_list_rooms` | read | auto | — | — (lists meeting rooms — name, email, building, floor, capacity — from a static directory IT syncs into `org_config.json` via `scripts/sync_room_directory.py`; not a live lookup, so it may be empty until IT has synced one; the Calendar connector's own OAuth client never holds Workspace admin directory access) |
 | `calendar_get_event_details` | read | review | title, time, organizer, attendee count | Description, full attendee list, conferencing link, file attachments (e.g. Gemini meeting notes/transcript) |
 | `calendar_get_event_visibility` | read | auto | — | — |

@@ -114,7 +114,7 @@ returns message text, so it gates like a read, not like a list.
 | `calendar_list_calendars` | auto | `id`, `summary`, `primary`, `access_role` |
 | `calendar_list_events` | auto | `id`, `title`, `start_time`, `end_time`, `day_of_week`, `all_day`, `status` — explicitly no attendees/description |
 | `calendar_get_free_busy` | auto | **for colleagues the authenticated account has calendar access to: full event `title`, time, and `status`** (not just busy/free blocks) — *unless* `calendar.free_busy_full_event_details` is set to `false`, in which case every entry is downgraded to a busy/free-only block regardless of access (default `true`, preserving the behavior above) |
-| `calendar_list_rooms` | auto | room `resource_email`, `resource_name`, building, floor, capacity, description |
+| `calendar_list_rooms` | auto | room `resource_email`, `resource_name`, building, floor, capacity, description — served from a static directory IT syncs into `org_config.json` (`scripts/sync_room_directory.py`), not a live API call, so it's empty until IT has synced one, and only ever reflects that last sync |
 | `calendar_get_event_visibility` | auto | just the `visibility` field |
 | `calendar_get_event_details` | review | **new:** `description`, full `attendees` (email, display name, response status), `location`, conferencing link, file attachments (`file_id`, `title`, `mime_type` — not their content; that's a separate `drive_get_file_content` gate) |
 

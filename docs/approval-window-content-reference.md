@@ -71,8 +71,13 @@ Claude's reason on a given call — that's about the *content* of a specific req
 
 ### RG-1 — Plain review popup (summary box only, no AI-visibility checklist)
 
-No `visibility` passed — Confluence, Telegram, Salesforce, and part of Calendar/Jira never wired
-into `privacy_filter.py`'s category-policy system, so there's no resolved policy to disclose here.
+No `visibility` passed — these specific tools never resolve a `privacy_filter.py` category policy
+for their own content, so there's no checklist to disclose here: Telegram and Salesforce entirely,
+Calendar's/Jira's review-gate tools, and Confluence's `get_page`/`get_page_by_title`. (Confluence's
+own auto-approved `confluence_search`/`confluence_cql_search` *do* now apply a category —
+`confluence_privacy.search_excerpt` — but that's enforced before those auto tools return, not
+surfaced as a review-gate checklist here; see
+[`claude-knowledge-boundary.md`](claude-knowledge-boundary.md#category-based-redaction-what-can-actually-be-blocked-or-redacted).)
 
 | Tool | Preview summary fields |
 |---|---|
