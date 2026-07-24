@@ -131,7 +131,7 @@ picked for the first `gmail_get_message` call and restores it to its exact start
 - [ ] (Optional) Add `approved_sandbox_folder` to `sheets.rename_sheet` / `sheets.format_range`,
       scoped to this same folder — kept as raw per-operation rules rather than the
       `drive.sandbox_folders` grant's all-or-nothing `write` capability specifically so
-      `connector-qa-testing.md`'s Phase 2 can still exercise the plain popup / "Allow for 5 min"
+      `connector-qa-testing.md`'s Phase 2 can still exercise the plain popup / temp-accept
       flow for the *other* Sheets/Docs writes (`write_file`, `write_doc`, `add_sheet`) in the same
       folder:
       ```yaml
@@ -206,17 +206,22 @@ event, the trust grant, `i_am_organizer`/`non_private_event`, ad-hoc reads durin
 should target the PFQA calendar instead.
 
 - [ ] Decide `calendar_list_rooms` coverage — needs **Google Workspace** (not consumer Gmail) *and*
-      admin rights
+      admin rights. `calendar_list_rooms` is a static read of `org_config.json`'s synced `rooms`
+      list now (see `scripts/sync_room_directory.py`) — the Calendar connector's own OAuth client
+      never requests Workspace-admin directory scope, so there's no "Reconnect…" step here anymore.
   - [ ] No Workspace admin access → skip to the next item; this is a permanent, environment-level
         limitation, not a regression
   - [ ] Workspace admin access available:
-        1. Google Cloud Console → APIs & Services → Library → enable **Admin SDK API**
-        2. No OAuth scope to add manually — `admin.directory.resource.calendar.readonly` is
-           requested at runtime
-        3. Google Admin console → **Directory → Buildings and resources → Calendar resources → Add
+        1. Google Admin console → **Directory → Buildings and resources → Calendar resources → Add
            resource** — create at least one, e.g. `PrivacyFence QA Room A`
-        4. PrivacyFence menu bar → **Connectors → Calendar → Reconnect…** so the token picks up the
-           new scope
+        2. Create a *second* Google Cloud project with **Admin SDK API** enabled and an OAuth
+           Desktop client (see "Room directory sync" in `google-cloud-setup.md`) — not the same
+           project as your main QA Google org bundle.
+        3. `.venv/bin/python scripts/sync_room_directory.py --admin-client-secret
+           <second-project's client_secret.json> --org-config <QA org_config.json>`, signed in with
+           an account that holds Directory Reader / admin rights.
+        4. Reinstall the refreshed `org_config.json` via **Organization Config…** in the menu bar,
+           then quit and reopen PrivacyFence to pick up the new `rooms` list.
 - [ ] (Optional) Trust the PFQA calendar as a resource-scoped grant — covers
       `calendar.read_event_details` (`read`) and `calendar.create_modify_event`/
       `calendar.set_visibility` (`write`) for events on it, regardless of who organized them (an
@@ -557,14 +562,14 @@ a failure.
       ```
 - [ ] Restart the daemon after editing by hand (or use "Always allow" once, which hot-reloads rules)
 
-`sheets.read_values` → `approved_spreadsheet` (grant-managed under `drive.spreadsheets`) isn't
-included above — it's created automatically the first time you click "Always allow" on a
-`drive_sheets_get_values` call. `sheets.rename_sheet`/`format_range`/`insert_dimensions`/
-`delete_dimensions` and `docs.edit_content`/`format_content` → `approved_sandbox_folder` (§2),
-`calendar.calendars`'s `write` capability (§4), and `salesforce.search` → `approved_object_types`
-(§8) are also left out of this block by default, since enabling them would make Phase 2/4/8 silently
-auto-accept operations meant to exercise the popup flow — add whichever you specifically want
-auto-accepted, individually.
+`sheets.read_values` → `i_am_owner`/`approved_folder` (same drive_read suggestion family as
+`drive.read_file_contents`/`download_file`) isn't included above — it's created automatically the
+first time you click "Always allow" on a `drive_sheets_get_values` call. `sheets.rename_sheet`/
+`format_range`/`insert_dimensions`/`delete_dimensions` and `docs.edit_content`/`format_content` →
+`approved_sandbox_folder` (§2), `calendar.calendars`'s `write` capability (§4), and
+`salesforce.search` → `approved_object_types` (§8) are also left out of this block by default, since
+enabling them would make Phase 2/4/8 silently auto-accept operations meant to exercise the popup
+flow — add whichever you specifically want auto-accepted, individually.
 
 ---
 

@@ -1,7 +1,10 @@
 """Tests for CalendarClient's parsing/normalization logic: event
 normalization (all-day detection, attendees, conference links), timezone
-handling on create/update, room listing, and the events->free/busy fallback
-logic in get_colleagues_schedule. As with the Gmail/Drive client tests, these
+handling on create/update, and the events->free/busy fallback logic in
+get_colleagues_schedule. Room directory listing now lives on the separate
+RoomDirectoryClient (see test_room_directory_client.py) -- CalendarClient's
+own scope never includes Workspace-admin directory access. As with the
+Gmail/Drive client tests, these
 call real CalendarClient methods against a MagicMock stand-in for the
 googleapiclient service object.
 
@@ -29,7 +32,6 @@ from privacyfence.calendar_client import (
     CalendarClientError,
     CalendarEvent,
     CalendarListEntry,
-    CalendarRoom,
     FreeBusyResult,
     FreeBusySlot,
     _has_timezone,
@@ -611,67 +613,6 @@ class TestGetColleaguesSchedule:
 
 
 # ---------------------------------------------------------------------------- #
-# list_rooms
-# ---------------------------------------------------------------------------- #
-
-class TestListRooms:
-    def test_maps_response(self):
-        directory_service = MagicMock()
-        directory_service.resources.return_value.calendars.return_value.list.return_value.execute.return_value = {
-            "items": [{
-                "resourceId": "r1", "resourceName": "Room A", "resourceEmail": "room-a@x.com",
-                "buildingId": "b1", "floorName": "3", "capacity": "10",
-                "generatedResourceName": "Room A (3rd floor)",
-            }]
-        }
-        client = make_client(MagicMock())
-        client._get_directory_service = lambda: directory_service
-
-        rooms = client.list_rooms()
-
-        assert rooms == [CalendarRoom(
-            resource_id="r1", resource_name="Room A", resource_email="room-a@x.com",
-            building_id="b1", floor_name="3", capacity=10, description="Room A (3rd floor)",
-        )]
-
-    def test_403_gives_actionable_admin_access_message(self):
-        directory_service = MagicMock()
-        directory_service.resources.return_value.calendars.return_value.list.return_value.execute.side_effect = (
-            http_error(403)
-        )
-        client = make_client(MagicMock())
-        client._get_directory_service = lambda: directory_service
-
-        with pytest.raises(CalendarClientError, match="Workspace admin access"):
-            client.list_rooms()
-
-    def test_other_http_error_gives_generic_message(self):
-        directory_service = MagicMock()
-        directory_service.resources.return_value.calendars.return_value.list.return_value.execute.side_effect = (
-            http_error(500)
-        )
-        client = make_client(MagicMock())
-        client._get_directory_service = lambda: directory_service
-
-        with pytest.raises(CalendarClientError, match="list_rooms failed"):
-            client.list_rooms()
-
-    def test_query_param_included_only_when_given(self):
-        directory_service = MagicMock()
-        directory_service.resources.return_value.calendars.return_value.list.return_value.execute.return_value = {
-            "items": []
-        }
-        client = make_client(MagicMock())
-        client._get_directory_service = lambda: directory_service
-
-        client.list_rooms()
-        assert "query" not in directory_service.resources.return_value.calendars.return_value.list.call_args.kwargs
-
-        client.list_rooms(query="floor 3")
-        assert directory_service.resources.return_value.calendars.return_value.list.call_args.kwargs["query"] == "floor 3"
-
-
-# ---------------------------------------------------------------------------- #
 # create_event: timezone injection + attendees/rooms/conferencing
 # ---------------------------------------------------------------------------- #
 
@@ -1019,10 +960,9 @@ class TestSetWorkingLocation:
 
 
 # ---------------------------------------------------------------------------- #
-# _get_service / _get_directory_service: must not share one service (and its
-# underlying httplib2 transport) across threads, since concurrent requests
-# dispatched via asyncio.to_thread corrupt a shared connection
-# (SSL: WRONG_VERSION_NUMBER).
+# _get_service: must not share one service (and its underlying httplib2
+# transport) across threads, since concurrent requests dispatched via
+# asyncio.to_thread corrupt a shared connection (SSL: WRONG_VERSION_NUMBER).
 # ---------------------------------------------------------------------------- #
 
 class TestServiceIsThreadLocal:

@@ -22,7 +22,6 @@ from privacyfence.calendar_client import (
     CalendarClientError,
     CalendarEvent,
     CalendarListEntry,
-    CalendarRoom,
 )
 from privacyfence.connectors import calendar as calendar_module
 from privacyfence.connectors.calendar import CalendarConnector, _day_of_week
@@ -32,12 +31,12 @@ from ...helpers import assert_all_tools_leave_an_audit_trail, assert_no_placehol
 LIVE_FIXTURES_DIR = Path(__file__).parent.parent.parent / "fixtures" / "live" / "calendar"
 
 
-def make_connector(my_email="me@example.com"):
+def make_connector(my_email="me@example.com", rooms=None):
     client = MagicMock()
     # Default to "not resolvable" so tests that don't care about calendar-name
     # resolution keep seeing the raw calendar id, same as before this was added.
     client.get_calendar.side_effect = CalendarClientError("no such calendar")
-    connector = CalendarConnector(client)
+    connector = CalendarConnector(client, rooms=rooms)
     connector.my_email = my_email
     return connector, client
 
@@ -135,20 +134,45 @@ class TestAutoTools:
             ["a@example.com", "b@example.com"], "t0", "t1"
         )
 
-    async def test_list_rooms(self, tmp_path):
+    async def test_list_rooms_filters_the_static_org_config_directory(self, tmp_path):
+        """No network call -- calendar_list_rooms now serves org_config.json's
+        synced "rooms" list (see daemon_main.build_connectors), so the client
+        is never touched here."""
         init_audit_logger(str(tmp_path))
-        connector, client = make_connector()
-        client.list_rooms.return_value = [
-            CalendarRoom(resource_id="r1", resource_name="Boardroom", resource_email="room1@example.com",
-                         building_id="HQ", floor_name="3", capacity=10, description="Big room"),
+        rooms = [
+            {"resource_email": "room1@example.com", "resource_name": "Boardroom",
+             "building_id": "HQ", "floor_name": "3", "capacity": 10, "description": "Big room"},
+            {"resource_email": "room2@example.com", "resource_name": "Focus Room",
+             "building_id": "Annex", "floor_name": "1", "capacity": 2, "description": ""},
         ]
+        connector, client = make_connector(rooms=rooms)
 
         result = await connector.call("calendar_list_rooms", {"query": "board"})
 
-        assert result == [{
-            "resource_email": "room1@example.com", "resource_name": "Boardroom",
-            "building_id": "HQ", "floor_name": "3", "capacity": 10, "description": "Big room",
-        }]
+        assert result == [rooms[0]]
+        client.list_rooms.assert_not_called()
+
+    async def test_list_rooms_query_matches_building(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        rooms = [
+            {"resource_email": "room1@example.com", "resource_name": "Boardroom",
+             "building_id": "HQ", "floor_name": "3", "capacity": 10, "description": "Big room"},
+            {"resource_email": "room2@example.com", "resource_name": "Focus Room",
+             "building_id": "Annex", "floor_name": "1", "capacity": 2, "description": ""},
+        ]
+        connector, client = make_connector(rooms=rooms)
+
+        result = await connector.call("calendar_list_rooms", {"query": "annex"})
+
+        assert result == [rooms[1]]
+
+    async def test_list_rooms_empty_when_org_config_has_no_rooms_synced_yet(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+
+        result = await connector.call("calendar_list_rooms", {"query": ""})
+
+        assert result == []
 
     async def test_get_event_visibility_auto_accepts_and_returns_only_visibility(self, tmp_path):
         init_audit_logger(str(tmp_path))

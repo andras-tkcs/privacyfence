@@ -95,16 +95,22 @@ class RulesManagerWindowController(NSObject):
     one-shot-per-request controllers, this gets created once and reused for
     the app's whole lifetime (see menu_bar.py's _open_rules_manager)."""
 
-    def _configure_window(self, list_connectors, sections_for) -> None:
+    def _configure_window(self, list_connectors, sections_for, window_title="Auto-accept Rules") -> None:
         """list_connectors: () -> list[(key, label, count)]
         sections_for: (key: str) -> list[Section]
 
         Both are called fresh on every refresh -- nothing here caches
         connector/rule data, so the window never shows anything stale after
         a mutation, a background grant-name resolution, or a connector
-        reauthenticating elsewhere."""
+        reauthenticating elsewhere.
+
+        window_title lets a second, independent instance of this same
+        pure-view engine serve an unrelated settings surface (see
+        menu_bar.py's Privacy Filter window) without this class knowing or
+        caring what domain data it's rendering."""
         self.list_connectors = list_connectors
         self.sections_for = sections_for
+        self.window_title = window_title
         self.window = None
         self.selected: str | None = None
         self.search: str = ""
@@ -139,7 +145,7 @@ class RulesManagerWindowController(NSObject):
         window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, _WINDOW_WIDTH, _WINDOW_HEIGHT), style, NSBackingStoreBuffered, False
         )
-        window.setTitle_("Auto-accept Rules")
+        window.setTitle_(self.window_title)
         # Default isReleasedWhenClosed is True, meaning AppKit issues its own
         # release when the user closes the window via the close button --
         # racing our own windowWillClose_ dropping self.window below. Losing

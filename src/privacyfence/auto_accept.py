@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -15,12 +16,12 @@ logger = logging.getLogger(__name__)
 
 # Write operations expected to be called repeatedly against the same file in
 # quick succession (e.g. an agent filling in a sheet cell-by-cell, or building
-# up formatting one range at a time). These get a lightweight "Allow for 5
-# min" popup button, scoped to one file and never persisted to settings.yaml
-# — unlike Always allow, it disappears with the daemon and with wall-clock
-# time, so it's a much smaller commitment than a standing rule. Maps
-# operation key -> the args field that identifies "the same file" for that
-# operation.
+# up formatting one range at a time). Allow once on one of these also arms a
+# lightweight, in-memory grace window scoped to one file (gate.py) -- there's
+# no separate button for it -- and never persisted to settings.yaml, unlike
+# Always allow, so it disappears with the daemon and with wall-clock time,
+# a much smaller commitment than a standing rule. Maps operation key -> the
+# args field that identifies "the same file" for that operation.
 TEMP_ACCEPT_ELIGIBLE_OPERATIONS: dict[str, str] = {
     "sheets.write_range": "spreadsheet_id",
     "sheets.format_range": "spreadsheet_id",
@@ -93,7 +94,14 @@ TOOL_TO_OPERATION: dict[str, str] = {
     "confluence_create_page":         "confluence.create_page",
     "confluence_update_page":         "confluence.update_page",
     "telegram_get_messages":          "telegram.read_chat_messages",
-    "telegram_search_messages":       "telegram.search_messages",
+    # Shares telegram.read_chat_messages with telegram_get_messages (rather
+    # than its own telegram.search_messages key) so a "trusted chats" rule
+    # only needs configuring once per chat, not once per Telegram read tool
+    # -- matching slack.read_messages, which slack_search_messages already
+    # shares with slack_get_channel_history/slack_get_thread_replies. See
+    # migrate_telegram_search_operation_key() for the one-time settings.yaml
+    # migration this rename requires.
+    "telegram_search_messages":       "telegram.read_chat_messages",
     "telegram_send_message":          "telegram.send_message",
     "tasks_create_task":              "tasks.create_task",
     "tasks_update_task":              "tasks.update_task",
@@ -241,9 +249,9 @@ TOOL_TO_GATE: dict[str, str] = {
 # Preflighting these would produce a confidently wrong "auto_accept" verdict,
 # which is worse than admitting "unknown" -- so they stay data-dependent.
 ARGS_ONLY_RULES: frozenset[str] = frozenset({
-    "approved_spreadsheet",
     "dm_with_myself",
     "send_to_myself",
+    "group_dm",
     "approved_channel",
     "approved_recipient",
     "reply_in_existing_thread",
@@ -262,6 +270,7 @@ ARGS_ONLY_RULES: frozenset[str] = frozenset({
                              # only when args lacks space_key, and that
                              # fallback degrades safely (empty, not a false
                              # match) when raw_data is unavailable.
+    "always_allow",  # unconditional -- reads nothing at all, args or otherwise.
 })
 
 DATA_DEPENDENT_RULES: frozenset[str] = frozenset({
@@ -290,6 +299,11 @@ DATA_DEPENDENT_RULES: frozenset[str] = frozenset({
     "i_am_assignee",
     "i_am_author",
     "no_media_attachments",
+    # These two check every item in a multi-result raw_data list (a search's
+    # matches, spanning however many channels/chats), not a single arg --
+    # see their docstrings for why an args-only equivalent isn't possible.
+    "approved_channel_all_results",
+    "approved_chats_all_results",
     # non_private_event reads the event's current visibility off
     # ctx.raw_data (calendar.read_event_details is the only operation that
     # offers it) -- with raw_data=None that read silently defaults to
@@ -368,7 +382,7 @@ class AutoAcceptEvaluator:
 
         file_key = temp_accept_key(operation_key, ctx)
         if self._is_temp_accepted(operation_key, file_key):
-            return "auto_accept", "session_temp_accept", "Matched an active \"Allow for 5 min\" window."
+            return "auto_accept", "session_temp_accept", "Matched an active same-file temp-accept grace window."
 
         configured = self._rules.get(operation_key) or []
         if not configured:
@@ -475,9 +489,7 @@ class AutoAcceptEvaluator:
     # ── Drive ─────────────────────────────────────────────────────────────
 
     def _file_from(self, raw):
-        if isinstance(raw, dict):
-            return raw.get("file", raw)
-        return raw.file if hasattr(raw, "file") else raw
+        return _file_from(raw)
 
     def _rule_i_am_owner(self, _v, ctx):
         f = self._file_from(ctx.raw_data)
@@ -517,33 +529,6 @@ class AutoAcceptEvaluator:
         f = self._file_from(ctx.raw_data)
         return not getattr(f, "shared", False)
 
-    # ── Drive: Sheets ────────────────────────────────────────────────────
-
-    def _rule_approved_spreadsheet(self, value, ctx):
-        """Match a specific spreadsheet, optionally narrowed to one tab.
-
-        Each entry is {"spreadsheet_id": "...", "tab": "..."} — "tab" is
-        optional (its absence approves every tab of that spreadsheet).
-        Entries without a matching spreadsheet_id never match; an entry with
-        a tab only matches calls whose current tab is known and equal.
-        """
-        if not value:
-            return False
-        entries = value if isinstance(value, list) else [value]
-        spreadsheet_id = ctx.args.get("spreadsheet_id", "") or ""
-        if not spreadsheet_id:
-            return False
-        current_tab = _sheet_tab_of(ctx)
-        for entry in entries:
-            if not isinstance(entry, dict) or entry.get("spreadsheet_id") != spreadsheet_id:
-                continue
-            tab = entry.get("tab")
-            if not tab:
-                return True
-            if current_tab and tab.lower() == current_tab.lower():
-                return True
-        return False
-
     # ── Slack ─────────────────────────────────────────────────────────────
 
     def _rule_dm_with_myself(self, _v, ctx):
@@ -552,6 +537,18 @@ class AutoAcceptEvaluator:
 
     def _rule_send_to_myself(self, v, ctx):
         return self._rule_dm_with_myself(v, ctx)
+
+    def _rule_group_dm(self, _v, ctx):
+        """Match a group DM (Slack's "mpim" conversation type -- a private
+        multi-person conversation that's neither a channel nor
+        dm_with_myself's 1:1 self-DM) as its own recognizable category,
+        rather than requiring each group's ID to be individually
+        allowlisted under approved_channel. The connector resolves and
+        passes `is_group_dm` in args (slack.py's `_get_channel_history`/
+        `_get_thread_replies`, via SlackClient.resolve_is_group_dm) since
+        the id alone can't tell a group DM apart from a private channel.
+        """
+        return bool(ctx.args.get("is_group_dm", False))
 
     def _rule_approved_channel(self, value, ctx):
         if not value:
@@ -562,6 +559,21 @@ class AutoAcceptEvaluator:
 
     def _rule_approved_recipient(self, value, ctx):
         return self._rule_approved_channel(value, ctx)
+
+    def _rule_approved_channel_all_results(self, value, ctx):
+        """Data-dependent counterpart to approved_channel for a call that
+        spans multiple channels at once (slack_search_messages) rather than
+        reading a single channel_id out of ctx.args -- a search's results can
+        come from any number of channels, so there's no one arg to check.
+        Auto-accepts only when every returned message's channel is on the
+        allowlist; a single unapproved result gates the whole call, same as
+        every other all-or-nothing gated response.
+        """
+        if not value:
+            return False
+        allowed = set(value if isinstance(value, list) else [value])
+        items = ctx.raw_data if isinstance(ctx.raw_data, list) else [ctx.raw_data]
+        return bool(items) and all(getattr(m, "channel_id", None) in allowed for m in items)
 
     def _rule_public_channels_only(self, _v, ctx):
         raw = ctx.raw_data
@@ -743,6 +755,21 @@ class AutoAcceptEvaluator:
         allowed = {str(v) for v in (value if isinstance(value, list) else [value])}
         return str(ctx.args.get("chat_id", "")) in allowed
 
+    def _rule_approved_chats_all_results(self, value, ctx):
+        """Data-dependent counterpart to approved_chats for a call that spans
+        multiple chats at once (telegram_search_messages, which shares this
+        operation key with telegram_get_messages) rather than reading a
+        single chat_id out of ctx.args. Auto-accepts only when every returned
+        message's chat is on the allowlist -- see
+        _rule_approved_channel_all_results's docstring for the same reasoning
+        on the Slack side.
+        """
+        if not value:
+            return False
+        allowed = {str(v) for v in (value if isinstance(value, list) else [value])}
+        items = ctx.raw_data if isinstance(ctx.raw_data, list) else [ctx.raw_data]
+        return bool(items) and all(str(getattr(m, "chat_id", None)) in allowed for m in items)
+
     def _rule_no_media_attachments(self, _v, ctx):
         raw = ctx.raw_data
         items = raw if isinstance(raw, list) else [raw]
@@ -768,8 +795,124 @@ class AutoAcceptEvaluator:
         destination = ctx.args.get("destination_list_id", "")
         return bool(source) and bool(destination) and source in allowed and destination in allowed
 
+    # ── Generic (no resource identity to scope to) ──────────────────────────
+
+    def _rule_always_allow(self, _v, ctx):
+        """Unconditional auto-accept, for operations with no resource
+        identity a narrower rule could ever check against -- e.g. drafting
+        (any recipient, unlike to_is_myself/approved_recipient_domain) or
+        calendar_create_out_of_office/calendar_set_working_location (always
+        act on your own primary calendar, no calendar_id arg at all, so
+        personal_calendar has nothing to check). Value-less, same shape as
+        i_am_owner/dm_with_myself/shared_drive_exclusion -- presence under an
+        operation key is the whole condition.
+        """
+        return True
+
 
 # ── Rule suggestion for the popup's "Always allow" button ────────────────────
+
+# Some operations can produce more than one plausible suggestion -- e.g. a
+# Drive read where you both own the file *and* it's in an approved folder.
+# Each such case is a "family": the default priority order (first match
+# wins) is the tuple below, user-overridable per family via
+# rule_suggestion_priority in settings.yaml (init_suggestion_priority()).
+# Overriding is also how a rule gets excluded from ever being suggested --
+# an omitted name is simply never tried. This governs *only* which rule
+# suggest_rule() offers through "Always allow"; it has no effect on
+# should_auto_accept()'s evaluation of whatever rules are actually
+# configured, so it never needs ARGS_ONLY_RULES/DATA_DEPENDENT_RULES/
+# known_rule_names() changes -- no new rule names are introduced here.
+SUGGESTION_FAMILIES: dict[str, tuple[str, ...]] = {
+    "drive_read":           ("i_am_owner", "approved_folder"),
+    "calendar_read_event":  ("i_am_organizer", "no_external_attendees", "non_private_event"),
+    "jira_read_issue":      ("i_am_reporter", "i_am_assignee", "approved_project_keys"),
+    "confluence_read_page": ("i_am_author", "approved_space_keys"),
+}
+
+# Sentinel distinguishing "this candidate doesn't match" from "it matches
+# with a real value of None" (several suggestions, e.g. i_am_owner, take no
+# value at all) -- plain None can't do that job here.
+_NO_MATCH = object()
+
+# family -> configured priority order (from settings.yaml). A family absent
+# here falls back to SUGGESTION_FAMILIES' own order -- see suggestion_order().
+_suggestion_priority: dict[str, list[str]] = {}
+
+
+def init_suggestion_priority(cfg: dict[str, list[str]] | None) -> None:
+    """Load rule_suggestion_priority from settings.yaml at daemon startup."""
+    global _suggestion_priority
+    _suggestion_priority = {family: list(order) for family, order in (cfg or {}).items()}
+
+
+def set_suggestion_priority(family: str, order: list[str]) -> None:
+    """Hot-update one family's order (the menu bar's Move up/down/exclude actions)."""
+    _suggestion_priority[family] = list(order)
+
+
+def suggestion_order(family: str) -> list[str]:
+    """The priority order to try `family`'s candidates in -- configured order
+    if set, else SUGGESTION_FAMILIES' built-in default. An unrecognized
+    `family` (a typo'd or removed name) has no default to fall back to, so
+    it's treated as configured-empty rather than raising -- suggest_rule()
+    then simply never proposes anything for that family, the same as if
+    every candidate had failed to match.
+    """
+    if family in _suggestion_priority:
+        return _suggestion_priority[family]
+    return list(SUGGESTION_FAMILIES.get(family, ()))
+
+
+def _first_matching_suggestion(
+    family: str, candidates: dict[str, Callable[[], Any]]
+) -> tuple[str, Any] | None:
+    """Walk `family`'s priority order, returning the first candidate whose
+    zero-arg check doesn't return _NO_MATCH. A configured name with no
+    matching entry in `candidates` (removed from this operation's
+    possibilities, or a stale/misspelled config entry) is silently skipped,
+    not an error -- same "never crash a popup over a rule-suggestion detail"
+    posture as should_auto_accept()'s own rule-evaluation try/except.
+    """
+    for rule_name in suggestion_order(family):
+        check = candidates.get(rule_name)
+        if check is None:
+            continue
+        value = check()
+        if value is not _NO_MATCH:
+            return (rule_name, value)
+    return None
+
+
+def _all_matching_suggestions(
+    family: str, candidates: dict[str, Callable[[], Any]]
+) -> list[tuple[str, Any]]:
+    """Like `_first_matching_suggestion`, but returns every candidate that
+    matches, not just the first -- still walked in priority order. Used to
+    offer the user an explicit choice when an item matches more than one
+    candidate, instead of always silently picking the top-priority one.
+    """
+    matches = []
+    for rule_name in suggestion_order(family):
+        check = candidates.get(rule_name)
+        if check is None:
+            continue
+        value = check()
+        if value is not _NO_MATCH:
+            matches.append((rule_name, value))
+    return matches
+
+
+def _file_from(raw: Any) -> Any:
+    """Unwrap a Drive file object out of whatever shape a call's raw_data
+    carries it in -- a dict with a "file" key (e.g. {"file": drive_file,
+    "values": ...}) or an object with a .file attribute (e.g. get_file_
+    content's response), or the raw value itself if it's already the file.
+    """
+    if isinstance(raw, dict):
+        return raw.get("file", raw)
+    return raw.file if hasattr(raw, "file") else raw
+
 
 def _domain_of(sender: str) -> str:
     email_part = sender
@@ -778,28 +921,13 @@ def _domain_of(sender: str) -> str:
     return email_part.split("@", 1)[-1].lower().strip()
 
 
-def _sheet_tab_of(ctx: "ReviewContext") -> str:
-    """Identify the tab a sheets call touches, for the approved_spreadsheet rule.
-
-    rename_sheet/format_range pass a numeric sheet_id directly; read_values/
-    write_range only have it embedded as the sheet-name prefix of range_a1
-    (e.g. "Sheet1!A1:C10" or "'My Tab'!A1:C10"); add_sheet has no existing
-    tab to identify. sheet_id is checked first since format_range carries
-    both sheet_id and a range_a1 with no "!" prefix.
-    """
-    if "sheet_id" in ctx.args:
-        return str(ctx.args["sheet_id"])
-    range_a1 = ctx.args.get("range_a1") or ""
-    tab, sep, _ = range_a1.partition("!")
-    return tab.strip("'") if sep else ""
-
-
 def temp_accept_key(operation_key: str, ctx: "ReviewContext") -> str | None:
     """The file identity a temp accept for this operation would be scoped to.
 
-    Returns None when the operation isn't eligible for "Allow for 5 min"
-    (see TEMP_ACCEPT_ELIGIBLE_OPERATIONS) or the expected arg is missing —
-    either way, gate.py takes that as "don't offer the button."
+    Returns None when the operation isn't in TEMP_ACCEPT_ELIGIBLE_OPERATIONS
+    or the expected arg is missing — either way, gate.py takes that as
+    "don't show the disclosure caption, and don't arm a grace window on
+    Allow once."
     """
     arg_name = TEMP_ACCEPT_ELIGIBLE_OPERATIONS.get(operation_key)
     if not arg_name:
@@ -823,6 +951,87 @@ def _attendee_email(attendee: Any) -> str:
     return getattr(attendee, "email", "") or ""
 
 
+# Candidate builders for the four "family" operations that can suggest more
+# than one rule for the same item -- shared between suggest_rule() (which
+# picks the top-priority match) and suggest_rule_choices() (which returns
+# every match, for the popup's "more than one applies" choice dialog).
+
+def _drive_read_candidates(ctx: ReviewContext) -> dict[str, Callable[[], Any]]:
+    f = _file_from(ctx.raw_data)
+    owners = getattr(f, "owners", []) or []
+    parents = list(getattr(f, "parent_ids", []) or [])
+    return {
+        "i_am_owner": lambda: None if (
+            ctx.my_email and any(ctx.my_email.lower() in o.lower() for o in owners)
+        ) else _NO_MATCH,
+        "approved_folder": lambda: parents if parents else _NO_MATCH,
+    }
+
+
+def _calendar_read_event_candidates(ctx: ReviewContext) -> dict[str, Callable[[], Any]]:
+    organizer = getattr(ctx.raw_data, "organizer_email", "") or ""
+    attendees = getattr(ctx.raw_data, "attendees", []) or []
+    visibility = getattr(ctx.raw_data, "visibility", "default") or "default"
+
+    def _no_external_attendees_check():
+        if not ctx.my_domain:
+            return _NO_MATCH
+        all_internal = all(ctx.my_domain in _attendee_email(a) for a in attendees)
+        return None if all_internal else _NO_MATCH
+
+    return {
+        "i_am_organizer": lambda: None if (
+            ctx.my_email and ctx.my_email.lower() == organizer.lower()
+        ) else _NO_MATCH,
+        "no_external_attendees": _no_external_attendees_check,
+        "non_private_event": lambda: None if visibility != "private" else _NO_MATCH,
+    }
+
+
+def _jira_read_issue_candidates(ctx: ReviewContext) -> dict[str, Callable[[], Any]]:
+    raw = ctx.raw_data
+    reporter = (raw.get("reporter") if isinstance(raw, dict) else getattr(raw, "reporter", "")) or ""
+    assignee = (raw.get("assignee") if isinstance(raw, dict) else getattr(raw, "assignee", "")) or ""
+    issue_key = ctx.args.get("issue_key", "") or ""
+    project_key = issue_key.split("-")[0] if "-" in issue_key else ""
+    return {
+        "i_am_reporter": lambda: None if (
+            ctx.my_email and ctx.my_email.lower() in reporter.lower()
+        ) else _NO_MATCH,
+        "i_am_assignee": lambda: None if (
+            ctx.my_email and ctx.my_email.lower() in assignee.lower()
+        ) else _NO_MATCH,
+        "approved_project_keys": lambda: [project_key] if project_key else _NO_MATCH,
+    }
+
+
+def _confluence_read_page_candidates(ctx: ReviewContext) -> dict[str, Callable[[], Any]]:
+    raw = ctx.raw_data
+    author = (raw.get("author") if isinstance(raw, dict) else getattr(raw, "author", "")) or ""
+    space_key = (
+        (raw.get("space_key") if isinstance(raw, dict) else getattr(raw, "space_key", ""))
+        or ctx.args.get("space_key", "")
+    )
+    return {
+        "i_am_author": lambda: None if (
+            ctx.my_email and ctx.my_email.lower() in author.lower()
+        ) else _NO_MATCH,
+        "approved_space_keys": lambda: [space_key] if space_key else _NO_MATCH,
+    }
+
+
+# operation_key -> (family, candidate builder), for the four multi-candidate
+# operations above -- shared lookup table for suggest_rule_choices() below.
+_MULTI_CANDIDATE_FAMILIES: dict[str, tuple[str, Callable[[ReviewContext], dict[str, Callable[[], Any]]]]] = {
+    "drive.read_file_contents": ("drive_read", _drive_read_candidates),
+    "drive.download_file": ("drive_read", _drive_read_candidates),
+    "sheets.read_values": ("drive_read", _drive_read_candidates),
+    "calendar.read_event_details": ("calendar_read_event", _calendar_read_event_candidates),
+    "jira.read_issue": ("jira_read_issue", _jira_read_issue_candidates),
+    "confluence.read_page": ("confluence_read_page", _confluence_read_page_candidates),
+}
+
+
 def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | None:
     """Propose one auto-accept rule from the current item's attributes.
 
@@ -838,47 +1047,35 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
         domain = _domain_of(sender)
         return ("trusted_sender_domain", [domain]) if domain else None
 
-    if operation_key in ("drive.read_file_contents", "drive.download_file"):
-        f = ctx.raw_data.file if hasattr(ctx.raw_data, "file") else ctx.raw_data
-        owners = getattr(f, "owners", []) or []
-        if ctx.my_email and any(ctx.my_email.lower() in o.lower() for o in owners):
-            return ("i_am_owner", None)
-        parents = list(getattr(f, "parent_ids", []) or [])
-        return ("approved_folder", parents) if parents else None
-
-    if operation_key == "sheets.read_values":
-        spreadsheet_id = ctx.args.get("spreadsheet_id", "") or ""
-        if not spreadsheet_id:
-            return None
-        entry: dict[str, Any] = {"spreadsheet_id": spreadsheet_id}
-        tab = _sheet_tab_of(ctx)
-        if tab:
-            entry["tab"] = tab
-        return ("approved_spreadsheet", [entry])
+    if operation_key in ("drive.read_file_contents", "drive.download_file", "sheets.read_values"):
+        return _first_matching_suggestion("drive_read", _drive_read_candidates(ctx))
 
     if operation_key == "slack.read_messages":
         cid = ctx.args.get("channel_id", "") or ctx.args.get("channel", "") or ""
         if cid.startswith("D"):
             return ("dm_with_myself", None)
-        return ("approved_channel", [cid]) if cid else None
+        if ctx.args.get("is_group_dm", False):
+            return ("group_dm", None)
+        if cid:
+            return ("approved_channel", [cid])
+        # No single channel in args -- a search spanning multiple channels
+        # (slack_search_messages shares this operation key). Propose the
+        # union of channels actually present across these results, the
+        # data-dependent counterpart to approved_channel above.
+        items = ctx.raw_data if isinstance(ctx.raw_data, list) else [ctx.raw_data]
+        channel_ids = sorted({mcid for m in items if (mcid := getattr(m, "channel_id", None))})
+        return ("approved_channel_all_results", channel_ids) if channel_ids else None
 
     if operation_key == "calendar.read_event_details":
-        organizer = getattr(ctx.raw_data, "organizer_email", "") or ""
-        if ctx.my_email and ctx.my_email.lower() == organizer.lower():
-            return ("i_am_organizer", None)
-        if ctx.my_domain:
-            attendees = getattr(ctx.raw_data, "attendees", []) or []
-            all_internal = all(ctx.my_domain in _attendee_email(a) for a in attendees)
-            if all_internal:
-                return ("no_external_attendees", None)
-        visibility = getattr(ctx.raw_data, "visibility", "default") or "default"
-        if visibility != "private":
-            return ("non_private_event", None)
-        return None
+        return _first_matching_suggestion("calendar_read_event", _calendar_read_event_candidates(ctx))
 
     if operation_key == "salesforce.read_record":
         object_type = ctx.args.get("object_type", "")
         return ("approved_object_types", [object_type]) if object_type else None
+
+    if operation_key == "salesforce.run_report":
+        report_id = ctx.args.get("report_id", "")
+        return ("approved_report_ids", [report_id]) if report_id else None
 
     if operation_key == "salesforce.search":
         object_types = [t.strip() for t in (ctx.args.get("object_types") or "").split(",") if t.strip()]
@@ -888,33 +1085,180 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
         return ("approved_object_types", object_types) if object_types else None
 
     if operation_key == "jira.read_issue":
-        raw = ctx.raw_data
-        reporter = (raw.get("reporter") if isinstance(raw, dict) else getattr(raw, "reporter", "")) or ""
-        if ctx.my_email and ctx.my_email.lower() in reporter.lower():
-            return ("i_am_reporter", None)
-        assignee = (raw.get("assignee") if isinstance(raw, dict) else getattr(raw, "assignee", "")) or ""
-        if ctx.my_email and ctx.my_email.lower() in assignee.lower():
-            return ("i_am_assignee", None)
-        issue_key = ctx.args.get("issue_key", "") or ""
-        project_key = issue_key.split("-")[0] if "-" in issue_key else ""
-        return ("approved_project_keys", [project_key]) if project_key else None
+        return _first_matching_suggestion("jira_read_issue", _jira_read_issue_candidates(ctx))
 
     if operation_key == "confluence.read_page":
-        raw = ctx.raw_data
-        author = (raw.get("author") if isinstance(raw, dict) else getattr(raw, "author", "")) or ""
-        if ctx.my_email and ctx.my_email.lower() in author.lower():
-            return ("i_am_author", None)
-        space_key = (
-            (raw.get("space_key") if isinstance(raw, dict) else getattr(raw, "space_key", ""))
-            or ctx.args.get("space_key", "")
-        )
-        return ("approved_space_keys", [space_key]) if space_key else None
+        return _first_matching_suggestion("confluence_read_page", _confluence_read_page_candidates(ctx))
 
     if operation_key == "telegram.read_chat_messages":
         chat_id = ctx.args.get("chat_id", "")
-        return ("approved_chats", [str(chat_id)]) if chat_id != "" else None
+        if chat_id != "":
+            return ("approved_chats", [str(chat_id)])
+        # No single chat in args -- a search spanning multiple chats
+        # (telegram_search_messages shares this operation key). Propose the
+        # union of chats actually present across these results, the
+        # data-dependent counterpart to approved_chats above.
+        items = ctx.raw_data if isinstance(ctx.raw_data, list) else [ctx.raw_data]
+        chat_ids = sorted({str(mcid) for m in items if (mcid := getattr(m, "chat_id", None)) is not None})
+        return ("approved_chats_all_results", chat_ids) if chat_ids else None
 
     return None
+
+
+def suggest_rule_choices(operation_key: str, ctx: ReviewContext) -> list[tuple[str, Any]]:
+    """Every rule suggest_rule() could plausibly propose for this item, in
+    priority order -- not just the highest-priority one.
+
+    Only the four "family" operations in _MULTI_CANDIDATE_FAMILIES can ever
+    have more than one entry here; every other operation has at most one
+    possible suggestion, so this just wraps suggest_rule()'s own result for
+    them. Used by the review-gate's "Always allow" flow to offer an explicit
+    choice when 2+ candidates actually match this item, instead of always
+    silently creating the top-priority one.
+    """
+    entry = _MULTI_CANDIDATE_FAMILIES.get(operation_key)
+    if entry is None:
+        single = suggest_rule(operation_key, ctx)
+        return [single] if single is not None else []
+    family, candidates_fn = entry
+    return _all_matching_suggestions(family, candidates_fn(ctx))
+
+
+# ── Rule suggestion for writes ("Always allow" on the write popup) ──────────
+
+def _project_key_value(ctx: ReviewContext) -> Any:
+    """Derive a Jira project key the same way _rule_approved_project_keys
+    does: jira_create_issue's own args carry project_key directly; every
+    other Jira write op only carries issue_key, so the project is parsed
+    out of its "PROJ-123" prefix instead."""
+    project_key = ctx.args.get("project_key", "") or ""
+    if not project_key:
+        issue_key = ctx.args.get("issue_key", "") or ""
+        project_key = issue_key.split("-")[0] if "-" in issue_key else ""
+    return [project_key] if project_key else _NO_SUGGESTION
+
+
+def _task_list_value(ctx: ReviewContext) -> Any:
+    """Derive an approved_task_list value the same way _rule_approved_task_list
+    reads it: tasks_move_task carries source_list_id/destination_list_id
+    instead of a single task_list_id, and the suggestion has to cover both
+    ends of the move -- a rule scoped to only one list would silently let a
+    task move into (or out of) a list the user never approved."""
+    if "task_list_id" in ctx.args:
+        task_list_id = ctx.args.get("task_list_id") or ""
+        return [task_list_id] if task_list_id else _NO_SUGGESTION
+    source = ctx.args.get("source_list_id", "") or ""
+    destination = ctx.args.get("destination_list_id", "") or ""
+    return sorted({source, destination}) if source and destination else _NO_SUGGESTION
+
+
+def _sandbox_folder_value(ctx: ReviewContext) -> Any:
+    """Derive an approved_sandbox_folder/move_within_approved_folders value
+    from the file's current parent folder(s) -- same _file_from() unwrap as
+    suggest_rule()'s drive_read family, and the same reasoning
+    _rule_approved_folder already reads by for these rule names. For
+    drive.move_file specifically, raw_data's file is the file *before* the
+    move (see drive.py::_move_file), i.e. its source folder -- moving out of
+    an approved folder is what move_within_approved_folders means, not
+    moving into one."""
+    f = _file_from(ctx.raw_data)
+    parents = list(getattr(f, "parent_ids", []) or [])
+    return parents if parents else _NO_SUGGESTION
+
+
+# Sentinel distinguishing "nothing to suggest for this call" from "the
+# suggested value is legitimately None" -- always_allow (see below) is a
+# value-less rule, so its value_of always returns None as a *real* value,
+# not an absence. Reuses the read-side suggestion machinery's naming
+# convention (_NO_MATCH) for the same kind of "can't just use None" gap.
+_NO_SUGGESTION = object()
+
+
+@dataclass(frozen=True)
+class WriteRuleSuggestion:
+    rule_name: str
+    value_of: Callable[[ReviewContext], Any]  # _NO_SUGGESTION -> nothing to suggest for this call
+
+
+# Every entry here except gmail.create_draft is resource-identity-scoped
+# (one folder, one label, one calendar, one project, one space, one task
+# list) rather than a bare "accept every future write of this type" toggle --
+# that property is what keeps this table's blast radius contained despite
+# reopening the write gate's "Always allow" button for these operations.
+# gmail.create_draft is a deliberate, narrow exception: drafting has no
+# recipient sent yet (unlike gmail.send_message, which the user still
+# reviews before it goes out via to_is_myself/approved_recipient_domain),
+# so an unconditional always_allow rule for drafting alone doesn't carry
+# the same blast radius a bare toggle would for an operation that actually
+# delivers something.
+WRITE_RULE_SUGGESTIONS: dict[str, WriteRuleSuggestion] = {
+    "gmail.create_draft": WriteRuleSuggestion("always_allow", lambda ctx: None),
+    "gmail.add_label": WriteRuleSuggestion(
+        "label_name_allowlist", lambda ctx: [ctx.args["label_name"]] if ctx.args.get("label_name") else _NO_SUGGESTION
+    ),
+    "gmail.remove_label": WriteRuleSuggestion(
+        "label_name_allowlist", lambda ctx: [ctx.args["label_name"]] if ctx.args.get("label_name") else _NO_SUGGESTION
+    ),
+    "calendar.create_modify_event": WriteRuleSuggestion(
+        "personal_calendar", lambda ctx: [ctx.args["calendar_id"]] if ctx.args.get("calendar_id") else _NO_SUGGESTION
+    ),
+    "calendar.set_visibility": WriteRuleSuggestion(
+        "personal_calendar", lambda ctx: [ctx.args["calendar_id"]] if ctx.args.get("calendar_id") else _NO_SUGGESTION
+    ),
+    # All of Drive's write tools -- writing into a trusted sandbox folder,
+    # uploading into it, commenting on a file already there, and moving a
+    # file out of it are all covered by the same drive.sandbox_folders
+    # grant (see resource_grants.py); upload/move use their own existing
+    # rule names since they check a different arg (the upload's destination
+    # folder, the file's current parent folder) rather than
+    # approved_sandbox_folder's raw_data-derived one.
+    "drive.write_file": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
+    "drive.write_doc": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
+    "drive.comment_file": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
+    "drive.upload_file": WriteRuleSuggestion(
+        "parent_folder_allowlist",
+        lambda ctx: [ctx.args["parent_folder_id"]] if ctx.args.get("parent_folder_id") else _NO_SUGGESTION,
+    ),
+    "drive.move_file": WriteRuleSuggestion("move_within_approved_folders", _sandbox_folder_value),
+    "sheets.write_range": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
+    "sheets.add_sheet": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
+    "sheets.rename_sheet": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
+    "sheets.format_range": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
+    "sheets.insert_dimensions": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
+    "sheets.delete_dimensions": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
+    "docs.edit_content": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
+    "docs.format_content": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
+    "jira.create_issue": WriteRuleSuggestion("approved_project_keys", _project_key_value),
+    "jira.add_comment": WriteRuleSuggestion("approved_project_keys", _project_key_value),
+    "jira.update_issue": WriteRuleSuggestion("approved_project_keys", _project_key_value),
+    "jira.transition_issue": WriteRuleSuggestion("approved_project_keys", _project_key_value),
+    "confluence.create_page": WriteRuleSuggestion(
+        "approved_space_keys", lambda ctx: [ctx.args["space_key"]] if ctx.args.get("space_key") else _NO_SUGGESTION
+    ),
+    "confluence.update_page": WriteRuleSuggestion(
+        "approved_space_keys", lambda ctx: [ctx.args["space_key"]] if ctx.args.get("space_key") else _NO_SUGGESTION
+    ),
+    "tasks.create_task": WriteRuleSuggestion("approved_task_list", _task_list_value),
+    "tasks.update_task": WriteRuleSuggestion("approved_task_list", _task_list_value),
+    "tasks.complete_task": WriteRuleSuggestion("approved_task_list", _task_list_value),
+    "tasks.uncomplete_task": WriteRuleSuggestion("approved_task_list", _task_list_value),
+    "tasks.move_task": WriteRuleSuggestion("approved_task_list", _task_list_value),
+}
+
+
+def suggest_write_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | None:
+    """Propose one auto-accept rule for a write's own "Always allow" button --
+    the write-gate counterpart to suggest_rule() above. Returns None for
+    every operation key not in WRITE_RULE_SUGGESTIONS (the other ~30-odd
+    write operations), by construction -- there is no fallback/generic path
+    here, which is what keeps this mechanism from ever proposing anything
+    broader than the rules the table declares.
+    """
+    entry = WRITE_RULE_SUGGESTIONS.get(operation_key)
+    if entry is None:
+        return None
+    value = entry.value_of(ctx)
+    return None if value is _NO_SUGGESTION else (entry.rule_name, value)
 
 
 def known_rule_names() -> frozenset[str]:
@@ -955,20 +1299,10 @@ _RULE_DESCRIPTIONS: dict[str, str] = {
     "i_am_author":           "Confluence page reads where you are the author",
     "approved_space_keys":   "Confluence page reads in space(s): {value}",
     "approved_chats":        "Telegram chat reads in chat(s): {value}",
-    "approved_spreadsheet":  "Sheets calls scoped to: {value}",
 }
 
 
-def _format_spreadsheet_entry(entry: Any) -> str:
-    if not isinstance(entry, dict):
-        return str(entry)
-    tab = entry.get("tab")
-    return f"{entry.get('spreadsheet_id', '')}" + (f" (tab: {tab})" if tab else "")
-
-
 def _format_rule_value(value: Any) -> str:
-    if isinstance(value, list) and value and isinstance(value[0], dict):
-        return ", ".join(_format_spreadsheet_entry(v) for v in value)
     if isinstance(value, list):
         return ", ".join(value)
     return str(value)
@@ -999,7 +1333,52 @@ def describe_rule_change(
             f"Replace auto-accept rule {rule_name!r} on {operation_key!r}: "
             f"{old_str} -> {_format_rule_value(value)}"
         )
+    if value is None:
+        # Value-less rule (e.g. always_allow) -- "= None" would misread as
+        # a real value rather than "unconditional, nothing to scope it to".
+        return f"Add auto-accept rule {rule_name!r} to {operation_key!r}"
     return f"Add auto-accept rule {rule_name!r} = {_format_rule_value(value)} to {operation_key!r}"
+
+
+# ── One-time config migrations ───────────────────────────────────────────────
+
+TELEGRAM_SEARCH_OPERATION_KEY_MIGRATION_MARKER = "migrated_telegram_search_op_key_v1"
+
+
+def migrate_telegram_search_operation_key(cfg: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """One-time rename of any ``auto_accept_rules["telegram.search_messages"]``
+    entries onto ``"telegram.read_chat_messages"``, now that
+    ``telegram_search_messages`` shares that operation key (see
+    TOOL_TO_OPERATION) the same way ``slack_search_messages`` already shares
+    ``slack.read_messages`` with Slack's other read tools -- one "trusted
+    chats" rule then covers both Telegram read tools instead of needing
+    configuring twice.
+
+    Idempotent (checks/sets its own marker) and never runs twice, mirroring
+    resource_grants.migrate_rules_to_grants's own marker/idempotency shape.
+    Entries already present under the destination key are left as-is (no
+    duplicates); an old entry identical to an existing one is dropped rather
+    than duplicated. Returns the updated config and whether anything actually
+    moved, for a one-time log line.
+    """
+    if cfg.get(TELEGRAM_SEARCH_OPERATION_KEY_MIGRATION_MARKER):
+        return cfg, False
+    cfg = deepcopy(cfg)
+    rules_cfg: dict[str, list[dict[str, Any]]] = cfg.get("auto_accept_rules") or {}
+    old_entries = rules_cfg.pop("telegram.search_messages", None)
+    moved = False
+    if old_entries:
+        merged = rules_cfg.setdefault("telegram.read_chat_messages", [])
+        for entry in old_entries:
+            if entry not in merged:
+                merged.append(entry)
+                moved = True
+    if rules_cfg:
+        cfg["auto_accept_rules"] = rules_cfg
+    else:
+        cfg.pop("auto_accept_rules", None)
+    cfg[TELEGRAM_SEARCH_OPERATION_KEY_MIGRATION_MARKER] = True
+    return cfg, moved
 
 
 # ── Rule persistence (used by the "Always allow" popup button) ──────────────

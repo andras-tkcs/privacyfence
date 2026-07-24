@@ -6,6 +6,9 @@ on:
   pull_request:
   workflow_dispatch:   # allow manual runs from the Actions tab
 
+permissions:
+  contents: read
+
 jobs:
   test:
     # macOS-only project (rumps/PyObjC, real Unix-socket/osascript-backed

@@ -14,6 +14,9 @@
 #
 # Never commit config/settings.yaml or any file under credentials/.
 
+# privacy / drive_privacy / slack_privacy are also editable live from the
+# menu bar's "Privacy Filter…" window (no restart needed) -- editing them
+# here or from the menu are equivalent.
 privacy:
   # Policy applied when a category is not explicitly configured below.
   # One of: allow, redact, block
@@ -112,6 +115,31 @@ pii_detection:
   # when you use "PII Detection Gate" in the menu bar.
   enabled: true
 
+  # IP addresses and currency figures show up constantly in ordinary
+  # business correspondence (server logs, invoices, budgets) without being
+  # personal data about anyone, so these two categories can be turned off
+  # independently of the gate as a whole. Toggled automatically from the
+  # "PII Detection Gate" submenu in the menu bar.
+  detect_ip_addresses: true
+  detect_financial_figures: true
+
+# Which rule the "Always allow" popup button proposes first, for the four
+# operations where more than one rule could plausibly match (e.g. a Drive
+# read where you both own the file *and* it's in an approved folder). Each
+# key is a "family" (see auto_accept.SUGGESTION_FAMILIES); the built-in
+# default order is used for any family omitted here. Listing only some of a
+# family's rules excludes the rest from ever being suggested, not just
+# deprioritizes them. This affects only which rule the button proposes --
+# it has no effect on which already-configured auto_accept_rules/
+# auto_accept_grants entries actually auto-accept. Toggled automatically
+# from each connector's "Always-allow Suggestion Order" section in
+# Manage Auto-accept Rules….
+# rule_suggestion_priority:
+#   drive_read: [approved_folder, i_am_owner]
+#   calendar_read_event: [i_am_organizer, no_external_attendees, non_private_event]
+#   jira_read_issue: [i_am_reporter, i_am_assignee, approved_project_keys]
+#   confluence_read_page: [i_am_author, approved_space_keys]
+
 # Note: unattended_sessions.enabled (privacyfence_begin_unattended_session's
 # opt-in gate) is NOT set here. It's a deliberate per-organization choice,
 # not a per-user setting, so it lives in the organization config bundle
@@ -172,7 +200,7 @@ auto_accept_rules:
     # - rule: label_name_allowlist
     #   value: ["Receipts", "Travel/Bookings"]
   # Trusting a specific folder, task list, channel, project, space, chat,
-  # spreadsheet, calendar, or Salesforce report? Use auto_accept_grants
+  # calendar, or Salesforce report? Use auto_accept_grants
   # above instead — it's the same underlying mechanism (this is what it
   # compiles down to) but configured once per resource instead of once per
   # operation key.

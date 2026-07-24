@@ -21,7 +21,7 @@ Every gated tool call resolves through exactly one of these:
 | Dialog | Built by | Used for | Buttons |
 |---|---|---|---|
 | **Review-gate window** | `approval_popup.show_read_popup` | `gate="review"` tools — reads | Deny, Allow once, *Always allow* (conditional) |
-| **Popup-gate window** | `approval_popup.show_popup` | `gate="popup"` tools — writes | Deny, Allow once, *Allow for 5 min* (conditional) |
+| **Popup-gate window** | `approval_popup.show_popup` | `gate="popup"` tools — writes | Deny, Allow once, *Always allow* (conditional — WG-2/WG-3 below, 32 tools; see row 10 below), *temp-accept disclosure caption shown above the buttons for WG-3 instead — conditional, see row 9 below; no separate button for that* |
 | **PII confirmation** | `approval_popup.show_pii_confirmation_popup` | second-step check after Allow/Always-allow on a review-gate call whose content matched the PII detector | Cancel (default), Proceed |
 | **Rule confirmation** | `approval_popup.show_rule_confirmation_popup` | second-step check after clicking Always allow | Cancel (default), Confirm |
 
@@ -46,7 +46,8 @@ differs is which optional sections a given call populates. In display order:
 | 6 | Content-flag banner (amber, informational) | local PII-pattern detector flagged Claude's own drafted content | – | **yes** | **Automatic** — same detector run over every popup-gate call's `details_text` |
 | 7 | "Claude says (unverified)" reason box | `claude_reason` non-empty | no | no | **Automatic** — every gated tool's schema requires a `reason` param (Phase 1b); self-reported, never verified |
 | 8 | Details/"Preview" pane (reading-time estimate + Show more/less) | always | no | no | Body rendering varies — see `content_kind`/`pdf_bytes` below |
-| 9 | Buttons | always | – | – | Always-allow offered only when `auto_accept.suggest_rule()` can derive a rule from this item; Allow-for-5-min only for the six tools in View WG-2 below |
+| 9 | Temp-accept disclosure caption (plain text, not a control) | `temp_accept_eligible` | – | **yes** | **Automatic** — `gate.py` sets it from `auto_accept.temp_accept_key()` resolving for the six WG-3 tools below. Not offered as a button: clicking Allow once on one of these silently also arms the 5-minute same-file grace window this caption describes — see WG-3 below |
+| 10 | Buttons | always | – | – | Always-allow offered when `auto_accept.suggest_rule()` (review-gate) or `auto_accept.suggest_write_rule()` (popup-gate, WG-2/WG-3 — see [Always allow for writes](TECHNICAL_REFERENCE.md#always-allow-for-writes)) can derive a rule from this item. The temp-accept caption (row 9) and an Always-allow button are independent and can both appear at once (WG-3) |
 
 Row 8's body defaults to plain escaped text in a WKWebView. Two read-only tools override that:
 
@@ -118,13 +119,47 @@ above).
 All popup-gate dialogs share one shape: summary box, no AI-visibility checklist (ever — see
 `show_popup`'s docstring: a write is content Claude itself already drafted, there's nothing extra
 to disclose), optional amber content-flag banner, optional "Claude says" box, plain-text details
-pane. The only structural difference between write tools is the **button set**.
+pane, Deny/Allow once always available. Two things vary independently on top of that: whether
+**Always allow** renders (conditional on `suggest_write_rule()` deriving a value — see
+[Always allow for writes](TECHNICAL_REFERENCE.md#always-allow-for-writes)) and whether the
+**temp-accept disclosure caption** (row 9) appears above the buttons. Every popup-gate tool falls
+into exactly one of the three groups below — WG-3 is the one group where both can be true at once.
 
-### WG-1 — Deny / Allow once (no time-boxed accept)
+### WG-1 — Deny / Allow once only (never Always allow, not temp-accept eligible)
 
-Every popup-gate tool *except* the six in WG-2 below — 38 tools. Preview fields are tool-specific;
-`[brackets]` mark a field that's only added to the dict when the corresponding argument was
-actually provided (empty/default arguments don't produce an empty row).
+12 tools. Preview fields are tool-specific; `[brackets]` mark a field that's only added to the dict
+when the corresponding argument was actually provided (empty/default arguments don't produce an
+empty row).
+
+| Tool | Preview summary fields |
+|---|---|
+| `gmail_archive_message` | From, Subject |
+| `gmail_create_filter` | Criteria, Actions |
+| `gmail_update_filter` | Filter ID, Criteria, Actions |
+| `gmail_create_label` | Label |
+| `slack_send_message` | Channel, [In thread], [Mark unread] |
+| `calendar_create_out_of_office` | Title, Time, Auto-decline |
+| `calendar_set_working_location` | Date, Location, [Building], [Label] |
+| `contacts_update` | Contact, [Name], [Emails], [Phones], [Organization], [Job title] |
+| `contacts_create` | Name, [Emails], [Phones], [Organization], [Job title] |
+| `contacts_add_label` | Contact, Label |
+| `contacts_remove_label` | Contact, Label |
+| `telegram_send_message` | Chat |
+
+`calendar_create_out_of_office`/`calendar_set_working_location` support the same unconditional
+`always_allow` rule `gmail_create_draft` does (see WG-2 below), but only from **Manage Auto-accept
+Rules… → Calendar → Filters** — deliberately no popup-time shortcut, so they stay in this group
+rather than WG-2.
+
+### WG-2 — Deny / Allow once, conditionally Always allow
+
+26 tools across `auto_accept.WRITE_RULE_SUGGESTIONS` — the narrow, deliberate exception to "writes
+never get Always allow" (see [Always allow for writes](TECHNICAL_REFERENCE.md#always-allow-for-writes)).
+The button only renders when `suggest_write_rule()` can actually derive a value from this call's own
+args or current state (e.g. `jira_create_issue` always can; `jira_add_comment` can't if `issue_key`
+has no `-` to parse a project out of; a Drive write can't if the file has no parent folder) — same
+"never propose a rule broader than what the item supports" contract `suggest_rule()` already holds
+on the read side.
 
 | Tool | Preview summary fields |
 |---|---|
@@ -133,10 +168,6 @@ actually provided (empty/default arguments don't produce an empty row).
 | `gmail_reply_all_draft` | In reply to, To, Also to, [Cc], [Bcc] |
 | `gmail_add_label` | From, Subject, Label |
 | `gmail_remove_label` | From, Subject, Label |
-| `gmail_archive_message` | From, Subject |
-| `gmail_create_filter` | Criteria, Actions |
-| `gmail_update_filter` | Filter ID, Criteria, Actions |
-| `gmail_create_label` | Label |
 | `drive_write_doc_content` | File, Owner |
 | `drive_upload_file` | File, Source, Size, Destination |
 | `drive_write_file_content` | File, Owner |
@@ -144,17 +175,9 @@ actually provided (empty/default arguments don't produce an empty row).
 | `drive_sheets_add_sheet` | Spreadsheet, Owner, New tab, Size |
 | `drive_sheets_rename_sheet` | Spreadsheet, Owner, Tab id, New title |
 | `drive_sheets_delete_dimensions` | Spreadsheet, Owner, Tab id, Action (e.g. "Delete 2 COLUMNS starting at index 3") |
-| `slack_send_message` | Channel, [In thread], [Mark unread] |
 | `calendar_create_event` | Title, Time, Calendar, [Location], [Conferencing], [Rooms], [Attendees] |
 | `calendar_update_event` | Event, Calendar, + one row per changed field (Title/Start/End/Description/Location/Conferencing/Rooms — only fields that actually changed appear) |
-| `calendar_create_out_of_office` | Title, Time, Auto-decline |
-| `calendar_set_working_location` | Date, Location, [Building], [Label] |
 | `calendar_set_event_visibility` | Event, Calendar, Visibility (old → new) |
-| `contacts_update` | Contact, [Name], [Emails], [Phones], [Organization], [Job title] |
-| `contacts_create` | Name, [Emails], [Phones], [Organization], [Job title] |
-| `contacts_add_label` | Contact, Label |
-| `contacts_remove_label` | Contact, Label |
-| `telegram_send_message` | Chat |
 | `jira_create_issue` | Project, Type, Summary, [Priority] |
 | `jira_add_comment` | Issue |
 | `jira_update_issue` | Issue, + one row per changed field (Summary/Description/Priority/any custom fields — only fields actually being updated appear) |
@@ -167,11 +190,26 @@ actually provided (empty/default arguments don't produce an empty row).
 | `tasks_uncomplete_task` | Task list, Task |
 | `tasks_move_task` | Task, From list, To list |
 
-### WG-2 — Deny / Allow once / Allow for 5 min
+`gmail_create_draft`/`gmail_reply_draft`/`gmail_reply_all_draft` propose the one unconditional
+entry in this whole group, `always_allow` (no recipient check at all) — every other row proposes a
+rule scoped to the one folder/label/calendar/project/space/task-list the call touched.
+
+Clicking Always allow here goes through the same second-confirmation dialog
+(`show_rule_confirmation_popup`) and persistence path (`add_auto_accept_rule`) the review-gate's own
+Always allow uses — described via `describe_rule_change()`, not `describe_rule()`, since these rule
+names are shared with a read operation key too (e.g. `jira.read_issue`) and `describe_rule()`'s
+canned templates are read-direction-only English.
+
+### WG-3 — Deny / Allow once, conditionally Always allow, *and* the temp-accept disclosure caption
 
 The six operations in `auto_accept.TEMP_ACCEPT_ELIGIBLE_OPERATIONS` — repeat calls against the
 same file are common enough to warrant a narrower, memory-only 5-minute auto-accept instead of
-either a full standing rule or re-approving every single call:
+either a full standing rule or re-approving every single call. There used to be a separate "Allow
+for 5 min" button for these; clicking Allow once on one of them now silently arms the same grace
+window instead, and the dialog only discloses that with a plain caption above the buttons (row 9),
+not a distinct control. All six are *also* in `WRITE_RULE_SUGGESTIONS` (they propose
+`approved_sandbox_folder` from the file's current parent folder), so this is the one group where the
+Always-allow button and the temp-accept caption can both be showing on the same popup at once:
 
 | Tool | Preview summary fields |
 |---|---|
@@ -182,9 +220,10 @@ either a full standing rule or re-approving every single call:
 | `drive_docs_edit_content` | File, Owner, Match ("every occurrence" / "the one matching occurrence") |
 | `drive_docs_format_content` | File, Owner, Format (summary of applied formatting) |
 
-"Allow for 5 min" auto-accepts further calls of the *same operation against the same file* for 5
-minutes, in memory only — never written to `settings.yaml`, gone on daemon restart. See
-`gate.py`'s module docstring for the full write-gate rationale.
+Allow once on one of these auto-accepts further calls of the *same operation against the same
+file* for 5 minutes, in memory only — never written to `settings.yaml`, gone on daemon restart.
+See `gate.py`'s module docstring for the full write-gate rationale. Clicking Always allow instead
+skips the grace window entirely in favor of a standing rule, same confirmation flow as WG-2 above.
 
 ## Cross-cutting: what's never in one but is in the other
 

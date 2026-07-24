@@ -19,8 +19,15 @@ Configuration is split into two files (see paths.py):
     release build — see app_credentials.py. Also carries
     ``unattended_sessions.enabled`` — a deliberate per-organization opt-in,
     not a per-user setting, so it lives here rather than settings.yaml.
+    ``rooms`` (optional) is a static room/resource directory snapshot IT
+    refreshes with ``scripts/sync_room_directory.py``, using a separate,
+    admin-scoped Google Cloud project — see room_directory_client.py and
+    docs/google-cloud-setup.md. It's plain data, not a credential, and is
+    handed straight to CalendarConnector; the Calendar OAuth client itself
+    never carries Workspace-admin directory scope.
   - ``config/settings.yaml``   — per-user settings: privacy policy,
-    connectors{enabled}, auto_accept_rules, pii_detection{enabled}. No
+    connectors{enabled}, auto_accept_rules,
+    pii_detection{enabled, detect_ip_addresses, detect_financial_figures}. No
     secrets live here.
 Per-user credentials (OAuth tokens, Telegram session) live under
 ``credentials/``, one file per connector.
@@ -44,7 +51,12 @@ import yaml
 from .paths import data_dir, org_dir
 from .app_credentials import telegram_app_credentials
 from .audit_log import init_audit_logger
-from .auto_accept import init_config_path, reload_rules
+from .auto_accept import (
+    init_config_path,
+    init_suggestion_priority,
+    migrate_telegram_search_operation_key,
+    reload_rules,
+)
 from .pii_detector import init_pii_detection
 from .privacy_filter import check_consistency_warnings, init_privacy_filter
 from .resource_grants import build_effective_rules, migrate_rules_to_grants
@@ -275,7 +287,7 @@ def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list
             )
             email = client.check_connection()
             logger.info("Calendar connector ready for %s", email)
-            connector = CalendarConnector(client)
+            connector = CalendarConnector(client, rooms=org_config.get("rooms", []))
             connector.my_email = email
             connector.free_busy_full_details = bool(
                 (config.get("calendar", {}) or {}).get("free_busy_full_event_details", True)
@@ -602,19 +614,32 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
     init_config_path(_resolve_path(config_path))
 
     config, migration_summary = migrate_rules_to_grants(config)
-    if migration_summary:
+    config, telegram_search_migrated = migrate_telegram_search_operation_key(config)
+    if migration_summary or telegram_search_migrated:
         try:
             with open(_resolve_path(config_path), "w", encoding="utf-8") as fh:
                 yaml.dump(config, fh, default_flow_style=False, allow_unicode=True)
-            logger.info(
-                "Auto-accept config migrated to connector-scoped grants:\n  %s",
-                "\n  ".join(migration_summary),
-            )
+            if migration_summary:
+                logger.info(
+                    "Auto-accept config migrated to connector-scoped grants:\n  %s",
+                    "\n  ".join(migration_summary),
+                )
+            if telegram_search_migrated:
+                logger.info(
+                    "Auto-accept config migrated: telegram.search_messages rules "
+                    "moved onto telegram.read_chat_messages"
+                )
         except OSError as exc:
-            logger.warning("Could not persist auto-accept grants migration: %s", exc)
+            logger.warning("Could not persist auto-accept config migration: %s", exc)
 
     reload_rules(build_effective_rules(config))
-    init_pii_detection((config.get("pii_detection", {}) or {}).get("enabled", True))
+    init_suggestion_priority(config.get("rule_suggestion_priority", {}) or {})
+    pii_config = config.get("pii_detection", {}) or {}
+    init_pii_detection(
+        pii_config.get("enabled", True),
+        detect_ip_addresses=pii_config.get("detect_ip_addresses", True),
+        detect_financial_figures=pii_config.get("detect_financial_figures", True),
+    )
     init_privacy_filter(config)
     for warning in check_consistency_warnings():
         logger.warning(warning)

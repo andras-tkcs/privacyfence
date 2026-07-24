@@ -30,7 +30,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from privacyfence import auto_accept, menu_bar
+from privacyfence import auto_accept, menu_bar, resource_names
 
 
 def wait_until(predicate, timeout=2.0, interval=0.005) -> bool:
@@ -47,6 +47,11 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setattr(menu_bar, "_find_icon", lambda: None)
     monkeypatch.setattr(menu_bar, "load_org_config", lambda: {})
     monkeypatch.setattr(menu_bar.rumps, "alert", lambda *a, **k: None)
+    # get_resolver() is a process-wide singleton whose on-disk cache
+    # defaults to paths.data_dir() (the repo root outside a bundled app) --
+    # redirect it into this test's own tmp_path so a test that resolves a
+    # name doesn't write resource_name_cache.json into the real checkout.
+    monkeypatch.setattr(resource_names, "_cache_file", lambda: tmp_path / "resource_name_cache.json")
 
     config_path = tmp_path / "settings.yaml"
     config_path.write_text("auto_accept_rules: {}\nconnectors: {}\n", encoding="utf-8")
@@ -370,44 +375,6 @@ class TestConcurrentAuthAndRuleChangeDoNotLoseUpdates:
 # test's approach of not popping up real modal dialogs in a test run.
 # ============================================================================ #
 
-class TestFormatPairLine:
-    def test_with_tab(self):
-        assert menu_bar._format_pair_line({"spreadsheet_id": "sheet1", "tab": "Sheet1"}) == "sheet1:Sheet1"
-
-    def test_without_tab(self):
-        assert menu_bar._format_pair_line({"spreadsheet_id": "sheet1"}) == "sheet1"
-
-    def test_non_dict_falls_back_to_str(self):
-        assert menu_bar._format_pair_line("sheet1") == "sheet1"
-
-
-class TestParsePairLines:
-    def test_parses_id_only_lines(self):
-        assert menu_bar._parse_pair_lines("sheet1\nsheet2") == [
-            {"spreadsheet_id": "sheet1"}, {"spreadsheet_id": "sheet2"},
-        ]
-
-    def test_parses_id_colon_tab_lines(self):
-        assert menu_bar._parse_pair_lines("sheet1:Sheet1\nsheet2:My Tab") == [
-            {"spreadsheet_id": "sheet1", "tab": "Sheet1"},
-            {"spreadsheet_id": "sheet2", "tab": "My Tab"},
-        ]
-
-    def test_strips_whitespace_around_id_and_tab(self):
-        assert menu_bar._parse_pair_lines("  sheet1 : Sheet1  ") == [{"spreadsheet_id": "sheet1", "tab": "Sheet1"}]
-
-    def test_blank_lines_are_skipped(self):
-        assert menu_bar._parse_pair_lines("sheet1\n\n\nsheet2") == [
-            {"spreadsheet_id": "sheet1"}, {"spreadsheet_id": "sheet2"},
-        ]
-
-    def test_trailing_colon_with_empty_tab_omits_tab_key(self):
-        assert menu_bar._parse_pair_lines("sheet1:") == [{"spreadsheet_id": "sheet1"}]
-
-    def test_empty_text_yields_empty_list(self):
-        assert menu_bar._parse_pair_lines("") == []
-
-
 class TestBind:
     def test_forwards_bound_args_and_sender(self):
         calls = []
@@ -473,6 +440,34 @@ class TestOsascriptPick:
     def test_empty_output_returns_none(self, monkeypatch):
         monkeypatch.setattr(menu_bar.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout=""))
         assert menu_bar._osascript_pick("T", "P", ["a"]) is None
+
+    def test_default_present_in_options_adds_default_items_clause(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            menu_bar.subprocess, "run",
+            lambda cmd, **kw: (captured.__setitem__("cmd", cmd), SimpleNamespace(stdout="a\n"))[1],
+        )
+        menu_bar._osascript_pick("T", "P", ["a", "b"], default="b")
+        assert "with default items" in captured["cmd"][2]
+        assert '{"b"}' in captured["cmd"][2]
+
+    def test_default_absent_from_options_omits_default_items_clause(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            menu_bar.subprocess, "run",
+            lambda cmd, **kw: (captured.__setitem__("cmd", cmd), SimpleNamespace(stdout="a\n"))[1],
+        )
+        menu_bar._osascript_pick("T", "P", ["a", "b"], default="not-an-option")
+        assert "with default items" not in captured["cmd"][2]
+
+    def test_no_default_omits_default_items_clause(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            menu_bar.subprocess, "run",
+            lambda cmd, **kw: (captured.__setitem__("cmd", cmd), SimpleNamespace(stdout="a\n"))[1],
+        )
+        menu_bar._osascript_pick("T", "P", ["a", "b"])
+        assert "with default items" not in captured["cmd"][2]
 
 
 class TestConfigHelpers:
@@ -641,6 +636,73 @@ class TestGatherConnectorSections:
         folders = next(s for s in sections if s.title == "Sandbox Folders")
         assert menu_bar._short_id(long_id) in folders.rows[0].text
 
+    def test_hand_authored_rule_value_for_grant_covered_name_shows_resolved_name(self, app):
+        # A rule value under a rule name a Trusted-resource grant also
+        # covers (e.g. approved_sandbox_folder) is the same kind of opaque
+        # Drive folder ID a grant entry stores -- it should resolve to a
+        # real name too, not stay a raw ID forever just because this
+        # particular folder was hand-authored (or only partially migrated --
+        # see resource_grants.migrate_rules_to_grants) instead of added via
+        # "+ Add folder…".
+        # Fresh resolver instance, not the process-wide get_resolver()
+        # singleton -- keeps this test's cached name from leaking into any
+        # other test that happens to run in the same process.
+        app._resolver = resource_names.ResourceNameResolver()
+        rt = menu_bar.grant_resource_type("drive", "sandbox_folders")
+        client = SimpleNamespace(get_file_metadata=lambda file_id: SimpleNamespace(name="Scratch"))
+        app._resolver.resolve(rt, "SBX1", client)
+
+        cfg = {"auto_accept_rules": {"drive.write_file": [
+            {"rule": "approved_sandbox_folder", "value": ["SBX1"]},
+        ]}}
+        config_path = app._config_path
+        with open(config_path, "w", encoding="utf-8") as f:
+            menu_bar.yaml.dump(cfg, f)
+
+        sections = app._gather_connector_sections("drive")
+        write_file = next(s for s in sections if s.title == "Write file")
+        value_row = next(r for r in write_file.rows if r.indent)
+        assert value_row.text == "Scratch"
+        assert "SBX1" not in value_row.text
+
+    def test_hand_authored_rule_value_for_grant_covered_name_falls_back_to_short_id(self, app):
+        long_id = "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms"
+        cfg = {"auto_accept_rules": {"drive.write_file": [
+            {"rule": "approved_sandbox_folder", "value": [long_id]},
+        ]}}
+        config_path = app._config_path
+        with open(config_path, "w", encoding="utf-8") as f:
+            menu_bar.yaml.dump(cfg, f)
+
+        sections = app._gather_connector_sections("drive")
+        write_file = next(s for s in sections if s.title == "Write file")
+        value_row = next(r for r in write_file.rows if r.indent)
+        assert menu_bar._short_id(long_id) in value_row.text
+
+    def test_parent_folder_allowlist_shows_resolved_name_too(self, app):
+        # parent_folder_allowlist (drive.upload_file) holds the same kind of
+        # Drive folder ID as approved_folder/approved_sandbox_folder, but
+        # isn't tied to any grant capability -- it's hand-authored only, with
+        # no "Trusted Folders"-style section of its own. Still worth a
+        # resolved name instead of a raw ID.
+        app._resolver = resource_names.ResourceNameResolver()
+        rt = menu_bar.grant_resource_type("drive", "folders")
+        client = SimpleNamespace(get_file_metadata=lambda file_id: SimpleNamespace(name="Uploads"))
+        app._resolver.resolve(rt, "PARENT1", client)
+
+        cfg = {"auto_accept_rules": {"drive.upload_file": [
+            {"rule": "parent_folder_allowlist", "value": ["PARENT1"]},
+        ]}}
+        config_path = app._config_path
+        with open(config_path, "w", encoding="utf-8") as f:
+            menu_bar.yaml.dump(cfg, f)
+
+        sections = app._gather_connector_sections("drive")
+        upload_file = next(s for s in sections if s.title == "Upload file")
+        value_row = next(r for r in upload_file.rows if r.indent)
+        assert value_row.text == "Uploads"
+        assert "PARENT1" not in value_row.text
+
     def test_grant_add_action_is_always_present(self, app):
         sections = app._gather_connector_sections("drive")
         folders = next(s for s in sections if s.title == "Sandbox Folders")
@@ -709,6 +771,198 @@ class TestOpenRulesManager:
         assert app._rules_manager is None
         app._rebuild()  # must not raise
         assert app._rules_manager is None
+
+
+class TestOpenPrivacyFilterManager:
+    # Same lazy-create/reuse/refresh contract as TestOpenRulesManager, since
+    # this is a second instance of the same generic window class -- see
+    # rules_manager_window.py's window_title param.
+    def test_lazily_creates_and_shows_the_window(self, app):
+        assert app._privacy_manager is None
+        app._open_privacy_filter_manager()
+        assert app._privacy_manager is not None
+        assert app._privacy_manager.window is not None
+        assert app._privacy_manager.window_title == "Privacy Filter"
+
+    def test_reopening_reuses_the_same_controller(self, app):
+        app._open_privacy_filter_manager()
+        first = app._privacy_manager
+        app._open_privacy_filter_manager()
+        assert app._privacy_manager is first
+
+    def test_distinct_from_rules_manager(self, app):
+        app._open_rules_manager()
+        app._open_privacy_filter_manager()
+        assert app._privacy_manager is not app._rules_manager
+
+    def test_rebuild_refreshes_an_open_manager_window(self, app):
+        app._open_privacy_filter_manager()
+        refreshed = []
+        app._privacy_manager._refresh_window = lambda: refreshed.append(1)
+
+        app._rebuild()
+
+        assert refreshed == [1]
+
+    def test_rebuild_is_a_no_op_when_manager_never_opened(self, app):
+        assert app._privacy_manager is None
+        app._rebuild()  # must not raise
+        assert app._privacy_manager is None
+
+
+class TestListPrivacyGroups:
+    def test_every_group_appears(self, app):
+        keys = {key for key, _label, _count in app._list_privacy_groups()}
+        assert keys == {"privacy", "drive_privacy", "slack_privacy"}
+
+    def test_count_reflects_explicit_category_overrides(self, app):
+        cfg = {"privacy": {"categories": {"body": "block", "attachments": "redact"}}}
+        config_path = app._config_path
+        with open(config_path, "w", encoding="utf-8") as f:
+            menu_bar.yaml.dump(cfg, f)
+
+        counts = dict((key, count) for key, _label, count in app._list_privacy_groups())
+        assert counts["privacy"] == 2
+        assert counts["drive_privacy"] == 0
+        assert counts["slack_privacy"] == 0
+
+    def test_missing_group_key_still_listed_with_zero_count(self, app):
+        # No "drive_privacy"/"slack_privacy" section in config at all.
+        cfg = {"privacy": {"default_policy": "block"}}
+        config_path = app._config_path
+        with open(config_path, "w", encoding="utf-8") as f:
+            menu_bar.yaml.dump(cfg, f)
+
+        counts = dict((key, count) for key, _label, count in app._list_privacy_groups())
+        assert counts["drive_privacy"] == 0
+        assert counts["slack_privacy"] == 0
+
+
+class TestGatherPrivacySections:
+    def test_empty_config_defaults_everything_to_allow(self, app):
+        rows = app._gather_privacy_sections("privacy")[0].rows
+        assert rows[0].text == "Default: allow"
+        for row in rows[1:]:
+            assert row.text.endswith("  (default)")
+            assert ": allow" in row.text
+
+    def test_explicit_default_and_overrides_are_reflected(self, app):
+        cfg = {"drive_privacy": {
+            "default_policy": "block",
+            "categories": {"file_content": "allow"},
+        }}
+        config_path = app._config_path
+        with open(config_path, "w", encoding="utf-8") as f:
+            menu_bar.yaml.dump(cfg, f)
+
+        rows = app._gather_privacy_sections("drive_privacy")[0].rows
+        assert rows[0].text == "Default: block"
+        by_text = {r.text for r in rows[1:]}
+        assert "Document content: allow" in by_text  # explicit override, no "(default)" suffix
+        assert any(": block" in t and t.endswith("(default)") for t in by_text if t.startswith("File metadata"))
+
+    def test_row_actions_are_change_only(self, app):
+        sections = app._gather_privacy_sections("slack_privacy")
+        for row in sections[0].rows:
+            assert [a[0] for a in row.actions] == ["Change…"]
+
+    def test_default_row_not_indented_category_rows_are(self, app):
+        rows = app._gather_privacy_sections("privacy")[0].rows
+        assert rows[0].indent is False
+        assert all(r.indent for r in rows[1:])
+
+    def test_invalid_policy_value_does_not_crash(self, app):
+        cfg = {"privacy": {"categories": {"body": "delete_everything"}}}
+        config_path = app._config_path
+        with open(config_path, "w", encoding="utf-8") as f:
+            menu_bar.yaml.dump(cfg, f)
+
+        rows = app._gather_privacy_sections("privacy")[0].rows
+        assert any(r.text.startswith("Message body:") for r in rows)
+
+
+def _run_privacy_change(app, monkeypatch, method, args, pick):
+    """Drive a _change_privacy_default/_change_privacy_category call to
+    completion -- same AppHelper.callAfter interception/drain _run_add_rule
+    uses, since these also run _osascript_pick on a background thread."""
+    if not callable(pick):
+        value = pick
+        pick = lambda **kw: value  # noqa: E731
+    monkeypatch.setattr(menu_bar, "_osascript_pick", pick)
+    recorded = []
+    monkeypatch.setattr(menu_bar.AppHelper, "callAfter", lambda f, *a, **k: recorded.append((f, a, k)))
+
+    getattr(app, method)(*args)
+
+    assert wait_until(lambda: recorded), "_osascript_pick's result never reached AppHelper.callAfter"
+    _drain_run_async(recorded)
+
+
+class TestChangePrivacyPolicy:
+    def test_change_default_persists_and_hot_reloads(self, app, monkeypatch):
+        from privacyfence import privacy_filter
+
+        _run_privacy_change(app, monkeypatch, "_change_privacy_default", ["privacy"], "block")
+
+        assert app._load_config()["privacy"]["default_policy"] == "block"
+        assert privacy_filter.category_policy("privacy", "body") == "block"
+
+    def test_cancelled_default_picker_makes_no_change(self, app, monkeypatch):
+        before = app._load_config()
+
+        _run_privacy_change(app, monkeypatch, "_change_privacy_default", ["privacy"], None)
+
+        assert app._load_config() == before
+
+    def test_change_category_sets_explicit_override(self, app, monkeypatch):
+        _run_privacy_change(
+            app, monkeypatch, "_change_privacy_category", ["slack_privacy", "message_content"], "block",
+        )
+
+        cfg = app._load_config()
+        assert cfg["slack_privacy"]["categories"]["message_content"] == "block"
+
+    def test_use_group_default_removes_existing_override(self, app, monkeypatch):
+        cfg = {"drive_privacy": {"default_policy": "block", "categories": {"file_content": "allow"}}}
+        config_path = app._config_path
+        with open(config_path, "w", encoding="utf-8") as f:
+            menu_bar.yaml.dump(cfg, f)
+
+        _run_privacy_change(
+            app, monkeypatch, "_change_privacy_category",
+            ["drive_privacy", "file_content"], "(use group default)",
+        )
+
+        assert "file_content" not in app._load_config()["drive_privacy"].get("categories", {})
+
+    def test_use_group_default_with_no_prior_categories_does_not_crash(self, app, monkeypatch):
+        _run_privacy_change(
+            app, monkeypatch, "_change_privacy_category",
+            ["privacy", "body"], "(use group default)",
+        )
+
+        assert "body" not in app._load_config().get("privacy", {}).get("categories", {})
+
+    def test_cancelled_category_picker_makes_no_change(self, app, monkeypatch):
+        before = app._load_config()
+
+        _run_privacy_change(
+            app, monkeypatch, "_change_privacy_category", ["privacy", "body"], None,
+        )
+
+        assert app._load_config() == before
+
+    def test_hot_reload_failure_still_rebuilds(self, app, monkeypatch):
+        monkeypatch.setattr(
+            menu_bar, "init_privacy_filter",
+            lambda cfg: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        rebuild_calls = []
+        monkeypatch.setattr(app, "_rebuild", lambda: rebuild_calls.append(1))
+
+        app._save_and_reload_privacy({})  # must not raise
+
+        assert rebuild_calls == [1]
 
 
 class TestBuildOrgMenu:
@@ -949,21 +1203,6 @@ class TestAddRule:
         assert len(alerts) == 1
         assert app._load_config().get("auto_accept_rules", {}) == {}
 
-    def test_pair_value_rule_starts_empty_no_prompt(self, app, monkeypatch):
-        # approved_spreadsheet is normally offered via a grant now (see
-        # resource_grants.py's drive.spreadsheets); this exercises _add_rule's
-        # generic pair-value handling regardless of what the picker returned.
-        window_calls = []
-        monkeypatch.setattr(menu_bar.rumps, "Window", lambda **kw: window_calls.append(kw))
-
-        _run_add_rule(app, monkeypatch, "sheets.read_values", "approved_spreadsheet")
-
-        assert window_calls == []
-        cfg = app._load_config()
-        assert cfg["auto_accept_rules"]["sheets.read_values"] == [
-            {"rule": "approved_spreadsheet", "value": []}
-        ]
-
     def test_add_rule_int_prompt_starts_empty_not_prefilled_with_hint(self, app, monkeypatch):
         # Regression: the "Add rule" dialog used to pre-fill the text field with
         # the RULE_HINTS example value, so the first line looked like garbage
@@ -1161,15 +1400,6 @@ class TestAddRuleValue:
         assert captured["default_text"] == ""
         assert "Example:" in captured["message"]
 
-    def test_pair_value_parses_id_and_id_colon_tab(self, app, monkeypatch):
-        self._seed(app, "sheets.read_values", [{"rule": "approved_spreadsheet", "value": []}])
-        monkeypatch.setattr(menu_bar.rumps, "Window", _fake_window(clicked=True, text="sheet1:Sheet1"))
-
-        app._add_rule_value("sheets.read_values", 0)
-
-        rules = app._load_config()["auto_accept_rules"]["sheets.read_values"]
-        assert rules[0]["value"] == [{"spreadsheet_id": "sheet1", "tab": "Sheet1"}]
-
     def test_cancelled_prompt_makes_no_change(self, app, monkeypatch):
         self._seed(app, "gmail.read_message", [{"rule": "trusted_sender_domain", "value": ["a.com"]}])
         monkeypatch.setattr(menu_bar.rumps, "Window", _fake_window(clicked=False))
@@ -1227,6 +1457,82 @@ class TestRemoveRuleValue:
         app._remove_rule_value("gmail.read_message", 0, 9)
 
         assert app._load_config() == before
+
+
+class TestSuggestionPrioritySection:
+    def test_drive_gets_a_suggestion_order_section_with_the_default_order(self, app):
+        sections = app._gather_connector_sections("drive")
+        section = next(s for s in sections if s.title == "Always-allow Suggestion Order")
+        assert [row.text for row in section.rows] == ["i_am_owner", "approved_folder"]
+
+    def test_first_row_has_no_move_up_last_row_has_no_move_down(self, app):
+        sections = app._gather_connector_sections("drive")
+        section = next(s for s in sections if s.title == "Always-allow Suggestion Order")
+        first_labels = [a[0] for a in section.rows[0].actions]
+        last_labels = [a[0] for a in section.rows[-1].actions]
+        assert "↑ Move up" not in first_labels
+        assert "↓ Move down" in first_labels
+        assert "↑ Move up" in last_labels
+        assert "↓ Move down" not in last_labels
+
+    def test_excluded_rule_shows_as_indented_with_re_include_only(self, app):
+        cfg = {"rule_suggestion_priority": {"drive_read": ["approved_folder"]}}
+        app._save_config(cfg)
+        menu_bar.set_suggestion_priority("drive_read", ["approved_folder"])
+
+        sections = app._gather_connector_sections("drive")
+        section = next(s for s in sections if s.title == "Always-allow Suggestion Order")
+        excluded_row = next(r for r in section.rows if "i_am_owner" in r.text)
+        assert excluded_row.indent is True
+        assert [a[0] for a in excluded_row.actions] == ["+ Re-include"]
+
+    def test_connector_without_a_family_gets_no_section(self, app):
+        sections = app._gather_connector_sections("gmail")
+        assert not any(s.title == "Always-allow Suggestion Order" for s in sections)
+
+
+class TestSuggestionPriorityMutators:
+    def test_move_up_swaps_with_the_previous_entry(self, app):
+        app._move_suggestion_priority("drive_read", "approved_folder", -1)
+        assert menu_bar.suggestion_order("drive_read") == ["approved_folder", "i_am_owner"]
+        assert app._load_config()["rule_suggestion_priority"]["drive_read"] == ["approved_folder", "i_am_owner"]
+
+    def test_move_down_swaps_with_the_next_entry(self, app):
+        app._move_suggestion_priority("drive_read", "i_am_owner", 1)
+        assert menu_bar.suggestion_order("drive_read") == ["approved_folder", "i_am_owner"]
+
+    def test_move_past_either_end_is_a_no_op(self, app):
+        app._move_suggestion_priority("drive_read", "i_am_owner", -1)  # already first
+        assert menu_bar.suggestion_order("drive_read") == ["i_am_owner", "approved_folder"]
+        app._move_suggestion_priority("drive_read", "approved_folder", 1)  # already last
+        assert menu_bar.suggestion_order("drive_read") == ["i_am_owner", "approved_folder"]
+
+    def test_move_unknown_rule_name_is_a_no_op(self, app):
+        app._move_suggestion_priority("drive_read", "not_a_real_rule", -1)
+        assert menu_bar.suggestion_order("drive_read") == ["i_am_owner", "approved_folder"]
+
+    def test_exclude_removes_the_rule_from_the_order(self, app):
+        app._exclude_suggestion_rule("drive_read", "i_am_owner")
+        assert menu_bar.suggestion_order("drive_read") == ["approved_folder"]
+
+    def test_include_appends_a_previously_excluded_rule(self, app):
+        app._exclude_suggestion_rule("drive_read", "i_am_owner")
+        app._include_suggestion_rule("drive_read", "i_am_owner")
+        assert menu_bar.suggestion_order("drive_read") == ["approved_folder", "i_am_owner"]
+
+    def test_include_an_already_included_rule_is_a_no_op(self, app):
+        app._include_suggestion_rule("drive_read", "i_am_owner")
+        assert menu_bar.suggestion_order("drive_read") == ["i_am_owner", "approved_folder"]
+
+    def test_mutator_persists_to_disk_and_hot_applies(self, app):
+        app._exclude_suggestion_rule("drive_read", "i_am_owner")
+
+        on_disk = app._load_config()
+        assert on_disk["rule_suggestion_priority"]["drive_read"] == ["approved_folder"]
+        # Hot-applied without needing a config reload -- suggestion_order()
+        # reads the live module state, same as should_auto_accept() does
+        # for auto_accept_rules via reload_rules().
+        assert menu_bar.suggestion_order("drive_read") == ["approved_folder"]
 
 
 class TestClientFor:
@@ -1342,14 +1648,23 @@ class TestConfirmAndSaveGrant:
         assert entries == [{"id": "F1", "write": True}]  # unchanged, not duplicated
         assert len(alerts) == 2  # the "already trusted" alert, on top of the initial confirmation
 
-    def test_spreadsheet_tab_is_stored_on_the_entry(self, app, monkeypatch):
+    def test_tab_is_stored_on_the_entry(self, app, monkeypatch):
+        # No current resource type uses "tab", but _confirm_and_save_grant
+        # still supports it generically for the bridge-facing
+        # propose_rule_change() contract -- a fake resource type exercises
+        # that path without depending on one being wired into the manifest.
         monkeypatch.setattr(menu_bar.rumps, "alert", lambda **kw: 1)
-        rt = menu_bar.grant_resource_type("drive", "spreadsheets")
+        fake_rt = menu_bar.GrantResourceType(
+            connector="fake", config_key="things", id_field="id",
+            label="Fake Things", singular="thing",
+            capabilities={},
+            resolver=lambda client, resource_id: None,
+        )
 
-        app._confirm_and_save_grant(rt, "S1", "Budget Sheet", "Q3")
+        app._confirm_and_save_grant(fake_rt, "T1", "My Thing", "Q3")
 
-        entries = app._load_config()["auto_accept_grants"]["drive"]["spreadsheets"]
-        assert entries == [{"id": "S1", "name": "Budget Sheet", "tab": "Q3"}]
+        entries = app._load_config()["auto_accept_grants"]["fake"]["things"]
+        assert entries == [{"id": "T1", "name": "My Thing", "tab": "Q3"}]
 
 
 def _run_on_candidates_listed(app, monkeypatch, rt, candidates, pick):
@@ -1604,8 +1919,77 @@ class TestTogglePiiDetection:
     def test_menu_item_state_reflects_config(self, app):
         app._toggle_pii_detection()  # now disabled
 
-        item = app.menu["PII Detection Gate"]
+        item = app.menu["PII Detection Gate"]["Enabled"]
         assert bool(item.state) is False
+
+
+class TestBuildPiiMenu:
+    def test_enabled_item_state_reflects_config(self, app):
+        pii_item = app._build_pii_menu({}, True)
+        assert bool(pii_item["Enabled"].state) is True
+
+        pii_item = app._build_pii_menu({}, False)
+        assert bool(pii_item["Enabled"].state) is False
+
+    def test_category_items_default_to_enabled_when_unset(self, app):
+        pii_item = app._build_pii_menu({}, True)
+        ip_title = next(t for t in pii_item.keys() if "Detect IP Addresses" in t)
+        fin_title = next(t for t in pii_item.keys() if "Detect Financial Figures" in t)
+        assert bool(pii_item[ip_title].state) is True
+        assert bool(pii_item[fin_title].state) is True
+
+    def test_category_item_state_reflects_config(self, app):
+        pii_cfg = {"detect_ip_addresses": False, "detect_financial_figures": True}
+        pii_item = app._build_pii_menu(pii_cfg, True)
+        ip_title = next(t for t in pii_item.keys() if "Detect IP Addresses" in t)
+        fin_title = next(t for t in pii_item.keys() if "Detect Financial Figures" in t)
+        assert bool(pii_item[ip_title].state) is False
+        assert bool(pii_item[fin_title].state) is True
+
+    def test_category_items_have_no_callback_when_gate_disabled(self, app):
+        pii_item = app._build_pii_menu({}, False)
+        ip_title = next(t for t in pii_item.keys() if "Detect IP Addresses" in t)
+        assert pii_item[ip_title].callback is None
+
+    def test_category_items_have_callback_when_gate_enabled(self, app):
+        pii_item = app._build_pii_menu({}, True)
+        ip_title = next(t for t in pii_item.keys() if "Detect IP Addresses" in t)
+        assert pii_item[ip_title].callback is not None
+
+
+class TestTogglePiiCategory:
+    def test_flips_category_flag_and_saves(self, app):
+        app._toggle_pii_category("detect_ip_addresses")
+
+        cfg = app._load_config()
+        assert cfg["pii_detection"]["detect_ip_addresses"] is False
+
+    def test_toggling_twice_re_enables(self, app):
+        app._toggle_pii_category("detect_financial_figures")
+        app._toggle_pii_category("detect_financial_figures")
+
+        assert app._load_config()["pii_detection"]["detect_financial_figures"] is True
+
+    def test_defaults_to_enabled_when_unset(self, app):
+        assert "pii_detection" not in app._load_config()
+
+        app._toggle_pii_category("detect_ip_addresses")
+
+        assert app._load_config()["pii_detection"]["detect_ip_addresses"] is False
+
+    def test_hot_reloads_live_detector_state(self, app):
+        from privacyfence import pii_detector
+
+        app._toggle_pii_category("detect_ip_addresses")
+
+        assert pii_detector.detect_categories("Server at 192.168.1.100.") == []
+
+    def test_categories_toggle_independently(self, app):
+        app._toggle_pii_category("detect_ip_addresses")
+
+        cfg = app._load_config()
+        assert cfg["pii_detection"]["detect_ip_addresses"] is False
+        assert cfg["pii_detection"].get("detect_financial_figures", True) is True
 
 
 class TestRefreshConnectors:

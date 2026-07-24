@@ -14,15 +14,32 @@ release gated data on its own.
     reads.
 
   gate="popup"   (write tools)
-    Popup offers Deny / Allow once only. Auto-accepting writes silently is a
-    materially bigger blast radius than auto-accepting reads, so Always
-    allow is not offered here. A small set of operations expected to be
-    called repeatedly against the same file in quick succession (see
-    auto_accept.TEMP_ACCEPT_ELIGIBLE_OPERATIONS) get a narrower "Allow for
-    5 min" button instead: it auto-accepts further calls of the same
-    operation against that same file for 5 minutes, in memory only (never
-    written to settings.yaml, gone on daemon restart) -- a much smaller
-    commitment than a standing Always allow rule.
+    Popup offers Deny / Allow once by default. Auto-accepting writes
+    silently is a materially bigger blast radius than auto-accepting reads,
+    so Always allow is not offered on most write popups. Two narrow, opt-in
+    exceptions to that rule, each scoped to avoid reopening it wholesale:
+
+    - A small set of operations expected to be called repeatedly against
+      the same file in quick succession (see
+      auto_accept.TEMP_ACCEPT_ELIGIBLE_OPERATIONS) get a lighter-weight
+      concession instead of a standing Always allow rule: clicking Allow
+      once on one of these also auto-accepts further calls of the same
+      operation against that same file for 5 minutes, in memory only
+      (never written to settings.yaml, gone on daemon restart). This used
+      to be a distinct "Allow for 5 min" button the user had to choose
+      instead of Allow once; it's now folded into Allow once itself -- the
+      popup only discloses it with a plain caption
+      (approval_window.py's temp_accept_eligible), not a separate control.
+    - A separate, small set of operations that already have a
+      resource-identity-scoped auto-accept rule (see
+      auto_accept.WRITE_RULE_SUGGESTIONS -- one Gmail label, one calendar,
+      one Jira project, one Confluence space, one Tasks list; never a bare
+      "accept every future write of this type" toggle) get an actual
+      Always allow button, proposing that rule scoped to the item just
+      acted on -- the same second-confirmation-dialog flow the review
+      branch already uses, reused here rather than reinvented.
+
+    See the popup-gate branch below for where both actually get armed.
 
 PII gate: read tools only (``gate="review"``). Before any auto-accept check,
 the scan text (``pii_scan_text`` if the caller provided one, otherwise the
@@ -66,6 +83,7 @@ from .approval_popup import (
     show_pii_confirmation_popup,
     show_popup,
     show_read_popup,
+    show_rule_choice_popup,
     show_rule_confirmation_popup,
 )
 from .audit_log import AuditEntry, current_week, get_audit_logger
@@ -80,6 +98,8 @@ from .auto_accept import (
     mutate_grants,
     remove_auto_accept_rule,
     suggest_rule,
+    suggest_rule_choices,
+    suggest_write_rule,
     temp_accept_key,
 )
 from .pii_detector import detect_pii_categories
@@ -319,10 +339,26 @@ async def gated_call(
                     decision = await _confirm_pii_or_deny(decision, pii_categories)
 
                 if decision == "accept_all" and suggestion is not None:
-                    rule_name, value = suggestion
-                    description = describe_rule(rule_name, value)
-                    confirmed = await asyncio.to_thread(show_rule_confirmation_popup, description)
-                    if confirmed:
+                    # Some operations (e.g. a Drive file you both own and
+                    # that lives in an approved folder) can suggest more than
+                    # one plausible rule for the same item -- ask which one
+                    # rather than always silently creating the top-priority
+                    # candidate suggest_rule() picked. Only ever 2+ entries
+                    # for the four families in SUGGESTION_FAMILIES; every
+                    # other operation gets back exactly `[suggestion]`, so
+                    # this is a no-op for them.
+                    choices = suggest_rule_choices(operation_key, ctx)
+                    if len(choices) > 1:
+                        descriptions = [describe_rule(rn, v) for rn, v in choices]
+                        chosen_idx = await asyncio.to_thread(show_rule_choice_popup, descriptions)
+                        chosen = choices[chosen_idx] if chosen_idx is not None else None
+                    else:
+                        description = describe_rule(*suggestion)
+                        confirmed = await asyncio.to_thread(show_rule_confirmation_popup, description)
+                        chosen = suggestion if confirmed else None
+
+                    if chosen is not None:
+                        rule_name, value = chosen
                         add_auto_accept_rule(operation_key, rule_name, value)
                         audit(
                             decision="accepted_via_accept_all", auto_accept_rule=rule_name,
@@ -346,6 +382,12 @@ async def gated_call(
             # content Claude itself generated for an outbound write, not
             # personal data flowing in from an external source.
             file_key = temp_accept_key(operation_key, ctx)
+            suggestion = suggest_write_rule(operation_key, ctx)
+            # Same "everything interactive stays inside one lock acquisition"
+            # reasoning as the review branch above -- the accept-all
+            # confirmation and rule persistence must not happen after
+            # releasing/re-acquiring _popup_lock, or a request queued behind
+            # this one could slip through with the pre-rule rule set.
             async with _popup_lock:
                 # Same race as above: a rule may have been created while queued.
                 auto_ok, matched_rule = evaluator.should_auto_accept(operation_key, ctx)
@@ -360,26 +402,60 @@ async def gated_call(
                 decision = await asyncio.to_thread(
                     show_popup, popup_title, preview or {}, details, file_key is not None,
                     claude_reason, write_content_flags, seen_count, connector,
+                    suggestion is not None,
                 )
 
-            if decision == "accept_temp":
+                if decision == "accept_all":
+                    if suggestion is None:
+                        # Shouldn't happen against the real window -- the
+                        # Always-allow button only renders when
+                        # allow_accept_all was True, i.e. suggestion was
+                        # already not None -- but degrade to a plain accept
+                        # rather than falling through to "denied" below if
+                        # it somehow does (same defensive posture as the
+                        # review branch's equivalent case).
+                        decision = "accept"
+                    else:
+                        rule_name, value = suggestion
+                        # describe_rule_change(), not describe_rule() -- these
+                        # five rule names are shared with a read operation key
+                        # too (e.g. jira.read_issue), and describe_rule()'s
+                        # canned templates are read-direction-only English
+                        # ("Jira issue reads in project(s): ..."), which would
+                        # mislabel a write's own confirmation.
+                        # describe_rule_change() names operation_key explicitly
+                        # and reads correctly regardless of direction.
+                        description = describe_rule_change("add", operation_key, rule_name, value)
+                        confirmed = await asyncio.to_thread(show_rule_confirmation_popup, description)
+                        if confirmed:
+                            add_auto_accept_rule(operation_key, rule_name, value)
+                            audit(
+                                decision="accepted_via_accept_all", auto_accept_rule=rule_name,
+                                pii_detected=False,
+                            )
+                            logger.info("Always allow: created rule %r for %s", rule_name, operation_key)
+                            return filtered_data
+                        # Cancelled rule creation — this item is still accepted, just once.
+                        decision = "accept"
+
+            if decision == "accept":
                 if file_key is not None:
+                    # Eligible for the same-file grace window (see module
+                    # docstring) -- no separate "Allow for 5 min" click
+                    # anymore, a plain Allow once on one of these operations
+                    # arms it too, so Claude's follow-up calls against this
+                    # same file don't reprompt for the next 5 minutes.
                     evaluator.register_temp_accept(operation_key, file_key)
                     audit(
                         decision="accepted_via_temp_session", auto_accept_rule="session_temp_accept",
                         pii_detected=False,
                     )
                     logger.info(
-                        "Allow for 5 min: op=%s file=%s (%s, %s)", operation_key, file_key, connector, tool
+                        "Allow once (also armed 5 min grace window): op=%s file=%s (%s, %s)",
+                        operation_key, file_key, connector, tool,
                     )
-                    return filtered_data
-                # Button shouldn't have been offered without a file_key -- fall
-                # back to a plain, once-only accept rather than denying a click
-                # the user clearly meant as approval.
-                decision = "accept"
-
-            if decision == "accept":
-                audit(decision="approved", auto_accept_rule="", pii_detected=False)
+                else:
+                    audit(decision="approved", auto_accept_rule="", pii_detected=False)
                 return filtered_data
 
             audit(decision="rejected", auto_accept_rule="", pii_detected=False)

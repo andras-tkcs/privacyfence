@@ -187,6 +187,8 @@ def scan_text(text: str) -> list[PIIMatch]:
         return []
     matches: list[PIIMatch] = []
     for p in _PATTERNS:
+        if p.category in _disabled_categories:
+            continue
         for m in p.pattern.finditer(text):
             if p.validator is not None and not p.validator(m.group(0)):
                 continue
@@ -206,15 +208,35 @@ def detect_categories(text: str) -> list[str]:
 _enabled = True
 _changed_listener: Callable[[], None] | None = None
 
+# Individually-toggleable categories, keyed by the settings.yaml field name.
+# Unlike the other categories (national IDs, TAJ/tax numbers, ...), IP
+# addresses and currency figures show up constantly in ordinary business
+# correspondence (server logs, invoices, budgets) without being personal
+# data about anyone -- so these two are opt-out per-category on top of the
+# whole-gate `enabled` switch, while the rest of _PATTERNS always runs
+# whenever the gate itself is on.
+_OPTIONAL_CATEGORIES: dict[str, str] = {
+    "detect_ip_addresses": "IP address",
+    "detect_financial_figures": "Financial figures (currency amounts)",
+}
+_disabled_categories: set[str] = set()
+
 
 def is_pii_detection_enabled() -> bool:
     return _enabled
 
 
-def init_pii_detection(enabled: bool) -> None:
+def init_pii_detection(
+    enabled: bool, *, detect_ip_addresses: bool = True, detect_financial_figures: bool = True
+) -> None:
     """Set the initial enabled state at daemon startup."""
     global _enabled
     _enabled = enabled
+    _disabled_categories.clear()
+    if not detect_ip_addresses:
+        _disabled_categories.add(_OPTIONAL_CATEGORIES["detect_ip_addresses"])
+    if not detect_financial_figures:
+        _disabled_categories.add(_OPTIONAL_CATEGORIES["detect_financial_figures"])
 
 
 def set_pii_detection_enabled(enabled: bool) -> None:
@@ -223,6 +245,19 @@ def set_pii_detection_enabled(enabled: bool) -> None:
     global _enabled
     _enabled = enabled
     logger.info("PII detection gate %s", "enabled" if enabled else "disabled")
+    if _changed_listener is not None:
+        _changed_listener()
+
+
+def set_pii_category_enabled(category_key: str, enabled: bool) -> None:
+    """Hot-toggle one optional category (``category_key`` is a key of
+    ``_OPTIONAL_CATEGORIES``, e.g. "detect_ip_addresses") from the menu bar."""
+    category = _OPTIONAL_CATEGORIES[category_key]
+    if enabled:
+        _disabled_categories.discard(category)
+    else:
+        _disabled_categories.add(category)
+    logger.info("PII category %r %s", category, "enabled" if enabled else "disabled")
     if _changed_listener is not None:
         _changed_listener()
 

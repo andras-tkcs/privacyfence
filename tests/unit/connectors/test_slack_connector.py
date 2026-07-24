@@ -27,6 +27,9 @@ def make_connector(my_email="me@example.com"):
     # Default to "not resolvable" so tests that don't care about channel-name
     # resolution keep seeing the raw channel id, same as before this was added.
     client.resolve_channel_name.return_value = ""
+    # Default to "not a group DM" so tests that don't care about channel-type
+    # resolution see a plain bool, not a MagicMock, in args.
+    client.resolve_is_group_dm.return_value = False
     connector = SlackConnector(client)
     connector.my_email = my_email
     return connector, client
@@ -104,9 +107,19 @@ class TestGetChannelHistory:
         assert kwargs["preview"]["Messages"] == "1"
         assert kwargs["preview"]["First message"] == "a" * 80  # truncated to 80 chars
         assert kwargs["raw_data"] == [make_message(text="a" * 100)]
-        assert kwargs["args"] == {"channel_id": "C123"}
+        assert kwargs["args"] == {"channel_id": "C123", "is_group_dm": False}
         client.get_channel_history.assert_called_once_with("C123", 10)
         client.resolve_channel_name.assert_not_called()
+
+    async def test_group_dm_channel_is_resolved_and_passed_in_args(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_channel_history.return_value = [make_message()]
+        client.resolve_is_group_dm.return_value = True
+
+        await connector.call("slack_get_channel_history", {"channel_id": "G123"})
+
+        client.resolve_is_group_dm.assert_called_once_with("G123")
+        assert gated_call_spy[0]["args"]["is_group_dm"] is True
 
     async def test_pii_scan_text_is_message_text_only_not_usernames_or_ids(self, gated_call_spy):
         # Regression: user_id/user_name are on every message regardless of
@@ -266,7 +279,7 @@ class TestGetThreadReplies:
         kwargs = gated_call_spy[0]
         assert kwargs["preview"]["Thread starter"] == "starter"
         assert kwargs["preview"]["Replies"] == "2"
-        assert kwargs["args"] == {"channel_id": "C123", "thread_ts": "t1"}
+        assert kwargs["args"] == {"channel_id": "C123", "thread_ts": "t1", "is_group_dm": False}
 
     async def test_empty_thread_replies_count_never_negative(self, gated_call_spy):
         connector, client = make_connector()

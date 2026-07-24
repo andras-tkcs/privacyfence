@@ -223,7 +223,7 @@ export function registerMetaTools(server: McpServer, ipc: IPCClientLike): void {
         "target='grant' edits the auto_accept_grants section (one resource trusted once, " +
         "covering several operations at a time -- e.g. a Drive sandbox folder): connector " +
         "(e.g. 'drive'), config_key (e.g. 'sandbox_folders'), resource_id (required), name " +
-        "(optional cosmetic label), tab (spreadsheets only), capabilities (add/update only -- " +
+        "(optional cosmetic label), tab (no current resource type uses this), capabilities (add/update only -- " +
         "a map of capability key, e.g. 'write', to true/false; see " +
         "privacyfence_list_auto_accept_rules' auto_accept_grants output for which capability " +
         "keys apply to which resource type).\n\n" +

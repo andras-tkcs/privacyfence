@@ -18,6 +18,7 @@ from privacyfence import auto_accept
 from privacyfence.auto_accept import (
     ARGS_ONLY_RULES,
     DATA_DEPENDENT_RULES,
+    SUGGESTION_FAMILIES,
     TOOL_TO_GATE,
     TOOL_TO_OPERATION,
     AutoAcceptEvaluator,
@@ -29,11 +30,16 @@ from privacyfence.auto_accept import (
     get_current_config,
     init_auto_accept_evaluator,
     init_config_path,
+    init_suggestion_priority,
     mutate_grants,
     reload_rules,
     remove_auto_accept_rule,
     set_rules_changed_listener,
+    set_suggestion_priority,
     suggest_rule,
+    suggest_rule_choices,
+    suggest_write_rule,
+    suggestion_order,
     temp_accept_key,
 )
 
@@ -239,6 +245,15 @@ class TestSlackRules:
         assert ev._rule_dm_with_myself(None, channel_ctx) is False
         assert ev._rule_send_to_myself(None, dm_ctx) is True
 
+    def test_group_dm(self):
+        ev = AutoAcceptEvaluator({})
+        group_ctx = make_ctx(args={"channel_id": "G123", "is_group_dm": True})
+        channel_ctx = make_ctx(args={"channel_id": "C123", "is_group_dm": False})
+        no_flag_ctx = make_ctx(args={"channel_id": "G123"})
+        assert ev._rule_group_dm(None, group_ctx) is True
+        assert ev._rule_group_dm(None, channel_ctx) is False
+        assert ev._rule_group_dm(None, no_flag_ctx) is False
+
     def test_approved_channel_and_alias(self):
         ev = AutoAcceptEvaluator({})
         ctx = make_ctx(args={"channel_id": "C123"})
@@ -269,6 +284,23 @@ class TestSlackRules:
         ev = AutoAcceptEvaluator({})
         assert ev._rule_reply_in_existing_thread(None, make_ctx(args={"thread_ts": "123.45"})) is True
         assert ev._rule_reply_in_existing_thread(None, make_ctx(args={})) is False
+
+    def test_approved_channel_all_results(self):
+        ev = AutoAcceptEvaluator({})
+        all_approved = make_ctx(raw_data=[SimpleNamespace(channel_id="C1"), SimpleNamespace(channel_id="C2")])
+        one_unapproved = make_ctx(raw_data=[SimpleNamespace(channel_id="C1"), SimpleNamespace(channel_id="C9")])
+        empty = make_ctx(raw_data=[])
+        assert ev._rule_approved_channel_all_results(["C1", "C2"], all_approved) is True
+        assert ev._rule_approved_channel_all_results(["C1", "C2"], one_unapproved) is False
+        assert ev._rule_approved_channel_all_results(["C1", "C2"], empty) is False
+        assert ev._rule_approved_channel_all_results([], all_approved) is False
+
+    def test_approved_channel_all_results_single_item_not_a_list(self):
+        # A non-list raw_data (a single message, not search results) is
+        # treated as a one-item list, same as the other all()-over-list rules.
+        ev = AutoAcceptEvaluator({})
+        single = make_ctx(raw_data=SimpleNamespace(channel_id="C1"))
+        assert ev._rule_approved_channel_all_results(["C1"], single) is True
 
 
 # --------------------------------------------------------------------------- #
@@ -454,96 +486,6 @@ class TestDriveWriteRules:
         assert ev._rule_parent_folder_allowlist([], ctx) is False
 
 
-# --------------------------------------------------------------------------- #
-# Sheets rules: approved_spreadsheet + the _sheet_tab_of helper it shares
-# with suggest_rule
-# --------------------------------------------------------------------------- #
-
-class TestSheetTabOf:
-    def test_sheet_id_arg_takes_priority(self):
-        # format_range carries both sheet_id and a range_a1 with no "!"
-        # prefix, so sheet_id must be checked first.
-        ctx = make_ctx(args={"sheet_id": 0, "range_a1": "A1:C10"})
-        assert auto_accept._sheet_tab_of(ctx) == "0"
-
-    def test_range_a1_unquoted_sheet_name_prefix(self):
-        ctx = make_ctx(args={"range_a1": "Sheet1!A1:C10"})
-        assert auto_accept._sheet_tab_of(ctx) == "Sheet1"
-
-    def test_range_a1_quoted_sheet_name_prefix(self):
-        ctx = make_ctx(args={"range_a1": "'My Tab'!A1:C10"})
-        assert auto_accept._sheet_tab_of(ctx) == "My Tab"
-
-    def test_range_a1_without_prefix_yields_empty(self):
-        ctx = make_ctx(args={"range_a1": "A1:C10"})
-        assert auto_accept._sheet_tab_of(ctx) == ""
-
-    def test_no_relevant_args_yields_empty(self):
-        # add_sheet has no existing tab to identify.
-        ctx = make_ctx(args={"title": "New Tab"})
-        assert auto_accept._sheet_tab_of(ctx) == ""
-
-
-class TestSheetsRules:
-    def test_matches_by_spreadsheet_id_alone_when_entry_has_no_tab(self):
-        ev = AutoAcceptEvaluator({})
-        ctx = make_ctx(args={"spreadsheet_id": "sheet1", "range_a1": "Sheet1!A1:B2"})
-        assert ev._rule_approved_spreadsheet([{"spreadsheet_id": "sheet1"}], ctx) is True
-
-    def test_no_match_for_a_different_spreadsheet_id(self):
-        ev = AutoAcceptEvaluator({})
-        ctx = make_ctx(args={"spreadsheet_id": "sheet2", "range_a1": "Sheet1!A1:B2"})
-        assert ev._rule_approved_spreadsheet([{"spreadsheet_id": "sheet1"}], ctx) is False
-
-    def test_tab_scoped_entry_matches_only_that_tab(self):
-        ev = AutoAcceptEvaluator({})
-        allowed = [{"spreadsheet_id": "sheet1", "tab": "Sheet1"}]
-        matching_ctx = make_ctx(args={"spreadsheet_id": "sheet1", "range_a1": "Sheet1!A1:B2"})
-        other_tab_ctx = make_ctx(args={"spreadsheet_id": "sheet1", "range_a1": "Sheet2!A1:B2"})
-        assert ev._rule_approved_spreadsheet(allowed, matching_ctx) is True
-        assert ev._rule_approved_spreadsheet(allowed, other_tab_ctx) is False
-
-    def test_tab_match_is_case_insensitive(self):
-        ev = AutoAcceptEvaluator({})
-        allowed = [{"spreadsheet_id": "sheet1", "tab": "sheet1"}]
-        ctx = make_ctx(args={"spreadsheet_id": "sheet1", "range_a1": "SHEET1!A1:B2"})
-        assert ev._rule_approved_spreadsheet(allowed, ctx) is True
-
-    def test_tab_scoped_entry_does_not_match_when_current_tab_unknown(self):
-        ev = AutoAcceptEvaluator({})
-        allowed = [{"spreadsheet_id": "sheet1", "tab": "Sheet1"}]
-        # add_sheet has no range_a1/sheet_id at all -- current_tab is "".
-        ctx = make_ctx(args={"spreadsheet_id": "sheet1", "title": "New Tab"})
-        assert ev._rule_approved_spreadsheet(allowed, ctx) is False
-
-    def test_multiple_entries_any_match_wins(self):
-        ev = AutoAcceptEvaluator({})
-        allowed = [{"spreadsheet_id": "other"}, {"spreadsheet_id": "sheet1", "tab": "Sheet1"}]
-        ctx = make_ctx(args={"spreadsheet_id": "sheet1", "range_a1": "Sheet1!A1:B2"})
-        assert ev._rule_approved_spreadsheet(allowed, ctx) is True
-
-    def test_empty_value_never_matches(self):
-        ev = AutoAcceptEvaluator({})
-        ctx = make_ctx(args={"spreadsheet_id": "sheet1", "range_a1": "Sheet1!A1:B2"})
-        assert ev._rule_approved_spreadsheet([], ctx) is False
-        assert ev._rule_approved_spreadsheet(None, ctx) is False
-
-    def test_missing_spreadsheet_id_in_args_never_matches(self):
-        ev = AutoAcceptEvaluator({})
-        ctx = make_ctx(args={"range_a1": "Sheet1!A1:B2"})
-        assert ev._rule_approved_spreadsheet([{"spreadsheet_id": "sheet1"}], ctx) is False
-
-    def test_single_dict_value_not_wrapped_in_a_list_is_accepted(self):
-        ev = AutoAcceptEvaluator({})
-        ctx = make_ctx(args={"spreadsheet_id": "sheet1", "range_a1": "Sheet1!A1:B2"})
-        assert ev._rule_approved_spreadsheet({"spreadsheet_id": "sheet1"}, ctx) is True
-
-    def test_malformed_entry_is_ignored_not_fatal(self):
-        ev = AutoAcceptEvaluator({})
-        ctx = make_ctx(args={"spreadsheet_id": "sheet1", "range_a1": "Sheet1!A1:B2"})
-        assert ev._rule_approved_spreadsheet(["not-a-dict"], ctx) is False
-
-
 class TestSheetsFolderScopedRules:
     """rename_sheet/format_range raw_data is {"file": drive_file, ...} — the
     same shape write_range/add_sheet already use approved_sandbox_folder
@@ -615,25 +557,6 @@ class TestSheetsFolderScopedRules:
             raw_data={"file": SimpleNamespace(parent_ids=["folder1"]), "dimension": "ROWS"},
         )
         assert ev.should_auto_accept("sheets.delete_dimensions", ctx) == (True, "approved_sandbox_folder")
-
-    def test_insert_dimensions_scopes_approved_spreadsheet_to_sheet_id_tab(self):
-        # sheet_id is present in args, so _sheet_tab_of resolves it the same
-        # way rename_sheet/format_range do.
-        ev = AutoAcceptEvaluator({
-            "sheets.insert_dimensions": [
-                {"rule": "approved_spreadsheet", "value": [{"spreadsheet_id": "sheet1", "tab": "5"}]},
-            ],
-        })
-        matching_ctx = make_ctx(
-            args={"spreadsheet_id": "sheet1", "sheet_id": 5, "dimension": "ROWS", "start_index": 0, "count": 1},
-            raw_data={"file": SimpleNamespace(parent_ids=[])},
-        )
-        other_tab_ctx = make_ctx(
-            args={"spreadsheet_id": "sheet1", "sheet_id": 9, "dimension": "ROWS", "start_index": 0, "count": 1},
-            raw_data={"file": SimpleNamespace(parent_ids=[])},
-        )
-        assert ev.should_auto_accept("sheets.insert_dimensions", matching_ctx) == (True, "approved_spreadsheet")
-        assert ev.should_auto_accept("sheets.insert_dimensions", other_tab_ctx) == (False, "")
 
     def test_docs_edit_and_format_content_match_owner_via_should_auto_accept(self):
         # docs.* operations reuse the plain Drive-file rules (i_am_owner,
@@ -741,6 +664,17 @@ class TestTelegramRules:
         assert ev._rule_no_media_attachments(None, clean) is True
         assert ev._rule_no_media_attachments(None, dirty) is False
 
+    def test_approved_chats_all_results(self):
+        ev = AutoAcceptEvaluator({})
+        all_approved = make_ctx(raw_data=[SimpleNamespace(chat_id=111), SimpleNamespace(chat_id=222)])
+        one_unapproved = make_ctx(raw_data=[SimpleNamespace(chat_id=111), SimpleNamespace(chat_id=999)])
+        empty = make_ctx(raw_data=[])
+        assert ev._rule_approved_chats_all_results(["111", "222"], all_approved) is True
+        assert ev._rule_approved_chats_all_results([111, 222], all_approved) is True  # string comparison
+        assert ev._rule_approved_chats_all_results(["111", "222"], one_unapproved) is False
+        assert ev._rule_approved_chats_all_results(["111", "222"], empty) is False
+        assert ev._rule_approved_chats_all_results([], all_approved) is False
+
 
 # --------------------------------------------------------------------------- #
 # Tasks rules
@@ -779,6 +713,17 @@ class TestTasksRules:
         ev = AutoAcceptEvaluator({})
         ctx = make_ctx(args={"task_list_id": "list1"})
         assert ev._rule_approved_task_list("list1", ctx) is True
+
+
+# --------------------------------------------------------------------------- #
+# Generic rules (no resource identity to scope to)
+# --------------------------------------------------------------------------- #
+
+class TestGenericRules:
+    def test_always_allow_matches_unconditionally(self):
+        ev = AutoAcceptEvaluator({})
+        assert ev._rule_always_allow(None, make_ctx()) is True
+        assert ev._rule_always_allow(None, make_ctx(args={"anything": "at all"})) is True
 
 
 # --------------------------------------------------------------------------- #
@@ -895,21 +840,45 @@ class TestSuggestRule:
         channel = make_ctx(args={"channel_id": "C1"})
         assert suggest_rule("slack.read_messages", channel) == ("approved_channel", ["C1"])
 
-    def test_sheets_read_values_suggests_spreadsheet_and_tab(self):
-        ctx = make_ctx(args={"spreadsheet_id": "sheet1", "range_a1": "Sheet1!A1:B2"})
-        assert suggest_rule("sheets.read_values", ctx) == (
-            "approved_spreadsheet", [{"spreadsheet_id": "sheet1", "tab": "Sheet1"}],
-        )
+    def test_slack_suggests_group_dm_before_approved_channel(self):
+        ctx = make_ctx(args={"channel_id": "G1", "is_group_dm": True})
+        assert suggest_rule("slack.read_messages", ctx) == ("group_dm", None)
 
-    def test_sheets_read_values_suggests_spreadsheet_only_without_a_tab(self):
-        # No "!" prefix in range_a1 -- _sheet_tab_of can't identify a tab.
-        ctx = make_ctx(args={"spreadsheet_id": "sheet1", "range_a1": "A1:B2"})
-        assert suggest_rule("sheets.read_values", ctx) == (
-            "approved_spreadsheet", [{"spreadsheet_id": "sheet1"}],
+    def test_slack_search_suggests_union_of_result_channels(self):
+        # No channel_id in args -- a search spanning multiple channels.
+        ctx = make_ctx(
+            args={"query": "hello world"},
+            raw_data=[SimpleNamespace(channel_id="C2"), SimpleNamespace(channel_id="C1")],
         )
+        assert suggest_rule("slack.read_messages", ctx) == ("approved_channel_all_results", ["C1", "C2"])
 
-    def test_sheets_read_values_suggests_nothing_without_spreadsheet_id(self):
-        assert suggest_rule("sheets.read_values", make_ctx(args={})) is None
+    def test_slack_search_suggests_nothing_with_no_results(self):
+        ctx = make_ctx(args={"query": "hello world"}, raw_data=[])
+        assert suggest_rule("slack.read_messages", ctx) is None
+
+    def test_sheets_read_values_suggests_owner_or_folder(self):
+        # Same drive_read family as drive.read_file_contents/download_file --
+        # raw_data is dict-shaped ({"file": ..., "values": ...}), unlike
+        # those two operations' object-shaped raw_data, so this also covers
+        # _file_from()'s dict-unwrapping path.
+        owned = make_ctx(
+            my_email="me@example.com",
+            raw_data={"file": SimpleNamespace(owners=["me@example.com"], parent_ids=[]), "values": []},
+        )
+        assert suggest_rule("sheets.read_values", owned) == ("i_am_owner", None)
+
+        foreign = make_ctx(
+            my_email="me@example.com",
+            raw_data={"file": SimpleNamespace(owners=["other@example.com"], parent_ids=["f1"]), "values": []},
+        )
+        assert suggest_rule("sheets.read_values", foreign) == ("approved_folder", ["f1"])
+
+    def test_sheets_read_values_suggests_nothing_without_owner_or_folder(self):
+        ctx = make_ctx(
+            my_email="me@example.com",
+            raw_data={"file": SimpleNamespace(owners=["other@example.com"], parent_ids=[]), "values": []},
+        )
+        assert suggest_rule("sheets.read_values", ctx) is None
 
     def test_calendar_suggests_organizer_or_internal_attendees(self):
         organizer = make_ctx(my_email="me@example.com", raw_data=SimpleNamespace(organizer_email="me@example.com"))
@@ -952,6 +921,13 @@ class TestSuggestRule:
 
     def test_salesforce_search_suggests_nothing_when_unscoped(self):
         assert suggest_rule("salesforce.search", make_ctx(args={"object_types": ""})) is None
+
+    def test_salesforce_run_report_suggests_approved_report_id(self):
+        ctx = make_ctx(args={"report_id": "00O000000000001"})
+        assert suggest_rule("salesforce.run_report", ctx) == ("approved_report_ids", ["00O000000000001"])
+
+    def test_salesforce_run_report_suggests_nothing_without_report_id(self):
+        assert suggest_rule("salesforce.run_report", make_ctx(args={})) is None
 
     def test_unrecognized_operation_suggests_nothing(self):
         assert suggest_rule("some.unmapped.operation", make_ctx()) is None
@@ -1027,6 +1003,19 @@ class TestSuggestRule:
     def test_telegram_suggests_nothing_without_chat_id(self):
         assert suggest_rule("telegram.read_chat_messages", make_ctx(args={})) is None
 
+    def test_telegram_search_suggests_union_of_result_chats(self):
+        # No chat_id in args -- a search spanning multiple chats (shares
+        # this operation key with telegram_get_messages).
+        ctx = make_ctx(
+            args={"query": "hello world"},
+            raw_data=[SimpleNamespace(chat_id=222), SimpleNamespace(chat_id=111)],
+        )
+        assert suggest_rule("telegram.read_chat_messages", ctx) == ("approved_chats_all_results", ["111", "222"])
+
+    def test_telegram_search_suggests_nothing_with_no_results(self):
+        ctx = make_ctx(args={"query": "hello world"}, raw_data=[])
+        assert suggest_rule("telegram.read_chat_messages", ctx) is None
+
     def test_describe_rule_formats_value(self):
         assert describe_rule("i_am_sender", None) == "Auto-accept future Gmail message/thread reads where you are the sender"
         desc = describe_rule("trusted_sender_domain", ["example.com", "other.com"])
@@ -1035,15 +1024,336 @@ class TestSuggestRule:
     def test_describe_rule_unknown_name_falls_back_to_raw_name(self):
         assert describe_rule("some_future_rule", "x") == "Auto-accept future some_future_rule"
 
-    def test_describe_rule_formats_spreadsheet_entries_with_and_without_tab(self):
-        desc = describe_rule("approved_spreadsheet", [
-            {"spreadsheet_id": "sheet1", "tab": "Sheet1"},
-            {"spreadsheet_id": "sheet2"},
-        ])
-        assert desc == "Auto-accept future Sheets calls scoped to: sheet1 (tab: Sheet1), sheet2"
 
-    def test_format_spreadsheet_entry_non_dict_falls_back_to_str(self):
-        assert auto_accept._format_spreadsheet_entry("not-a-dict") == "not-a-dict"
+# --------------------------------------------------------------------------- #
+# Configurable "Always allow" suggestion priority (SUGGESTION_FAMILIES)
+# --------------------------------------------------------------------------- #
+
+class TestSuggestionOrder:
+    def test_unconfigured_family_falls_back_to_the_default(self):
+        assert suggestion_order("drive_read") == list(SUGGESTION_FAMILIES["drive_read"])
+
+    def test_configured_family_overrides_the_default(self):
+        init_suggestion_priority({"drive_read": ["approved_folder", "i_am_owner"]})
+        assert suggestion_order("drive_read") == ["approved_folder", "i_am_owner"]
+
+    def test_set_suggestion_priority_hot_updates_one_family(self):
+        init_suggestion_priority({"drive_read": ["approved_folder", "i_am_owner"]})
+        set_suggestion_priority("calendar_read_event", ["non_private_event"])
+        assert suggestion_order("drive_read") == ["approved_folder", "i_am_owner"]
+        assert suggestion_order("calendar_read_event") == ["non_private_event"]
+
+    def test_unrecognized_family_has_no_default_and_is_empty(self):
+        assert suggestion_order("not_a_real_family") == []
+
+    def test_none_config_is_treated_as_empty(self):
+        init_suggestion_priority(None)
+        assert suggestion_order("drive_read") == list(SUGGESTION_FAMILIES["drive_read"])
+
+
+class TestSuggestRulePriorityIntegration:
+    """suggest_rule()'s four multi-candidate branches, driven through
+    SUGGESTION_FAMILIES/suggestion_order rather than a hardcoded if/elif --
+    these are the regression guard that the refactor didn't change default
+    behavior, plus proof that a configured override actually changes which
+    rule wins."""
+
+    def test_drive_default_order_prefers_owner_over_folder(self):
+        # Regression: matches the pre-refactor hardcoded priority exactly.
+        ctx = make_ctx(
+            my_email="me@example.com",
+            raw_data=SimpleNamespace(owners=["me@example.com"], parent_ids=["f1"]),
+        )
+        assert suggest_rule("drive.read_file_contents", ctx) == ("i_am_owner", None)
+
+    def test_drive_configured_order_prefers_folder_over_owner(self):
+        init_suggestion_priority({"drive_read": ["approved_folder", "i_am_owner"]})
+        ctx = make_ctx(
+            my_email="me@example.com",
+            raw_data=SimpleNamespace(owners=["me@example.com"], parent_ids=["f1"]),
+        )
+        assert suggest_rule("drive.read_file_contents", ctx) == ("approved_folder", ["f1"])
+
+    def test_drive_excluding_owner_falls_through_to_folder(self):
+        # Owning the file no longer wins at all -- excluded from the
+        # configured order entirely, not just deprioritized.
+        init_suggestion_priority({"drive_read": ["approved_folder"]})
+        ctx = make_ctx(
+            my_email="me@example.com",
+            raw_data=SimpleNamespace(owners=["me@example.com"], parent_ids=["f1"]),
+        )
+        assert suggest_rule("drive.read_file_contents", ctx) == ("approved_folder", ["f1"])
+
+    def test_drive_excluding_owner_with_no_folder_suggests_nothing(self):
+        init_suggestion_priority({"drive_read": ["approved_folder"]})
+        ctx = make_ctx(
+            my_email="me@example.com",
+            raw_data=SimpleNamespace(owners=["me@example.com"], parent_ids=[]),
+        )
+        assert suggest_rule("drive.read_file_contents", ctx) is None
+
+    def test_calendar_default_order_matches_pre_refactor_priority(self):
+        ctx = make_ctx(
+            my_email="me@example.com",
+            raw_data=SimpleNamespace(organizer_email="me@example.com", attendees=[], visibility="private"),
+        )
+        assert suggest_rule("calendar.read_event_details", ctx) == ("i_am_organizer", None)
+
+    def test_calendar_configured_order_prefers_non_private_event(self):
+        init_suggestion_priority({"calendar_read_event": ["non_private_event", "i_am_organizer"]})
+        ctx = make_ctx(
+            my_email="me@example.com",
+            raw_data=SimpleNamespace(organizer_email="me@example.com", attendees=[], visibility="default"),
+        )
+        assert suggest_rule("calendar.read_event_details", ctx) == ("non_private_event", None)
+
+    def test_calendar_no_external_attendees_check_skipped_without_my_domain(self):
+        # ctx.my_email has no "@", so my_domain is empty and
+        # no_external_attendees has nothing to compare attendees against --
+        # must be skipped (not a false match), falling through to
+        # non_private_event.
+        ctx = make_ctx(
+            my_email="not-an-email",
+            raw_data=SimpleNamespace(organizer_email="other@example.com", attendees=[], visibility="public"),
+        )
+        assert suggest_rule("calendar.read_event_details", ctx) == ("non_private_event", None)
+
+    def test_jira_configured_order_prefers_project_over_reporter(self):
+        init_suggestion_priority({"jira_read_issue": ["approved_project_keys", "i_am_reporter", "i_am_assignee"]})
+        ctx = make_ctx(
+            my_email="me@example.com",
+            args={"issue_key": "PFQA-1"},
+            raw_data=SimpleNamespace(reporter="me@example.com", assignee=""),
+        )
+        assert suggest_rule("jira.read_issue", ctx) == ("approved_project_keys", ["PFQA"])
+
+    def test_confluence_configured_order_prefers_space_over_author(self):
+        init_suggestion_priority({"confluence_read_page": ["approved_space_keys", "i_am_author"]})
+        ctx = make_ctx(
+            my_email="me@example.com",
+            raw_data=SimpleNamespace(author="me@example.com", space_key="ENG"),
+        )
+        assert suggest_rule("confluence.read_page", ctx) == ("approved_space_keys", ["ENG"])
+
+    def test_malformed_unknown_rule_name_in_config_is_skipped_not_a_crash(self):
+        # A stale/misspelled config entry has no matching candidate closure
+        # -- _first_matching_suggestion must skip it, not raise, and keep
+        # trying the rest of the configured order.
+        init_suggestion_priority({"drive_read": ["not_a_real_rule", "i_am_owner"]})
+        ctx = make_ctx(
+            my_email="me@example.com",
+            raw_data=SimpleNamespace(owners=["me@example.com"], parent_ids=[]),
+        )
+        assert suggest_rule("drive.read_file_contents", ctx) == ("i_am_owner", None)
+
+
+class TestSuggestRuleChoices:
+    """suggest_rule_choices() -- every candidate that matches, not just the
+    top-priority one suggest_rule() would pick. Only the four multi-candidate
+    families can ever return more than one entry; everything else just wraps
+    suggest_rule()'s own result."""
+
+    def test_drive_owner_and_folder_both_match_returns_both_in_priority_order(self):
+        ctx = make_ctx(
+            my_email="me@example.com",
+            raw_data=SimpleNamespace(owners=["me@example.com"], parent_ids=["f1"]),
+        )
+        assert suggest_rule_choices("drive.read_file_contents", ctx) == [
+            ("i_am_owner", None), ("approved_folder", ["f1"]),
+        ]
+
+    def test_drive_configured_order_changes_the_returned_order_too(self):
+        init_suggestion_priority({"drive_read": ["approved_folder", "i_am_owner"]})
+        ctx = make_ctx(
+            my_email="me@example.com",
+            raw_data=SimpleNamespace(owners=["me@example.com"], parent_ids=["f1"]),
+        )
+        assert suggest_rule_choices("drive.read_file_contents", ctx) == [
+            ("approved_folder", ["f1"]), ("i_am_owner", None),
+        ]
+
+    def test_drive_only_owner_matches_returns_single_entry_list(self):
+        ctx = make_ctx(
+            my_email="me@example.com",
+            raw_data=SimpleNamespace(owners=["me@example.com"], parent_ids=[]),
+        )
+        assert suggest_rule_choices("drive.read_file_contents", ctx) == [("i_am_owner", None)]
+
+    def test_drive_neither_matches_returns_empty_list(self):
+        ctx = make_ctx(
+            my_email="me@example.com",
+            raw_data=SimpleNamespace(owners=["other@example.com"], parent_ids=[]),
+        )
+        assert suggest_rule_choices("drive.read_file_contents", ctx) == []
+
+    def test_calendar_organizer_and_non_private_both_match(self):
+        # An external attendee rules out no_external_attendees, leaving
+        # exactly i_am_organizer and non_private_event as matches.
+        ctx = make_ctx(
+            my_email="me@example.com",
+            raw_data=SimpleNamespace(
+                organizer_email="me@example.com",
+                attendees=[{"email": "outsider@other.com"}],
+                visibility="default",
+            ),
+        )
+        assert suggest_rule_choices("calendar.read_event_details", ctx) == [
+            ("i_am_organizer", None), ("non_private_event", None),
+        ]
+
+    def test_jira_reporter_and_project_both_match(self):
+        ctx = make_ctx(
+            my_email="me@example.com",
+            args={"issue_key": "PFQA-1"},
+            raw_data=SimpleNamespace(reporter="me@example.com", assignee=""),
+        )
+        assert suggest_rule_choices("jira.read_issue", ctx) == [
+            ("i_am_reporter", None), ("approved_project_keys", ["PFQA"]),
+        ]
+
+    def test_confluence_author_and_space_both_match(self):
+        ctx = make_ctx(
+            my_email="me@example.com",
+            raw_data=SimpleNamespace(author="me@example.com", space_key="ENG"),
+        )
+        assert suggest_rule_choices("confluence.read_page", ctx) == [
+            ("i_am_author", None), ("approved_space_keys", ["ENG"]),
+        ]
+
+    def test_non_family_operation_wraps_suggest_rule_single_result(self):
+        ctx = make_ctx(my_email="me@example.com", raw_data=SimpleNamespace(sender="Me <me@example.com>"))
+        assert suggest_rule_choices("gmail.read_message", ctx) == [("i_am_sender", None)]
+
+    def test_non_family_operation_with_no_suggestion_returns_empty_list(self):
+        ctx = make_ctx(my_email="me@example.com", raw_data=SimpleNamespace(sender=""))
+        assert suggest_rule_choices("gmail.read_message", ctx) == []
+
+
+# --------------------------------------------------------------------------- #
+# Write-side "Always allow" suggestions (WRITE_RULE_SUGGESTIONS)
+# --------------------------------------------------------------------------- #
+
+class TestSuggestWriteRule:
+    def test_gmail_add_label_suggests_label_name_allowlist(self):
+        ctx = make_ctx(args={"message_id": "m1", "label_name": "Newsletters"})
+        assert suggest_write_rule("gmail.add_label", ctx) == ("label_name_allowlist", ["Newsletters"])
+
+    def test_gmail_remove_label_suggests_label_name_allowlist(self):
+        ctx = make_ctx(args={"message_id": "m1", "label_name": "Newsletters"})
+        assert suggest_write_rule("gmail.remove_label", ctx) == ("label_name_allowlist", ["Newsletters"])
+
+    def test_gmail_add_label_suggests_nothing_without_a_label_name(self):
+        assert suggest_write_rule("gmail.add_label", make_ctx(args={"message_id": "m1"})) is None
+
+    def test_calendar_create_modify_event_suggests_personal_calendar(self):
+        ctx = make_ctx(args={"calendar_id": "cal-1", "attendees": []})
+        assert suggest_write_rule("calendar.create_modify_event", ctx) == ("personal_calendar", ["cal-1"])
+
+    def test_calendar_set_visibility_suggests_personal_calendar(self):
+        ctx = make_ctx(args={"calendar_id": "cal-1", "event_id": "e1", "visibility": "private"})
+        assert suggest_write_rule("calendar.set_visibility", ctx) == ("personal_calendar", ["cal-1"])
+
+    def test_jira_create_issue_suggests_project_from_project_key_arg(self):
+        ctx = make_ctx(args={"project_key": "PFQA", "summary": "x"})
+        assert suggest_write_rule("jira.create_issue", ctx) == ("approved_project_keys", ["PFQA"])
+
+    def test_jira_add_comment_suggests_project_parsed_from_issue_key(self):
+        # jira_add_comment/update_issue/transition_issue carry issue_key, not
+        # project_key -- the project is parsed out of its "PROJ-123" prefix,
+        # same derivation _rule_approved_project_keys itself uses.
+        ctx = make_ctx(args={"issue_key": "PFQA-42", "body": "x"})
+        assert suggest_write_rule("jira.add_comment", ctx) == ("approved_project_keys", ["PFQA"])
+
+    def test_jira_suggests_nothing_without_a_derivable_project(self):
+        # No "-" in issue_key at all -- nothing to split a project key out of.
+        assert suggest_write_rule("jira.add_comment", make_ctx(args={"issue_key": "nokeyhere"})) is None
+
+    def test_confluence_create_page_suggests_approved_space_keys(self):
+        ctx = make_ctx(args={"space_key": "ENG", "title": "x"})
+        assert suggest_write_rule("confluence.create_page", ctx) == ("approved_space_keys", ["ENG"])
+
+    def test_confluence_update_page_suggests_approved_space_keys(self):
+        ctx = make_ctx(args={"page_id": "p1", "space_key": "ENG", "title": "x"})
+        assert suggest_write_rule("confluence.update_page", ctx) == ("approved_space_keys", ["ENG"])
+
+    def test_tasks_create_task_suggests_approved_task_list(self):
+        ctx = make_ctx(args={"task_list_id": "list1", "title": "x"})
+        assert suggest_write_rule("tasks.create_task", ctx) == ("approved_task_list", ["list1"])
+
+    def test_tasks_move_task_suggests_both_source_and_destination_lists(self):
+        # Both ends of the move must be in the suggested value -- a rule
+        # scoped to only one list would let a future move smuggle a task
+        # out of (or into) a list the user never approved.
+        ctx = make_ctx(args={"source_list_id": "list1", "destination_list_id": "list2", "task_id": "t1"})
+        assert suggest_write_rule("tasks.move_task", ctx) == ("approved_task_list", ["list1", "list2"])
+
+    def test_tasks_move_task_suggests_nothing_with_only_one_side(self):
+        assert suggest_write_rule("tasks.move_task", make_ctx(args={"source_list_id": "list1"})) is None
+
+    def test_unlisted_write_operation_suggests_nothing(self):
+        # The other write operations aren't in WRITE_RULE_SUGGESTIONS at
+        # all -- this is what keeps the mechanism's blast radius contained.
+        assert suggest_write_rule("gmail.send_message", make_ctx(args={"to": "x@example.com"})) is None
+        assert suggest_write_rule("slack.send_message", make_ctx(args={})) is None
+        assert suggest_write_rule("calendar.out_of_office", make_ctx(args={})) is None
+
+    def test_drive_write_file_suggests_approved_sandbox_folder_from_current_parent(self):
+        ctx = make_ctx(raw_data={"file": SimpleNamespace(parent_ids=["folder1"]), "content_preview": "x"})
+        assert suggest_write_rule("drive.write_file", ctx) == ("approved_sandbox_folder", ["folder1"])
+
+    def test_drive_write_file_suggests_nothing_without_a_parent_folder(self):
+        ctx = make_ctx(raw_data={"file": SimpleNamespace(parent_ids=[]), "content_preview": "x"})
+        assert suggest_write_rule("drive.write_file", ctx) is None
+
+    def test_drive_write_doc_suggests_approved_sandbox_folder(self):
+        ctx = make_ctx(raw_data={"file": SimpleNamespace(parent_ids=["folder1"]), "markdown_preview": "x"})
+        assert suggest_write_rule("drive.write_doc", ctx) == ("approved_sandbox_folder", ["folder1"])
+
+    def test_drive_comment_file_suggests_approved_sandbox_folder(self):
+        ctx = make_ctx(raw_data={"file": SimpleNamespace(parent_ids=["folder1"]), "comment": "x"})
+        assert suggest_write_rule("drive.comment_file", ctx) == ("approved_sandbox_folder", ["folder1"])
+
+    def test_drive_upload_file_suggests_parent_folder_allowlist_from_destination(self):
+        ctx = make_ctx(args={"parent_folder_id": "folder1", "name": "x"})
+        assert suggest_write_rule("drive.upload_file", ctx) == ("parent_folder_allowlist", ["folder1"])
+
+    def test_drive_upload_file_suggests_nothing_without_a_destination(self):
+        # Uploading straight into My Drive root has no folder to scope a
+        # rule to.
+        assert suggest_write_rule("drive.upload_file", make_ctx(args={"name": "x"})) is None
+
+    def test_drive_move_file_suggests_move_within_approved_folders_from_source_not_destination(self):
+        # raw_data's file is the file *before* the move (see
+        # drive.py::_move_file) -- the suggestion must be scoped to the
+        # folder being moved out of, not the destination_folder_id arg.
+        ctx = make_ctx(
+            args={"file_id": "f1", "destination_folder_id": "folder2"},
+            raw_data={"file": SimpleNamespace(parent_ids=["folder1"]), "destination_folder_id": "folder2"},
+        )
+        assert suggest_write_rule("drive.move_file", ctx) == ("move_within_approved_folders", ["folder1"])
+
+    def test_sheets_and_docs_write_ops_all_suggest_approved_sandbox_folder(self):
+        # All share the same _sandbox_folder_value derivation as
+        # drive.write_file/write_doc/comment_file -- one grant covers them
+        # all (see resource_grants.py's sandbox_folders write capability).
+        for op_key in (
+            "sheets.write_range", "sheets.add_sheet", "sheets.rename_sheet", "sheets.format_range",
+            "sheets.insert_dimensions", "sheets.delete_dimensions", "docs.edit_content", "docs.format_content",
+        ):
+            ctx = make_ctx(raw_data={"file": SimpleNamespace(parent_ids=["folder1"])})
+            assert suggest_write_rule(op_key, ctx) == ("approved_sandbox_folder", ["folder1"]), op_key
+
+    def test_gmail_create_draft_always_suggests_the_unconditional_rule(self):
+        # Deliberately not resource-identity-scoped, unlike every other entry
+        # in the table -- drafting has no recipient sent yet, so an
+        # unconditional rule here doesn't carry the blast radius a bare
+        # "accept every future write" toggle would for an operation that
+        # actually delivers something (e.g. gmail.send_message, which stays
+        # out of this table entirely).
+        assert suggest_write_rule("gmail.create_draft", make_ctx(args={"to": "anyone@example.com"})) == (
+            "always_allow", None,
+        )
+        assert suggest_write_rule("gmail.create_draft", make_ctx(args={})) == ("always_allow", None)
 
 
 # --------------------------------------------------------------------------- #
@@ -1359,6 +1669,12 @@ class TestDescribeRuleChange:
         )
         assert "a.com -> b.com" in description
 
+    def test_add_with_no_value_omits_the_equals_none(self):
+        # always_allow (gmail.create_draft's suggestion) has no value at
+        # all -- "= None" would misread as a real, meaningful value.
+        description = describe_rule_change("add", "gmail.create_draft", "always_allow", None)
+        assert description == "Add auto-accept rule 'always_allow' to 'gmail.create_draft'"
+
 
 # --------------------------------------------------------------------------- #
 # Rules-changed listener (drives the menu bar's live rule submenu refresh)
@@ -1479,9 +1795,10 @@ class TestConcurrentRulePersistence:
 
 
 # --------------------------------------------------------------------------- #
-# Session temp accept ("Allow for 5 min") -- gate.py's lighter alternative
-# to a standing Always allow rule for write ops expected to be called
-# repeatedly against the same file (sheets writes/formats, drive comments).
+# Session temp accept -- gate.py's lighter alternative to a standing Always
+# allow rule for write ops expected to be called repeatedly against the
+# same file (sheets writes/formats, drive comments): an Allow once on one
+# of these operations also arms this window, with no separate button.
 # Unlike the YAML-backed rules above, this state is in-memory only and never
 # persisted.
 # --------------------------------------------------------------------------- #
@@ -1509,8 +1826,9 @@ class TestTempAcceptKey:
 
     def test_covers_every_declared_eligible_operation(self):
         # Every entry in TEMP_ACCEPT_ELIGIBLE_OPERATIONS must actually resolve
-        # a key when its arg is present -- otherwise the popup would offer
-        # "Allow for 5 min" for an operation that can never register one.
+        # a key when its arg is present -- otherwise the popup would show the
+        # temp-accept disclosure caption for an operation that can never
+        # actually register one.
         for op_key, arg_name in TEMP_ACCEPT_ELIGIBLE_OPERATIONS.items():
             ctx = make_ctx(args={arg_name: "some-id"})
             assert temp_accept_key(op_key, ctx) == "some-id"
@@ -1523,7 +1841,7 @@ class TestTempAcceptKey:
         # Resolved design decision: unlike format_range/insert_dimensions,
         # deleting rows/columns is destructive with no undo path through
         # PrivacyFence, so it only ever gets the standing-rule treatment, not
-        # a lightweight "Allow for 5 min" button.
+        # the lighter-weight temp-accept grace window.
         assert "sheets.delete_dimensions" not in TEMP_ACCEPT_ELIGIBLE_OPERATIONS
         ctx = make_ctx(args={"spreadsheet_id": "sheet-1", "dimension": "ROWS"})
         assert temp_accept_key("sheets.delete_dimensions", ctx) is None
@@ -1725,3 +2043,75 @@ class TestToolToGate:
 
     def test_popup_tool(self):
         assert TOOL_TO_GATE["gmail_create_draft"] == "popup"
+
+
+class TestMigrateTelegramSearchOperationKey:
+    """telegram_search_messages now shares telegram.read_chat_messages with
+    telegram_get_messages (see TOOL_TO_OPERATION) instead of its own
+    telegram.search_messages key -- this one-time migration moves any
+    existing hand-authored rules onto the new key. Mirrors
+    resource_grants.TestMigrateRulesToGrants's marker/idempotency coverage."""
+
+    def test_entries_move_onto_the_shared_key(self):
+        cfg = {
+            "auto_accept_rules": {
+                "telegram.search_messages": [{"rule": "no_media_attachments"}],
+                "telegram.read_chat_messages": [{"rule": "approved_chats", "value": ["111"]}],
+            }
+        }
+        new_cfg, moved = auto_accept.migrate_telegram_search_operation_key(cfg)
+        assert moved is True
+        assert "telegram.search_messages" not in new_cfg["auto_accept_rules"]
+        assert new_cfg["auto_accept_rules"]["telegram.read_chat_messages"] == [
+            {"rule": "approved_chats", "value": ["111"]},
+            {"rule": "no_media_attachments"},
+        ]
+
+    def test_no_op_when_no_search_messages_key_present(self):
+        cfg = {"auto_accept_rules": {"telegram.read_chat_messages": [{"rule": "approved_chats", "value": ["111"]}]}}
+        new_cfg, moved = auto_accept.migrate_telegram_search_operation_key(cfg)
+        assert moved is False
+        assert new_cfg["auto_accept_rules"] == cfg["auto_accept_rules"]
+
+    def test_duplicate_entry_is_dropped_not_duplicated(self):
+        cfg = {
+            "auto_accept_rules": {
+                "telegram.search_messages": [{"rule": "approved_chats", "value": ["111"]}],
+                "telegram.read_chat_messages": [{"rule": "approved_chats", "value": ["111"]}],
+            }
+        }
+        new_cfg, moved = auto_accept.migrate_telegram_search_operation_key(cfg)
+        assert moved is False
+        assert new_cfg["auto_accept_rules"]["telegram.read_chat_messages"] == [
+            {"rule": "approved_chats", "value": ["111"]},
+        ]
+
+    def test_empty_config_has_no_rules_key_afterward(self):
+        new_cfg, moved = auto_accept.migrate_telegram_search_operation_key({})
+        assert moved is False
+        assert "auto_accept_rules" not in new_cfg
+
+    def test_migration_marker_is_set(self):
+        new_cfg, _ = auto_accept.migrate_telegram_search_operation_key({})
+        assert new_cfg[auto_accept.TELEGRAM_SEARCH_OPERATION_KEY_MIGRATION_MARKER] is True
+
+    def test_already_marked_config_is_returned_unchanged(self):
+        cfg = {
+            auto_accept.TELEGRAM_SEARCH_OPERATION_KEY_MIGRATION_MARKER: True,
+            "auto_accept_rules": {"telegram.search_messages": [{"rule": "no_media_attachments"}]},
+        }
+        new_cfg, moved = auto_accept.migrate_telegram_search_operation_key(cfg)
+        assert new_cfg is cfg
+        assert moved is False
+
+    def test_idempotent_second_run_is_a_no_op(self):
+        cfg = {
+            "auto_accept_rules": {
+                "telegram.search_messages": [{"rule": "no_media_attachments"}],
+                "telegram.read_chat_messages": [{"rule": "approved_chats", "value": ["111"]}],
+            }
+        }
+        migrated_once, _ = auto_accept.migrate_telegram_search_operation_key(cfg)
+        migrated_twice, moved_twice = auto_accept.migrate_telegram_search_operation_key(migrated_once)
+        assert moved_twice is False
+        assert migrated_twice == migrated_once
