@@ -49,6 +49,9 @@ from .audit_log import AuditLogger, current_week
 from .auto_accept import reload_rules, set_rules_changed_listener
 from .paths import data_dir, org_dir
 from .pii_detector import set_pii_detection_enabled
+from .privacy_filter import _parse_group as _parse_privacy_group
+from .privacy_filter import _VALID_POLICIES as PRIVACY_POLICIES
+from .privacy_filter import init_privacy_filter
 from .app_credentials import telegram_app_credentials
 from .daemon_main import TOKEN_FILES, build_connectors, load_org_config
 from .atlassian_oauth import authorize_interactive as atlassian_authorize_interactive
@@ -278,6 +281,36 @@ RULE_HINTS: dict[str, str] = {
     "approved_task_list":    "MDAwMDAwMDAwMDAwMDAwMDAwMDA6MDow\nMTExMTExMTExMTExMTExMTExMTE6MDow",
 }
 
+# Display metadata for the "Privacy Filter" window -- mirrors the group/
+# category schema documented in resources/settings.yaml.example and enforced
+# by privacy_filter.py. Deliberately only the 3 connectors that module knows
+# about; adding a 4th group means adding it there first.
+PRIVACY_GROUP_LABELS: dict[str, str] = {
+    "privacy": "Gmail",
+    "drive_privacy": "Drive & Sheets",
+    "slack_privacy": "Slack",
+}
+PRIVACY_CATEGORY_LABELS: dict[str, dict[str, str]] = {
+    "privacy": {
+        "body": "Message body",
+        "metadata": "Metadata (sender / recipients / date / subject)",
+        "attachments": "Attachment metadata",
+        "thread_history": "Thread history",
+    },
+    "drive_privacy": {
+        "file_content": "Document content",
+        "file_metadata": "File metadata (name / owners / dates / sharing)",
+        "file_list": "File list results",
+        "folder_structure": "Folder structure",
+    },
+    "slack_privacy": {
+        "message_content": "Message text",
+        "user_identity": "User identity (names / emails)",
+        "channel_list": "Channel list",
+        "thread_content": "Thread replies",
+    },
+}
+
 # Rule names now configured through a Trusted-resource grant (see
 # resource_grants.py) instead of by hand. Hidden from "+ Add rule…" so there
 # isn't a second, more tedious way to do the same thing — existing entries
@@ -404,6 +437,11 @@ class PrivacyFenceMenuBar(rumps.App):
         # _open_rules_manager) -- one long-lived window reused for the app's
         # whole lifetime, unlike the modal one-shot approval windows.
         self._rules_manager: RulesManagerWindowController | None = None
+        # Lazily created on first "Privacy Filter…" click (see
+        # _open_privacy_filter_manager) -- same lazy/long-lived pattern as
+        # _rules_manager above, a separate instance of the same generic
+        # window class (see rules_manager_window.py's window_title param).
+        self._privacy_manager: RulesManagerWindowController | None = None
         icon_path = _find_icon()
         super().__init__(
             name="PrivacyFence",
@@ -465,6 +503,7 @@ class PrivacyFenceMenuBar(rumps.App):
         org_item = self._build_org_menu(org_config)
         connectors_parent = self._build_connectors_menu(org_config, connectors_cfg)
         rules_item = rumps.MenuItem("Manage Auto-accept Rules…", callback=self._open_rules_manager)
+        privacy_item = rumps.MenuItem("Privacy Filter…", callback=self._open_privacy_filter_manager)
 
         pii_item = rumps.MenuItem("PII Detection Gate", callback=self._toggle_pii_detection)
         pii_item.state = pii_enabled
@@ -477,6 +516,7 @@ class PrivacyFenceMenuBar(rumps.App):
             rumps.separator,
             connectors_parent,
             rules_item,
+            privacy_item,
             org_item,
             rumps.separator,
             rumps.MenuItem("Export Audit Log…", callback=self.export_audit_log),
@@ -491,12 +531,49 @@ class PrivacyFenceMenuBar(rumps.App):
         # done() callbacks, ...).
         if self._rules_manager is not None:
             self._rules_manager._refresh_window()
+        if self._privacy_manager is not None:
+            self._privacy_manager._refresh_window()
 
     def _open_rules_manager(self, _sender: Any = None) -> None:
         if self._rules_manager is None:
             self._rules_manager = RulesManagerWindowController.alloc().init()
             self._rules_manager._configure_window(self._list_rule_connectors, self._gather_connector_sections)
         self._rules_manager._show_window()
+
+    def _open_privacy_filter_manager(self, _sender: Any = None) -> None:
+        if self._privacy_manager is None:
+            self._privacy_manager = RulesManagerWindowController.alloc().init()
+            self._privacy_manager._configure_window(
+                self._list_privacy_groups, self._gather_privacy_sections, window_title="Privacy Filter"
+            )
+        self._privacy_manager._show_window()
+
+    def _list_privacy_groups(self) -> list[tuple[str, str, int]]:
+        cfg = self._load_config()
+        result: list[tuple[str, str, int]] = []
+        for group, label in PRIVACY_GROUP_LABELS.items():
+            parsed = _parse_privacy_group(cfg.get(group))
+            result.append((group, label, len(parsed["categories"])))
+        return result
+
+    def _gather_privacy_sections(self, group: str) -> list[Section]:
+        cfg = self._load_config()
+        parsed = _parse_privacy_group(cfg.get(group))
+        default_policy = parsed["default_policy"]
+        categories = parsed["categories"]
+
+        rows = [Row(
+            f"Default: {default_policy}", False,
+            [("Change…", partial(self._change_privacy_default, group))],
+        )]
+        for category, label in PRIVACY_CATEGORY_LABELS.get(group, {}).items():
+            policy = categories.get(category, default_policy)
+            suffix = "" if category in categories else "  (default)"
+            rows.append(Row(
+                f"{label}: {policy}{suffix}", True,
+                [("Change…", partial(self._change_privacy_category, group, category))],
+            ))
+        return [Section("", rows)]
 
     def _list_rule_connectors(self) -> list[tuple[str, str, int]]:
         cfg = self._load_config()
@@ -1137,6 +1214,75 @@ class PrivacyFenceMenuBar(rumps.App):
         self._rebuild()
 
     # ------------------------------------------------------------------ #
+    # Privacy filter (privacy / drive_privacy / slack_privacy)
+    # ------------------------------------------------------------------ #
+
+    def _change_privacy_default(self, group: str, _sender: Any = None) -> None:
+        cfg = self._load_config()
+        current = _parse_privacy_group(cfg.get(group))["default_policy"]
+
+        # Off the main thread, like every other osascript-backed picker in
+        # this file (see _add_rule's comment on why calling _osascript_pick
+        # straight from a button handler segfaults AppKit).
+        def work() -> str | None:
+            return _osascript_pick(
+                title="Privacy Filter",
+                prompt=f"Default policy for {PRIVACY_GROUP_LABELS.get(group, group)}:",
+                options=list(PRIVACY_POLICIES),
+                default=current,
+            )
+
+        def done(ok: bool, result: Any) -> None:
+            if ok and result:
+                self._finish_change_privacy_default(group, result)
+
+        self._run_async(work, done)
+
+    def _finish_change_privacy_default(self, group: str, policy: str) -> None:
+        cfg = self._load_config()
+        cfg.setdefault(group, {})["default_policy"] = policy
+        self._save_and_reload_privacy(cfg)
+
+    def _change_privacy_category(self, group: str, category: str, _sender: Any = None) -> None:
+        cfg = self._load_config()
+        parsed = _parse_privacy_group(cfg.get(group))
+        current = parsed["categories"].get(category, parsed["default_policy"])
+        options = [*PRIVACY_POLICIES, "(use group default)"]
+
+        def work() -> str | None:
+            return _osascript_pick(
+                title="Privacy Filter",
+                prompt=f"Policy for {PRIVACY_CATEGORY_LABELS.get(group, {}).get(category, category)}:",
+                options=options,
+                default=current,
+            )
+
+        def done(ok: bool, result: Any) -> None:
+            if ok and result:
+                self._finish_change_privacy_category(group, category, result)
+
+        self._run_async(work, done)
+
+    def _finish_change_privacy_category(self, group: str, category: str, choice: str) -> None:
+        cfg = self._load_config()
+        categories = cfg.setdefault(group, {}).setdefault("categories", {})
+        if choice == "(use group default)":
+            categories.pop(category, None)
+        else:
+            categories[category] = choice
+        self._save_and_reload_privacy(cfg)
+
+    def _save_and_reload_privacy(self, cfg: dict) -> None:
+        self._save_config(cfg)
+        try:
+            # No changed-listener to piggyback on the way reload_rules has
+            # _on_rules_changed -- rebuild explicitly.
+            init_privacy_filter(cfg)
+        except Exception as exc:
+            logger.warning("Privacy filter hot-reload failed: %s", exc)
+        self._rebuild()
+
+    # ------------------------------------------------------------------ #
     # Connector actions
     # ------------------------------------------------------------------ #
 
@@ -1530,14 +1676,20 @@ def _parse_pair_lines(text: str) -> list[dict[str, str]]:
     return entries
 
 
-def _osascript_pick(title: str, prompt: str, options: list[str]) -> str | None:
-    """Show a native macOS list-picker and return the chosen item or None."""
+def _osascript_pick(title: str, prompt: str, options: list[str], default: str | None = None) -> str | None:
+    """Show a native macOS list-picker and return the chosen item or None.
+
+    ``default``, if given and present in ``options``, pre-highlights that
+    item (AppleScript's "default items") -- purely cosmetic, existing
+    callers that don't pass it see no change in behavior."""
     opts_as = "{" + ", ".join(f'"{o}"' for o in options) + "}"
+    default_clause = f' with default items {{"{default}"}}' if default in options else ""
     script = (
         f'set opts to {opts_as}\n'
         f'set chosen to (choose from list opts '
         f'with title "{title}" '
-        f'with prompt "{prompt}")\n'
+        f'with prompt "{prompt}"'
+        f'{default_clause})\n'
         f'if chosen is false then return ""\n'
         f'return item 1 of chosen'
     )
