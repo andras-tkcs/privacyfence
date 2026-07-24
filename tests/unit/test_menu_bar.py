@@ -479,6 +479,34 @@ class TestOsascriptPick:
         monkeypatch.setattr(menu_bar.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout=""))
         assert menu_bar._osascript_pick("T", "P", ["a"]) is None
 
+    def test_default_present_in_options_adds_default_items_clause(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            menu_bar.subprocess, "run",
+            lambda cmd, **kw: (captured.__setitem__("cmd", cmd), SimpleNamespace(stdout="a\n"))[1],
+        )
+        menu_bar._osascript_pick("T", "P", ["a", "b"], default="b")
+        assert "with default items" in captured["cmd"][2]
+        assert '{"b"}' in captured["cmd"][2]
+
+    def test_default_absent_from_options_omits_default_items_clause(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            menu_bar.subprocess, "run",
+            lambda cmd, **kw: (captured.__setitem__("cmd", cmd), SimpleNamespace(stdout="a\n"))[1],
+        )
+        menu_bar._osascript_pick("T", "P", ["a", "b"], default="not-an-option")
+        assert "with default items" not in captured["cmd"][2]
+
+    def test_no_default_omits_default_items_clause(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            menu_bar.subprocess, "run",
+            lambda cmd, **kw: (captured.__setitem__("cmd", cmd), SimpleNamespace(stdout="a\n"))[1],
+        )
+        menu_bar._osascript_pick("T", "P", ["a", "b"])
+        assert "with default items" not in captured["cmd"][2]
+
 
 class TestConfigHelpers:
     def test_load_config_round_trips_yaml(self, app, tmp_path):
@@ -781,6 +809,198 @@ class TestOpenRulesManager:
         assert app._rules_manager is None
         app._rebuild()  # must not raise
         assert app._rules_manager is None
+
+
+class TestOpenPrivacyFilterManager:
+    # Same lazy-create/reuse/refresh contract as TestOpenRulesManager, since
+    # this is a second instance of the same generic window class -- see
+    # rules_manager_window.py's window_title param.
+    def test_lazily_creates_and_shows_the_window(self, app):
+        assert app._privacy_manager is None
+        app._open_privacy_filter_manager()
+        assert app._privacy_manager is not None
+        assert app._privacy_manager.window is not None
+        assert app._privacy_manager.window_title == "Privacy Filter"
+
+    def test_reopening_reuses_the_same_controller(self, app):
+        app._open_privacy_filter_manager()
+        first = app._privacy_manager
+        app._open_privacy_filter_manager()
+        assert app._privacy_manager is first
+
+    def test_distinct_from_rules_manager(self, app):
+        app._open_rules_manager()
+        app._open_privacy_filter_manager()
+        assert app._privacy_manager is not app._rules_manager
+
+    def test_rebuild_refreshes_an_open_manager_window(self, app):
+        app._open_privacy_filter_manager()
+        refreshed = []
+        app._privacy_manager._refresh_window = lambda: refreshed.append(1)
+
+        app._rebuild()
+
+        assert refreshed == [1]
+
+    def test_rebuild_is_a_no_op_when_manager_never_opened(self, app):
+        assert app._privacy_manager is None
+        app._rebuild()  # must not raise
+        assert app._privacy_manager is None
+
+
+class TestListPrivacyGroups:
+    def test_every_group_appears(self, app):
+        keys = {key for key, _label, _count in app._list_privacy_groups()}
+        assert keys == {"privacy", "drive_privacy", "slack_privacy"}
+
+    def test_count_reflects_explicit_category_overrides(self, app):
+        cfg = {"privacy": {"categories": {"body": "block", "attachments": "redact"}}}
+        config_path = app._config_path
+        with open(config_path, "w", encoding="utf-8") as f:
+            menu_bar.yaml.dump(cfg, f)
+
+        counts = dict((key, count) for key, _label, count in app._list_privacy_groups())
+        assert counts["privacy"] == 2
+        assert counts["drive_privacy"] == 0
+        assert counts["slack_privacy"] == 0
+
+    def test_missing_group_key_still_listed_with_zero_count(self, app):
+        # No "drive_privacy"/"slack_privacy" section in config at all.
+        cfg = {"privacy": {"default_policy": "block"}}
+        config_path = app._config_path
+        with open(config_path, "w", encoding="utf-8") as f:
+            menu_bar.yaml.dump(cfg, f)
+
+        counts = dict((key, count) for key, _label, count in app._list_privacy_groups())
+        assert counts["drive_privacy"] == 0
+        assert counts["slack_privacy"] == 0
+
+
+class TestGatherPrivacySections:
+    def test_empty_config_defaults_everything_to_allow(self, app):
+        rows = app._gather_privacy_sections("privacy")[0].rows
+        assert rows[0].text == "Default: allow"
+        for row in rows[1:]:
+            assert row.text.endswith("  (default)")
+            assert ": allow" in row.text
+
+    def test_explicit_default_and_overrides_are_reflected(self, app):
+        cfg = {"drive_privacy": {
+            "default_policy": "block",
+            "categories": {"file_content": "allow"},
+        }}
+        config_path = app._config_path
+        with open(config_path, "w", encoding="utf-8") as f:
+            menu_bar.yaml.dump(cfg, f)
+
+        rows = app._gather_privacy_sections("drive_privacy")[0].rows
+        assert rows[0].text == "Default: block"
+        by_text = {r.text for r in rows[1:]}
+        assert "Document content: allow" in by_text  # explicit override, no "(default)" suffix
+        assert any(": block" in t and t.endswith("(default)") for t in by_text if t.startswith("File metadata"))
+
+    def test_row_actions_are_change_only(self, app):
+        sections = app._gather_privacy_sections("slack_privacy")
+        for row in sections[0].rows:
+            assert [a[0] for a in row.actions] == ["Change…"]
+
+    def test_default_row_not_indented_category_rows_are(self, app):
+        rows = app._gather_privacy_sections("privacy")[0].rows
+        assert rows[0].indent is False
+        assert all(r.indent for r in rows[1:])
+
+    def test_invalid_policy_value_does_not_crash(self, app):
+        cfg = {"privacy": {"categories": {"body": "delete_everything"}}}
+        config_path = app._config_path
+        with open(config_path, "w", encoding="utf-8") as f:
+            menu_bar.yaml.dump(cfg, f)
+
+        rows = app._gather_privacy_sections("privacy")[0].rows
+        assert any(r.text.startswith("Message body:") for r in rows)
+
+
+def _run_privacy_change(app, monkeypatch, method, args, pick):
+    """Drive a _change_privacy_default/_change_privacy_category call to
+    completion -- same AppHelper.callAfter interception/drain _run_add_rule
+    uses, since these also run _osascript_pick on a background thread."""
+    if not callable(pick):
+        value = pick
+        pick = lambda **kw: value  # noqa: E731
+    monkeypatch.setattr(menu_bar, "_osascript_pick", pick)
+    recorded = []
+    monkeypatch.setattr(menu_bar.AppHelper, "callAfter", lambda f, *a, **k: recorded.append((f, a, k)))
+
+    getattr(app, method)(*args)
+
+    assert wait_until(lambda: recorded), "_osascript_pick's result never reached AppHelper.callAfter"
+    _drain_run_async(recorded)
+
+
+class TestChangePrivacyPolicy:
+    def test_change_default_persists_and_hot_reloads(self, app, monkeypatch):
+        from privacyfence import privacy_filter
+
+        _run_privacy_change(app, monkeypatch, "_change_privacy_default", ["privacy"], "block")
+
+        assert app._load_config()["privacy"]["default_policy"] == "block"
+        assert privacy_filter.category_policy("privacy", "body") == "block"
+
+    def test_cancelled_default_picker_makes_no_change(self, app, monkeypatch):
+        before = app._load_config()
+
+        _run_privacy_change(app, monkeypatch, "_change_privacy_default", ["privacy"], None)
+
+        assert app._load_config() == before
+
+    def test_change_category_sets_explicit_override(self, app, monkeypatch):
+        _run_privacy_change(
+            app, monkeypatch, "_change_privacy_category", ["slack_privacy", "message_content"], "block",
+        )
+
+        cfg = app._load_config()
+        assert cfg["slack_privacy"]["categories"]["message_content"] == "block"
+
+    def test_use_group_default_removes_existing_override(self, app, monkeypatch):
+        cfg = {"drive_privacy": {"default_policy": "block", "categories": {"file_content": "allow"}}}
+        config_path = app._config_path
+        with open(config_path, "w", encoding="utf-8") as f:
+            menu_bar.yaml.dump(cfg, f)
+
+        _run_privacy_change(
+            app, monkeypatch, "_change_privacy_category",
+            ["drive_privacy", "file_content"], "(use group default)",
+        )
+
+        assert "file_content" not in app._load_config()["drive_privacy"].get("categories", {})
+
+    def test_use_group_default_with_no_prior_categories_does_not_crash(self, app, monkeypatch):
+        _run_privacy_change(
+            app, monkeypatch, "_change_privacy_category",
+            ["privacy", "body"], "(use group default)",
+        )
+
+        assert "body" not in app._load_config().get("privacy", {}).get("categories", {})
+
+    def test_cancelled_category_picker_makes_no_change(self, app, monkeypatch):
+        before = app._load_config()
+
+        _run_privacy_change(
+            app, monkeypatch, "_change_privacy_category", ["privacy", "body"], None,
+        )
+
+        assert app._load_config() == before
+
+    def test_hot_reload_failure_still_rebuilds(self, app, monkeypatch):
+        monkeypatch.setattr(
+            menu_bar, "init_privacy_filter",
+            lambda cfg: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        rebuild_calls = []
+        monkeypatch.setattr(app, "_rebuild", lambda: rebuild_calls.append(1))
+
+        app._save_and_reload_privacy({})  # must not raise
+
+        assert rebuild_calls == [1]
 
 
 class TestBuildOrgMenu:
