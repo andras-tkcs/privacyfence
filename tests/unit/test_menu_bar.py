@@ -813,7 +813,10 @@ class TestOpenPrivacyFilterManager:
 class TestListPrivacyGroups:
     def test_every_group_appears(self, app):
         keys = {key for key, _label, _count in app._list_privacy_groups()}
-        assert keys == {"privacy", "drive_privacy", "slack_privacy"}
+        assert keys == {
+            "privacy", "drive_privacy", "slack_privacy",
+            "contacts_privacy", "tasks_privacy", "confluence_privacy",
+        }
 
     def test_count_reflects_explicit_category_overrides(self, app):
         cfg = {"privacy": {"categories": {"body": "block", "attachments": "redact"}}}
@@ -827,7 +830,7 @@ class TestListPrivacyGroups:
         assert counts["slack_privacy"] == 0
 
     def test_missing_group_key_still_listed_with_zero_count(self, app):
-        # No "drive_privacy"/"slack_privacy" section in config at all.
+        # No "drive_privacy"/"slack_privacy"/etc. section in config at all.
         cfg = {"privacy": {"default_policy": "block"}}
         config_path = app._config_path
         with open(config_path, "w", encoding="utf-8") as f:
@@ -836,6 +839,9 @@ class TestListPrivacyGroups:
         counts = dict((key, count) for key, _label, count in app._list_privacy_groups())
         assert counts["drive_privacy"] == 0
         assert counts["slack_privacy"] == 0
+        assert counts["contacts_privacy"] == 0
+        assert counts["tasks_privacy"] == 0
+        assert counts["confluence_privacy"] == 0
 
 
 class TestGatherPrivacySections:
@@ -845,6 +851,20 @@ class TestGatherPrivacySections:
         for row in rows[1:]:
             assert row.text.endswith("  (default)")
             assert ": allow" in row.text
+
+    def test_new_groups_appear_with_their_one_category(self, app):
+        # contacts_privacy/tasks_privacy/confluence_privacy each define a
+        # single category -- confirms they're wired the same way the
+        # original three groups are, not just present in the group list.
+        for group, label in [
+            ("contacts_privacy", "Contact notes"),
+            ("tasks_privacy", "Task notes"),
+            ("confluence_privacy", "Search result excerpt"),
+        ]:
+            rows = app._gather_privacy_sections(group)[0].rows
+            assert rows[0].text == "Default: allow"
+            assert len(rows) == 2
+            assert rows[1].text.startswith(label)
 
     def test_explicit_default_and_overrides_are_reflected(self, app):
         cfg = {"drive_privacy": {

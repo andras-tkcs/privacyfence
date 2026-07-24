@@ -100,12 +100,20 @@ returns.
 | Tool | Gate | Fields Claude gets |
 |---|---|---|
 | `slack_list_channels` | auto | `id`, `name`, `is_private`, `topic`, `purpose`, `member_count` |
+| `slack_list_dms` | auto | `id`, `user_id`, `user_name` per 1:1 DM (who the user DMs with) |
+| `slack_list_group_chats` | auto | `id`, `name`, `member_ids`, `member_names` per group DM |
 | `slack_get_channel_history` | review | **new:** every message's `text` and `user_name`/`user_id` |
 | `slack_get_thread_replies` | review | **new:** same, for a thread |
 | `slack_search_messages` | review | **new:** matching messages' `text` and `user_name`/`user_id` across channels |
 
 Unlike Gmail/Drive/Jira, Slack has no metadata-only auto search — `slack_search_messages` itself
 returns message text, so it gates like a read, not like a list.
+
+`slack_list_dms`/`slack_list_group_chats` mean *who a user DMs with* is knowable for free, with no
+review gate at all — the same "auto tool discloses more than it looks like" pattern Contacts/Tasks
+already have for their free-text fields (see below), just for relationship/identity data instead of
+free text. Both accept an optional `participant` filter (id, handle, or display name) so Claude can
+search by *who's in a conversation* directly, without first listing everything.
 
 ## Google Calendar
 
@@ -254,9 +262,13 @@ site in the connector code, naming the literal key(s) in what Claude actually re
 | `drive_privacy.file_content` | `drive_get_file_content` | `content` |
 | `drive_privacy.file_content` | `drive_sheets_get_values` | the entire returned cell-values array (there's no separate "cell values" category — this reuses `file_content`) |
 | `slack_privacy.channel_list` | `slack_list_channels` (auto) | the entire returned list — every channel's `id`/`name`/`is_private`/`topic`/`purpose`/`member_count` together |
+| `slack_privacy.dm_list` | `slack_list_dms` (auto) | the entire returned list — every DM's `id`/`user_id`/`user_name` together |
+| `slack_privacy.group_chat_list` | `slack_list_group_chats` (auto) | the entire returned list — every group chat's `id`/`name`/`member_ids`/`member_names` together |
 | `slack_privacy.message_content` | `slack_get_channel_history`, `slack_search_messages` | per message, `text` |
 | `slack_privacy.thread_content` | `slack_get_thread_replies` | per message, `text` |
 | `slack_privacy.user_identity` | `slack_get_channel_history`, `slack_get_thread_replies`, `slack_search_messages` | per message, `user_name` and `user_id` |
+| `slack_privacy.user_identity` | `slack_list_dms` (auto) | `user_id`, `user_name` (redacted individually, *before* `dm_list` empties the whole list if that category is also non-`allow`) |
+| `slack_privacy.user_identity` | `slack_list_group_chats` (auto) | each entry in `member_ids`, `member_names` |
 | `contacts_privacy.notes` | `contacts_list`, `contacts_search`, `contacts_get` (all auto) | `notes` |
 | `tasks_privacy.notes` | `tasks_list_tasks`, `tasks_get_task` (all auto) | `notes` — `tasks_list_task_lists` has no `notes` field, nothing to redact |
 | `confluence_privacy.search_excerpt` | `confluence_search`, `confluence_cql_search` (both auto) | `excerpt` |

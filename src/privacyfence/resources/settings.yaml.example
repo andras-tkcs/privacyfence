@@ -14,9 +14,10 @@
 #
 # Never commit config/settings.yaml or any file under credentials/.
 
-# privacy / drive_privacy / slack_privacy are also editable live from the
-# menu bar's "Privacy Filter…" window (no restart needed) -- editing them
-# here or from the menu are equivalent.
+# All six category-schema groups below (privacy / drive_privacy /
+# slack_privacy / contacts_privacy / tasks_privacy / confluence_privacy) are
+# also editable live from the menu bar's "Privacy Filter…" window (no
+# restart needed) -- editing them here or from the menu are equivalent.
 privacy:
   # Policy applied when a category is not explicitly configured below.
   # One of: allow, redact, block
