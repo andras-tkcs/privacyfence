@@ -138,6 +138,16 @@ silent auto-accept path exactly as before this gate existed.
 **Toggle:** enable or disable the whole gate from the menu bar (**PII Detection Gate**), or set
 `pii_detection.enabled: true|false` directly in `config/settings.yaml`. Enabled by default.
 
+**IP address** and **Financial figures (currency amounts)** can also be toggled off individually,
+independent of the gate as a whole — from the same **PII Detection Gate** submenu in the menu bar,
+or via `pii_detection.detect_ip_addresses` / `detect_financial_figures` in `config/settings.yaml`
+(both `true` by default). Unlike the other categories, these two show up constantly in ordinary
+business correspondence (server logs, invoices, budgets) without being personal data about anyone,
+so they're the two most likely to be worth muting on their own rather than disabling the whole
+gate. The remaining categories are always on whenever the gate itself is enabled. See
+[`pii-detection-keywords.md`](pii-detection-keywords.md) for the full category × language keyword
+reference.
+
 ---
 
 ## Connectors & privacy matrix
