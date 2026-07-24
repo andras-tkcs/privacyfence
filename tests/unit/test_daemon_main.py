@@ -253,6 +253,35 @@ class TestBuildConnectorsGoogleFamily:
         assert names == {"drive", "calendar", "contacts", "tasks"}
 
 
+class TestBuildConnectorsCalendarFreeBusySetting:
+    """settings.yaml's calendar.free_busy_full_event_details is plumbed onto
+    the built CalendarConnector -- see calendar.py's _get_free_busy /
+    _downgrade_to_busy_only."""
+
+    def test_defaults_to_true_when_unconfigured(self, monkeypatch):
+        monkeypatch.setattr(daemon_main, "CalendarClient", fake_client_class(result="user@example.com"))
+
+        connectors = daemon_main.build_connectors({}, GOOGLE_ORG_CONFIG)
+
+        assert connectors[0].free_busy_full_details is True
+
+    def test_reads_explicit_false_from_config(self, monkeypatch):
+        monkeypatch.setattr(daemon_main, "CalendarClient", fake_client_class(result="user@example.com"))
+        config = {"calendar": {"free_busy_full_event_details": False}}
+
+        connectors = daemon_main.build_connectors(config, GOOGLE_ORG_CONFIG)
+
+        assert connectors[0].free_busy_full_details is False
+
+    def test_reads_explicit_true_from_config(self, monkeypatch):
+        monkeypatch.setattr(daemon_main, "CalendarClient", fake_client_class(result="user@example.com"))
+        config = {"calendar": {"free_busy_full_event_details": True}}
+
+        connectors = daemon_main.build_connectors(config, GOOGLE_ORG_CONFIG)
+
+        assert connectors[0].free_busy_full_details is True
+
+
 # ---------------------------------------------------------------------------- #
 # build_connectors: Slack
 # ---------------------------------------------------------------------------- #
@@ -961,6 +990,35 @@ class TestRunApp:
         assert result == 0
         assert menu_bar_calls[0]["connectors"] == []
         assert "No connectors could be initialized" in caplog.text
+
+    def test_inconsistent_drive_privacy_categories_log_a_warning(self, monkeypatch, caplog):
+        # check_consistency_warnings() runs right after init_privacy_filter()
+        # -- see privacy_filter.py. Advisory only, never changes what
+        # actually gets filtered.
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        self._patch_common(monkeypatch, connectors=[])
+        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
+        config = {"drive_privacy": {"categories": {"file_list": "allow", "file_metadata": "block"}}}
+
+        with caplog.at_level(logging.WARNING):
+            result = daemon_main.run_app(config, "config.yaml")
+
+        assert result == 0
+        assert "file_metadata" in caplog.text
+        assert "file_list" in caplog.text
+
+    def test_consistent_drive_privacy_categories_log_no_warning(self, monkeypatch, caplog):
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        self._patch_common(monkeypatch, connectors=[])
+        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
+        config = {"drive_privacy": {"categories": {"file_list": "allow", "file_metadata": "allow"}}}
+
+        with caplog.at_level(logging.WARNING):
+            daemon_main.run_app(config, "config.yaml")
+
+        assert "file_metadata" not in caplog.text
 
     def test_keyboard_interrupt_is_caught_lock_released_returns_0(self, monkeypatch, caplog):
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)

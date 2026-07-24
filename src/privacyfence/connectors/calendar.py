@@ -23,11 +23,37 @@ def _day_of_week(iso_str: str) -> str:
         return ""
 
 
+def _downgrade_to_busy_only(entry: dict) -> dict:
+    """Collapse a colleague's 'events'-sourced free/busy entry (full event
+    title/status) down to the same busy-slot-only shape a 'free_busy'-
+    sourced entry already has, for calendar.free_busy_full_event_details:
+    false. Titles/status never reach Claude this way, regardless of whether
+    the authenticated account happens to have full calendar access to that
+    colleague. Entries already source="free_busy" (or "error") pass
+    through unchanged -- there's nothing to downgrade."""
+    if entry.get("source") != "events":
+        return entry
+    return {
+        "email": entry.get("email", ""),
+        "source": "free_busy",
+        "busy": [
+            {"start": e.get("start_time", ""), "end": e.get("end_time", "")}
+            for e in (entry.get("events") or [])
+        ],
+    }
+
+
 class CalendarConnector(Connector):
     def __init__(self, client: CalendarClient, rooms: list[dict] | None = None) -> None:
         self._calendar = client
         self.my_email: str = ""
         self._calendar_name_cache: dict[str, str] = {}
+        # settings.yaml's calendar.free_busy_full_event_details (default
+        # true, preserving prior behavior). When false,
+        # calendar_get_free_busy always returns busy/free blocks only, even
+        # for colleagues the authenticated account has full calendar access
+        # to -- see _get_free_busy.
+        self.free_busy_full_details: bool = True
         # Static room directory synced into org_config.json by IT (see
         # scripts/sync_room_directory.py) — never a live Admin SDK call, so this
         # connector's own client never needs Workspace-admin directory scope.
@@ -294,6 +320,8 @@ class CalendarConnector(Connector):
         data = await self._fetch(
             self._calendar.get_colleagues_schedule, email_list, time_min, time_max
         )
+        if not self.free_busy_full_details:
+            data = [_downgrade_to_busy_only(r) for r in data]
         events_count = sum(1 for r in data if r.get("source") == "events")
         fb_count = sum(1 for r in data if r.get("source") == "free_busy")
         summary_note = (

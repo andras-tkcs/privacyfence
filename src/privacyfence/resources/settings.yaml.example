@@ -14,9 +14,10 @@
 #
 # Never commit config/settings.yaml or any file under credentials/.
 
-# privacy / drive_privacy / slack_privacy are also editable live from the
-# menu bar's "Privacy Filter…" window (no restart needed) -- editing them
-# here or from the menu are equivalent.
+# All six category-schema groups below (privacy / drive_privacy /
+# slack_privacy / contacts_privacy / tasks_privacy / confluence_privacy) are
+# also editable live from the menu bar's "Privacy Filter…" window (no
+# restart needed) -- editing them here or from the menu are equivalent.
 privacy:
   # Policy applied when a category is not explicitly configured below.
   # One of: allow, redact, block
@@ -26,7 +27,10 @@ privacy:
   # The privacy filter is a floor (a minimum protection), not a ceiling -
   # the user still has to approve every request.
   #   allow  -> data passes through unchanged
-  #   redact -> data is partially masked
+  #   redact -> data is replaced by a placeholder revealing only its length
+  #             (e.g. "[REDACTED BY PRIVACY FILTER — 42 characters withheld]") -
+  #             a full replacement, not a partial reveal of the content;
+  #             for list-shaped categories this behaves the same as block
   #   block  -> data is replaced with "[BLOCKED BY PRIVACY FILTER]"
   categories:
     body: allow
@@ -43,6 +47,12 @@ drive_privacy:
     file_metadata: allow     # name / owners / created/modified times / sharing
     file_list: allow         # results from list operations (names + ids)
     folder_structure: allow  # folder listing results
+  # NOTE: file_metadata and file_list cover overlapping fields (a file's name/
+  # owners) but gate two different tools (drive_get_file_metadata vs.
+  # drive_list_files) independently - restricting one without the other
+  # still lets that same information through the tool whose category is
+  # still "allow". PrivacyFence logs a startup warning if they're set
+  # inconsistently (privacy_filter.check_consistency_warnings).
 
 slack_privacy:
   default_policy: block
@@ -53,6 +63,40 @@ slack_privacy:
     thread_content: allow    # thread reply content
     dm_list: allow           # 1:1 DM listing (who you DM with)
     group_chat_list: allow   # group-DM listing (id, name, participants)
+
+contacts_privacy:
+  default_policy: block
+  categories:
+    notes: block   # free-text biography field - the one field here that can
+                   # carry arbitrary personal content, unlike name/email/
+                   # phone/organization/job_title, which have no category of
+                   # their own and always pass through unfiltered
+
+tasks_privacy:
+  default_policy: block
+  categories:
+    notes: block   # free-text notes field - same reasoning as
+                   # contacts_privacy.notes; title/due/status have no
+                   # category of their own
+
+confluence_privacy:
+  default_policy: block
+  categories:
+    search_excerpt: block   # the content excerpt confluence_search/
+                            # confluence_cql_search return alongside each
+                            # match - the one place Confluence's otherwise
+                            # metadata-only auto search tools return actual
+                            # page content pre-approval
+
+calendar:
+  # Whether calendar_get_free_busy returns full event titles/times/status for
+  # a queried colleague when the authenticated account already has calendar
+  # access to see them (falls back to busy/free-only automatically when
+  # access isn't available either way). Set to false to always return
+  # busy/free blocks only, regardless of access - a more conservative choice
+  # for scheduling queries across a team, at the cost of losing event
+  # titles/status in the (auto-approved) free/busy result.
+  free_busy_full_event_details: true
 
 # Enable/disable individual connectors (all enabled by default — this section
 # is only needed to turn one off). Toggled automatically when you use

@@ -64,11 +64,19 @@ class TestAutoTools:
     async def test_list_messages_auto_accepts_without_gate(self, monkeypatch, tmp_path):
         init_audit_logger(str(tmp_path))
         connector, client = make_connector()
-        client.list_messages.return_value = [{"id": "1"}, {"id": "2"}]
+        client.list_messages.return_value = [
+            {"id": "1", "thread_id": "t1", "subject": "Hi", "sender": "a@b.com", "date": "Mon"},
+            {"id": "2", "thread_id": "t2", "subject": "Yo", "sender": "c@d.com", "date": "Tue"},
+        ]
 
         result = await connector.call("gmail_list_messages", {"query": "from:alice", "max_results": 5})
 
-        assert result == [{"id": "1"}, {"id": "2"}]
+        # No init_privacy_filter call in this test -- "metadata" defaults to
+        # allow, so these fields pass through unchanged.
+        assert result == [
+            {"id": "1", "thread_id": "t1", "subject": "Hi", "sender": "a@b.com", "date": "Mon"},
+            {"id": "2", "thread_id": "t2", "subject": "Yo", "sender": "c@d.com", "date": "Tue"},
+        ]
         client.list_messages.assert_called_once_with("from:alice", 5)
 
         week_file = tmp_path / f"{current_week()}.jsonl"
@@ -80,11 +88,13 @@ class TestAutoTools:
     async def test_list_threads_auto_accepts(self, tmp_path):
         init_audit_logger(str(tmp_path))
         connector, client = make_connector()
-        client.list_threads.return_value = [{"id": "t1"}]
+        client.list_threads.return_value = [{"id": "t1", "snippet": "hello there"}]
 
         result = await connector.call("gmail_list_threads", {"query": "q"})
 
-        assert result == [{"id": "t1"}]
+        # No init_privacy_filter call in this test -- "body" defaults to
+        # allow, so snippet passes through unchanged.
+        assert result == [{"id": "t1", "snippet": "hello there"}]
 
     async def test_list_filters_auto_accepts_without_gate(self, tmp_path):
         init_audit_logger(str(tmp_path))
@@ -386,6 +396,37 @@ class TestGmailPrivacyFilter:
         assert "Thread messages" in gated_call_spy[0]["visibility"]
         assert "Message body" not in gated_call_spy[0]["visibility"]
 
+    async def test_list_messages_honors_metadata_category(self, tmp_path):
+        # gmail_list_messages is auto-approved, but subject/sender/date are
+        # the same "metadata" category gmail_get_message applies -- blocking
+        # it must restrict search results too, not just the full fetch.
+        init_audit_logger(str(tmp_path))
+        init_privacy_filter({"privacy": {"categories": {"metadata": "block"}}})
+        connector, client = make_connector()
+        client.list_messages.return_value = [
+            {"id": "1", "thread_id": "t1", "subject": "Confidential", "sender": "a@b.com", "date": "Mon"},
+        ]
+
+        result = await connector.call("gmail_list_messages", {"query": "q"})
+
+        assert result[0]["subject"] == "[BLOCKED BY PRIVACY FILTER]"
+        assert result[0]["sender"] == "[BLOCKED BY PRIVACY FILTER]"
+        assert result[0]["date"] == "[BLOCKED BY PRIVACY FILTER]"
+        # id/thread_id aren't part of any category -- untouched
+        assert result[0]["id"] == "1"
+        assert result[0]["thread_id"] == "t1"
+
+    async def test_list_threads_snippet_honors_body_category(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        init_privacy_filter({"privacy": {"categories": {"body": "redact"}}})
+        connector, client = make_connector()
+        client.list_threads.return_value = [{"id": "t1", "snippet": "the actual excerpt"}]
+
+        result = await connector.call("gmail_list_threads", {"query": "q"})
+
+        assert "the actual excerpt" not in result[0]["snippet"]
+        assert result[0]["snippet"] == "[REDACTED BY PRIVACY FILTER — 18 characters withheld]"
+
 
 class TestListMessageAttachments:
     """gmail_list_message_attachments is auto-approved (metadata only, no
@@ -415,6 +456,23 @@ class TestListMessageAttachments:
         init_audit_logger(str(tmp_path))
         connector, client = make_connector()
         client.get_message.return_value = GmailMessage(id="m1", thread_id="t1", subject="s", sender="a@b.com")
+
+        result = await connector.call("gmail_list_message_attachments", {"message_id": "m1"})
+
+        assert result == {"message_id": "m1", "attachments": []}
+
+    async def test_honors_attachments_category(self, tmp_path):
+        # The default settings.yaml.example ships "attachments: block" --
+        # this tool must actually enforce it, not just gmail_get_message's
+        # embedded attachments list.
+        init_audit_logger(str(tmp_path))
+        init_privacy_filter({"privacy": {"categories": {"attachments": "block"}}})
+        connector, client = make_connector()
+        message = GmailMessage(
+            id="m1", thread_id="t1", subject="s", sender="a@b.com",
+            attachments=[Attachment(name="secret.pdf", mime_type="application/pdf", size=10)],
+        )
+        client.get_message.return_value = message
 
         result = await connector.call("gmail_list_message_attachments", {"message_id": "m1"})
 

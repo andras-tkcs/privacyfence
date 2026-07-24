@@ -313,12 +313,17 @@ RULE_HINTS: dict[str, str] = {
 
 # Display metadata for the "Privacy Filter" window -- mirrors the group/
 # category schema documented in resources/settings.yaml.example and enforced
-# by privacy_filter.py. Deliberately only the 3 connectors that module knows
-# about; adding a 4th group means adding it there first.
+# by privacy_filter.py. Every group privacy_filter.py knows about needs an
+# entry here (and a matching PRIVACY_CATEGORY_LABELS sub-dict) to actually
+# show up in the window -- _list_privacy_groups()/_gather_privacy_sections()
+# below iterate only these two dicts, not privacy_filter.py's own _GROUPS.
 PRIVACY_GROUP_LABELS: dict[str, str] = {
     "privacy": "Gmail",
     "drive_privacy": "Drive & Sheets",
     "slack_privacy": "Slack",
+    "contacts_privacy": "Contacts",
+    "tasks_privacy": "Tasks",
+    "confluence_privacy": "Confluence",
 }
 PRIVACY_CATEGORY_LABELS: dict[str, dict[str, str]] = {
     "privacy": {
@@ -340,6 +345,15 @@ PRIVACY_CATEGORY_LABELS: dict[str, dict[str, str]] = {
         "thread_content": "Thread replies",
         "dm_list": "DM list",
         "group_chat_list": "Group chat list",
+    },
+    "contacts_privacy": {
+        "notes": "Contact notes (free-text biography)",
+    },
+    "tasks_privacy": {
+        "notes": "Task notes (free-text)",
+    },
+    "confluence_privacy": {
+        "search_excerpt": "Search result excerpt",
     },
 }
 

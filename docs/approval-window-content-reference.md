@@ -6,8 +6,10 @@ the same layout with only a few optional sections toggled on or off — which to
 [`TECHNICAL_REFERENCE.md`'s per-connector tool tables](TECHNICAL_REFERENCE.md#connectors--privacy-matrix),
 which list exact preview/details text per tool grouped by connector; this doc groups by dialog
 *shape* first, tool second, and adds the optional overlay sections (AI-visibility checklist,
-sensitivity badges, Gmail/PDF body rendering, etc.) that table doesn't cover. Source of truth for
-everything below: [`gate.py`](../src/privacyfence/gate.py),
+sensitivity badges, Gmail/PDF body rendering, etc.) that table doesn't cover. Neither this doc nor
+that table says what Claude *already knew* before a given call, from prior auto-approved calls —
+for that cut, see [`claude-knowledge-boundary.md`](claude-knowledge-boundary.md). Source of truth
+for everything below: [`gate.py`](../src/privacyfence/gate.py),
 [`approval_popup.py`](../src/privacyfence/approval_popup.py),
 [`approval_window.py`](../src/privacyfence/approval_window.py) — re-derive from there if this
 drifts, don't trust it blindly.
@@ -69,8 +71,13 @@ Claude's reason on a given call — that's about the *content* of a specific req
 
 ### RG-1 — Plain review popup (summary box only, no AI-visibility checklist)
 
-No `visibility` passed — Confluence, Telegram, Salesforce, and part of Calendar/Jira never wired
-into `privacy_filter.py`'s category-policy system, so there's no resolved policy to disclose here.
+No `visibility` passed — these specific tools never resolve a `privacy_filter.py` category policy
+for their own content, so there's no checklist to disclose here: Telegram and Salesforce entirely,
+Calendar's/Jira's review-gate tools, and Confluence's `get_page`/`get_page_by_title`. (Confluence's
+own auto-approved `confluence_search`/`confluence_cql_search` *do* now apply a category —
+`confluence_privacy.search_excerpt` — but that's enforced before those auto tools return, not
+surfaced as a review-gate checklist here; see
+[`claude-knowledge-boundary.md`](claude-knowledge-boundary.md#category-based-redaction-what-can-actually-be-blocked-or-redacted).)
 
 | Tool | Preview summary fields |
 |---|---|

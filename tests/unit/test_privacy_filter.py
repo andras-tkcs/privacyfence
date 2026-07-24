@@ -14,6 +14,7 @@ from privacyfence.privacy_filter import (
     apply_list,
     apply_text,
     category_policy,
+    check_consistency_warnings,
     init_privacy_filter,
 )
 
@@ -57,6 +58,16 @@ class TestInitAndResolution:
         assert category_policy("privacy", "body") == "allow"
         assert category_policy("drive_privacy", "file_content") == "block"
         assert category_policy("slack_privacy", "message_content") == "allow"  # never configured
+
+    def test_contacts_tasks_confluence_groups_are_wired(self):
+        init_privacy_filter({
+            "contacts_privacy": {"categories": {"notes": "block"}},
+            "tasks_privacy": {"categories": {"notes": "redact"}},
+            "confluence_privacy": {"categories": {"search_excerpt": "block"}},
+        })
+        assert category_policy("contacts_privacy", "notes") == "block"
+        assert category_policy("tasks_privacy", "notes") == "redact"
+        assert category_policy("confluence_privacy", "search_excerpt") == "block"
 
     def test_non_dict_config_value_does_not_crash(self):
         init_privacy_filter({"privacy": "not a dict"})
@@ -118,3 +129,39 @@ class TestApplyList:
     def test_empty_list_passes_through_regardless_of_policy(self):
         init_privacy_filter({"drive_privacy": {"categories": {"file_list": "block"}}})
         assert apply_list("drive_privacy", "file_list", []) == []
+
+
+class TestConsistencyWarnings:
+    """Advisory-only: drive_privacy.file_list and .file_metadata gate two
+    different tools (drive_list_files / drive_get_file_metadata) that both
+    return a file's name/owners. Restricting one without the other still
+    leaks that data through whichever tool's category is still "allow" --
+    check_consistency_warnings() surfaces that, but never changes what
+    apply_text/apply_list actually do."""
+
+    def test_no_warning_when_both_allow(self):
+        init_privacy_filter({"drive_privacy": {"categories": {"file_list": "allow", "file_metadata": "allow"}}})
+        assert check_consistency_warnings() == []
+
+    def test_no_warning_when_both_restricted(self):
+        init_privacy_filter({"drive_privacy": {"categories": {"file_list": "block", "file_metadata": "redact"}}})
+        assert check_consistency_warnings() == []
+
+    def test_warns_when_file_metadata_restricted_but_file_list_allows(self):
+        init_privacy_filter({"drive_privacy": {"categories": {"file_list": "allow", "file_metadata": "block"}}})
+        warnings = check_consistency_warnings()
+        assert len(warnings) == 1
+        assert "file_metadata" in warnings[0]
+        assert "file_list" in warnings[0]
+        assert "drive_list_files" in warnings[0]
+
+    def test_warns_when_file_list_restricted_but_file_metadata_allows(self):
+        init_privacy_filter({"drive_privacy": {"categories": {"file_list": "redact", "file_metadata": "allow"}}})
+        warnings = check_consistency_warnings()
+        assert len(warnings) == 1
+        assert "file_list" in warnings[0]
+        assert "drive_get_file_metadata" in warnings[0]
+
+    def test_no_warning_when_unconfigured(self):
+        # Both default to "allow" -- no mismatch.
+        assert check_consistency_warnings() == []

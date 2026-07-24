@@ -1,5 +1,6 @@
 """Category-based privacy filter: enforces the ``privacy`` / ``drive_privacy`` /
-``slack_privacy`` sections of ``settings.yaml`` (see ``resources/settings.yaml.example``).
+``slack_privacy`` / ``contacts_privacy`` / ``tasks_privacy`` / ``confluence_privacy`` sections
+of ``settings.yaml`` (see ``resources/settings.yaml.example``).
 
 Historically these config sections were documentation of an intended policy that no code
 ever actually read -- editing a category from ``allow`` to ``block`` changed nothing. This
@@ -9,13 +10,14 @@ category's data *before* it reaches ``gated_call()``, so a category set to ``blo
 matching ``coding-and-testing-guidelines.md`` §1.5's "the privacy filter is a floor under
 human review, not a substitute for it."
 
-Scope, deliberately narrow: only the three connectors with a category schema documented in
-``settings.yaml.example`` (Gmail via the top-level ``privacy`` group, Drive via
-``drive_privacy``, Slack via ``slack_privacy``) -- other connectors have no such schema and
-this module invents none for them. Within those three, only tools that return content read
-from an external source (matching exactly which tools ``pii_detector.py`` scans -- see its
-module docstring): write tools never pass through here, for the same reason they never pass
-through the PII gate.
+Scope, deliberately narrow: only the connectors with a category schema documented in
+``settings.yaml.example`` -- Gmail via the top-level ``privacy`` group, Drive via
+``drive_privacy``, Slack via ``slack_privacy``, Contacts via ``contacts_privacy``, Tasks via
+``tasks_privacy``, Confluence via ``confluence_privacy`` -- other connectors have no such
+schema and this module invents none for them. Within those, only tools that return content
+read from an external source (matching exactly which tools ``pii_detector.py`` scans -- see
+its module docstring): write tools never pass through here, for the same reason they never
+pass through the PII gate.
 
 Policy values, applied per category:
   allow  -> value passed through unchanged.
@@ -40,7 +42,8 @@ logger = logging.getLogger(__name__)
 _VALID_POLICIES = ("allow", "redact", "block")
 _BLOCK_MARKER = "[BLOCKED BY PRIVACY FILTER]"
 
-# Keyed by group name ("privacy", "drive_privacy", "slack_privacy"), each value
+# Keyed by group name ("privacy", "drive_privacy", "slack_privacy",
+# "contacts_privacy", "tasks_privacy", "confluence_privacy"), each value
 # {"default_policy": str, "categories": {category: policy}}. Populated once at
 # daemon startup by init_privacy_filter(); empty dict for any group not yet
 # initialized resolves every category to "allow" (fail open on missing config,
@@ -51,14 +54,17 @@ _GROUPS: dict[str, dict[str, Any]] = {}
 
 
 def init_privacy_filter(config: dict[str, Any]) -> None:
-    """Parse ``privacy``/``drive_privacy``/``slack_privacy`` out of the loaded
-    settings.yaml dict. Call once at daemon startup, same pattern as
-    pii_detector.init_pii_detection()."""
+    """Parse ``privacy``/``drive_privacy``/``slack_privacy``/``contacts_privacy``/
+    ``tasks_privacy``/``confluence_privacy`` out of the loaded settings.yaml dict.
+    Call once at daemon startup, same pattern as pii_detector.init_pii_detection()."""
     global _GROUPS
     _GROUPS = {
         "privacy": _parse_group(config.get("privacy")),
         "drive_privacy": _parse_group(config.get("drive_privacy")),
         "slack_privacy": _parse_group(config.get("slack_privacy")),
+        "contacts_privacy": _parse_group(config.get("contacts_privacy")),
+        "tasks_privacy": _parse_group(config.get("tasks_privacy")),
+        "confluence_privacy": _parse_group(config.get("confluence_privacy")),
     }
 
 
@@ -120,3 +126,36 @@ def apply_list(group: str, category: str, items: list[Any]) -> list[Any]:
     if policy == "allow":
         return items
     return []
+
+
+def check_consistency_warnings() -> list[str]:
+    """Advisory config warnings for privacy_filter policies likely to surprise
+    the operator -- never affects runtime filtering, only logged once at
+    daemon startup (see daemon_main.py's run_app, right after
+    init_privacy_filter()).
+
+    Currently checks one thing: Drive's ``file_list`` and ``file_metadata``
+    categories cover overlapping fields (a file's name/owners appear in both
+    drive_list_files's results and drive_get_file_metadata's result) but gate
+    two different tools independently. Restricting one without the other
+    still lets that same information through the tool whose category is
+    still "allow" -- someone who sets ``file_metadata: block`` expecting
+    "Claude can't learn file names/owners" would reasonably assume that
+    covers both tools; it silently doesn't.
+    """
+    warnings: list[str] = []
+    file_list = category_policy("drive_privacy", "file_list")
+    file_metadata = category_policy("drive_privacy", "file_metadata")
+    if file_list == "allow" and file_metadata != "allow":
+        warnings.append(
+            f"drive_privacy.file_metadata is {file_metadata!r}, but drive_privacy.file_list "
+            "is 'allow' -- a file's name/owners still reach Claude via drive_list_files even "
+            "though drive_get_file_metadata restricts the same fields."
+        )
+    elif file_metadata == "allow" and file_list != "allow":
+        warnings.append(
+            f"drive_privacy.file_list is {file_list!r}, but drive_privacy.file_metadata is "
+            "'allow' -- a file's name/owners still reach Claude via drive_get_file_metadata "
+            "even though drive_list_files restricts the same fields."
+        )
+    return warnings

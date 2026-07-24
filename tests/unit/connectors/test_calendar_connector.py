@@ -189,6 +189,77 @@ class TestAutoTools:
         client.get_event.assert_called_once_with("primary", "e1")
 
 
+class TestFreeBusyFullDetailsToggle:
+    """calendar.free_busy_full_event_details (settings.yaml) controls
+    whether calendar_get_free_busy is allowed to return a colleague's full
+    event title/status, or is always downgraded to busy/free blocks only --
+    see connectors/calendar.py's _downgrade_to_busy_only."""
+
+    async def test_full_details_enabled_by_default(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        assert connector.free_busy_full_details is True
+        client.get_colleagues_schedule.return_value = [
+            {"email": "a@example.com", "source": "events", "events": [
+                {"id": "e1", "title": "1:1: performance concerns", "start_time": "t0", "end_time": "t1",
+                 "status": "confirmed", "all_day": False},
+            ]},
+        ]
+
+        result = await connector.call(
+            "calendar_get_free_busy", {"emails": "a@example.com", "time_min": "t0", "time_max": "t1"}
+        )
+
+        assert result[0]["source"] == "events"
+        assert result[0]["events"][0]["title"] == "1:1: performance concerns"
+
+    async def test_full_details_disabled_downgrades_events_to_busy_blocks(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        connector.free_busy_full_details = False
+        client.get_colleagues_schedule.return_value = [
+            {"email": "a@example.com", "source": "events", "events": [
+                {"id": "e1", "title": "1:1: performance concerns", "start_time": "t0", "end_time": "t1",
+                 "status": "confirmed", "all_day": False},
+            ]},
+        ]
+
+        result = await connector.call(
+            "calendar_get_free_busy", {"emails": "a@example.com", "time_min": "t0", "time_max": "t1"}
+        )
+
+        assert result == [{"email": "a@example.com", "source": "free_busy", "busy": [{"start": "t0", "end": "t1"}]}]
+        assert "title" not in json.dumps(result)
+
+    async def test_full_details_disabled_leaves_free_busy_source_unchanged(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        connector.free_busy_full_details = False
+        client.get_colleagues_schedule.return_value = [
+            {"email": "b@example.com", "source": "free_busy", "busy": [{"start": "t0", "end": "t1"}]},
+        ]
+
+        result = await connector.call(
+            "calendar_get_free_busy", {"emails": "b@example.com", "time_min": "t0", "time_max": "t1"}
+        )
+
+        assert result == [{"email": "b@example.com", "source": "free_busy", "busy": [{"start": "t0", "end": "t1"}]}]
+
+    async def test_full_details_disabled_leaves_error_source_unchanged(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        connector.free_busy_full_details = False
+        client.get_colleagues_schedule.return_value = [
+            {"email": "c@example.com", "source": "error", "error": "no access"},
+        ]
+
+        result = await connector.call(
+            "calendar_get_free_busy", {"emails": "c@example.com", "time_min": "t0", "time_max": "t1"}
+        )
+
+        assert result == [{"email": "c@example.com", "source": "error", "error": "no access"}]
+
+
 class TestGetEventDetails:
     async def test_preview_excludes_description_and_full_attendees(self, gated_call_spy):
         connector, client = make_connector()

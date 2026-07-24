@@ -157,17 +157,24 @@ narrower calls still deny rather than silently proceed.
 
 ## 5. Data handling
 
-- **Data minimization by default:** for the three connectors with a documented category schema —
-  Gmail, Google Drive (including Sheets), and Slack (see
-  `src/privacyfence/resources/settings.yaml.example`'s `privacy`/`drive_privacy`/`slack_privacy`
-  sections, enforced by `src/privacyfence/privacy_filter.py`) — the default policy for undefined
-  categories is `block`, and each configured category narrows what the review UI even shows
-  before a human approves it: filtering is a floor under human review, not a substitute for it.
-  The remaining connectors (Calendar, Contacts, Salesforce, Jira, Confluence, Telegram, Tasks)
-  have no category-based privacy filter of their own; what they disclose is governed by the
-  review/popup gate (§4) and by what each connector's code structurally includes or omits (e.g.
-  attachment content is never carried in a read, by design — see
-  `coding-and-testing-guidelines.md` §1.3), not by a configurable category policy.
+- **Data minimization by default:** for the six connectors with a documented category schema —
+  Gmail, Google Drive (including Sheets), Slack, Google Contacts, Google Tasks, and Confluence (see
+  `src/privacyfence/resources/settings.yaml.example`'s `privacy`/`drive_privacy`/`slack_privacy`/
+  `contacts_privacy`/`tasks_privacy`/`confluence_privacy` sections, enforced by
+  `src/privacyfence/privacy_filter.py`) — the default policy for undefined categories is `block`,
+  and each configured category narrows what reaches a human's review popup or, for several of
+  these connectors' auto-approved list/search tools, what reaches Claude directly with no popup at
+  all: filtering is a floor under human review, not a substitute for it. The remaining connectors
+  (Salesforce, Jira, Telegram) have no category-based privacy filter of their own; what they
+  disclose is governed by the review/popup gate (§4) and by what each connector's code
+  structurally includes or omits (e.g. attachment content is never carried in a read, by design —
+  see `coding-and-testing-guidelines.md` §1.3), not by a configurable category policy. Calendar has
+  one narrower, single-setting exception: `calendar.free_busy_full_event_details` can force
+  `calendar_get_free_busy` to withhold full event titles from colleagues' calendars regardless of
+  access — a standalone boolean, not part of the category-schema system above. See
+  [`claude-knowledge-boundary.md`](claude-knowledge-boundary.md) for exactly which fields each
+  category governs, tool by tool, and which auto-approved tools bypass a category that looks like
+  it should cover them.
 - **No aggregation, no secondary use:** PrivacyFence does not copy data to any store beyond the
   local audit log entry needed to record the decision. It does not build profiles, does not train
   models, and has no mechanism to transmit mediated content anywhere other than back to the

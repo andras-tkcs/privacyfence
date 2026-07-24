@@ -58,7 +58,7 @@ from .auto_accept import (
     reload_rules,
 )
 from .pii_detector import init_pii_detection
-from .privacy_filter import init_privacy_filter
+from .privacy_filter import check_consistency_warnings, init_privacy_filter
 from .resource_grants import build_effective_rules, migrate_rules_to_grants
 from .connectors.calendar import CalendarConnector
 from .connectors.confluence import ConfluenceConnector
@@ -289,6 +289,9 @@ def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list
             logger.info("Calendar connector ready for %s", email)
             connector = CalendarConnector(client, rooms=org_config.get("rooms", []))
             connector.my_email = email
+            connector.free_busy_full_details = bool(
+                (config.get("calendar", {}) or {}).get("free_busy_full_event_details", True)
+            )
             connectors.append(connector)
         except (CalendarClientError, FileNotFoundError) as exc:
             logger.warning("Calendar connector disabled: %s", exc)
@@ -638,6 +641,8 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
         detect_financial_figures=pii_config.get("detect_financial_figures", True),
     )
     init_privacy_filter(config)
+    for warning in check_consistency_warnings():
+        logger.warning(warning)
 
     audit_logger = init_audit_logger(str(Path(data_dir()) / "logs" / "audit"))
     audit_logger.export_all_pending()

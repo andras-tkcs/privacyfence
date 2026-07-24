@@ -23,6 +23,7 @@ import pytest
 from privacyfence.audit_log import current_week, init_audit_logger
 from privacyfence.connectors import tasks as tasks_module
 from privacyfence.connectors.tasks import TasksConnector
+from privacyfence.privacy_filter import init_privacy_filter
 from privacyfence.tasks_client import Task, TaskList, TasksClient, TasksClientError
 
 from ...helpers import assert_all_tools_leave_an_audit_trail, assert_no_placeholder_fields
@@ -98,6 +99,52 @@ class TestListAndGet:
 
         client.get_task.assert_called_once_with("list1", "t1")
         assert result == make_task().__dict__
+
+
+class TestNotesPrivacyFilter:
+    """The three read tools are all auto-approved with no gate at all --
+    notes is the one free-text field that can carry arbitrary personal
+    content, so it's the one field filtered through tasks_privacy's "notes"
+    category (see privacy_filter.py). TaskList has no notes field and must
+    be unaffected."""
+
+    async def test_list_tasks_notes_blocked(self):
+        init_privacy_filter({"tasks_privacy": {"categories": {"notes": "block"}}})
+        connector, client = make_connector()
+        client.list_tasks.return_value = [make_task(notes="private detail")]
+
+        result = await connector.call("tasks_list_tasks", {"task_list_id": "list1"})
+
+        assert result[0]["notes"] == "[BLOCKED BY PRIVACY FILTER]"
+        # title has no category of its own -- untouched
+        assert result[0]["title"] == "Buy milk"
+
+    async def test_get_task_notes_blocked(self):
+        init_privacy_filter({"tasks_privacy": {"categories": {"notes": "block"}}})
+        connector, client = make_connector()
+        client.get_task.return_value = make_task(notes="private detail")
+
+        result = await connector.call("tasks_get_task", {"task_list_id": "list1", "task_id": "t1"})
+
+        assert result["notes"] == "[BLOCKED BY PRIVACY FILTER]"
+
+    async def test_task_lists_have_no_notes_field_to_redact(self):
+        init_privacy_filter({"tasks_privacy": {"categories": {"notes": "block"}}})
+        connector, client = make_connector()
+        client.list_task_lists.return_value = [TaskList(id="l1", title="Groceries", updated="u1")]
+
+        result = await connector.call("tasks_list_task_lists", {})
+
+        assert result == [{"id": "l1", "title": "Groceries", "updated": "u1"}]
+
+    async def test_notes_allowed_by_default(self):
+        # No init_privacy_filter call -- fails open to "allow".
+        connector, client = make_connector()
+        client.get_task.return_value = make_task(notes="2%")
+
+        result = await connector.call("tasks_get_task", {"task_list_id": "list1", "task_id": "t1"})
+
+        assert result["notes"] == "2%"
 
 
 class TestListNameResolution:
