@@ -163,6 +163,7 @@ class SlackConnector(Connector):
         messages = await self._fetch(self._slack.get_channel_history, channel_id, limit)
         n = len(messages)
         channel_display = await self._channel_display(channel_id, messages)
+        is_group_dm = await self._fetch(self._slack.resolve_is_group_dm, channel_id)
         filtered = _apply_message_privacy([_message_to_dict(m) for m in messages], "message_content")
         first_preview = (filtered[0]["text"] or "")[:80] if filtered else ""
         preview = {
@@ -192,13 +193,14 @@ class SlackConnector(Connector):
                 "Usernames": category_policy("slack_privacy", "user_identity"),
             },
             my_email=self.my_email,
-            args={"channel_id": channel_id},
+            args={"channel_id": channel_id, "is_group_dm": is_group_dm},
         )
 
     async def _get_thread_replies(self, channel_id: str, thread_ts: str) -> Any:
         messages = await self._fetch(self._slack.get_thread_replies, channel_id, thread_ts)
         n = len(messages)
         channel_display = await self._channel_display(channel_id, messages)
+        is_group_dm = await self._fetch(self._slack.resolve_is_group_dm, channel_id)
         filtered = _apply_message_privacy([_message_to_dict(m) for m in messages], "thread_content")
         starter = (filtered[0]["text"] or "")[:80] if filtered else ""
         preview = {
@@ -228,7 +230,7 @@ class SlackConnector(Connector):
                 "Usernames": category_policy("slack_privacy", "user_identity"),
             },
             my_email=self.my_email,
-            args={"channel_id": channel_id, "thread_ts": thread_ts},
+            args={"channel_id": channel_id, "thread_ts": thread_ts, "is_group_dm": is_group_dm},
         )
 
     async def _search_messages(self, query: str, count: int = 20) -> Any:

@@ -187,6 +187,64 @@ class TestDriveApprovedFolder:
         assert entries[0]["pii_detected"] is False
 
 
+class TestDriveSandboxFolderCoveragePastComment:
+    """drive.comment_file/drive.upload_file/drive.move_file are now targets
+    of the same sandbox_folders grant capability as the six pre-existing
+    write ops -- confirms each one's own existing rule name still auto-
+    accepts end to end (the wiring was purely additive)."""
+
+    async def test_comment_on_a_file_in_the_sandbox_folder_auto_accepts(self, monkeypatch, audit_dir):
+        init_auto_accept_evaluator(
+            {"drive.comment_file": [{"rule": "approved_sandbox_folder", "value": ["qa-folder-id"]}]}
+        )
+        fail_if_popup_shown(monkeypatch)
+
+        result = await gate.gated_call(**make_kwargs(
+            connector="drive", tool="drive_add_comment", gate="popup",
+            raw_data={"file": SimpleNamespace(parent_ids=["qa-folder-id"], owners=[]), "comment": "hi"},
+            args={"file_id": "file-abc"},
+        ))
+
+        assert result is FILTERED
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "auto_accepted"
+        assert entries[0]["auto_accept_rule"] == "approved_sandbox_folder"
+
+    async def test_upload_into_the_allowlisted_folder_auto_accepts(self, monkeypatch, audit_dir):
+        init_auto_accept_evaluator(
+            {"drive.upload_file": [{"rule": "parent_folder_allowlist", "value": ["qa-folder-id"]}]}
+        )
+        fail_if_popup_shown(monkeypatch)
+
+        result = await gate.gated_call(**make_kwargs(
+            connector="drive", tool="drive_upload_file", gate="popup",
+            raw_data=SimpleNamespace(),
+            args={"parent_folder_id": "qa-folder-id"},
+        ))
+
+        assert result is FILTERED
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "auto_accepted"
+        assert entries[0]["auto_accept_rule"] == "parent_folder_allowlist"
+
+    async def test_move_of_a_file_from_the_allowlisted_folder_auto_accepts(self, monkeypatch, audit_dir):
+        init_auto_accept_evaluator(
+            {"drive.move_file": [{"rule": "move_within_approved_folders", "value": ["qa-folder-id"]}]}
+        )
+        fail_if_popup_shown(monkeypatch)
+
+        result = await gate.gated_call(**make_kwargs(
+            connector="drive", tool="drive_move_file", gate="popup",
+            raw_data={"file": SimpleNamespace(parent_ids=["qa-folder-id"], owners=[]), "destination_folder_id": "other"},
+            args={"file_id": "file-abc", "destination_folder_id": "other"},
+        ))
+
+        assert result is FILTERED
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "auto_accepted"
+        assert entries[0]["auto_accept_rule"] == "move_within_approved_folders"
+
+
 class TestDriveTempAccept:
     """connector-qa-testing.md Phase 2 steps 5/13/16: accepting one
     temp-accept-eligible call must silently auto-accept a second call for
@@ -239,6 +297,42 @@ class TestDriveTempAccept:
         assert len(popup_calls) == 2
         entries = read_audit_entries(audit_dir)
         assert entries[1]["decision"] == "accepted_via_temp_session"
+
+
+class TestSlackGroupDm:
+    """Group DMs (Slack's mpim conversation type) get their own rule instead
+    of requiring each group's channel ID to be individually allowlisted
+    under approved_channel."""
+
+    RULES = {"slack.read_messages": [{"rule": "group_dm"}]}
+
+    async def test_group_dm_channel_auto_accepts(self, monkeypatch, audit_dir):
+        init_auto_accept_evaluator(self.RULES)
+        fail_if_popup_shown(monkeypatch)
+
+        result = await gate.gated_call(**make_kwargs(
+            connector="slack", tool="slack_get_channel_history", gate="review",
+            raw_data=[SimpleNamespace(channel_id="G1")],
+            args={"channel_id": "G1", "is_group_dm": True},
+        ))
+
+        assert result is FILTERED
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "auto_accepted"
+        assert entries[0]["auto_accept_rule"] == "group_dm"
+
+    async def test_regular_channel_still_prompts_even_with_the_rule_configured(self, monkeypatch, audit_dir):
+        init_auto_accept_evaluator(self.RULES)
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+
+        result = await gate.gated_call(**make_kwargs(
+            connector="slack", tool="slack_get_channel_history", gate="review",
+            raw_data=[SimpleNamespace(channel_id="C1")],
+            args={"channel_id": "C1", "is_group_dm": False},
+        ))
+
+        assert result is FILTERED
+        assert read_audit_entries(audit_dir)[0]["decision"] == "approved"
 
 
 class TestSlackSearchAllResults:
@@ -348,6 +442,68 @@ class TestTelegramSearchAllResults:
         entries = read_audit_entries(audit_dir)
         assert entries[0]["decision"] == "auto_accepted"
         assert entries[0]["auto_accept_rule"] == "approved_chats"
+
+
+class TestAlwaysAllowUnconditionalRule:
+    """always_allow is the one rule with no resource identity to scope to --
+    for drafts (any recipient) and calendar_create_out_of_office/
+    calendar_set_working_location (no calendar_id arg at all)."""
+
+    async def test_gmail_draft_auto_accepts_regardless_of_recipient(self, monkeypatch, audit_dir):
+        init_auto_accept_evaluator({"gmail.create_draft": [{"rule": "always_allow"}]})
+        fail_if_popup_shown(monkeypatch)
+
+        result = await gate.gated_call(**make_kwargs(
+            connector="gmail", tool="gmail_create_draft", gate="popup",
+            raw_data={"to": "anyone@example.com", "subject": "x", "body": "y", "cc": "", "bcc": ""},
+            args={"to": "anyone@example.com", "subject": "x"},
+        ))
+
+        assert result is FILTERED
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "auto_accepted"
+        assert entries[0]["auto_accept_rule"] == "always_allow"
+
+    async def test_gmail_draft_still_prompts_without_the_rule_configured(self, monkeypatch, audit_dir):
+        init_auto_accept_evaluator({})
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
+
+        result = await gate.gated_call(**make_kwargs(
+            connector="gmail", tool="gmail_create_draft", gate="popup",
+            raw_data={"to": "anyone@example.com", "subject": "x", "body": "y", "cc": "", "bcc": ""},
+            args={"to": "anyone@example.com", "subject": "x"},
+        ))
+
+        assert result is FILTERED
+        assert read_audit_entries(audit_dir)[0]["decision"] == "approved"
+
+    async def test_calendar_out_of_office_auto_accepts(self, monkeypatch, audit_dir):
+        init_auto_accept_evaluator({"calendar.out_of_office": [{"rule": "always_allow"}]})
+        fail_if_popup_shown(monkeypatch)
+
+        result = await gate.gated_call(**make_kwargs(
+            connector="calendar", tool="calendar_create_out_of_office", gate="popup",
+            raw_data={"title": "OOO"}, args={},
+        ))
+
+        assert result is FILTERED
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "auto_accepted"
+        assert entries[0]["auto_accept_rule"] == "always_allow"
+
+    async def test_calendar_working_location_auto_accepts(self, monkeypatch, audit_dir):
+        init_auto_accept_evaluator({"calendar.working_location": [{"rule": "always_allow"}]})
+        fail_if_popup_shown(monkeypatch)
+
+        result = await gate.gated_call(**make_kwargs(
+            connector="calendar", tool="calendar_set_working_location", gate="popup",
+            raw_data={"location": "home"}, args={},
+        ))
+
+        assert result is FILTERED
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "auto_accepted"
+        assert entries[0]["auto_accept_rule"] == "always_allow"
 
 
 class TestCalendarIAmOrganizer:

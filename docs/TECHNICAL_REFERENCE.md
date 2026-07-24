@@ -424,7 +424,7 @@ the evaluator never reads it, only `id`/`key` and the capability booleans decide
 | Connector | Resource type (`config_key`) | Capabilities → what they auto-accept |
 |---|---|---|
 | `drive` | `folders` | `read` → reading file contents/downloads in that folder, and `sheets.read_values` for spreadsheets in it |
-| `drive` | `sandbox_folders` | `write` → writing files/Docs in that folder (including `docs.edit_content`/`docs.format_content`), and every `sheets.*` write operation for spreadsheets in it |
+| `drive` | `sandbox_folders` | `write` → writing files/Docs in that folder (including `docs.edit_content`/`docs.format_content`), every `sheets.*` write operation for spreadsheets in it, commenting on a file already there, uploading into it, and moving a file out of it |
 | `drive` | `spreadsheets` (optionally scoped to one `tab`) | `read` → `sheets.read_values`; `write` → every `sheets.*` write operation (`write_range`/`add_sheet`/`rename_sheet`/`format_range`/`insert_dimensions`/`delete_dimensions`) |
 | `tasks` | `task_lists` | `create`, `edit`, `complete` (covers complete + uncomplete), `move` — one per Tasks write tool |
 | `slack` | `channels` | `read` → reading channel/thread history and search results in that channel; `send` → sending messages there |
@@ -435,11 +435,13 @@ the evaluator never reads it, only `id`/`key` and the capability booleans decide
 | `salesforce` | `reports` | `run` → running that specific report |
 
 `drive.upload_file`'s destination-folder allowlist (`parent_folder_allowlist`) and
-`drive.move_file`'s move-approval (`move_within_approved_folders`) are deliberately **not** part of
-the `folders`/`sandbox_folders` grants above — upload-destination and move-both-ends are different
-enough semantics from "read this folder" / "write into this sandbox" that folding them in would
-misrepresent what a capability checkbox grants. They stay configured under `auto_accept_rules`
-(see below), in the connector's per-operation sections.
+`drive.move_file`'s move-approval (`move_within_approved_folders`) are targets of the
+`sandbox_folders` grant's `write` capability too, alongside the rest — one trusted sandbox folder
+now covers writing into it, uploading into it, and moving a file out of it, not only writing to a
+file already there. They use their own rule names rather than `approved_sandbox_folder` since their
+underlying checks differ (a destination-folder arg for uploads; the file's current parent folder,
+not the move's destination, for moves — see [Auto-accept rules](#auto-accept-rules) below), but take
+the same plain folder-id-list value the grant already compiles.
 
 ### Menu bar UX
 
@@ -523,6 +525,14 @@ own rules:
 | `to_is_myself` | Every recipient of the draft/reply is the authenticated account itself |
 | `approved_recipient_domain` | Every recipient's domain is in the allowlist |
 | `label_name_allowlist` | The label being added/removed/created is in the allowlist |
+| `always_allow` | Unconditional — matches every call, regardless of recipient |
+
+`always_allow` (`gmail.create_draft` only, of these three) is deliberately broader than
+`to_is_myself`/`approved_recipient_domain`: a draft never sends itself, so "always auto-accept
+drafting, I review before it sends anyway" is a coherent policy independent of who the draft is
+addressed to. It's the same value-less rule shape as `i_am_owner`/`dm_with_myself` — presence under
+an operation key is the whole condition — see [Google Calendar](#google-calendar) below for its
+other two uses.
 
 `gmail_create_filter` and `gmail_update_filter` have no built-in rule and always prompt — a
 filter's criteria/action combination is too open-ended for a simple allowlist match.
@@ -542,13 +552,14 @@ filter's criteria/action combination is too open-ended for a simple allowlist ma
 `drive_upload_file` additionally supports `parent_folder_allowlist` (matches when the upload's
 destination folder ID is in the allowlist).
 
-> **`approved_folder` and `approved_sandbox_folder` are grant-managed** — see
+> **`approved_folder`, `approved_sandbox_folder`, `parent_folder_allowlist`, and
+> `move_within_approved_folders` are all grant-managed** — see
 > [Auto-accept grants](#auto-accept-grants) → `drive.folders` / `drive.sandbox_folders`. Add the
 > folder there once (from the menu bar's **Trusted Folders** / **Sandbox Folders** submenus, or by
 > hand under `auto_accept_grants`) and it applies across every operation key below automatically,
-> instead of needing the same folder ID added to each one separately. `parent_folder_allowlist` and
-> `move_within_approved_folders` remain configured directly under `auto_accept_rules` (see
-> [Auto-accept grants](#auto-accept-grants) for why they're not folded into the same grant).
+> instead of needing the same folder ID added to each one separately — including
+> `drive_upload_file`'s destination-folder check and `drive_move_file`'s move-approval, which use
+> their own rule names (different underlying check — see below) but the same sandbox-folder grant.
 
 The same rules apply to the `drive_sheets_*` tools, under their own operation keys so they can be
 configured independently of plain-file Drive operations: `sheets.read_values` (`i_am_owner`,
@@ -592,12 +603,13 @@ Clicking **Always allow** on a "Read Sheet Values" prompt proposes exactly this 
 spreadsheet and tab you just read — rather than a broader ownership- or folder-based rule.
 
 `drive.comment_file` (`drive_add_comment` — also used for comments on Docs and Sheets, since those
-ride the Drive connector's OAuth grant) supports `i_am_owner` and `created_this_session` the same
-way plain Drive files do. `docs.edit_content` and `docs.format_content` (`drive_docs_edit_content`/
-`drive_docs_format_content`) support the same rules `drive.write_doc` does — `i_am_owner`,
-`approved_sandbox_folder`, `created_this_session` — under their own operation keys.
-`approved_sandbox_folder` here is the same `drive.sandbox_folders` grant covered above — enabling
-its `write` capability auto-accepts `docs.edit_content`/`docs.format_content` too, alongside
+ride the Drive connector's OAuth grant) supports `i_am_owner`, `approved_sandbox_folder`, and
+`created_this_session` the same way plain Drive files do. `docs.edit_content` and
+`docs.format_content` (`drive_docs_edit_content`/`drive_docs_format_content`) support the same rules
+`drive.write_doc` does — `i_am_owner`, `approved_sandbox_folder`, `created_this_session` — under
+their own operation keys. `approved_sandbox_folder` here is the same `drive.sandbox_folders` grant
+covered above — enabling its `write` capability auto-accepts `drive.comment_file`,
+`docs.edit_content`/`docs.format_content`, `drive.upload_file`, and `drive.move_file` too, alongside
 `drive.write_file`/`drive.write_doc` and every `sheets.*` write.
 
 **Write ops have no Always allow, but some get a temp-accept grace window instead.** All of the
@@ -621,11 +633,20 @@ with no undo path through PrivacyFence, so it only ever gets the standing-rule t
 | Rule | Matches when… |
 |------|--------------|
 | `dm_with_myself` / `send_to_myself` | Target channel is a self-DM |
+| `group_dm` | Target channel is a group DM (Slack's "mpim" type — a private multi-person conversation, distinct from a 1:1 DM and from a private channel) |
 | `approved_channel` / `approved_recipient` | Channel ID is in the allowlist |
 | `approved_channel_all_results` | **Every** message returned is from a channel in the allowlist |
 | `public_channels_only` | All messages are from public channels |
 | `no_file_attachments` | Messages have no file attachments |
 | `reply_in_existing_thread` | Message is a reply (has `thread_ts`) |
+
+`group_dm` recognizes the group-DM *shape* itself as a trustable category, rather than requiring
+each group's channel ID to be individually allowlisted under `approved_channel` the way a channel
+or a group DM previously had to be. Channel type isn't derivable from the ID alone (a legacy private
+channel can share the same `G`-prefixed shape a group DM uses), so `slack_get_channel_history`/
+`slack_get_thread_replies` resolve it via `SlackClient.resolve_is_group_dm()` (a cached
+`conversations.info` lookup) before the call reaches the gate, alongside the channel-name lookup
+`slack.py`'s preview text already does.
 
 > **`approved_channel`/`approved_recipient` are grant-managed** — see
 > [Auto-accept grants](#auto-accept-grants) → `slack.channels`. One channel grant's `read`/`send`
@@ -651,16 +672,19 @@ channel(s) alike.
 | `time_window_days` | Event starts within the next N days |
 | `no_conferencing_link` | Event has no video conferencing link |
 | `non_private_event` | The event's visibility is not `private` |
+| `always_allow` | Unconditional — `calendar.out_of_office`/`calendar.working_location` only (see below) |
 
 > **`personal_calendar` is grant-managed** — see [Auto-accept grants](#auto-accept-grants) →
 > `calendar.calendars`. One calendar grant's `read`/`write` capabilities cover
 > `calendar.read_event_details`, `calendar.create_modify_event`, and `calendar.set_visibility`.
 
 `calendar_create_out_of_office` (`calendar.out_of_office`) and `calendar_set_working_location`
-(`calendar.working_location`) each have their own operation key but no rule above applies to
-either — both always act on your own primary calendar with no organizer/attendee/other-calendar
-concept for these rules to check — so they remain `popup`-gated with no configurable auto-accept,
-unlike `calendar_create_event`/`calendar_update_event` above.
+(`calendar.working_location`) each have their own operation key, but none of the rules above apply
+to either — both always act on your own primary calendar with no organizer/attendee/other-calendar
+concept for these rules to check. Like `gmail.create_draft` above, their only configurable
+auto-accept is the unconditional `always_allow` — there's no narrower resource identity to scope a
+rule to, so it's a plain yes/no rather than the organizer/calendar-scoped rules
+`calendar_create_event`/`calendar_update_event` support.
 
 `calendar_set_event_visibility` (`calendar.set_visibility`) is a write like
 `calendar_create_event`/`calendar_update_event`, so it shares `calendar.create_modify_event`'s

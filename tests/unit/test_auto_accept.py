@@ -239,6 +239,15 @@ class TestSlackRules:
         assert ev._rule_dm_with_myself(None, channel_ctx) is False
         assert ev._rule_send_to_myself(None, dm_ctx) is True
 
+    def test_group_dm(self):
+        ev = AutoAcceptEvaluator({})
+        group_ctx = make_ctx(args={"channel_id": "G123", "is_group_dm": True})
+        channel_ctx = make_ctx(args={"channel_id": "C123", "is_group_dm": False})
+        no_flag_ctx = make_ctx(args={"channel_id": "G123"})
+        assert ev._rule_group_dm(None, group_ctx) is True
+        assert ev._rule_group_dm(None, channel_ctx) is False
+        assert ev._rule_group_dm(None, no_flag_ctx) is False
+
     def test_approved_channel_and_alias(self):
         ev = AutoAcceptEvaluator({})
         ctx = make_ctx(args={"channel_id": "C123"})
@@ -810,6 +819,17 @@ class TestTasksRules:
 
 
 # --------------------------------------------------------------------------- #
+# Generic rules (no resource identity to scope to)
+# --------------------------------------------------------------------------- #
+
+class TestGenericRules:
+    def test_always_allow_matches_unconditionally(self):
+        ev = AutoAcceptEvaluator({})
+        assert ev._rule_always_allow(None, make_ctx()) is True
+        assert ev._rule_always_allow(None, make_ctx(args={"anything": "at all"})) is True
+
+
+# --------------------------------------------------------------------------- #
 # Dict-shaped raw_data support (calendar rules now accept dicts too)
 # --------------------------------------------------------------------------- #
 
@@ -923,6 +943,10 @@ class TestSuggestRule:
         channel = make_ctx(args={"channel_id": "C1"})
         assert suggest_rule("slack.read_messages", channel) == ("approved_channel", ["C1"])
 
+    def test_slack_suggests_group_dm_before_approved_channel(self):
+        ctx = make_ctx(args={"channel_id": "G1", "is_group_dm": True})
+        assert suggest_rule("slack.read_messages", ctx) == ("group_dm", None)
+
     def test_slack_search_suggests_union_of_result_channels(self):
         # No channel_id in args -- a search spanning multiple channels.
         ctx = make_ctx(
@@ -992,6 +1016,13 @@ class TestSuggestRule:
 
     def test_salesforce_search_suggests_nothing_when_unscoped(self):
         assert suggest_rule("salesforce.search", make_ctx(args={"object_types": ""})) is None
+
+    def test_salesforce_run_report_suggests_approved_report_id(self):
+        ctx = make_ctx(args={"report_id": "00O000000000001"})
+        assert suggest_rule("salesforce.run_report", ctx) == ("approved_report_ids", ["00O000000000001"])
+
+    def test_salesforce_run_report_suggests_nothing_without_report_id(self):
+        assert suggest_rule("salesforce.run_report", make_ctx(args={})) is None
 
     def test_unrecognized_operation_suggests_nothing(self):
         assert suggest_rule("some.unmapped.operation", make_ctx()) is None

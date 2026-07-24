@@ -363,6 +363,25 @@ class TestExpandGrants:
         for op in ("sheets.insert_dimensions", "sheets.delete_dimensions", "docs.edit_content", "docs.format_content"):
             assert compiled[op] == [{"rule": "approved_sandbox_folder", "value": ["F1"], "_grant": True}]
 
+    def test_sandbox_folder_write_also_covers_comment_upload_and_move(self):
+        # drive.comment_file uses approved_sandbox_folder like the rest;
+        # drive.upload_file/drive.move_file use their own existing rule
+        # names (parent_folder_allowlist/move_within_approved_folders) --
+        # all three are now targets of the same "write" capability, so one
+        # sandbox-folder grant covers commenting on, uploading into, and
+        # moving out of it, not just writing to a file already there.
+        grants = {"drive": {"sandbox_folders": [{"id": "F1", "write": True}]}}
+        compiled = rg.expand_grants(grants)
+        assert compiled["drive.comment_file"] == [
+            {"rule": "approved_sandbox_folder", "value": ["F1"], "_grant": True}
+        ]
+        assert compiled["drive.upload_file"] == [
+            {"rule": "parent_folder_allowlist", "value": ["F1"], "_grant": True}
+        ]
+        assert compiled["drive.move_file"] == [
+            {"rule": "move_within_approved_folders", "value": ["F1"], "_grant": True}
+        ]
+
     def test_spreadsheet_write_also_covers_dimensions_ops(self):
         grants = {"drive": {"spreadsheets": [{"id": "S1", "write": True}]}}
         compiled = rg.expand_grants(grants)

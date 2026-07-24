@@ -380,6 +380,46 @@ class TestResolveChannelName:
         assert client.resolve_channel_name("C1") == ""
 
 
+class TestResolveIsGroupDm:
+    def test_empty_channel_id_returns_false_without_api_call(self):
+        web_client = MagicMock()
+        client = make_client(web_client)
+        assert client.resolve_is_group_dm("") is False
+        web_client.conversations_info.assert_not_called()
+
+    def test_mpim_channel_resolves_true_and_caches(self):
+        web_client = MagicMock()
+        web_client.conversations_info.return_value = {"channel": {"is_mpim": True}}
+        client = make_client(web_client)
+
+        assert client.resolve_is_group_dm("G1") is True
+        assert client.resolve_is_group_dm("G1") is True
+        web_client.conversations_info.assert_called_once()
+
+    def test_non_mpim_channel_resolves_false(self):
+        web_client = MagicMock()
+        web_client.conversations_info.return_value = {"channel": {"is_mpim": False, "is_private": True}}
+        client = make_client(web_client)
+        assert client.resolve_is_group_dm("G2") is False
+
+    def test_api_error_is_swallowed_returns_false(self):
+        web_client = MagicMock()
+        web_client.conversations_info.side_effect = slack_error()
+        client = make_client(web_client)
+        assert client.resolve_is_group_dm("G1") is False
+
+    def test_group_dm_cache_is_independent_of_channel_name_cache(self):
+        # Same conversations.info response backs both resolvers, but each
+        # keeps its own cache -- calling one must not short-circuit the other.
+        web_client = MagicMock()
+        web_client.conversations_info.return_value = {"channel": {"name": "", "is_mpim": True}}
+        client = make_client(web_client)
+
+        assert client.resolve_channel_name("G1") == ""
+        assert client.resolve_is_group_dm("G1") is True
+        assert web_client.conversations_info.call_count == 2
+
+
 class TestResolveUserName:
     def test_empty_user_id_returns_empty(self):
         client = make_client(MagicMock())

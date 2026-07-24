@@ -68,14 +68,18 @@ the menu bar's Trusted-\* submenus — the popup button itself never writes ther
 
 | Tool | Always allow rule created |
 |---|---|
-| `slack_get_channel_history` | `dm_with_myself` (channel is your self-DM), else `approved_channel` (that channel) |
-| `slack_get_thread_replies` | `dm_with_myself`, else `approved_channel` |
+| `slack_get_channel_history` | `dm_with_myself` (channel is your self-DM), else `group_dm` (channel is a group DM), else `approved_channel` (that channel) |
+| `slack_get_thread_replies` | `dm_with_myself`, else `group_dm`, else `approved_channel` |
 | `slack_search_messages` | `approved_channel_all_results` (union of channels across every result — see [Conditional gating for search tools](#conditional-gating-for-search-tools) below for why this is a different rule from `approved_channel`) |
 
-> 📋 **Proposed design change:** add a rule that recognizes a group DM (private multi-person
-> conversation that's neither a channel nor `dm_with_myself`) as its own shape — today one falls
-> through to `approved_channel`, so each group's ID has to be individually allowlisted rather than
-> "any group message" being a recognizable, always-allow-able category on its own.
+**Shipped:** `group_dm` recognizes a Slack group DM (the "mpim" conversation type — a private
+multi-person conversation, distinct from a 1:1 DM and from a private channel, even though both can
+share the same `G`-prefixed channel-id shape) as its own always-allow-able category, rather than
+requiring each group's ID to be individually allowlisted under `approved_channel`. Channel type
+isn't derivable from the ID alone, so `slack_get_channel_history`/`slack_get_thread_replies` resolve
+it via a cached `conversations.info` lookup (`SlackClient.resolve_is_group_dm()`) before the call
+reaches the gate — `slack_search_messages` isn't covered, since resolving channel type for every
+distinct channel across a search's results would need one lookup per channel per search.
 
 ### Google Calendar
 
@@ -101,15 +105,8 @@ the menu bar's Trusted-\* submenus — the popup button itself never writes ther
 | Tool | Always allow rule created |
 |---|---|
 | `salesforce_get_record` | `approved_object_types` (that object type) |
-| `salesforce_run_report` | *(none today — see proposal below)* |
+| `salesforce_run_report` | `approved_report_ids` (that report) |
 | `salesforce_search` | `approved_object_types` (every object type the search touches) — only offered when the call specifies `object_types`; an unscoped search (Salesforce's whole default searchable set) never offers Always allow |
-
-> 📋 **Proposed design change:** wire up `salesforce_run_report` to suggest `approved_report_ids`
-> (see [Auto-accept grants](TECHNICAL_REFERENCE.md#auto-accept-grants) → `salesforce.reports`),
-> scoped to the report just run — the same way `drive_sheets_get_values` suggests
-> `approved_spreadsheet` scoped to the sheet just read. The rule already exists and can be
-> configured by hand or via a grant; `suggest_rule()` just has no branch for
-> `salesforce.run_report` yet, so Always allow never offers it from the popup itself.
 
 ### Jira
 
@@ -258,12 +255,15 @@ an Always-allow rule and doesn't belong in this column.
 | `gmail_update_filter` | |
 | `gmail_create_label` | |
 
-> 🆕 **Proposed design change — drafts:** add a plain, unconditional "always allow drafting" rule
-> (a yes/no toggle, no recipient check at all) for `gmail_create_draft`/`gmail_reply_draft`/
-> `gmail_reply_all_draft`. This is genuinely new — the two rules that exist today for
-> `gmail.create_draft` (`to_is_myself`, `approved_recipient_domain`) are both *conditional* on who
-> the draft goes to; a plain yes/no is a different, broader thing, closer in spirit to "Claude
-> drafting is fine, I always review before it sends anyway" (a draft never sends itself).
+> ✅ **Shipped — drafts:** a plain, unconditional `always_allow` rule (a yes/no toggle, no recipient
+> check at all) now exists for `gmail_create_draft`/`gmail_reply_draft`/`gmail_reply_all_draft`
+> (`gmail.create_draft`), configurable from **Manage Auto-accept Rules… → Gmail → Filters**. It's
+> deliberately broader than `to_is_myself`/`approved_recipient_domain` (both *conditional* on who
+> the draft goes to) — closer in spirit to "Claude drafting is fine, I always review before it sends
+> anyway" (a draft never sends itself). Popup-time creation (an Always-allow-style button on the
+> draft popup itself) is still a separate, not-yet-built proposal — see the cross-cutting note
+> above; `always_allow` is deliberately excluded from that mechanism since it has no resource
+> identity to scope to.
 >
 > ✅ **Already supported — add/remove label:** `label_name_allowlist` already exists for both
 > `gmail.add_label` and `gmail.remove_label` (`menu_bar.py`'s `RULES_BY_OPERATION`), i.e. "auto
@@ -295,25 +295,20 @@ an Always-allow rule and doesn't belong in this column.
 | `drive_docs_edit_content` | |
 | `drive_docs_format_content` | |
 
-> 📋 **Proposed design change — treat the parent folder as an approved sandbox folder everywhere:**
-> today's coverage is inconsistent per tool:
->
-> | Tool | Folder-based rule today |
-> |---|---|
-> | `drive_write_file_content`, `drive_write_doc_content`, all six `drive_sheets_*` writes, `drive_docs_edit_content`, `drive_docs_format_content` | `approved_sandbox_folder` ✅ (grant-managed) |
-> | `drive_upload_file` | `parent_folder_allowlist` — a separate, non-grant-managed rule checking the *destination* folder |
-> | `drive_move_file` | `move_within_approved_folders` — a separate, non-grant-managed rule requiring *both* ends of the move to be approved |
-> | `drive_add_comment` | none at all — only `i_am_owner`/`created_this_session` |
->
-> [Auto-accept grants](TECHNICAL_REFERENCE.md#auto-accept-grants) documents `parent_folder_allowlist`
-> and `move_within_approved_folders` as *deliberately* excluded from the `sandbox_folders` grant
-> ("upload-destination and move-both-ends are different enough semantics... that folding them in
-> would misrepresent what a capability checkbox grants"). This proposal is a direct challenge to
-> that call: fold all of it into one `approved_sandbox_folder` grant — one trusted folder covers
-> writing into it, uploading into it, moving a file into it, and commenting on a file already in it
-> — rather than three separately-named rules plus one tool (`drive_add_comment`) with no
-> folder-based option at all. Worth revisiting *why* that separation was made before undoing it, but
-> flagging that the current fragmentation is exactly the kind of thing this document surfaces.
+> ✅ **Shipped — parent folder treated as an approved sandbox folder everywhere:** coverage used to
+> be inconsistent per tool — `drive_write_file_content`/`drive_write_doc_content`/all six
+> `drive_sheets_*` writes/`drive_docs_edit_content`/`drive_docs_format_content` had
+> `approved_sandbox_folder` (grant-managed), `drive_upload_file` had its own, separate,
+> non-grant-managed `parent_folder_allowlist` (checking the upload's *destination* folder, an arg,
+> since the file doesn't exist yet), `drive_move_file` had its own `move_within_approved_folders`
+> (checking the file's *current* parent folder, the same way `approved_folder`/
+> `approved_sandbox_folder` do — **not** the move's destination, despite the name), and
+> `drive_add_comment` had no folder-based rule at all. All three are now targets of the same
+> `sandbox_folders` grant's `write` capability (`resource_grants.py`) — one trusted folder covers
+> writing into it, uploading into it, commenting on a file already there, and moving a file out of
+> it, all from a single grant. `parent_folder_allowlist`/`move_within_approved_folders` keep their
+> own rule names (their underlying checks are genuinely different from `approved_sandbox_folder`'s),
+> just compiled from the same grant now, alongside it.
 
 ### Slack
 
@@ -331,7 +326,7 @@ an Always-allow rule and doesn't belong in this column.
 | `calendar_set_working_location` | |
 | `calendar_set_event_visibility` | |
 
-> 📋 **Proposed design change — "always allow [this] calendar":** status is split down the middle:
+> Status is split down the middle:
 >
 > - ✅ **Already supported** for `calendar_create_event`/`calendar_update_event` (`calendar.
 >   create_modify_event`) and `calendar_set_event_visibility` (`calendar.set_visibility`) —
@@ -340,12 +335,12 @@ an Always-allow rule and doesn't belong in this column.
 >   popup-exposure gap as everywhere else in this section.
 >   📋 **Proposed design change:** it exists, but surface *creating* it from the approval window
 >   itself — an Always-allow-style flow on these three write popups (propose `personal_calendar`
->   scoped to the event's own calendar), not only from the menu bar.
-> - 🆕 **Genuinely new** for `calendar_create_out_of_office`/`calendar_set_working_location`: neither
->   tool even takes a `calendar_id` (`calendar.py`'s `_create_out_of_office`/`_set_working_location`
->   — both always act on your own primary calendar), so `personal_calendar` has nothing to check
->   against here. These two would need the same kind of plain, unconditional yes/no toggle proposed
->   for Gmail drafts above, not a calendar-scoped rule.
+>   scoped to the event's own calendar), not only from the menu bar. Not yet built.
+> - ✅ **Shipped** for `calendar_create_out_of_office`/`calendar_set_working_location`: neither tool
+>   even takes a `calendar_id` (`calendar.py`'s `_create_out_of_office`/`_set_working_location` —
+>   both always act on your own primary calendar), so `personal_calendar` had nothing to check
+>   against here — genuinely new. Both now support the same unconditional `always_allow` toggle
+>   shipped for Gmail drafts, configurable from **Manage Auto-accept Rules… → Calendar → Filters**.
 
 ### Google Contacts
 

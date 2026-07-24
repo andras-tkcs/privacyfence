@@ -252,6 +252,7 @@ ARGS_ONLY_RULES: frozenset[str] = frozenset({
     "approved_spreadsheet",
     "dm_with_myself",
     "send_to_myself",
+    "group_dm",
     "approved_channel",
     "approved_recipient",
     "reply_in_existing_thread",
@@ -270,6 +271,7 @@ ARGS_ONLY_RULES: frozenset[str] = frozenset({
                              # only when args lacks space_key, and that
                              # fallback degrades safely (empty, not a false
                              # match) when raw_data is unavailable.
+    "always_allow",  # unconditional -- reads nothing at all, args or otherwise.
 })
 
 DATA_DEPENDENT_RULES: frozenset[str] = frozenset({
@@ -566,6 +568,18 @@ class AutoAcceptEvaluator:
     def _rule_send_to_myself(self, v, ctx):
         return self._rule_dm_with_myself(v, ctx)
 
+    def _rule_group_dm(self, _v, ctx):
+        """Match a group DM (Slack's "mpim" conversation type -- a private
+        multi-person conversation that's neither a channel nor
+        dm_with_myself's 1:1 self-DM) as its own recognizable category,
+        rather than requiring each group's ID to be individually
+        allowlisted under approved_channel. The connector resolves and
+        passes `is_group_dm` in args (slack.py's `_get_channel_history`/
+        `_get_thread_replies`, via SlackClient.resolve_is_group_dm) since
+        the id alone can't tell a group DM apart from a private channel.
+        """
+        return bool(ctx.args.get("is_group_dm", False))
+
     def _rule_approved_channel(self, value, ctx):
         if not value:
             return False
@@ -811,6 +825,20 @@ class AutoAcceptEvaluator:
         destination = ctx.args.get("destination_list_id", "")
         return bool(source) and bool(destination) and source in allowed and destination in allowed
 
+    # ── Generic (no resource identity to scope to) ──────────────────────────
+
+    def _rule_always_allow(self, _v, ctx):
+        """Unconditional auto-accept, for operations with no resource
+        identity a narrower rule could ever check against -- e.g. drafting
+        (any recipient, unlike to_is_myself/approved_recipient_domain) or
+        calendar_create_out_of_office/calendar_set_working_location (always
+        act on your own primary calendar, no calendar_id arg at all, so
+        personal_calendar has nothing to check). Value-less, same shape as
+        i_am_owner/dm_with_myself/shared_drive_exclusion -- presence under an
+        operation key is the whole condition.
+        """
+        return True
+
 
 # ── Rule suggestion for the popup's "Always allow" button ────────────────────
 
@@ -904,6 +932,8 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
         cid = ctx.args.get("channel_id", "") or ctx.args.get("channel", "") or ""
         if cid.startswith("D"):
             return ("dm_with_myself", None)
+        if ctx.args.get("is_group_dm", False):
+            return ("group_dm", None)
         if cid:
             return ("approved_channel", [cid])
         # No single channel in args -- a search spanning multiple channels
@@ -931,6 +961,10 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
     if operation_key == "salesforce.read_record":
         object_type = ctx.args.get("object_type", "")
         return ("approved_object_types", [object_type]) if object_type else None
+
+    if operation_key == "salesforce.run_report":
+        report_id = ctx.args.get("report_id", "")
+        return ("approved_report_ids", [report_id]) if report_id else None
 
     if operation_key == "salesforce.search":
         object_types = [t.strip() for t in (ctx.args.get("object_types") or "").split(",") if t.strip()]

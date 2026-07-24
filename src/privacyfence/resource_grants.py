@@ -228,6 +228,27 @@ GRANT_RESOURCE_TYPES: tuple[GrantResourceType, ...] = (
                 ("sheets.delete_dimensions", "approved_sandbox_folder"),
                 ("docs.edit_content", "approved_sandbox_folder"),
                 ("docs.format_content", "approved_sandbox_folder"),
+                # drive.comment_file already reads approved_sandbox_folder the
+                # same way every entry above does (its raw_data is
+                # {"file": ..., "comment": ...}, the same dict shape
+                # AutoAcceptEvaluator._file_from() already unwraps) -- this
+                # was purely a config-wiring gap, not a missing rule.
+                ("drive.comment_file", "approved_sandbox_folder"),
+                # drive.upload_file/drive.move_file use their own existing
+                # rule names rather than approved_sandbox_folder --
+                # parent_folder_allowlist checks the upload's destination
+                # folder (an arg, since the file doesn't exist yet);
+                # move_within_approved_folders checks the file's *current*
+                # parent folder the same way approved_folder/
+                # approved_sandbox_folder do (not the move's destination --
+                # see auto_accept.py's _rule_move_within_approved_folders,
+                # a plain alias of _rule_approved_folder). Both take the same
+                # plain folder-id-list value already, so one sandbox-folder
+                # grant now covers uploading into it and moving a file out of
+                # it too, not just writing/formatting/commenting on a file
+                # already there.
+                ("drive.upload_file", "parent_folder_allowlist"),
+                ("drive.move_file", "move_within_approved_folders"),
             )),
         },
         resolver=_resolve_drive_file,
