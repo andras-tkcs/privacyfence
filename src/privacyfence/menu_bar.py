@@ -48,7 +48,7 @@ from . import __version__
 from .audit_log import AuditLogger, current_week
 from .auto_accept import reload_rules, set_rules_changed_listener
 from .paths import data_dir, org_dir
-from .pii_detector import set_pii_detection_enabled
+from .pii_detector import set_pii_category_enabled, set_pii_detection_enabled
 from .app_credentials import telegram_app_credentials
 from .daemon_main import TOKEN_FILES, build_connectors, load_org_config
 from .atlassian_oauth import authorize_interactive as atlassian_authorize_interactive
@@ -245,6 +245,14 @@ ORG_CONFIG_SERVICE: dict[str, str] = {
     "salesforce": "salesforce",
 }
 ORG_BUNDLE_SERVICES: list[str] = ["google", "slack", "salesforce", "atlassian"]
+
+# Categories individually toggleable from the "PII Detection Gate" submenu,
+# on top of that submenu's own master "Enabled" switch. Keys match
+# pii_detector._OPTIONAL_CATEGORIES and the settings.yaml field names.
+PII_OPTIONAL_CATEGORIES: list[tuple[str, str]] = [
+    ("detect_ip_addresses", "Detect IP Addresses"),
+    ("detect_financial_figures", "Detect Financial Figures"),
+]
 
 _GOOGLE_CLIENTS: dict[str, type] = {
     "gmail": GmailClient,
@@ -460,14 +468,14 @@ class PrivacyFenceMenuBar(rumps.App):
         cfg = self._load_config()
         org_config = load_org_config()
         connectors_cfg: dict[str, dict] = cfg.get("connectors", {}) or {}
-        pii_enabled: bool = (cfg.get("pii_detection", {}) or {}).get("enabled", True)
+        pii_cfg: dict[str, Any] = cfg.get("pii_detection", {}) or {}
+        pii_enabled: bool = pii_cfg.get("enabled", True)
 
         org_item = self._build_org_menu(org_config)
         connectors_parent = self._build_connectors_menu(org_config, connectors_cfg)
         rules_item = rumps.MenuItem("Manage Auto-accept Rules…", callback=self._open_rules_manager)
 
-        pii_item = rumps.MenuItem("PII Detection Gate", callback=self._toggle_pii_detection)
-        pii_item.state = pii_enabled
+        pii_item = self._build_pii_menu(pii_cfg, pii_enabled)
 
         self.menu.clear()
         self.menu = [
@@ -1127,6 +1135,24 @@ class PrivacyFenceMenuBar(rumps.App):
     # PII detection gate
     # ------------------------------------------------------------------ #
 
+    def _build_pii_menu(self, pii_cfg: dict[str, Any], pii_enabled: bool) -> rumps.MenuItem:
+        pii_item = rumps.MenuItem("PII Detection Gate")
+
+        enabled_item = rumps.MenuItem("Enabled", callback=self._toggle_pii_detection)
+        enabled_item.state = pii_enabled
+        pii_item.add(enabled_item)
+        pii_item.add(rumps.separator)
+
+        for key, label in PII_OPTIONAL_CATEGORIES:
+            item = rumps.MenuItem(f"  {label}")
+            item.state = pii_cfg.get(key, True)
+            # Grayed out (no callback) while the gate itself is off -- these
+            # two categories are meaningless without the master switch on.
+            item.set_callback(_bind(self._toggle_pii_category, key) if pii_enabled else None)
+            pii_item.add(item)
+
+        return pii_item
+
     def _toggle_pii_detection(self, _sender: Any = None) -> None:
         cfg = self._load_config()
         pii_cfg = cfg.setdefault("pii_detection", {})
@@ -1134,6 +1160,15 @@ class PrivacyFenceMenuBar(rumps.App):
         pii_cfg["enabled"] = enabled
         self._save_config(cfg)
         set_pii_detection_enabled(enabled)
+        self._rebuild()
+
+    def _toggle_pii_category(self, category_key: str, _sender: Any = None) -> None:
+        cfg = self._load_config()
+        pii_cfg = cfg.setdefault("pii_detection", {})
+        enabled = not pii_cfg.get(category_key, True)
+        pii_cfg[category_key] = enabled
+        self._save_config(cfg)
+        set_pii_category_enabled(category_key, enabled)
         self._rebuild()
 
     # ------------------------------------------------------------------ #
