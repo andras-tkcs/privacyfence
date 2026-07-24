@@ -46,7 +46,9 @@ class GmailConnector(Connector):
                 name="gmail_list_threads",
                 description=(
                     "Search Gmail and return matching thread summaries "
-                    "(id, snippet). Auto-approved — no body content is returned."
+                    "(id, snippet). Auto-approved — snippet is a short excerpt of the "
+                    "last message's body, subject to the same 'body' privacy category "
+                    "as gmail_get_message."
                 ),
                 params=[
                     ToolParam("query", "str"),
@@ -299,22 +301,44 @@ class GmailConnector(Connector):
         summaries = await self._fetch(self._gmail.list_messages, query, max_results)
         self._auto_audit("gmail_list_messages", "List Gmail Messages",
                          f"List messages: {query!r}", f"{len(summaries)} result(s)", t0)
-        return summaries
+        # Same "metadata" category gmail_get_message/gmail_get_thread already
+        # apply to these same fields -- without this, blocking/redacting
+        # metadata there had no effect, since search results carried the
+        # unfiltered subject/sender/date regardless.
+        return [
+            {
+                **s,
+                "subject": apply_text("privacy", "metadata", s.get("subject", "") or ""),
+                "sender": apply_text("privacy", "metadata", s.get("sender", "") or ""),
+                "date": apply_text("privacy", "metadata", s.get("date", "") or ""),
+            }
+            for s in summaries
+        ]
 
     async def _list_threads(self, query: str, max_results: int = 10) -> Any:
         t0 = time.time()
         summaries = await self._fetch(self._gmail.list_threads, query, max_results)
         self._auto_audit("gmail_list_threads", "List Gmail Threads",
                          f"List threads: {query!r}", f"{len(summaries)} result(s)", t0)
-        return summaries
+        # snippet is a genuine excerpt of the last message's body (straight
+        # from the Gmail API), not structural metadata -- gate it under the
+        # same "body" category gmail_get_message applies to the full body,
+        # rather than leaving this the one unfiltered leak of that content.
+        return [
+            {**s, "snippet": apply_text("privacy", "body", s.get("snippet", "") or "")}
+            for s in summaries
+        ]
 
     async def _list_message_attachments(self, message_id: str) -> Any:
         t0 = time.time()
         message = await self._fetch(self._gmail.get_message, message_id)
-        attachments = [
-            {"name": att.name, "mime_type": att.mime_type, "size": att.size}
-            for att in (message.attachments or [])
-        ]
+        attachments = apply_list(
+            "privacy", "attachments",
+            [
+                {"name": att.name, "mime_type": att.mime_type, "size": att.size}
+                for att in (message.attachments or [])
+            ],
+        )
         self._auto_audit(
             "gmail_list_message_attachments", "List Gmail Attachments",
             f"List attachments: {message.subject or '(no subject)'}",

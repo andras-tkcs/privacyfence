@@ -26,6 +26,7 @@ from privacyfence.confluence_client import (
 )
 from privacyfence.connectors import confluence as confluence_module
 from privacyfence.connectors.confluence import ConfluenceConnector
+from privacyfence.privacy_filter import init_privacy_filter
 
 from ...helpers import assert_all_tools_leave_an_audit_trail, assert_no_placeholder_fields
 
@@ -141,6 +142,61 @@ class TestAutoTools:
 
         with pytest.raises(RuntimeError, match="no access"):
             await connector.call("confluence_list_spaces", {})
+
+
+class TestExcerptPrivacyFilter:
+    """confluence_search/confluence_cql_search are auto-approved, but
+    excerpt is a genuine content excerpt (not structural metadata like
+    title/space/id) -- the one auto search tool across every connector that
+    returns actual page content pre-approval. Filtered through
+    confluence_privacy's "search_excerpt" category (see privacy_filter.py)."""
+
+    async def test_search_excerpt_blocked(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        init_privacy_filter({"confluence_privacy": {"categories": {"search_excerpt": "block"}}})
+        connector, client = make_connector()
+        client.search.return_value = [
+            ConfluenceSearchResult(
+                id="s1", title="Runbook", content_type="page", space_key="ENG",
+                excerpt="the confidential matching snippet",
+            ),
+        ]
+
+        result = await connector.call("confluence_search", {"query": "runbook"})
+
+        assert result[0]["excerpt"] == "[BLOCKED BY PRIVACY FILTER]"
+        # title/space/id have no category of their own -- untouched
+        assert result[0]["title"] == "Runbook"
+
+    async def test_cql_search_excerpt_blocked(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        init_privacy_filter({"confluence_privacy": {"categories": {"search_excerpt": "block"}}})
+        connector, client = make_connector()
+        client.cql_search.return_value = [
+            ConfluenceSearchResult(
+                id="s1", title="Runbook", content_type="page", space_key="ENG",
+                excerpt="confidential",
+            ),
+        ]
+
+        result = await connector.call("confluence_cql_search", {"cql": "space = ENG"})
+
+        assert result[0]["excerpt"] == "[BLOCKED BY PRIVACY FILTER]"
+
+    async def test_excerpt_allowed_by_default(self, tmp_path):
+        # No init_privacy_filter call -- fails open to "allow".
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        client.search.return_value = [
+            ConfluenceSearchResult(
+                id="s1", title="Runbook", content_type="page", space_key="ENG",
+                excerpt="a normal excerpt",
+            ),
+        ]
+
+        result = await connector.call("confluence_search", {"query": "runbook"})
+
+        assert result[0]["excerpt"] == "a normal excerpt"
 
 
 class TestGetPage:

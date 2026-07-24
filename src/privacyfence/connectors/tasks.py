@@ -2,6 +2,10 @@
 
 Reads (list task lists, list tasks, get a task) are low-sensitivity metadata
 and stay auto-approved, like every other connector's read-only listing calls.
+The one exception is a task's free-text `notes` field, which is filtered
+through tasks_privacy's "notes" category (see privacy_filter.py) before
+being returned -- unlike title/due/status, notes can carry arbitrary
+personal content.
 Writes (create/update/complete/uncomplete/move) go through the popup gate,
 same as every other connector's writes — this connector used to auto-approve
 everything, including writes, which was the one connector whose behavior
@@ -20,6 +24,7 @@ from typing import Any
 from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
 from ..gate import current_reason, gated_call
+from ..privacy_filter import apply_text
 from ..tasks_client import TasksClient, TasksClientError
 
 logger = logging.getLogger(__name__)
@@ -147,7 +152,9 @@ class TasksConnector(Connector):
         t0 = time.time()
         result = await self._fetch(func, *func_args)
         self._auto_audit(tool, tool_name, summary, t0)
-        return self._serialize(result)
+        # Only the read path -- a write's result dict echoes back notes
+        # Claude just wrote itself, so there's nothing to redact there.
+        return _redact_notes(self._serialize(result))
 
     # ------------------------------------------------------------------ #
     # Popup gate (writes)
@@ -326,3 +333,16 @@ class TasksConnector(Connector):
             ))
         except Exception as exc:
             logger.warning("Audit log write failed: %s", exc)
+
+
+def _redact_notes(value: Any) -> Any:
+    """Apply tasks_privacy's "notes" category to a serialized Task's
+    free-text notes field -- the one field on a task that can carry
+    arbitrary personal content, unlike title/due/status. A TaskList dict has
+    no "notes" key and passes through untouched; a list of either is handled
+    recursively."""
+    if isinstance(value, list):
+        return [_redact_notes(v) for v in value]
+    if isinstance(value, dict) and "notes" in value:
+        value["notes"] = apply_text("tasks_privacy", "notes", value.get("notes", "") or "")
+    return value

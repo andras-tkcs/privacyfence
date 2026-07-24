@@ -20,6 +20,7 @@ from privacyfence.audit_log import current_week, init_audit_logger
 from privacyfence.connectors import contacts as contacts_module
 from privacyfence.connectors.contacts import ContactsConnector, _parse_json_list
 from privacyfence.contacts_client import Contact, ContactEmail, ContactPhone, ContactsClient, ContactsClientError
+from privacyfence.privacy_filter import init_privacy_filter
 
 from ...helpers import assert_all_tools_leave_an_audit_trail, assert_no_placeholder_fields
 
@@ -152,6 +153,56 @@ class TestSourceParam:
 
         with pytest.raises(RuntimeError, match="but source='directory' was requested"):
             await connector.call("contacts_get", {"resource_name": "people/c1", "source": "directory"})
+
+
+class TestNotesPrivacyFilter:
+    """contacts_list/search/get are all auto-approved with no read gate at
+    all -- notes is the one free-text field that can carry arbitrary
+    personal content, so it's the one field filtered through
+    contacts_privacy's "notes" category (see privacy_filter.py)."""
+
+    async def test_notes_blocked_in_list(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        init_privacy_filter({"contacts_privacy": {"categories": {"notes": "block"}}})
+        connector, client = make_connector()
+        client.list_contacts.return_value = [make_contact(notes="secret detail")]
+
+        result = await connector.call("contacts_list", {})
+
+        assert result[0]["notes"] == "[BLOCKED BY PRIVACY FILTER]"
+        # everything else is untouched -- notes has no bearing on other fields
+        assert result[0]["display_name"] == "Bob Smith"
+
+    async def test_notes_blocked_in_search(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        init_privacy_filter({"contacts_privacy": {"categories": {"notes": "block"}}})
+        connector, client = make_connector()
+        client.search_contacts.return_value = [make_contact(notes="secret detail")]
+
+        result = await connector.call("contacts_search", {"query": "Bob"})
+
+        assert result[0]["notes"] == "[BLOCKED BY PRIVACY FILTER]"
+
+    async def test_notes_blocked_in_get(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        init_privacy_filter({"contacts_privacy": {"categories": {"notes": "block"}}})
+        connector, client = make_connector()
+        client.get_contact.return_value = make_contact(notes="secret detail")
+
+        result = await connector.call("contacts_get", {"resource_name": "people/c1"})
+
+        assert result["notes"] == "[BLOCKED BY PRIVACY FILTER]"
+
+    async def test_notes_allowed_by_default(self, tmp_path):
+        # No init_privacy_filter call -- fails open to "allow", same as
+        # every other unconfigured category.
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        client.get_contact.return_value = make_contact(notes="met at conference")
+
+        result = await connector.call("contacts_get", {"resource_name": "people/c1"})
+
+        assert result["notes"] == "met at conference"
 
 
 class TestContactsUpdate:

@@ -13,6 +13,7 @@ from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..confluence_client import ConfluenceClient, ConfluenceClientError
 from ..connector import Connector, ToolParam, ToolSpec
 from ..gate import current_reason, gated_call
+from ..privacy_filter import apply_text
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +179,7 @@ class ConfluenceConnector(Connector):
     async def _search(self, query: str, max_results: int = 20) -> Any:
         t0 = time.time()
         results = await self._fetch(self._confluence.search, query, max_results)
-        data = [asdict(r) for r in results]
+        data = [_redact_excerpt(asdict(r)) for r in results]
         self._auto_audit(
             "confluence_search", "Search Confluence",
             f"Search: {query[:80]}", f"{len(results)} result(s)", t0,
@@ -188,7 +189,7 @@ class ConfluenceConnector(Connector):
     async def _cql_search(self, cql: str, max_results: int = 20) -> Any:
         t0 = time.time()
         results = await self._fetch(self._confluence.cql_search, cql, max_results)
-        data = [asdict(r) for r in results]
+        data = [_redact_excerpt(asdict(r)) for r in results]
         self._auto_audit(
             "confluence_cql_search", "CQL Search Confluence",
             f"CQL: {cql[:80]}", f"{len(results)} result(s)", t0,
@@ -345,3 +346,15 @@ class ConfluenceConnector(Connector):
             ))
         except Exception as exc:
             logger.warning("Audit log write failed: %s", exc)
+
+
+def _redact_excerpt(result_dict: dict[str, Any]) -> dict[str, Any]:
+    """Apply confluence_privacy's "search_excerpt" category to one
+    confluence_search/confluence_cql_search result -- excerpt is a genuine
+    content excerpt built to show *why* a page matched (straight from
+    Confluence's search API), not structural metadata like title/space/id,
+    which have no category of their own."""
+    result_dict["excerpt"] = apply_text(
+        "confluence_privacy", "search_excerpt", result_dict.get("excerpt", "") or ""
+    )
+    return result_dict

@@ -12,6 +12,7 @@ from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
 from ..contacts_client import ContactsClient, ContactsClientError
 from ..gate import current_reason, gated_call
+from ..privacy_filter import apply_text
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +170,7 @@ class ContactsConnector(Connector):
     async def _contacts_list(self, max_results: int = 50, source: str = "both") -> Any:
         t0 = time.time()
         contacts = await self._fetch(self._contacts.list_contacts, max_results, source)
-        result = [c.to_dict() for c in contacts]
+        result = [_redact_notes(c.to_dict()) for c in contacts]
         self._auto_audit("contacts_list", "List Contacts",
                          f"List contacts (max {max_results}, source={source})", f"{len(result)} contact(s)", t0)
         return result
@@ -177,7 +178,7 @@ class ContactsConnector(Connector):
     async def _contacts_search(self, query: str, max_results: int = 20, source: str = "both") -> Any:
         t0 = time.time()
         contacts = await self._fetch(self._contacts.search_contacts, query, max_results, source)
-        result = [c.to_dict() for c in contacts]
+        result = [_redact_notes(c.to_dict()) for c in contacts]
         self._auto_audit("contacts_search", "Search Contacts",
                          f"Search: {query!r} (source={source})", f"{len(result)} result(s)", t0)
         return result
@@ -185,7 +186,7 @@ class ContactsConnector(Connector):
     async def _contacts_get(self, resource_name: str, source: str = "both") -> Any:
         t0 = time.time()
         contact = await self._fetch(self._contacts.get_contact, resource_name, source)
-        result = contact.to_dict()
+        result = _redact_notes(contact.to_dict())
         self._auto_audit("contacts_get", "Get Contact",
                          f"Get: {resource_name}", contact.display_name or resource_name, t0)
         return result
@@ -390,3 +391,13 @@ def _parse_json_list(value: str) -> list[dict] | None:
         return parsed if isinstance(parsed, list) else None
     except (json.JSONDecodeError, ValueError):
         return None
+
+
+def _redact_notes(contact_dict: dict[str, Any]) -> dict[str, Any]:
+    """Apply contacts_privacy's "notes" category to a contact's free-text
+    biography field -- the one field on a contact that can carry arbitrary
+    personal content, unlike the structured name/email/phone/org fields
+    around it, none of which have a category of their own (see
+    privacy_filter.py's module docstring for scope)."""
+    contact_dict["notes"] = apply_text("contacts_privacy", "notes", contact_dict.get("notes", "") or "")
+    return contact_dict
