@@ -13,6 +13,7 @@ import asyncio
 import json
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -339,7 +340,7 @@ class TestAcceptAllMultipleChoices:
 
 class TestAcceptAllWrites:
     """The write-gate counterpart to TestAcceptAll -- gate.suggest_write_rule()
-    drives an "Always allow" button on the five write operations in
+    drives an "Always allow" button on the write operations listed in
     auto_accept.WRITE_RULE_SUGGESTIONS, using the same accept_all/
     show_rule_confirmation_popup/add_auto_accept_rule machinery the review
     branch already uses, not a separate mechanism."""
@@ -413,6 +414,27 @@ class TestAcceptAllWrites:
         assert added == []
         entries = read_audit_entries(audit_dir)
         assert entries[0]["decision"] == "approved"
+
+    async def test_drive_write_offers_approved_sandbox_folder_end_to_end(self, monkeypatch, audit_dir):
+        # End-to-end through the real (unmocked) suggest_write_rule, for one
+        # of the 13 Drive/Sheets/Docs write operations that now share the
+        # sandbox-folder suggestion.
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
+        added = []
+        monkeypatch.setattr(gate, "add_auto_accept_rule", lambda op, name, value: added.append((op, name, value)))
+
+        result = await gate.gated_call(**base_kwargs(
+            gate="popup", connector="drive", tool="drive_write_file_content",
+            raw_data={"file": SimpleNamespace(parent_ids=["folder1"]), "content_preview": "x"},
+        ))
+
+        assert result is FILTERED
+        assert added == [("drive.write_file", "approved_sandbox_folder", ["folder1"])]
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "accepted_via_accept_all"
+        assert entries[0]["auto_accept_rule"] == "approved_sandbox_folder"
 
     async def test_gmail_create_draft_offers_the_unconditional_always_allow_rule(self, monkeypatch, audit_dir):
         # End-to-end through the real (unmocked) suggest_write_rule -- unlike

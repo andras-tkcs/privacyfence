@@ -1152,6 +1152,20 @@ def _task_list_value(ctx: ReviewContext) -> Any:
     return sorted({source, destination}) if source and destination else _NO_SUGGESTION
 
 
+def _sandbox_folder_value(ctx: ReviewContext) -> Any:
+    """Derive an approved_sandbox_folder/move_within_approved_folders value
+    from the file's current parent folder(s) -- same _file_from() unwrap as
+    suggest_rule()'s drive_read family, and the same reasoning
+    _rule_approved_folder already reads by for these rule names. For
+    drive.move_file specifically, raw_data's file is the file *before* the
+    move (see drive.py::_move_file), i.e. its source folder -- moving out of
+    an approved folder is what move_within_approved_folders means, not
+    moving into one."""
+    f = _file_from(ctx.raw_data)
+    parents = list(getattr(f, "parent_ids", []) or [])
+    return parents if parents else _NO_SUGGESTION
+
+
 # Sentinel distinguishing "nothing to suggest for this call" from "the
 # suggested value is legitimately None" -- always_allow (see below) is a
 # value-less rule, so its value_of always returns None as a *real* value,
@@ -1167,9 +1181,9 @@ class WriteRuleSuggestion:
 
 
 # Every entry here except gmail.create_draft is resource-identity-scoped
-# (one label, one calendar, one project, one space, one task list) rather
-# than a bare "accept every future write of this type" toggle -- that
-# property is what keeps this table's blast radius contained despite
+# (one folder, one label, one calendar, one project, one space, one task
+# list) rather than a bare "accept every future write of this type" toggle --
+# that property is what keeps this table's blast radius contained despite
 # reopening the write gate's "Always allow" button for these operations.
 # gmail.create_draft is a deliberate, narrow exception: drafting has no
 # recipient sent yet (unlike gmail.send_message, which the user still
@@ -1191,6 +1205,29 @@ WRITE_RULE_SUGGESTIONS: dict[str, WriteRuleSuggestion] = {
     "calendar.set_visibility": WriteRuleSuggestion(
         "personal_calendar", lambda ctx: [ctx.args["calendar_id"]] if ctx.args.get("calendar_id") else _NO_SUGGESTION
     ),
+    # All of Drive's write tools -- writing into a trusted sandbox folder,
+    # uploading into it, commenting on a file already there, and moving a
+    # file out of it are all covered by the same drive.sandbox_folders
+    # grant (see resource_grants.py); upload/move use their own existing
+    # rule names since they check a different arg (the upload's destination
+    # folder, the file's current parent folder) rather than
+    # approved_sandbox_folder's raw_data-derived one.
+    "drive.write_file": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
+    "drive.write_doc": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
+    "drive.comment_file": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
+    "drive.upload_file": WriteRuleSuggestion(
+        "parent_folder_allowlist",
+        lambda ctx: [ctx.args["parent_folder_id"]] if ctx.args.get("parent_folder_id") else _NO_SUGGESTION,
+    ),
+    "drive.move_file": WriteRuleSuggestion("move_within_approved_folders", _sandbox_folder_value),
+    "sheets.write_range": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
+    "sheets.add_sheet": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
+    "sheets.rename_sheet": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
+    "sheets.format_range": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
+    "sheets.insert_dimensions": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
+    "sheets.delete_dimensions": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
+    "docs.edit_content": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
+    "docs.format_content": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
     "jira.create_issue": WriteRuleSuggestion("approved_project_keys", _project_key_value),
     "jira.add_comment": WriteRuleSuggestion("approved_project_keys", _project_key_value),
     "jira.update_issue": WriteRuleSuggestion("approved_project_keys", _project_key_value),

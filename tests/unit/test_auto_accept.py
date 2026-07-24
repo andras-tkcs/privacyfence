@@ -1294,8 +1294,54 @@ class TestSuggestWriteRule:
         # The other write operations aren't in WRITE_RULE_SUGGESTIONS at
         # all -- this is what keeps the mechanism's blast radius contained.
         assert suggest_write_rule("gmail.send_message", make_ctx(args={"to": "x@example.com"})) is None
-        assert suggest_write_rule("drive.write_file", make_ctx(args={})) is None
+        assert suggest_write_rule("slack.send_message", make_ctx(args={})) is None
         assert suggest_write_rule("calendar.out_of_office", make_ctx(args={})) is None
+
+    def test_drive_write_file_suggests_approved_sandbox_folder_from_current_parent(self):
+        ctx = make_ctx(raw_data={"file": SimpleNamespace(parent_ids=["folder1"]), "content_preview": "x"})
+        assert suggest_write_rule("drive.write_file", ctx) == ("approved_sandbox_folder", ["folder1"])
+
+    def test_drive_write_file_suggests_nothing_without_a_parent_folder(self):
+        ctx = make_ctx(raw_data={"file": SimpleNamespace(parent_ids=[]), "content_preview": "x"})
+        assert suggest_write_rule("drive.write_file", ctx) is None
+
+    def test_drive_write_doc_suggests_approved_sandbox_folder(self):
+        ctx = make_ctx(raw_data={"file": SimpleNamespace(parent_ids=["folder1"]), "markdown_preview": "x"})
+        assert suggest_write_rule("drive.write_doc", ctx) == ("approved_sandbox_folder", ["folder1"])
+
+    def test_drive_comment_file_suggests_approved_sandbox_folder(self):
+        ctx = make_ctx(raw_data={"file": SimpleNamespace(parent_ids=["folder1"]), "comment": "x"})
+        assert suggest_write_rule("drive.comment_file", ctx) == ("approved_sandbox_folder", ["folder1"])
+
+    def test_drive_upload_file_suggests_parent_folder_allowlist_from_destination(self):
+        ctx = make_ctx(args={"parent_folder_id": "folder1", "name": "x"})
+        assert suggest_write_rule("drive.upload_file", ctx) == ("parent_folder_allowlist", ["folder1"])
+
+    def test_drive_upload_file_suggests_nothing_without_a_destination(self):
+        # Uploading straight into My Drive root has no folder to scope a
+        # rule to.
+        assert suggest_write_rule("drive.upload_file", make_ctx(args={"name": "x"})) is None
+
+    def test_drive_move_file_suggests_move_within_approved_folders_from_source_not_destination(self):
+        # raw_data's file is the file *before* the move (see
+        # drive.py::_move_file) -- the suggestion must be scoped to the
+        # folder being moved out of, not the destination_folder_id arg.
+        ctx = make_ctx(
+            args={"file_id": "f1", "destination_folder_id": "folder2"},
+            raw_data={"file": SimpleNamespace(parent_ids=["folder1"]), "destination_folder_id": "folder2"},
+        )
+        assert suggest_write_rule("drive.move_file", ctx) == ("move_within_approved_folders", ["folder1"])
+
+    def test_sheets_and_docs_write_ops_all_suggest_approved_sandbox_folder(self):
+        # All share the same _sandbox_folder_value derivation as
+        # drive.write_file/write_doc/comment_file -- one grant covers them
+        # all (see resource_grants.py's sandbox_folders write capability).
+        for op_key in (
+            "sheets.write_range", "sheets.add_sheet", "sheets.rename_sheet", "sheets.format_range",
+            "sheets.insert_dimensions", "sheets.delete_dimensions", "docs.edit_content", "docs.format_content",
+        ):
+            ctx = make_ctx(raw_data={"file": SimpleNamespace(parent_ids=["folder1"])})
+            assert suggest_write_rule(op_key, ctx) == ("approved_sandbox_folder", ["folder1"]), op_key
 
     def test_gmail_create_draft_always_suggests_the_unconditional_rule(self):
         # Deliberately not resource-identity-scoped, unlike every other entry
