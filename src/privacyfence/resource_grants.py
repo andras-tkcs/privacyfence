@@ -41,9 +41,9 @@ class GrantCapability:
 
     ``targets`` is the list of (operation_key, rule_name) pairs that get a
     compiled rule entry when this capability is enabled on a grant entry —
-    almost always one pair, but e.g. a spreadsheet's "write" capability
-    spans four ``sheets.*`` operation keys, and this is exactly where the
-    "apply to all" behavior comes from.
+    almost always one pair, but e.g. a sandbox folder's "write" capability
+    spans several Drive/Sheets/Docs operation keys, and this is exactly
+    where the "apply to all" behavior comes from.
     """
 
     label: str
@@ -72,18 +72,17 @@ class GrantResourceType:
     # installed (google-api-python-client, slack_sdk, atlassian-python-api).
     resolver: Callable[[Any, str], str | None]
     # Build the rule value contributed by one grant entry. Defaults to just
-    # the ID; spreadsheets override this to build the {"spreadsheet_id",
-    # "tab"} pair dict `approved_spreadsheet` expects.
+    # the ID.
     value_of: Callable[[dict[str, Any]], Any] = field(
         default_factory=lambda: (lambda entry: entry)
     )
     # (client) -> [(resource_id, display_name), ...] when the connector has a
     # cheap, already-auto-gated listing call — lets the "+ Add …" menu item
     # offer a live picker by name instead of asking the user to paste an ID.
-    # None for resources with no such call (Drive folders/spreadsheets: there
-    # is no "list every folder I can see" API short of the heavier Google
-    # Picker integration — see docs at the time this shipped) — those fall
-    # back to paste-ID-or-URL entry in the menu bar.
+    # None for resources with no such call (Drive folders: there is no "list
+    # every folder I can see" API short of the heavier Google Picker
+    # integration — see docs at the time this shipped) — those fall back to
+    # paste-ID-or-URL entry in the menu bar.
     list_candidates: Callable[[Any], list[tuple[str, str]]] | None = None
 
     def id_of(self, entry: dict[str, Any]) -> str:
@@ -92,13 +91,6 @@ class GrantResourceType:
 
 def _plain_value_of(id_field: str) -> Callable[[dict[str, Any]], Any]:
     return lambda entry: entry.get(id_field, "")
-
-
-def _spreadsheet_value_of(entry: dict[str, Any]) -> dict[str, Any]:
-    value: dict[str, Any] = {"spreadsheet_id": entry.get("id", "")}
-    if entry.get("tab"):
-        value["tab"] = entry["tab"]
-    return value
 
 
 def _find_by(items: Any, attr: str, target: str) -> str | None:
@@ -253,25 +245,6 @@ GRANT_RESOURCE_TYPES: tuple[GrantResourceType, ...] = (
         },
         resolver=_resolve_drive_file,
         value_of=_plain_value_of("id"),
-    ),
-    GrantResourceType(
-        connector="drive", config_key="spreadsheets", id_field="id",
-        label="Trusted Spreadsheets", singular="spreadsheet",
-        capabilities={
-            "read": GrantCapability("Read auto-accept", (
-                ("sheets.read_values", "approved_spreadsheet"),
-            )),
-            "write": GrantCapability("Write auto-accept", (
-                ("sheets.write_range", "approved_spreadsheet"),
-                ("sheets.add_sheet", "approved_spreadsheet"),
-                ("sheets.rename_sheet", "approved_spreadsheet"),
-                ("sheets.format_range", "approved_spreadsheet"),
-                ("sheets.insert_dimensions", "approved_spreadsheet"),
-                ("sheets.delete_dimensions", "approved_spreadsheet"),
-            )),
-        },
-        resolver=_resolve_drive_file,
-        value_of=_spreadsheet_value_of,
     ),
     GrantResourceType(
         connector="tasks", config_key="task_lists", id_field="id",
@@ -441,7 +414,7 @@ def set_grant_entries(grants_cfg: dict[str, Any], rt: GrantResourceType, entries
 def _grant_matches(rt: GrantResourceType, entry: dict[str, Any], resource_id: str, tab: str | None) -> bool:
     if rt.id_of(entry) != resource_id:
         return False
-    return rt.config_key != "spreadsheets" or entry.get("tab") == (tab or None)
+    return entry.get("tab") == (tab or None)
 
 
 def apply_grant_upsert(
@@ -450,8 +423,9 @@ def apply_grant_upsert(
     capabilities: dict[str, bool] | None = None,
 ) -> bool:
     """Add a new grant entry, or update an existing one's cosmetic name
-    and/or capability flags (matched by id, plus tab for spreadsheets).
-    Mutates `cfg["auto_accept_grants"]` in place. Always returns True --
+    and/or capability flags (matched by id, plus tab if this resource type
+    uses one). Mutates `cfg["auto_accept_grants"]` in place. Always returns
+    True --
     see auto_accept.mutate_grants -- since even re-confirming the same
     capabilities is a proposal that already went through a human
     confirmation, not a no-op worth silently skipping the write for.
@@ -482,9 +456,9 @@ def apply_grant_upsert(
 def apply_grant_removal(
     cfg: dict[str, Any], rt: GrantResourceType, resource_id: str, tab: str | None = None
 ) -> bool:
-    """Remove a grant entry (matched by id, plus tab for spreadsheets).
-    Mutates `cfg["auto_accept_grants"]` in place. Returns False (no write
-    needed) if no entry matched."""
+    """Remove a grant entry (matched by id, plus tab if this resource type
+    uses one). Mutates `cfg["auto_accept_grants"]` in place. Returns False
+    (no write needed) if no entry matched."""
     grants_cfg = cfg.setdefault("auto_accept_grants", {})
     entries = get_grant_entries(grants_cfg, rt)
     remaining = [e for e in entries if not _grant_matches(rt, e, resource_id, tab)]
@@ -579,9 +553,9 @@ MIGRATION_MARKER = "migrated_to_grants_v1"
 
 
 def _values_equal(a: Any, b: Any) -> bool:
-    """Order-independent equality for rule values (plain strings or the
-    spreadsheet pair-dict shape), matching how the evaluator itself treats
-    a rule's value as an unordered set."""
+    """Order-independent equality for rule values (plain strings or a
+    dict-shaped entry), matching how the evaluator itself treats a rule's
+    value as an unordered set."""
     if isinstance(a, list) and isinstance(b, list):
         def _key(v: Any) -> Any:
             return tuple(sorted(v.items())) if isinstance(v, dict) else v
@@ -641,17 +615,12 @@ def migrate_rules_to_grants(cfg: dict[str, Any]) -> tuple[dict[str, Any], list[s
             entries = get_grant_entries(grants_cfg, rt)
             by_id = {rt.id_of(e): e for e in entries}
             for raw in values:
-                if isinstance(raw, dict):
-                    resource_id = raw.get("spreadsheet_id", "") if rt.config_key == "spreadsheets" else ""
-                    extra = {"tab": raw["tab"]} if raw.get("tab") else {}
-                else:
-                    resource_id = str(raw)
-                    extra = {}
+                resource_id = str(raw)
                 if not resource_id:
                     continue
                 entry = by_id.get(resource_id)
                 if entry is None:
-                    entry = {rt.id_field: resource_id, **extra}
+                    entry = {rt.id_field: resource_id}
                     entries.append(entry)
                     by_id[resource_id] = entry
                 entry[capability_key] = True

@@ -485,96 +485,6 @@ class TestDriveWriteRules:
         assert ev._rule_parent_folder_allowlist([], ctx) is False
 
 
-# --------------------------------------------------------------------------- #
-# Sheets rules: approved_spreadsheet + the _sheet_tab_of helper it shares
-# with suggest_rule
-# --------------------------------------------------------------------------- #
-
-class TestSheetTabOf:
-    def test_sheet_id_arg_takes_priority(self):
-        # format_range carries both sheet_id and a range_a1 with no "!"
-        # prefix, so sheet_id must be checked first.
-        ctx = make_ctx(args={"sheet_id": 0, "range_a1": "A1:C10"})
-        assert auto_accept._sheet_tab_of(ctx) == "0"
-
-    def test_range_a1_unquoted_sheet_name_prefix(self):
-        ctx = make_ctx(args={"range_a1": "Sheet1!A1:C10"})
-        assert auto_accept._sheet_tab_of(ctx) == "Sheet1"
-
-    def test_range_a1_quoted_sheet_name_prefix(self):
-        ctx = make_ctx(args={"range_a1": "'My Tab'!A1:C10"})
-        assert auto_accept._sheet_tab_of(ctx) == "My Tab"
-
-    def test_range_a1_without_prefix_yields_empty(self):
-        ctx = make_ctx(args={"range_a1": "A1:C10"})
-        assert auto_accept._sheet_tab_of(ctx) == ""
-
-    def test_no_relevant_args_yields_empty(self):
-        # add_sheet has no existing tab to identify.
-        ctx = make_ctx(args={"title": "New Tab"})
-        assert auto_accept._sheet_tab_of(ctx) == ""
-
-
-class TestSheetsRules:
-    def test_matches_by_spreadsheet_id_alone_when_entry_has_no_tab(self):
-        ev = AutoAcceptEvaluator({})
-        ctx = make_ctx(args={"spreadsheet_id": "sheet1", "range_a1": "Sheet1!A1:B2"})
-        assert ev._rule_approved_spreadsheet([{"spreadsheet_id": "sheet1"}], ctx) is True
-
-    def test_no_match_for_a_different_spreadsheet_id(self):
-        ev = AutoAcceptEvaluator({})
-        ctx = make_ctx(args={"spreadsheet_id": "sheet2", "range_a1": "Sheet1!A1:B2"})
-        assert ev._rule_approved_spreadsheet([{"spreadsheet_id": "sheet1"}], ctx) is False
-
-    def test_tab_scoped_entry_matches_only_that_tab(self):
-        ev = AutoAcceptEvaluator({})
-        allowed = [{"spreadsheet_id": "sheet1", "tab": "Sheet1"}]
-        matching_ctx = make_ctx(args={"spreadsheet_id": "sheet1", "range_a1": "Sheet1!A1:B2"})
-        other_tab_ctx = make_ctx(args={"spreadsheet_id": "sheet1", "range_a1": "Sheet2!A1:B2"})
-        assert ev._rule_approved_spreadsheet(allowed, matching_ctx) is True
-        assert ev._rule_approved_spreadsheet(allowed, other_tab_ctx) is False
-
-    def test_tab_match_is_case_insensitive(self):
-        ev = AutoAcceptEvaluator({})
-        allowed = [{"spreadsheet_id": "sheet1", "tab": "sheet1"}]
-        ctx = make_ctx(args={"spreadsheet_id": "sheet1", "range_a1": "SHEET1!A1:B2"})
-        assert ev._rule_approved_spreadsheet(allowed, ctx) is True
-
-    def test_tab_scoped_entry_does_not_match_when_current_tab_unknown(self):
-        ev = AutoAcceptEvaluator({})
-        allowed = [{"spreadsheet_id": "sheet1", "tab": "Sheet1"}]
-        # add_sheet has no range_a1/sheet_id at all -- current_tab is "".
-        ctx = make_ctx(args={"spreadsheet_id": "sheet1", "title": "New Tab"})
-        assert ev._rule_approved_spreadsheet(allowed, ctx) is False
-
-    def test_multiple_entries_any_match_wins(self):
-        ev = AutoAcceptEvaluator({})
-        allowed = [{"spreadsheet_id": "other"}, {"spreadsheet_id": "sheet1", "tab": "Sheet1"}]
-        ctx = make_ctx(args={"spreadsheet_id": "sheet1", "range_a1": "Sheet1!A1:B2"})
-        assert ev._rule_approved_spreadsheet(allowed, ctx) is True
-
-    def test_empty_value_never_matches(self):
-        ev = AutoAcceptEvaluator({})
-        ctx = make_ctx(args={"spreadsheet_id": "sheet1", "range_a1": "Sheet1!A1:B2"})
-        assert ev._rule_approved_spreadsheet([], ctx) is False
-        assert ev._rule_approved_spreadsheet(None, ctx) is False
-
-    def test_missing_spreadsheet_id_in_args_never_matches(self):
-        ev = AutoAcceptEvaluator({})
-        ctx = make_ctx(args={"range_a1": "Sheet1!A1:B2"})
-        assert ev._rule_approved_spreadsheet([{"spreadsheet_id": "sheet1"}], ctx) is False
-
-    def test_single_dict_value_not_wrapped_in_a_list_is_accepted(self):
-        ev = AutoAcceptEvaluator({})
-        ctx = make_ctx(args={"spreadsheet_id": "sheet1", "range_a1": "Sheet1!A1:B2"})
-        assert ev._rule_approved_spreadsheet({"spreadsheet_id": "sheet1"}, ctx) is True
-
-    def test_malformed_entry_is_ignored_not_fatal(self):
-        ev = AutoAcceptEvaluator({})
-        ctx = make_ctx(args={"spreadsheet_id": "sheet1", "range_a1": "Sheet1!A1:B2"})
-        assert ev._rule_approved_spreadsheet(["not-a-dict"], ctx) is False
-
-
 class TestSheetsFolderScopedRules:
     """rename_sheet/format_range raw_data is {"file": drive_file, ...} — the
     same shape write_range/add_sheet already use approved_sandbox_folder
@@ -646,25 +556,6 @@ class TestSheetsFolderScopedRules:
             raw_data={"file": SimpleNamespace(parent_ids=["folder1"]), "dimension": "ROWS"},
         )
         assert ev.should_auto_accept("sheets.delete_dimensions", ctx) == (True, "approved_sandbox_folder")
-
-    def test_insert_dimensions_scopes_approved_spreadsheet_to_sheet_id_tab(self):
-        # sheet_id is present in args, so _sheet_tab_of resolves it the same
-        # way rename_sheet/format_range do.
-        ev = AutoAcceptEvaluator({
-            "sheets.insert_dimensions": [
-                {"rule": "approved_spreadsheet", "value": [{"spreadsheet_id": "sheet1", "tab": "5"}]},
-            ],
-        })
-        matching_ctx = make_ctx(
-            args={"spreadsheet_id": "sheet1", "sheet_id": 5, "dimension": "ROWS", "start_index": 0, "count": 1},
-            raw_data={"file": SimpleNamespace(parent_ids=[])},
-        )
-        other_tab_ctx = make_ctx(
-            args={"spreadsheet_id": "sheet1", "sheet_id": 9, "dimension": "ROWS", "start_index": 0, "count": 1},
-            raw_data={"file": SimpleNamespace(parent_ids=[])},
-        )
-        assert ev.should_auto_accept("sheets.insert_dimensions", matching_ctx) == (True, "approved_spreadsheet")
-        assert ev.should_auto_accept("sheets.insert_dimensions", other_tab_ctx) == (False, "")
 
     def test_docs_edit_and_format_content_match_owner_via_should_auto_accept(self):
         # docs.* operations reuse the plain Drive-file rules (i_am_owner,
@@ -964,21 +855,29 @@ class TestSuggestRule:
         ctx = make_ctx(args={"query": "hello world"}, raw_data=[])
         assert suggest_rule("slack.read_messages", ctx) is None
 
-    def test_sheets_read_values_suggests_spreadsheet_and_tab(self):
-        ctx = make_ctx(args={"spreadsheet_id": "sheet1", "range_a1": "Sheet1!A1:B2"})
-        assert suggest_rule("sheets.read_values", ctx) == (
-            "approved_spreadsheet", [{"spreadsheet_id": "sheet1", "tab": "Sheet1"}],
+    def test_sheets_read_values_suggests_owner_or_folder(self):
+        # Same drive_read family as drive.read_file_contents/download_file --
+        # raw_data is dict-shaped ({"file": ..., "values": ...}), unlike
+        # those two operations' object-shaped raw_data, so this also covers
+        # _file_from()'s dict-unwrapping path.
+        owned = make_ctx(
+            my_email="me@example.com",
+            raw_data={"file": SimpleNamespace(owners=["me@example.com"], parent_ids=[]), "values": []},
         )
+        assert suggest_rule("sheets.read_values", owned) == ("i_am_owner", None)
 
-    def test_sheets_read_values_suggests_spreadsheet_only_without_a_tab(self):
-        # No "!" prefix in range_a1 -- _sheet_tab_of can't identify a tab.
-        ctx = make_ctx(args={"spreadsheet_id": "sheet1", "range_a1": "A1:B2"})
-        assert suggest_rule("sheets.read_values", ctx) == (
-            "approved_spreadsheet", [{"spreadsheet_id": "sheet1"}],
+        foreign = make_ctx(
+            my_email="me@example.com",
+            raw_data={"file": SimpleNamespace(owners=["other@example.com"], parent_ids=["f1"]), "values": []},
         )
+        assert suggest_rule("sheets.read_values", foreign) == ("approved_folder", ["f1"])
 
-    def test_sheets_read_values_suggests_nothing_without_spreadsheet_id(self):
-        assert suggest_rule("sheets.read_values", make_ctx(args={})) is None
+    def test_sheets_read_values_suggests_nothing_without_owner_or_folder(self):
+        ctx = make_ctx(
+            my_email="me@example.com",
+            raw_data={"file": SimpleNamespace(owners=["other@example.com"], parent_ids=[]), "values": []},
+        )
+        assert suggest_rule("sheets.read_values", ctx) is None
 
     def test_calendar_suggests_organizer_or_internal_attendees(self):
         organizer = make_ctx(my_email="me@example.com", raw_data=SimpleNamespace(organizer_email="me@example.com"))
@@ -1123,16 +1022,6 @@ class TestSuggestRule:
 
     def test_describe_rule_unknown_name_falls_back_to_raw_name(self):
         assert describe_rule("some_future_rule", "x") == "Auto-accept future some_future_rule"
-
-    def test_describe_rule_formats_spreadsheet_entries_with_and_without_tab(self):
-        desc = describe_rule("approved_spreadsheet", [
-            {"spreadsheet_id": "sheet1", "tab": "Sheet1"},
-            {"spreadsheet_id": "sheet2"},
-        ])
-        assert desc == "Auto-accept future Sheets calls scoped to: sheet1 (tab: Sheet1), sheet2"
-
-    def test_format_spreadsheet_entry_non_dict_falls_back_to_str(self):
-        assert auto_accept._format_spreadsheet_entry("not-a-dict") == "not-a-dict"
 
 
 # --------------------------------------------------------------------------- #

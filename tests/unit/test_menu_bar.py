@@ -375,44 +375,6 @@ class TestConcurrentAuthAndRuleChangeDoNotLoseUpdates:
 # test's approach of not popping up real modal dialogs in a test run.
 # ============================================================================ #
 
-class TestFormatPairLine:
-    def test_with_tab(self):
-        assert menu_bar._format_pair_line({"spreadsheet_id": "sheet1", "tab": "Sheet1"}) == "sheet1:Sheet1"
-
-    def test_without_tab(self):
-        assert menu_bar._format_pair_line({"spreadsheet_id": "sheet1"}) == "sheet1"
-
-    def test_non_dict_falls_back_to_str(self):
-        assert menu_bar._format_pair_line("sheet1") == "sheet1"
-
-
-class TestParsePairLines:
-    def test_parses_id_only_lines(self):
-        assert menu_bar._parse_pair_lines("sheet1\nsheet2") == [
-            {"spreadsheet_id": "sheet1"}, {"spreadsheet_id": "sheet2"},
-        ]
-
-    def test_parses_id_colon_tab_lines(self):
-        assert menu_bar._parse_pair_lines("sheet1:Sheet1\nsheet2:My Tab") == [
-            {"spreadsheet_id": "sheet1", "tab": "Sheet1"},
-            {"spreadsheet_id": "sheet2", "tab": "My Tab"},
-        ]
-
-    def test_strips_whitespace_around_id_and_tab(self):
-        assert menu_bar._parse_pair_lines("  sheet1 : Sheet1  ") == [{"spreadsheet_id": "sheet1", "tab": "Sheet1"}]
-
-    def test_blank_lines_are_skipped(self):
-        assert menu_bar._parse_pair_lines("sheet1\n\n\nsheet2") == [
-            {"spreadsheet_id": "sheet1"}, {"spreadsheet_id": "sheet2"},
-        ]
-
-    def test_trailing_colon_with_empty_tab_omits_tab_key(self):
-        assert menu_bar._parse_pair_lines("sheet1:") == [{"spreadsheet_id": "sheet1"}]
-
-    def test_empty_text_yields_empty_list(self):
-        assert menu_bar._parse_pair_lines("") == []
-
-
 class TestBind:
     def test_forwards_bound_args_and_sender(self):
         calls = []
@@ -1241,21 +1203,6 @@ class TestAddRule:
         assert len(alerts) == 1
         assert app._load_config().get("auto_accept_rules", {}) == {}
 
-    def test_pair_value_rule_starts_empty_no_prompt(self, app, monkeypatch):
-        # approved_spreadsheet is normally offered via a grant now (see
-        # resource_grants.py's drive.spreadsheets); this exercises _add_rule's
-        # generic pair-value handling regardless of what the picker returned.
-        window_calls = []
-        monkeypatch.setattr(menu_bar.rumps, "Window", lambda **kw: window_calls.append(kw))
-
-        _run_add_rule(app, monkeypatch, "sheets.read_values", "approved_spreadsheet")
-
-        assert window_calls == []
-        cfg = app._load_config()
-        assert cfg["auto_accept_rules"]["sheets.read_values"] == [
-            {"rule": "approved_spreadsheet", "value": []}
-        ]
-
     def test_add_rule_int_prompt_starts_empty_not_prefilled_with_hint(self, app, monkeypatch):
         # Regression: the "Add rule" dialog used to pre-fill the text field with
         # the RULE_HINTS example value, so the first line looked like garbage
@@ -1452,15 +1399,6 @@ class TestAddRuleValue:
 
         assert captured["default_text"] == ""
         assert "Example:" in captured["message"]
-
-    def test_pair_value_parses_id_and_id_colon_tab(self, app, monkeypatch):
-        self._seed(app, "sheets.read_values", [{"rule": "approved_spreadsheet", "value": []}])
-        monkeypatch.setattr(menu_bar.rumps, "Window", _fake_window(clicked=True, text="sheet1:Sheet1"))
-
-        app._add_rule_value("sheets.read_values", 0)
-
-        rules = app._load_config()["auto_accept_rules"]["sheets.read_values"]
-        assert rules[0]["value"] == [{"spreadsheet_id": "sheet1", "tab": "Sheet1"}]
 
     def test_cancelled_prompt_makes_no_change(self, app, monkeypatch):
         self._seed(app, "gmail.read_message", [{"rule": "trusted_sender_domain", "value": ["a.com"]}])
@@ -1710,14 +1648,23 @@ class TestConfirmAndSaveGrant:
         assert entries == [{"id": "F1", "write": True}]  # unchanged, not duplicated
         assert len(alerts) == 2  # the "already trusted" alert, on top of the initial confirmation
 
-    def test_spreadsheet_tab_is_stored_on_the_entry(self, app, monkeypatch):
+    def test_tab_is_stored_on_the_entry(self, app, monkeypatch):
+        # No current resource type uses "tab", but _confirm_and_save_grant
+        # still supports it generically for the bridge-facing
+        # propose_rule_change() contract -- a fake resource type exercises
+        # that path without depending on one being wired into the manifest.
         monkeypatch.setattr(menu_bar.rumps, "alert", lambda **kw: 1)
-        rt = menu_bar.grant_resource_type("drive", "spreadsheets")
+        fake_rt = menu_bar.GrantResourceType(
+            connector="fake", config_key="things", id_field="id",
+            label="Fake Things", singular="thing",
+            capabilities={},
+            resolver=lambda client, resource_id: None,
+        )
 
-        app._confirm_and_save_grant(rt, "S1", "Budget Sheet", "Q3")
+        app._confirm_and_save_grant(fake_rt, "T1", "My Thing", "Q3")
 
-        entries = app._load_config()["auto_accept_grants"]["drive"]["spreadsheets"]
-        assert entries == [{"id": "S1", "name": "Budget Sheet", "tab": "Q3"}]
+        entries = app._load_config()["auto_accept_grants"]["fake"]["things"]
+        assert entries == [{"id": "T1", "name": "My Thing", "tab": "Q3"}]
 
 
 def _run_on_candidates_listed(app, monkeypatch, rt, candidates, pick):

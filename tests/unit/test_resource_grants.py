@@ -51,7 +51,7 @@ class TestManifestSanity:
 
     def test_resource_types_for_connector_drive_includes_folders_and_sandbox(self):
         keys = {rt.config_key for rt in rg.resource_types_for_connector("drive")}
-        assert {"folders", "sandbox_folders", "spreadsheets"} <= keys
+        assert {"folders", "sandbox_folders"} <= keys
 
     def test_resource_types_for_connector_contacts_is_empty(self):
         # contacts.edit's only rule (no_contact_info_change) isn't a resource
@@ -316,9 +316,9 @@ class TestListCandidates:
         assert rt.list_candidates(client) == [("R1", "Pipeline")]
 
     def test_drive_resource_types_have_no_list_candidates(self):
-        # No cheap "list every folder/spreadsheet I can see" API -- these
-        # fall back to paste-ID-or-URL entry in the menu (see menu_bar.py).
-        for config_key in ("folders", "sandbox_folders", "spreadsheets"):
+        # No cheap "list every folder I can see" API -- these fall back to
+        # paste-ID-or-URL entry in the menu (see menu_bar.py).
+        for config_key in ("folders", "sandbox_folders"):
             assert rg.resource_type("drive", config_key).list_candidates is None
 
 
@@ -382,12 +382,6 @@ class TestExpandGrants:
             {"rule": "move_within_approved_folders", "value": ["F1"], "_grant": True}
         ]
 
-    def test_spreadsheet_write_also_covers_dimensions_ops(self):
-        grants = {"drive": {"spreadsheets": [{"id": "S1", "write": True}]}}
-        compiled = rg.expand_grants(grants)
-        for op in ("sheets.insert_dimensions", "sheets.delete_dimensions"):
-            assert compiled[op] == [{"rule": "approved_spreadsheet", "value": [{"spreadsheet_id": "S1"}], "_grant": True}]
-
     def test_multiple_entries_aggregate_into_one_rule_value(self):
         grants = {"drive": {"folders": [{"id": "F1", "read": True}, {"id": "F2", "read": True}]}}
         compiled = rg.expand_grants(grants)
@@ -404,18 +398,6 @@ class TestExpandGrants:
         assert "tasks.complete_task" in compiled
         assert "tasks.uncomplete_task" in compiled
         assert "tasks.create_task" not in compiled  # create wasn't enabled
-
-    def test_spreadsheet_grant_compiles_pair_dict_value(self):
-        grants = {"drive": {"spreadsheets": [{"id": "S1", "tab": "Budget", "read": True}]}}
-        compiled = rg.expand_grants(grants)
-        assert compiled["sheets.read_values"] == [
-            {"rule": "approved_spreadsheet", "value": [{"spreadsheet_id": "S1", "tab": "Budget"}], "_grant": True}
-        ]
-
-    def test_spreadsheet_grant_without_tab_omits_tab_key(self):
-        grants = {"drive": {"spreadsheets": [{"id": "S1", "read": True}]}}
-        compiled = rg.expand_grants(grants)
-        assert compiled["sheets.read_values"][0]["value"] == [{"spreadsheet_id": "S1"}]
 
     def test_jira_project_grant_uses_key_field_not_id(self):
         grants = {"jira": {"projects": [{"key": "ENG", "read": True}]}}
@@ -583,19 +565,6 @@ class TestMigrateRulesToGrants:
         after = _normalize(rg.build_effective_rules(migrated_cfg))
         assert before == after
 
-    def test_spreadsheet_pair_values_migrate_correctly(self):
-        cfg = {
-            "auto_accept_rules": {
-                "sheets.read_values": [
-                    {"rule": "approved_spreadsheet", "value": [{"spreadsheet_id": "S1", "tab": "Budget"}]}
-                ],
-            }
-        }
-        new_cfg, summary = rg.migrate_rules_to_grants(cfg)
-        assert summary
-        entries = new_cfg["auto_accept_grants"]["drive"]["spreadsheets"]
-        assert entries == [{"id": "S1", "tab": "Budget", "read": True}]
-
     def test_capability_with_no_target_operation_keys_is_skipped_without_crashing(self, monkeypatch):
         # Defensive branch: `first_op_key, first_rule_name = capability.targets[0]`
         # on the next line would IndexError if `targets` were empty and this
@@ -702,18 +671,27 @@ class TestApplyGrantUpsert:
         rg.apply_grant_upsert(cfg, rt, "folder1", capabilities={"write": True})
         assert cfg["auto_accept_grants"]["drive"]["sandbox_folders"] == [{"id": "folder1", "write": True}]
 
-    def test_upsert_on_spreadsheets_matches_by_id_and_tab_together(self):
-        rt = rg.resource_type("drive", "spreadsheets")
+    def test_upsert_matches_by_id_and_tab_together(self):
+        # No current resource type uses "tab", but apply_grant_upsert/
+        # _grant_matches still support it generically for the bridge-facing
+        # propose_rule_change() contract -- a fake resource type exercises
+        # that path without depending on one being wired into the manifest.
+        fake_rt = rg.GrantResourceType(
+            connector="fake", config_key="things", id_field="id",
+            label="Fake Things", singular="thing",
+            capabilities={"read": rg.GrantCapability("Read", (("fake.read", "fake_rule"),))},
+            resolver=lambda client, resource_id: None,
+        )
         cfg = {
             "auto_accept_grants": {
-                "drive": {"spreadsheets": [{"id": "sheet1", "tab": "Sheet1", "read": True}]}
+                "fake": {"things": [{"id": "thing1", "tab": "Tab1", "read": True}]}
             }
         }
-        # Same id, different tab -- must be a new entry, not an update of Sheet1's.
-        rg.apply_grant_upsert(cfg, rt, "sheet1", tab="Sheet2", capabilities={"read": True})
-        entries = cfg["auto_accept_grants"]["drive"]["spreadsheets"]
-        assert {"id": "sheet1", "tab": "Sheet1", "read": True} in entries
-        assert {"id": "sheet1", "tab": "Sheet2", "read": True} in entries
+        # Same id, different tab -- must be a new entry, not an update of Tab1's.
+        rg.apply_grant_upsert(cfg, fake_rt, "thing1", tab="Tab2", capabilities={"read": True})
+        entries = cfg["auto_accept_grants"]["fake"]["things"]
+        assert {"id": "thing1", "tab": "Tab1", "read": True} in entries
+        assert {"id": "thing1", "tab": "Tab2", "read": True} in entries
         assert len(entries) == 2
 
     def test_unknown_capability_key_raises(self):

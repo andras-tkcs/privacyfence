@@ -167,13 +167,13 @@ RULES_BY_OPERATION: dict[str, list[str]] = {
     "drive.upload_file":            ["parent_folder_allowlist"],
     "drive.move_file":              ["move_within_approved_folders"],
     "drive.comment_file":           ["i_am_owner", "approved_sandbox_folder", "created_this_session"],
-    "sheets.read_values":           ["approved_spreadsheet", "i_am_owner", "created_by_me", "approved_folder", "created_this_session", "shared_drive_exclusion"],
-    "sheets.write_range":           ["approved_spreadsheet", "i_am_owner", "approved_sandbox_folder", "created_this_session"],
-    "sheets.add_sheet":             ["approved_spreadsheet", "i_am_owner", "approved_sandbox_folder", "created_this_session"],
-    "sheets.rename_sheet":          ["approved_spreadsheet", "i_am_owner", "approved_sandbox_folder", "created_this_session"],
-    "sheets.format_range":          ["approved_spreadsheet", "i_am_owner", "approved_sandbox_folder", "created_this_session"],
-    "sheets.insert_dimensions":     ["approved_spreadsheet", "i_am_owner", "approved_sandbox_folder", "created_this_session"],
-    "sheets.delete_dimensions":     ["approved_spreadsheet", "i_am_owner", "approved_sandbox_folder", "created_this_session"],
+    "sheets.read_values":           ["i_am_owner", "created_by_me", "approved_folder", "created_this_session", "shared_drive_exclusion"],
+    "sheets.write_range":           ["i_am_owner", "approved_sandbox_folder", "created_this_session"],
+    "sheets.add_sheet":             ["i_am_owner", "approved_sandbox_folder", "created_this_session"],
+    "sheets.rename_sheet":          ["i_am_owner", "approved_sandbox_folder", "created_this_session"],
+    "sheets.format_range":          ["i_am_owner", "approved_sandbox_folder", "created_this_session"],
+    "sheets.insert_dimensions":     ["i_am_owner", "approved_sandbox_folder", "created_this_session"],
+    "sheets.delete_dimensions":     ["i_am_owner", "approved_sandbox_folder", "created_this_session"],
     "docs.edit_content":            ["i_am_owner", "approved_sandbox_folder", "created_this_session"],
     "docs.format_content":          ["i_am_owner", "approved_sandbox_folder", "created_this_session"],
     "slack.read_messages":          ["dm_with_myself", "group_dm", "approved_channel", "approved_channel_all_results", "public_channels_only", "no_file_attachments"],
@@ -219,8 +219,6 @@ RULES_LIST_VALUE: set[str] = {
 }
 # Rules that take a single integer value
 RULES_INT_VALUE: set[str] = {"age_threshold_days", "time_window_days"}
-# Rules that take a list of "spreadsheet_id" or "spreadsheet_id:tab" pairs
-RULES_PAIR_VALUE: set[str] = {"approved_spreadsheet"}
 
 # All connectors PrivacyFence supports, in display order
 ALL_CONNECTORS: list[str] = [
@@ -310,7 +308,6 @@ RULE_HINTS: dict[str, str] = {
     "approved_space_keys":   "TEAM\nDOCS",
     "approved_chats":        "123456789\n-100987654321",
     "approved_chats_all_results": "123456789\n-100987654321",
-    "approved_spreadsheet":  "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms\n1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms:Sheet1",
     "approved_task_list":    "MDAwMDAwMDAwMDAwMDAwMDAwMDA6MDow\nMTExMTExMTExMTExMTExMTExMTE6MDow",
 }
 
@@ -377,10 +374,10 @@ _drive_folder_rt = grant_resource_type("drive", "folders")
 assert _drive_folder_rt is not None
 RULE_NAME_TO_RESOURCE_TYPE["parent_folder_allowlist"] = _drive_folder_rt
 
-# Drive/Sheets URLs paste-able into "+ Add folder…" / "+ Add spreadsheet…",
-# so the user can copy the browser address bar instead of hand-extracting
-# the ID segment. Order matters: a spreadsheet URL also contains "/d/" so
-# the folder pattern is tried first.
+# Drive/Sheets URLs paste-able into "+ Add folder…", so the user can copy
+# the browser address bar instead of hand-extracting the ID segment. Order
+# matters: a file URL also contains "/d/" so the folder pattern is tried
+# first.
 _DRIVE_FOLDER_URL_RE = re.compile(r"/folders/([a-zA-Z0-9_-]+)")
 _DRIVE_FILE_URL_RE = re.compile(r"/d/([a-zA-Z0-9_-]+)")
 
@@ -728,8 +725,7 @@ class PrivacyFenceMenuBar(rumps.App):
             # rule — nothing to edit here, only where it actually lives.
             return [Row(f"{rule_name}  (via grant above)", False, [])]
 
-        if rule_name in RULES_LIST_VALUE or rule_name in RULES_PAIR_VALUE:
-            is_pair = rule_name in RULES_PAIR_VALUE
+        if rule_name in RULES_LIST_VALUE:
             # A hand-authored/partially-migrated rule under one of the
             # resource-scoped rule names (see GRANT_COVERED_RULE_NAMES) holds
             # the same kind of opaque resource ID a grant entry does -- show
@@ -739,22 +735,19 @@ class PrivacyFenceMenuBar(rumps.App):
             rows = [Row(rule_name, False, [("+ Add value…", partial(self._add_rule_value, op_key, idx))])]
             values = value if isinstance(value, list) else ([value] if value else [])
             if rt is not None:
-                ids = [v.get("spreadsheet_id", "") if is_pair else str(v) for v in values]
-                self._resolve_names_async(rt, ids, client)
+                self._resolve_names_async(rt, [str(v) for v in values], client)
             for v_idx, v in enumerate(values):
                 if rt is not None:
-                    resource_id = v.get("spreadsheet_id", "") if is_pair else str(v)
+                    resource_id = str(v)
                     name = self._resolver.cached_name(rt, resource_id)
                     v_label = name or _short_id(resource_id)
-                    if is_pair and v.get("tab"):
-                        v_label += f" — {v['tab']}"
                     if name is None:
                         v_label += (
                             "  (resolving…)" if client is not None
                             else f"  (connect {rt.connector.capitalize()} to see its name)"
                         )
                 else:
-                    v_label = _format_pair_line(v) if is_pair else str(v)
+                    v_label = str(v)
                 rows.append(Row(v_label, True, [("✕ Remove", partial(self._remove_rule_value, op_key, idx, v_idx))]))
             return rows
 
@@ -911,7 +904,7 @@ class PrivacyFenceMenuBar(rumps.App):
     def _finish_add_rule(self, op_key: str, rule_name: str) -> None:
         new_rule: dict[str, Any] = {"rule": rule_name}
 
-        if rule_name in RULES_LIST_VALUE or rule_name in RULES_PAIR_VALUE:
+        if rule_name in RULES_LIST_VALUE:
             # Start empty — populated one value at a time via "+ Add value…"
             # on the new row, not a shared multi-line box.
             new_rule["value"] = []
@@ -948,14 +941,13 @@ class PrivacyFenceMenuBar(rumps.App):
             return
         rule = rules[idx]
         rule_name = rule.get("rule", "")
-        is_pair = rule_name in RULES_PAIR_VALUE
         hint = (RULE_HINTS.get(rule_name, "") or "").splitlines()[0] if RULE_HINTS.get(rule_name) else ""
 
         # Hint goes in the message, not pre-filled into the editable field --
         # a pre-filled example reads as garbage data the user has to delete
         # before typing their real value (see TestAddRule's regression test
         # for the same fix on _add_rule's int-value prompt).
-        message = "Enter one 'spreadsheet_id' or 'spreadsheet_id:tab':" if is_pair else "Enter a value:"
+        message = "Enter a value:"
         if hint:
             message += f"\nExample: {hint}"
         w = rumps.Window(
@@ -972,11 +964,7 @@ class PrivacyFenceMenuBar(rumps.App):
 
         values = rule.get("value")
         values = values if isinstance(values, list) else ([values] if values else [])
-        if is_pair:
-            for entry in _parse_pair_lines(text):
-                if entry not in values:
-                    values.append(entry)
-        elif text not in values:
+        if text not in values:
             values.append(text)
         rule["value"] = values
         cfg["auto_accept_rules"][op_key][idx] = rule
@@ -1164,8 +1152,8 @@ class PrivacyFenceMenuBar(rumps.App):
             self._run_async(work, done)
             return
 
-        # No cheap enumeration for this resource type (e.g. Drive folders/
-        # spreadsheets) — accept a pasted ID or full Drive/Sheets URL instead.
+        # No cheap enumeration for this resource type (e.g. Drive folders) —
+        # accept a pasted ID or full Drive/Sheets URL instead.
         w = rumps.Window(
             title=f"Add {rt.singular}",
             message=f"Paste the {rt.singular} ID, or its full Drive/Sheets URL:",
@@ -1181,15 +1169,6 @@ class PrivacyFenceMenuBar(rumps.App):
             return
 
         tab = ""
-        if rt.config_key == "spreadsheets":
-            tab_resp = rumps.Window(
-                title="Add spreadsheet",
-                message="Tab name to restrict to (optional — leave blank for the whole spreadsheet):",
-                ok="Continue", cancel="Continue",
-                dimensions=(320, 24),
-            ).run()
-            tab = tab_resp.text.strip()
-
         if client is None:
             self._confirm_and_save_grant(rt, resource_id, None, tab)
             return
@@ -1779,30 +1758,6 @@ def _bind(fn, *bound_args):
     def _cb(sender):
         fn(*bound_args, sender)
     return _cb
-
-
-def _format_pair_line(entry: Any) -> str:
-    """Render an approved_spreadsheet entry as "id" or "id:tab"."""
-    if not isinstance(entry, dict):
-        return str(entry)
-    spreadsheet_id = entry.get("spreadsheet_id", "")
-    tab = entry.get("tab")
-    return f"{spreadsheet_id}:{tab}" if tab else spreadsheet_id
-
-
-def _parse_pair_lines(text: str) -> list[dict[str, str]]:
-    """Parse "spreadsheet_id" / "spreadsheet_id:tab" lines into rule entries."""
-    entries: list[dict[str, str]] = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        spreadsheet_id, sep, tab = line.partition(":")
-        entry: dict[str, str] = {"spreadsheet_id": spreadsheet_id.strip()}
-        if sep and tab.strip():
-            entry["tab"] = tab.strip()
-        entries.append(entry)
-    return entries
 
 
 def _osascript_pick(title: str, prompt: str, options: list[str], default: str | None = None) -> str | None:
