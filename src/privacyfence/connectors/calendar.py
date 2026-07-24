@@ -24,10 +24,14 @@ def _day_of_week(iso_str: str) -> str:
 
 
 class CalendarConnector(Connector):
-    def __init__(self, client: CalendarClient) -> None:
+    def __init__(self, client: CalendarClient, rooms: list[dict] | None = None) -> None:
         self._calendar = client
         self.my_email: str = ""
         self._calendar_name_cache: dict[str, str] = {}
+        # Static room directory synced into org_config.json by IT (see
+        # scripts/sync_room_directory.py) — never a live Admin SDK call, so this
+        # connector's own client never needs Workspace-admin directory scope.
+        self._rooms: list[dict] = rooms or []
 
     @property
     def client(self) -> CalendarClient:
@@ -128,14 +132,18 @@ class CalendarConnector(Connector):
             ToolSpec(
                 name="calendar_list_rooms",
                 description=(
-                    "List meeting rooms and resource calendars from the Google Workspace directory. "
-                    "Returns room name, email, building, floor, and capacity. "
-                    "Use the room email with calendar_create_event or calendar_update_event to book. "
-                    "Requires Google Workspace admin directory access. Auto-approved."
+                    "List meeting rooms and resource calendars from the organization's room "
+                    "directory. This is a locally-cached list IT refreshes with "
+                    "scripts/sync_room_directory.py, not a live Workspace lookup — it may come back "
+                    "empty if IT hasn't synced one yet. Returns room name, email, building, floor, "
+                    "and capacity. To check whether a room is actually free before booking, call "
+                    "calendar_get_free_busy with its resource_email. Use the room email with "
+                    "calendar_create_event or calendar_update_event to book. Auto-approved."
                 ),
                 params=[
                     ToolParam("query", "str", required=False, default="",
-                              description="Optional search query to filter rooms by name or building"),
+                              description="Optional substring filter matched against room name, "
+                                          "building, floor, or description (case-insensitive)"),
                     ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
@@ -305,21 +313,22 @@ class CalendarConnector(Connector):
         return {"visibility": event.visibility}
 
     async def _list_rooms(self, query: str = "") -> Any:
+        """Filters the static room directory synced into org_config.json — no
+        network call, so no Workspace-admin directory scope is ever needed here."""
         t0 = time.time()
-        rooms = await self._fetch(self._calendar.list_rooms, query)
-        result = [
-            {
-                "resource_email": r.resource_email,
-                "resource_name": r.resource_name,
-                "building_id": r.building_id,
-                "floor_name": r.floor_name,
-                "capacity": r.capacity,
-                "description": r.description,
-            }
-            for r in rooms
-        ]
+        if query:
+            needle = query.lower()
+            result = [
+                r for r in self._rooms
+                if needle in r.get("resource_name", "").lower()
+                or needle in r.get("building_id", "").lower()
+                or needle in r.get("floor_name", "").lower()
+                or needle in r.get("description", "").lower()
+            ]
+        else:
+            result = list(self._rooms)
         self._auto_audit("calendar_list_rooms", "List Meeting Rooms",
-                         f"List rooms{': ' + query if query else ''}", f"{len(rooms)} room(s)", t0)
+                         f"List rooms{': ' + query if query else ''}", f"{len(result)} room(s)", t0)
         return result
 
     # ------------------------------------------------------------------ #

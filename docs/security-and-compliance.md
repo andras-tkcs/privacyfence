@@ -79,6 +79,16 @@ and confirm which OAuth scopes are requested per connector (documented per-servi
 `docs/atlassian-setup.md`); those scopes are the actual ceiling on what any connector can ever
 read or write, independent of PrivacyFence's own gating logic.
 
+The Calendar connector's optional room-lookup feature is a concrete example of that ceiling being
+kept as narrow as possible: `calendar_list_rooms` needs Google Workspace's admin-level directory
+scope to discover rooms at all, but that scope never touches the OAuth client every employee
+authorizes day to day. Instead, IT runs a separate script (`scripts/sync_room_directory.py`)
+against a *second*, admin-scoped Google Cloud project to produce a one-time (or periodically
+refreshed) data snapshot — plain room names/emails/buildings/capacities — which is merged into the
+same `org_config.json` bundle everyone already installs. The everyday Calendar client's own token
+never carries directory-read access; a leaked or over-shared employee token simply cannot enumerate
+your Workspace's room resources.
+
 ---
 
 ## 4. Human-in-the-loop control

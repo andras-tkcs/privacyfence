@@ -246,7 +246,7 @@ PrivacyFence for a delete.
 | `calendar_list_calendars` | read | auto | — | — |
 | `calendar_list_events` | read | auto | — | — |
 | `calendar_get_free_busy` | read | auto | — | — (returns full events when calendar access is available; falls back to busy-slot list otherwise) |
-| `calendar_list_rooms` | read | auto | — | — (lists Google Workspace meeting rooms with name, email, building, floor, capacity; requires Workspace admin directory access) |
+| `calendar_list_rooms` | read | auto | — | — (lists meeting rooms — name, email, building, floor, capacity — from a static directory IT syncs into `org_config.json` via `scripts/sync_room_directory.py`; not a live lookup, so it may be empty until IT has synced one; the Calendar connector's own OAuth client never holds Workspace admin directory access) |
 | `calendar_get_event_details` | read | review | title, time, organizer, attendee count | Description, full attendee list, conferencing link, file attachments (e.g. Gemini meeting notes/transcript) |
 | `calendar_get_event_visibility` | read | auto | — | — |
 | `calendar_create_event` | write | popup | — | Title, time, attendees, description, location, Google Meet flag, room bookings |
@@ -928,7 +928,11 @@ PrivacyFence splits configuration into two steps done by two different people:
    Slack, Salesforce, Atlassian) and package the result into one organization config bundle with
    `scripts/build_org_bundle.py`. See the "For IT admins" section of each doc below. Telegram is
    not part of this step — its `api_id`/`api_hash` identify the PrivacyFence app itself, not your
-   organization, and are already baked into the release build.
+   organization, and are already baked into the release build. If your organization does Workspace
+   room/resource booking, there's one more optional, one-time step here: syncing the room directory
+   into the bundle from a *second*, admin-scoped Google Cloud project via
+   `scripts/sync_room_directory.py` — see "Room directory sync" in
+   [google-cloud-setup.md](google-cloud-setup.md).
 2. **Every user, from the PrivacyFence menu bar:** install the bundle IT sent you, then click
    **Authenticate…** on each connector you want. Almost everywhere this opens your browser to sign
    in — Telegram is the only connector that instead asks for your phone number and a verification
