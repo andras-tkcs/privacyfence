@@ -19,6 +19,12 @@ Configuration is split into two files (see paths.py):
     release build — see app_credentials.py. Also carries
     ``unattended_sessions.enabled`` — a deliberate per-organization opt-in,
     not a per-user setting, so it lives here rather than settings.yaml.
+    ``rooms`` (optional) is a static room/resource directory snapshot IT
+    refreshes with ``scripts/sync_room_directory.py``, using a separate,
+    admin-scoped Google Cloud project — see room_directory_client.py and
+    docs/google-cloud-setup.md. It's plain data, not a credential, and is
+    handed straight to CalendarConnector; the Calendar OAuth client itself
+    never carries Workspace-admin directory scope.
   - ``config/settings.yaml``   — per-user settings: privacy policy,
     connectors{enabled}, auto_accept_rules, pii_detection{enabled}. No
     secrets live here.
@@ -275,7 +281,7 @@ def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list
             )
             email = client.check_connection()
             logger.info("Calendar connector ready for %s", email)
-            connector = CalendarConnector(client)
+            connector = CalendarConnector(client, rooms=org_config.get("rooms", []))
             connector.my_email = email
             connectors.append(connector)
         except (CalendarClientError, FileNotFoundError) as exc:

@@ -28,10 +28,7 @@ from googleapiclient.errors import HttpError
 
 logger = logging.getLogger(__name__)
 
-SCOPES = [
-    "https://www.googleapis.com/auth/calendar",
-    "https://www.googleapis.com/auth/admin.directory.resource.calendar.readonly",
-]
+SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
 # Values the Calendar API accepts for Event.visibility. "confidential" is a
 # legacy synonym for "private" that the API still accepts on write.
@@ -208,14 +205,6 @@ class CalendarClient:
             service = build("calendar", "v3", credentials=creds, cache_discovery=False)
             self._local.service = service
             logger.debug("Calendar API service initialized for thread %s", threading.current_thread().name)
-        return service
-
-    def _get_directory_service(self):
-        service = getattr(self._local, "directory_service", None)
-        if service is None:
-            creds = self._load_credentials()
-            service = build("admin", "directory_v1", credentials=creds, cache_discovery=False)
-            self._local.directory_service = service
         return service
 
     # ------------------------------------------------------------------ #
@@ -401,40 +390,6 @@ class CalendarClient:
                     results.append({"email": email, "source": "error", "error": str(exc)})
 
         return results
-
-    def list_rooms(self, query: str = "") -> list[CalendarRoom]:
-        """List meeting rooms/resources from the Google Workspace directory.
-
-        Requires the authenticated user to have admin directory read access
-        (https://www.googleapis.com/auth/admin.directory.resource.calendar.readonly).
-        Raises CalendarClientError with a clear message if access is denied.
-        """
-        try:
-            kwargs: dict[str, Any] = {"customer": "my_customer", "maxResults": 500}
-            if query:
-                kwargs["query"] = query
-            result = self._get_directory_service().resources().calendars().list(**kwargs).execute()
-        except HttpError as exc:
-            if exc.resp.status == 403:
-                raise CalendarClientError(
-                    "Room listing requires Google Workspace admin access. "
-                    "Ask your Workspace admin to grant you the 'Directory Reader' role, "
-                    "or provide room email addresses directly."
-                ) from exc
-            raise CalendarClientError(f"list_rooms failed: {exc}") from exc
-        rooms = []
-        for raw in result.get("items", []):
-            rooms.append(CalendarRoom(
-                resource_id=raw.get("resourceId", ""),
-                resource_name=raw.get("resourceName", ""),
-                resource_email=raw.get("resourceEmail", ""),
-                building_id=raw.get("buildingId", ""),
-                floor_name=raw.get("floorName", ""),
-                capacity=int(raw.get("capacity", 0)),
-                description=raw.get("generatedResourceName", raw.get("resourceDescription", "")),
-            ))
-        logger.info("list_rooms returned %d room(s)", len(rooms))
-        return rooms
 
     # ------------------------------------------------------------------ #
     # Write operations

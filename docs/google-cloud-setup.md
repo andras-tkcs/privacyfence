@@ -1,6 +1,6 @@
 # Google Cloud Console Setup
 
-This guide walks through creating a Google Cloud project, configuring OAuth, and enabling the APIs that PrivacyFence's Gmail, Drive, Calendar, Contacts, and Tasks connectors require.
+This guide walks through creating a Google Cloud project, configuring OAuth, and enabling the APIs that PrivacyFence's Gmail, Drive, Calendar, Contacts, and Tasks connectors require. If your organization also does Workspace room/resource booking, there's a second, separate project involved — see "Room directory sync" below.
 
 Google is organization-level config: **one IT admin does this once**, packages the result into PrivacyFence's organization config bundle, and distributes it. Individual users never touch the Google Cloud Console — they just click **Authenticate…** in the menu bar and sign in with their browser.
 
@@ -28,7 +28,6 @@ Open **APIs & Services → Library** and enable each of the following APIs one b
 | Google People API | `People API` | Contacts connector |
 | Google Calendar API | `Google Calendar API` | Calendar connector |
 | Google Tasks API | `Tasks API` | Google Tasks connector |
-| Admin SDK API | `Admin SDK API` | Calendar connector (`calendar_list_rooms` only) |
 
 For each: click the API in the search results, then click **Enable**.
 
@@ -36,7 +35,7 @@ For each: click the API in the search results, then click **Enable**.
 
 > **Note:** The Sheets API doesn't need its own OAuth scope or consent-screen entry — it accepts the same `drive` scope already granted, so users don't re-authenticate. It still has to be individually **enabled** in this project's API Library like every other API here; if it's left disabled, `drive_sheets_*` calls fail with an `accessNotConfigured` / "API has not been used in project ... before or it is disabled" error even though the user's OAuth token is otherwise valid.
 
-> **Note:** The Admin SDK API is only needed for `calendar_list_rooms` (Workspace room/resource booking), which requires the `admin.directory.resource.calendar.readonly` scope and a Workspace admin account. If your organization doesn't use room booking, you can skip enabling it — every other Calendar tool works without it.
+> **Note:** This project deliberately never requests Admin SDK / Workspace-directory scopes. `calendar_list_rooms` (room/resource booking) is served from a static room directory synced separately — see "Room directory sync" below — precisely so that the OAuth client every employee authorizes day to day can never read the Workspace directory.
 
 ### 3. Configure the OAuth consent screen
 
@@ -74,6 +73,42 @@ Run it again with `--merge` if you're adding Google to a bundle that already has
 
 ---
 
+## Room directory sync (optional, separate Google Cloud project)
+
+Skip this whole section if your organization doesn't do Workspace room/resource booking —
+every other Calendar tool works fine without it.
+
+`calendar_list_rooms` doesn't call Google live. It reads a static room directory (name, email,
+building, floor, capacity) that IT syncs into `org_config.json` ahead of time with
+`scripts/sync_room_directory.py`. That script needs `admin.directory.resource.calendar.readonly`,
+a Workspace-admin-level scope — and it deliberately runs against **a second Google Cloud
+project**, separate from the one above, so the OAuth client every employee authorizes for
+Gmail/Drive/Calendar/Contacts/Tasks never carries that scope. A leaked or over-shared per-user
+token then simply can't read your Workspace directory, no matter what.
+
+1. Create a **second** project the same way as step 1 above (e.g. `privacyfence-room-sync`).
+2. **APIs & Services → Library** → enable **Admin SDK API** only.
+3. **APIs & Services → OAuth consent screen** → same as step 3 above, but there's no need to add
+   test users beyond whoever on your IT team will actually run the sync.
+4. **APIs & Services → Credentials** → **+ Create Credentials → OAuth client ID** → **Desktop app**
+   → **Download JSON**. This is a *second*, separate `client_secret.json` — keep it at least as
+   private as the first one, and never add it to `org_config.json` or hand it to end users.
+5. Run the sync, signed in with an account that holds the Workspace **Directory Reader** role (or
+   super admin):
+   ```bash
+   .venv/bin/python scripts/sync_room_directory.py \
+     --admin-client-secret /path/to/room_sync_client_secret.json \
+     --org-config org_config.json
+   ```
+   This merges a `rooms` snapshot into the existing bundle without touching its other sections.
+   Re-run it whenever your organization's rooms change; `--token-file` (default
+   `.room_sync_token.json`) caches the sync's own token so you don't have to re-consent every time
+   — keep that file private too, for the same reason as the client secret.
+6. Redistribute the updated `org_config.json` exactly as in step 5 above. The `rooms` data itself
+   is plain metadata, not a credential, so it's fine for every user's install to have it.
+
+---
+
 ## For users
 
 1. Get `org_config.json` from your IT team.
@@ -96,3 +131,13 @@ Make sure you created credentials of type **Desktop app**, not Web application �
 
 **Scopes not granted / 403 errors** (user)
 Click **Reconnect…** next to the connector in the PrivacyFence menu bar to re-run the OAuth flow. From source, you can also run `privacyfence-app --gmail-oauth` (or `--drive-oauth` / `--contacts-oauth` / `--calendar-oauth` / `--tasks-oauth`).
+
+**`calendar_list_rooms` comes back empty** (user)
+This just means IT hasn't run `scripts/sync_room_directory.py` yet, or hasn't redistributed the
+result — it's not an error. Ask IT to run the sync (see "Room directory sync" above) and send you
+the refreshed `org_config.json`.
+
+**`sync_room_directory.py` fails with "Room directory listing requires Google Workspace admin access"** (IT admin)
+The Google account you signed in with when running the script isn't a Workspace admin and doesn't
+hold the **Directory Reader** role. Re-run the script signed in as an account that does — this is
+enforced by Google, not by PrivacyFence.

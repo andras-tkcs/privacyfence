@@ -669,10 +669,13 @@ regardless of `calendar_id`), each called out again where they occur.
 
 1. `calendar_list_calendars`, `calendar_list_events` on `calendar_pfqa_id`, `calendar_get_free_busy`
    (expect: all silent). Then `calendar_list_rooms`: if the Calendar room fixture
-   from `qa-environment-setup.md` is set up, expect it to succeed and list at
-   least one room, silently. If it isn't (no Workspace admin access), expect the
-   same permissions error as before — that's a standing, known environment
-   limitation, not a new finding, so don't report it as a regression each run.
+   from `qa-environment-setup.md` is set up (i.e. `scripts/sync_room_directory.py` has been run
+   against this environment's `org_config.json`), expect it to succeed and list at
+   least one room, silently. If it isn't (no Workspace admin access, or the sync
+   was never run), expect an empty list, not an error — there's no live Admin SDK
+   call left in this tool to fail, so a missing fixture just means nothing to
+   return. That's a standing, known environment limitation, not a new finding,
+   so don't report it as a regression each run.
 2. Pick any existing event on `calendar_pfqa_id` (the seed event from
    `qa-environment-setup.md` §4 works if nothing else is on it yet),
    `calendar_get_event_details` — review gate, Allow once.
