@@ -17,6 +17,7 @@ def _reset_singletons():
     audit_log._INSTANCE = None
     pii_detector._enabled = True
     pii_detector._changed_listener = None
+    pii_detector._disabled_categories.clear()
     privacy_filter._GROUPS = {}
     yield
     auto_accept._INSTANCE = None
@@ -25,4 +26,5 @@ def _reset_singletons():
     audit_log._INSTANCE = None
     pii_detector._enabled = True
     pii_detector._changed_listener = None
+    pii_detector._disabled_categories.clear()
     privacy_filter._GROUPS = {}

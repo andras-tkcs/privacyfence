@@ -1896,8 +1896,77 @@ class TestTogglePiiDetection:
     def test_menu_item_state_reflects_config(self, app):
         app._toggle_pii_detection()  # now disabled
 
-        item = app.menu["PII Detection Gate"]
+        item = app.menu["PII Detection Gate"]["Enabled"]
         assert bool(item.state) is False
+
+
+class TestBuildPiiMenu:
+    def test_enabled_item_state_reflects_config(self, app):
+        pii_item = app._build_pii_menu({}, True)
+        assert bool(pii_item["Enabled"].state) is True
+
+        pii_item = app._build_pii_menu({}, False)
+        assert bool(pii_item["Enabled"].state) is False
+
+    def test_category_items_default_to_enabled_when_unset(self, app):
+        pii_item = app._build_pii_menu({}, True)
+        ip_title = next(t for t in pii_item.keys() if "Detect IP Addresses" in t)
+        fin_title = next(t for t in pii_item.keys() if "Detect Financial Figures" in t)
+        assert bool(pii_item[ip_title].state) is True
+        assert bool(pii_item[fin_title].state) is True
+
+    def test_category_item_state_reflects_config(self, app):
+        pii_cfg = {"detect_ip_addresses": False, "detect_financial_figures": True}
+        pii_item = app._build_pii_menu(pii_cfg, True)
+        ip_title = next(t for t in pii_item.keys() if "Detect IP Addresses" in t)
+        fin_title = next(t for t in pii_item.keys() if "Detect Financial Figures" in t)
+        assert bool(pii_item[ip_title].state) is False
+        assert bool(pii_item[fin_title].state) is True
+
+    def test_category_items_have_no_callback_when_gate_disabled(self, app):
+        pii_item = app._build_pii_menu({}, False)
+        ip_title = next(t for t in pii_item.keys() if "Detect IP Addresses" in t)
+        assert pii_item[ip_title].callback is None
+
+    def test_category_items_have_callback_when_gate_enabled(self, app):
+        pii_item = app._build_pii_menu({}, True)
+        ip_title = next(t for t in pii_item.keys() if "Detect IP Addresses" in t)
+        assert pii_item[ip_title].callback is not None
+
+
+class TestTogglePiiCategory:
+    def test_flips_category_flag_and_saves(self, app):
+        app._toggle_pii_category("detect_ip_addresses")
+
+        cfg = app._load_config()
+        assert cfg["pii_detection"]["detect_ip_addresses"] is False
+
+    def test_toggling_twice_re_enables(self, app):
+        app._toggle_pii_category("detect_financial_figures")
+        app._toggle_pii_category("detect_financial_figures")
+
+        assert app._load_config()["pii_detection"]["detect_financial_figures"] is True
+
+    def test_defaults_to_enabled_when_unset(self, app):
+        assert "pii_detection" not in app._load_config()
+
+        app._toggle_pii_category("detect_ip_addresses")
+
+        assert app._load_config()["pii_detection"]["detect_ip_addresses"] is False
+
+    def test_hot_reloads_live_detector_state(self, app):
+        from privacyfence import pii_detector
+
+        app._toggle_pii_category("detect_ip_addresses")
+
+        assert pii_detector.detect_categories("Server at 192.168.1.100.") == []
+
+    def test_categories_toggle_independently(self, app):
+        app._toggle_pii_category("detect_ip_addresses")
+
+        cfg = app._load_config()
+        assert cfg["pii_detection"]["detect_ip_addresses"] is False
+        assert cfg["pii_detection"].get("detect_financial_figures", True) is True
 
 
 class TestRefreshConnectors:

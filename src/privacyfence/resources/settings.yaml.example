@@ -72,6 +72,14 @@ pii_detection:
   # when you use "PII Detection Gate" in the menu bar.
   enabled: true
 
+  # IP addresses and currency figures show up constantly in ordinary
+  # business correspondence (server logs, invoices, budgets) without being
+  # personal data about anyone, so these two categories can be turned off
+  # independently of the gate as a whole. Toggled automatically from the
+  # "PII Detection Gate" submenu in the menu bar.
+  detect_ip_addresses: true
+  detect_financial_figures: true
+
 # Note: unattended_sessions.enabled (privacyfence_begin_unattended_session's
 # opt-in gate) is NOT set here. It's a deliberate per-organization choice,
 # not a per-user setting, so it lives in the organization config bundle

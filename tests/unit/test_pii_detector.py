@@ -20,6 +20,7 @@ from privacyfence.pii_detector import (
     init_pii_detection,
     is_pii_detection_enabled,
     scan_text,
+    set_pii_category_enabled,
     set_pii_detection_changed_listener,
     set_pii_detection_enabled,
 )
@@ -329,3 +330,49 @@ class TestEnabledToggle:
         # Must not raise even with no listener registered.
         set_pii_detection_enabled(False)
         set_pii_detection_enabled(True)
+
+
+class TestOptionalCategoryToggle:
+    """IP address and Financial figures are the two categories that can be
+    disabled individually (config: pii_detection.detect_ip_addresses /
+    detect_financial_figures), on top of the whole-gate enabled switch."""
+
+    def test_init_disables_only_ip_address(self):
+        init_pii_detection(True, detect_ip_addresses=False)
+        text = "Server at 192.168.1.100, wire $500 today."
+        assert detect_categories(text) == ["Financial figures (currency amounts)"]
+
+    def test_init_disables_only_financial_figures(self):
+        init_pii_detection(True, detect_financial_figures=False)
+        text = "Server at 192.168.1.100, wire $500 today."
+        assert detect_categories(text) == ["IP address"]
+
+    def test_init_disables_both(self):
+        init_pii_detection(True, detect_ip_addresses=False, detect_financial_figures=False)
+        text = "Server at 192.168.1.100, wire $500 today."
+        assert detect_categories(text) == []
+
+    def test_other_categories_unaffected(self):
+        init_pii_detection(True, detect_ip_addresses=False, detect_financial_figures=False)
+        assert detect_categories("Wire to DE89370400440532013000 today.") == [
+            "IBAN (bank account number)"
+        ]
+
+    def test_set_pii_category_enabled_hot_toggles(self):
+        init_pii_detection(True)
+        set_pii_category_enabled("detect_ip_addresses", False)
+        assert detect_categories("Server at 192.168.1.100.") == []
+        set_pii_category_enabled("detect_ip_addresses", True)
+        assert detect_categories("Server at 192.168.1.100.") == ["IP address"]
+
+    def test_changed_listener_fires_on_category_toggle(self):
+        init_pii_detection(True)
+        calls = []
+        set_pii_detection_changed_listener(lambda: calls.append(1))
+        set_pii_category_enabled("detect_financial_figures", False)
+        assert calls == [1]
+        set_pii_detection_changed_listener(None)
+
+    def test_master_disable_short_circuits_before_category_filtering(self):
+        init_pii_detection(False)
+        assert detect_pii_categories("Server at 192.168.1.100.") == []
