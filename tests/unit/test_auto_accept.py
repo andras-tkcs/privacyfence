@@ -1291,11 +1291,23 @@ class TestSuggestWriteRule:
         assert suggest_write_rule("tasks.move_task", make_ctx(args={"source_list_id": "list1"})) is None
 
     def test_unlisted_write_operation_suggests_nothing(self):
-        # The other ~33 write operations aren't in WRITE_RULE_SUGGESTIONS at
+        # The other write operations aren't in WRITE_RULE_SUGGESTIONS at
         # all -- this is what keeps the mechanism's blast radius contained.
-        assert suggest_write_rule("gmail.create_draft", make_ctx(args={"to": "x@example.com"})) is None
+        assert suggest_write_rule("gmail.send_message", make_ctx(args={"to": "x@example.com"})) is None
         assert suggest_write_rule("drive.write_file", make_ctx(args={})) is None
         assert suggest_write_rule("calendar.out_of_office", make_ctx(args={})) is None
+
+    def test_gmail_create_draft_always_suggests_the_unconditional_rule(self):
+        # Deliberately not resource-identity-scoped, unlike every other entry
+        # in the table -- drafting has no recipient sent yet, so an
+        # unconditional rule here doesn't carry the blast radius a bare
+        # "accept every future write" toggle would for an operation that
+        # actually delivers something (e.g. gmail.send_message, which stays
+        # out of this table entirely).
+        assert suggest_write_rule("gmail.create_draft", make_ctx(args={"to": "anyone@example.com"})) == (
+            "always_allow", None,
+        )
+        assert suggest_write_rule("gmail.create_draft", make_ctx(args={})) == ("always_allow", None)
 
 
 # --------------------------------------------------------------------------- #
@@ -1610,6 +1622,12 @@ class TestDescribeRuleChange:
             "update", "gmail.read_message", "trusted_sender_domain", ["b.com"], old_value=["a.com"]
         )
         assert "a.com -> b.com" in description
+
+    def test_add_with_no_value_omits_the_equals_none(self):
+        # always_allow (gmail.create_draft's suggestion) has no value at
+        # all -- "= None" would misread as a real, meaningful value.
+        description = describe_rule_change("add", "gmail.create_draft", "always_allow", None)
+        assert description == "Add auto-accept rule 'always_allow' to 'gmail.create_draft'"
 
 
 # --------------------------------------------------------------------------- #

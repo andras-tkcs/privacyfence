@@ -1126,7 +1126,7 @@ def suggest_rule_choices(operation_key: str, ctx: ReviewContext) -> list[tuple[s
 
 # ── Rule suggestion for writes ("Always allow" on the write popup) ──────────
 
-def _project_key_value(ctx: ReviewContext) -> Any | None:
+def _project_key_value(ctx: ReviewContext) -> Any:
     """Derive a Jira project key the same way _rule_approved_project_keys
     does: jira_create_issue's own args carry project_key directly; every
     other Jira write op only carries issue_key, so the project is parsed
@@ -1135,10 +1135,10 @@ def _project_key_value(ctx: ReviewContext) -> Any | None:
     if not project_key:
         issue_key = ctx.args.get("issue_key", "") or ""
         project_key = issue_key.split("-")[0] if "-" in issue_key else ""
-    return [project_key] if project_key else None
+    return [project_key] if project_key else _NO_SUGGESTION
 
 
-def _task_list_value(ctx: ReviewContext) -> Any | None:
+def _task_list_value(ctx: ReviewContext) -> Any:
     """Derive an approved_task_list value the same way _rule_approved_task_list
     reads it: tasks_move_task carries source_list_id/destination_list_id
     instead of a single task_list_id, and the suggestion has to cover both
@@ -1146,49 +1146,60 @@ def _task_list_value(ctx: ReviewContext) -> Any | None:
     task move into (or out of) a list the user never approved."""
     if "task_list_id" in ctx.args:
         task_list_id = ctx.args.get("task_list_id") or ""
-        return [task_list_id] if task_list_id else None
+        return [task_list_id] if task_list_id else _NO_SUGGESTION
     source = ctx.args.get("source_list_id", "") or ""
     destination = ctx.args.get("destination_list_id", "") or ""
-    return sorted({source, destination}) if source and destination else None
+    return sorted({source, destination}) if source and destination else _NO_SUGGESTION
+
+
+# Sentinel distinguishing "nothing to suggest for this call" from "the
+# suggested value is legitimately None" -- always_allow (see below) is a
+# value-less rule, so its value_of always returns None as a *real* value,
+# not an absence. Reuses the read-side suggestion machinery's naming
+# convention (_NO_MATCH) for the same kind of "can't just use None" gap.
+_NO_SUGGESTION = object()
 
 
 @dataclass(frozen=True)
 class WriteRuleSuggestion:
     rule_name: str
-    value_of: Callable[[ReviewContext], Any | None]  # None -> nothing to suggest for this call
+    value_of: Callable[[ReviewContext], Any]  # _NO_SUGGESTION -> nothing to suggest for this call
 
 
-# Every entry here is deliberately resource-identity-scoped (one label, one
-# calendar, one project, one space, one task list) -- never a bare "accept
-# every future write of this type" toggle. That property is what keeps this
-# table's blast radius contained despite reopening the write gate's
-# "Always allow" button for these five operations: a `None`-for-everything-
-# else default means the other ~33 write operations are structurally
-# unaffected, and nothing here can ever propose an unconditional rule (see
-# auto_accept.ARGS_ONLY_RULES's "always_allow" -- deliberately absent from
-# this table for exactly that reason).
+# Every entry here except gmail.create_draft is resource-identity-scoped
+# (one label, one calendar, one project, one space, one task list) rather
+# than a bare "accept every future write of this type" toggle -- that
+# property is what keeps this table's blast radius contained despite
+# reopening the write gate's "Always allow" button for these operations.
+# gmail.create_draft is a deliberate, narrow exception: drafting has no
+# recipient sent yet (unlike gmail.send_message, which the user still
+# reviews before it goes out via to_is_myself/approved_recipient_domain),
+# so an unconditional always_allow rule for drafting alone doesn't carry
+# the same blast radius a bare toggle would for an operation that actually
+# delivers something.
 WRITE_RULE_SUGGESTIONS: dict[str, WriteRuleSuggestion] = {
+    "gmail.create_draft": WriteRuleSuggestion("always_allow", lambda ctx: None),
     "gmail.add_label": WriteRuleSuggestion(
-        "label_name_allowlist", lambda ctx: [ctx.args["label_name"]] if ctx.args.get("label_name") else None
+        "label_name_allowlist", lambda ctx: [ctx.args["label_name"]] if ctx.args.get("label_name") else _NO_SUGGESTION
     ),
     "gmail.remove_label": WriteRuleSuggestion(
-        "label_name_allowlist", lambda ctx: [ctx.args["label_name"]] if ctx.args.get("label_name") else None
+        "label_name_allowlist", lambda ctx: [ctx.args["label_name"]] if ctx.args.get("label_name") else _NO_SUGGESTION
     ),
     "calendar.create_modify_event": WriteRuleSuggestion(
-        "personal_calendar", lambda ctx: [ctx.args["calendar_id"]] if ctx.args.get("calendar_id") else None
+        "personal_calendar", lambda ctx: [ctx.args["calendar_id"]] if ctx.args.get("calendar_id") else _NO_SUGGESTION
     ),
     "calendar.set_visibility": WriteRuleSuggestion(
-        "personal_calendar", lambda ctx: [ctx.args["calendar_id"]] if ctx.args.get("calendar_id") else None
+        "personal_calendar", lambda ctx: [ctx.args["calendar_id"]] if ctx.args.get("calendar_id") else _NO_SUGGESTION
     ),
     "jira.create_issue": WriteRuleSuggestion("approved_project_keys", _project_key_value),
     "jira.add_comment": WriteRuleSuggestion("approved_project_keys", _project_key_value),
     "jira.update_issue": WriteRuleSuggestion("approved_project_keys", _project_key_value),
     "jira.transition_issue": WriteRuleSuggestion("approved_project_keys", _project_key_value),
     "confluence.create_page": WriteRuleSuggestion(
-        "approved_space_keys", lambda ctx: [ctx.args["space_key"]] if ctx.args.get("space_key") else None
+        "approved_space_keys", lambda ctx: [ctx.args["space_key"]] if ctx.args.get("space_key") else _NO_SUGGESTION
     ),
     "confluence.update_page": WriteRuleSuggestion(
-        "approved_space_keys", lambda ctx: [ctx.args["space_key"]] if ctx.args.get("space_key") else None
+        "approved_space_keys", lambda ctx: [ctx.args["space_key"]] if ctx.args.get("space_key") else _NO_SUGGESTION
     ),
     "tasks.create_task": WriteRuleSuggestion("approved_task_list", _task_list_value),
     "tasks.update_task": WriteRuleSuggestion("approved_task_list", _task_list_value),
@@ -1201,16 +1212,16 @@ WRITE_RULE_SUGGESTIONS: dict[str, WriteRuleSuggestion] = {
 def suggest_write_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | None:
     """Propose one auto-accept rule for a write's own "Always allow" button --
     the write-gate counterpart to suggest_rule() above. Returns None for
-    every operation key not in WRITE_RULE_SUGGESTIONS (the other ~33 write
-    operations), by construction -- there is no fallback/generic path here,
-    which is what keeps this mechanism from ever proposing anything broader
-    than the five resource-identity-scoped rules the table declares.
+    every operation key not in WRITE_RULE_SUGGESTIONS (the other ~30-odd
+    write operations), by construction -- there is no fallback/generic path
+    here, which is what keeps this mechanism from ever proposing anything
+    broader than the rules the table declares.
     """
     entry = WRITE_RULE_SUGGESTIONS.get(operation_key)
     if entry is None:
         return None
     value = entry.value_of(ctx)
-    return (entry.rule_name, value) if value is not None else None
+    return None if value is _NO_SUGGESTION else (entry.rule_name, value)
 
 
 def known_rule_names() -> frozenset[str]:
@@ -1285,6 +1296,10 @@ def describe_rule_change(
             f"Replace auto-accept rule {rule_name!r} on {operation_key!r}: "
             f"{old_str} -> {_format_rule_value(value)}"
         )
+    if value is None:
+        # Value-less rule (e.g. always_allow) -- "= None" would misread as
+        # a real value rather than "unconditional, nothing to scope it to".
+        return f"Add auto-accept rule {rule_name!r} to {operation_key!r}"
     return f"Add auto-accept rule {rule_name!r} = {_format_rule_value(value)} to {operation_key!r}"
 
 

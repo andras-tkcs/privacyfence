@@ -383,7 +383,7 @@ class TestAcceptAllWrites:
         )
 
     async def test_accept_all_without_suggestion_falls_back_to_plain_approve(self, monkeypatch, audit_dir):
-        # gmail_create_draft has no entry in WRITE_RULE_SUGGESTIONS at all --
+        # gmail_send_message has no entry in WRITE_RULE_SUGGESTIONS at all --
         # even if the (real) popup somehow returned "accept_all", there's no
         # suggestion to act on, so this must behave like a plain accept.
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
@@ -392,7 +392,7 @@ class TestAcceptAllWrites:
         added = []
         monkeypatch.setattr(gate, "add_auto_accept_rule", lambda *a: added.append(a))
 
-        result = await gate.gated_call(**base_kwargs(gate="popup", connector="gmail", tool="gmail_create_draft"))
+        result = await gate.gated_call(**base_kwargs(gate="popup", connector="gmail", tool="gmail_send_message"))
 
         assert result is FILTERED
         assert added == []
@@ -413,6 +413,33 @@ class TestAcceptAllWrites:
         assert added == []
         entries = read_audit_entries(audit_dir)
         assert entries[0]["decision"] == "approved"
+
+    async def test_gmail_create_draft_offers_the_unconditional_always_allow_rule(self, monkeypatch, audit_dir):
+        # End-to-end through the real (unmocked) suggest_write_rule -- unlike
+        # every other write suggestion, always_allow has no recipient/value
+        # to scope it to, so this also exercises describe_rule_change's
+        # "no value" formatting for the confirmation popup.
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept_all")
+        captured = {}
+        monkeypatch.setattr(
+            gate, "show_rule_confirmation_popup",
+            lambda description: captured.setdefault("description", description) or True,
+        )
+        added = []
+        monkeypatch.setattr(gate, "add_auto_accept_rule", lambda op, name, value: added.append((op, name, value)))
+
+        result = await gate.gated_call(**base_kwargs(
+            gate="popup", connector="gmail", tool="gmail_create_draft",
+            args={"to": "anyone@example.com"},
+        ))
+
+        assert result is FILTERED
+        assert added == [("gmail.create_draft", "always_allow", None)]
+        assert captured["description"] == "Add auto-accept rule 'always_allow' to 'gmail.create_draft'"
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "accepted_via_accept_all"
+        assert entries[0]["auto_accept_rule"] == "always_allow"
 
     async def test_show_popup_receives_allow_accept_all_true_when_suggestion_exists(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
