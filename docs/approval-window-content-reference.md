@@ -237,18 +237,21 @@ skips the grace window entirely in favor of a standing rule, same confirmation f
   disclose.
 - **PII banner (red) vs. content-flag banner (amber)**: both come from the same local detector
   (`pii_detector.py`'s `detect_pii_categories()`), but scan opposite directions and carry opposite
-  weight. The red banner (review-gate) scans content flowing **in** from an external source
-  (`gate.py`'s `pii_categories`) and, on Allow/Always-allow, forces a second explicit
-  `show_pii_confirmation_popup` before the decision is final — it's a trust-boundary gate, not
-  just a label. The amber banner (popup-gate) scans Claude's own drafted content going **out**
-  (`gate.py`'s `write_content_flags`) and is purely informational: no full-window tint, no second
-  dialog, the click resolves immediately regardless — there's no "personal data snuck in" scenario
-  on a write, since it's content Claude already described in chat, for every popup-gate tool except
-  one. `drive_upload_file` is the deliberate exception: its `local_path`/`content_base64` payload
-  can be content Claude never actually read, so it additionally gets the real, red-banner-style
-  treatment (`gate.py`'s `upload_pii_categories`) on top of the amber banner every write gets — see
+  weight. The red banner itself (row 5 in the anatomy table — the visual tint on the *first*
+  dialog) is still strictly review-gate only: `show_popup`/`approval_window.py`'s controller never
+  receives a `pii_categories` value on the popup-gate path, only `write_content_flags` (the amber
+  banner), regardless of tool. What *is* shared with one write tool is the underlying **gate
+  behavior** the red banner is a visual cue for, not the banner's rendering: on Allow/Always-allow,
+  the review-gate's `pii_categories` forces a second explicit `show_pii_confirmation_popup` before
+  the decision is final — a trust-boundary gate, not just a label — and `drive_upload_file` is the
+  one popup-gate tool whose own scan (`gate.py`'s `upload_pii_categories`) triggers that same
+  second dialog and audit-log `pii_detected` field, without changing what the first popup itself
+  shows (still just the ordinary amber banner, informational only, from `write_content_flags`).
+  Every other popup-gate tool's amber banner stays purely informational end to end: no tint beyond
+  it, no second dialog, the click resolves immediately regardless — there's no "personal data
+  snuck in" scenario for content Claude already described in chat. See
   [`TECHNICAL_REFERENCE.md`'s PII detection gate section](TECHNICAL_REFERENCE.md#pii-detection-gate)
-  for the full reasoning.
+  for the full reasoning behind `drive_upload_file`'s exception.
 - **Seen-count caption and "Claude says" reason box**: both, since both are computed centrally in
   `gate.py` for every gated call regardless of direction.
 - **content_kind email header / native PDFView**: review-gate only, and only for the two specific
