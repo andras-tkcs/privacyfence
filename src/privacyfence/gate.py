@@ -220,6 +220,17 @@ async def gated_call(
         # item -- exactly the one case where details_text/filtered_data's own content already
         # flows through unredacted -- so the human reviewer is never shown a rendered PDF that's
         # richer than what "AI will receive" already discloses Claude gets for this same call.
+    preview_bytes: bytes = b"",  # Raw image bytes for a native NSImageView embed, instead of the
+        # "[binary content...]" placeholder text or a plain metadata-only popup.
+        # Unlike pdf_bytes, carries no AI-visibility parity constraint: only ever set by
+        # download/upload-shaped tools (gmail_download_attachment, drive_download_file,
+        # drive_upload_file) whose content never reaches Claude at all -- there's nothing an
+        # "AI will receive" checklist could disclose for these calls to stay in parity with, so
+        # the human reviewer can be shown the full image regardless of any category policy.
+        # Valid on both gate="review" and gate="popup" calls (unlike pdf_bytes/content_kind/
+        # visibility, which are read-only).
+    preview_mime_type: str = "",  # MIME type for preview_bytes, e.g. "image/png" -- used to decide
+        # whether approval_window.py can render it as an image at all before attempting to.
     my_email: str = "",
     session_created_ids: set | None = None,
     args: dict | None = None,
@@ -332,7 +343,7 @@ async def gated_call(
                 decision = await asyncio.to_thread(
                     show_read_popup, popup_title, preview or {}, details, suggestion is not None,
                     pii_categories, visibility, claude_reason, seen_count, content_kind, pdf_bytes,
-                    connector,
+                    connector, preview_bytes, preview_mime_type,
                 )
 
                 if decision in ("accept", "accept_all") and pii_categories:
@@ -402,7 +413,7 @@ async def gated_call(
                 decision = await asyncio.to_thread(
                     show_popup, popup_title, preview or {}, details, file_key is not None,
                     claude_reason, write_content_flags, seen_count, connector,
-                    suggestion is not None,
+                    suggestion is not None, preview_bytes, preview_mime_type,
                 )
 
                 if decision == "accept_all":

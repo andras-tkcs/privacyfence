@@ -64,6 +64,7 @@ from AppKit import (
     NSFontAttributeName,
     NSForegroundColorAttributeName,
     NSImage,
+    NSImageScaleProportionallyUpOrDown,
     NSImageView,
     NSLineBreakByWordWrapping,
     NSMakeRect,
@@ -415,6 +416,8 @@ class ApprovalWindowController(NSObject):
         self.content_kind: str = "generic"
         self.pdf_bytes: bytes = b""
         self.connector: str = ""
+        self.preview_bytes: bytes = b""
+        self.preview_mime_type: str = ""
         self.result = "deny"
         self.panel = None
         self._details_view = None
@@ -662,7 +665,7 @@ class ApprovalWindowController(NSObject):
     # AppKit constraints.
     # ------------------------------------------------------------------ #
 
-    def _build_details_view(self, y: float, width: float) -> WKWebView | PDFView:
+    def _build_details_view(self, y: float, width: float) -> WKWebView | PDFView | NSImageView:
         # pdf_bytes is only ever non-empty when gate.py's caller (drive.py's
         # _get_file_content) already confirmed category_policy allows it --
         # see gate.py's gated_call docstring. _build_details_pdf_view still
@@ -672,6 +675,15 @@ class ApprovalWindowController(NSObject):
             pdf_view = self._build_details_pdf_view(y, width)
             if pdf_view is not None:
                 return pdf_view
+        # preview_bytes/preview_mime_type (unlike pdf_bytes) carry no
+        # AI-visibility parity constraint -- see gate.py's gated_call
+        # docstring -- only ever set by download/upload-shaped tools whose
+        # content never reaches Claude at all. Same corrupt-data fallback
+        # discipline as the PDF branch above.
+        if self.preview_bytes and self.preview_mime_type.startswith("image/"):
+            image_view = self._build_details_image_view(y, width)
+            if image_view is not None:
+                return image_view
         return self._build_details_web_view(y, width)
 
     def _build_details_pdf_view(self, y: float, width: float) -> PDFView | None:
@@ -684,6 +696,19 @@ class ApprovalWindowController(NSObject):
         pdf_view.setAutoScales_(True)
         self._details_view = pdf_view
         return pdf_view
+
+    def _build_details_image_view(self, y: float, width: float) -> NSImageView | None:
+        data = NSData.dataWithBytes_length_(self.preview_bytes, len(self.preview_bytes))
+        image = NSImage.alloc().initWithData_(data)
+        if image is None:
+            return None
+        image_view = NSImageView.alloc().initWithFrame_(
+            NSMakeRect(_MARGIN, y, width, self._details_height)
+        )
+        image_view.setImage_(image)
+        image_view.setImageScaling_(NSImageScaleProportionallyUpOrDown)
+        self._details_view = image_view
+        return image_view
 
     def _build_details_web_view(self, y: float, width: float) -> WKWebView:
         config = WKWebViewConfiguration.alloc().init()
@@ -1181,6 +1206,8 @@ def show_native_approval(
     content_kind: str = "generic",
     pdf_bytes: bytes = b"",
     connector: str = "",
+    preview_bytes: bytes = b"",
+    preview_mime_type: str = "",
 ) -> str:
     """Show the approval window and block until the user picks a button.
 
@@ -1209,6 +1236,8 @@ def show_native_approval(
         controller.content_kind = content_kind or "generic"
         controller.pdf_bytes = pdf_bytes or b""
         controller.connector = connector or ""
+        controller.preview_bytes = preview_bytes or b""
+        controller.preview_mime_type = preview_mime_type or ""
 
         controller.performSelectorOnMainThread_withObject_waitUntilDone_(
             "runApproval:", None, True

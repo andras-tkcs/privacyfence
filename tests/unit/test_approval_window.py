@@ -24,6 +24,7 @@ already established for osascript.
 """
 from __future__ import annotations
 
+import base64
 import sys
 
 import pytest
@@ -68,6 +69,8 @@ def make_controller(
     content_kind="generic",
     pdf_bytes=b"",
     connector="",
+    preview_bytes=b"",
+    preview_mime_type="",
 ):
     c = ApprovalWindowController.alloc().init()
     c.title = title
@@ -83,6 +86,8 @@ def make_controller(
     c.content_kind = content_kind
     c.pdf_bytes = pdf_bytes
     c.connector = connector
+    c.preview_bytes = preview_bytes
+    c.preview_mime_type = preview_mime_type
     return c
 
 
@@ -890,6 +895,71 @@ class TestPdfViewEmbed:
         views = build_views(make_controller(pdf_bytes=b"not a pdf at all"))
         assert any(isinstance(v, WKWebView) for v in views)
         assert not any(isinstance(v, PDFView) for v in views)
+
+
+class TestImagePreviewEmbed:
+    """preview_bytes/preview_mime_type, when set to an image, render a
+    native NSImageView instead of the usual WKWebView -- unlike pdf_bytes,
+    valid on both the review-gate and popup-gate windows (drive_download_
+    file, gmail_download_attachment, drive_upload_file), since none of them
+    disclose their content to Claude at all -- see gate.py's gated_call
+    docstring for why no AI-visibility parity check gates this.
+
+    Assertions check ``controller._details_view`` specifically rather than
+    scanning the whole panel for an NSImageView, unlike TestPdfViewEmbed's
+    PDFView checks above -- NSImageView isn't unique to the details pane the
+    way PDFView is: the connector/fence brand icons (TestConnectorIcon) are
+    NSImageViews too, so "no NSImageView anywhere in the panel" would be a
+    false assumption regardless of what the details pane renders.
+    """
+
+    # 1x1 transparent PNG -- enough for NSImage to parse successfully
+    # (confirmed via a real NSImage.alloc().initWithData_() call), not a
+    # claim this is a meaningful image.
+    VALID_PNG = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+        "+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+
+    def test_no_preview_bytes_renders_the_web_view(self):
+        controller = make_controller(preview_bytes=b"", preview_mime_type="")
+        controller.build_panel()
+        assert isinstance(controller._details_view, WKWebView)
+
+    def test_valid_image_bytes_render_an_image_view_instead(self):
+        controller = make_controller(preview_bytes=self.VALID_PNG, preview_mime_type="image/png")
+        controller.build_panel()
+        assert isinstance(controller._details_view, NSImageView)
+
+    def test_image_view_holds_the_parsed_image(self):
+        controller = make_controller(preview_bytes=self.VALID_PNG, preview_mime_type="image/png")
+        controller.build_panel()
+        assert isinstance(controller._details_view, NSImageView)
+        assert controller._details_view.image() is not None
+
+    def test_non_image_mime_type_falls_back_to_the_web_view(self):
+        # preview_bytes is set (e.g. a PDF fetched for an upload preview
+        # before the mime type was known to be non-image), but the mime
+        # type isn't "image/*" -- must not attempt to parse it as an image.
+        controller = make_controller(preview_bytes=self.VALID_PNG, preview_mime_type="application/pdf")
+        controller.build_panel()
+        assert isinstance(controller._details_view, WKWebView)
+
+    def test_garbage_image_bytes_falls_back_to_the_web_view(self):
+        controller = make_controller(preview_bytes=b"not an image at all", preview_mime_type="image/png")
+        controller.build_panel()
+        assert isinstance(controller._details_view, WKWebView)
+
+    def test_pdf_bytes_takes_priority_over_preview_bytes(self):
+        # Not a real call shape (no caller sets both), but the priority
+        # should be deterministic if it ever happened rather than depend on
+        # dict/attribute ordering.
+        controller = make_controller(
+            pdf_bytes=TestPdfViewEmbed.VALID_PDF,
+            preview_bytes=self.VALID_PNG, preview_mime_type="image/png",
+        )
+        controller.build_panel()
+        assert isinstance(controller._details_view, PDFView)
 
 
 class TestButtonClicked:
