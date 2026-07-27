@@ -50,6 +50,18 @@ Auto-accept Rules…" window (see _run_menu_bar_scenario's docstring) -- the men
 #60) has the same "real click actually reaching it" gap the rest of this script covers for
 approval popups, just never exercised end to end before now.
 
+--layout v2 (default: "legacy", every existing scenario's rendering unchanged) switches every
+tool-approval scenario to the redesigned card-stack rendering (approval_window_html.py) instead of
+the original hand-laid-out NSTextField/NSBox stack -- this is the visual-review surface for the
+approval-window redesign, per that project's own implementation plan: iterate here, with
+--screenshot-dir, before any of it touches gate.py or the real daemon. Each scenario's
+compact/wide shape (_TOOL_LAYOUT below) is a fixed, explicit per-tool assignment re-derived
+directly from the "Approval windows design system" claude.ai/design project's own markup (turns
+4-6) for every one of the 30 dialog shapes that project actually mocked; tools it didn't
+explicitly mock get a best-effort classification by analogy to the closest mocked sibling
+(documented inline at _TOOL_LAYOUT) and should be treated as provisional until reviewed against
+real screenshots. --layout v2 has no effect on the menu-bar scenario (unrelated window).
+
 Usage (the project's own venv, not a bare system python3 -- this needs the
 same pyobjc/AppKit packages the app itself depends on, which only the venv
 has installed):
@@ -57,6 +69,9 @@ has installed):
     .venv/bin/python scripts/qa_popup_smoke.py --report-file /tmp/popup_smoke.md
     .venv/bin/python scripts/qa_popup_smoke.py --pause-seconds 3   # slow down to actually look
     .venv/bin/python scripts/qa_popup_smoke.py --screenshot-dir /tmp/popup_smoke_shots
+    # The redesigned rendering, full screenshot set for visual review:
+    .venv/bin/python scripts/qa_popup_smoke.py --layout v2 --screenshot-dir /tmp/popup_smoke_v2 \\
+        --pause-seconds 2
     # One scenario only, e.g. to refresh a single README.md screenshot -- the three screenshots
     # README.md actually uses (as of this writing) come from these three scenario names, one
     # popup-gate, one review-gate, one menu-bar:
@@ -70,6 +85,7 @@ has installed):
 from __future__ import annotations
 
 import argparse
+import base64
 import os
 import re
 import subprocess
@@ -294,8 +310,22 @@ def _screenshot_own_window(pid: int, path: Path) -> bool:
 
 def _run_scenario(
     name: str, *, click_title: str, expected: str, pre_click_title: str | None = None,
-    pause_seconds: float = 0.3, screenshot_dir: Path | None = None, **popup_kwargs
+    pause_seconds: float = 0.3, screenshot_dir: Path | None = None, layout_mode: str = "legacy",
+    **popup_kwargs
 ) -> ScenarioResult:
+    if layout_mode != "legacy":
+        # Inject the redesigned rendering's params from the scenario name
+        # alone -- see _TOOL_LAYOUT's docstring -- rather than editing all
+        # 61 individual scenario calls below. is_read is derived from the
+        # "RG-"/"WG-" prefix every real tool scenario name already carries
+        # (docs/approval-window-content-reference.md's own grouping);
+        # upload_forced only ever applies to drive_upload_file (see gap #4
+        # in the redesign's implementation plan).
+        tool_name = _tool_name_from_scenario(name)
+        popup_kwargs.setdefault("layout", _TOOL_LAYOUT.get(tool_name, "compact"))
+        popup_kwargs.setdefault("is_read", name.startswith("RG-"))
+        popup_kwargs.setdefault("upload_forced", tool_name == "drive_upload_file")
+
     pid = os.getpid()
     click_status_box: list[str] = []
 
@@ -440,6 +470,122 @@ _TINY_PDF_BYTES = (
     b"trailer << /Size 4 /Root 1 0 R >>\n"
     b"startxref\n0\n%%EOF"
 )
+
+# A real, visually-distinguishable PNG (240x160, nested blue/white/magenta
+# squares -- Broadsheet's own accent/accent-2 colors) -- for
+# gmail_download_attachment/drive_download_file/drive_upload_file's
+# preview_bytes/preview_mime_type, so --layout v2's (and, for that matter,
+# today's legacy layout's own already-merged _build_details_image_view)
+# image-render branch has something actually *visible* on screen, not a
+# 1x1-transparent-pixel stand-in that "renders" but shows nothing to look at
+# in a screenshot. See docs/file-type-support.md for the real feature this
+# stands in for.
+_TINY_PNG_BYTES = base64.b64decode(
+    "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"
+)
+
+# --layout v2's per-tool compact/wide assignment -- re-derived directly from the "Approval
+# windows design system" claude.ai/design project's own markup (turns 4-6: every .pf-win with an
+# inline style="width:880px" is wide, everything else is compact), not from memory or a length
+# heuristic. Keyed by the bare tool name _tool_name_from_scenario() extracts from each scenario's
+# own name string.
+#
+# All 17 read-gate tools the design canvas mocked are wide except calendar_get_event_details; all
+# 13 write-gate tools it mocked are wide except calendar_create_event/slack_send_message/
+# telegram_send_message/jira_add_comment. Tools the canvas never mocked at all (everything below
+# the first blank line in each connector's block) are a best-effort classification by analogy to
+# the closest mocked sibling from the same connector -- wide only for tools that write/return a
+# genuine prose body (doc/file content, page content, sheet cell values); compact for short
+# structured field changes. Provisional until reviewed against real --layout v2 screenshots.
+_TOOL_LAYOUT: dict[str, str] = {
+    # Confirmed wide from the design canvas directly (turns 4-6):
+    "gmail_get_message": "wide", "gmail_get_thread": "wide",
+    "gmail_download_attachment": "wide", "drive_download_file": "wide",
+    "salesforce_get_record": "wide", "salesforce_search": "wide", "salesforce_run_report": "wide",
+    "jira_get_issue": "wide", "confluence_get_page": "wide", "confluence_get_page_by_title": "wide",
+    "telegram_get_messages": "wide", "telegram_search_messages": "wide",
+    "drive_sheets_get_values": "wide", "slack_get_channel_history": "wide",
+    "slack_get_thread_replies": "wide", "slack_search_messages": "wide",
+    "drive_get_file_content": "wide",
+    "gmail_create_draft": "wide", "gmail_reply_draft": "wide",
+    "drive_sheets_write_range": "wide", "drive_upload_file": "wide",
+    "jira_create_issue": "wide", "confluence_create_page": "wide",
+    "calendar_get_event_details": "compact", "calendar_create_event": "compact",
+    "slack_send_message": "compact", "telegram_send_message": "compact", "jira_add_comment": "compact",
+    #
+    # Not mocked by the design canvas -- best-effort by analogy (see docstring above):
+    "gmail_reply_all_draft": "wide",  # same shape as gmail_reply_draft
+    "gmail_add_label": "compact", "gmail_remove_label": "compact", "gmail_archive_message": "compact",
+    "gmail_create_filter": "compact", "gmail_update_filter": "compact", "gmail_create_label": "compact",
+    "drive_write_doc_content": "wide", "drive_write_file_content": "wide",  # writing a prose body
+    "drive_docs_edit_content": "wide",  # editing doc body content, same as writing it
+    "drive_move_file": "compact", "drive_sheets_add_sheet": "compact",
+    "drive_sheets_rename_sheet": "compact", "drive_sheets_delete_dimensions": "compact",
+    "drive_sheets_format_range": "compact", "drive_sheets_insert_dimensions": "compact",
+    "drive_add_comment": "compact",  # short annotation, like jira_add_comment
+    "drive_docs_format_content": "compact",  # formatting only, no new body text
+    "calendar_update_event": "compact", "calendar_create_out_of_office": "compact",
+    "calendar_set_working_location": "compact", "calendar_set_event_visibility": "compact",
+    "contacts_update": "compact", "contacts_create": "compact",
+    "contacts_add_label": "compact", "contacts_remove_label": "compact",
+    "jira_update_issue": "compact", "jira_transition_issue": "compact",  # field-change rows, not prose
+    "confluence_update_page": "wide",  # editing page body, same as confluence_create_page
+    "tasks_create_task": "compact", "tasks_update_task": "compact", "tasks_complete_task": "compact",
+    "tasks_uncomplete_task": "compact", "tasks_move_task": "compact",
+}
+
+_SCENARIO_TOOL_RE = re.compile(r"^\S+-\d+\s*·\s*([a-z_]+)")
+
+
+def _tool_name_from_scenario(name: str) -> str | None:
+    """Extracts e.g. "gmail_download_attachment" from "RG-1 · gmail_download_attachment (+ Show
+    more → Allow once)". Returns None for the menu-bar scenario (no "RG-N ·"/"WG-N ·" prefix at
+    all) -- _run_scenario only consults this when actually building a tool-approval popup, so a
+    None here is never reached for that scenario in the first place."""
+    m = _SCENARIO_TOOL_RE.match(name)
+    return m.group(1) if m else None
 
 
 def _run_on_main_thread_sync(func: Callable[[], Any]) -> Any:
@@ -601,7 +747,8 @@ def _run_menu_bar_scenario(
 
 
 def _scenarios(
-    pause_seconds: float = 0.3, screenshot_dir: Path | None = None, only: str | None = None
+    pause_seconds: float = 0.3, screenshot_dir: Path | None = None, only: str | None = None,
+    layout_mode: str = "legacy",
 ) -> list[ScenarioResult]:
     """One scenario per tool in docs/approval-window-content-reference.md's RG-1/RG-2/RG-3/RG-4/
     WG-1/WG-2 tables (61 tools total) -- every dialog *shape* that reference doc documents, not
@@ -618,6 +765,10 @@ def _scenarios(
     -- see main()'s --scenario flag. Filtering happens here, before each matching call site's
     run(...) actually pops and clicks a real window, rather than after: skipped scenarios must
     never show a window at all, not just be dropped from the report.
+
+    `layout_mode` ("legacy" or "v2", see main()'s --layout flag) is threaded straight through to
+    _run_scenario, which does the actual per-tool layout/is_read/upload_forced injection -- no
+    change needed to any of the individual scenario calls below to support it.
     """
     results = []
     only_lower = only.lower() if only else None
@@ -625,36 +776,48 @@ def _scenarios(
     def run(name: str, **kwargs) -> ScenarioResult | None:
         if only_lower is not None and only_lower not in name.lower():
             return None
-        return _run_scenario(name, pause_seconds=pause_seconds, screenshot_dir=screenshot_dir, **kwargs)
+        return _run_scenario(
+            name, pause_seconds=pause_seconds, screenshot_dir=screenshot_dir,
+            layout_mode=layout_mode, **kwargs,
+        )
 
     # ================================================================== #
     # RG-1 -- plain review popup (summary box only, no AI-visibility checklist)
     # ================================================================== #
 
     results.append(run(
-        "RG-1 · gmail_download_attachment",
+        # Also the preview_bytes/preview_mime_type image-render mechanic
+        # (merged via #96-#97 -- see the redesign's implementation plan):
+        # _TINY_PNG_BYTES gives approval_window.py's image branch (legacy's
+        # native NSImageView, v2's inline <img> data URI) something real to
+        # render instead of falling back to the plain-metadata view.
+        "RG-1 · gmail_download_attachment (+ image preview)",
         click_title="Allow once", expected="accept",
         title="Download Gmail Attachment",
         preview={
-            "From": QA_EMAIL, "Subject": QA_GMAIL_SUBJECT, "Attachment name": "qa-smoke-test.pdf",
-            "Type": "application/pdf", "Size": "24 KB", "Will save to": "~/Downloads/qa-smoke-test.pdf",
+            "From": QA_EMAIL, "Subject": QA_GMAIL_SUBJECT, "Attachment name": "qa-smoke-test.png",
+            "Type": "image/png", "Size": "1 KB", "Will save to": "~/Downloads/qa-smoke-test.png",
         },
         details_text=QA_GMAIL_BODY,
         allow_accept_all=False,
         connector="gmail",
+        preview_bytes=_TINY_PNG_BYTES, preview_mime_type="image/png",
     ))
 
     results.append(run(
-        "RG-1 · drive_download_file",
+        # Also the preview_bytes/preview_mime_type image-render mechanic --
+        # see the gmail_download_attachment scenario above for why.
+        "RG-1 · drive_download_file (+ image preview)",
         click_title="Allow once", expected="accept",
         title="Download Drive File",
         preview={
-            "File": QA_DRIVE_FILE, "Owner": QA_EMAIL, "Size": "1.2 KB", "Modified": "2026-07-16",
-            "Saved to": f"~/Downloads/{QA_DRIVE_FILE}",
+            "File": "PrivacyFence QA test image [QATEST].png", "Owner": QA_EMAIL, "Size": "1 KB",
+            "Modified": "2026-07-16", "Saved to": "~/Downloads/PrivacyFence QA test image [QATEST].png",
         },
         details_text="Ordinary, non-sensitive smoke-test file content.",
         allow_accept_all=False,
         connector="drive",
+        preview_bytes=_TINY_PNG_BYTES, preview_mime_type="image/png",
     ))
 
     results.append(run(
@@ -1012,16 +1175,19 @@ def _scenarios(
     ))
 
     results.append(run(
-        "WG-1 · drive_upload_file",
+        # Also the preview_bytes/preview_mime_type image-render mechanic --
+        # see the gmail_download_attachment RG-1 scenario above for why.
+        "WG-1 · drive_upload_file (+ image preview)",
         click_title="Allow once", expected="accept",
         title="Upload Drive File",
         preview={
-            "File": "PrivacyFence QA upload [QATEST].txt", "Source": "~/Desktop/qa-smoke-test.txt",
-            "Size": "0.8 KB", "Destination": QA_DRIVE_FOLDER,
+            "File": "PrivacyFence QA upload [QATEST].png", "Source": "~/Desktop/qa-smoke-test.png",
+            "Size": "1 KB", "Destination": QA_DRIVE_FOLDER,
         },
         details_text="Synthetic PrivacyFence QA upload content. No real information.",
         allow_accept_all=False,
         connector="drive",
+        preview_bytes=_TINY_PNG_BYTES, preview_mime_type="image/png",
     ))
 
     results.append(run(
@@ -1481,6 +1647,15 @@ def main() -> None:
              "docs/images/screenshots. Matches nothing -> an empty report and a nonzero exit "
              "code, same as any other all-failed run.",
     )
+    parser.add_argument(
+        "--layout", choices=["legacy", "v2"], default="legacy",
+        help="'legacy' (default): every scenario renders exactly as it does today. 'v2': every "
+             "tool-approval scenario renders through the redesigned card-stack template "
+             "(approval_window_html.py) instead -- the visual-review surface for the "
+             "approval-window redesign; see this script's own module docstring and _TOOL_LAYOUT "
+             "for how each scenario's compact/wide shape is chosen. No effect on the menu-bar "
+             "scenario.",
+    )
     args = parser.parse_args()
 
     results: list[ScenarioResult] = []
@@ -1491,7 +1666,9 @@ def main() -> None:
         try:
             if args.screenshot_dir is not None:
                 args.screenshot_dir.mkdir(parents=True, exist_ok=True)
-            results.extend(_scenarios(args.pause_seconds, args.screenshot_dir, args.scenario))
+            results.extend(_scenarios(
+                args.pause_seconds, args.screenshot_dir, args.scenario, layout_mode=args.layout,
+            ))
         except Exception as exc:  # noqa: BLE001 - surfaced via the report/exit code below, not swallowed
             print(f"qa_popup_smoke.py: scenario run raised {exc!r}", file=sys.stderr)
             exit_code = 1
