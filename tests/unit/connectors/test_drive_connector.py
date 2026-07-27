@@ -600,6 +600,116 @@ class TestUploadFile:
         kwargs = gated_call_spy[0]
         assert kwargs["preview"]["Size"] == "0 bytes"
 
+    async def test_local_path_image_under_cap_gets_a_preview(self, tmp_path, gated_call_spy):
+        connector, client = make_connector()
+        f = tmp_path / "photo.png"
+        f.write_bytes(b"\x89PNGfakebytes")
+        client.upload_file.return_value = {"id": "uploaded4"}
+
+        await connector.call("drive_upload_file", {"local_path": str(f)})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview_bytes"] == b"\x89PNGfakebytes"
+        assert kwargs["preview_mime_type"] == "image/png"
+
+    async def test_local_path_non_image_gets_no_preview(self, tmp_path, gated_call_spy):
+        connector, client = make_connector()
+        f = tmp_path / "report.pdf"
+        f.write_bytes(b"%PDF-1.4 fake")
+        client.upload_file.return_value = {"id": "uploaded5"}
+
+        await connector.call("drive_upload_file", {"local_path": str(f)})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview_bytes"] == b""
+        assert kwargs["preview_mime_type"] == ""
+
+    async def test_local_path_image_over_cap_gets_no_preview(self, tmp_path, monkeypatch, gated_call_spy):
+        connector, client = make_connector()
+        f = tmp_path / "huge.png"
+        f.write_bytes(b"x")
+        monkeypatch.setattr(drive_module, "_UPLOAD_PREVIEW_MAX_BYTES", 0)
+        client.upload_file.return_value = {"id": "uploaded6"}
+
+        await connector.call("drive_upload_file", {"local_path": str(f)})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview_bytes"] == b""
+        assert kwargs["preview_mime_type"] == ""
+
+    async def test_local_path_read_failure_degrades_gracefully(self, tmp_path, monkeypatch, gated_call_spy):
+        connector, client = make_connector()
+        f = tmp_path / "photo.png"
+        f.write_bytes(b"\x89PNGfakebytes")
+        client.upload_file.return_value = {"id": "uploaded-read-fail"}
+
+        real_open = open
+
+        def flaky_open(path, *args, **kwargs):
+            if str(path) == str(f):
+                raise OSError("permission denied")
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", flaky_open)
+
+        result = await connector.call("drive_upload_file", {"local_path": str(f)})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview_bytes"] == b""
+        assert kwargs["preview_mime_type"] == ""
+        assert result == {"id": "uploaded-read-fail"}
+
+    async def test_local_path_missing_file_gets_no_preview(self, tmp_path, gated_call_spy):
+        connector, client = make_connector()
+        client.upload_file.return_value = {"id": "uploaded7"}
+
+        await connector.call(
+            "drive_upload_file", {"local_path": str(tmp_path / "does-not-exist.png")}
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview"]["Size"] == "0 bytes"
+        assert kwargs["preview_bytes"] == b""
+        assert kwargs["preview_mime_type"] == ""
+
+    async def test_content_base64_image_gets_a_preview(self, gated_call_spy):
+        import base64
+        connector, client = make_connector()
+        client.upload_file.return_value = {"id": "uploaded8"}
+        payload = base64.b64encode(b"\x89PNGfakebytes").decode()
+
+        await connector.call(
+            "drive_upload_file", {"content_base64": payload, "name": "photo.png"}
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview_bytes"] == b"\x89PNGfakebytes"
+        assert kwargs["preview_mime_type"] == "image/png"
+
+    async def test_content_base64_without_name_gets_no_preview(self, gated_call_spy):
+        import base64
+        connector, client = make_connector()
+        client.upload_file.return_value = {"id": "uploaded9"}
+        payload = base64.b64encode(b"\x89PNGfakebytes").decode()
+
+        await connector.call("drive_upload_file", {"content_base64": payload})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview_bytes"] == b""
+        assert kwargs["preview_mime_type"] == ""
+
+    async def test_content_base64_non_image_gets_no_preview(self, gated_call_spy):
+        connector, client = make_connector()
+        client.upload_file.return_value = {"id": "uploaded10"}
+
+        await connector.call(
+            "drive_upload_file", {"content_base64": "aGVsbG8=", "name": "greeting.txt"}
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview_bytes"] == b""
+        assert kwargs["preview_mime_type"] == ""
+
 
 class TestFetchErrorMapping:
     async def test_drive_client_error_becomes_runtime_error(self):
