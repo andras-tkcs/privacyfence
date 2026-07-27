@@ -126,19 +126,21 @@ class TestParseFile:
             "createdTime": "c", "modifiedTime": "m",
             "owners": [{"emailAddress": "a@x.com"}, {"emailAddress": "b@x.com"}],
             "shared": True, "webViewLink": "https://x", "parents": ["p1", "p2"],
-            "driveId": "d1",
+            "driveId": "d1", "thumbnailLink": "https://signed.example/thumb",
         }
         f = DriveClient._parse_file(raw)
         assert f == DriveFile(
             id="f1", name="doc.txt", mime_type="text/plain", size=1234,
             created_time="c", modified_time="m", owners=["a@x.com", "b@x.com"],
             shared=True, web_view_link="https://x", parent_ids=["p1", "p2"], drive_id="d1",
+            thumbnail_link="https://signed.example/thumb",
         )
 
     def test_missing_fields_default_sensibly(self):
         f = DriveClient._parse_file({})
         assert f == DriveFile(id="", name="", mime_type="", size=0)
         assert f.short_summary() == "(unnamed) ()"
+        assert f.thumbnail_link == ""
 
     def test_owners_without_email_address_are_dropped(self):
         f = DriveClient._parse_file({"owners": [{"emailAddress": "a@x.com"}, {}]})
@@ -1333,6 +1335,60 @@ class TestDownloadFile:
         assert result["path"] == str(tmp_path / "evil.bin")
         assert result["name"] == "evil.bin"
         assert os.path.exists(tmp_path / "evil.bin")
+
+
+# ---------------------------------------------------------------------------- #
+# fetch_thumbnail
+# ---------------------------------------------------------------------------- #
+
+class TestFetchThumbnail:
+    def test_empty_thumbnail_link_raises(self):
+        client = make_client(MagicMock())
+        with pytest.raises(DriveClientError, match="non-empty thumbnail_link"):
+            client.fetch_thumbnail("")
+
+    def test_fetches_and_returns_bytes(self, monkeypatch):
+        client = make_client(MagicMock())
+        monkeypatch.setattr(client, "_load_credentials", lambda: MagicMock())
+
+        captured = {}
+        fake_session = MagicMock()
+
+        def fake_get(url, stream):
+            captured["url"] = url
+            captured["stream"] = stream
+            return _FakeStreamResponse([b"\x89PNG", b"", b"restofimage"])
+
+        fake_session.get.side_effect = fake_get
+        monkeypatch.setattr(drive_client_module, "AuthorizedSession", lambda creds: fake_session)
+
+        result = client.fetch_thumbnail("https://signed.example/thumb")
+
+        assert result == b"\x89PNGrestofimage"
+        assert captured["url"] == "https://signed.example/thumb"
+        assert captured["stream"] is True
+
+    def test_raises_when_response_exceeds_max_bytes(self, monkeypatch):
+        client = make_client(MagicMock())
+        monkeypatch.setattr(client, "_load_credentials", lambda: MagicMock())
+
+        fake_session = MagicMock()
+        fake_session.get.return_value = _FakeStreamResponse([b"x" * 10])
+        monkeypatch.setattr(drive_client_module, "AuthorizedSession", lambda creds: fake_session)
+
+        with pytest.raises(DriveClientError, match="exceeded"):
+            client.fetch_thumbnail("https://signed.example/thumb", max_bytes=5)
+
+    def test_network_failure_becomes_drive_client_error(self, monkeypatch):
+        client = make_client(MagicMock())
+        monkeypatch.setattr(client, "_load_credentials", lambda: MagicMock())
+
+        fake_session = MagicMock()
+        fake_session.get.side_effect = RuntimeError("connection reset")
+        monkeypatch.setattr(drive_client_module, "AuthorizedSession", lambda creds: fake_session)
+
+        with pytest.raises(DriveClientError, match="fetch_thumbnail failed"):
+            client.fetch_thumbnail("https://signed.example/thumb")
 
 
 # ---------------------------------------------------------------------------- #
