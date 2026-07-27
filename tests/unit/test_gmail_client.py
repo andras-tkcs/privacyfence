@@ -1204,6 +1204,59 @@ class TestResolveAttachmentDestination:
 
 
 # ---------------------------------------------------------------------------- #
+# fetch_attachment_bytes / save_attachment_bytes
+# ---------------------------------------------------------------------------- #
+
+class TestFetchAttachmentBytes:
+    def test_requires_message_id_and_attachment_id(self):
+        client = make_client(MagicMock())
+        with pytest.raises(GmailClientError, match="non-empty message_id and attachment_id"):
+            client.fetch_attachment_bytes("", "att1")
+        with pytest.raises(GmailClientError, match="non-empty message_id and attachment_id"):
+            client.fetch_attachment_bytes("m1", "")
+
+    def test_fetches_and_decodes_bytes_without_writing_to_disk(self, tmp_path):
+        service = MagicMock()
+        service.users.return_value.messages.return_value.attachments.return_value.get.return_value.execute.return_value = {
+            "data": b64("file contents")
+        }
+        client = make_client(service)
+
+        data = client.fetch_attachment_bytes("m1", "att1")
+
+        assert data == b"file contents"
+        assert list(tmp_path.iterdir()) == []
+        service.users.return_value.messages.return_value.attachments.return_value.get.assert_called_once_with(
+            userId="me", messageId="m1", id="att1"
+        )
+
+    def test_http_error_becomes_gmail_client_error(self):
+        service = MagicMock()
+        service.users.return_value.messages.return_value.attachments.return_value.get.return_value.execute.side_effect = http_error(404)
+        client = make_client(service)
+        with pytest.raises(GmailClientError, match="fetch_attachment_bytes"):
+            client.fetch_attachment_bytes("m1", "att1")
+
+
+class TestSaveAttachmentBytes:
+    def test_sanitizes_filename_before_writing(self, tmp_path):
+        client = make_client(MagicMock())
+
+        result = client.save_attachment_bytes(b"data", "../../evil.txt", str(tmp_path))
+
+        assert result == {"path": str(tmp_path / "evil.txt"), "name": "evil.txt", "size_bytes": 4}
+        assert (tmp_path / "evil.txt").read_bytes() == b"data"
+
+    def test_creates_destination_directory_if_missing(self, tmp_path):
+        nested = tmp_path / "nested" / "dir"
+        client = make_client(MagicMock())
+
+        client.save_attachment_bytes(b"data", "f.txt", str(nested))
+
+        assert (nested / "f.txt").read_bytes() == b"data"
+
+
+# ---------------------------------------------------------------------------- #
 # download_attachment
 # ---------------------------------------------------------------------------- #
 
@@ -1269,7 +1322,9 @@ class TestDownloadAttachment:
         service = MagicMock()
         service.users.return_value.messages.return_value.attachments.return_value.get.return_value.execute.side_effect = http_error(404)
         client = make_client(service)
-        with pytest.raises(GmailClientError, match="download_attachment"):
+        # download_attachment delegates the actual fetch to fetch_attachment_bytes
+        # (see its own test class below) -- the error originates there.
+        with pytest.raises(GmailClientError, match="fetch_attachment_bytes"):
             client.download_attachment("m1", "att1", "f.txt")
 
 

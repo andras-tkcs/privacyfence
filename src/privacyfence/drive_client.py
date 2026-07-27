@@ -870,7 +870,7 @@ class DriveClient:
 
     def fetch_thumbnail(
         self, thumbnail_link: str, max_bytes: int = _THUMBNAIL_MAX_BYTES
-    ) -> bytes:
+    ) -> dict:
         """Fetch a Drive-generated preview image from its signed thumbnailLink URL.
 
         Much cheaper than a full ``download_file`` when a caller only wants
@@ -879,6 +879,11 @@ class DriveClient:
         generated a thumbnail for it). Capped at ``max_bytes``: this is meant
         to be a small preview image, so a response that large indicates
         something unexpected rather than a legitimately big thumbnail.
+
+        Returns a dict with ``data`` (bytes) and ``mime_type`` (str, from the
+        response's own Content-Type header) -- Drive's thumbnails are
+        commonly JPEG, but that's not a documented guarantee, so this reports
+        whatever the response actually says rather than assuming.
         """
         if not thumbnail_link:
             raise DriveClientError("fetch_thumbnail requires a non-empty thumbnail_link")
@@ -887,6 +892,7 @@ class DriveClient:
             session = AuthorizedSession(creds)
             with session.get(thumbnail_link, stream=True) as resp:
                 resp.raise_for_status()
+                mime_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
                 chunks: list[bytes] = []
                 total = 0
                 for chunk in resp.iter_content(chunk_size=65536):
@@ -904,8 +910,8 @@ class DriveClient:
             raise DriveClientError(f"fetch_thumbnail failed: {exc}") from exc
 
         data = b"".join(chunks)
-        logger.info("fetch_thumbnail: %d bytes", len(data))
-        return data
+        logger.info("fetch_thumbnail: %d bytes, mime_type=%s", len(data), mime_type)
+        return {"data": data, "mime_type": mime_type}
 
     def list_folder(self, folder_id: str, max_results: int = 50) -> list[DriveFile]:
         """List the direct children of a folder."""

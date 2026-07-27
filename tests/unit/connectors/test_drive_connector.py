@@ -441,6 +441,52 @@ class TestDownloadFile:
         assert kwargs["preview"]["File"] == "Q3 Report.txt"
         assert kwargs["preview"]["Saved to"] == "/tmp/Q3 Report.txt"
 
+    async def test_thumbnail_link_present_fetches_a_preview(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file(
+            name="photo.jpg", mime_type="image/jpeg", size=2048,
+            thumbnail_link="https://signed.example/thumb",
+        )
+        client.fetch_thumbnail.return_value = {"data": b"\xff\xd8thumb", "mime_type": "image/jpeg"}
+        client.download_file.return_value = {"name": "photo.jpg", "path": "/tmp/photo.jpg", "size_bytes": 2048}
+
+        await connector.call("drive_download_file", {"file_id": "f1", "destination_dir": "/tmp"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview_bytes"] == b"\xff\xd8thumb"
+        assert kwargs["preview_mime_type"] == "image/jpeg"
+        client.fetch_thumbnail.assert_called_once_with("https://signed.example/thumb")
+
+    async def test_no_thumbnail_link_skips_the_fetch(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file(
+            name="report.pdf", mime_type="application/pdf", size=2048, thumbnail_link="",
+        )
+        client.download_file.return_value = {"name": "report.pdf", "path": "/tmp/report.pdf", "size_bytes": 2048}
+
+        await connector.call("drive_download_file", {"file_id": "f1", "destination_dir": "/tmp"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview_bytes"] == b""
+        assert kwargs["preview_mime_type"] == ""
+        client.fetch_thumbnail.assert_not_called()
+
+    async def test_thumbnail_fetch_failure_degrades_gracefully(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file(
+            name="photo.jpg", mime_type="image/jpeg", size=2048,
+            thumbnail_link="https://signed.example/thumb",
+        )
+        client.fetch_thumbnail.side_effect = DriveClientError("link expired")
+        client.download_file.return_value = {"name": "photo.jpg", "path": "/tmp/photo.jpg", "size_bytes": 2048}
+
+        result = await connector.call("drive_download_file", {"file_id": "f1", "destination_dir": "/tmp"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview_bytes"] == b""
+        assert kwargs["preview_mime_type"] == ""
+        assert result == {"name": "photo.jpg", "path": "/tmp/photo.jpg", "size_bytes": 2048}
+
 
 class TestWriteToolsGateAndPreview:
     async def test_write_file_content_preview_excludes_full_content(self, gated_call_spy):
