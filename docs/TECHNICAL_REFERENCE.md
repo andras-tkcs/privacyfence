@@ -131,12 +131,19 @@ excluded (matching those formats flagged nearly every read popup, since almost e
 signature carries the sender's own). See [`pii-detection-keywords.md`](pii-detection-keywords.md)
 for the exact categories, patterns, and the full reasoning behind what is and isn't matched.
 
-When something is flagged:
+When something is flagged on a `review` (read) call:
 
 - The popup is tinted light red and shows a banner naming the categories found.
 - After clicking **Allow once** (or **Always allow**), one more explicit **"Are you sure?"** dialog is
   required before the decision takes effect — declining it denies the whole request, the same as
   clicking **Deny** on the original popup.
+
+`drive_upload_file`'s exception only extends the **second** part of that — the forced "Are you
+sure?" confirmation, and `pii_detected` in the audit log. Its own first popup is never tinted red:
+`approval_window.py`'s red-banner rendering is wired to the review-gate's `pii_categories` only, and
+the popup-gate window never receives a value for it regardless of tool, so a flagged upload's first
+dialog looks like any other (at most the ordinary amber content-flag banner, if `write_content_flags`
+separately matched) — the confirmation dialog is the only visible sign anything was flagged.
 
 This is a local, regex-based heuristic (see `src/privacyfence/pii_detector.py`) — it runs
 entirely on-device with no network calls, and it can both miss real PII and flag things that

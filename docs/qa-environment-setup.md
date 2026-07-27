@@ -482,12 +482,13 @@ Every connector above has recorder support (`scripts/qa_fixture_recorder.py`'s `
       `pii_detection.enabled` is `true` or absent in `settings.yaml`)
 
 No fixture to create here — `connector-qa-testing.md`'s Phase 2 (steps 17–20) creates and tears down
-its own throwaway Drive subfolder and Doc seeded with synthetic PII. The gate only ever runs on the
-`review` (read) direction, never `popup` (write) — see
-[TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md#pii-detection-gate) — so a write always stays plain
-while the matching read gets flagged, when the gate is enabled. If you've turned it off, the read
-also stays plain (no tint, `pii_detected: false`), which is the expected disabled-state result, not
-a failure.
+its own throwaway Drive subfolder and Doc seeded with synthetic PII, using `drive_write_doc_content`
+as the write tool. That tool's gate only ever runs on the `review` (read) direction, never `popup`
+(write) — see [TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md#pii-detection-gate) — so its write
+always stays plain while the matching read gets flagged, when the gate is enabled. If you've turned
+it off, the read also stays plain (no tint, `pii_detected: false`), which is the expected
+disabled-state result, not a failure. (`drive_upload_file` is a separate, deliberate exception to
+this write-side rule — not exercised by this check, and not covered by this QA script.)
 
 ## 12. Scheduled / unattended Cowork tasks
 

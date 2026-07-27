@@ -499,9 +499,13 @@ is guaranteed to fire regardless of what auto-accept rules this environment
 has configured.
 
 This check also demonstrates the write/read split directly: the PII gate
-only ever runs on the `review` (read) direction, never on `popup` (write) —
-see the Technical Reference's "PII detection gate" section. Step 18 (a write) and step 19 (a
-read of that same write's content) exist specifically to contrast the two.
+only ever runs on the `review` (read) direction — `drive_write_doc_content`,
+the write tool used in step 18 below, is never scanned, regardless of
+content — see the Technical Reference's "PII detection gate" section. (The
+gate's one write-side exception, `drive_upload_file`, isn't exercised by
+this check at all; it's not covered by this QA script.) Step 18 (a write)
+and step 19 (a read of that same write's content) exist specifically to
+contrast the two.
 
 17. Create a subfolder named `PrivacyFence QA PII test [{RUN_ID}]` inside the
     QA Sandbox folder (same pattern as step 9). Add it to the manifest.

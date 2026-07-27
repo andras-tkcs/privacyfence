@@ -18,10 +18,10 @@ destination, etc.) regardless of type; that part is unaffected by any of this.
 
 | Operation | Tool | Preview source | Supported types | Falls back to metadata-only when |
 |---|---|---|---|---|
-| Download | `drive_download_file` | Drive's own `thumbnailLink` (a small, pre-generated preview image Drive serves for many file types) | Whatever Drive generated a thumbnail for — commonly Docs, Sheets, Slides, images, PDFs; not guaranteed for every file | No `thumbnailLink` present, or the fetch fails |
-| Download | `gmail_download_attachment` | The attachment's own bytes, fetched in full | `image/*` only, ≤5MB | Any non-image type, or size over the cap, or the fetch fails |
-| Upload (`local_path`) | `drive_upload_file` | The local file's own bytes, read from disk | `image/*` only (via `mimetypes.guess_type` on the file name), ≤5MB | Any non-image type, unreadable file, or size over the cap |
-| Upload (`content_base64`) | `drive_upload_file` | The already-decoded inline bytes | `image/*` only (via `mimetypes.guess_type` on the `name` argument) | Non-image type, or no `name` given to guess from |
+| Download | `drive_download_file` | Drive's own `thumbnailLink` (a small, pre-generated preview image Drive serves for many file types) | Whatever Drive generated a thumbnail for — commonly Docs, Sheets, Slides, images, PDFs; not guaranteed for every file | No `thumbnailLink` present, or the fetch fails, and QuickLook (below) is off or also misses |
+| Download | `gmail_download_attachment` | The attachment's own bytes, fetched in full | `image/*` only, ≤5MB | Any non-image type, or size over the cap, or the fetch fails, and QuickLook also misses |
+| Upload (`local_path`) | `drive_upload_file` | The local file's own bytes, read from disk | `image/*` only (via `mimetypes.guess_type` on the file name), ≤5MB | Any non-image type, unreadable file, or size over the cap, and QuickLook also misses |
+| Upload (`content_base64`) | `drive_upload_file` | The already-decoded inline bytes | `image/*` only (via `mimetypes.guess_type` on the `name` argument) | Non-image type, or no `name` given to guess from, and QuickLook also misses |
 
 Note the asymmetry: Drive downloads get the broadest coverage because Drive itself generates the
 thumbnail server-side (so a Doc, Slide, or PDF can get a real preview without PrivacyFence knowing
@@ -31,6 +31,23 @@ lean on, so the only images that decode without a renderer of our own are litera
 Pre-existing and unrelated to this work: `drive_get_file_content` already renders PDFs via a native
 `PDFView` when Drive's own category policy allows it (`pdf_bytes`) — a different tool, a different
 mechanism, included here only for completeness.
+
+### QuickLook fallback (off by default)
+
+`src/privacyfence/quicklook_preview.py` adds a second preview source, toggled from the menu bar
+("QuickLook Previews → Enabled") or `quicklook_preview.enabled` in `settings.yaml`: macOS's own
+QuickLook renderer (`quicklookd`, out-of-process), which recognizes far more formats than the
+direct-image path above — PDFs, Office documents, and anything else Quick Look in Finder can
+thumbnail. It only ever runs as a **fallback**, after the image-preview check above has already
+failed (or doesn't apply) for whatever bytes were already fetched — it doesn't change *which* files
+get fetched in the first place, only what's attempted with bytes already in hand (i.e. today, that
+means the same PDF/DOCX/PPTX content already fetched for the PII scan, per the table below).
+
+Since `QLThumbnailGenerator`'s real API is callback-based, `generate_thumbnail()` bridges it into a
+synchronous call bounded by `quicklook_preview.max_wait_seconds` (5 seconds by default, set in
+`settings.yaml`, not menu-bar configurable) — a slow or hung render times out and falls back to the
+same metadata-only view a disabled toggle or an unsupported format would, never blocking the
+approval popup indefinitely.
 
 ## 2. PII scan support (what content gets analyzed)
 

@@ -754,6 +754,110 @@ class TestPiiScanWiring:
         assert kwargs["pii_scan_text"] == ""
 
 
+class TestQuickLookFallback:
+    """QuickLook (off by default, menu-bar toggle) is the fallback preview
+    source for prefetched, non-image attachment content -- generate_thumbnail
+    itself is exercised in test_quicklook_preview.py; these tests only pin
+    the wiring (when it's tried, when it isn't, and how a miss degrades)."""
+
+    def _message_with_attachment(self, **overrides):
+        defaults = dict(name="report.pdf", mime_type="application/pdf", size=1024, attachment_id="att-1")
+        defaults.update(overrides)
+        return GmailMessage(
+            id="m1", thread_id="t1", subject="Q3 numbers", sender="alice@example.com",
+            attachments=[Attachment(**defaults)],
+        )
+
+    async def test_disabled_by_default_never_calls_generate_thumbnail(self, monkeypatch, gated_call_spy):
+        connector, client = make_connector()
+        client.get_message.return_value = self._message_with_attachment()
+        client.fetch_attachment_bytes.return_value = b"%PDF-1.4 fake"
+        client.save_attachment_bytes.return_value = {
+            "path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024,
+        }
+        calls = []
+        monkeypatch.setattr(gmail_module, "generate_thumbnail", lambda *a, **k: calls.append(1))
+
+        await connector.call(
+            "gmail_download_attachment",
+            {"message_id": "m1", "attachment_name": "report.pdf", "destination_dir": "/tmp"},
+        )
+
+        assert calls == []
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview_bytes"] == b""
+        assert kwargs["preview_mime_type"] == ""
+
+    async def test_enabled_and_successful_populates_preview_bytes(self, monkeypatch, gated_call_spy):
+        connector, client = make_connector()
+        client.get_message.return_value = self._message_with_attachment()
+        client.fetch_attachment_bytes.return_value = b"%PDF-1.4 fake"
+        client.save_attachment_bytes.return_value = {
+            "path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024,
+        }
+        monkeypatch.setattr(gmail_module, "is_quicklook_enabled", lambda: True)
+        captured = {}
+
+        def fake_generate(data, filename_hint):
+            captured["data"] = data
+            captured["filename_hint"] = filename_hint
+            return b"\x89PNGthumbnail"
+
+        monkeypatch.setattr(gmail_module, "generate_thumbnail", fake_generate)
+
+        await connector.call(
+            "gmail_download_attachment",
+            {"message_id": "m1", "attachment_name": "report.pdf", "destination_dir": "/tmp"},
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview_bytes"] == b"\x89PNGthumbnail"
+        assert kwargs["preview_mime_type"] == "image/png"
+        assert captured["data"] == b"%PDF-1.4 fake"
+        assert captured["filename_hint"] == "report.pdf"
+
+    async def test_enabled_but_no_thumbnail_keeps_preview_empty(self, monkeypatch, gated_call_spy):
+        connector, client = make_connector()
+        client.get_message.return_value = self._message_with_attachment()
+        client.fetch_attachment_bytes.return_value = b"%PDF-1.4 fake"
+        client.save_attachment_bytes.return_value = {
+            "path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024,
+        }
+        monkeypatch.setattr(gmail_module, "is_quicklook_enabled", lambda: True)
+        monkeypatch.setattr(gmail_module, "generate_thumbnail", lambda *a, **k: None)
+
+        await connector.call(
+            "gmail_download_attachment",
+            {"message_id": "m1", "attachment_name": "report.pdf", "destination_dir": "/tmp"},
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview_bytes"] == b""
+        assert kwargs["preview_mime_type"] == ""
+
+    async def test_image_attachment_never_tries_quicklook(self, monkeypatch, gated_call_spy):
+        # Images already have their own direct preview path -- QuickLook is
+        # strictly a fallback for the non-image case.
+        connector, client = make_connector()
+        client.get_message.return_value = self._message_with_attachment(
+            name="photo.png", mime_type="image/png",
+        )
+        client.fetch_attachment_bytes.return_value = b"\x89PNGfakebytes"
+        client.save_attachment_bytes.return_value = {
+            "path": "/tmp/photo.png", "name": "photo.png", "size_bytes": 1024,
+        }
+        monkeypatch.setattr(gmail_module, "is_quicklook_enabled", lambda: True)
+        calls = []
+        monkeypatch.setattr(gmail_module, "generate_thumbnail", lambda *a, **k: calls.append(1))
+
+        await connector.call(
+            "gmail_download_attachment",
+            {"message_id": "m1", "attachment_name": "photo.png", "destination_dir": "/tmp"},
+        )
+
+        assert calls == []
+
+
 class TestWriteToolsGateAndPreview:
     async def test_create_draft_preview_excludes_body(self, gated_call_spy):
         connector, client = make_connector()

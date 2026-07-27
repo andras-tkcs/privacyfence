@@ -18,6 +18,7 @@ from ..drive_client import (
 )
 from ..gate import current_reason, gated_call
 from ..privacy_filter import apply_list, apply_text, category_policy
+from ..quicklook_preview import generate_thumbnail, is_quicklook_enabled
 from ..text_extraction import extract_text, is_prefetch_worthy
 
 logger = logging.getLogger(__name__)
@@ -727,6 +728,20 @@ class DriveConnector(Connector):
                 pii_scan_text = content.content_text
             elif content.content_bytes:
                 pii_scan_text = extract_text(content.content_bytes, drive_file.mime_type)
+                if not preview_bytes and is_quicklook_enabled():
+                    # No thumbnailLink (or its fetch failed) -- QuickLook (off
+                    # by default, menu-bar toggle) is the fallback preview
+                    # source for anything its own renderer recognizes,
+                    # bounded by its own max-wait timeout. asyncio.to_thread,
+                    # not a direct call: generate_thumbnail can block its
+                    # calling thread for the full timeout, and this is an
+                    # async def.
+                    thumbnail_png = await asyncio.to_thread(
+                        generate_thumbnail, content.content_bytes, name,
+                    )
+                    if thumbnail_png is not None:
+                        preview_bytes = thumbnail_png
+                        preview_mime_type = "image/png"
         except RuntimeError:
             pass
 
@@ -909,6 +924,19 @@ class DriveConnector(Connector):
                     if guessed_mime.startswith("image/"):
                         preview_bytes = read_bytes
                         preview_mime_type = guessed_mime
+                    elif is_quicklook_enabled():
+                        # QuickLook (off by default, menu-bar toggle) is the
+                        # fallback preview source for anything its own
+                        # renderer recognizes, bounded by its own max-wait
+                        # timeout. asyncio.to_thread, not a direct call:
+                        # generate_thumbnail can block its calling thread for
+                        # the full timeout, and this is an async def.
+                        thumbnail_png = await asyncio.to_thread(
+                            generate_thumbnail, read_bytes, display_name,
+                        )
+                        if thumbnail_png is not None:
+                            preview_bytes = thumbnail_png
+                            preview_mime_type = "image/png"
                     upload_pii_scan_text = extract_text(read_bytes, guessed_mime)
         else:
             display_name = name.strip() or "(unnamed file)"
@@ -930,6 +958,11 @@ class DriveConnector(Connector):
                 if guessed_mime.startswith("image/"):
                     preview_bytes = decoded
                     preview_mime_type = guessed_mime
+                elif is_quicklook_enabled():
+                    thumbnail_png = await asyncio.to_thread(generate_thumbnail, decoded, display_name)
+                    if thumbnail_png is not None:
+                        preview_bytes = thumbnail_png
+                        preview_mime_type = "image/png"
                 upload_pii_scan_text = extract_text(decoded, guessed_mime)
 
         preview = {
