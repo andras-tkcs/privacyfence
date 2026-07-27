@@ -688,6 +688,26 @@ class DriveConnector(Connector):
             "Saved to": dest_path,
         }
         details = "The file above will be downloaded to the destination shown."
+
+        # Drive already generates a small preview image for many file types
+        # (Docs/Sheets/Slides, images, PDFs) -- cheaper to fetch that than the
+        # full file just to show the human something. Not every file has one
+        # (thumbnail_link is empty when Drive hasn't generated one), and this
+        # is best-effort: a fetch failure just falls back to today's
+        # metadata-only preview rather than blocking the download.
+        preview_bytes = b""
+        preview_mime_type = ""
+        if drive_file.thumbnail_link:
+            try:
+                thumbnail = await self._fetch(self._drive.fetch_thumbnail, drive_file.thumbnail_link)
+                preview_bytes = thumbnail["data"]
+                preview_mime_type = thumbnail["mime_type"]
+            except RuntimeError:
+                # _fetch() already turned the underlying DriveClientError into
+                # a RuntimeError and logged it -- this is a best-effort
+                # preview, not the actual download.
+                pass
+
         # Gate before touching disk: gated_call raises on denial, and only a
         # decision made here should ever cause the file to be written. This
         # used to download the file first and gate afterward, so a Deny still
@@ -705,6 +725,8 @@ class DriveConnector(Connector):
             preview=preview,
             details_text=details,
             pii_scan_text="",
+            preview_bytes=preview_bytes,
+            preview_mime_type=preview_mime_type,
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={"file_id": file_id, "destination_dir": destination_dir},

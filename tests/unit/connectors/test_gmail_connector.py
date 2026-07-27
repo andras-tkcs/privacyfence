@@ -545,6 +545,94 @@ class TestDownloadAttachment:
                 "gmail_download_attachment", {"message_id": "m1", "attachment_name": "report.pdf"}
             )
 
+    async def test_image_attachment_under_size_cap_gets_a_preview(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_message.return_value = self._message_with_attachment(
+            name="photo.png", mime_type="image/png", size=1024,
+        )
+        client.fetch_attachment_bytes.return_value = b"\x89PNGfakebytes"
+        client.save_attachment_bytes.return_value = {
+            "path": "/tmp/photo.png", "name": "photo.png", "size_bytes": 13,
+        }
+
+        result = await connector.call(
+            "gmail_download_attachment",
+            {"message_id": "m1", "attachment_name": "photo.png", "destination_dir": "/tmp"},
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview_bytes"] == b"\x89PNGfakebytes"
+        assert kwargs["preview_mime_type"] == "image/png"
+        client.fetch_attachment_bytes.assert_called_once_with("m1", "att-1")
+        # Already fetched for the preview -- must reuse those bytes, not
+        # fetch the same attachment from Gmail a second time.
+        client.save_attachment_bytes.assert_called_once_with(
+            b"\x89PNGfakebytes", "photo.png", "/tmp"
+        )
+        client.download_attachment.assert_not_called()
+        assert result == {"path": "/tmp/photo.png", "name": "photo.png", "size_bytes": 13}
+
+    async def test_image_attachment_over_size_cap_gets_no_preview(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_message.return_value = self._message_with_attachment(
+            name="huge.png", mime_type="image/png",
+            size=gmail_module._ATTACHMENT_PREVIEW_MAX_BYTES + 1,
+        )
+        client.download_attachment.return_value = {
+            "path": "/tmp/huge.png", "name": "huge.png", "size_bytes": 1,
+        }
+
+        await connector.call(
+            "gmail_download_attachment",
+            {"message_id": "m1", "attachment_name": "huge.png", "destination_dir": "/tmp"},
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview_bytes"] == b""
+        assert kwargs["preview_mime_type"] == ""
+        client.fetch_attachment_bytes.assert_not_called()
+        client.download_attachment.assert_called_once_with("m1", "att-1", "huge.png", "/tmp")
+
+    async def test_non_image_attachment_gets_no_preview(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_message.return_value = self._message_with_attachment()
+        client.download_attachment.return_value = {
+            "path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024,
+        }
+
+        await connector.call(
+            "gmail_download_attachment",
+            {"message_id": "m1", "attachment_name": "report.pdf", "destination_dir": "/tmp"},
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview_bytes"] == b""
+        assert kwargs["preview_mime_type"] == ""
+        client.fetch_attachment_bytes.assert_not_called()
+
+    async def test_preview_fetch_failure_degrades_gracefully(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_message.return_value = self._message_with_attachment(
+            name="photo.png", mime_type="image/png", size=1024,
+        )
+        client.fetch_attachment_bytes.side_effect = GmailClientError("expired token")
+        client.download_attachment.return_value = {
+            "path": "/tmp/photo.png", "name": "photo.png", "size_bytes": 1024,
+        }
+
+        result = await connector.call(
+            "gmail_download_attachment",
+            {"message_id": "m1", "attachment_name": "photo.png", "destination_dir": "/tmp"},
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview_bytes"] == b""
+        assert kwargs["preview_mime_type"] == ""
+        # Falls back to the original single-call path since no preview bytes
+        # were actually obtained.
+        client.download_attachment.assert_called_once_with("m1", "att-1", "photo.png", "/tmp")
+        assert result == {"path": "/tmp/photo.png", "name": "photo.png", "size_bytes": 1024}
+
 
 class TestWriteToolsGateAndPreview:
     async def test_create_draft_preview_excludes_body(self, gated_call_spy):

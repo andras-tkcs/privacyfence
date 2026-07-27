@@ -1230,8 +1230,9 @@ class TestResolveDownloadDestination:
 # ---------------------------------------------------------------------------- #
 
 class _FakeStreamResponse:
-    def __init__(self, chunks: list[bytes]):
+    def __init__(self, chunks: list[bytes], headers: dict | None = None):
         self._chunks = chunks
+        self.headers = headers or {}
     def raise_for_status(self):
         pass
     def iter_content(self, chunk_size):
@@ -1347,7 +1348,7 @@ class TestFetchThumbnail:
         with pytest.raises(DriveClientError, match="non-empty thumbnail_link"):
             client.fetch_thumbnail("")
 
-    def test_fetches_and_returns_bytes(self, monkeypatch):
+    def test_fetches_and_returns_bytes_and_mime_type(self, monkeypatch):
         client = make_client(MagicMock())
         monkeypatch.setattr(client, "_load_credentials", lambda: MagicMock())
 
@@ -1357,16 +1358,31 @@ class TestFetchThumbnail:
         def fake_get(url, stream):
             captured["url"] = url
             captured["stream"] = stream
-            return _FakeStreamResponse([b"\x89PNG", b"", b"restofimage"])
+            return _FakeStreamResponse(
+                [b"\x89PNG", b"", b"restofimage"],
+                headers={"Content-Type": "image/png; charset=binary"},
+            )
 
         fake_session.get.side_effect = fake_get
         monkeypatch.setattr(drive_client_module, "AuthorizedSession", lambda creds: fake_session)
 
         result = client.fetch_thumbnail("https://signed.example/thumb")
 
-        assert result == b"\x89PNGrestofimage"
+        assert result == {"data": b"\x89PNGrestofimage", "mime_type": "image/png"}
         assert captured["url"] == "https://signed.example/thumb"
         assert captured["stream"] is True
+
+    def test_defaults_mime_type_when_no_content_type_header(self, monkeypatch):
+        client = make_client(MagicMock())
+        monkeypatch.setattr(client, "_load_credentials", lambda: MagicMock())
+
+        fake_session = MagicMock()
+        fake_session.get.return_value = _FakeStreamResponse([b"data"])
+        monkeypatch.setattr(drive_client_module, "AuthorizedSession", lambda creds: fake_session)
+
+        result = client.fetch_thumbnail("https://signed.example/thumb")
+
+        assert result["mime_type"] == "image/jpeg"
 
     def test_raises_when_response_exceeds_max_bytes(self, monkeypatch):
         client = make_client(MagicMock())

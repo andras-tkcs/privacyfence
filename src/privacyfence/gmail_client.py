@@ -311,17 +311,16 @@ class GmailClient:
         )
         return summaries
 
-    def download_attachment(
-        self, message_id: str, attachment_id: str, filename: str, destination_dir: str = ""
-    ) -> dict:
-        """Fetch an attachment's bytes and save it to a local directory.
+    def fetch_attachment_bytes(self, message_id: str, attachment_id: str) -> bytes:
+        """Fetch and decode an attachment's raw bytes, without writing anything to disk.
 
-        If ``destination_dir`` is empty, defaults to ``~/Downloads``. Returns a
-        dict with ``path``, ``name``, and ``size_bytes``.
+        Factored out of ``download_attachment`` so a caller can fetch bytes
+        once for a pre-approval preview and reuse them for the actual save on
+        approval, via ``save_attachment_bytes``, instead of fetching twice.
         """
         if not message_id or not attachment_id:
             raise GmailClientError(
-                "download_attachment requires a non-empty message_id and attachment_id"
+                "fetch_attachment_bytes requires a non-empty message_id and attachment_id"
             )
         service = self._get_service()
         try:
@@ -334,21 +333,42 @@ class GmailClient:
             )
         except HttpError as exc:
             raise GmailClientError(
-                f"download_attachment({message_id}, {attachment_id}) failed: {exc}"
+                f"fetch_attachment_bytes({message_id}, {attachment_id}) failed: {exc}"
             ) from exc
+        return base64.urlsafe_b64decode(raw.get("data", "").encode("utf-8"))
 
-        data = base64.urlsafe_b64decode(raw.get("data", "").encode("utf-8"))
-        dest_path = resolve_attachment_destination(filename or attachment_id, destination_dir)
+    def save_attachment_bytes(
+        self, data: bytes, filename: str, destination_dir: str = ""
+    ) -> dict:
+        """Save already-fetched attachment bytes to a local directory.
+
+        If ``destination_dir`` is empty, defaults to ``~/Downloads``. Returns a
+        dict with ``path``, ``name``, and ``size_bytes``.
+        """
+        dest_path = resolve_attachment_destination(filename, destination_dir)
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         with open(dest_path, "wb") as fh:
             fh.write(data)
 
         name = os.path.basename(dest_path)
         logger.info(
-            "download_attachment: message_id=%s name=%s size=%d",
-            message_id, name, len(data),
+            "save_attachment_bytes: name=%s size=%d", name, len(data),
         )
         return {"path": dest_path, "name": name, "size_bytes": len(data)}
+
+    def download_attachment(
+        self, message_id: str, attachment_id: str, filename: str, destination_dir: str = ""
+    ) -> dict:
+        """Fetch an attachment's bytes and save it to a local directory.
+
+        If ``destination_dir`` is empty, defaults to ``~/Downloads``. Returns a
+        dict with ``path``, ``name``, and ``size_bytes``. See
+        ``fetch_attachment_bytes``/``save_attachment_bytes`` if the caller
+        already fetched the bytes for a preview and wants to avoid fetching
+        them twice.
+        """
+        data = self.fetch_attachment_bytes(message_id, attachment_id)
+        return self.save_attachment_bytes(data, filename or attachment_id, destination_dir)
 
     # ------------------------------------------------------------------ #
     # Write operations
