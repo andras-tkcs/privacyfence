@@ -1,5 +1,5 @@
 """Tests for approval_window_html.py -- the card-stack HTML template for the
-redesigned (layout="compact"/"wide") approval window.
+redesigned (layout="narrow"/"wide") approval window.
 
 Pure-function module, no AppKit -- unlike test_approval_window.py, none of
 this needs macOS/PyObjC or a real view tree; it asserts directly on the
@@ -10,7 +10,7 @@ module's TestDetailsPane for the precedent this file follows).
 from __future__ import annotations
 
 from privacyfence.approval_window_html import (
-    COMPACT,
+    NARROW,
     WIDE,
     _risk_section_html,
     build_card_stack_html,
@@ -21,7 +21,7 @@ from privacyfence.approval_window_html import (
 
 def _minimal_kwargs(**overrides):
     kwargs = dict(
-        layout=COMPACT,
+        layout=NARROW,
         title="Read Calendar Event",
         connector_icon_data_uri="",
         shield_icon_data_uri="",
@@ -90,9 +90,8 @@ class TestSectionNumbering:
         assert "04 · Possible PII detected" in html
 
     def test_read_call_without_disclosure_but_with_pii_numbers_03(self):
-        # e.g. an RG-1 tool (no `visibility` dict today) whose content still
-        # matched the PII detector -- see module docstring's scope-boundary
-        # note on RG-1 tools never getting a §3 card yet.
+        # A tool with nothing to disclose in §3 (empty disclosure_rows) whose
+        # content still matched the PII detector.
         html = build_card_stack_html(**_minimal_kwargs(pii_categories=["Phone number"]))
         assert "03 · Possible PII detected" in html
         assert "04 ·" not in html
@@ -162,8 +161,8 @@ class TestRiskCardVariants:
 
 
 class TestLayoutShapes:
-    def test_compact_layout_has_no_two_column_split(self):
-        html = build_card_stack_html(**_minimal_kwargs(layout=COMPACT))
+    def test_narrow_layout_has_no_two_column_split(self):
+        html = build_card_stack_html(**_minimal_kwargs(layout=NARROW))
         assert "flex:0 0 350px" not in html
         assert "width: 610px" in html
 
@@ -172,14 +171,18 @@ class TestLayoutShapes:
         assert "flex:0 0 350px" in html
         assert "width: 880px" in html
 
-    def test_compact_preview_is_inline_after_the_left_column_sections(self):
-        html = build_card_stack_html(**_minimal_kwargs(layout=COMPACT))
-        assert html.index("Preview (~2 sec read)") > html.index("What Claude already knows")
+    def test_narrow_layout_has_no_preview_pane_at_all(self):
+        # Not a smaller version of WIDE's preview -- genuinely absent, even
+        # when preview_kicker/preview_body_html are given non-empty values.
+        html = build_card_stack_html(**_minimal_kwargs(layout=NARROW))
+        assert "Preview (~2 sec read)" not in html
+        assert "Synthetic event body text" not in html
 
     def test_wide_preview_pane_scrolls_independently(self):
         html = build_card_stack_html(**_minimal_kwargs(layout=WIDE))
         assert "overflow-y:auto" in html
         assert "max-height:520px" in html
+        assert html.index("Preview (~2 sec read)") > html.index("What Claude already knows")
 
 
 class TestTempAcceptDisclosure:

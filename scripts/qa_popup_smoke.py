@@ -55,7 +55,7 @@ tool-approval scenario to the redesigned card-stack rendering (approval_window_h
 the original hand-laid-out NSTextField/NSBox stack -- this is the visual-review surface for the
 approval-window redesign, per that project's own implementation plan: iterate here, with
 --screenshot-dir, before any of it touches gate.py or the real daemon. Each scenario's
-compact/wide shape (_TOOL_LAYOUT below) is a fixed, explicit per-tool assignment re-derived
+narrow/wide shape (_TOOL_LAYOUT below) is a fixed, explicit per-tool assignment re-derived
 directly from the "Approval windows design system" claude.ai/design project's own markup (turns
 4-6) for every one of the 30 dialog shapes that project actually mocked; tools it didn't
 explicitly mock get a best-effort classification by analogy to the closest mocked sibling
@@ -322,7 +322,7 @@ def _run_scenario(
         # upload_forced only ever applies to drive_upload_file (see gap #4
         # in the redesign's implementation plan).
         tool_name = _tool_name_from_scenario(name)
-        popup_kwargs.setdefault("layout", _TOOL_LAYOUT.get(tool_name, "compact"))
+        popup_kwargs.setdefault("layout", _TOOL_LAYOUT.get(tool_name, "narrow"))
         popup_kwargs.setdefault("is_read", name.startswith("RG-"))
         popup_kwargs.setdefault("upload_forced", tool_name == "drive_upload_file")
 
@@ -526,9 +526,9 @@ _TINY_PNG_BYTES = base64.b64decode(
     "yxOdgAG7AwSKBQy4uDzRCRiwO0CgWOAvMrINdTs38y8AAAAASUVORK5CYII="
 )
 
-# --layout v2's per-tool compact/wide assignment -- re-derived directly from the "Approval
+# --layout v2's per-tool narrow/wide assignment -- re-derived directly from the "Approval
 # windows design system" claude.ai/design project's own markup (turns 4-6: every .pf-win with an
-# inline style="width:880px" is wide, everything else is compact), not from memory or a length
+# inline style="width:880px" is wide, everything else is narrow), not from memory or a length
 # heuristic. Keyed by the bare tool name _tool_name_from_scenario() extracts from each scenario's
 # own name string.
 #
@@ -537,7 +537,7 @@ _TINY_PNG_BYTES = base64.b64decode(
 # telegram_send_message/jira_add_comment. Tools the canvas never mocked at all (everything below
 # the first blank line in each connector's block) are a best-effort classification by analogy to
 # the closest mocked sibling from the same connector -- wide only for tools that write/return a
-# genuine prose body (doc/file content, page content, sheet cell values); compact for short
+# genuine prose body (doc/file content, page content, sheet cell values); narrow for short
 # structured field changes. Provisional until reviewed against real --layout v2 screenshots.
 _TOOL_LAYOUT: dict[str, str] = {
     # Confirmed wide from the design canvas directly (turns 4-6):
@@ -552,28 +552,28 @@ _TOOL_LAYOUT: dict[str, str] = {
     "gmail_create_draft": "wide", "gmail_reply_draft": "wide",
     "drive_sheets_write_range": "wide", "drive_upload_file": "wide",
     "jira_create_issue": "wide", "confluence_create_page": "wide",
-    "calendar_get_event_details": "compact", "calendar_create_event": "compact",
-    "slack_send_message": "compact", "telegram_send_message": "compact", "jira_add_comment": "compact",
+    "calendar_get_event_details": "narrow", "calendar_create_event": "narrow",
+    "slack_send_message": "narrow", "telegram_send_message": "narrow", "jira_add_comment": "narrow",
     #
     # Not mocked by the design canvas -- best-effort by analogy (see docstring above):
     "gmail_reply_all_draft": "wide",  # same shape as gmail_reply_draft
-    "gmail_add_label": "compact", "gmail_remove_label": "compact", "gmail_archive_message": "compact",
-    "gmail_create_filter": "compact", "gmail_update_filter": "compact", "gmail_create_label": "compact",
+    "gmail_add_label": "narrow", "gmail_remove_label": "narrow", "gmail_archive_message": "narrow",
+    "gmail_create_filter": "narrow", "gmail_update_filter": "narrow", "gmail_create_label": "narrow",
     "drive_write_doc_content": "wide", "drive_write_file_content": "wide",  # writing a prose body
     "drive_docs_edit_content": "wide",  # editing doc body content, same as writing it
-    "drive_move_file": "compact", "drive_sheets_add_sheet": "compact",
-    "drive_sheets_rename_sheet": "compact", "drive_sheets_delete_dimensions": "compact",
-    "drive_sheets_format_range": "compact", "drive_sheets_insert_dimensions": "compact",
-    "drive_add_comment": "compact",  # short annotation, like jira_add_comment
-    "drive_docs_format_content": "compact",  # formatting only, no new body text
-    "calendar_update_event": "compact", "calendar_create_out_of_office": "compact",
-    "calendar_set_working_location": "compact", "calendar_set_event_visibility": "compact",
-    "contacts_update": "compact", "contacts_create": "compact",
-    "contacts_add_label": "compact", "contacts_remove_label": "compact",
-    "jira_update_issue": "compact", "jira_transition_issue": "compact",  # field-change rows, not prose
+    "drive_move_file": "narrow", "drive_sheets_add_sheet": "narrow",
+    "drive_sheets_rename_sheet": "narrow", "drive_sheets_delete_dimensions": "narrow",
+    "drive_sheets_format_range": "narrow", "drive_sheets_insert_dimensions": "narrow",
+    "drive_add_comment": "narrow",  # short annotation, like jira_add_comment
+    "drive_docs_format_content": "narrow",  # formatting only, no new body text
+    "calendar_update_event": "narrow", "calendar_create_out_of_office": "narrow",
+    "calendar_set_working_location": "narrow", "calendar_set_event_visibility": "narrow",
+    "contacts_update": "narrow", "contacts_create": "narrow",
+    "contacts_add_label": "narrow", "contacts_remove_label": "narrow",
+    "jira_update_issue": "narrow", "jira_transition_issue": "narrow",  # field-change rows, not prose
     "confluence_update_page": "wide",  # editing page body, same as confluence_create_page
-    "tasks_create_task": "compact", "tasks_update_task": "compact", "tasks_complete_task": "compact",
-    "tasks_uncomplete_task": "compact", "tasks_move_task": "compact",
+    "tasks_create_task": "narrow", "tasks_update_task": "narrow", "tasks_complete_task": "narrow",
+    "tasks_uncomplete_task": "narrow", "tasks_move_task": "narrow",
 }
 
 _SCENARIO_TOOL_RE = re.compile(r"^\S+-\d+\s*·\s*([a-z_]+)")
@@ -821,14 +821,25 @@ def _scenarios(
     ))
 
     results.append(run(
+        # Also the redesign's new_info (§3) mechanic: real values (not an
+        # abstract policy sentence), merged Attendees+Organizer (no separate
+        # Organizer field on the UI), and allow_accept_all=True -- matches
+        # auto_accept.py's real calendar.read_event_details rule for an
+        # event the caller organizes with no external attendees (i_am_
+        # organizer/no_external_attendees/non_private_event all hold for
+        # this synthetic event), which the old fixture had wrong.
         "RG-1 · calendar_get_event_details",
         click_title="Allow once", expected="accept",
         title="Read Calendar Event",
-        preview={
-            "Title": QA_EVENT, "Time": QA_EVENT_TIME, "Organizer": QA_PERSON, "Attendees": "none",
+        preview={"Title": QA_EVENT, "Time": QA_EVENT_TIME},
+        new_info={
+            "Attendees": f"{QA_PERSON} (organizer), QA Contact <{QA_CONTACT_EMAIL}>",
+            "Location": "Remote",
+            "Description": "Synthetic PrivacyFence QA test event description. No real information.",
         },
         details_text="Synthetic PrivacyFence QA test event. No real information.",
-        allow_accept_all=False,
+        claude_reason="Checking the QA event details as requested.",
+        allow_accept_all=True,
         connector="calendar",
     ))
 
@@ -1653,7 +1664,7 @@ def main() -> None:
              "tool-approval scenario renders through the redesigned card-stack template "
              "(approval_window_html.py) instead -- the visual-review surface for the "
              "approval-window redesign; see this script's own module docstring and _TOOL_LAYOUT "
-             "for how each scenario's compact/wide shape is chosen. No effect on the menu-bar "
+             "for how each scenario's narrow/wide shape is chosen. No effect on the menu-bar "
              "scenario.",
     )
     args = parser.parse_args()

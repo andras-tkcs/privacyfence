@@ -1,5 +1,5 @@
 """Construction-level tests for ApprovalWindowController's v2 rendering
-(layout="compact"/"wide" -- the redesigned card-stack window).
+(layout="narrow"/"wide" -- the redesigned card-stack window).
 
 Same "build_panel() directly, walk the real AppKit view tree, never call
 runModalForWindow_" contract test_approval_window.py's own tests hold for
@@ -21,14 +21,14 @@ from privacyfence.approval_window import (
     _V2_WINDOW_WIDTH,
     ApprovalWindowController,
 )
-from privacyfence.approval_window_html import COMPACT, WIDE
+from privacyfence.approval_window_html import NARROW, WIDE
 
 from .test_approval_window import buttons_by_title, flatten
 
 
 def make_v2_controller(
     *,
-    layout=COMPACT,
+    layout=NARROW,
     title="Read Calendar Event",
     preview=None,
     details_text="ordinary, non-sensitive content",
@@ -36,6 +36,7 @@ def make_v2_controller(
     is_read=True,
     claude_reason="Checking the event as requested.",
     visibility=None,
+    new_info=None,
     pii_categories=None,
     write_content_flags=None,
     upload_forced=False,
@@ -56,6 +57,7 @@ def make_v2_controller(
     c.is_read = is_read
     c.claude_reason = claude_reason
     c.visibility = visibility or {}
+    c.new_info = new_info or {}
     c.pii_categories = pii_categories or []
     c.write_content_flags = write_content_flags or []
     c.upload_forced = upload_forced
@@ -80,10 +82,10 @@ _TINY_PNG_BYTES = base64.b64decode(
 
 
 class TestV2WindowShape:
-    def test_compact_layout_window_width(self):
-        controller = make_v2_controller(layout=COMPACT)
+    def test_narrow_layout_window_width(self):
+        controller = make_v2_controller(layout=NARROW)
         panel = controller.build_panel()
-        assert panel.frame().size.width == _V2_WINDOW_WIDTH[COMPACT] == 610.0
+        assert panel.frame().size.width == _V2_WINDOW_WIDTH[NARROW] == 610.0
 
     def test_wide_layout_window_width(self):
         controller = make_v2_controller(layout=WIDE)
@@ -117,9 +119,12 @@ class TestV2Buttons:
         views_with, _ = build_views(make_v2_controller(allow_accept_all=True))
         assert "Always allow" in buttons_by_title(views_with)
 
-    def test_show_more_toggle_present_only_for_compact_layout(self):
-        compact_views, _ = build_views(make_v2_controller(layout=COMPACT))
-        assert "Show more" in buttons_by_title(compact_views)
+    def test_no_show_more_toggle_in_either_v2_layout(self):
+        # v2 has no progressive-disclosure toggle at all (unlike legacy):
+        # every row is CSS-fixed-and-truncated instead -- see
+        # approval_window_html.py's module docstring.
+        narrow_views, _ = build_views(make_v2_controller(layout=NARROW))
+        assert "Show more" not in buttons_by_title(narrow_views)
 
         wide_views, _ = build_views(make_v2_controller(layout=WIDE))
         assert "Show more" not in buttons_by_title(wide_views)
@@ -153,13 +158,32 @@ class TestV2CardStackContent:
         assert "Action to perform" in controller._details_html_string
         assert "Details — data to write" in controller._details_html_string
 
-    def test_visibility_dict_becomes_a_disclosure_section(self):
+    def test_new_info_becomes_the_disclosure_section_with_real_values(self):
+        # §3 shows real values (calendar_get_event_details's Attendees/
+        # Location/Description shape), not an abstract policy sentence.
         controller = make_v2_controller(
-            is_read=True, visibility={"Cell values": "allow"},
+            is_read=True, new_info={"Attendees": "Alice, Bob (organizer)", "Location": "Room 1"},
+        )
+        controller.build_panel()
+        assert "What will be provided to Claude" in controller._details_html_string
+        assert "Alice, Bob (organizer)" in controller._details_html_string
+        assert "Room 1" in controller._details_html_string
+
+    def test_visibility_is_a_fallback_when_new_info_is_empty(self):
+        controller = make_v2_controller(
+            is_read=True, new_info={}, visibility={"Cell values": "allow"},
         )
         controller.build_panel()
         assert "What will be provided to Claude" in controller._details_html_string
         assert "Full cell values" in controller._details_html_string
+
+    def test_new_info_takes_priority_over_visibility_when_both_given(self):
+        controller = make_v2_controller(
+            is_read=True, new_info={"Attendees": "Alice, Bob"}, visibility={"Cell values": "allow"},
+        )
+        controller.build_panel()
+        assert "Alice, Bob" in controller._details_html_string
+        assert "Full cell values" not in controller._details_html_string
 
     def test_pii_categories_render_the_read_variant_risk_card(self):
         controller = make_v2_controller(pii_categories=["Phone number"])
@@ -183,20 +207,35 @@ class TestV2CardStackContent:
         assert "var(--pii-w-bg)" not in controller._details_html_string
 
     def test_html_escapes_markup_in_details_text(self):
-        controller = make_v2_controller(details_text="<script>alert(1)</script>")
+        # WIDE, not NARROW's default -- NARROW doesn't render details_text at
+        # all, so this needs the layout that actually shows the preview pane.
+        controller = make_v2_controller(layout=WIDE, details_text="<script>alert(1)</script>")
         controller.build_panel()
         assert "<script>alert(1)</script>" not in controller._details_html_string
         assert "&lt;script&gt;" in controller._details_html_string
+
+    def test_narrow_layout_renders_no_preview_content_at_all(self):
+        controller = make_v2_controller(layout=NARROW, details_text="should not appear anywhere")
+        controller.build_panel()
+        assert "should not appear anywhere" not in controller._details_html_string
+
+    def test_wide_layout_renders_the_preview_content(self):
+        controller = make_v2_controller(layout=WIDE, details_text="the real body text")
+        controller.build_panel()
+        assert "the real body text" in controller._details_html_string
 
 
 class TestV2ImageAndPdfPreview:
     """v2 renders image/PDF preview content inline via a data URI (<img>/
     <embed>), not a native NSImageView/PDFView overlay -- see
     _build_content_view_v2's docstring for why that's simpler here than in
-    the legacy layout."""
+    the legacy layout. Only meaningful for WIDE -- NARROW has no preview
+    pane at all to render into."""
 
     def test_image_preview_bytes_render_as_an_img_data_uri(self):
-        controller = make_v2_controller(preview_bytes=_TINY_PNG_BYTES, preview_mime_type="image/png")
+        controller = make_v2_controller(
+            layout=WIDE, preview_bytes=_TINY_PNG_BYTES, preview_mime_type="image/png",
+        )
         controller.build_panel()
         # The header's shield icon is also a base64 <img>, so check for the
         # *preview* image's own distinguishing base64 content specifically.
@@ -210,7 +249,8 @@ class TestV2ImageAndPdfPreview:
 
     def test_pdf_bytes_render_as_an_embed_data_uri_and_take_priority_over_image(self):
         controller = make_v2_controller(
-            pdf_bytes=b"%PDF-1.1 fake", preview_bytes=_TINY_PNG_BYTES, preview_mime_type="image/png",
+            layout=WIDE, pdf_bytes=b"%PDF-1.1 fake",
+            preview_bytes=_TINY_PNG_BYTES, preview_mime_type="image/png",
         )
         controller.build_panel()
         # The header's own shield-icon <img> is expected regardless -- check
@@ -224,24 +264,44 @@ class TestV2ImageAndPdfPreview:
         # Unlike the legacy layout's _build_details_pdf_view -- v2 never
         # builds a native PDFView at all.
         from Quartz import PDFView
-        controller = make_v2_controller(pdf_bytes=b"%PDF-1.1 fake")
+        controller = make_v2_controller(layout=WIDE, pdf_bytes=b"%PDF-1.1 fake")
         views, _ = build_views(controller)
         assert not [v for v in views if isinstance(v, PDFView)]
 
 
-class TestV2ProgressiveDisclosure:
-    def test_toggling_expanded_grows_the_compact_window(self):
-        controller = make_v2_controller(layout=COMPACT, details_text="line\n" * 400)
-        controller.build_panel()
-        collapsed_height = controller.panel.frame().size.height
-        controller.toggleDetailsExpanded_(None)
-        expanded_height = controller.panel.frame().size.height
-        assert expanded_height > collapsed_height
+class TestV2HeightEstimate:
+    """The window height is deterministic from field/section *counts*
+    alone (see _estimate_left_column_height's docstring) -- never from how
+    long any actual value is, since every row is CSS-fixed-and-truncated
+    (styles.css). These pin the *direction* of the estimate (more fields/
+    sections -> taller window), not exact pixel values, which are tuned
+    empirically against real screenshots."""
 
-    def test_wide_layout_has_no_expand_toggle_to_click(self):
-        views, _ = build_views(make_v2_controller(layout=WIDE))
-        assert "Show more" not in buttons_by_title(views)
-        assert "Show less" not in buttons_by_title(views)
+    def test_more_preview_fields_means_a_taller_window(self):
+        few = make_v2_controller(preview={"Title": "x"})
+        many = make_v2_controller(preview={"Title": "x", "Time": "y", "Location": "z", "Notes": "w"})
+        assert many.build_panel().frame().size.height > few.build_panel().frame().size.height
+
+    def test_a_present_section_2_or_3_or_4_grows_the_window(self):
+        bare = make_v2_controller(claude_reason="", new_info={}, pii_categories=[])
+        with_reason = make_v2_controller(claude_reason="A real reason.", new_info={}, pii_categories=[])
+        with_disclosure = make_v2_controller(
+            claude_reason="", new_info={"Attendees": "Alice"}, pii_categories=[],
+        )
+        with_pii = make_v2_controller(claude_reason="", new_info={}, pii_categories=["Phone number"])
+
+        bare_height = bare.build_panel().frame().size.height
+        assert with_reason.build_panel().frame().size.height > bare_height
+        assert with_disclosure.build_panel().frame().size.height > bare_height
+        assert with_pii.build_panel().frame().size.height > bare_height
+
+    def test_a_long_value_never_grows_the_window_only_truncates(self):
+        # The core "fixed layout" contract: a value long enough to need
+        # truncation (styles.css's ellipsis) must not change the window's
+        # own height -- only the field *count* does.
+        short = make_v2_controller(preview={"Attendees": "Alice"})
+        long = make_v2_controller(preview={"Attendees": "Alice, " * 200})
+        assert short.build_panel().frame().size.height == long.build_panel().frame().size.height
 
 
 class TestV2LegacyUnaffected:

@@ -110,11 +110,17 @@ img { display: block; max-width: 100%; }
 .text-muted { color: color-mix(in srgb, var(--color-text) 55%, transparent); }
 ::selection { background: color-mix(in srgb, var(--color-accent) 30%, transparent); }
 
-/* — cards — (Broadsheet's own .card/.card-kicker/.card-meta, unchanged) */
+/* — cards — (Broadsheet's own .card/.card-kicker/.card-meta, unchanged except
+   margin-bottom, added so a fixed-per-tool layout can compute total height
+   from field/section *counts* alone -- see .pf-kv below for the other half
+   of that: each row's height is capped too, so nothing here ever depends on
+   how long a given call's actual data happens to be.) */
 .card {
   display: flex; flex-direction: column; gap: var(--space-2);
   padding: var(--space-3); border-radius: var(--radius-md); background: var(--color-surface);
+  margin-bottom: 18px;
 }
+.card:last-child { margin-bottom: 0; }
 .card-kicker { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-accent); }
 .card-meta {
   display: flex; align-items: center; gap: 6px; font-size: 11px;
@@ -138,8 +144,21 @@ img { display: block; max-width: 100%; }
 }
 .pf-kv { display: flex; justify-content: space-between; gap: 16px; font-size: 13px; }
 .pf-kv span:first-child { color: var(--color-neutral-700); flex: none; }
-.pf-kv span:last-child { font-weight: 600; font-size: 14px; text-align: right; flex: 1; min-width: 0; }
-.pf-quote { margin: 0; font-style: italic; font-size: 15px; line-height: 1.5; }
+.pf-kv span:last-child {
+  font-weight: 600; font-size: 14px; text-align: right; flex: 1; min-width: 0;
+  /* Fixed layout, not reflow: a row's height is capped at 2 lines regardless
+     of value length (e.g. a long attendee list) -- overflow is truncated
+     with an ellipsis, never grows the card or requires scrolling. */
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.pf-quote {
+  margin: 0; font-style: italic; font-size: 15px; line-height: 1.5;
+  /* Same fixed-height contract as .pf-kv values above, just a slightly
+     taller allowance for Claude's stated-reason sentence. */
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden; text-overflow: ellipsis;
+}
 
 /* Write-gate PII card — distinct from the (unchanged, --color-accent-2-*)
    read-gate one, per the redesign's gap #1 resolution. */

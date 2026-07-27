@@ -261,7 +261,15 @@ class TestFreeBusyFullDetailsToggle:
 
 
 class TestGetEventDetails:
-    async def test_preview_excludes_description_and_full_attendees(self, gated_call_spy):
+    """§1 ("What Claude already knows") is exactly calendar_list_events' own
+    fields (Title, Time) -- everything else the tool discloses is new only
+    on approval, and lives in `new_info` (§3) instead of `preview` now. No
+    separate Organizer field anywhere in the UI: merged into Attendees (see
+    _merged_attendees_display). conference_link/hangout_link/attachments are
+    no longer surfaced at all -- not in preview, not in new_info, not in
+    details_text, not in filtered_data (i.e. never reach Claude either)."""
+
+    async def test_preview_is_title_and_time_only(self, gated_call_spy):
         connector, client = make_connector()
         client.get_event.return_value = make_event()
 
@@ -270,15 +278,34 @@ class TestGetEventDetails:
         kwargs = gated_call_spy[0]
         assert kwargs["preview"] == {
             "Title": "Q3 Planning", "Time": "2026-07-08T10:00:00+00:00 – 2026-07-08T11:00:00+00:00",
-            "Organizer": "alice@example.com", "Attendees": "1",
         }
         assert "Confidential roadmap discussion" not in str(kwargs["preview"])
         assert "bob@example.com" not in str(kwargs["preview"])
-        assert "Confidential roadmap discussion" in kwargs["details_text"]
-        assert "bob@example.com" in kwargs["details_text"]
         assert kwargs["gate"] == "review"
         assert kwargs["raw_data"] is client.get_event.return_value
         assert kwargs["args"] == {"calendar_id": "primary", "event_id": "e1"}
+
+    async def test_new_info_carries_the_merged_attendees_location_and_description(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_event.return_value = make_event()
+
+        await connector.call("calendar_get_event_details", {"calendar_id": "primary", "event_id": "e1"})
+
+        new_info = gated_call_spy[0]["new_info"]
+        assert new_info["Attendees"] == "alice@example.com (organizer), Bob <bob@example.com>"
+        assert new_info["Location"] == "Room 1"
+        assert new_info["Description"] == "Confidential roadmap discussion."
+
+    async def test_new_info_rows_are_present_even_when_empty(self, gated_call_spy):
+        # Fixed row structure -- a missing Location/Description still gets
+        # its own (blank) row, never omitted.
+        connector, client = make_connector()
+        client.get_event.return_value = make_event(location="", description="", attendees=[], organizer_email="")
+
+        await connector.call("calendar_get_event_details", {"calendar_id": "primary", "event_id": "e1"})
+
+        new_info = gated_call_spy[0]["new_info"]
+        assert new_info == {"Attendees": "", "Location": "", "Description": ""}
 
     async def test_pii_scan_text_is_description_only_not_organizer_or_attendees(self, gated_call_spy):
         # organizer_email/attendee emails are present on every event
@@ -291,7 +318,7 @@ class TestGetEventDetails:
 
         kwargs = gated_call_spy[0]
         assert kwargs["pii_scan_text"] == "nothing sensitive"
-        assert kwargs["preview"]["Organizer"] == "alice@example.com"  # still shown in the popup
+        assert "alice@example.com" in kwargs["new_info"]["Attendees"]  # still shown in the popup
         assert "alice@example.com" not in kwargs["pii_scan_text"]
         assert "bob@example.com" not in kwargs["pii_scan_text"]  # attendee
 
@@ -306,67 +333,60 @@ class TestGetEventDetails:
             {"email": "bob@example.com", "display_name": "Bob", "response_status": "accepted", "organizer": False}
         ]
 
-    async def test_no_attendees_shows_none_placeholder(self, gated_call_spy):
+    async def test_filtered_data_never_carries_conferencing_or_attachments(self, gated_call_spy):
         connector, client = make_connector()
-        client.get_event.return_value = make_event(attendees=[])
-
-        await connector.call("calendar_get_event_details", {"calendar_id": "primary", "event_id": "e1"})
-
-        assert "  (none)" in gated_call_spy[0]["details_text"]
-
-    async def test_no_attachments_omits_preview_field_and_shows_none_placeholder(self, gated_call_spy):
-        connector, client = make_connector()
-        client.get_event.return_value = make_event(attachments=[])
-
-        await connector.call("calendar_get_event_details", {"calendar_id": "primary", "event_id": "e1"})
-
-        kwargs = gated_call_spy[0]
-        assert "Attachments" not in kwargs["preview"]
-        assert "Attachments (use drive_get_file_content with file_id to read):" in kwargs["details_text"]
-        assert kwargs["filtered_data"]["attachments"] == []
-
-    async def test_attachments_surfaced_in_preview_details_and_filtered_data(self, gated_call_spy):
-        # This is what lets an agent get at the "Notes by Gemini" / transcript
-        # docs Google Meet attaches to an event after a meeting ends: the
-        # file_id here can be handed straight to drive_get_file_content.
-        connector, client = make_connector()
-        client.get_event.return_value = make_event(attachments=[
-            CalendarAttachment(
-                file_id="doc123",
-                title="Notes by Gemini - Q3 Planning",
-                mime_type="application/vnd.google-apps.document",
-                file_url="https://docs.google.com/document/d/doc123/edit",
-            ),
-            CalendarAttachment(
-                file_id="doc456",
-                title="Transcript - Q3 Planning",
-                mime_type="application/vnd.google-apps.document",
-                file_url="https://docs.google.com/document/d/doc456/edit",
-            ),
-        ])
-
-        result = await connector.call(
-            "calendar_get_event_details", {"calendar_id": "primary", "event_id": "e1"}
+        client.get_event.return_value = make_event(
+            conference_link="https://meet.example.com/xyz",
+            attachments=[CalendarAttachment(
+                file_id="doc1", title="Notes", mime_type="text/plain", file_url="https://x/y",
+            )],
         )
 
+        result = await connector.call("calendar_get_event_details", {"calendar_id": "primary", "event_id": "e1"})
+
+        assert "conference_link" not in result
+        assert "hangout_link" not in result
+        assert "attachments" not in result
+
+    async def test_no_attendees_but_a_real_organizer_shows_the_organizer_not_none(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_event.return_value = make_event(attendees=[], organizer_email="alice@example.com")
+
+        await connector.call("calendar_get_event_details", {"calendar_id": "primary", "event_id": "e1"})
+
         kwargs = gated_call_spy[0]
-        assert kwargs["preview"]["Attachments"] == "2"
-        assert "Notes by Gemini - Q3 Planning" in kwargs["details_text"]
-        assert "file_id=doc123" in kwargs["details_text"]
-        assert "Transcript - Q3 Planning" in kwargs["details_text"]
-        assert "file_id=doc456" in kwargs["details_text"]
-        assert result["attachments"] == [
-            {
-                "file_id": "doc123", "title": "Notes by Gemini - Q3 Planning",
-                "mime_type": "application/vnd.google-apps.document",
-                "file_url": "https://docs.google.com/document/d/doc123/edit",
-            },
-            {
-                "file_id": "doc456", "title": "Transcript - Q3 Planning",
-                "mime_type": "application/vnd.google-apps.document",
-                "file_url": "https://docs.google.com/document/d/doc456/edit",
-            },
-        ]
+        assert kwargs["new_info"]["Attendees"] == "alice@example.com (organizer)"
+        assert "(none)" not in kwargs["details_text"]
+
+    async def test_no_attendees_and_no_organizer_shows_none_placeholder(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_event.return_value = make_event(attendees=[], organizer_email="")
+
+        await connector.call("calendar_get_event_details", {"calendar_id": "primary", "event_id": "e1"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["new_info"]["Attendees"] == ""
+        assert "  (none)" in kwargs["details_text"]
+
+    async def test_organizer_already_flagged_in_attendees_is_not_duplicated(self, gated_call_spy):
+        # Google's API sometimes includes the organizer as a flagged
+        # attendee entry directly -- _merged_attendees_display must not
+        # also synthesize a second, separate organizer entry in that case.
+        connector, client = make_connector()
+        client.get_event.return_value = make_event(
+            organizer_email="alice@example.com",
+            attendees=[
+                CalendarAttendee(email="alice@example.com", display_name="Alice",
+                                  response_status="accepted", organizer=True),
+                CalendarAttendee(email="bob@example.com", display_name="Bob", response_status="accepted"),
+            ],
+        )
+
+        await connector.call("calendar_get_event_details", {"calendar_id": "primary", "event_id": "e1"})
+
+        attendees_value = gated_call_spy[0]["new_info"]["Attendees"]
+        assert attendees_value.count("alice@example.com") == 1
+        assert attendees_value == "Alice <alice@example.com> (organizer), Bob <bob@example.com>"
 
 
 class TestCreateEvent:
@@ -730,6 +750,11 @@ class TestFieldCompleteness:
         await connector.call("calendar_get_event_details", {"calendar_id": "primary", "event_id": raw["id"]})
 
         assert_no_placeholder_fields(gated_call_spy[0]["preview"])
+        # Only Attendees is guaranteed non-empty here (the raw fixture was
+        # given a real one above) -- Location/Description may genuinely be
+        # blank on the recorded fixture, which is valid (see the
+        # "leave it empty, don't omit the row" tests above), not a bug.
+        assert_no_placeholder_fields({"Attendees": gated_call_spy[0]["new_info"]["Attendees"]})
 
 
 class TestFetchErrorMapping:

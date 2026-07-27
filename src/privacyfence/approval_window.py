@@ -174,28 +174,42 @@ _BADGE_GAP = 6.0
 _BADGE_ROW_GAP = 6.0
 
 # ---------------------------------------------------------------------------- #
-# layout="compact"/"wide" -- the redesigned card-stack rendering
+# layout="narrow"/"wide" -- the redesigned card-stack rendering
 # (approval_window_html.build_card_stack_html), opt-in per call site,
 # default "legacy" leaves every existing caller's rendering byte-for-byte
 # unchanged. See approval_window_html.py's module docstring for the visual
-# design source and known scope boundaries.
+# design source.
 #
 # Unlike the legacy layout's per-section NSString.boundingRectWithSize_
-# measurement (_compute_layout, _text_height), v2 uses a *fixed* content
-# height with CSS `overflow-y: auto` handling any overflow -- the same
-# "fixed frame, scrolls internally" contract the legacy layout's own details
-# pane already holds (_DETAILS_HEIGHT/_DETAILS_HEIGHT_EXPANDED), just
-# applied to the whole content area instead of one sub-pane. This sidesteps
-# needing an async WKNavigationDelegate round-trip (load, measure
-# document.body.scrollHeight, resize, then show) purely to size the window
-# up front -- a real simplification, not a hidden bug: content that doesn't
-# fit scrolls, it's never actually hidden from the reviewer.
+# measurement (_compute_layout, _text_height), v2 doesn't measure text at
+# all: every row in every card has a CSS-fixed, truncated size regardless of
+# actual value length (styles.css's .pf-kv/.pf-quote), so the window height
+# is fully deterministic from field/section *counts* alone -- see
+# _estimate_left_column_height() below. No "Show more" toggle exists in v2
+# (see approval_window_html.py's module docstring): fixed-and-truncated rows
+# replace the legacy layout's own area-expansion progressive disclosure.
+# WIDE's right pane is the one exception -- genuine free-text body content,
+# not row-shaped, so it keeps its own fixed max-height + internal scroll
+# (approval_window_html.py's own CSS) independent of this estimate.
 # ---------------------------------------------------------------------------- #
-_V2_LAYOUTS = (approval_window_html.COMPACT, approval_window_html.WIDE)
-_V2_WINDOW_WIDTH = {approval_window_html.COMPACT: 610.0, approval_window_html.WIDE: 880.0}
-_V2_CONTENT_HEIGHT = 560.0
-_V2_CONTENT_HEIGHT_EXPANDED = 680.0  # "Show more", compact layout only -- see toggleDetailsExpanded_
-_V2_TOGGLE_ROW_HEIGHT = 26.0  # native "Show more"/"Show less" band, between the webview and the buttons
+_V2_LAYOUTS = (approval_window_html.NARROW, approval_window_html.WIDE)
+_V2_WINDOW_WIDTH = {approval_window_html.NARROW: 610.0, approval_window_html.WIDE: 880.0}
+
+# Pixel constants behind _estimate_left_column_height() -- deliberately
+# "assume every row is at its 2-line-clamped maximum" rather than measured,
+# so a short value never causes clipping; the cost is a little unused
+# whitespace when a row's real content is shorter than its allowance, never
+# the other direction. Re-derived empirically against real qa_popup_smoke.py
+# --layout v2 screenshots, not computed from the CSS alone -- adjust here if
+# a future style change to styles.css's card/row rules drifts from these.
+_V2_HEADER_HEIGHT = 90.0
+_V2_SEEN_COUNT_HEIGHT = 22.0
+_V2_CARD_CHROME = 62.0  # card padding (2x15) + margin-bottom (18) + kicker line (~14)
+_V2_ROW_HEIGHT = 40.0  # one .pf-kv row at its 2-line-clamp maximum, incl. its share of the card's own gap
+_V2_QUOTE_CARD_HEIGHT = 96.0  # §2's whole card: chrome + 3-line-clamped quote + the "unverified" meta line
+_V2_RISK_CARD_BASE_HEIGHT = 96.0  # §4 card: chrome + the "⚠ ..." line + one row of category tags
+_V2_MIN_CONTENT_HEIGHT = 260.0
+_V2_MAX_CONTENT_HEIGHT = 760.0
 
 _popup_lock = threading.Lock()  # only one native window on screen at a time
 
@@ -468,6 +482,7 @@ class ApprovalWindowController(NSObject):
         self.layout: str = "legacy"
         self.is_read: bool = True
         self.upload_forced: bool = False
+        self.new_info: dict[str, str] = {}
         self.result = "deny"
         self.panel = None
         self._details_view = None
@@ -1191,11 +1206,42 @@ class ApprovalWindowController(NSObject):
             panel.setInitialFirstResponder_(self._details_view)
         return panel
 
+    def _v2_disclosure_rows(self) -> list[tuple[str, str]]:
+        """§3's rows -- ``new_info`` (real values a connector builds directly,
+        e.g. calendar_get_event_details's Attendees/Location/Description)
+        takes priority when given; falls back to the older
+        visibility-derived policy sentences for the handful of tools that
+        only have a privacy-category checklist and no explicit new_info
+        (Gmail/Drive/Slack/Contacts/Tasks/Confluence). Never both at once in
+        practice -- see approval_window_html.py's module docstring."""
+        if not self.is_read:
+            return []
+        if self.new_info:
+            return list(self.new_info.items())
+        return approval_window_html.disclosure_rows_from_visibility(self.visibility)
+
+    def _estimate_left_column_height(self) -> float:
+        """Deterministic from field/section *counts* alone -- never from how
+        long any actual value is (every row is CSS-fixed-and-truncated, see
+        styles.css). See the _V2_* pixel constants' own comment for the
+        "assume worst case" reasoning."""
+        height = _V2_HEADER_HEIGHT
+        if self.seen_count > 0:
+            height += _V2_SEEN_COUNT_HEIGHT
+        if self.preview:
+            height += _V2_CARD_CHROME + len(self.preview) * _V2_ROW_HEIGHT
+        if self.claude_reason:
+            height += _V2_QUOTE_CARD_HEIGHT
+        disclosure_rows = self._v2_disclosure_rows()
+        if disclosure_rows:
+            height += _V2_CARD_CHROME + len(disclosure_rows) * _V2_ROW_HEIGHT
+        if self.pii_categories or self.write_content_flags:
+            height += _V2_RISK_CARD_BASE_HEIGHT
+        return max(_V2_MIN_CONTENT_HEIGHT, min(height, _V2_MAX_CONTENT_HEIGHT))
+
     def _window_height_v2(self) -> float:
-        content_height = _V2_CONTENT_HEIGHT_EXPANDED if self._details_expanded else _V2_CONTENT_HEIGHT
+        content_height = self._estimate_left_column_height()
         window_height = content_height + _BUTTON_ROW_HEIGHT
-        if self.layout == approval_window_html.COMPACT:
-            window_height += _V2_TOGGLE_ROW_HEIGHT
         screen = NSScreen.mainScreen()
         if screen is not None:
             window_height = min(window_height, screen.frame().size.height - 80.0)
@@ -1204,10 +1250,7 @@ class ApprovalWindowController(NSObject):
     def _build_content_view_v2(self, window_width: float, window_height: float):
         content = _FlippedView.alloc().initWithFrame_(NSMakeRect(0, 0, window_width, window_height))
 
-        show_toggle = self.layout == approval_window_html.COMPACT
         webview_height = window_height - _BUTTON_ROW_HEIGHT
-        if show_toggle:
-            webview_height -= _V2_TOGGLE_ROW_HEIGHT
 
         # pdf_bytes/preview_bytes render inline via a standard <embed>/<img>
         # data URI now -- no native PDFView/NSImageView overlay needed, v2's
@@ -1228,9 +1271,7 @@ class ApprovalWindowController(NSObject):
             self.details_text, content_kind=self.content_kind, preview=self.preview,
             image_data_uri=image_data_uri, pdf_data_uri=pdf_data_uri,
         )
-        disclosure_rows = (
-            approval_window_html.disclosure_rows_from_visibility(self.visibility) if self.is_read else []
-        )
+        disclosure_rows = self._v2_disclosure_rows()
 
         html = approval_window_html.build_card_stack_html(
             layout=self.layout,
@@ -1270,14 +1311,6 @@ class ApprovalWindowController(NSObject):
         content.addSubview_(webview)
 
         y = webview_height
-        if show_toggle:
-            expand_btn = self._build_expand_toggle_button()
-            expand_btn.setFrameOrigin_((
-                window_width - _MARGIN - expand_btn.frame().size.width,
-                y + (_V2_TOGGLE_ROW_HEIGHT - expand_btn.frame().size.height) / 2.0,
-            ))
-            content.addSubview_(expand_btn)
-            y += _V2_TOGGLE_ROW_HEIGHT
 
         # Button row -- identical construction/positioning to the legacy
         # layout's own button row (_build_content_view above), just anchored
@@ -1415,6 +1448,7 @@ def show_native_approval(
     layout: str = "legacy",
     is_read: bool = True,
     upload_forced: bool = False,
+    new_info: dict[str, str] | None = None,
 ) -> str:
     """Show the approval window and block until the user picks a button.
 
@@ -1430,12 +1464,13 @@ def show_native_approval(
 
     ``layout`` selects the rendering: "legacy" (default -- every existing
     caller, byte-for-byte unchanged) or one of approval_window_html's
-    COMPACT/WIDE card-stack shapes (see ApprovalWindowController's v2
-    methods and approval_window_html.py's module docstring). ``is_read``
-    and ``upload_forced`` only matter for a v2 ``layout`` -- see
-    ApprovalWindowController._build_content_view_v2 and
-    approval_window_html.build_card_stack_html's own docstring for what
-    each controls; they're no-ops under "legacy".
+    NARROW/WIDE card-stack shapes (see ApprovalWindowController's v2
+    methods and approval_window_html.py's module docstring). ``is_read``,
+    ``upload_forced``, and ``new_info`` (§3's real "what's new" field/value
+    pairs -- e.g. calendar_get_event_details's Attendees/Location/
+    Description; falls back to a ``visibility``-derived policy summary when
+    empty, see ApprovalWindowController._v2_disclosure_rows) only matter for
+    a v2 ``layout``; they're no-ops under "legacy".
     """
     with _popup_lock:
         controller = ApprovalWindowController.alloc().init()
@@ -1457,6 +1492,7 @@ def show_native_approval(
         controller.layout = layout or "legacy"
         controller.is_read = is_read
         controller.upload_forced = upload_forced
+        controller.new_info = new_info or {}
 
         controller.performSelectorOnMainThread_withObject_waitUntilDone_(
             "runApproval:", None, True

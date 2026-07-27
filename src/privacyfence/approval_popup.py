@@ -170,6 +170,7 @@ def show_read_popup(
     connector: str = "",
     preview_bytes: bytes = b"",
     preview_mime_type: str = "",
+    new_info: dict[str, str] | None = None,
 ) -> str:
     """Approval popup for read tools. Full content is always shown before the
     decision, in a scrollable pane — the user never has to click through to
@@ -196,6 +197,9 @@ def show_read_popup(
     ``preview_bytes``/``preview_mime_type``, when set, render a native image
     view instead -- see gate.py's gated_call docstring for why these carry
     no AI-visibility parity constraint, unlike ``pdf_bytes``.
+    ``new_info``, when given, is the v2 redesign's §3 ("What will be
+    provided to Claude") real (label, value) pairs -- see gate.py's
+    gated_call docstring. Ignored entirely by the legacy layout.
 
     Returns 'accept', 'deny', or 'accept_all' (only offered when
     allow_accept_all is True).
@@ -204,7 +208,7 @@ def show_read_popup(
         title=title, preview=preview, details_text=details_text, allow_accept_all=allow_accept_all,
         pii_categories=pii_categories, visibility=visibility, claude_reason=claude_reason,
         seen_count=seen_count, content_kind=content_kind, pdf_bytes=pdf_bytes, connector=connector,
-        preview_bytes=preview_bytes, preview_mime_type=preview_mime_type,
+        preview_bytes=preview_bytes, preview_mime_type=preview_mime_type, new_info=new_info,
     )
 
 

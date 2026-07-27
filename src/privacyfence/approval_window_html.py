@@ -28,15 +28,29 @@ design canvas itself, which numbers write-gate PII cards "03" (no §3 exists
 on the write side at all) but read-gate ones "04" wherever a §3 card also
 rendered on that same tool.
 
-Known scope boundary, not yet closed: §3 only ever renders here when
-``disclosure_rows`` is non-empty, i.e. only for the ~7 read tools that already
-pass a ``visibility`` dict today. The design canvas actually mocks a §3 card
-on every one of the 17 read tools, including ones with no ``visibility`` dict
-today (e.g. gmail_download_attachment's "Content returned to Claude: None --
-file bytes are never sent") -- giving those tools a real §3 card needs new
-per-connector data these call sites don't emit today, which is a
-connector-touching change out of scope for this template-only pass. Tracked
-as a follow-up, not silently faked here.
+§3's rows are real values (the same rendering as §1's ``.pf-kv`` rows, just
+meaning "new to Claude" instead of "already known"), not an abstract policy
+summary -- "What will be provided to Claude" should show what will actually
+be provided. ``disclosure_rows`` accepts either: literal (label, real value)
+pairs a connector builds directly (e.g. calendar_get_event_details's
+Attendees/Location/Description), or -- for the handful of tools that also
+carry a privacy-category ``visibility`` policy (Gmail/Drive/Slack/Contacts/
+Tasks/Confluence) -- rows built by disclosure_rows_from_visibility() below.
+Either way this function itself doesn't care; approval_window.py's
+controller decides which source to use per call (its ``new_info`` vs
+``visibility`` attributes).
+
+NARROW layout has no preview pane at all -- not a smaller version of WIDE's,
+genuinely absent. A tool gets WIDE only when it has real free-text body
+content §1-§4's fixed-row-per-field format can't represent (email/message
+bodies, ticket descriptions, page content, sheet cell values, uploaded file
+content); everything else is NARROW. Every row in every section is a fixed
+size regardless of actual value length (see styles.css's .pf-kv/.pf-quote
+truncation) specifically so a per-tool layout is fully deterministic from
+field *counts* alone (known upfront, schema-driven) -- never from how long a
+specific call's data happens to be. Rows are never omitted for having an
+empty value either (a missing Location still gets its own blank row) --
+only the section as a whole disappears when it has no fields at all.
 
 drive_upload_file's PII card is a second known placeholder: gate.py routes
 its own PII match through the same forced second-confirmation flow the
@@ -53,13 +67,14 @@ from pathlib import Path
 _STYLES_PATH = Path(__file__).parent / "resources" / "approval_window" / "styles.css"
 _STYLES_CSS = _STYLES_PATH.read_text(encoding="utf-8")
 
-# Compact (single-column, short/metadata-only tools) vs wide (two-column,
-# long-body tools) -- the design canvas's own split, not a length heuristic:
-# set explicitly per call site (see approval_window.py's `layout` param).
-COMPACT = "compact"
+# Narrow (single-column, sections only, no preview pane at all) vs wide
+# (two-column, sections + a genuine free-text-body right pane) -- set
+# explicitly per call site (see approval_window.py's `layout` param), not a
+# length heuristic. See module docstring for exactly which tools get which.
+NARROW = "narrow"
 WIDE = "wide"
 
-_CONTENT_WIDTH = {COMPACT: 610, WIDE: 880}
+_CONTENT_WIDTH = {NARROW: 610, WIDE: 880}
 
 # §3's generic allow/redact/block -> disclosure-sentence mapping. A
 # deliberate, generic rule rather than hand-authored per-tool prose (compare
@@ -96,9 +111,10 @@ def build_preview_body_html(
     image_data_uri: str = "",
     pdf_data_uri: str = "",
 ) -> str:
-    """The inner-HTML fragment for the preview pane (right-hand column in
-    ``WIDE`` layout, inline card in ``COMPACT``) -- the ``build_card_stack_
-    html()``-embeddable counterpart to approval_window.py's ``_details_html()``,
+    """The inner-HTML fragment for ``WIDE`` layout's right-hand preview pane
+    (``NARROW`` has no preview at all -- callers never need this for a
+    narrow-shape tool) -- the ``build_card_stack_html()``-embeddable
+    counterpart to approval_window.py's ``_details_html()``,
     which builds a *full standalone document* for its own separate small
     WKWebView instead. Same escaping/whitespace discipline: ``details_text``
     is already HTML-stripped plain text (see html_to_text.py) and is never
@@ -183,9 +199,8 @@ def _section_2_html(number: int, is_read: bool, claude_reason: str) -> str:
 
 
 def _section_3_html(number: int, disclosure_rows: list[tuple[str, str]]) -> str:
-    # Read-gate only, and only when disclosure_rows is non-empty -- see this
-    # module's docstring for the known scope boundary (RG-1 tools get no §3
-    # card today, not just a hidden/empty one).
+    # Read-gate only. Absent (not just empty) when a tool has nothing new to
+    # disclose -- see module docstring for where disclosure_rows comes from.
     if not disclosure_rows:
         return ""
     kicker = f"{number:02d} · What will be provided to Claude"
@@ -259,16 +274,16 @@ def build_card_stack_html(
     styles.css already read at import time -- directly unit-testable, same
     contract ``_details_html()`` already holds in approval_window.py.
 
-    ``layout`` is ``COMPACT`` (single column, the preview renders inline as
-    its own card) or ``WIDE`` (two columns, the preview gets its own
-    independently-scrolling right-hand pane). Callers decide which per tool,
-    mirroring the design canvas's own grouping; see approval_window.py's
-    ``layout`` parameter. Neither shape renders a "Show more"/"Show less"
-    control here -- that toggle (compact layout only) is a native NSButton
-    overlaid on the webview by approval_window.py, and only ever changes the
-    *webview's frame height*, never this document's content (all of it is
-    always present -- "Show more" reveals more of it without scrolling, same
-    progressive-disclosure contract the legacy layout already holds).
+    ``layout`` is ``NARROW`` (§1-§4 only, no preview pane at all --
+    ``preview_kicker``/``preview_body_html`` are ignored entirely) or
+    ``WIDE`` (§1-§4 in a fixed-width left column, plus a genuine
+    independently-scrolling right-hand preview pane). Callers decide which
+    per tool -- see module docstring for the criterion (real free-text body
+    content vs. everything else) and approval_window.py's ``layout``
+    parameter. No "Show more"/"Show less" control anywhere: progressive
+    disclosure by area-expansion doesn't apply once every row has a fixed,
+    truncated size (see styles.css's ``.pf-kv``/``.pf-quote``) and the right
+    pane (WIDE only) already scrolls on its own.
 
     Exactly one of ``pii_categories``/``write_content_flags`` is ever
     non-empty for a given call (gate.py never populates both at once), and
@@ -331,20 +346,9 @@ def build_card_stack_html(
             '</div></div>'
         )
     else:
-        # No "Show more"/"Show less" markup here at all: that toggle is a
-        # native NSButton overlaid on the webview (approval_window.py), and
-        # -- exactly like the legacy layout's own progressive disclosure --
-        # it only ever changes the *webview's frame height*, never this
-        # document's content (all of it is always present; "Show more"
-        # reveals more of it without scrolling, it doesn't fetch more). See
-        # this function's docstring.
-        body_html = (
-            left_column
-            + '<div style="margin-top:14px">'
-            + f'<div class="card-kicker" style="margin-bottom:8px">{_html_escape(preview_kicker)}</div>'
-            + f'<div class="card" style="background:var(--color-neutral-100);min-height:70px">{preview_body_html}</div>'
-            + '</div>'
-        )
+        # NARROW: no preview pane at all -- preview_kicker/preview_body_html
+        # are simply not used. See module docstring.
+        body_html = left_column
 
     if temp_accept_text:
         body_html += (
