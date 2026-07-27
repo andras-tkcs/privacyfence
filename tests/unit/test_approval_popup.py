@@ -180,7 +180,7 @@ class TestShowPopupAndShowReadPopup:
         assert captured == {
             "title": "Title", "preview": {"Field": "Value"}, "details_text": "details", "allow_accept_all": False,
             "temp_accept_eligible": False, "claude_reason": "", "write_content_flags": None, "seen_count": 0,
-            "connector": "",
+            "connector": "", "preview_bytes": b"", "preview_mime_type": "",
         }
         assert result == "accept"
 
@@ -317,6 +317,48 @@ class TestShowPopupAndShowReadPopup:
         approval_popup.show_read_popup("Title", {}, "details", allow_accept_all=False, seen_count=5)
 
         assert captured["seen_count"] == 5
+
+    def test_show_read_popup_forwards_preview_bytes_and_mime_type(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(approval_popup, "show_native_approval", lambda **kw: captured.update(kw) or "deny")
+
+        approval_popup.show_read_popup(
+            "Title", {}, "details", allow_accept_all=False,
+            preview_bytes=b"\x89PNG", preview_mime_type="image/png",
+        )
+
+        assert captured["preview_bytes"] == b"\x89PNG"
+        assert captured["preview_mime_type"] == "image/png"
+
+    def test_show_read_popup_defaults_preview_bytes_to_empty(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(approval_popup, "show_native_approval", lambda **kw: captured.update(kw) or "deny")
+
+        approval_popup.show_read_popup("Title", {}, "details", allow_accept_all=False)
+
+        assert captured["preview_bytes"] == b""
+        assert captured["preview_mime_type"] == ""
+
+    def test_show_popup_forwards_preview_bytes_and_mime_type(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(approval_popup, "show_native_approval", lambda **kw: captured.update(kw) or "accept")
+
+        approval_popup.show_popup(
+            "Title", {"Field": "Value"}, "details",
+            preview_bytes=b"\x89PNG", preview_mime_type="image/png",
+        )
+
+        assert captured["preview_bytes"] == b"\x89PNG"
+        assert captured["preview_mime_type"] == "image/png"
+
+    def test_show_popup_defaults_preview_bytes_to_empty(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(approval_popup, "show_native_approval", lambda **kw: captured.update(kw) or "accept")
+
+        approval_popup.show_popup("Title", {"Field": "Value"}, "details")
+
+        assert captured["preview_bytes"] == b""
+        assert captured["preview_mime_type"] == ""
 
 
 class TestShowPiiConfirmationPopup:

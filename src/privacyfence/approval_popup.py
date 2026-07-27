@@ -87,6 +87,8 @@ def show_popup(
     seen_count: int = 0,
     connector: str = "",
     allow_accept_all: bool = False,
+    preview_bytes: bytes = b"",
+    preview_mime_type: str = "",
 ) -> str:
     """Approval popup for write tools. No PII *gate* applies here -- see
     gate.py's module docstring for why the PII confirmation flow is
@@ -132,6 +134,13 @@ def show_popup(
     suggest_write_rule() returned anything for this call. False for every
     other write, identical to today.
 
+    ``preview_bytes``/``preview_mime_type``, when set, render a native image
+    view in the details pane instead of the usual plain-text WKWebView --
+    unlike show_read_popup's ``pdf_bytes``/``content_kind``, these carry no
+    AI-visibility parity constraint (see gate.py's gated_call docstring):
+    only ever set by upload-shaped write tools (drive_upload_file) whose
+    payload never reaches Claude's context at all.
+
     Returns 'accept', 'deny', or 'accept_all' (only offered when
     allow_accept_all is True).
     """
@@ -139,6 +148,7 @@ def show_popup(
         title=title, preview=preview, details_text=details_text, allow_accept_all=allow_accept_all,
         temp_accept_eligible=temp_accept_eligible, claude_reason=claude_reason,
         write_content_flags=write_content_flags, seen_count=seen_count, connector=connector,
+        preview_bytes=preview_bytes, preview_mime_type=preview_mime_type,
     )
 
 
@@ -158,6 +168,8 @@ def show_read_popup(
     content_kind: str = "generic",
     pdf_bytes: bytes = b"",
     connector: str = "",
+    preview_bytes: bytes = b"",
+    preview_mime_type: str = "",
 ) -> str:
     """Approval popup for read tools. Full content is always shown before the
     decision, in a scrollable pane — the user never has to click through to
@@ -181,6 +193,9 @@ def show_read_popup(
     ``connector`` (e.g. "gmail", "drive") selects the top-left brand icon
     -- see approval_window.py's _connector_icon_path() docstring for the
     silent-skip fallback when no asset exists yet for it.
+    ``preview_bytes``/``preview_mime_type``, when set, render a native image
+    view instead -- see gate.py's gated_call docstring for why these carry
+    no AI-visibility parity constraint, unlike ``pdf_bytes``.
 
     Returns 'accept', 'deny', or 'accept_all' (only offered when
     allow_accept_all is True).
@@ -189,6 +204,7 @@ def show_read_popup(
         title=title, preview=preview, details_text=details_text, allow_accept_all=allow_accept_all,
         pii_categories=pii_categories, visibility=visibility, claude_reason=claude_reason,
         seen_count=seen_count, content_kind=content_kind, pdf_bytes=pdf_bytes, connector=connector,
+        preview_bytes=preview_bytes, preview_mime_type=preview_mime_type,
     )
 
 
