@@ -21,6 +21,12 @@ from ..privacy_filter import apply_list, apply_text, category_policy
 
 logger = logging.getLogger(__name__)
 
+# Cap on how big a local_path file we'll read into memory pre-approval just to
+# build an upload preview -- unlike content_base64 (already fully decoded in
+# memory regardless, and naturally bounded by the MCP/IPC wire size limit),
+# local_path can point at an arbitrarily large file on disk.
+_UPLOAD_PREVIEW_MAX_BYTES = 5_000_000
+
 
 def _parse_json_str_list(value: str) -> list[str] | None:
     """Parse a JSON array-of-strings tool argument, or None if empty/invalid."""
@@ -846,10 +852,14 @@ class DriveConnector(Connector):
         content_base64: str = "",
     ) -> Any:
         import base64
+        import mimetypes
         import os
 
         if bool(local_path.strip()) == bool(content_base64.strip()):
             raise ValueError("drive_upload_file: provide exactly one of local_path or content_base64")
+
+        preview_bytes = b""
+        preview_mime_type = ""
 
         if local_path.strip():
             display_name = name.strip() or os.path.basename(local_path)
@@ -857,14 +867,46 @@ class DriveConnector(Connector):
             size_bytes = os.path.getsize(expanded) if os.path.isfile(expanded) else 0
             source = local_path
             sender = "(local file)"
+            # The connector never used to read this file's bytes at all --
+            # only stat its size -- so the popup showed a human nothing about
+            # what's actually in it. Unlike drafted text (every other
+            # popup-gate tool), this can be an arbitrary local file Claude
+            # never saw the contents of, so it's worth reading -- but only
+            # for images under a sane cap, since it's a disk read of a file
+            # that could be arbitrarily large.
+            guessed_mime, _ = mimetypes.guess_type(display_name)
+            if (
+                guessed_mime and guessed_mime.startswith("image/")
+                and 0 < size_bytes <= _UPLOAD_PREVIEW_MAX_BYTES
+            ):
+                try:
+                    with open(expanded, "rb") as fh:
+                        preview_bytes = fh.read()
+                    preview_mime_type = guessed_mime
+                except OSError:
+                    logger.warning(
+                        "drive_upload_file: failed to read %r for preview",
+                        local_path, exc_info=True,
+                    )
         else:
             display_name = name.strip() or "(unnamed file)"
             try:
-                size_bytes = len(base64.b64decode(content_base64, validate=True))
+                decoded = base64.b64decode(content_base64, validate=True)
             except (base64.binascii.Error, ValueError):
-                size_bytes = 0
+                decoded = b""
+            size_bytes = len(decoded)
             source = "inline content"
             sender = "(inline content)"
+            # Already fully decoded in memory above regardless (needed just to
+            # measure size) -- no extra cost to reuse it for the preview, and
+            # no separate size cap needed: content_base64 arrives as an MCP
+            # tool argument, already bounded by the daemon's own wire-protocol
+            # line limit (ipc.py's LINE_LIMIT), unlike local_path's unbounded
+            # disk read above.
+            guessed_mime, _ = mimetypes.guess_type(display_name) if name.strip() else (None, None)
+            if guessed_mime and guessed_mime.startswith("image/") and decoded:
+                preview_bytes = decoded
+                preview_mime_type = guessed_mime
 
         preview = {
             "File": display_name,
@@ -884,6 +926,8 @@ class DriveConnector(Connector):
             gate="popup",
             preview=preview,
             details_text=details,
+            preview_bytes=preview_bytes,
+            preview_mime_type=preview_mime_type,
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={
