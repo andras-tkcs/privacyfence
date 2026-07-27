@@ -54,6 +54,40 @@ _FILE_FIELDS = (
 )
 
 
+def resolve_download_name(metadata: Any) -> str:
+    """Compute the filename ``download_file`` will save under.
+
+    Google Workspace documents are exported as text (Docs/Slides -> .txt,
+    Sheets -> .csv), so the saved name differs from ``metadata.name``. Pure --
+    takes already-fetched metadata, makes no API call -- so it can be called
+    once to preview the save path before download approval and again inside
+    ``download_file`` to actually write the file, and the two can never
+    disagree.
+    """
+    export_mime = _GOOGLE_DOC_EXPORTS.get(metadata.mime_type)
+    name = metadata.name or metadata.id
+    if export_mime == "text/plain" and not name.endswith(".txt"):
+        name = name + ".txt"
+    elif export_mime == "text/csv" and not name.endswith(".csv"):
+        name = name + ".csv"
+    return name
+
+
+def resolve_download_destination(metadata: Any, destination_dir: str = "") -> str:
+    """Compute where ``download_file`` will save this file, without touching disk.
+
+    ``metadata.name`` comes from Drive and is untrusted -- a file can be
+    renamed to anything, including path separators -- so only the basename of
+    the resolved download name is kept. This is the same protection
+    ``gmail_client.resolve_attachment_destination`` applies to attachment
+    names, and for the same reason: it's what stops a file renamed to
+    "../../.ssh/authorized_keys" from writing outside ``destination_dir``.
+    """
+    dest_dir = os.path.expanduser(destination_dir.strip() or "~/Downloads")
+    safe_name = os.path.basename(resolve_download_name(metadata)) or metadata.id or "file"
+    return os.path.join(dest_dir, safe_name)
+
+
 # ------------------------------------------------------------------ #
 # Markdown → Google Docs API helpers
 # ------------------------------------------------------------------ #
@@ -786,20 +820,10 @@ class DriveClient:
         if not file_id:
             raise DriveClientError("download_file requires a non-empty file_id")
 
-        dest = os.path.expanduser(destination_dir.strip() or "~/Downloads")
-        os.makedirs(dest, exist_ok=True)
-
         metadata = self.get_file_metadata(file_id)
         export_mime = _GOOGLE_DOC_EXPORTS.get(metadata.mime_type)
-
-        # Choose filename and extension
-        name = metadata.name or file_id
-        if export_mime == "text/plain" and not name.endswith(".txt"):
-            name = name + ".txt"
-        elif export_mime == "text/csv" and not name.endswith(".csv"):
-            name = name + ".csv"
-
-        dest_path = os.path.join(dest, name)
+        dest_path = resolve_download_destination(metadata, destination_dir)
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
 
         try:
             creds = self._load_credentials()
@@ -829,7 +853,7 @@ class DriveClient:
         logger.info("download_file %s → %s (%d bytes)", file_id, dest_path, size)
         return {
             "path": dest_path,
-            "name": name,
+            "name": os.path.basename(dest_path),
             "size_bytes": size,
             "truncated": False,
         }

@@ -10,7 +10,12 @@ from typing import Any
 
 from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
-from ..drive_client import DriveClient, DriveClientError, _parse_a1_range
+from ..drive_client import (
+    DriveClient,
+    DriveClientError,
+    _parse_a1_range,
+    resolve_download_destination,
+)
 from ..gate import current_reason, gated_call
 from ..privacy_filter import apply_list, apply_text, category_policy
 
@@ -669,31 +674,33 @@ class DriveConnector(Connector):
         self, file_id: str, destination_dir: str = ""
     ) -> Any:
         import os
-        result = await self._fetch(self._drive.download_file, file_id, destination_dir)
-        name = result.get("name", file_id)
-        path = result.get("path", "")
-        size_bytes = result.get("size_bytes", 0)
-
         drive_file = await self._fetch(self._drive.get_file_metadata, file_id)
         owners = getattr(drive_file, "owners", [])
         modified = getattr(drive_file, "modified_time", "")
+        dest_path = resolve_download_destination(drive_file, destination_dir)
+        name = os.path.basename(dest_path)
 
         preview = {
             "File": name,
             "Owner": ", ".join(owners) if owners else "(unknown)",
-            "Size": f"{size_bytes:,} bytes",
+            "Size": f"{drive_file.size:,} bytes",
             "Modified": str(modified) if modified else "(unknown)",
-            "Saved to": path,
+            "Saved to": dest_path,
         }
-        details = "The file above has been downloaded to the destination shown."
-        return await gated_call(
+        details = "The file above will be downloaded to the destination shown."
+        # Gate before touching disk: gated_call raises on denial, and only a
+        # decision made here should ever cause the file to be written. This
+        # used to download the file first and gate afterward, so a Deny still
+        # left the file on disk -- mirrors gmail.py's _download_attachment,
+        # which already got this ordering right.
+        await gated_call(
             connector=self.name,
             tool="drive_download_file",
             tool_name="Download Drive File",
-            summary=f"Download \"{name}\" to {os.path.dirname(path)}",
+            summary=f"Download \"{name}\" to {os.path.dirname(dest_path)}",
             sender=", ".join(owners) or "(unknown)",
-            raw_data={"file": drive_file, "path": path, "name": name, "size_bytes": size_bytes},
-            filtered_data=result,
+            raw_data=drive_file,
+            filtered_data=None,
             gate="review",
             preview=preview,
             details_text=details,
@@ -702,6 +709,7 @@ class DriveConnector(Connector):
             session_created_ids=self.session_created_ids,
             args={"file_id": file_id, "destination_dir": destination_dir},
         )
+        return await self._fetch(self._drive.download_file, file_id, destination_dir)
 
     # ------------------------------------------------------------------ #
     # Popup gate (writes)

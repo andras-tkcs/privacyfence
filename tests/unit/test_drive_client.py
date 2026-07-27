@@ -33,6 +33,8 @@ from privacyfence.drive_client import (
     _parse_a1_range,
     _parse_inline_runs,
     _table_cell_start_indices,
+    resolve_download_destination,
+    resolve_download_name,
 )
 from googleapiclient.errors import HttpError
 
@@ -1171,6 +1173,57 @@ class TestWriteDocRichContent:
 
 
 # ---------------------------------------------------------------------------- #
+# resolve_download_name / resolve_download_destination: path-traversal
+# sanitization + export-extension resolution
+# ---------------------------------------------------------------------------- #
+
+def make_file(**overrides) -> DriveFile:
+    defaults = dict(id="f1", name="report.pdf", mime_type="application/pdf", size=100)
+    defaults.update(overrides)
+    return DriveFile(**defaults)
+
+
+class TestResolveDownloadName:
+    def test_non_workspace_file_keeps_its_name(self):
+        assert resolve_download_name(make_file(name="report.pdf", mime_type="application/pdf")) == "report.pdf"
+
+    def test_google_doc_gets_txt_extension(self):
+        f = make_file(name="MyDoc", mime_type="application/vnd.google-apps.document")
+        assert resolve_download_name(f) == "MyDoc.txt"
+
+    def test_google_sheet_gets_csv_extension(self):
+        f = make_file(name="Budget", mime_type="application/vnd.google-apps.spreadsheet")
+        assert resolve_download_name(f) == "Budget.csv"
+
+    def test_does_not_double_up_an_existing_extension(self):
+        f = make_file(name="MyDoc.txt", mime_type="application/vnd.google-apps.document")
+        assert resolve_download_name(f) == "MyDoc.txt"
+
+    def test_falls_back_to_file_id_when_name_is_empty(self):
+        assert resolve_download_name(make_file(name="", mime_type="application/pdf")) == "f1"
+
+
+class TestResolveDownloadDestination:
+    def test_joins_basename_with_destination_dir(self, tmp_path):
+        result = resolve_download_destination(make_file(name="report.pdf"), str(tmp_path))
+        assert result == str(tmp_path / "report.pdf")
+
+    def test_strips_directory_traversal_from_file_name(self, tmp_path):
+        # A Drive file can be renamed to anything, including path separators --
+        # this must never be able to write outside destination_dir.
+        result = resolve_download_destination(make_file(name="../../.ssh/authorized_keys"), str(tmp_path))
+        assert result == str(tmp_path / "authorized_keys")
+
+    def test_strips_absolute_path_prefix_from_file_name(self, tmp_path):
+        result = resolve_download_destination(make_file(name="/etc/passwd"), str(tmp_path))
+        assert result == str(tmp_path / "passwd")
+
+    def test_empty_destination_dir_defaults_to_downloads(self, monkeypatch):
+        monkeypatch.setattr(os.path, "expanduser", lambda p: "/home/user/Downloads" if p == "~/Downloads" else p)
+        assert resolve_download_destination(make_file(name="report.pdf"), "") == "/home/user/Downloads/report.pdf"
+
+
+# ---------------------------------------------------------------------------- #
 # download_file: URL selection (export vs raw media) + streaming
 # ---------------------------------------------------------------------------- #
 
@@ -1262,6 +1315,24 @@ class TestDownloadFile:
 
         with pytest.raises(DriveClientError, match="download_file"):
             client.download_file("f1", destination_dir=str(tmp_path))
+
+    def test_sanitizes_file_name_before_writing(self, tmp_path, monkeypatch):
+        service = MagicMock()
+        service.files.return_value.get.return_value.execute.return_value = {
+            "id": "f1", "name": "../../evil.bin", "mimeType": "application/octet-stream",
+        }
+        client = make_client(service)
+        monkeypatch.setattr(client, "_load_credentials", lambda: MagicMock())
+
+        fake_session = MagicMock()
+        fake_session.get.return_value = _FakeStreamResponse([b"data"])
+        monkeypatch.setattr(drive_client_module, "AuthorizedSession", lambda creds: fake_session)
+
+        result = client.download_file("f1", destination_dir=str(tmp_path))
+
+        assert result["path"] == str(tmp_path / "evil.bin")
+        assert result["name"] == "evil.bin"
+        assert os.path.exists(tmp_path / "evil.bin")
 
 
 # ---------------------------------------------------------------------------- #

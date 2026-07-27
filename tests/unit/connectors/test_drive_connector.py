@@ -366,10 +366,20 @@ class TestPdfViewEmbed:
 
 
 class TestDownloadFile:
+    """drive_download_file used to call DriveClient.download_file (which
+    streams the full file straight to its final destination) before ever
+    gating -- so a Deny still left the file on disk. Fixed so the gate runs
+    first, using only cheap metadata (name/size/owner/modified, all already
+    available from get_file_metadata) for the preview, mirroring
+    gmail.py's _download_attachment. These tests pin the corrected ordering.
+    """
+
     async def test_download_file_preview_and_args(self, gated_call_spy):
         connector, client = make_connector()
         client.download_file.return_value = {"name": "Q3 Report.pdf", "path": "/tmp/Q3 Report.pdf", "size_bytes": 4096}
-        client.get_file_metadata.return_value = make_file(name="Q3 Report.pdf")
+        client.get_file_metadata.return_value = make_file(
+            name="Q3 Report.pdf", mime_type="application/pdf", size=4096,
+        )
 
         result = await connector.call("drive_download_file", {"file_id": "f1", "destination_dir": "/tmp"})
 
@@ -377,8 +387,59 @@ class TestDownloadFile:
         kwargs = gated_call_spy[0]
         assert kwargs["gate"] == "review"
         assert kwargs["preview"]["Saved to"] == "/tmp/Q3 Report.pdf"
+        assert kwargs["preview"]["Size"] == "4,096 bytes"
         assert kwargs["args"] == {"file_id": "f1", "destination_dir": "/tmp"}
         assert kwargs["pii_scan_text"] == ""  # no content involved, nothing to scan
+
+    async def test_metadata_is_fetched_and_gate_runs_before_any_bytes_are_downloaded(self, gated_call_spy):
+        """The preview must be buildable -- and the gate must run -- from
+        metadata alone, with DriveClient.download_file (the actual streaming
+        fetch/write) never invoked beforehand."""
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file(
+            name="Q3 Report.pdf", mime_type="application/pdf", size=4096,
+        )
+        client.download_file.return_value = {"name": "Q3 Report.pdf", "path": "/tmp/Q3 Report.pdf", "size_bytes": 4096}
+
+        await connector.call("drive_download_file", {"file_id": "f1", "destination_dir": "/tmp"})
+
+        client.get_file_metadata.assert_called_once_with("f1")
+        client.download_file.assert_called_once_with("f1", "/tmp")
+
+    async def test_deny_leaves_the_file_undownloaded(self, monkeypatch):
+        """A denied gated_call must propagate before DriveClient.download_file
+        (the call that actually writes bytes to disk) is ever reached."""
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file(
+            name="Q3 Report.pdf", mime_type="application/pdf", size=4096,
+        )
+
+        async def deny(**kwargs):
+            raise RuntimeError("denied")
+
+        monkeypatch.setattr(drive_module, "gated_call", deny)
+
+        with pytest.raises(RuntimeError, match="denied"):
+            await connector.call("drive_download_file", {"file_id": "f1", "destination_dir": "/tmp"})
+
+        client.download_file.assert_not_called()
+
+    async def test_google_doc_preview_reflects_export_extension(self, gated_call_spy):
+        """The preview's save path must already carry the .txt/.csv extension
+        download_file will actually save under -- computed once via
+        resolve_download_name/resolve_download_destination and reused by
+        both, so the two can never disagree (see drive_client.py)."""
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file(
+            name="Q3 Report", mime_type="application/vnd.google-apps.document", size=0,
+        )
+        client.download_file.return_value = {"name": "Q3 Report.txt", "path": "/tmp/Q3 Report.txt", "size_bytes": 512}
+
+        await connector.call("drive_download_file", {"file_id": "f1", "destination_dir": "/tmp"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview"]["File"] == "Q3 Report.txt"
+        assert kwargs["preview"]["Saved to"] == "/tmp/Q3 Report.txt"
 
 
 class TestWriteToolsGateAndPreview:
@@ -960,9 +1021,11 @@ class TestFieldCompleteness:
 class TestEveryToolIsAudited:
     async def test_every_declared_tool_leaves_an_audit_trail(self, monkeypatch, tmp_path):
         connector, client = make_connector()
-        # download_file's size is read via result.get("size_bytes", 0) and then
-        # formatted with ":," -- a bare MagicMock has no meaningful __format__
-        # for that spec, so it needs a real dict back.
+        # drive_download_file's preview reads size straight off get_file_metadata's
+        # result (no bytes fetched pre-gate) and formats it with ":," -- a bare
+        # MagicMock has no meaningful __format__ for that spec, so it needs a
+        # real DriveFile back.
+        client.get_file_metadata.return_value = make_file()
         client.download_file.return_value = {"name": "f.txt", "path": "/tmp/f.txt", "size_bytes": 100}
 
         await assert_all_tools_leave_an_audit_trail(
