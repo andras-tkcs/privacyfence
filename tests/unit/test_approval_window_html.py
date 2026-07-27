@@ -10,12 +10,14 @@ module's TestDetailsPane for the precedent this file follows).
 from __future__ import annotations
 
 from privacyfence.approval_window_html import (
+    DEFAULT_LINE_CLAMP,
     NARROW,
     WIDE,
     _risk_section_html,
     build_card_stack_html,
     build_preview_body_html,
     disclosure_rows_from_visibility,
+    line_clamp_for,
 )
 
 
@@ -39,6 +41,34 @@ def _minimal_kwargs(**overrides):
     )
     kwargs.update(overrides)
     return kwargs
+
+
+class TestLineClamp:
+    """A value too long for its row is truncated with a CSS ellipsis
+    (styles.css's .pf-kv default -webkit-line-clamp:2), never grows the row
+    or the window -- some fields get more than the 2-line default (see
+    line_clamp_for's own docstring)."""
+
+    def test_default_clamp_for_an_unlisted_label(self):
+        assert line_clamp_for("Title") == DEFAULT_LINE_CLAMP == 2
+
+    def test_attendees_gets_a_taller_clamp(self):
+        assert line_clamp_for("Attendees") == 3
+
+    def test_description_gets_the_tallest_clamp(self):
+        assert line_clamp_for("Description") == 4
+
+    def test_default_clamp_label_has_no_inline_style_override(self):
+        html = build_card_stack_html(**_minimal_kwargs(preview={"Title": "x"}))
+        assert 'style="-webkit-line-clamp' not in html
+
+    def test_attendees_row_carries_its_own_inline_clamp_override(self):
+        html = build_card_stack_html(**_minimal_kwargs(disclosure_rows=[("Attendees", "Alice, Bob")]))
+        assert '<span style="-webkit-line-clamp:3">Alice, Bob</span>' in html
+
+    def test_description_row_carries_its_own_inline_clamp_override(self):
+        html = build_card_stack_html(**_minimal_kwargs(disclosure_rows=[("Description", "A long paragraph.")]))
+        assert '<span style="-webkit-line-clamp:4">A long paragraph.</span>' in html
 
 
 class TestDisclosureRowsFromVisibility:

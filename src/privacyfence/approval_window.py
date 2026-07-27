@@ -196,20 +196,24 @@ _V2_LAYOUTS = (approval_window_html.NARROW, approval_window_html.WIDE)
 _V2_WINDOW_WIDTH = {approval_window_html.NARROW: 610.0, approval_window_html.WIDE: 880.0}
 
 # Pixel constants behind _estimate_left_column_height() -- deliberately
-# "assume every row is at its 2-line-clamped maximum" rather than measured,
-# so a short value never causes clipping; the cost is a little unused
-# whitespace when a row's real content is shorter than its allowance, never
-# the other direction. Re-derived empirically against real qa_popup_smoke.py
-# --layout v2 screenshots, not computed from the CSS alone -- adjust here if
-# a future style change to styles.css's card/row rules drifts from these.
+# "assume every row is at its own label's line-clamp maximum"
+# (approval_window_html.line_clamp_for -- the single source of truth for
+# which labels get more than the 2-line default, so the template and this
+# estimate can never disagree) rather than measured, so a short value never
+# causes clipping; the cost is a little unused whitespace when a row's real
+# content is shorter than its allowance, never the other direction.
+# Re-derived empirically against real qa_popup_smoke.py --layout v2
+# screenshots, not computed from the CSS alone -- adjust here if a future
+# style change to styles.css's card/row rules drifts from these.
 _V2_HEADER_HEIGHT = 90.0
 _V2_SEEN_COUNT_HEIGHT = 22.0
 _V2_CARD_CHROME = 62.0  # card padding (2x15) + margin-bottom (18) + kicker line (~14)
-_V2_ROW_HEIGHT = 40.0  # one .pf-kv row at its 2-line-clamp maximum, incl. its share of the card's own gap
+_V2_ROW_BASE_HEIGHT = 12.0  # a .pf-kv row's share of the card's own gap, on top of its clamped lines
+_V2_ROW_LINE_HEIGHT = 18.0  # one line of a .pf-kv value at 14px/~1.3 line-height
 _V2_QUOTE_CARD_HEIGHT = 96.0  # §2's whole card: chrome + 3-line-clamped quote + the "unverified" meta line
 _V2_RISK_CARD_BASE_HEIGHT = 96.0  # §4 card: chrome + the "⚠ ..." line + one row of category tags
 _V2_MIN_CONTENT_HEIGHT = 260.0
-_V2_MAX_CONTENT_HEIGHT = 760.0
+_V2_MAX_WINDOW_HEIGHT_FRACTION = 0.8  # of the screen's height -- see _window_height_v2
 
 _popup_lock = threading.Lock()  # only one native window on screen at a time
 
@@ -1220,6 +1224,17 @@ class ApprovalWindowController(NSObject):
             return list(self.new_info.items())
         return approval_window_html.disclosure_rows_from_visibility(self.visibility)
 
+    @staticmethod
+    def _rows_height(labels) -> float:
+        """Sum of each row's own worst-case height -- per-label line-clamp
+        via approval_window_html.line_clamp_for (Attendees/Description get
+        more room than a typical short field; see that function's own
+        comment), never a single uniform per-row constant."""
+        return sum(
+            _V2_ROW_BASE_HEIGHT + approval_window_html.line_clamp_for(str(label)) * _V2_ROW_LINE_HEIGHT
+            for label in labels
+        )
+
     def _estimate_left_column_height(self) -> float:
         """Deterministic from field/section *counts* alone -- never from how
         long any actual value is (every row is CSS-fixed-and-truncated, see
@@ -1229,22 +1244,22 @@ class ApprovalWindowController(NSObject):
         if self.seen_count > 0:
             height += _V2_SEEN_COUNT_HEIGHT
         if self.preview:
-            height += _V2_CARD_CHROME + len(self.preview) * _V2_ROW_HEIGHT
+            height += _V2_CARD_CHROME + self._rows_height(self.preview.keys())
         if self.claude_reason:
             height += _V2_QUOTE_CARD_HEIGHT
         disclosure_rows = self._v2_disclosure_rows()
         if disclosure_rows:
-            height += _V2_CARD_CHROME + len(disclosure_rows) * _V2_ROW_HEIGHT
+            height += _V2_CARD_CHROME + self._rows_height(label for label, _ in disclosure_rows)
         if self.pii_categories or self.write_content_flags:
             height += _V2_RISK_CARD_BASE_HEIGHT
-        return max(_V2_MIN_CONTENT_HEIGHT, min(height, _V2_MAX_CONTENT_HEIGHT))
+        return max(_V2_MIN_CONTENT_HEIGHT, height)
 
     def _window_height_v2(self) -> float:
         content_height = self._estimate_left_column_height()
         window_height = content_height + _BUTTON_ROW_HEIGHT
         screen = NSScreen.mainScreen()
         if screen is not None:
-            window_height = min(window_height, screen.frame().size.height - 80.0)
+            window_height = min(window_height, screen.frame().size.height * _V2_MAX_WINDOW_HEIGHT_FRACTION)
         return window_height
 
     def _build_content_view_v2(self, window_width: float, window_height: float):

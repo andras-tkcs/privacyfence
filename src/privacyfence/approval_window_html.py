@@ -105,6 +105,24 @@ def disclosure_rows_from_visibility(visibility: dict[str, str]) -> list[tuple[st
     return rows
 
 
+# Per-field max line-clamp before a value truncates with an ellipsis
+# (styles.css's .pf-kv default is 2 lines) instead of growing the row or the
+# window -- keyed by exact label text, since some fields are known to
+# reliably carry longer content than a typical short structured field.
+# Provisional: extend here as more tools are built out; approval_window.py's
+# own height estimate calls this too, so the two never disagree about how
+# tall a given row's worst case is.
+DEFAULT_LINE_CLAMP = 2
+LINE_CLAMP_BY_LABEL = {
+    "Attendees": 3,
+    "Description": 4,
+}
+
+
+def line_clamp_for(label: str) -> int:
+    return LINE_CLAMP_BY_LABEL.get(label, DEFAULT_LINE_CLAMP)
+
+
 def build_preview_body_html(
     details_text: str, *, content_kind: str = "generic",
     preview: dict[str, str] | None = None,
@@ -168,11 +186,17 @@ def _email_header_fragment(preview: dict[str, str]) -> str:
 
 
 def _kv_rows_html(pairs: list[tuple[str, str]]) -> str:
-    return "".join(
-        f'<div class="pf-kv"><span>{_html_escape(str(k))}</span>'
-        f'<span>{_html_escape(str(v))}</span></div>'
-        for k, v in pairs
-    )
+    rows = []
+    for k, v in pairs:
+        clamp = line_clamp_for(str(k))
+        # Inline override only when it actually differs from the CSS
+        # default -- keeps the common case's markup uncluttered.
+        style_attr = f' style="-webkit-line-clamp:{clamp}"' if clamp != DEFAULT_LINE_CLAMP else ""
+        rows.append(
+            f'<div class="pf-kv"><span>{_html_escape(str(k))}</span>'
+            f'<span{style_attr}>{_html_escape(str(v))}</span></div>'
+        )
+    return "".join(rows)
 
 
 def _card(kicker: str, inner_html: str, *, style: str = "") -> str:
