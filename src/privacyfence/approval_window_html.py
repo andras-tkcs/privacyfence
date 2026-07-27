@@ -1,0 +1,395 @@
+"""Card-stack HTML template for the redesigned approval window.
+
+Renders the *entire* content area of a review-gate or popup-gate dialog as one
+self-contained HTML document for a single full-window WKWebView, replacing the
+hand-laid-out NSTextField/NSBox stack ``approval_window.py`` builds for
+``layout="legacy"``. Buttons stay native (see approval_window.py's module
+docstring for why) -- nothing here renders Deny/Allow once/Always allow.
+
+Source of truth for the visual design: the "Approval windows design system"
+claude.ai/design project (``12d94c54-621e-48ce-b836-a687e0a10ed7``, turns 5
+and 6), built on the "Broadsheet" design-system project
+(``96120b24-3fd3-4cc7-b48c-109e89968d8e``) for tokens/components -- vendored
+into ``resources/approval_window/`` (styles.css, with Source Serif 4 embedded
+as base64 data URIs; see that directory's fonts/OFL.txt for licensing). Two
+deliberate departures from the design canvas, per the redesign's own
+implementation notes: ``.pf-bar`` (the mock's own 3-dot chrome row) is
+dropped in favor of the real window's native title bar, and Google Fonts'
+``@import`` is replaced with the vendored local ``@font-face`` -- this
+document must never trigger a network fetch just to render a popup.
+
+Every section is numbered dynamically (a running counter, not literal
+"01"/"02"/"03"/"04" strings) because which sections actually render varies by
+tool and by direction: §3 ("What will be provided to Claude") only ever
+renders for a review-gate call carrying a ``visibility`` dict today (see
+``disclosure_rows`` below), so the §4-equivalent risk card that follows it
+lands on "03" instead of "04" whenever §3 is absent -- confirmed against the
+design canvas itself, which numbers write-gate PII cards "03" (no §3 exists
+on the write side at all) but read-gate ones "04" wherever a §3 card also
+rendered on that same tool.
+
+Known scope boundary, not yet closed: §3 only ever renders here when
+``disclosure_rows`` is non-empty, i.e. only for the ~7 read tools that already
+pass a ``visibility`` dict today. The design canvas actually mocks a §3 card
+on every one of the 17 read tools, including ones with no ``visibility`` dict
+today (e.g. gmail_download_attachment's "Content returned to Claude: None --
+file bytes are never sent") -- giving those tools a real §3 card needs new
+per-connector data these call sites don't emit today, which is a
+connector-touching change out of scope for this template-only pass. Tracked
+as a follow-up, not silently faked here.
+
+drive_upload_file's PII card is a second known placeholder: gate.py routes
+its own PII match through the same forced second-confirmation flow the
+read-gate case gets, but no distinct design exists for it yet (a design-canvas
+edit is planned). ``upload_forced=True`` reuses the read-gate's own
+(unchanged, accent-2) card styling as an interim stand-in -- not a final
+answer, see that parameter's docstring.
+"""
+from __future__ import annotations
+
+from html import escape as _html_escape
+from pathlib import Path
+
+_STYLES_PATH = Path(__file__).parent / "resources" / "approval_window" / "styles.css"
+_STYLES_CSS = _STYLES_PATH.read_text(encoding="utf-8")
+
+# Compact (single-column, short/metadata-only tools) vs wide (two-column,
+# long-body tools) -- the design canvas's own split, not a length heuristic:
+# set explicitly per call site (see approval_window.py's `layout` param).
+COMPACT = "compact"
+WIDE = "wide"
+
+_CONTENT_WIDTH = {COMPACT: 610, WIDE: 880}
+
+# §3's generic allow/redact/block -> disclosure-sentence mapping. A
+# deliberate, generic rule rather than hand-authored per-tool prose (compare
+# the design canvas's bespoke wording, e.g. "Full values for range") -- see
+# this module's docstring for why the exact wording isn't tool-specific yet.
+_DISCLOSURE_ALLOW = "Full {label_lower}"
+_DISCLOSURE_REDACT = "{label}, with some fields redacted"
+_DISCLOSURE_BLOCK = "None — not disclosed to Claude"
+
+
+def disclosure_rows_from_visibility(visibility: dict[str, str]) -> list[tuple[str, str]]:
+    """Translate the existing ``{label: allow/redact/block}`` policy dict
+    (privacy_filter.category_policy()'s ground truth, unchanged) into §3's
+    plain "what's disclosed" sentence per field -- the structural change
+    turn 5 makes (dropping the old checklist's per-row ✓/✗/◐ icons for
+    prose), even though the exact wording here is generic rather than
+    hand-tuned per tool (see module docstring). Pure function, order-
+    preserving, same testability contract as _details_html()."""
+    rows = []
+    for label, policy in visibility.items():
+        if policy == "allow":
+            sentence = _DISCLOSURE_ALLOW.format(label_lower=label[:1].lower() + label[1:])
+        elif policy == "redact":
+            sentence = _DISCLOSURE_REDACT.format(label=label)
+        else:
+            sentence = _DISCLOSURE_BLOCK
+        rows.append((label, sentence))
+    return rows
+
+
+def build_preview_body_html(
+    details_text: str, *, content_kind: str = "generic",
+    preview: dict[str, str] | None = None,
+    image_data_uri: str = "",
+    pdf_data_uri: str = "",
+) -> str:
+    """The inner-HTML fragment for the preview pane (right-hand column in
+    ``WIDE`` layout, inline card in ``COMPACT``) -- the ``build_card_stack_
+    html()``-embeddable counterpart to approval_window.py's ``_details_html()``,
+    which builds a *full standalone document* for its own separate small
+    WKWebView instead. Same escaping/whitespace discipline: ``details_text``
+    is already HTML-stripped plain text (see html_to_text.py) and is never
+    treated as markup, only escaped and given ``white-space: pre-wrap``.
+
+    ``pdf_data_uri`` takes priority over ``image_data_uri``, which takes
+    priority over ``content_kind``/``details_text`` -- the same precedence
+    ``_build_details_view()`` already holds for the legacy layout's
+    pdf_bytes-before-preview_bytes-before-text dispatch, just rendered
+    inline via a standard ``<embed>``/``<img>`` data URI here instead of a
+    separate native ``PDFView``/``NSImageView`` overlay: v2's whole content
+    area is already one WKWebView, so there's no separate small pane for a
+    native view to stand in for -- WebKit's own built-in PDF renderer and
+    image decoding handle both directly, no extra native code needed.
+    """
+    if pdf_data_uri:
+        return (
+            f'<embed src="{pdf_data_uri}" type="application/pdf" '
+            'style="width:100%;height:100%;min-height:400px;border:none">'
+        )
+    if image_data_uri:
+        return f'<img src="{image_data_uri}" style="max-width:100%;display:block">'
+    if content_kind == "email":
+        return _email_header_fragment(preview or {}) + _escaped_text_fragment(details_text)
+    return _escaped_text_fragment(details_text)
+
+
+def _escaped_text_fragment(text: str) -> str:
+    escaped = _html_escape(text or "(no details)")
+    return f'<div style="white-space:pre-wrap;word-wrap:break-word;font-size:13px;line-height:1.6">{escaped}</div>'
+
+
+def _email_header_fragment(preview: dict[str, str]) -> str:
+    """Structured From/To/Subject/Date header for content_kind="email" --
+    same field contract as approval_window.py's ``_email_header_html()``
+    (Gmail's preview dict shape, only ever set at gmail_get_message's call
+    site). Values are still individually escaped, never assumed to be valid
+    HTML themselves."""
+    from_ = _html_escape(preview.get("From", "") or "(unknown)")
+    to = _html_escape(preview.get("To", "") or "(unknown)")
+    subject = _html_escape(preview.get("Subject", "") or "(no subject)")
+    date = _html_escape(preview.get("Date", "") or "(unknown)")
+    return (
+        '<div style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--color-divider)">'
+        f'<div style="margin-bottom:4px"><span class="text-muted">From:</span> {from_}'
+        f'&nbsp;&nbsp;<span class="text-muted">To:</span> {to}</div>'
+        f'<div><span class="text-muted">Subject:</span> {subject}'
+        f'&nbsp;&nbsp;<span class="text-muted">Date:</span> {date}</div>'
+        '</div>'
+    )
+
+
+def _kv_rows_html(pairs: list[tuple[str, str]]) -> str:
+    return "".join(
+        f'<div class="pf-kv"><span>{_html_escape(str(k))}</span>'
+        f'<span>{_html_escape(str(v))}</span></div>'
+        for k, v in pairs
+    )
+
+
+def _card(kicker: str, inner_html: str, *, style: str = "") -> str:
+    style_attr = f' style="{style}"' if style else ""
+    return f'<div class="card"{style_attr}><div class="card-kicker">{_html_escape(kicker)}</div>{inner_html}</div>'
+
+
+def _section_1_html(number: int, is_read: bool, preview: dict[str, str]) -> str:
+    if not preview:
+        return ""
+    kicker = f"{number:02d} · " + ("What Claude already knows" if is_read else "Action to perform")
+    return _card(kicker, _kv_rows_html(list(preview.items())))
+
+
+def _section_2_html(number: int, is_read: bool, claude_reason: str) -> str:
+    if not claude_reason:
+        return ""
+    kicker = f"{number:02d} · " + ("Why Claude needs more data" if is_read else "Details — data to write")
+    body = (
+        f'<p class="pf-quote">“{_html_escape(claude_reason)}”</p>'
+        f'<div class="card-meta">Claude’s stated reason · unverified</div>'
+    )
+    return _card(kicker, body)
+
+
+def _section_3_html(number: int, disclosure_rows: list[tuple[str, str]]) -> str:
+    # Read-gate only, and only when disclosure_rows is non-empty -- see this
+    # module's docstring for the known scope boundary (RG-1 tools get no §3
+    # card today, not just a hidden/empty one).
+    if not disclosure_rows:
+        return ""
+    kicker = f"{number:02d} · What will be provided to Claude"
+    return _card(kicker, _kv_rows_html(disclosure_rows))
+
+
+def _tag_html(label: str, *, bg: str, color: str) -> str:
+    return f'<span class="tag" style="background:{bg};color:{color}">{_html_escape(label)}</span>'
+
+
+def _risk_section_html(
+    number: int, categories: list[str], *, variant: str,
+) -> str:
+    """§4 (or §3, if §3 above didn't render): the PII/content-flag card.
+    ``variant`` is one of:
+      - "read": review-gate PII match. Unchanged from earlier design turns
+        (accent-2 tokens) -- see module docstring, this card's job is to
+        look distinct from "write" below, which it already does.
+      - "write": popup-gate content-flag match, informational only. Uses
+        the new pii-write-bg amber/ochre tokens.
+      - "write-forced": drive_upload_file's own PII match, which forces the
+        same second-confirmation flow "read" does despite being a write --
+        no distinct design exists yet (a design-canvas edit is planned), so
+        this reuses "read"'s styling as an interim placeholder. See module
+        docstring.
+    """
+    if not categories:
+        return ""
+    kicker = f"{number:02d} · Possible PII detected"
+    if variant == "write":
+        card_style = "background:var(--pii-w-bg);border:1px solid var(--pii-w-border)"
+        ink = "var(--pii-w-ink)"
+        tag_bg, tag_color = "var(--pii-w-tagbg)", "var(--pii-w-ink)"
+        message = "This message appears to contain"
+    else:  # "read" and the "write-forced" placeholder
+        card_style = "background:var(--color-accent-2-100);border:1px solid var(--color-accent-2-300)"
+        ink = "var(--color-accent-2-800)"
+        tag_bg, tag_color = "var(--color-accent-2-200)", "var(--color-accent-2-800)"
+        message = "Review carefully before approving"
+    tags = "".join(_tag_html(c, bg=tag_bg, color=tag_color) for c in categories)
+    body = (
+        f'<div style="display:flex;align-items:center;gap:8px;color:{ink};'
+        f'font-weight:600;font-size:14px;margin-bottom:8px">⚠️ {_html_escape(message)}</div>'
+        f'{tags}'
+    )
+    kicker_html = f'<div class="card-kicker" style="color:{ink}">{_html_escape(kicker)}</div>'
+    return f'<div class="card" style="{card_style}">{kicker_html}{body}</div>'
+
+
+def build_card_stack_html(
+    *,
+    layout: str,
+    title: str,
+    connector_icon_data_uri: str,
+    shield_icon_data_uri: str,
+    is_read: bool,
+    seen_count_text: str,
+    preview: dict[str, str],
+    claude_reason: str,
+    disclosure_rows: list[tuple[str, str]],
+    pii_categories: list[str],
+    write_content_flags: list[str],
+    upload_forced: bool,
+    temp_accept_text: str,
+    preview_kicker: str,
+    preview_body_html: str,
+) -> str:
+    """Build the full HTML document for one approval window's content area.
+
+    Pure function -- no AppKit, no filesystem access beyond the module-level
+    styles.css already read at import time -- directly unit-testable, same
+    contract ``_details_html()`` already holds in approval_window.py.
+
+    ``layout`` is ``COMPACT`` (single column, the preview renders inline as
+    its own card) or ``WIDE`` (two columns, the preview gets its own
+    independently-scrolling right-hand pane). Callers decide which per tool,
+    mirroring the design canvas's own grouping; see approval_window.py's
+    ``layout`` parameter. Neither shape renders a "Show more"/"Show less"
+    control here -- that toggle (compact layout only) is a native NSButton
+    overlaid on the webview by approval_window.py, and only ever changes the
+    *webview's frame height*, never this document's content (all of it is
+    always present -- "Show more" reveals more of it without scrolling, same
+    progressive-disclosure contract the legacy layout already holds).
+
+    Exactly one of ``pii_categories``/``write_content_flags`` is ever
+    non-empty for a given call (gate.py never populates both at once), and
+    ``upload_forced`` only ever accompanies a non-empty ``write_content_flags``
+    -- see _risk_section_html()'s docstring for what each combination
+    renders.
+    """
+    width = _CONTENT_WIDTH[layout]
+    # A plain running counter, advanced only when a section actually
+    # renders -- not itertools.count()'d speculatively, since §1/§2 are
+    # effectively always present in production but §3/§4 aren't, and this
+    # must reflect exactly what's on screen (see module docstring on why
+    # §4's number is dynamic).
+    next_number = 1
+    sections_html = []
+
+    sec1 = _section_1_html(next_number, is_read, preview)
+    if sec1:
+        sections_html.append(sec1)
+        next_number += 1
+
+    sec2 = _section_2_html(next_number, is_read, claude_reason)
+    if sec2:
+        sections_html.append(sec2)
+        next_number += 1
+
+    if is_read:
+        # Write-gate calls never get §3 at all -- the counter simply never
+        # advances for one, so the risk card below lands on "03" instead of
+        # "04", matching the design canvas's own write-gate numbering.
+        sec3 = _section_3_html(next_number, disclosure_rows)
+        if sec3:
+            sections_html.append(sec3)
+            next_number += 1
+
+    if pii_categories:
+        risk_html = _risk_section_html(next_number, pii_categories, variant="read")
+    elif write_content_flags:
+        variant = "write-forced" if upload_forced else "write"
+        risk_html = _risk_section_html(next_number, write_content_flags, variant=variant)
+    else:
+        risk_html = ""
+    if risk_html:
+        sections_html.append(risk_html)
+
+    header_html = _header_html(title, connector_icon_data_uri, shield_icon_data_uri, seen_count_text)
+    left_column = header_html + "".join(sections_html)
+
+    if layout == WIDE:
+        # Fixed 350px left column width, matching the design canvas exactly
+        # (its two-column cards use flex:0 0 350px regardless of the overall
+        # 880px window width) -- not derived from `width`.
+        body_html = (
+            '<div style="display:flex;gap:28px;align-items:flex-start">'
+            f'<div style="flex:0 0 350px;min-width:0">{left_column}</div>'
+            '<div style="flex:1;min-width:0;border-left:1px solid var(--color-divider);'
+            'padding-left:24px;max-height:520px;overflow-y:auto">'
+            f'<div class="card-kicker" style="margin-bottom:8px">{_html_escape(preview_kicker)}</div>'
+            f'{preview_body_html}'
+            '</div></div>'
+        )
+    else:
+        # No "Show more"/"Show less" markup here at all: that toggle is a
+        # native NSButton overlaid on the webview (approval_window.py), and
+        # -- exactly like the legacy layout's own progressive disclosure --
+        # it only ever changes the *webview's frame height*, never this
+        # document's content (all of it is always present; "Show more"
+        # reveals more of it without scrolling, it doesn't fetch more). See
+        # this function's docstring.
+        body_html = (
+            left_column
+            + '<div style="margin-top:14px">'
+            + f'<div class="card-kicker" style="margin-bottom:8px">{_html_escape(preview_kicker)}</div>'
+            + f'<div class="card" style="background:var(--color-neutral-100);min-height:70px">{preview_body_html}</div>'
+            + '</div>'
+        )
+
+    if temp_accept_text:
+        body_html += (
+            f'<div style="margin-top:16px;font-size:11px;'
+            f'color:color-mix(in srgb, var(--color-text) 55%, transparent)">'
+            f'{_html_escape(temp_accept_text)}</div>'
+        )
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light">
+<style>
+{_STYLES_CSS}
+html, body {{ overflow-y: auto; }}
+body {{ padding: 26px 30px 24px; width: {width}px; }}
+</style>
+</head>
+<body>{body_html}</body>
+</html>
+"""
+
+
+def _header_html(title: str, connector_icon_data_uri: str, shield_icon_data_uri: str, seen_count_text: str) -> str:
+    connector_img = (
+        f'<img src="{connector_icon_data_uri}" style="width:20px;height:20px;object-fit:contain">'
+        if connector_icon_data_uri else ""
+    )
+    shield_img = (
+        f'<img src="{shield_icon_data_uri}" style="width:51px;height:51px;object-fit:contain;opacity:.9">'
+        if shield_icon_data_uri else ""
+    )
+    seen_html = (
+        f'<div style="font-size:12px;color:var(--color-neutral-700);margin-bottom:6px">'
+        f'{_html_escape(seen_count_text)}</div>'
+        if seen_count_text else ""
+    )
+    return (
+        '<div class="pf-head">'
+        '<div style="min-width:0">'
+        f'<div class="pf-kicker">{connector_img}<span>PrivacyFence</span></div>'
+        f'{seen_html}'
+        f'<h2>{_html_escape(title)}</h2>'
+        '</div>'
+        f'{shield_img}'
+        '</div>'
+    )

@@ -43,6 +43,7 @@ changes beyond where it imports from.
 """
 from __future__ import annotations
 
+import base64
 import threading
 from html import escape as _html_escape
 from pathlib import Path
@@ -83,6 +84,8 @@ from AppKit import (
 from Foundation import NSAttributedString, NSData, NSObject, NSString
 from Quartz import PDFDocument, PDFView
 from WebKit import WKWebView, WKWebViewConfiguration
+
+from . import approval_window_html
 
 _WINDOW_WIDTH = 620.0
 _MARGIN = 28.0
@@ -169,6 +172,30 @@ _BADGE_PAD_X = 8.0
 _BADGE_ROW_HEIGHT = 20.0
 _BADGE_GAP = 6.0
 _BADGE_ROW_GAP = 6.0
+
+# ---------------------------------------------------------------------------- #
+# layout="compact"/"wide" -- the redesigned card-stack rendering
+# (approval_window_html.build_card_stack_html), opt-in per call site,
+# default "legacy" leaves every existing caller's rendering byte-for-byte
+# unchanged. See approval_window_html.py's module docstring for the visual
+# design source and known scope boundaries.
+#
+# Unlike the legacy layout's per-section NSString.boundingRectWithSize_
+# measurement (_compute_layout, _text_height), v2 uses a *fixed* content
+# height with CSS `overflow-y: auto` handling any overflow -- the same
+# "fixed frame, scrolls internally" contract the legacy layout's own details
+# pane already holds (_DETAILS_HEIGHT/_DETAILS_HEIGHT_EXPANDED), just
+# applied to the whole content area instead of one sub-pane. This sidesteps
+# needing an async WKNavigationDelegate round-trip (load, measure
+# document.body.scrollHeight, resize, then show) purely to size the window
+# up front -- a real simplification, not a hidden bug: content that doesn't
+# fit scrolls, it's never actually hidden from the reviewer.
+# ---------------------------------------------------------------------------- #
+_V2_LAYOUTS = (approval_window_html.COMPACT, approval_window_html.WIDE)
+_V2_WINDOW_WIDTH = {approval_window_html.COMPACT: 610.0, approval_window_html.WIDE: 880.0}
+_V2_CONTENT_HEIGHT = 560.0
+_V2_CONTENT_HEIGHT_EXPANDED = 680.0  # "Show more", compact layout only -- see toggleDetailsExpanded_
+_V2_TOGGLE_ROW_HEIGHT = 26.0  # native "Show more"/"Show less" band, between the webview and the buttons
 
 _popup_lock = threading.Lock()  # only one native window on screen at a time
 
@@ -298,6 +325,26 @@ def _connector_icon_path(connector: str) -> str | None:
     return str(p) if p.exists() else None
 
 
+_icon_data_uri_cache: dict[str, str] = {}
+
+
+def _icon_data_uri(path: str | None) -> str:
+    """Base64 data: URI for a vendored PNG icon, or "" if missing -- v2's
+    equivalent of _icon_path()/_connector_icon_path() feeding an NSImageView
+    directly. Data URIs (not a file:// reference) keep the v2 document
+    loadable via loadHTMLString_baseURL_(html, None), same as the legacy
+    layout's own WKWebView -- nothing here needs a base URL to resolve
+    anything against. Cached (these are a fixed, small set of bundled
+    resources, not user data) so repeated popups don't re-read/re-encode
+    the same file."""
+    if not path:
+        return ""
+    if path not in _icon_data_uri_cache:
+        data = base64.b64encode(Path(path).read_bytes()).decode("ascii")
+        _icon_data_uri_cache[path] = f"data:image/png;base64,{data}"
+    return _icon_data_uri_cache[path]
+
+
 def _text_height(text: str, width: float, font) -> float:
     ns = NSString.stringWithString_(text)
     rect = ns.boundingRectWithSize_options_attributes_(
@@ -418,6 +465,9 @@ class ApprovalWindowController(NSObject):
         self.connector: str = ""
         self.preview_bytes: bytes = b""
         self.preview_mime_type: str = ""
+        self.layout: str = "legacy"
+        self.is_read: bool = True
+        self.upload_forced: bool = False
         self.result = "deny"
         self.panel = None
         self._details_view = None
@@ -858,6 +908,9 @@ class ApprovalWindowController(NSObject):
         nothing but this, then the actual show/activate/modal-block/hide
         sequence.
         """
+        if self.layout in _V2_LAYOUTS:
+            return self._build_panel_v2()
+
         content_width = _WINDOW_WIDTH - 2 * _MARGIN
         window_height = self._window_height(content_width)
 
@@ -1106,6 +1159,151 @@ class ApprovalWindowController(NSObject):
 
         return content
 
+    # ------------------------------------------------------------------ #
+    # v2 (layout="compact"/"wide"): the redesigned card-stack rendering.
+    # One WKWebView (approval_window_html.build_card_stack_html) fills the
+    # whole content area; native buttons -- and, for "compact", a native
+    # "Show more"/"Show less" toggle -- sit in a fixed band below it. See
+    # this class's _build_content_view() above for the legacy equivalent,
+    # and the _V2_* constants' comment for why v2 uses a fixed content
+    # height instead of _compute_layout()'s per-section measurement.
+    # ------------------------------------------------------------------ #
+
+    def _build_panel_v2(self):
+        window_width = _V2_WINDOW_WIDTH[self.layout]
+        window_height = self._window_height_v2()
+
+        panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(0, 0, window_width, window_height),
+            NSWindowStyleMaskTitled | NSWindowStyleMaskClosable,
+            NSBackingStoreBuffered,
+            False,
+        )
+        panel.setTitle_("")
+        panel.setReleasedWhenClosed_(False)
+        panel.setHidesOnDeactivate_(False)
+        panel.center()
+        self.panel = panel
+
+        content = self._build_content_view_v2(window_width, window_height)
+        panel.setContentView_(content)
+        if self._details_view is not None:
+            panel.setInitialFirstResponder_(self._details_view)
+        return panel
+
+    def _window_height_v2(self) -> float:
+        content_height = _V2_CONTENT_HEIGHT_EXPANDED if self._details_expanded else _V2_CONTENT_HEIGHT
+        window_height = content_height + _BUTTON_ROW_HEIGHT
+        if self.layout == approval_window_html.COMPACT:
+            window_height += _V2_TOGGLE_ROW_HEIGHT
+        screen = NSScreen.mainScreen()
+        if screen is not None:
+            window_height = min(window_height, screen.frame().size.height - 80.0)
+        return window_height
+
+    def _build_content_view_v2(self, window_width: float, window_height: float):
+        content = _FlippedView.alloc().initWithFrame_(NSMakeRect(0, 0, window_width, window_height))
+
+        show_toggle = self.layout == approval_window_html.COMPACT
+        webview_height = window_height - _BUTTON_ROW_HEIGHT
+        if show_toggle:
+            webview_height -= _V2_TOGGLE_ROW_HEIGHT
+
+        # pdf_bytes/preview_bytes render inline via a standard <embed>/<img>
+        # data URI now -- no native PDFView/NSImageView overlay needed, v2's
+        # whole content area is already one WKWebView. Same precedence as
+        # the legacy layout's _build_details_view(): pdf_bytes, then an
+        # image preview_bytes, then plain text/email.
+        pdf_data_uri = ""
+        if self.pdf_bytes:
+            pdf_data_uri = f"data:application/pdf;base64,{base64.b64encode(self.pdf_bytes).decode('ascii')}"
+        image_data_uri = ""
+        if not pdf_data_uri and self.preview_bytes and self.preview_mime_type.startswith("image/"):
+            image_data_uri = (
+                f"data:{self.preview_mime_type};base64,"
+                f"{base64.b64encode(self.preview_bytes).decode('ascii')}"
+            )
+
+        preview_body_html = approval_window_html.build_preview_body_html(
+            self.details_text, content_kind=self.content_kind, preview=self.preview,
+            image_data_uri=image_data_uri, pdf_data_uri=pdf_data_uri,
+        )
+        disclosure_rows = (
+            approval_window_html.disclosure_rows_from_visibility(self.visibility) if self.is_read else []
+        )
+
+        html = approval_window_html.build_card_stack_html(
+            layout=self.layout,
+            title=self.title,
+            connector_icon_data_uri=_icon_data_uri(_connector_icon_path(self.connector)),
+            shield_icon_data_uri=_icon_data_uri(_icon_path()),
+            is_read=self.is_read,
+            seen_count_text=self._seen_count_text() if self.seen_count > 0 else "",
+            preview=self.preview,
+            claude_reason=self.claude_reason,
+            disclosure_rows=disclosure_rows,
+            pii_categories=self.pii_categories,
+            write_content_flags=self.write_content_flags,
+            upload_forced=self.upload_forced,
+            temp_accept_text=_TEMP_ACCEPT_DISCLOSURE_TEXT if self.temp_accept_eligible else "",
+            preview_kicker=f"Preview ({_reading_time_label(self.details_text)})",
+            preview_body_html=preview_body_html,
+        )
+        # Kept purely for testability, same reasoning as the legacy layout's
+        # own _details_html_string -- see test_approval_window_html.py for
+        # build_card_stack_html()'s own direct pure-function coverage; this
+        # just confirms the controller actually hands the real thing to
+        # loadHTMLString_baseURL_.
+        self._details_html_string = html
+
+        config = WKWebViewConfiguration.alloc().init()
+        # No script needed -- this document is 100% static, self-contained
+        # markup (fonts/icons/images already inlined as data URIs); nothing
+        # here has ever needed a JS bridge back to Python. Same "no code
+        # execution, no network" guarantee _build_details_web_view() holds.
+        config.preferences().setJavaScriptEnabled_(False)
+        webview = WKWebView.alloc().initWithFrame_configuration_(
+            NSMakeRect(0, 0, window_width, webview_height), config
+        )
+        webview.loadHTMLString_baseURL_(html, None)
+        self._details_view = webview
+        content.addSubview_(webview)
+
+        y = webview_height
+        if show_toggle:
+            expand_btn = self._build_expand_toggle_button()
+            expand_btn.setFrameOrigin_((
+                window_width - _MARGIN - expand_btn.frame().size.width,
+                y + (_V2_TOGGLE_ROW_HEIGHT - expand_btn.frame().size.height) / 2.0,
+            ))
+            content.addSubview_(expand_btn)
+            y += _V2_TOGGLE_ROW_HEIGHT
+
+        # Button row -- identical construction/positioning to the legacy
+        # layout's own button row (_build_content_view above), just anchored
+        # under the webview (+ toggle band) instead of under the measured
+        # section stack.
+        accept_btn = self._build_button("Allow once", primary=True)
+        button_h = accept_btn.frame().size.height
+        button_y = y + (_BUTTON_ROW_HEIGHT - button_h) / 2.0
+
+        deny_btn = self._build_button("Deny", danger=True)
+        deny_btn.setFrameOrigin_((_MARGIN, button_y))
+        content.addSubview_(deny_btn)
+
+        right_x = window_width - _MARGIN - accept_btn.frame().size.width
+        accept_btn.setFrameOrigin_((right_x, button_y))
+        content.addSubview_(accept_btn)
+
+        if self.allow_accept_all:
+            link_x = _MARGIN + deny_btn.frame().size.width + 16.0
+            accept_all_btn = self._build_link_button("Always allow")
+            link_y = y + (_BUTTON_ROW_HEIGHT - accept_all_btn.frame().size.height) / 2.0
+            accept_all_btn.setFrameOrigin_((link_x, link_y))
+            content.addSubview_(accept_all_btn)
+
+        return content
+
     def toggleDetailsExpanded_(self, _sender) -> None:
         """"Show more"/"Show less" -- progressive disclosure as an *area*
         expansion of the already-fully-visible details pane, not an
@@ -1127,23 +1325,29 @@ class ApprovalWindowController(NSObject):
         self._rebuild_content()
 
     def _rebuild_content(self) -> None:
-        content_width = _WINDOW_WIDTH - 2 * _MARGIN
-        window_height = self._window_height(content_width)
-        content = self._build_content_view(content_width, window_height)
+        if self.layout in _V2_LAYOUTS:
+            window_width = _V2_WINDOW_WIDTH[self.layout]
+            window_height = self._window_height_v2()
+            content = self._build_content_view_v2(window_width, window_height)
+        else:
+            window_width = _WINDOW_WIDTH
+            content_width = _WINDOW_WIDTH - 2 * _MARGIN
+            window_height = self._window_height(content_width)
+            content = self._build_content_view(content_width, window_height)
 
         # window_height is a *content* height (what NSPanel's own
         # initWithContentRect_... takes); the window's frame is taller by
         # its title bar. frameRectForContentRect_ is the panel's own
         # conversion, not a hardcoded constant, so this stays correct
         # regardless of title bar height across macOS versions/settings.
-        new_frame = self.panel.frameRectForContentRect_(NSMakeRect(0, 0, _WINDOW_WIDTH, window_height))
+        new_frame = self.panel.frameRectForContentRect_(NSMakeRect(0, 0, window_width, window_height))
         old_frame = self.panel.frame()
         # NSWindow's frame origin is bottom-left (screen coordinates), so
         # keeping the window's visible top edge fixed while its height
         # changes means shifting origin.y by the same delta, in the
         # opposite direction.
         delta = new_frame.size.height - old_frame.size.height
-        new_frame = NSMakeRect(old_frame.origin.x, old_frame.origin.y - delta, _WINDOW_WIDTH, new_frame.size.height)
+        new_frame = NSMakeRect(old_frame.origin.x, old_frame.origin.y - delta, window_width, new_frame.size.height)
         self.panel.setContentView_(content)
         self.panel.setFrame_display_(new_frame, True)
         if self._details_view is not None:
@@ -1208,6 +1412,9 @@ def show_native_approval(
     connector: str = "",
     preview_bytes: bytes = b"",
     preview_mime_type: str = "",
+    layout: str = "legacy",
+    is_read: bool = True,
+    upload_forced: bool = False,
 ) -> str:
     """Show the approval window and block until the user picks a button.
 
@@ -1220,6 +1427,15 @@ def show_native_approval(
     check that produced this flag -- not from a distinct user choice here.
     Thread-safe: safe to call from any thread, the window itself is always
     built and driven on the main thread.
+
+    ``layout`` selects the rendering: "legacy" (default -- every existing
+    caller, byte-for-byte unchanged) or one of approval_window_html's
+    COMPACT/WIDE card-stack shapes (see ApprovalWindowController's v2
+    methods and approval_window_html.py's module docstring). ``is_read``
+    and ``upload_forced`` only matter for a v2 ``layout`` -- see
+    ApprovalWindowController._build_content_view_v2 and
+    approval_window_html.build_card_stack_html's own docstring for what
+    each controls; they're no-ops under "legacy".
     """
     with _popup_lock:
         controller = ApprovalWindowController.alloc().init()
@@ -1238,6 +1454,9 @@ def show_native_approval(
         controller.connector = connector or ""
         controller.preview_bytes = preview_bytes or b""
         controller.preview_mime_type = preview_mime_type or ""
+        controller.layout = layout or "legacy"
+        controller.is_read = is_read
+        controller.upload_forced = upload_forced
 
         controller.performSelectorOnMainThread_withObject_waitUntilDone_(
             "runApproval:", None, True
