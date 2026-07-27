@@ -489,8 +489,13 @@ class TestDownloadAttachment:
         )
 
     async def test_preview_and_gate(self, gated_call_spy):
+        # application/octet-stream -- a type _worth_prefetching() doesn't
+        # recognize -- keeps this test's focus on the preview/gate fields
+        # themselves; see TestPiiScanWiring below for PDF/text prefetch behavior.
         connector, client = make_connector()
-        client.get_message.return_value = self._message_with_attachment()
+        client.get_message.return_value = self._message_with_attachment(
+            mime_type="application/octet-stream",
+        )
         client.download_attachment.return_value = {"path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024}
 
         result = await connector.call(
@@ -501,7 +506,7 @@ class TestDownloadAttachment:
         kwargs = gated_call_spy[0]
         assert kwargs["gate"] == "review"
         assert kwargs["preview"]["Attachment"] == "report.pdf"
-        assert kwargs["preview"]["Type"] == "application/pdf"
+        assert kwargs["preview"]["Type"] == "application/octet-stream"
         assert kwargs["preview"]["Size"] == "1,024 bytes"
         assert kwargs["preview"]["Will save to"] == "/tmp/report.pdf"
         # MIME type used to only appear in details_text (duplicating the
@@ -510,12 +515,14 @@ class TestDownloadAttachment:
         assert kwargs["filtered_data"] is None
         assert kwargs["args"] == {"message_id": "m1", "attachment_name": "report.pdf"}
         assert result == {"path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024}
-        assert kwargs["pii_scan_text"] == ""  # no message body involved, nothing to scan
+        assert kwargs["pii_scan_text"] == ""  # unrecognized type, nothing prefetched to scan
         client.download_attachment.assert_called_once_with("m1", "att-1", "report.pdf", "/tmp")
 
     async def test_destination_dir_forwarded_to_client(self, gated_call_spy):
         connector, client = make_connector()
-        client.get_message.return_value = self._message_with_attachment()
+        client.get_message.return_value = self._message_with_attachment(
+            mime_type="application/octet-stream",
+        )
         client.download_attachment.return_value = {"path": "/x/report.pdf", "name": "report.pdf", "size_bytes": 1024}
 
         await connector.call(
@@ -537,7 +544,9 @@ class TestDownloadAttachment:
 
     async def test_client_error_after_approval_becomes_runtime_error(self, gated_call_spy):
         connector, client = make_connector()
-        client.get_message.return_value = self._message_with_attachment()
+        client.get_message.return_value = self._message_with_attachment(
+            mime_type="application/octet-stream",
+        )
         client.download_attachment.side_effect = GmailClientError("disk full")
 
         with pytest.raises(RuntimeError, match="disk full"):
@@ -576,7 +585,7 @@ class TestDownloadAttachment:
         connector, client = make_connector()
         client.get_message.return_value = self._message_with_attachment(
             name="huge.png", mime_type="image/png",
-            size=gmail_module._ATTACHMENT_PREVIEW_MAX_BYTES + 1,
+            size=gmail_module._ATTACHMENT_PREFETCH_MAX_BYTES + 1,
         )
         client.download_attachment.return_value = {
             "path": "/tmp/huge.png", "name": "huge.png", "size_bytes": 1,
@@ -593,10 +602,13 @@ class TestDownloadAttachment:
         client.fetch_attachment_bytes.assert_not_called()
         client.download_attachment.assert_called_once_with("m1", "att-1", "huge.png", "/tmp")
 
-    async def test_non_image_attachment_gets_no_preview(self, gated_call_spy):
+    async def test_pdf_attachment_gets_no_preview_bytes(self, gated_call_spy):
+        # PDF is prefetch-worthy for the PII scan (TestPiiScanWiring below),
+        # but never for the image preview.
         connector, client = make_connector()
         client.get_message.return_value = self._message_with_attachment()
-        client.download_attachment.return_value = {
+        client.fetch_attachment_bytes.return_value = b"%PDF-1.4 fake"
+        client.save_attachment_bytes.return_value = {
             "path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024,
         }
 
@@ -608,6 +620,25 @@ class TestDownloadAttachment:
         kwargs = gated_call_spy[0]
         assert kwargs["preview_bytes"] == b""
         assert kwargs["preview_mime_type"] == ""
+
+    async def test_unrecognized_binary_attachment_gets_no_prefetch_at_all(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_message.return_value = self._message_with_attachment(
+            mime_type="application/octet-stream",
+        )
+        client.download_attachment.return_value = {
+            "path": "/tmp/report.bin", "name": "report.bin", "size_bytes": 1024,
+        }
+
+        await connector.call(
+            "gmail_download_attachment",
+            {"message_id": "m1", "attachment_name": "report.pdf", "destination_dir": "/tmp"},
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview_bytes"] == b""
+        assert kwargs["preview_mime_type"] == ""
+        assert kwargs["pii_scan_text"] == ""
         client.fetch_attachment_bytes.assert_not_called()
 
     async def test_preview_fetch_failure_degrades_gracefully(self, gated_call_spy):
@@ -632,6 +663,95 @@ class TestDownloadAttachment:
         # were actually obtained.
         client.download_attachment.assert_called_once_with("m1", "att-1", "photo.png", "/tmp")
         assert result == {"path": "/tmp/photo.png", "name": "photo.png", "size_bytes": 1024}
+
+
+class TestPiiScanWiring:
+    """gmail_download_attachment used to pass pii_scan_text="" unconditionally
+    -- nothing about attachment content was ever scanned. Now fetches
+    prefetch-worthy attachments (text/PDF/DOCX/PPTX, in addition to images)
+    and extracts text via text_extraction.extract_text() for the scan."""
+
+    def _message_with_attachment(self, **overrides):
+        defaults = dict(name="report.pdf", mime_type="application/pdf", size=1024, attachment_id="att-1")
+        defaults.update(overrides)
+        return GmailMessage(
+            id="m1", thread_id="t1", subject="Q3 numbers", sender="alice@example.com",
+            attachments=[Attachment(**defaults)],
+        )
+
+    async def test_text_attachment_populates_pii_scan_text(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_message.return_value = self._message_with_attachment(
+            name="notes.txt", mime_type="text/plain",
+        )
+        client.fetch_attachment_bytes.return_value = b"Please wire the deposit to DE89370400440532013000."
+        client.save_attachment_bytes.return_value = {
+            "path": "/tmp/notes.txt", "name": "notes.txt", "size_bytes": 1024,
+        }
+
+        await connector.call(
+            "gmail_download_attachment",
+            {"message_id": "m1", "attachment_name": "notes.txt", "destination_dir": "/tmp"},
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["pii_scan_text"] == "Please wire the deposit to DE89370400440532013000."
+
+    async def test_reuses_fetched_bytes_for_the_save_even_without_a_preview(self, gated_call_spy):
+        # A PDF isn't an image -- no preview -- but the bytes fetched for the
+        # PII scan must still be reused for the actual save, not re-fetched.
+        connector, client = make_connector()
+        client.get_message.return_value = self._message_with_attachment()
+        client.fetch_attachment_bytes.return_value = b"%PDF-1.4 fake"
+        client.save_attachment_bytes.return_value = {
+            "path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024,
+        }
+
+        result = await connector.call(
+            "gmail_download_attachment",
+            {"message_id": "m1", "attachment_name": "report.pdf", "destination_dir": "/tmp"},
+        )
+
+        client.fetch_attachment_bytes.assert_called_once_with("m1", "att-1")
+        client.save_attachment_bytes.assert_called_once_with(b"%PDF-1.4 fake", "report.pdf", "/tmp")
+        client.download_attachment.assert_not_called()
+        assert result == {"path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024}
+
+    async def test_image_attachment_has_no_scannable_text(self, gated_call_spy):
+        # No OCR -- an image attachment still gets fetched (for the preview)
+        # but extract_text() returns "" for image mime types.
+        connector, client = make_connector()
+        client.get_message.return_value = self._message_with_attachment(
+            name="photo.png", mime_type="image/png",
+        )
+        client.fetch_attachment_bytes.return_value = b"\x89PNGfakebytes"
+        client.save_attachment_bytes.return_value = {
+            "path": "/tmp/photo.png", "name": "photo.png", "size_bytes": 1024,
+        }
+
+        await connector.call(
+            "gmail_download_attachment",
+            {"message_id": "m1", "attachment_name": "photo.png", "destination_dir": "/tmp"},
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["pii_scan_text"] == ""
+
+    async def test_prefetch_failure_degrades_scan_text_to_empty(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_message.return_value = self._message_with_attachment()
+        client.fetch_attachment_bytes.side_effect = GmailClientError("expired token")
+        client.download_attachment.return_value = {
+            "path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024,
+        }
+
+        await connector.call(
+            "gmail_download_attachment",
+            {"message_id": "m1", "attachment_name": "report.pdf", "destination_dir": "/tmp"},
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["pii_scan_text"] == ""
 
 
 class TestWriteToolsGateAndPreview:

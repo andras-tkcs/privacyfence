@@ -13,14 +13,16 @@ from ..gate import current_reason, gated_call
 from ..gmail_client import GmailClient, GmailClientError, resolve_attachment_destination
 from ..html_to_text import html_to_text
 from ..privacy_filter import apply_list, apply_text, category_policy
+from ..text_extraction import extract_text, is_prefetch_worthy
 
 logger = logging.getLogger(__name__)
 
-# Cap on how big an image attachment we'll fetch pre-approval just to build a
-# preview -- gmail_download_attachment's gate has to fully fetch the
-# attachment to preview it at all (no partial-fetch API), so this bounds how
-# much we'll pull down before the human has decided anything.
-_ATTACHMENT_PREVIEW_MAX_BYTES = 5_000_000
+# Cap on how big an attachment we'll fetch pre-approval -- for a preview
+# (images) or a PII scan (text/PDF/DOCX/PPTX). gmail_download_attachment's
+# gate has to fully fetch the attachment to do either at all (no
+# partial-fetch API), so this bounds how much we'll pull down before the
+# human has decided anything.
+_ATTACHMENT_PREFETCH_MAX_BYTES = 5_000_000
 
 
 class GmailConnector(Connector):
@@ -521,27 +523,34 @@ class GmailConnector(Connector):
         details = "The attachment above will be downloaded to the destination shown."
 
         # Gmail's attachments().get() has no partial/range fetch -- previewing
-        # means fully fetching the attachment before the human has decided
-        # anything, unlike Drive's cheaper thumbnailLink path. Only worth it
-        # for images under a sane size cap; anything else keeps today's
-        # metadata-only preview.
+        # or PII-scanning means fully fetching the attachment before the
+        # human has decided anything, unlike Drive's cheaper thumbnailLink
+        # path. Only worth it for types is_prefetch_worthy() recognizes,
+        # under a sane size cap; anything else keeps today's metadata-only
+        # preview and unscanned content.
         preview_bytes = b""
         preview_mime_type = ""
+        pii_scan_text = ""
+        fetched_bytes: bytes | None = None
         if (
-            attachment.mime_type.startswith("image/")
-            and 0 < attachment.size <= _ATTACHMENT_PREVIEW_MAX_BYTES
+            is_prefetch_worthy(attachment.mime_type)
+            and 0 < attachment.size <= _ATTACHMENT_PREFETCH_MAX_BYTES
         ):
             try:
-                preview_bytes = await self._fetch(
+                fetched_bytes = await self._fetch(
                     self._gmail.fetch_attachment_bytes, message_id, attachment.attachment_id,
                 )
-                preview_mime_type = attachment.mime_type
             except RuntimeError:
                 # _fetch() already turned the underlying GmailClientError into
                 # a RuntimeError and logged it -- this is a best-effort
-                # preview, not the actual download, so fall back to today's
-                # metadata-only preview instead of failing the whole call.
+                # preview/scan, not the actual download, so fall back to
+                # today's metadata-only preview instead of failing the call.
                 pass
+            else:
+                if attachment.mime_type.startswith("image/"):
+                    preview_bytes = fetched_bytes
+                    preview_mime_type = attachment.mime_type
+                pii_scan_text = extract_text(fetched_bytes, attachment.mime_type)
 
         # Gate before touching disk: gated_call raises on denial, and only a
         # decision made here should ever cause the attachment to be written.
@@ -556,17 +565,17 @@ class GmailConnector(Connector):
             gate="review",
             preview=preview,
             details_text=details,
-            pii_scan_text="",
+            pii_scan_text=pii_scan_text,
             preview_bytes=preview_bytes,
             preview_mime_type=preview_mime_type,
             my_email=self.my_email,
             args={"message_id": message_id, "attachment_name": attachment_name},
         )
-        if preview_bytes:
-            # Already fetched above for the preview -- reuse it instead of
-            # fetching the same attachment from Gmail a second time.
+        if fetched_bytes is not None:
+            # Already fetched above for the preview/scan -- reuse it instead
+            # of fetching the same attachment from Gmail a second time.
             return await self._fetch(
-                self._gmail.save_attachment_bytes, preview_bytes, attachment.name, destination_dir,
+                self._gmail.save_attachment_bytes, fetched_bytes, attachment.name, destination_dir,
             )
         return await self._fetch(
             self._gmail.download_attachment,

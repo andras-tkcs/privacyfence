@@ -18,6 +18,7 @@ from ..drive_client import (
 )
 from ..gate import current_reason, gated_call
 from ..privacy_filter import apply_list, apply_text, category_policy
+from ..text_extraction import extract_text, is_prefetch_worthy
 
 logger = logging.getLogger(__name__)
 
@@ -714,6 +715,21 @@ class DriveConnector(Connector):
                 # preview, not the actual download.
                 pass
 
+        # Best-effort PII scan: reuses the same capped fetch
+        # drive_get_file_content already does (100KB default) purely to get
+        # something to scan -- gmail_download_attachment's equivalent is
+        # below in gmail.py. A fetch/parse failure just means nothing gets
+        # scanned, same as today, rather than blocking the download.
+        pii_scan_text = ""
+        try:
+            content = await self._fetch(self._drive.get_file_content, file_id)
+            if content.content_text:
+                pii_scan_text = content.content_text
+            elif content.content_bytes:
+                pii_scan_text = extract_text(content.content_bytes, drive_file.mime_type)
+        except RuntimeError:
+            pass
+
         # Gate before touching disk: gated_call raises on denial, and only a
         # decision made here should ever cause the file to be written. This
         # used to download the file first and gate afterward, so a Deny still
@@ -730,7 +746,7 @@ class DriveConnector(Connector):
             gate="review",
             preview=preview,
             details_text=details,
-            pii_scan_text="",
+            pii_scan_text=pii_scan_text,
             preview_bytes=preview_bytes,
             preview_mime_type=preview_mime_type,
             my_email=self.my_email,
@@ -860,6 +876,7 @@ class DriveConnector(Connector):
 
         preview_bytes = b""
         preview_mime_type = ""
+        upload_pii_scan_text = ""
 
         if local_path.strip():
             display_name = name.strip() or os.path.basename(local_path)
@@ -869,25 +886,30 @@ class DriveConnector(Connector):
             sender = "(local file)"
             # The connector never used to read this file's bytes at all --
             # only stat its size -- so the popup showed a human nothing about
-            # what's actually in it. Unlike drafted text (every other
-            # popup-gate tool), this can be an arbitrary local file Claude
-            # never saw the contents of, so it's worth reading -- but only
-            # for images under a sane cap, since it's a disk read of a file
-            # that could be arbitrarily large.
+            # what's actually in it, and nothing was ever scanned for PII
+            # either. Unlike drafted text (every other popup-gate tool), this
+            # can be an arbitrary local file Claude never saw the contents
+            # of, so it's worth reading -- but only for types is_prefetch_
+            # worthy() recognizes, under a sane cap, since it's a disk read
+            # of a file that could be arbitrarily large.
             guessed_mime, _ = mimetypes.guess_type(display_name)
             if (
-                guessed_mime and guessed_mime.startswith("image/")
+                guessed_mime and is_prefetch_worthy(guessed_mime)
                 and 0 < size_bytes <= _UPLOAD_PREVIEW_MAX_BYTES
             ):
                 try:
                     with open(expanded, "rb") as fh:
-                        preview_bytes = fh.read()
-                    preview_mime_type = guessed_mime
+                        read_bytes = fh.read()
                 except OSError:
                     logger.warning(
-                        "drive_upload_file: failed to read %r for preview",
+                        "drive_upload_file: failed to read %r for preview/PII scan",
                         local_path, exc_info=True,
                     )
+                else:
+                    if guessed_mime.startswith("image/"):
+                        preview_bytes = read_bytes
+                        preview_mime_type = guessed_mime
+                    upload_pii_scan_text = extract_text(read_bytes, guessed_mime)
         else:
             display_name = name.strip() or "(unnamed file)"
             try:
@@ -898,15 +920,17 @@ class DriveConnector(Connector):
             source = "inline content"
             sender = "(inline content)"
             # Already fully decoded in memory above regardless (needed just to
-            # measure size) -- no extra cost to reuse it for the preview, and
-            # no separate size cap needed: content_base64 arrives as an MCP
-            # tool argument, already bounded by the daemon's own wire-protocol
-            # line limit (ipc.py's LINE_LIMIT), unlike local_path's unbounded
-            # disk read above.
+            # measure size) -- no extra cost to reuse it for the preview/scan,
+            # and no separate size cap needed: content_base64 arrives as an
+            # MCP tool argument, already bounded by the daemon's own
+            # wire-protocol line limit (ipc.py's LINE_LIMIT), unlike
+            # local_path's unbounded disk read above.
             guessed_mime, _ = mimetypes.guess_type(display_name) if name.strip() else (None, None)
-            if guessed_mime and guessed_mime.startswith("image/") and decoded:
-                preview_bytes = decoded
-                preview_mime_type = guessed_mime
+            if guessed_mime and decoded:
+                if guessed_mime.startswith("image/"):
+                    preview_bytes = decoded
+                    preview_mime_type = guessed_mime
+                upload_pii_scan_text = extract_text(decoded, guessed_mime)
 
         preview = {
             "File": display_name,
@@ -928,6 +952,7 @@ class DriveConnector(Connector):
             details_text=details,
             preview_bytes=preview_bytes,
             preview_mime_type=preview_mime_type,
+            upload_pii_scan_text=upload_pii_scan_text,
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={

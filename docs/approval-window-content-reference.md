@@ -237,14 +237,18 @@ skips the grace window entirely in favor of a standing rule, same confirmation f
   disclose.
 - **PII banner (red) vs. content-flag banner (amber)**: both come from the same local detector
   (`pii_detector.py`'s `detect_pii_categories()`), but scan opposite directions and carry opposite
-  weight. The red banner (review-gate only) scans content flowing **in** from an external source
+  weight. The red banner (review-gate) scans content flowing **in** from an external source
   (`gate.py`'s `pii_categories`) and, on Allow/Always-allow, forces a second explicit
   `show_pii_confirmation_popup` before the decision is final — it's a trust-boundary gate, not
-  just a label. The amber banner (popup-gate only) scans Claude's own drafted content going **out**
+  just a label. The amber banner (popup-gate) scans Claude's own drafted content going **out**
   (`gate.py`'s `write_content_flags`) and is purely informational: no full-window tint, no second
-  dialog, the click resolves immediately regardless. There's no "personal data snuck in" scenario
-  on a write — it's content Claude already described in chat — so it only ever gets a heads-up,
-  never a gate.
+  dialog, the click resolves immediately regardless — there's no "personal data snuck in" scenario
+  on a write, since it's content Claude already described in chat, for every popup-gate tool except
+  one. `drive_upload_file` is the deliberate exception: its `local_path`/`content_base64` payload
+  can be content Claude never actually read, so it additionally gets the real, red-banner-style
+  treatment (`gate.py`'s `upload_pii_categories`) on top of the amber banner every write gets — see
+  [`TECHNICAL_REFERENCE.md`'s PII detection gate section](TECHNICAL_REFERENCE.md#pii-detection-gate)
+  for the full reasoning.
 - **Seen-count caption and "Claude says" reason box**: both, since both are computed centrally in
   `gate.py` for every gated call regardless of direction.
 - **content_kind email header / native PDFView**: review-gate only, and only for the two specific

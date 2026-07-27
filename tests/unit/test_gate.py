@@ -739,6 +739,124 @@ class TestPopupGateWrites:
         assert entries[0]["pii_detected"] is False
 
 
+class TestUploadPiiGate:
+    """upload_pii_scan_text is the one deliberate exception to
+    TestPopupGateWrites's "the write gate never triggers the PII
+    confirmation gate" -- only ever set by drive_upload_file, since its
+    payload can be external content Claude never read. When set, this
+    behaves like the review-gate's own pii_categories: forces
+    show_pii_confirmation_popup, overrides a matching auto-accept rule, and
+    folds into the audit log's pii_detected field -- unlike
+    write_content_flags, which stays informational-only regardless.
+    """
+
+    PII_TEXT = "Please wire the deposit to DE89370400440532013000, thanks."
+
+    async def test_no_upload_pii_scan_text_never_shows_confirmation_popup(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
+        confirm_calls = []
+        monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda *a, **k: confirm_calls.append(1) or True)
+
+        result = await gate.gated_call(**base_kwargs(gate="popup", tool="drive_upload_file"))
+
+        assert result is FILTERED
+        assert confirm_calls == []
+
+    async def test_clean_upload_pii_scan_text_never_shows_confirmation_popup(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
+        confirm_calls = []
+        monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda *a, **k: confirm_calls.append(1) or True)
+
+        result = await gate.gated_call(**base_kwargs(
+            gate="popup", tool="drive_upload_file", upload_pii_scan_text="nothing sensitive here",
+        ))
+
+        assert result is FILTERED
+        assert confirm_calls == []
+
+    async def test_flagged_upload_pii_scan_text_forces_confirmation(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: True)
+
+        result = await gate.gated_call(**base_kwargs(
+            gate="popup", tool="drive_upload_file", upload_pii_scan_text=self.PII_TEXT,
+        ))
+
+        assert result is FILTERED
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "approved"
+        assert entries[0]["pii_detected"] is True
+
+    async def test_declining_confirmation_denies_the_whole_upload(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: False)
+
+        with pytest.raises(RuntimeError, match="denied"):
+            await gate.gated_call(**base_kwargs(
+                gate="popup", tool="drive_upload_file", upload_pii_scan_text=self.PII_TEXT,
+            ))
+
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "rejected"
+        assert entries[0]["pii_detected"] is True
+
+    async def test_flagged_content_overrides_a_matching_auto_accept_rule(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "parent_folder_allowlist")))
+        popup_calls = []
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: popup_calls.append(1) or "accept")
+        monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: True)
+
+        result = await gate.gated_call(**base_kwargs(
+            gate="popup", tool="drive_upload_file", upload_pii_scan_text=self.PII_TEXT,
+        ))
+
+        assert result is FILTERED
+        assert popup_calls == [1]  # the popup was NOT skipped, despite auto_ok
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "approved"  # not "auto_accepted"
+        assert entries[0]["pii_detected"] is True
+
+    async def test_matching_rule_without_flagged_content_still_auto_accepts_silently(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "parent_folder_allowlist")))
+        popup_calls = []
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: popup_calls.append(1) or "deny")
+
+        result = await gate.gated_call(**base_kwargs(
+            gate="popup", tool="drive_upload_file", upload_pii_scan_text="nothing sensitive here",
+        ))
+
+        assert result is FILTERED
+        assert popup_calls == []
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "auto_accepted"
+        assert entries[0]["pii_detected"] is False
+
+    async def test_write_content_flags_still_computed_independently(self, monkeypatch, audit_dir):
+        # upload_pii_scan_text and details_text are scanned separately --
+        # confirms adding the real gate didn't remove the existing
+        # informational write_content_flags signal (TestWriteContentFlags).
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        captured = {}
+
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type=""):
+            captured["write_content_flags"] = write_content_flags
+            return "accept"
+
+        monkeypatch.setattr(gate, "show_popup", fake_show_popup)
+        monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: True)
+
+        await gate.gated_call(**base_kwargs(
+            gate="popup", tool="drive_upload_file",
+            details_text=self.PII_TEXT, upload_pii_scan_text=self.PII_TEXT,
+        ))
+
+        assert captured["write_content_flags"] == ["IBAN (bank account number)"]
+
+
 class TestRequestFingerprint:
     """seen_count: AuditLogger.recent_matches(connector, tool, summary),
     computed once per gated_call and forwarded to both popup functions."""

@@ -105,21 +105,31 @@ the grace window is withheld.
 
 ### PII detection gate
 
-This gate only runs on the **`review` (read) direction — tool → Claude.** It exists to catch
+This gate mainly runs on the **`review` (read) direction — tool → Claude.** It exists to catch
 personal data flowing from an external source into Claude's context, before you approve
-handing it over. It does not run on the `popup` (write) direction — Claude → tool — since a
-write is content Claude itself already generated for an action it described in chat (e.g.
-`drive_write_file_content`, `gmail_create_draft`, `slack_send_message`), not external personal
-data being newly exposed to it.
+handing it over. It does not run on the `popup` (write) direction in general — Claude → tool —
+since a write is normally content Claude itself already generated for an action it described in
+chat (e.g. `drive_write_file_content`, `gmail_create_draft`, `slack_send_message`), not external
+personal data being newly exposed to it.
+
+**One narrow exception:** `drive_upload_file`. Its payload — an arbitrary local file via
+`local_path`, or inline bytes via `content_base64` — can be content Claude never actually read,
+unlike every other write tool's drafted text. When that file's extracted content (see
+[`text_extraction.py`](../src/privacyfence/text_extraction.py) — plain text, PDF, DOCX, and PPTX;
+images are out of scope, no OCR) flags likely personal data, the upload gets the same real
+treatment a flagged read does: the second "Are you sure?" confirmation below, and `pii_detected`
+recorded in the audit log. Every other popup-gate write is unaffected and keeps the weaker,
+informational-only content-flag banner described in
+[`approval-window-content-reference.md`](approval-window-content-reference.md).
 
 On top of the normal Allow once/Deny popup, PrivacyFence can scan the message/document/spreadsheet
-content shown in every `review` dialog for likely personal data across **Hungarian, English, and
-German** before you approve it — IBANs, credit card numbers, national identifiers, IP addresses,
-financial figures, and common personal-data/salary phrases per language. Email addresses and phone
-numbers are deliberately excluded (matching those formats flagged nearly every read popup, since
-almost every email signature carries the sender's own). See
-[`pii-detection-keywords.md`](pii-detection-keywords.md) for the exact categories, patterns, and
-the full reasoning behind what is and isn't matched.
+content shown in every `review` dialog (and, per the exception above, `drive_upload_file`'s content)
+for likely personal data across **Hungarian, English, and German** before you approve it — IBANs,
+credit card numbers, national identifiers, IP addresses, financial figures, and common
+personal-data/salary phrases per language. Email addresses and phone numbers are deliberately
+excluded (matching those formats flagged nearly every read popup, since almost every email
+signature carries the sender's own). See [`pii-detection-keywords.md`](pii-detection-keywords.md)
+for the exact categories, patterns, and the full reasoning behind what is and isn't matched.
 
 When something is flagged:
 
