@@ -47,11 +47,20 @@ _GOOGLE_DOC_EXPORTS = {
 }
 
 # Metadata fields requested from the Drive API for a single file.
-# driveId is populated for files that live inside a Shared Drive.
+# driveId is populated for files that live inside a Shared Drive. thumbnailLink
+# is a short-lived, Google-signed URL to a small preview image Drive already
+# generated for this file (not guaranteed to be present for every file type) --
+# fetching it is much cheaper than downloading the full file just to preview it.
 _FILE_FIELDS = (
     "id, name, mimeType, size, createdTime, modifiedTime, "
-    "owners(emailAddress), shared, webViewLink, parents, driveId"
+    "owners(emailAddress), shared, webViewLink, parents, driveId, thumbnailLink"
 )
+
+# Cap on how much we'll read back from a thumbnailLink fetch. It's meant to be
+# a small preview image Drive generated, not a full download -- if a response
+# somehow exceeds this, something is wrong (not actually a thumbnail) and we'd
+# rather fail than buffer an unbounded amount of memory.
+_THUMBNAIL_MAX_BYTES = 1_048_576
 
 
 def resolve_download_name(metadata: Any) -> str:
@@ -550,6 +559,7 @@ class DriveFile:
     web_view_link: str = ""
     parent_ids: list[str] = field(default_factory=list)
     drive_id: str = ""  # non-empty when the file lives in a Shared Drive
+    thumbnail_link: str = ""  # signed URL to a Drive-generated preview image, if any
 
     def short_summary(self) -> str:
         """Human-readable one-liner for the review UI / logs."""
@@ -857,6 +867,45 @@ class DriveClient:
             "size_bytes": size,
             "truncated": False,
         }
+
+    def fetch_thumbnail(
+        self, thumbnail_link: str, max_bytes: int = _THUMBNAIL_MAX_BYTES
+    ) -> bytes:
+        """Fetch a Drive-generated preview image from its signed thumbnailLink URL.
+
+        Much cheaper than a full ``download_file`` when a caller only wants
+        something to show a human, not the file itself -- but not every file
+        has one (``DriveFile.thumbnail_link`` is empty when Drive hasn't
+        generated a thumbnail for it). Capped at ``max_bytes``: this is meant
+        to be a small preview image, so a response that large indicates
+        something unexpected rather than a legitimately big thumbnail.
+        """
+        if not thumbnail_link:
+            raise DriveClientError("fetch_thumbnail requires a non-empty thumbnail_link")
+        try:
+            creds = self._load_credentials()
+            session = AuthorizedSession(creds)
+            with session.get(thumbnail_link, stream=True) as resp:
+                resp.raise_for_status()
+                chunks: list[bytes] = []
+                total = 0
+                for chunk in resp.iter_content(chunk_size=65536):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise DriveClientError(
+                            f"fetch_thumbnail: response exceeded {max_bytes} bytes"
+                        )
+                    chunks.append(chunk)
+        except DriveClientError:
+            raise
+        except Exception as exc:
+            raise DriveClientError(f"fetch_thumbnail failed: {exc}") from exc
+
+        data = b"".join(chunks)
+        logger.info("fetch_thumbnail: %d bytes", len(data))
+        return data
 
     def list_folder(self, folder_id: str, max_results: int = 50) -> list[DriveFile]:
         """List the direct children of a folder."""
@@ -1823,4 +1872,5 @@ class DriveClient:
             web_view_link=raw.get("webViewLink", ""),
             parent_ids=list(raw.get("parents", []) or []),
             drive_id=raw.get("driveId", ""),
+            thumbnail_link=raw.get("thumbnailLink", ""),
         )
