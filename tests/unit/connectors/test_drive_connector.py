@@ -380,6 +380,7 @@ class TestDownloadFile:
         client.get_file_metadata.return_value = make_file(
             name="Q3 Report.pdf", mime_type="application/pdf", size=4096,
         )
+        client.get_file_content.return_value = DriveFileContent(file=make_file())
 
         result = await connector.call("drive_download_file", {"file_id": "f1", "destination_dir": "/tmp"})
 
@@ -389,7 +390,7 @@ class TestDownloadFile:
         assert kwargs["preview"]["Saved to"] == "/tmp/Q3 Report.pdf"
         assert kwargs["preview"]["Size"] == "4,096 bytes"
         assert kwargs["args"] == {"file_id": "f1", "destination_dir": "/tmp"}
-        assert kwargs["pii_scan_text"] == ""  # no content involved, nothing to scan
+        assert kwargs["pii_scan_text"] == ""  # empty content, nothing to scan
 
     async def test_metadata_is_fetched_and_gate_runs_before_any_bytes_are_downloaded(self, gated_call_spy):
         """The preview must be buildable -- and the gate must run -- from
@@ -486,6 +487,53 @@ class TestDownloadFile:
         assert kwargs["preview_bytes"] == b""
         assert kwargs["preview_mime_type"] == ""
         assert result == {"name": "photo.jpg", "path": "/tmp/photo.jpg", "size_bytes": 2048}
+
+    async def test_text_content_becomes_pii_scan_text(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file(
+            name="notes.txt", mime_type="text/plain", size=64,
+        )
+        client.get_file_content.return_value = DriveFileContent(
+            file=make_file(), content_text="Please wire the deposit to DE89370400440532013000.",
+        )
+        client.download_file.return_value = {"name": "notes.txt", "path": "/tmp/notes.txt", "size_bytes": 64}
+
+        await connector.call("drive_download_file", {"file_id": "f1", "destination_dir": "/tmp"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["pii_scan_text"] == "Please wire the deposit to DE89370400440532013000."
+
+    async def test_binary_content_is_extracted_for_pii_scan_text(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file(
+            name="report.pdf", mime_type="application/pdf", size=2048,
+        )
+        client.get_file_content.return_value = DriveFileContent(
+            file=make_file(), content_bytes=b"not actually a valid pdf",
+        )
+        client.download_file.return_value = {"name": "report.pdf", "path": "/tmp/report.pdf", "size_bytes": 2048}
+
+        await connector.call("drive_download_file", {"file_id": "f1", "destination_dir": "/tmp"})
+
+        kwargs = gated_call_spy[0]
+        # Garbage bytes don't parse as a real PDF -- extract_text degrades to
+        # "" rather than raising; this pins that the connector calls through
+        # to it at all, not that this specific fixture extracts real text.
+        assert kwargs["pii_scan_text"] == ""
+
+    async def test_content_fetch_failure_degrades_to_no_scan_text(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file(
+            name="report.pdf", mime_type="application/pdf", size=2048,
+        )
+        client.get_file_content.side_effect = DriveClientError("quota exceeded")
+        client.download_file.return_value = {"name": "report.pdf", "path": "/tmp/report.pdf", "size_bytes": 2048}
+
+        result = await connector.call("drive_download_file", {"file_id": "f1", "destination_dir": "/tmp"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["pii_scan_text"] == ""
+        assert result == {"name": "report.pdf", "path": "/tmp/report.pdf", "size_bytes": 2048}
 
 
 class TestWriteToolsGateAndPreview:
@@ -709,6 +757,64 @@ class TestUploadFile:
         kwargs = gated_call_spy[0]
         assert kwargs["preview_bytes"] == b""
         assert kwargs["preview_mime_type"] == ""
+
+    async def test_local_path_text_file_populates_upload_pii_scan_text(self, tmp_path, gated_call_spy):
+        connector, client = make_connector()
+        f = tmp_path / "notes.txt"
+        f.write_bytes(b"Please wire the deposit to DE89370400440532013000.")
+        client.upload_file.return_value = {"id": "uploaded11"}
+
+        await connector.call("drive_upload_file", {"local_path": str(f)})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["upload_pii_scan_text"] == "Please wire the deposit to DE89370400440532013000."
+
+    async def test_local_path_image_has_no_scannable_text(self, tmp_path, gated_call_spy):
+        # No OCR -- an image still gets read (for the preview), but
+        # extract_text() returns "" for image mime types.
+        connector, client = make_connector()
+        f = tmp_path / "photo.png"
+        f.write_bytes(b"\x89PNGfakebytes")
+        client.upload_file.return_value = {"id": "uploaded12"}
+
+        await connector.call("drive_upload_file", {"local_path": str(f)})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["upload_pii_scan_text"] == ""
+
+    async def test_local_path_unrecognized_type_gets_no_scan_at_all(self, tmp_path, gated_call_spy):
+        connector, client = make_connector()
+        f = tmp_path / "archive.zip"
+        f.write_bytes(b"PK\x03\x04 not a real zip payload")
+        client.upload_file.return_value = {"id": "uploaded13"}
+
+        await connector.call("drive_upload_file", {"local_path": str(f)})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["upload_pii_scan_text"] == ""
+        assert kwargs["preview_bytes"] == b""
+
+    async def test_content_base64_text_populates_upload_pii_scan_text(self, gated_call_spy):
+        import base64
+        connector, client = make_connector()
+        client.upload_file.return_value = {"id": "uploaded14"}
+        payload = base64.b64encode(b"Please wire the deposit to DE89370400440532013000.").decode()
+
+        await connector.call(
+            "drive_upload_file", {"content_base64": payload, "name": "notes.txt"}
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["upload_pii_scan_text"] == "Please wire the deposit to DE89370400440532013000."
+
+    async def test_no_upload_pii_scan_text_when_neither_input_looks_scannable(self, gated_call_spy):
+        connector, client = make_connector()
+        client.upload_file.return_value = {"id": "uploaded15"}
+
+        await connector.call("drive_upload_file", {"content_base64": "aGVsbG8=", "name": "unknown.bin"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["upload_pii_scan_text"] == ""
 
 
 class TestFetchErrorMapping:

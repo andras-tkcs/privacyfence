@@ -110,7 +110,7 @@ exception — never a default absence of control. Sensitive actions (writes, and
 message/document bodies) default to `review` or `popup`; only low-sensitivity metadata listing
 operations (e.g., "list my calendars") default to `auto`.
 
-**PII detection gate:** on the `review` (read) direction only, PrivacyFence runs a local,
+**PII detection gate:** on the `review` (read) direction, PrivacyFence runs a local,
 regex-based scan (Hungarian, English, German) over the content shown in every `review` dialog,
 before the human decides — and before any auto-accept rule is checked. A match overrides a
 matching rule (a `review` call is content-blind to the rule, so PII in an otherwise-trusted
@@ -118,8 +118,11 @@ sender/folder still routes to a human) and tints the dialog, forcing one additio
 confirmation on top of Allow once — see [PII detection gate](TECHNICAL_REFERENCE.md#pii-detection-gate) in the
 Technical Reference. It is a best-effort heuristic layered on top of human review, not a substitute for it,
 and it never logs or stores the matched text — only category labels, in the audit entry for that
-decision. It does not run on the `popup` (write) direction: that content is Claude's own generated
-output for an action already described in chat, not external personal data newly reaching Claude.
+decision. It does not otherwise run on the `popup` (write) direction: that content is normally
+Claude's own generated output for an action already described in chat, not external personal data
+newly reaching Claude. `drive_upload_file` is the one deliberate exception — its payload can be an
+arbitrary local file Claude never actually read, so it gets the same real scan and forced
+confirmation, extracting text from plain text, PDF, DOCX, and PPTX content (no OCR on images).
 
 **Note for reviewers evaluating the MCP-level permission model:** since v0.4.9 the bridge
 advertises every tool to Claude as `readOnlyHint = true`, including writes. This is documented and

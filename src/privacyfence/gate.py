@@ -54,11 +54,21 @@ domain, folder, "I am the organizer") rather than content, so a rule that
 would silently pass through PII-bearing content still gets a human in the
 loop for that specific item.
 
-Write tools (``gate="popup"``) never run this scan: the gate exists to catch
-personal data flowing from an external source into Claude's context, and a
-write is content Claude itself already generated going the other way, to a
-tool Claude already described in chat -- there's no external PII to
-intercept on that side.
+Write tools (``gate="popup"``) never run this real scan: the gate exists to
+catch personal data flowing from an external source into Claude's context,
+and a write is normally content Claude itself already generated going the
+other way, to a tool Claude already described in chat -- there's no external
+PII to intercept on that side. ``write_content_flags`` (below) is a
+deliberately weaker, informational-only signal for the general write case.
+
+One narrow, deliberate exception: ``upload_pii_scan_text``, only ever set by
+drive_upload_file. Its payload (an arbitrary local file via ``local_path``,
+or inline bytes via ``content_base64``) breaks the "Claude already generated
+this" premise above -- it can be content Claude never read at all. When set,
+this runs the same real scan (``upload_pii_categories``) and the same forced
+second confirmation (``_confirm_pii_or_deny``) the read side gets, gated
+strictly to this one operation rather than reopening "writes get the PII
+gate" as a general rule.
 
 Callers should pass ``pii_scan_text`` whenever a review-gate ``details_text``
 mixes structural envelope metadata (an email's From/To headers, a chat
@@ -66,7 +76,7 @@ message's channel/sender, a page's author) with the actual content (body,
 message text, description) -- that metadata is present on every item
 regardless of what it says and will otherwise make the PII gate fire on
 essentially every read. ``pii_scan_text`` should carry only the actual
-content being read.
+content being read. Same reasoning applies to ``upload_pii_scan_text``.
 """
 from __future__ import annotations
 
@@ -231,6 +241,13 @@ async def gated_call(
         # visibility, which are read-only).
     preview_mime_type: str = "",  # MIME type for preview_bytes, e.g. "image/png" -- used to decide
         # whether approval_window.py can render it as an image at all before attempting to.
+    upload_pii_scan_text: str | None = None,  # content-only text for a REAL PII scan on the popup
+        # (write) direction -- unlike write_content_flags below, a match here forces the same
+        # second "Are you sure?" confirmation the review-gate's pii_scan_text does. Only ever set
+        # by drive_upload_file: see this function's module docstring for why that one write tool
+        # (whose payload can be an arbitrary local file Claude never read) is a deliberate, narrow
+        # exception to "writes don't get the real PII gate" -- every other popup-gate call must
+        # leave this at its default.
     my_email: str = "",
     session_created_ids: set | None = None,
     args: dict | None = None,
@@ -276,6 +293,15 @@ async def gated_call(
     # confirmation is coming. Exists as its own signal rather than reusing
     # pii_categories's machinery.
     write_content_flags = detect_pii_categories(details) if gate == "popup" else []
+    # The one deliberate exception to the comment above: drive_upload_file's
+    # payload can be external content Claude never read (see module
+    # docstring), so when it supplies upload_pii_scan_text this runs the same
+    # real scan pii_categories does -- folded into pii_detected below and
+    # routed through _confirm_pii_or_deny, unlike write_content_flags.
+    upload_pii_categories = (
+        detect_pii_categories(upload_pii_scan_text)
+        if gate == "popup" and upload_pii_scan_text else []
+    )
     # Request fingerprint: "you've approved this exact (connector, tool,
     # summary) N times this week" -- read directly from the audit log,
     # same synchronous-call
@@ -308,7 +334,7 @@ async def gated_call(
         evaluator = get_auto_accept_evaluator()
         auto_ok, matched_rule = evaluator.should_auto_accept(operation_key, ctx)
 
-        if auto_ok and not pii_categories:
+        if auto_ok and not pii_categories and not upload_pii_categories:
             audit(decision="auto_accepted", auto_accept_rule=matched_rule, pii_detected=False)
             logger.info("Auto-accepted: %s/%s rule=%r", connector, tool, matched_rule)
             return filtered_data
@@ -389,9 +415,11 @@ async def gated_call(
 
         else:
             # ── Popup gate: block and show native approval dialog for a write ───
-            # No PII scan here -- see module docstring: this gate covers
-            # content Claude itself generated for an outbound write, not
-            # personal data flowing in from an external source.
+            # No real PII scan here in general -- see module docstring: this
+            # gate covers content Claude itself generated for an outbound
+            # write, not personal data flowing in from an external source.
+            # upload_pii_categories (computed above) is the one narrow
+            # exception, drive_upload_file only.
             file_key = temp_accept_key(operation_key, ctx)
             suggestion = suggest_write_rule(operation_key, ctx)
             # Same "everything interactive stays inside one lock acquisition"
@@ -402,19 +430,22 @@ async def gated_call(
             async with _popup_lock:
                 # Same race as above: a rule may have been created while queued.
                 auto_ok, matched_rule = evaluator.should_auto_accept(operation_key, ctx)
-                if auto_ok:
+                if auto_ok and not upload_pii_categories:
                     audit(decision="auto_accepted", auto_accept_rule=matched_rule, pii_detected=False)
                     logger.info("Auto-accepted while queued: %s/%s rule=%r", connector, tool, matched_rule)
                     return filtered_data
 
                 if is_unattended():
-                    _deny_unattended(audit, connector, tool, pii_categories=[])
+                    _deny_unattended(audit, connector, tool, pii_categories=upload_pii_categories)
 
                 decision = await asyncio.to_thread(
                     show_popup, popup_title, preview or {}, details, file_key is not None,
                     claude_reason, write_content_flags, seen_count, connector,
                     suggestion is not None, preview_bytes, preview_mime_type,
                 )
+
+                if decision in ("accept", "accept_all") and upload_pii_categories:
+                    decision = await _confirm_pii_or_deny(decision, upload_pii_categories)
 
                 if decision == "accept_all":
                     if suggestion is None:
@@ -442,7 +473,7 @@ async def gated_call(
                             add_auto_accept_rule(operation_key, rule_name, value)
                             audit(
                                 decision="accepted_via_accept_all", auto_accept_rule=rule_name,
-                                pii_detected=False,
+                                pii_detected=bool(upload_pii_categories),
                             )
                             logger.info("Always allow: created rule %r for %s", rule_name, operation_key)
                             return filtered_data
@@ -459,17 +490,17 @@ async def gated_call(
                     evaluator.register_temp_accept(operation_key, file_key)
                     audit(
                         decision="accepted_via_temp_session", auto_accept_rule="session_temp_accept",
-                        pii_detected=False,
+                        pii_detected=bool(upload_pii_categories),
                     )
                     logger.info(
                         "Allow once (also armed 5 min grace window): op=%s file=%s (%s, %s)",
                         operation_key, file_key, connector, tool,
                     )
                 else:
-                    audit(decision="approved", auto_accept_rule="", pii_detected=False)
+                    audit(decision="approved", auto_accept_rule="", pii_detected=bool(upload_pii_categories))
                 return filtered_data
 
-            audit(decision="rejected", auto_accept_rule="", pii_detected=False)
+            audit(decision="rejected", auto_accept_rule="", pii_detected=bool(upload_pii_categories))
             raise RuntimeError("Request denied by user")
     finally:
         if not audited:
@@ -478,7 +509,7 @@ async def gated_call(
                 "-- recording a fallback 'error' entry so the audit trail has no silent gap",
                 connector, tool, request_id,
             )
-            audit(decision="error", auto_accept_rule="", pii_detected=bool(pii_categories))
+            audit(decision="error", auto_accept_rule="", pii_detected=bool(pii_categories or upload_pii_categories))
 
 
 async def propose_rule_change(
