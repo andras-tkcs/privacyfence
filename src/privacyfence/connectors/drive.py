@@ -64,6 +64,22 @@ def _format_sheet_rows(rows: list[list], limit: int = _SHEET_ROW_LIMIT) -> str:
     return shown
 
 
+def _sheet_values_table(values: list[list], limit: int = _SHEET_ROW_LIMIT) -> dict:
+    """The same 2D cell data _format_sheet_rows renders as a comma-joined
+    text dump, instead built as a preview_tables-shaped table dict --
+    headerless, since an arbitrary A1-notation range has no guaranteed
+    header row (the first row is just more data, not necessarily a label,
+    same reasoning _sheets_get_values already used), capped at `limit`
+    rows with a footer noting the rest. Shared by every sheet tool --
+    read (_sheets_get_values) and write (_sheets_write_range) -- that
+    shows real cell data in v2's right pane, so they can never disagree
+    about where the cap/footer lands."""
+    table = {"rows": [[str(cell) for cell in row] for row in values[:limit]]}
+    if len(values) > limit:
+        table["footer"] = f"… and {len(values) - limit} more row(s)"
+    return table
+
+
 class DriveConnector(Connector):
     def __init__(self, client: DriveClient) -> None:
         self._drive = client
@@ -679,15 +695,10 @@ class DriveConnector(Connector):
         preview = {"Spreadsheet": name, "Owner": ", ".join(owners) or "(unknown)", "Range": range_a1}
         rows_preview = _format_sheet_rows(values)
         # v2's right pane: actual cell data as a real table, not a comma-
-        # joined text dump -- there's no semantic "header row" to assume
-        # (the first row of an arbitrary A1:C10-style range is just more
-        # data, not necessarily a label), so this renders headerless, same
-        # as any other headerless table (see approval_window_html.py's
-        # _table_html). table_only since details_text (kept for legacy/
-        # PII-scan) would otherwise show the exact same values twice.
-        table = {"rows": [[str(cell) for cell in row] for row in values[:_SHEET_ROW_LIMIT]]}
-        if len(values) > _SHEET_ROW_LIMIT:
-            table["footer"] = f"… and {len(values) - _SHEET_ROW_LIMIT} more row(s)"
+        # joined text dump (see _sheet_values_table's own docstring).
+        # table_only since details_text (kept for legacy/PII-scan) would
+        # otherwise show the exact same values twice.
+        table = _sheet_values_table(values)
         return await gated_call(
             connector=self.name,
             tool="drive_sheets_get_values",
@@ -1125,6 +1136,13 @@ class DriveConnector(Connector):
                 "drive_sheets_write_range: 'values' must be a JSON 2D array, e.g. [[\"a\",\"b\"]]"
             )
         preview = {"Spreadsheet": name, "Owner": ", ".join(owners) or "(unknown)", "Range": range_a1}
+        # v2's right pane: the actual values being written as a real table,
+        # not a comma-joined text dump -- same treatment and same
+        # reasoning as _sheets_get_values's own table (see
+        # _sheet_values_table's docstring). table_only since details_text
+        # (kept for legacy/PII-scan) would otherwise show the exact same
+        # values twice.
+        table = _sheet_values_table(parsed_values)
         await gated_call(
             connector=self.name,
             tool="drive_sheets_write_range",
@@ -1136,6 +1154,8 @@ class DriveConnector(Connector):
             gate="popup",
             preview=preview,
             details_text=_format_sheet_rows(parsed_values),
+            preview_tables=[table] if parsed_values else [],
+            table_only=True,
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={"spreadsheet_id": spreadsheet_id, "range_a1": range_a1},

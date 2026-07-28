@@ -715,12 +715,21 @@ def _quicklook_thumbnail_for_lorem_ipsum_docx() -> bytes:
 # own name string.
 #
 # All 17 read-gate tools the design canvas mocked are wide except calendar_get_event_details; all
-# 13 write-gate tools it mocked are wide except calendar_create_event/slack_send_message/
-# telegram_send_message/jira_add_comment. Tools the canvas never mocked at all (everything below
-# the first blank line in each connector's block) are a best-effort classification by analogy to
-# the closest mocked sibling from the same connector -- wide only for tools that write/return a
-# genuine prose body (doc/file content, page content, sheet cell values); narrow for short
-# structured field changes. Provisional until reviewed against real --layout v2 screenshots.
+# 13 write-gate tools it mocked are wide except calendar_create_event. The canvas's own mock also
+# had slack_send_message/telegram_send_message/jira_add_comment as narrow, but that mock rendered
+# the message/comment body inline inside its own §2 card via a "Show more" progressive-disclosure
+# toggle this template deliberately never carried over (see build_card_stack_html's own docstring
+# -- "no Show more/less anywhere ... every row has a fixed, truncated size"). Since our narrow
+# layout genuinely has no mechanism at all to show details_text (see that function's own docstring:
+# "no preview pane at all"), keeping these three narrow would silently drop the one thing being
+# approved -- the actual message/comment text -- so they're wide here instead, same as every other
+# tool whose details_text is real free-text content rather than a fixed disclosure sentence. Tools
+# the canvas never mocked at all (everything below the first blank line in each connector's block)
+# are a best-effort classification by analogy to the closest mocked sibling from the same connector
+# -- wide only for tools that write/return a genuine prose body (doc/file content, page content,
+# sheet cell values, chat/comment text); narrow for short structured field changes or a fixed
+# disclosure sentence with nothing to actually preview. Provisional until reviewed against real
+# --layout v2 screenshots.
 _TOOL_LAYOUT: dict[str, str] = {
     # Confirmed wide from the design canvas directly (turns 4-6):
     "gmail_get_message": "wide", "gmail_get_thread": "wide",
@@ -735,7 +744,12 @@ _TOOL_LAYOUT: dict[str, str] = {
     "drive_sheets_write_range": "wide", "drive_upload_file": "wide",
     "jira_create_issue": "wide", "confluence_create_page": "wide",
     "calendar_get_event_details": "narrow", "calendar_create_event": "narrow",
-    "slack_send_message": "narrow", "telegram_send_message": "narrow", "jira_add_comment": "narrow",
+    #
+    # Deviates from the design canvas's own (narrow) mock -- see the
+    # docstring above for why: our narrow layout has no mechanism at all to
+    # show details_text, and these three carry a real message/comment body,
+    # not a fixed disclosure sentence.
+    "slack_send_message": "wide", "telegram_send_message": "wide", "jira_add_comment": "wide",
     #
     # Not mocked by the design canvas -- best-effort by analogy (see docstring above):
     "gmail_reply_all_draft": "wide",  # same shape as gmail_reply_draft
@@ -746,7 +760,7 @@ _TOOL_LAYOUT: dict[str, str] = {
     "drive_move_file": "narrow", "drive_sheets_add_sheet": "narrow",
     "drive_sheets_rename_sheet": "narrow", "drive_sheets_delete_dimensions": "narrow",
     "drive_sheets_format_range": "narrow", "drive_sheets_insert_dimensions": "narrow",
-    "drive_add_comment": "narrow",  # short annotation, like jira_add_comment
+    "drive_add_comment": "wide",  # real comment body, like jira_add_comment (see that entry above)
     "drive_docs_format_content": "narrow",  # formatting only, no new body text
     "calendar_update_event": "narrow", "calendar_create_out_of_office": "narrow",
     "calendar_set_working_location": "narrow", "calendar_set_event_visibility": "narrow",
@@ -1796,7 +1810,7 @@ def _scenarios(
         click_title="Allow once", expected="accept",
         title="Add Gmail Label",
         preview={"From": QA_EMAIL, "Subject": QA_GMAIL_SUBJECT, "Label": "QATEST"},
-        details_text=QA_GMAIL_BODY,
+        details_text="Label will be added; no other content changes.",
         allow_accept_all=False,
         connector="gmail",
     ))
@@ -1806,7 +1820,7 @@ def _scenarios(
         click_title="Allow once", expected="accept",
         title="Remove Gmail Label",
         preview={"From": QA_EMAIL, "Subject": QA_GMAIL_SUBJECT, "Label": "QATEST"},
-        details_text=QA_GMAIL_BODY,
+        details_text="Label will be removed; no other content changes.",
         allow_accept_all=False,
         connector="gmail",
     ))
@@ -1826,7 +1840,7 @@ def _scenarios(
         click_title="Allow once", expected="accept",
         title="Create Gmail Filter",
         preview={"Criteria": f"from:{QA_EMAIL}", "Actions": "Apply label QATEST"},
-        details_text="Synthetic PrivacyFence QA filter. No real information.",
+        details_text="Filter will be created with the criteria and actions above.",
         allow_accept_all=False,
         connector="gmail",
     ))
@@ -1894,7 +1908,7 @@ def _scenarios(
         click_title="Allow once", expected="accept",
         title="Move Drive File",
         preview={"File": QA_DRIVE_FILE, "Owner": QA_EMAIL, "Move to folder": f"{QA_DRIVE_FOLDER} / Archive"},
-        details_text="Synthetic PrivacyFence QA file move. No real information.",
+        details_text="File will be moved to the new folder; its content is unchanged.",
         allow_accept_all=False,
         connector="drive",
     ))
@@ -1907,7 +1921,7 @@ def _scenarios(
             "Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "New tab": "QATEST Sheet2",
             "Size": "26 columns x 1000 rows",
         },
-        details_text="Synthetic PrivacyFence QA new sheet tab. No real information.",
+        details_text="A new tab will be added with the settings shown above.",
         allow_accept_all=False,
         connector="drive",
     ))
@@ -1919,7 +1933,7 @@ def _scenarios(
         preview={
             "Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Tab id": "0", "New title": "QATEST renamed",
         },
-        details_text="Synthetic PrivacyFence QA sheet rename. No real information.",
+        details_text="The tab above will be renamed; its contents are unchanged.",
         allow_accept_all=False,
         connector="drive",
     ))
@@ -1989,7 +2003,7 @@ def _scenarios(
         click_title="Allow once", expected="accept",
         title="Set Working Location",
         preview={"Date": "2027-03-22", "Location": "Home", "Building": "n/a", "Label": "Remote"},
-        details_text="Synthetic PrivacyFence QA working-location entry. No real information.",
+        details_text="Working location will be set as shown above; no other calendar changes.",
         allow_accept_all=False,
         connector="calendar",
     ))
@@ -1999,7 +2013,7 @@ def _scenarios(
         click_title="Allow once", expected="accept",
         title="Set Event Visibility",
         preview={"Event": QA_EVENT, "Calendar": QA_CALENDAR, "Visibility": "default → private"},
-        details_text="Synthetic PrivacyFence QA test event. No real information.",
+        details_text="Only the event's visibility will change; no other fields are affected.",
         allow_accept_all=False,
         connector="calendar",
     ))
@@ -2032,7 +2046,7 @@ def _scenarios(
         click_title="Allow once", expected="accept",
         title="Add Contact Label",
         preview={"Contact": QA_CONTACT, "Label": "QATEST"},
-        details_text="Synthetic PrivacyFence QA contact label. No real information.",
+        details_text="Label will be added to this contact; no other fields change.",
         allow_accept_all=False,
         connector="contacts",
     ))
@@ -2042,7 +2056,7 @@ def _scenarios(
         click_title="Allow once", expected="accept",
         title="Remove Contact Label",
         preview={"Contact": QA_CONTACT, "Label": "QATEST"},
-        details_text="Synthetic PrivacyFence QA contact label removal. No real information.",
+        details_text="Label will be removed from this contact; no other fields change.",
         allow_accept_all=False,
         connector="contacts",
     ))
@@ -2095,7 +2109,7 @@ def _scenarios(
         click_title="Allow once", expected="accept",
         title="Transition Jira Issue",
         preview={"Issue": QA_JIRA_KEY, "Status": "To Do → In Progress"},
-        details_text="Synthetic PrivacyFence QA issue transition. No real information.",
+        details_text="The status change above is the only change; no other fields are affected.",
         allow_accept_all=False,
         connector="jira",
     ))
@@ -2150,7 +2164,7 @@ def _scenarios(
         click_title="Allow once", expected="accept",
         title="Complete Task",
         preview={"Task list": QA_TASK_LIST, "Task": QA_TASK},
-        details_text="Synthetic PrivacyFence QA test task. No real information.",
+        details_text="Task will be marked as completed; title and notes are unchanged.",
         allow_accept_all=False,
         connector="tasks",
     ))
@@ -2160,7 +2174,7 @@ def _scenarios(
         click_title="Allow once", expected="accept",
         title="Uncomplete Task",
         preview={"Task list": QA_TASK_LIST, "Task": QA_TASK},
-        details_text="Synthetic PrivacyFence QA test task. No real information.",
+        details_text="Task will be marked as not completed; title and notes are unchanged.",
         allow_accept_all=False,
         connector="tasks",
     ))
@@ -2170,7 +2184,7 @@ def _scenarios(
         click_title="Allow once", expected="accept",
         title="Move Task",
         preview={"Task": QA_TASK, "From list": QA_TASK_LIST, "To list": QA_CONTRAST_TASK_LIST},
-        details_text="Synthetic PrivacyFence QA test task. No real information.",
+        details_text="Task will be moved to the new list; title and notes are unchanged.",
         allow_accept_all=False,
         connector="tasks",
     ))
@@ -2199,7 +2213,22 @@ def _scenarios(
         click_title="Allow once", expected="accept",
         title="Write Sheet Range",
         preview={"Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Range": "A1:C10"},
-        details_text="Synthetic PrivacyFence QA sheet write: Q2 budget figures, $12,400.00 [QATEST].",
+        # Real, A1:C10-shaped synthetic cell data -- not a plain sentence --
+        # so the right pane's table actually matches what "Range" claims,
+        # same fix and same reasoning as drive_sheets_get_values's own
+        # scenario above.
+        details_text="\n".join(
+            ", ".join(row) for row in
+            [["Category", "Q2 Budget", "Actual"]]
+            + [[f"QA Line {i} [QATEST]", f"${1000 * i:,.2f}", f"${900 * i:,.2f}"] for i in range(1, 10)]
+        ),
+        preview_tables=[{
+            "rows": (
+                [["Category", "Q2 Budget", "Actual"]]
+                + [[f"QA Line {i} [QATEST]", f"${1000 * i:,.2f}", f"${900 * i:,.2f}"] for i in range(1, 10)]
+            ),
+        }],
+        table_only=True,
         allow_accept_all=False,
         temp_accept_eligible=True,
         write_content_flags=["Financial figures (currency amounts)"],
@@ -2215,7 +2244,7 @@ def _scenarios(
         preview={
             "Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Range": "A1:C10", "Format": "Bold header row",
         },
-        details_text="Synthetic PrivacyFence QA sheet formatting. No real information.",
+        details_text="The formatting above will be applied to the range; other formatting is unchanged.",
         allow_accept_all=False,
         temp_accept_eligible=True,
         connector="drive",

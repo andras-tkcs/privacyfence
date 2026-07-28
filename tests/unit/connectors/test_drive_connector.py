@@ -1130,6 +1130,12 @@ class TestSheetsGatedTools:
         # (comma-joined per row), not the raw unparsed JSON string argument.
         # Spreadsheet/Range are already in preview, not repeated here.
         assert kwargs["details_text"] == "a, b\n1, 2"
+        # v2's right pane: the values being written as a real (headerless)
+        # table, same treatment and same reasoning as the read side's own
+        # table -- table_only since details_text (kept for legacy/PII-scan)
+        # would otherwise show the exact same values twice.
+        assert kwargs["preview_tables"] == [{"rows": [["a", "b"], ["1", "2"]]}]
+        assert kwargs["table_only"] is True
         client.write_sheet_values.assert_called_once_with("sheet1", "A1:B2", [["a", "b"], ["1", "2"]])
         assert result == {"updated_cells": 4}
 
@@ -1148,6 +1154,10 @@ class TestSheetsGatedTools:
         assert "… and 1 more row(s)" in details
         assert "49" in details  # last of the 50 shown rows (index 49)
         assert "50" not in details.split("… and")[0]  # the 51st row (index 50) is truncated away
+
+        table = gated_call_spy[0]["preview_tables"][0]
+        assert len(table["rows"]) == 50
+        assert table["footer"] == "… and 1 more row(s)"
 
     async def test_write_range_invalid_json_raises_before_gating(self, gated_call_spy):
         connector, client = make_connector()
