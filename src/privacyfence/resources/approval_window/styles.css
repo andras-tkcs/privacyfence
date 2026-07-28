@@ -138,6 +138,15 @@ img { display: block; max-width: 100%; }
 /* — approval-window-specific, from the "Approval windows design system" project — */
 .pf-head { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 22px; }
 .pf-head h2 { margin: 0; font-size: 25px; white-space: nowrap; }
+/* Read/Write pill, design canvas turn 3 option "3b" -- paired with the
+   same-colored rail on <body> (see approval_window_html.py's
+   build_card_stack_html). Background/color set inline per call (accent
+   vs accent-2 tokens), only the shape/type is shared here. */
+.pf-pill {
+  display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+  font: 600 11px ui-monospace, Menlo, monospace; letter-spacing: 0.05em; text-transform: uppercase;
+  padding: 4px 10px; border-radius: 20px;
+}
 .pf-kicker {
   display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
   font-size: 12px; color: var(--color-neutral-700); white-space: nowrap;

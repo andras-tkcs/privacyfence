@@ -228,6 +228,31 @@ class TestRiskCardVariants:
         assert "Possible PII detected" not in html
 
 
+class TestReadWriteDifferentiation:
+    """Design canvas turn 3, option "3b" -- a colored side rail on <body>'s
+    left edge plus a matching "Read"/"Write" pill next to the title, cyan/
+    accent tokens for reads and magenta/accent-2 for writes, on every
+    dialog (not just ones carrying a PII/content-flag card)."""
+
+    def test_read_gets_the_read_pill_and_accent_rail(self):
+        html = build_card_stack_html(**_minimal_kwargs(is_read=True))
+        assert '<span class="pf-pill" style="background:var(--color-accent-100);color:var(--color-accent-700)">Read</span>' in html
+        assert "border-left: 6px solid var(--color-accent-500)" in html
+        assert ">Write</span>" not in html
+        assert "var(--color-accent-2-500)" not in html
+
+    def test_write_gets_the_write_pill_and_accent_2_rail(self):
+        html = build_card_stack_html(**_minimal_kwargs(is_read=False))
+        assert '<span class="pf-pill" style="background:var(--color-accent-2-100);color:var(--color-accent-2-700)">Write</span>' in html
+        assert "border-left: 6px solid var(--color-accent-2-500)" in html
+        assert ">Read</span>" not in html
+        assert "var(--color-accent-500)" not in html
+
+    def test_pill_sits_next_to_the_title(self):
+        html = build_card_stack_html(**_minimal_kwargs(is_read=True, title="Read Calendar Event"))
+        assert html.index("Read Calendar Event") < html.index('class="pf-pill"')
+
+
 class TestLayoutShapes:
     def test_narrow_layout_has_no_two_column_split(self):
         html = build_card_stack_html(**_minimal_kwargs(layout=NARROW))

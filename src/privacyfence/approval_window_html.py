@@ -513,7 +513,7 @@ def build_card_stack_html(
             scrollable_html.append(sec3)
             next_number += 1
 
-    header_html = _header_html(title, connector_icon_data_uri, shield_icon_data_uri, seen_count_text)
+    header_html = _header_html(title, connector_icon_data_uri, shield_icon_data_uri, seen_count_text, is_read)
     pinned_joined = "".join(pinned_html)
     scrollable_joined = "".join(scrollable_html)
     # The whole left column -- header/§1/§2/risk-card *and* §3 together --
@@ -574,6 +574,12 @@ def build_card_stack_html(
             f'{_html_escape(temp_accept_text)}</div>'
         )
 
+    # Read/write side rail (design canvas turn 3, option "3b"), paired with
+    # the header's same-colored pill above -- 6px, on the window's left
+    # edge, cyan/accent for reads and magenta/accent-2 for writes. Left
+    # padding is reduced by the rail's own width so the total left inset
+    # (rail + padding) still matches the original 30px everywhere else.
+    rail_color = "var(--color-accent-500)" if is_read else "var(--color-accent-2-500)"
     return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -590,7 +596,9 @@ html {{ height: 100%; }}
    grows that region's own internal scrollbar instead of this one. */
 html, body {{ overflow-y: auto; }}
 body {{
-  box-sizing: border-box; padding: 26px 30px 24px; width: {width}px; height: 100vh;
+  box-sizing: border-box; width: {width}px; height: 100vh;
+  padding-top: 26px; padding-right: 30px; padding-bottom: 24px; padding-left: 24px;
+  border-left: 6px solid {rail_color};
   display: flex; flex-direction: column;
 }}
 </style>
@@ -600,7 +608,9 @@ body {{
 """
 
 
-def _header_html(title: str, connector_icon_data_uri: str, shield_icon_data_uri: str, seen_count_text: str) -> str:
+def _header_html(
+    title: str, connector_icon_data_uri: str, shield_icon_data_uri: str, seen_count_text: str, is_read: bool,
+) -> str:
     connector_img = (
         f'<img src="{connector_icon_data_uri}" style="width:20px;height:20px;object-fit:contain">'
         if connector_icon_data_uri else ""
@@ -614,12 +624,23 @@ def _header_html(title: str, connector_icon_data_uri: str, shield_icon_data_uri:
         f'{_html_escape(seen_count_text)}</div>'
         if seen_count_text else ""
     )
+    # Read/Write pill (design canvas turn 3, option "3b" -- colored side
+    # rail + pill), paired with the same-colored rail on <body> below --
+    # cyan/accent for reads, magenta/accent-2 for writes, the same two
+    # token families the rest of this template already uses (e.g. the read
+    # vs write PII/content-flag card variants), just made visible on every
+    # dialog now, not only ones carrying a PII match.
+    pill_bg = "var(--color-accent-100)" if is_read else "var(--color-accent-2-100)"
+    pill_color = "var(--color-accent-700)" if is_read else "var(--color-accent-2-700)"
+    pill_label = "Read" if is_read else "Write"
+    pill_html = f'<span class="pf-pill" style="background:{pill_bg};color:{pill_color}">{pill_label}</span>'
     return (
         '<div class="pf-head">'
         '<div style="min-width:0">'
         f'<div class="pf-kicker">{connector_img}<span>PrivacyFence</span></div>'
         f'{seen_html}'
-        f'<h2>{_html_escape(title)}</h2>'
+        f'<div style="display:flex;align-items:center;gap:10px">'
+        f'<h2>{_html_escape(title)}</h2>{pill_html}</div>'
         '</div>'
         f'{shield_img}'
         '</div>'
