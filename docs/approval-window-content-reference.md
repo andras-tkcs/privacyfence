@@ -44,7 +44,7 @@ differs is which optional sections a given call populates. In display order:
 | 4 | "AI will receive" checklist | `visibility` dict passed | **yes** | – | Per-tool opt-in — only Gmail/Drive/Slack read tools pass this (see View groups below) |
 | 5 | PII banner (red tint + sensitivity badges) | PII detector flagged the scanned content | **yes** | – | **Automatic** — `gate.py` runs `detect_pii_categories()` on every review-gate call's content, not opt-in per tool |
 | 6 | Content-flag banner (amber, informational) | local PII-pattern detector flagged Claude's own drafted content | – | **yes** | **Automatic** — same detector run over every popup-gate call's `details_text` |
-| 7 | "Claude says (unverified)" reason box | `claude_reason` non-empty | no | no | **Automatic** — every gated tool's schema requires a `reason` param (Phase 1b); self-reported, never verified |
+| 7 | "Claude says (unverified)" reason box | `claude_reason` non-empty | no | no | **Automatic** — every gated tool's schema requires a `reason` param (Phase 1b); self-reported, never verified. **v2**'s kicker text differs by direction: "Why Claude needs more data" (review-gate) vs. "Why Claude is doing this" (popup-gate) — legacy keeps one plain title regardless of direction |
 | 8 | Details/"Preview" pane (reading-time estimate + Show more/less) | always | no | no | Body rendering varies — see `content_kind`/`pdf_bytes` below |
 | 9 | Temp-accept disclosure caption (plain text, not a control) | `temp_accept_eligible` | – | **yes** | **Automatic** — `gate.py` sets it from `auto_accept.temp_accept_key()` resolving for the six WG-3 tools below. Not offered as a button: clicking Allow once on one of these silently also arms the 5-minute same-file grace window this caption describes — see WG-3 below |
 | 10 | Buttons | always | – | – | Always-allow offered when `auto_accept.suggest_rule()` (review-gate) or `auto_accept.suggest_write_rule()` (popup-gate, WG-2/WG-3 — see [Always allow for writes](TECHNICAL_REFERENCE.md#always-allow-for-writes)) can derive a rule from this item. The temp-accept caption (row 9) and an Always-allow button are independent and can both appear at once (WG-3) |
@@ -102,23 +102,34 @@ Confluence's `get_page`/`get_page_by_title`). On **legacy**, a blank checklist c
 box renders at all for that tool (the old RG-1 group); a non-blank one means it does (the old RG-2
 group) — on **v2**, §3 renders either way, just with fewer rows when blank.
 
+"Preview summary fields" below is strictly row 3's `preview` dict (§1 on v2) — the identifying
+context shown before any approval. It's deliberately the *slimmer* of the two field lists a
+connector builds: fields the human needs to identify *which* item this is (a message's Subject, a
+record's Object type) stay here, while everything a connector's own comments call out as "genuinely
+new" (a thread's message count, a contact record's notes, a page's author) moves to the separate
+`new_info` dict that only renders in §3 — never duplicated in this preview column. Don't confuse
+"not in this column" with "never shown to the reviewer": every `new_info` field still renders,
+directly below, in §3. For exactly which fields are new vs. already knowable from a prior
+auto-approved call — the actual "AI knowledge boundary" question, as opposed to "what renders where
+in the dialog" — see [`claude-knowledge-boundary.md`](claude-knowledge-boundary.md), not this table.
+
 | Tool | Preview summary fields | AI-visibility checklist rows |
 |---|---|---|
-| `gmail_download_attachment` | From, Subject, Attachment name, Type, Size, Will save to | — |
-| `drive_download_file` | File, Owner, Size, Modified, Saved to | — |
-| `calendar_get_event_details` | Title, Time, Organizer, Attendees, *Attachments (if any)* | — |
+| `gmail_download_attachment` | From, Subject, Attachment, Type, Size | — |
+| `drive_download_file` | File, Owner, Size, Modified | — |
+| `calendar_get_event_details` | Title, Time | — |
 | `jira_get_issue` | Project, Key, Summary (truncated 80 chars), Status, Assignee | — |
-| `confluence_get_page` / `confluence_get_page_by_title` | Title, Space, Author, Last modified | — |
-| `telegram_get_messages` | Chat, Messages (count) | — |
-| `telegram_search_messages` | Query, Results (count) | — |
-| `salesforce_get_record` | Object type, Name, Record ID | — |
+| `confluence_get_page` / `confluence_get_page_by_title` | Title, Space | — |
+| `telegram_get_messages` | Chat | — |
+| `telegram_search_messages` | Query | — |
+| `salesforce_get_record` | Object type, Record ID | — |
 | `salesforce_run_report` | Report, Report ID | — |
-| `salesforce_search` | Search term, Object types, Results, *Account ID (if scoped)* | — |
-| `gmail_get_thread` | Subject, Participants, Messages (count), Dates (range) | Thread messages, Attachments |
+| `salesforce_search` | Search term, Object types, *[Account ID]* | — |
+| `gmail_get_thread` | Subject, Participants, Dates | Thread messages, Attachments |
 | `drive_sheets_get_values` | Spreadsheet, Owner, Range | Cell values |
-| `slack_get_channel_history` | Channel, Messages (count) | Message text, Usernames |
-| `slack_get_thread_replies` | Channel, Replies (count) | Reply text, Usernames |
-| `slack_search_messages` | Query, Results (count) | Message text, Usernames |
+| `slack_get_channel_history` | Channel | Message text, Usernames |
+| `slack_get_thread_replies` | Channel | Reply text, Usernames |
+| `slack_search_messages` | Query | Message text, Usernames |
 | `gmail_get_message` | From, Date, Subject | Message body, Attachments |
 
 `gmail_get_message` is the one row worth a callout: on **legacy only**, its preview dict (From, To,
@@ -161,10 +172,10 @@ empty row).
 | `slack_send_message` | Channel, [In thread], [Mark unread] |
 | `calendar_create_out_of_office` | Title, Time, Auto-decline |
 | `calendar_set_working_location` | Date, Location, [Building], [Label] |
-| `contacts_update` | Contact, [Name], [Emails], [Phones], [Organization], [Job title] |
+| `contacts_update` | Name, Emails, Phones (each: current value, or old → new if changing), [Organization], [Job title] |
 | `contacts_create` | Name, [Emails], [Phones], [Organization], [Job title] |
-| `contacts_add_label` | Contact, Label |
-| `contacts_remove_label` | Contact, Label |
+| `contacts_add_label` | Name, Label |
+| `contacts_remove_label` | Name, Label |
 | `telegram_send_message` | Chat |
 
 `calendar_create_out_of_office`/`calendar_set_working_location` support the same unconditional
@@ -190,26 +201,26 @@ on the read side.
 | `gmail_add_label` | From, Subject, Label |
 | `gmail_remove_label` | From, Subject, Label |
 | `drive_write_doc_content` | File, Owner |
-| `drive_upload_file` | File, Source, Size, Destination |
+| `drive_upload_file` | File, Source, Size, Folder |
 | `drive_write_file_content` | File, Owner |
-| `drive_move_file` | File, Owner, Move to folder |
+| `drive_move_file` | File, Owner, Folder (old → new — a move always changes it) |
 | `drive_sheets_add_sheet` | Spreadsheet, Owner, New tab, Size |
-| `drive_sheets_rename_sheet` | Spreadsheet, Owner, Tab id, New title |
-| `drive_sheets_delete_dimensions` | Spreadsheet, Owner, Tab id, Action (e.g. "Delete 2 COLUMNS starting at index 3") |
+| `drive_sheets_rename_sheet` | Spreadsheet, Owner, Tab title (old → new) |
+| `drive_sheets_delete_dimensions` | Spreadsheet, Owner, Tab (current title), Action (e.g. "Delete 2 COLUMNS starting at index 3") |
 | `calendar_create_event` | Title, Time, Calendar, [Location], [Conferencing], [Rooms], [Attendees] |
-| `calendar_update_event` | Event, Calendar, + one row per changed field (Title/Start/End/Description/Location/Conferencing/Rooms — only fields that actually changed appear) |
+| `calendar_update_event` | Event, Calendar, Start, End (each: current value, or old → new if changing), + one row per other changed field (Description/Location/Conferencing/Rooms — only fields that actually changed appear) |
 | `calendar_set_event_visibility` | Event, Calendar, Visibility (old → new) |
-| `jira_create_issue` | Project, Type, Summary, [Priority] |
+| `jira_create_issue` | Project, Type, Summary, [Priority] — v2's WIDE right pane also shows Description as a labeled block, when provided |
 | `jira_add_comment` | Issue |
 | `jira_update_issue` | Issue, + one row per changed field (Summary/Description/Priority/any custom fields — only fields actually being updated appear) |
 | `jira_transition_issue` | Issue, Status (old → new) |
 | `confluence_create_page` | Space, Title, [Parent page ID] |
 | `confluence_update_page` | Page ID, Space, Title |
-| `tasks_create_task` | Task list, Title, [Due] |
-| `tasks_update_task` | Task list, Task, [New title], [New due] |
+| `tasks_create_task` | Task list, Title, [Due] — v2's WIDE right pane also shows Notes as a labeled block, when provided |
+| `tasks_update_task` | Task list, Task (current value, or old → new if changing), [Due (old → new)] — v2's WIDE right pane also shows Notes as a labeled block, when changing |
 | `tasks_complete_task` | Task list, Task |
 | `tasks_uncomplete_task` | Task list, Task |
-| `tasks_move_task` | Task, From list, To list |
+| `tasks_move_task` | Task, List (old → new — a move always changes it) |
 
 `gmail_create_draft`/`gmail_reply_draft`/`gmail_reply_all_draft` propose the one unconditional
 entry in this whole group, `always_allow` (no recipient check at all) — every other row proposes a
@@ -236,7 +247,7 @@ Always-allow button and the temp-accept caption can both be showing on the same 
 |---|---|
 | `drive_sheets_write_range` | Spreadsheet, Owner, Range |
 | `drive_sheets_format_range` | Spreadsheet, Owner, Range, Format (summary of applied formatting) |
-| `drive_sheets_insert_dimensions` | Spreadsheet, Owner, Tab id, Action (e.g. "Insert 3 ROWS before index 5") |
+| `drive_sheets_insert_dimensions` | Spreadsheet, Owner, Tab (current title), Action (e.g. "Insert 3 ROWS before index 5") |
 | `drive_add_comment` | File, Owner |
 | `drive_docs_edit_content` | File, Owner, Match ("every occurrence" / "the one matching occurrence") |
 | `drive_docs_format_content` | File, Owner, Format (summary of applied formatting) |
@@ -261,11 +272,17 @@ skips the grace window entirely in favor of a standing rule, same confirmation f
   the review-gate's `pii_categories` forces a second explicit `show_pii_confirmation_popup` before
   the decision is final — a trust-boundary gate, not just a label — and `drive_upload_file` is the
   one popup-gate tool whose own scan (`gate.py`'s `upload_pii_categories`) triggers that same
-  second dialog and audit-log `pii_detected` field, without changing what the first popup itself
-  shows (still just the ordinary amber banner, informational only, from `write_content_flags`).
-  Every other popup-gate tool's amber banner stays purely informational end to end: no tint beyond
-  it, no second dialog, the click resolves immediately regardless — there's no "personal data
-  snuck in" scenario for content Claude already described in chat. See
+  second dialog and audit-log `pii_detected` field. On **legacy**, this changes nothing about what
+  the first popup itself shows (still just the ordinary amber banner, informational only, from
+  `write_content_flags`). On **v2**, the first popup's card *does* look different for this one
+  tool: `gate.py` passes `upload_forced=True` (derived from `upload_pii_categories` being
+  non-empty) through to `show_popup`/`show_native_approval`, which renders the "write-forced"
+  card variant — an interim placeholder reusing the read-gate's own red-tinted styling, since no
+  distinct design exists yet for this narrow case (see `approval_window_html.py`'s
+  `_risk_section_html` docstring). Every other popup-gate tool's amber banner stays purely
+  informational end to end on both layouts: no tint beyond it, no second dialog, the click
+  resolves immediately regardless — there's no "personal data snuck in" scenario for content
+  Claude already described in chat. See
   [`TECHNICAL_REFERENCE.md`'s PII detection gate section](TECHNICAL_REFERENCE.md#pii-detection-gate)
   for the full reasoning behind `drive_upload_file`'s exception.
 - **Seen-count caption and "Claude says" reason box**: both, since both are computed centrally in

@@ -92,6 +92,7 @@ def show_popup(
     preview_tables: list[dict] | None = None,
     preview_blocks: list[dict] | None = None,
     table_only: bool = False,
+    upload_forced: bool = False,
 ) -> str:
     """Approval popup for write tools. No PII *gate* applies here -- see
     gate.py's module docstring for why the PII confirmation flow is
@@ -150,6 +151,15 @@ def show_popup(
     jira_create_issue's Description heading. See gate.py's gated_call
     docstring for the exact shape of each. Legacy layout ignores all three.
 
+    ``upload_forced`` selects the v2 redesign's distinct "write-forced" PII
+    card styling (an interim placeholder reusing the read-gate's own look --
+    see approval_window_html.py's _risk_section_html docstring) for
+    drive_upload_file's own real PII match, which -- unlike every other
+    write tool's informational ``write_content_flags`` banner -- forces the
+    same second "Are you sure?" confirmation the read side gets. gate.py
+    sets this from whether ``upload_pii_categories`` is non-empty, the one
+    signal unique to that call site. Legacy layout ignores it.
+
     Returns 'accept', 'deny', or 'accept_all' (only offered when
     allow_accept_all is True).
     """
@@ -159,6 +169,7 @@ def show_popup(
         write_content_flags=write_content_flags, seen_count=seen_count, connector=connector,
         preview_bytes=preview_bytes, preview_mime_type=preview_mime_type,
         preview_tables=preview_tables, preview_blocks=preview_blocks, table_only=table_only,
+        upload_forced=upload_forced,
     )
 
 

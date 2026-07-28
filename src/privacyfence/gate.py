@@ -477,6 +477,11 @@ async def gated_call(
                     suggestion is not None, preview_bytes, preview_mime_type,
                     preview_tables=preview_tables, preview_blocks=preview_blocks,
                     table_only=table_only,
+                    # upload_forced selects the v2 redesign's distinct "write-forced" PII
+                    # card (see show_popup's own docstring) -- upload_pii_categories is only
+                    # ever non-empty for drive_upload_file's real PII match, the one write
+                    # call that forces the same second confirmation the read side gets.
+                    upload_forced=bool(upload_pii_categories),
                 )
 
                 if decision in ("accept", "accept_all") and upload_pii_categories:
