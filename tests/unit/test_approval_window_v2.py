@@ -304,6 +304,64 @@ class TestV2HeightEstimate:
         assert short.build_panel().frame().size.height == long.build_panel().frame().size.height
 
 
+class TestV2ButtonsDisabledUntilWebviewLoads:
+    """webView_didFinishNavigation_ is what re-enables Deny/Allow once/
+    Always allow once the card-stack webview has actually painted --
+    loadHTMLString_baseURL_ is asynchronous even for this fully local
+    document (base64 fonts, full CSS bundle), so without this a fast or
+    reflexive click could resolve the decision before the reviewer has
+    seen any content at all. See _build_content_view_v2's own comment."""
+
+    def test_buttons_start_disabled(self):
+        controller = make_v2_controller(allow_accept_all=True)
+        panel = controller.build_panel()
+
+        buttons = buttons_by_title(flatten(panel.contentView()))
+        assert buttons["Deny"].isEnabled() is False
+        assert buttons["Allow once"].isEnabled() is False
+        assert buttons["Always allow"].isEnabled() is False
+
+    def test_buttons_enabled_after_navigation_finishes(self):
+        controller = make_v2_controller(allow_accept_all=True)
+        panel = controller.build_panel()
+
+        controller.webView_didFinishNavigation_(controller._details_view, None)
+
+        buttons = buttons_by_title(flatten(panel.contentView()))
+        assert buttons["Deny"].isEnabled() is True
+        assert buttons["Allow once"].isEnabled() is True
+        assert buttons["Always allow"].isEnabled() is True
+
+    @pytest.mark.parametrize(
+        "failure_method",
+        ["webView_didFailNavigation_withError_", "webView_didFailProvisionalNavigation_withError_"],
+    )
+    def test_buttons_enabled_even_if_navigation_fails(self, failure_method):
+        # Fail-safe: a load failure must still enable the buttons rather
+        # than permanently trap the reviewer in an unresponsive modal.
+        controller = make_v2_controller(allow_accept_all=True)
+        panel = controller.build_panel()
+
+        getattr(controller, failure_method)(controller._details_view, None, None)
+
+        buttons = buttons_by_title(flatten(panel.contentView()))
+        assert buttons["Deny"].isEnabled() is True
+        assert buttons["Allow once"].isEnabled() is True
+        assert buttons["Always allow"].isEnabled() is True
+
+    def test_legacy_layout_buttons_are_unaffected(self):
+        # Legacy's content isn't behind a single full-window webview (most
+        # of it is native, synchronously-drawn views), so this gate is v2
+        # only -- legacy buttons must start enabled, same as before this
+        # existed.
+        controller = make_v2_controller(layout="legacy")
+        panel = controller.build_panel()
+
+        buttons = buttons_by_title(flatten(panel.contentView()))
+        assert buttons["Deny"].isEnabled() is True
+        assert buttons["Allow once"].isEnabled() is True
+
+
 class TestV2LegacyUnaffected:
     """The default layout ("legacy") must render exactly as before -- these
     mirror a couple of test_approval_window.py's own assertions as a belt-

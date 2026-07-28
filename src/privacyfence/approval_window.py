@@ -493,6 +493,14 @@ class ApprovalWindowController(NSObject):
         self._details_html_string = ""
         self._details_expanded = False
         self._details_height = _DETAILS_HEIGHT
+        # v2 only (see webView_didFinishNavigation_): Deny/Allow once/
+        # Always allow start disabled and only become clickable once the
+        # card-stack webview has actually finished loading, so a fast or
+        # reflexive click can't resolve the decision before its content is
+        # even visible -- the same "don't approve what wasn't reviewed"
+        # principle _build_button() already applies to Allow once's missing
+        # Enter keyEquivalent, just covering the window's initial paint too.
+        self._v2_action_buttons: list = []
         return self
 
     # ------------------------------------------------------------------ #
@@ -1334,6 +1342,11 @@ class ApprovalWindowController(NSObject):
         webview = WKWebView.alloc().initWithFrame_configuration_(
             NSMakeRect(0, 0, window_width, webview_height), config
         )
+        # loadHTMLString_baseURL_ is asynchronous even for this fully local,
+        # self-contained document (parsing the embedded base64 fonts/CSS
+        # alone takes a beat) -- the navigation delegate below is what
+        # re-enables the buttons once it's actually done, not a timer/guess.
+        webview.setNavigationDelegate_(self)
         webview.loadHTMLString_baseURL_(html, None)
         self._details_view = webview
         content.addSubview_(webview)
@@ -1343,7 +1356,9 @@ class ApprovalWindowController(NSObject):
         # Button row -- identical construction/positioning to the legacy
         # layout's own button row (_build_content_view above), just anchored
         # under the webview (+ toggle band) instead of under the measured
-        # section stack.
+        # section stack. Disabled until webView_didFinishNavigation_ fires
+        # below -- see _v2_action_buttons' own comment in init().
+        self._v2_action_buttons = []
         accept_btn = self._build_button("Allow once", primary=True)
         button_h = accept_btn.frame().size.height
         button_y = y + (_BUTTON_ROW_HEIGHT - button_h) / 2.0
@@ -1351,10 +1366,12 @@ class ApprovalWindowController(NSObject):
         deny_btn = self._build_button("Deny", danger=True)
         deny_btn.setFrameOrigin_((_MARGIN, button_y))
         content.addSubview_(deny_btn)
+        self._v2_action_buttons.append(deny_btn)
 
         right_x = window_width - _MARGIN - accept_btn.frame().size.width
         accept_btn.setFrameOrigin_((right_x, button_y))
         content.addSubview_(accept_btn)
+        self._v2_action_buttons.append(accept_btn)
 
         if self.allow_accept_all:
             link_x = _MARGIN + deny_btn.frame().size.width + 16.0
@@ -1362,8 +1379,41 @@ class ApprovalWindowController(NSObject):
             link_y = y + (_BUTTON_ROW_HEIGHT - accept_all_btn.frame().size.height) / 2.0
             accept_all_btn.setFrameOrigin_((link_x, link_y))
             content.addSubview_(accept_all_btn)
+            self._v2_action_buttons.append(accept_all_btn)
+
+        for btn in self._v2_action_buttons:
+            btn.setEnabled_(False)
 
         return content
+
+    def webView_didFinishNavigation_(self, webView, navigation) -> None:
+        """WKNavigationDelegate callback: the card-stack webview has
+        actually finished loading and painting, so it's now safe to let
+        Deny/Allow once/Always allow be clicked -- see _build_content_view_v2
+        (where they start disabled) and _v2_action_buttons' comment in
+        init() for why. Never wired up for the legacy layout, so this only
+        ever fires for v2's full-window webview."""
+        self._enable_v2_action_buttons()
+
+    def webView_didFailNavigation_withError_(self, webView, navigation, error) -> None:
+        """Fail-safe counterpart to webView_didFinishNavigation_ above: a
+        load that fails outright must still enable the buttons, not leave
+        them permanently disabled. This document is fully local/self-
+        contained (no network, nil base URL), so an actual failure here
+        would be unexpected -- but leaving a reviewer stuck in a modal
+        dialog with no way to even click Deny would be a far worse outcome
+        than the cosmetic issue this whole mechanism exists to fix."""
+        self._enable_v2_action_buttons()
+
+    def webView_didFailProvisionalNavigation_withError_(self, webView, navigation, error) -> None:
+        """Same fail-safe as webView_didFailNavigation_withError_ above, for
+        the earlier (provisional) failure point in WKNavigationDelegate's
+        callback sequence."""
+        self._enable_v2_action_buttons()
+
+    def _enable_v2_action_buttons(self) -> None:
+        for btn in self._v2_action_buttons:
+            btn.setEnabled_(True)
 
     def toggleDetailsExpanded_(self, _sender) -> None:
         """"Show more"/"Show less" -- progressive disclosure as an *area*

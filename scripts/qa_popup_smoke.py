@@ -193,8 +193,22 @@ def _click_button(pid: int, title: str) -> str:
     """Click a button on our own process's first window by its exact title
     -- returns "clicked", "BUTTON_NOT_FOUND" (the window has no button with
     this exact title -- e.g. the button set didn't match what the scenario
-    expected), or an osascript-level error string. Assumes the window
-    already exists (call _wait_for_window() first).
+    expected), "TIMEOUT_BUTTON_DISABLED" (the button exists but never
+    became enabled within WINDOW_WAIT_TIMEOUT_SECONDS), or an osascript-
+    level error string. Assumes the window already exists (call
+    _wait_for_window() first).
+
+    v2's Deny/Allow once/Always allow start disabled and only become
+    enabled once the card-stack webview finishes loading (see
+    approval_window.py's webView_didFinishNavigation_ -- loadHTMLString_
+    baseURL_ is asynchronous even for local content, so a click landing
+    before that finishes would otherwise let a click "succeed" against
+    a button that doesn't actually do anything yet, which without this
+    wait would leave show_native_approval() blocked in
+    runModalForWindow_ forever (the modal never resolves) instead of
+    failing the scenario cleanly. Legacy's buttons are never disabled, so
+    this poll passes on its first check for that layout -- no behavior
+    change there.
     """
     script = f'''
     tell application "System Events"
@@ -203,6 +217,12 @@ def _click_button(pid: int, title: str) -> str:
             if not (exists button "{title}" of window 1) then
                 return "BUTTON_NOT_FOUND"
             end if
+            set deadlineTime to (current date) + {WINDOW_WAIT_TIMEOUT_SECONDS}
+            repeat
+                if (enabled of button "{title}" of window 1) then exit repeat
+                if (current date) > deadlineTime then return "TIMEOUT_BUTTON_DISABLED"
+                delay 0.1
+            end repeat
             click button "{title}" of window 1
         end tell
     end tell
