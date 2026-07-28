@@ -14,6 +14,7 @@ from privacyfence.approval_window_html import (
     NARROW,
     WIDE,
     _risk_section_html,
+    _WIDE_LEFT_COLUMN_WIDTH,
     build_card_stack_html,
     build_preview_body_html,
     disclosure_rows_from_visibility,
@@ -193,12 +194,12 @@ class TestRiskCardVariants:
 class TestLayoutShapes:
     def test_narrow_layout_has_no_two_column_split(self):
         html = build_card_stack_html(**_minimal_kwargs(layout=NARROW))
-        assert "flex:0 0 350px" not in html
+        assert "flex:0 0" not in html
         assert "width: 610px" in html
 
     def test_wide_layout_has_the_two_column_split(self):
         html = build_card_stack_html(**_minimal_kwargs(layout=WIDE))
-        assert "flex:0 0 350px" in html
+        assert f"flex:0 0 {_WIDE_LEFT_COLUMN_WIDTH}px" in html
         assert "width: 880px" in html
 
     def test_narrow_layout_has_no_preview_pane_at_all(self):

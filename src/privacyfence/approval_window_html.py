@@ -76,6 +76,15 @@ WIDE = "wide"
 
 _CONTENT_WIDTH = {NARROW: 610, WIDE: 880}
 
+# WIDE's left column width -- deliberately narrower than a full 550px
+# single-column tool's content width (matching the design canvas's own
+# flex:0 0 350px would have been even narrower still), bumped to give §1-§4's
+# rows more room without pushing the window's overall width past what
+# comfortably fits on a scaled-resolution laptop display (see the redesign
+# discussion: a symmetric 550/550 split would need an ~1200px window, too
+# wide for common 1280/1440-logical-point MacBook screens).
+_WIDE_LEFT_COLUMN_WIDTH = 420
+
 # §3's generic allow/redact/block -> disclosure-sentence mapping. A
 # deliberate, generic rule rather than hand-authored per-tool prose (compare
 # the design canvas's bespoke wording, e.g. "Full values for range") -- see
@@ -383,9 +392,10 @@ def build_card_stack_html(
     left_column = header_html + "".join(sections_html)
 
     if layout == WIDE:
-        # Fixed 350px left column width, matching the design canvas exactly
-        # (its two-column cards use flex:0 0 350px regardless of the overall
-        # 880px window width) -- not derived from `width`.
+        # Fixed left column width (_WIDE_LEFT_COLUMN_WIDTH) regardless of
+        # the overall 880px window width -- the design canvas's own two-
+        # column cards used a fixed flex-basis the same way (350px there;
+        # widened since, see that constant's own comment).
         body_html = (
             # align-items defaults to "stretch" (deliberately not
             # overridden to "flex-start") so both columns match the height
@@ -393,7 +403,7 @@ def build_card_stack_html(
             # divider only extends as far as its own (often shorter)
             # content, instead of running the window's full height.
             '<div style="display:flex;gap:28px">'
-            f'<div style="flex:0 0 350px;min-width:0">{left_column}</div>'
+            f'<div style="flex:0 0 {_WIDE_LEFT_COLUMN_WIDTH}px;min-width:0">{left_column}</div>'
             '<div style="flex:1;min-width:0;border-left:1px solid var(--color-divider);'
             'padding-left:24px;max-height:520px;overflow-y:auto">'
             f'<div class="card-kicker" style="margin-bottom:8px">{_html_escape(preview_kicker)}</div>'

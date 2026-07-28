@@ -30,10 +30,13 @@ covered by test_approval_window.py on every PR and doesn't need this).
 Paste the printed report into the PR description under a "## Popup smoke
 check" heading -- see docs/testing-policy.md §2.2.
 
-_scenarios() has one entry per tool in docs/approval-window-content-reference.md's RG-1/RG-2/
-RG-3/RG-4/WG-1/WG-2 tables (62 tools total, including every RG-1 tool sharing a dialog shape,
-e.g. confluence_get_page/confluence_get_page_by_title) -- every dialog shape that doc documents
-gets a real on-screen click, not just a representative handful. Preview/details data is
+_scenarios() has at least one entry per tool in docs/approval-window-content-reference.md's
+RG-1/RG-2/RG-3/RG-4/WG-1/WG-2 tables (62 tools total, including every RG-1 tool sharing a dialog
+shape, e.g. confluence_get_page/confluence_get_page_by_title) -- every dialog shape that doc
+documents gets a real on-screen click, not just a representative handful. A handful of RG-1 tools
+additionally get two "RG-1 stress" readability variants (long text/many rows/columns, with and
+without a PII banner) beyond their one baseline entry -- see the "RG-1 stress" section below for
+why. Preview/details data is
 realistic-but-synthetic, sourced from tests/fixtures/live/*/*.json (recorded, redacted real API
 responses -- see scripts/qa_fixture_recorder.py) and docs/qa-environment-setup.md's own PFQA/
 [QATEST] naming conventions, rather than generic placeholder strings -- see that doc's "one rule
@@ -189,26 +192,28 @@ def _wait_for_window(pid: int) -> str:
     return _run_applescript(script)
 
 
-def _click_button(pid: int, title: str) -> str:
-    """Click a button on our own process's first window by its exact title
-    -- returns "clicked", "BUTTON_NOT_FOUND" (the window has no button with
-    this exact title -- e.g. the button set didn't match what the scenario
-    expected), "TIMEOUT_BUTTON_DISABLED" (the button exists but never
-    became enabled within WINDOW_WAIT_TIMEOUT_SECONDS), or an osascript-
-    level error string. Assumes the window already exists (call
-    _wait_for_window() first).
+def _wait_for_button_enabled(pid: int, title: str) -> str:
+    """Block until a button with this exact title exists AND is enabled on
+    our own process's first window -- returns "ready", "BUTTON_NOT_FOUND"
+    (no such button ever appeared), or "TIMEOUT_BUTTON_DISABLED" (it
+    exists but never became enabled within WINDOW_WAIT_TIMEOUT_SECONDS).
 
     v2's Deny/Allow once/Always allow start disabled and only become
     enabled once the card-stack webview finishes loading (see
     approval_window.py's webView_didFinishNavigation_ -- loadHTMLString_
-    baseURL_ is asynchronous even for local content, so a click landing
-    before that finishes would otherwise let a click "succeed" against
-    a button that doesn't actually do anything yet, which without this
-    wait would leave show_native_approval() blocked in
-    runModalForWindow_ forever (the modal never resolves) instead of
-    failing the scenario cleanly. Legacy's buttons are never disabled, so
-    this poll passes on its first check for that layout -- no behavior
-    change there.
+    baseURL_ is asynchronous even for local content). This is the actual
+    "the popup is ready" signal, distinct from _wait_for_window()'s "the
+    window exists" -- the window appears (and passes _wait_for_window)
+    the instant the NSPanel is created, well before the webview has
+    painted anything, so a screenshot taken right after _wait_for_window
+    alone can capture a still-blank webview (just the header and disabled
+    buttons) depending on how fast the machine happens to render that
+    run -- not reliably reproducible, and no --pause-seconds value fixes
+    it for certain, only makes the race less likely to lose. Called both
+    by the screenshot step (clicker(), below) and by _click_button()
+    before it actually clicks, so neither can act on a stale window state.
+    Legacy's buttons are never disabled, so this returns "ready" on its
+    first check for that layout -- no behavior change there.
     """
     script = f'''
     tell application "System Events"
@@ -219,10 +224,35 @@ def _click_button(pid: int, title: str) -> str:
             end if
             set deadlineTime to (current date) + {WINDOW_WAIT_TIMEOUT_SECONDS}
             repeat
-                if (enabled of button "{title}" of window 1) then exit repeat
+                if (enabled of button "{title}" of window 1) then return "ready"
                 if (current date) > deadlineTime then return "TIMEOUT_BUTTON_DISABLED"
                 delay 0.1
             end repeat
+        end tell
+    end tell
+    '''
+    return _run_applescript(script)
+
+
+def _click_button(pid: int, title: str) -> str:
+    """Click a button on our own process's first window by its exact title
+    -- returns "clicked", "BUTTON_NOT_FOUND"/"TIMEOUT_BUTTON_DISABLED" (see
+    _wait_for_button_enabled), or an osascript-level error string. Assumes
+    the window already exists (call _wait_for_window() first).
+
+    Waits for the button to actually be enabled before clicking -- without
+    this, a click landing before v2's webview finishes loading would
+    "succeed" against a button that doesn't do anything yet, leaving
+    show_native_approval() blocked in runModalForWindow_ forever (the
+    modal never resolves) instead of failing the scenario cleanly.
+    """
+    wait_status = _wait_for_button_enabled(pid, title)
+    if wait_status != "ready":
+        return wait_status
+    script = f'''
+    tell application "System Events"
+        set targetProcess to first process whose unix id is {pid}
+        tell targetProcess
             click button "{title}" of window 1
         end tell
     end tell
@@ -352,8 +382,8 @@ def _run_scenario(
 
     if layout_mode != "legacy":
         # Inject the redesigned rendering's params from the scenario name
-        # alone -- see _TOOL_LAYOUT's docstring -- rather than editing all
-        # 61 individual scenario calls below. is_read is derived from the
+        # alone -- see _TOOL_LAYOUT's docstring -- rather than editing every
+        # individual scenario call below. is_read is derived from the
         # "RG-"/"WG-" prefix every real tool scenario name already carries
         # (docs/approval-window-content-reference.md's own grouping);
         # upload_forced only ever applies to drive_upload_file (see gap #4
@@ -378,6 +408,19 @@ def _run_scenario(
         wait_status = _wait_for_window(pid)
         if wait_status != "ready":
             click_status_box.append(wait_status)
+            return
+        # The window existing is not the same as it being ready to look
+        # at: v2's webview loads asynchronously and the window appears the
+        # instant the NSPanel is created, well before that finishes (see
+        # _wait_for_button_enabled's own docstring) -- waiting on "Deny"
+        # (always present, never conditional like "Always allow") becoming
+        # enabled is the actual "safe to screenshot" signal. Without this,
+        # a screenshot taken right after _wait_for_window alone could
+        # capture just the header and disabled buttons, a race no
+        # --pause-seconds value reliably avoids.
+        ready_status = _wait_for_button_enabled(pid, "Deny")
+        if ready_status != "ready":
+            click_status_box.append(ready_status)
             return
         if screenshot_dir is not None:
             # Taken as the popup first appears, before any click -- for a
@@ -457,6 +500,60 @@ QA_PAGE_BODY = (
 QA_ACCOUNT = "PrivacyFence QA — Acme Test Co [QATEST]"
 QA_REPORT = "PrivacyFence QA Report"
 QA_TELEGRAM_SEED = "PrivacyFence QA seed message [QATEST]. No real information."
+
+# Readability stress-test fixtures (RG-1 stress section below): every RG-1
+# tool's baseline scenario above uses short, single-line content -- these
+# exist purely to exercise the fixed-layout line-clamp/table machinery with
+# long text, many rows/columns, and a PII banner, in isolation from each
+# other (a long/no-PII and long/PII pair per tool, holding content length
+# constant and varying only the PII banner) so a reviewer can tell which
+# variable actually caused any given readability problem.
+QA_LONG_PARAGRAPH = (
+    "Synthetic PrivacyFence QA long-form test content [QATEST]. This paragraph exists purely to "
+    "exercise the fixed-layout line-clamp behavior with a body of text long enough to overflow "
+    "two, three, and four lines at the approval window's actual rendered width, so a reviewer can "
+    "confirm truncation lands with a clean ellipsis instead of a ragged cutoff, an overlapping "
+    "line, or a silently reflowed card. No real information is present anywhere in this sentence "
+    "or any of the ones around it -- it is QA filler text only, safe to read, copy, or discard by "
+    "any automated test or human reviewer without consequence."
+)
+QA_MANY_ATTENDEES = ", ".join(
+    [f"{QA_PERSON} (organizer)"]
+    + [f"QA Contact {i} <qatest.contact{i}@example.com>" for i in range(1, 9)]
+)
+QA_MANY_COMMENTS = [
+    [f"QA Commenter {i}", f"2026-07-{10 + i:02d}",
+     (QA_LONG_PARAGRAPH if i % 3 == 0 else f"Synthetic PrivacyFence QA comment {i} [QATEST]. No real information.")]
+    for i in range(1, 7)
+]
+QA_MANY_TELEGRAM_ROWS = [
+    [f"QA Contact {i}", f"2026-07-{10 + i:02d}T09:{i:02d}:00Z",
+     (QA_LONG_PARAGRAPH if i % 4 == 0 else f"Synthetic PrivacyFence QA message {i} [QATEST]. No real information.")]
+    for i in range(1, 13)
+]
+QA_MANY_SALESFORCE_FIELDS = {
+    "Name": QA_ACCOUNT, "Industry": "Technology", "Type": "Customer", "Phone": QA_PHONE,
+    "Website": "https://qa-placeholder.example.com", "BillingCity": "Budapest",
+    "BillingCountry": "Hungary", "AnnualRevenue": "1000000", "NumberOfEmployees": "42",
+    "AccountSource": "QA Seed Data", "Description": QA_LONG_PARAGRAPH,
+    "OwnerId": "005QA00000000001", "CreatedDate": "2026-01-01T00:00:00Z",
+    "LastModifiedDate": "2026-07-16T00:00:00Z", "Rating": "Hot",
+}
+QA_MANY_SALESFORCE_ROWS = [
+    [f"{QA_ACCOUNT} {i}", "Prospecting", f"${1000 * i:,}", f"2026-0{(i % 9) + 1}-15", QA_PERSON]
+    for i in range(1, 11)
+]
+QA_MANY_SEARCH_ROWS = [
+    ["Account", f"{QA_ACCOUNT} {i}", f"001QA000001234{i}"] for i in range(1, 11)
+]
+QA_LONG_SUBJECT = (
+    "Re: Fwd: Re: PrivacyFence QA quarterly financial summary and supporting documentation "
+    "review needed before Friday's board meeting [QATEST]"
+)
+QA_LONG_FILENAME = (
+    "PrivacyFence-QA-Quarterly-Financial-Summary-And-Supporting-Documentation-Bundle-"
+    "2026-Q3-Draft-v12-FINAL-FINAL [QATEST].pdf"
+)
 
 # A synthetic settings.yaml for the menu-bar scenario -- enough auto_accept_grants/auto_accept_
 # rules spread across a few connectors (gmail, drive, sheets, slack) that the Auto-accept Rules
@@ -787,9 +884,11 @@ def _scenarios(
     pause_seconds: float = 0.3, screenshot_dir: Path | None = None, only: str | None = None,
     layout_mode: str = "legacy",
 ) -> list[ScenarioResult]:
-    """One scenario per tool in docs/approval-window-content-reference.md's RG-1/RG-2/RG-3/RG-4/
-    WG-1/WG-2 tables (61 tools total) -- every dialog *shape* that reference doc documents, not
-    just a representative handful. Cross-cutting mechanics that doc calls "automatic on every
+    """At least one scenario per tool in docs/approval-window-content-reference.md's RG-1/RG-2/
+    RG-3/RG-4/WG-1/WG-2 tables (61 tools total) -- every dialog *shape* that reference doc
+    documents, not just a representative handful. A handful of RG-1 tools additionally get two
+    "RG-1 stress" readability variants beyond their baseline entry -- see that section below.
+    Cross-cutting mechanics that doc calls "automatic on every
     group" (Deny, Always allow, the temp-accept disclosure caption, the PII/content-flag banners,
     the visibility checklist, seen-count + Claude's reason together, progressive disclosure, the
     Gmail-style header, native PDFView) are folded into specific tool scenarios below rather than kept as
@@ -840,7 +939,7 @@ def _scenarios(
             "Will save to": "~/Downloads/qa-smoke-test.png",
         },
         details_text=QA_GMAIL_BODY,
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="gmail",
         preview_bytes=_TINY_PNG_BYTES, preview_mime_type="image/png",
     ))
@@ -860,7 +959,7 @@ def _scenarios(
             "Saved to": "~/Downloads/PrivacyFence QA test image [QATEST].png",
         },
         details_text="Ordinary, non-sensitive smoke-test file content.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="drive",
         preview_bytes=_TINY_PNG_BYTES, preview_mime_type="image/png",
     ))
@@ -906,7 +1005,7 @@ def _scenarios(
             "caption": "Comments (1)", "headers": ["Author", "Date", "Comment"],
             "rows": [[QA_PERSON, "2026-07-16", "Synthetic PrivacyFence QA test comment. No real information."]],
         }],
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="jira",
     ))
 
@@ -916,16 +1015,22 @@ def _scenarios(
         # resolving the modal loop, so the following "Allow once" click
         # still has to land on the same (now taller) window -- exactly
         # the kind of thing a title-bar-height miscalculation in
-        # _rebuild_content would silently break.
+        # _rebuild_content would silently break. Legacy-only: v2 has no
+        # "Show more"/"Show less" anywhere (full content is always shown
+        # up front via truncation instead, see approval_window_html.py's
+        # module docstring) -- pre_click_title is None under --layout v2
+        # so this scenario just becomes a plain "Allow once" click there,
+        # instead of failing on a button that was never going to exist.
         "RG-1 · confluence_get_page (+ Show more → Allow once)",
-        click_title="Allow once", expected="accept", pre_click_title="Show more",
+        click_title="Allow once", expected="accept",
+        pre_click_title=("Show more" if layout_mode == "legacy" else None),
         title="Read Confluence Page",
         preview={"Title": QA_PAGE, "Space": QA_SPACE},
         new_info={
             "Author": QA_PERSON, "Last modified": "2026-07-16", "Page body": "Full page content",
         },
         details_text=(QA_PAGE_BODY + "\n") * 60 + "the last line, still present",
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="confluence",
     ))
 
@@ -942,7 +1047,7 @@ def _scenarios(
             "Author": QA_PERSON, "Last modified": "2026-07-16", "Page body": "Full page content",
         },
         details_text=QA_PAGE_BODY,
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="confluence",
     ))
 
@@ -956,7 +1061,7 @@ def _scenarios(
         preview_tables=[{
             "headers": ["Sender", "Date", "Message"], "rows": [[QA_PERSON, "2026-07-16", QA_TELEGRAM_SEED]],
         }],
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="telegram",
     ))
 
@@ -970,7 +1075,7 @@ def _scenarios(
         preview_tables=[{
             "headers": ["Sender", "Date", "Message"], "rows": [[QA_PERSON, "2026-07-16", QA_TELEGRAM_SEED]],
         }],
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="telegram",
     ))
 
@@ -984,7 +1089,7 @@ def _scenarios(
         preview_tables=[{
             "headers": ["Field", "Value"], "rows": [["Industry", "Technology"], ["Name", QA_ACCOUNT]],
         }],
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="salesforce",
     ))
 
@@ -999,7 +1104,7 @@ def _scenarios(
             "headers": ["Account Name", "Amount"], "rows": [[QA_ACCOUNT, "$1,000"]],
             "footer": "Total: $1,000",
         }],
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="salesforce",
     ))
 
@@ -1019,8 +1124,318 @@ def _scenarios(
                 ["Account", "PrivacyFence QA — Globex Test Co [QATEST]", "001QA0000067890"],
             ],
         }],
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="salesforce",
+    ))
+
+    # ================================================================== #
+    # RG-1 stress -- same 9 dialog shapes above, but with long text, many
+    # rows/columns, or both, each as a long/no-PII + long/PII pair (holding
+    # content length constant, varying only the PII banner) so a
+    # readability problem can be attributed to one specific cause rather
+    # than several changing at once. See QA_LONG_PARAGRAPH's own comment.
+    # ================================================================== #
+
+    results.append(run(
+        "RG-1 · calendar_get_event_details (long description, many attendees, no PII)",
+        click_title="Allow once", expected="accept",
+        title="Read Calendar Event",
+        preview={"Title": QA_EVENT, "Time": QA_EVENT_TIME},
+        new_info={
+            "Attendees": QA_MANY_ATTENDEES, "Location": "Remote",
+            "Description": QA_LONG_PARAGRAPH,
+        },
+        details_text=f"Attendees: {QA_MANY_ATTENDEES}\n\nDescription:\n{QA_LONG_PARAGRAPH}",
+        claude_reason="Checking the QA event details as requested.",
+        allow_accept_all=True,
+        connector="calendar",
+    ))
+
+    results.append(run(
+        "RG-1 · calendar_get_event_details (long description, many attendees, PII)",
+        click_title="Allow once", expected="accept",
+        title="Read Calendar Event",
+        preview={"Title": QA_EVENT, "Time": QA_EVENT_TIME},
+        new_info={
+            "Attendees": QA_MANY_ATTENDEES, "Location": "Remote",
+            "Description": f"{QA_LONG_PARAGRAPH} Call {QA_PHONE} to confirm attendance.",
+        },
+        details_text=f"Attendees: {QA_MANY_ATTENDEES}\n\nDescription:\n"
+                      f"{QA_LONG_PARAGRAPH} Call {QA_PHONE} to confirm attendance.",
+        claude_reason="Checking the QA event details as requested.",
+        allow_accept_all=True,
+        pii_categories=["Phone number"],
+        connector="calendar",
+    ))
+
+    results.append(run(
+        "RG-1 · jira_get_issue (long description, many comments, no PII)",
+        click_title="Allow once", expected="accept",
+        title="Read Jira Issue",
+        preview={
+            "Project": QA_PROJECT, "Key": QA_JIRA_KEY, "Summary": QA_JIRA_SUMMARY,
+            "Status": "To Do", "Assignee": "Unassigned",
+        },
+        new_info={
+            "Description": QA_LONG_PARAGRAPH,
+            "Comments": "Author, created date, and body per comment",
+        },
+        details_text=f"Reporter: {QA_PERSON}\n\nDescription:\n{QA_LONG_PARAGRAPH}",
+        preview_tables=[{
+            "caption": f"Comments ({len(QA_MANY_COMMENTS)})", "headers": ["Author", "Date", "Comment"],
+            "rows": QA_MANY_COMMENTS,
+        }],
+        allow_accept_all=True,
+        connector="jira",
+    ))
+
+    results.append(run(
+        "RG-1 · jira_get_issue (long description, many comments, PII)",
+        click_title="Allow once", expected="accept",
+        title="Read Jira Issue",
+        preview={
+            "Project": QA_PROJECT, "Key": QA_JIRA_KEY, "Summary": QA_JIRA_SUMMARY,
+            "Status": "To Do", "Assignee": "Unassigned",
+        },
+        new_info={
+            "Description": f"{QA_LONG_PARAGRAPH} Reach the reporter at {QA_PHONE}.",
+            "Comments": "Author, created date, and body per comment",
+        },
+        details_text=f"Reporter: {QA_PERSON}\n\nDescription:\n{QA_LONG_PARAGRAPH} Reach the reporter at {QA_PHONE}.",
+        preview_tables=[{
+            "caption": f"Comments ({len(QA_MANY_COMMENTS)})", "headers": ["Author", "Date", "Comment"],
+            "rows": QA_MANY_COMMENTS,
+        }],
+        allow_accept_all=True,
+        pii_categories=["Phone number"],
+        connector="jira",
+    ))
+
+    results.append(run(
+        "RG-1 · confluence_get_page (long body, no PII)",
+        click_title="Allow once", expected="accept",
+        title="Read Confluence Page",
+        preview={"Title": QA_PAGE, "Space": QA_SPACE},
+        new_info={
+            "Author": QA_PERSON, "Last modified": "2026-07-16", "Page body": "Full page content",
+        },
+        details_text=(QA_LONG_PARAGRAPH + "\n\n") * 3 + "The final line, still present.",
+        allow_accept_all=True,
+        connector="confluence",
+    ))
+
+    results.append(run(
+        "RG-1 · confluence_get_page (long body, PII)",
+        click_title="Allow once", expected="accept",
+        title="Read Confluence Page",
+        preview={"Title": QA_PAGE, "Space": QA_SPACE},
+        new_info={
+            "Author": QA_PERSON, "Last modified": "2026-07-16", "Page body": "Full page content",
+        },
+        details_text=(QA_LONG_PARAGRAPH + "\n\n") * 3 + f"Contact {QA_PERSON} at {QA_PHONE} with questions.",
+        allow_accept_all=True,
+        pii_categories=["Phone number"],
+        connector="confluence",
+    ))
+
+    results.append(run(
+        "RG-1 · telegram_get_messages (many long messages, no PII)",
+        click_title="Allow once", expected="accept",
+        title="Read Telegram Messages",
+        preview={"Chat": "Saved Messages"},
+        new_info={
+            "Messages": str(len(QA_MANY_TELEGRAM_ROWS)),
+            "Message text": "Full sender name, text, and date per message",
+        },
+        details_text="\n".join(f"[{r[1]}] {r[0]}: {r[2]}" for r in QA_MANY_TELEGRAM_ROWS),
+        preview_tables=[{"headers": ["Sender", "Date", "Message"], "rows": QA_MANY_TELEGRAM_ROWS}],
+        allow_accept_all=True,
+        connector="telegram",
+    ))
+
+    results.append(run(
+        "RG-1 · telegram_get_messages (many long messages, PII)",
+        click_title="Allow once", expected="accept",
+        title="Read Telegram Messages",
+        preview={"Chat": "Saved Messages"},
+        new_info={
+            "Messages": str(len(QA_MANY_TELEGRAM_ROWS) + 1),
+            "Message text": "Full sender name, text, and date per message",
+        },
+        details_text="\n".join(f"[{r[1]}] {r[0]}: {r[2]}" for r in QA_MANY_TELEGRAM_ROWS)
+                      + f"\n[2026-07-16T09:00:00Z] {QA_PERSON}: Call me at {QA_PHONE} when you land.",
+        preview_tables=[{
+            "headers": ["Sender", "Date", "Message"],
+            "rows": QA_MANY_TELEGRAM_ROWS + [[QA_PERSON, "2026-07-16T09:00:00Z", f"Call me at {QA_PHONE} when you land."]],
+        }],
+        allow_accept_all=True,
+        pii_categories=["Phone number"],
+        connector="telegram",
+    ))
+
+    results.append(run(
+        "RG-1 · salesforce_get_record (many fields, no PII)",
+        click_title="Allow once", expected="accept",
+        title="Read Salesforce Record",
+        preview={"Object type": "Account", "Record ID": "001QA0000012345"},
+        new_info={
+            "Name": QA_ACCOUNT, "Field values": ", ".join(sorted(QA_MANY_SALESFORCE_FIELDS)),
+        },
+        details_text="Fields:\n" + "\n".join(f"{k}: {v}" for k, v in sorted(QA_MANY_SALESFORCE_FIELDS.items())),
+        preview_tables=[{
+            "headers": ["Field", "Value"],
+            "rows": [[k, QA_MANY_SALESFORCE_FIELDS[k]] for k in sorted(QA_MANY_SALESFORCE_FIELDS)],
+        }],
+        allow_accept_all=True,
+        connector="salesforce",
+    ))
+
+    results.append(run(
+        "RG-1 · salesforce_get_record (many fields, PII)",
+        click_title="Allow once", expected="accept",
+        title="Read Salesforce Record",
+        preview={"Object type": "Account", "Record ID": "001QA0000012345"},
+        new_info={
+            "Name": QA_ACCOUNT, "Field values": ", ".join(sorted(QA_MANY_SALESFORCE_FIELDS)),
+        },
+        details_text="Fields:\n" + "\n".join(f"{k}: {v}" for k, v in sorted(QA_MANY_SALESFORCE_FIELDS.items())),
+        preview_tables=[{
+            "headers": ["Field", "Value"],
+            "rows": [[k, QA_MANY_SALESFORCE_FIELDS[k]] for k in sorted(QA_MANY_SALESFORCE_FIELDS)],
+        }],
+        allow_accept_all=True,
+        pii_categories=["Phone number"],
+        connector="salesforce",
+    ))
+
+    results.append(run(
+        "RG-1 · salesforce_run_report (many columns and rows, no PII)",
+        click_title="Allow once", expected="accept",
+        title="Run Salesforce Report",
+        preview={"Report": QA_REPORT, "Report ID": "00OQA0000006789"},
+        new_info={"Report data": "All report rows/aggregates"},
+        details_text=f"{len(QA_MANY_SALESFORCE_ROWS)} rows, 1 grouping -- synthetic PrivacyFence QA report output.",
+        preview_tables=[{
+            "headers": ["Account Name", "Stage", "Amount", "Close Date", "Owner"],
+            "rows": QA_MANY_SALESFORCE_ROWS,
+            "footer": "Total: $550,000",
+        }],
+        allow_accept_all=True,
+        connector="salesforce",
+    ))
+
+    results.append(run(
+        "RG-1 · salesforce_run_report (many columns and rows, PII)",
+        click_title="Allow once", expected="accept",
+        title="Run Salesforce Report",
+        preview={"Report": QA_REPORT, "Report ID": "00OQA0000006789"},
+        new_info={"Report data": "All report rows/aggregates"},
+        details_text=f"{len(QA_MANY_SALESFORCE_ROWS)} rows, 1 grouping -- synthetic PrivacyFence QA report output.",
+        preview_tables=[{
+            "headers": ["Account Name", "Stage", "Amount", "Close Date", "Owner"],
+            "rows": QA_MANY_SALESFORCE_ROWS,
+            "footer": "Total: $550,000",
+        }],
+        allow_accept_all=True,
+        pii_categories=["Phone number"],
+        connector="salesforce",
+    ))
+
+    results.append(run(
+        "RG-1 · salesforce_search (many results, no PII)",
+        click_title="Allow once", expected="accept",
+        title="Search Salesforce",
+        preview={"Search term": "PrivacyFence QA", "Object types": "Account"},
+        new_info={
+            "Results": str(len(QA_MANY_SEARCH_ROWS)), "Search results": "Object type, Name, and id per match",
+        },
+        details_text="\n".join(f"{r[0]} — {r[1]} (id={r[2]})" for r in QA_MANY_SEARCH_ROWS),
+        preview_tables=[{"headers": ["Object type", "Name", "ID"], "rows": QA_MANY_SEARCH_ROWS}],
+        allow_accept_all=True,
+        connector="salesforce",
+    ))
+
+    results.append(run(
+        "RG-1 · salesforce_search (many results, PII)",
+        click_title="Allow once", expected="accept",
+        title="Search Salesforce",
+        preview={"Search term": "PrivacyFence QA", "Object types": "Account"},
+        new_info={
+            "Results": str(len(QA_MANY_SEARCH_ROWS)), "Search results": "Object type, Name, and id per match",
+        },
+        details_text="\n".join(f"{r[0]} — {r[1]} (id={r[2]})" for r in QA_MANY_SEARCH_ROWS),
+        preview_tables=[{"headers": ["Object type", "Name", "ID"], "rows": QA_MANY_SEARCH_ROWS}],
+        allow_accept_all=True,
+        pii_categories=["Email address"],
+        connector="salesforce",
+    ))
+
+    results.append(run(
+        "RG-1 · gmail_download_attachment (long subject and filename, no PII)",
+        click_title="Allow once", expected="accept",
+        title="Download Gmail Attachment",
+        preview={
+            "From": QA_EMAIL, "Subject": QA_LONG_SUBJECT, "Attachment": QA_LONG_FILENAME,
+            "Type": "application/pdf", "Size": "4.2 MB",
+        },
+        new_info={
+            "Content returned to Claude": "None — file bytes are never sent",
+            "Will save to": f"~/Downloads/{QA_LONG_FILENAME}",
+        },
+        details_text=QA_GMAIL_BODY,
+        allow_accept_all=True,
+        connector="gmail",
+    ))
+
+    results.append(run(
+        "RG-1 · gmail_download_attachment (long subject and filename, PII)",
+        click_title="Allow once", expected="accept",
+        title="Download Gmail Attachment",
+        preview={
+            "From": QA_EMAIL, "Subject": QA_LONG_SUBJECT, "Attachment": QA_LONG_FILENAME,
+            "Type": "application/pdf", "Size": "4.2 MB",
+        },
+        new_info={
+            "Content returned to Claude": "None — file bytes are never sent",
+            "Will save to": f"~/Downloads/{QA_LONG_FILENAME}",
+        },
+        details_text=f"{QA_GMAIL_BODY} Call {QA_PHONE} with questions.",
+        allow_accept_all=True,
+        pii_categories=["Phone number"],
+        connector="gmail",
+    ))
+
+    results.append(run(
+        "RG-1 · drive_download_file (long filename, no PII)",
+        click_title="Allow once", expected="accept",
+        title="Download Drive File",
+        preview={
+            "File": QA_LONG_FILENAME, "Owner": QA_EMAIL, "Size": "128.4 MB", "Modified": "2026-07-16",
+        },
+        new_info={
+            "Content returned to Claude": "None — file bytes are never sent",
+            "Saved to": f"~/Downloads/{QA_LONG_FILENAME}",
+        },
+        details_text="Ordinary, non-sensitive smoke-test file content.",
+        allow_accept_all=True,
+        connector="drive",
+    ))
+
+    results.append(run(
+        "RG-1 · drive_download_file (long filename, PII)",
+        click_title="Allow once", expected="accept",
+        title="Download Drive File",
+        preview={
+            "File": QA_LONG_FILENAME, "Owner": QA_EMAIL, "Size": "128.4 MB", "Modified": "2026-07-16",
+        },
+        new_info={
+            "Content returned to Claude": "None — file bytes are never sent",
+            "Saved to": f"~/Downloads/{QA_LONG_FILENAME}",
+        },
+        details_text=f"Ordinary, non-sensitive smoke-test file content. Contact {QA_PHONE} if corrupted.",
+        allow_accept_all=True,
+        pii_categories=["Phone number"],
+        connector="drive",
     ))
 
     # ================================================================== #
@@ -1065,7 +1480,7 @@ def _scenarios(
         title="Read Sheet Values",
         preview={"Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Range": "A1:C10"},
         details_text="Synthetic PrivacyFence QA test spreadsheet values. No real information.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         visibility={"Cell values": "allow"},
         connector="drive",
     ))
@@ -1081,7 +1496,7 @@ def _scenarios(
         preview={"Channel": QA_SLACK_CHANNEL},
         new_info={"Messages": "2", "First message": QA_SLACK_SEED},
         details_text=f"{QA_SLACK_SEED}\n{QA_SLACK_REPLY}",
-        allow_accept_all=False,
+        allow_accept_all=True,
         visibility={"Message text": "allow", "Usernames": "redact"},
         claude_reason="Checking recent QA channel activity as requested.",
         seen_count=2,
@@ -1095,7 +1510,7 @@ def _scenarios(
         preview={"Channel": QA_SLACK_CHANNEL},
         new_info={"Thread starter": QA_SLACK_SEED, "Replies": "1"},
         details_text=QA_SLACK_REPLY,
-        allow_accept_all=False,
+        allow_accept_all=True,
         visibility={"Message text": "allow", "Usernames": "redact"},
         connector="slack",
     ))
@@ -1107,7 +1522,7 @@ def _scenarios(
         preview={"Query": "QATEST"},
         new_info={"Results": "2"},
         details_text=f"{QA_SLACK_SEED}\n{QA_SLACK_REPLY}",
-        allow_accept_all=False,
+        allow_accept_all=True,
         visibility={"Message text": "allow", "Usernames": "redact"},
         connector="slack",
     ))
@@ -1128,7 +1543,7 @@ def _scenarios(
         preview={"From": QA_EMAIL, "Subject": QA_GMAIL_SUBJECT, "Date": "2026-07-16"},
         new_info={"To": QA_EMAIL, "Labels": "INBOX, IMPORTANT"},
         details_text=f"{QA_GMAIL_BODY} Call me back at 555-0142 [QATEST] to confirm.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         visibility={"Sender & metadata": "redact", "Message body": "allow", "Attachments": "block"},
         content_kind="email",
         pii_categories=["Phone number"],
@@ -1149,7 +1564,7 @@ def _scenarios(
             "Size": "18 KB", "Modified": "2026-07-16",
         },
         details_text="[binary content — this text should not be visible; the PDFView should be]",
-        allow_accept_all=False,
+        allow_accept_all=True,
         visibility={"File metadata": "allow", "Document content": "allow"},
         pdf_bytes=_TINY_PDF_BYTES,
         connector="drive",
@@ -1730,7 +2145,7 @@ def main() -> None:
         help="Run only the scenario(s) whose name contains this text (case-insensitive substring "
              "match against the scenario name shown in the report table, e.g. 'gmail_get_thread', "
              "'RG-4', or 'Menu bar' for the menu-bar/rules-window scenario), instead of the full "
-             "~63-scenario suite (62 tool-approval scenarios plus the one menu-bar scenario). For "
+             "~81-scenario suite (80 tool-approval scenarios plus the one menu-bar scenario). For "
              "grabbing a single updated screenshot -- e.g. for README.md -- without sitting "
              "through the whole run: --scenario 'gmail_get_thread' --screenshot-dir "
              "docs/images/screenshots. Matches nothing -> an empty report and a nonzero exit "
