@@ -222,6 +222,20 @@ async def gated_call(
         # fixed field count (a Salesforce record's fields, search results, a
         # message list) -- see approval_window_html.py's _table_html. Read-only
         # (gate="review") calls only. v2 rendering only; the legacy layout ignores it.
+    preview_blocks: list[dict] | None = None,  # v2 redesign's WIDE right-pane preview, as
+        # an ordered list of {"type": "text"|"field"|"table", ...} blocks -- lets text
+        # and tables interleave (e.g. Jira's Reporter field, then its Description
+        # paragraph, then its Comments table), which details_text/preview_tables alone
+        # can't express. Takes full precedence over both when given -- see
+        # approval_window_html.py's build_preview_body_html. v2 rendering only.
+    table_only: bool = False,  # v2 redesign: when True and preview_tables is non-empty,
+        # the WIDE right pane shows *only* the table(s), not details_text too -- for tools
+        # whose details_text is a full duplicate of the table's own data (a Salesforce
+        # record's plain-text field dump, a Telegram message list) rather than genuinely
+        # distinct content. details_text itself is untouched -- legacy and the PII scan's
+        # default fallback still see it in full. No effect when preview_blocks is set
+        # (blocks already control exactly what renders, no separate "hide text" concept
+        # needed) or when preview_tables is empty.
     details_text: str = "",       # full text shown inline or via TextEdit
     pii_scan_text: str | None = None,  # content-only text for the PII scan; defaults to details_text
     visibility: dict[str, str] | None = None,  # {label: "allow"|"redact"|"block"} -- the review
@@ -383,7 +397,8 @@ async def gated_call(
                     show_read_popup, popup_title, preview or {}, details, suggestion is not None,
                     pii_categories, visibility, claude_reason, seen_count, content_kind, pdf_bytes,
                     connector, preview_bytes, preview_mime_type, new_info=new_info,
-                    preview_tables=preview_tables,
+                    preview_tables=preview_tables, preview_blocks=preview_blocks,
+                    table_only=table_only,
                 )
 
                 if decision in ("accept", "accept_all") and pii_categories:

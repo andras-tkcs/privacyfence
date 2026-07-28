@@ -164,7 +164,18 @@ img { display: block; max-width: 100%; }
    many-row/many-field data reads better as an actual table than a plain-
    text dump) -- used for record field lists, search results, message
    lists, report rows. Plain borders/tokens, no card chrome of its own:
-   it lives inside the existing preview pane, not a separate card. */
+   it lives inside the existing preview pane, not a separate card.
+
+   .pf-preview-label is the one canonical "this is a field/column name"
+   style, shared by table headers, table captions, and standalone field
+   labels in plain-text preview content (e.g. Jira's "Reporter", a Gmail
+   thread message's "From"/"Date") -- so a field name reads identically
+   everywhere in the right pane, whether it's a table header or a plain
+   label next to a value. */
+.pf-preview-label {
+  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--color-neutral-700);
+}
 .pf-table-caption {
   font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
   color: var(--color-neutral-700); margin: 16px 0 6px;
@@ -184,6 +195,20 @@ img { display: block; max-width: 100%; }
 .pf-table-footer {
   font-size: 12px; font-style: italic; color: var(--color-neutral-700); margin: 6px 0 0;
 }
+
+/* Plain-text preview blocks (build_preview_body_html's "blocks" mechanism)
+   -- paragraphs and standalone labeled fields interleaved with tables,
+   e.g. Jira's Reporter field + Description paragraph + Comments table, or
+   a Gmail thread's per-message From/Date + body. */
+.pf-preview-paragraph {
+  white-space: pre-wrap; word-wrap: break-word; font-size: 13px; line-height: 1.6;
+  margin: 0 0 14px;
+}
+.pf-preview-paragraph:last-child { margin-bottom: 0; }
+.pf-preview-field {
+  display: flex; gap: 6px; font-size: 13px; margin-bottom: 4px;
+}
+.pf-preview-field-value { word-break: break-word; }
 
 /* Write-gate PII card — distinct from the (unchanged, --color-accent-2-*)
    read-gate one, per the redesign's gap #1 resolution. */

@@ -168,6 +168,7 @@ class TelegramConnector(Connector):
             details_text="\n".join(lines),
             pii_scan_text="\n".join(getattr(m, "text", "") or "" for m in messages),
             preview_tables=[table] if messages else [],
+            table_only=True,
             args={"chat_id": chat_id},
         )
 
@@ -217,6 +218,7 @@ class TelegramConnector(Connector):
             details_text="\n".join(lines),
             pii_scan_text="\n".join(getattr(m, "text", "") or "" for m in messages),
             preview_tables=[table] if messages else [],
+            table_only=True,
             args={"query": query},
         )
 

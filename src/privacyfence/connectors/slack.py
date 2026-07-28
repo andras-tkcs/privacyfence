@@ -240,20 +240,23 @@ class SlackConnector(Connector):
         channel_display = await self._channel_display(channel_id, messages)
         is_group_dm = await self._fetch(self._slack.resolve_is_group_dm, channel_id)
         filtered = _apply_message_privacy([_message_to_dict(m) for m in messages], "message_content")
-        first_preview = (filtered[0]["text"] or "")[:80] if filtered else ""
-        # Channel is known via slack_list_channels; Messages (count) and
-        # First message (actual message text) are only learned once this
-        # call is approved.
+        # Channel is known via slack_list_channels; Messages (count) is
+        # only learned once approved. No literal excerpt here (no "First
+        # message") -- the visibility row below already discloses "Message
+        # text: Full message text" (or the redact/block equivalent), and
+        # the actual text is in the right-pane table, so a separate literal
+        # excerpt would just duplicate one of those two.
         preview = {"Channel": channel_display}
-        new_info = {
-            "Messages": str(n),
-            "First message": first_preview or "(empty)",
-        }
+        new_info = {"Messages": str(n)}
         lines = [
             f"[{d['ts']}] {d['user_name'] or d['user_id'] or 'unknown'}: {d['text']}"
             for d in filtered
         ]
         details = "\n".join(lines)
+        table = {
+            "headers": ["Sender", "Date", "Message"],
+            "rows": [[d["user_name"] or d["user_id"] or "unknown", d["ts"], d["text"]] for d in filtered],
+        }
         return await gated_call(
             connector=self.name,
             tool="slack_get_channel_history",
@@ -271,6 +274,8 @@ class SlackConnector(Connector):
                 "Message text": category_policy("slack_privacy", "message_content"),
                 "Usernames": category_policy("slack_privacy", "user_identity"),
             },
+            preview_tables=[table] if filtered else [],
+            table_only=True,
             my_email=self.my_email,
             args={"channel_id": channel_id, "is_group_dm": is_group_dm},
         )
@@ -281,19 +286,23 @@ class SlackConnector(Connector):
         channel_display = await self._channel_display(channel_id, messages)
         is_group_dm = await self._fetch(self._slack.resolve_is_group_dm, channel_id)
         filtered = _apply_message_privacy([_message_to_dict(m) for m in messages], "thread_content")
-        starter = (filtered[0]["text"] or "")[:80] if filtered else ""
-        # Channel is known via slack_list_channels; Thread starter (actual
-        # message text) and Replies (count) are only learned once approved.
+        # Channel is known via slack_list_channels; Replies (count) is only
+        # learned once approved. No literal excerpt here (no "Thread
+        # starter") -- same reasoning as slack_get_channel_history: the
+        # visibility row already discloses "Reply text: Full reply text"
+        # (or the redact/block equivalent), and the actual text is in the
+        # right-pane table.
         preview = {"Channel": channel_display}
-        new_info = {
-            "Thread starter": starter or "(empty)",
-            "Replies": str(max(0, n - 1)),
-        }
+        new_info = {"Replies": str(max(0, n - 1))}
         lines = [
             f"[{d['ts']}] {d['user_name'] or d['user_id'] or 'unknown'}: {d['text']}"
             for d in filtered
         ]
         details = f"Thread: {thread_ts}\n\n" + "\n".join(lines)
+        table = {
+            "headers": ["Sender", "Date", "Message"],
+            "rows": [[d["user_name"] or d["user_id"] or "unknown", d["ts"], d["text"]] for d in filtered],
+        }
         return await gated_call(
             connector=self.name,
             tool="slack_get_thread_replies",
@@ -311,6 +320,8 @@ class SlackConnector(Connector):
                 "Reply text": category_policy("slack_privacy", "thread_content"),
                 "Usernames": category_policy("slack_privacy", "user_identity"),
             },
+            preview_tables=[table] if filtered else [],
+            table_only=True,
             my_email=self.my_email,
             args={"channel_id": channel_id, "thread_ts": thread_ts, "is_group_dm": is_group_dm},
         )
@@ -329,6 +340,16 @@ class SlackConnector(Connector):
             for d in filtered
         ]
         details = "\n".join(lines)
+        # Search results span channels, unlike channel_history/thread_replies
+        # (already fixed to one channel in §1), so the table needs an
+        # explicit Channel column too.
+        table = {
+            "headers": ["Channel", "Sender", "Date", "Message"],
+            "rows": [
+                [d["channel_name"], d["user_name"] or d["user_id"] or "unknown", d["ts"], d["text"]]
+                for d in filtered
+            ],
+        }
         return await gated_call(
             connector=self.name,
             tool="slack_search_messages",
@@ -346,6 +367,8 @@ class SlackConnector(Connector):
                 "Message text": category_policy("slack_privacy", "message_content"),
                 "Usernames": category_policy("slack_privacy", "user_identity"),
             },
+            preview_tables=[table] if filtered else [],
+            table_only=True,
             my_email=self.my_email,
             args={"query": query},
         )

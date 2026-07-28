@@ -153,21 +153,34 @@ class TestGetIssue:
         await connector.call("jira_get_issue", {"issue_key": "ENG-42"})
 
         kwargs = gated_call_spy[0]
-        assert kwargs["new_info"]["Description"] == "Users can't log in with SSO."
+        # Fixed summary sentences, not the literal text -- the real
+        # description/comment content lives only in preview_blocks below
+        # (duplicating it into new_info too would just repeat the same full
+        # text twice, same reasoning Comments already had).
+        assert kwargs["new_info"]["Description"] == "Full description text"
         assert kwargs["new_info"]["Comments"] == "Author, created date, and body per comment"
-        assert kwargs["preview_tables"] == [{
-            "caption": "Comments (1)", "headers": ["Author", "Date", "Comment"],
-            "rows": [["bob@example.com", "2026-07-01", "Looking into it"]],
-        }]
+        # v2's right pane: Reporter as a label-styled field, Description as
+        # a heading + paragraph, Comments as its own table -- interleaved
+        # via preview_blocks, not a flat text blob (see connectors/jira.py).
+        assert kwargs["preview_blocks"] == [
+            {"type": "field", "label": "Reporter", "value": "alice@example.com"},
+            {"type": "heading", "label": "Description"},
+            {"type": "text", "text": "Users can't log in with SSO."},
+            {
+                "type": "table", "caption": "Comments (1)", "headers": ["Author", "Date", "Comment"],
+                "rows": [["bob@example.com", "2026-07-01", "Looking into it"]],
+            },
+        ]
 
-    async def test_no_comments_produces_no_table(self, gated_call_spy):
+    async def test_no_comments_produces_no_table_block(self, gated_call_spy):
         connector, client = make_connector()
         client.get_issue.return_value = make_issue()
         client.get_issue_comments.return_value = []
 
         await connector.call("jira_get_issue", {"issue_key": "ENG-42"})
 
-        assert gated_call_spy[0]["preview_tables"] == []
+        blocks = gated_call_spy[0]["preview_blocks"]
+        assert all(b["type"] != "table" for b in blocks)
 
     async def test_summary_truncated_in_preview_but_full_in_details(self, gated_call_spy):
         connector, client = make_connector()

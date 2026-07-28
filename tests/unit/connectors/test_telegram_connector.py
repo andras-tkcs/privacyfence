@@ -117,6 +117,7 @@ class TestGetMessages:
             "headers": ["Sender", "Date", "Message"],
             "rows": [["Alice", "2026-07-06T10:00:00Z", "see you tomorrow"]],
         }]
+        assert kwargs["table_only"] is True
 
     async def test_no_messages_produces_no_table(self, gated_call_spy):
         connector, client = make_connector()
@@ -177,6 +178,7 @@ class TestSearchMessages:
             "headers": ["Sender", "Date", "Message"],
             "rows": [["Alice", "2026-07-06T10:00:00Z", "see you tomorrow"], ["Alice", "2026-07-06T10:00:00Z", "see you tomorrow"]],
         }
+        assert kwargs["table_only"] is True
 
     async def test_no_results_produces_no_table(self, gated_call_spy):
         connector, client = make_connector()

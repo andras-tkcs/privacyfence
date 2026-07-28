@@ -301,6 +301,7 @@ class SalesforceConnector(Connector):
             new_info=new_info,
             details_text=details,
             preview_tables=[table],
+            table_only=True,
             my_email=self.my_email,
             args={"object_type": object_type, "record_id": record_id},
         )
@@ -343,7 +344,16 @@ class SalesforceConnector(Connector):
             preview=preview,
             new_info=new_info,
             details_text=details,
+            # _report_tables() renders the exact same factMap data
+            # _format_report_details() does, just structured as tables
+            # instead of plain text -- same "keep the table, not both"
+            # reasoning as salesforce_get_record/_search. Falls back to the
+            # plain-text details automatically when _report_tables()
+            # returns [] (non-matching/complex report shape), since
+            # table_only only suppresses details_text when preview_tables
+            # is actually non-empty.
             preview_tables=_report_tables(result_dict),
+            table_only=True,
             my_email=self.my_email,
             args={"report_id": report_id},
         )
@@ -401,6 +411,7 @@ class SalesforceConnector(Connector):
             new_info=new_info,
             details_text=details,
             preview_tables=[table] if records else [],
+            table_only=True,
             my_email=self.my_email,
             args={"search_term": search_term, "object_types": object_types, "account_id": account_id},
         )

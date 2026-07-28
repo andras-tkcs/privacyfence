@@ -172,6 +172,8 @@ def show_read_popup(
     preview_mime_type: str = "",
     new_info: dict[str, str] | None = None,
     preview_tables: list[dict] | None = None,
+    preview_blocks: list[dict] | None = None,
+    table_only: bool = False,
 ) -> str:
     """Approval popup for read tools. Full content is always shown before the
     decision, in a scrollable pane — the user never has to click through to
@@ -204,6 +206,15 @@ def show_read_popup(
     ``preview_tables``, when given, renders the WIDE right-pane preview as
     structured table(s) instead of plain text -- see gate.py's gated_call
     docstring. Also v2-only, also ignored by the legacy layout.
+    ``preview_blocks``, when given, takes full precedence over both
+    ``details_text`` and ``preview_tables`` for the WIDE right pane --
+    an ordered list of text/field/table blocks, letting them interleave.
+    See gate.py's gated_call docstring. Also v2-only.
+    ``table_only``, when True (and ``preview_tables`` is non-empty, and
+    ``preview_blocks`` isn't set), shows only the table(s) in the WIDE
+    right pane, not ``details_text`` too -- for tools whose details_text
+    fully duplicates the table's own data. See gate.py's gated_call
+    docstring.
 
     Returns 'accept', 'deny', or 'accept_all' (only offered when
     allow_accept_all is True).
@@ -213,7 +224,7 @@ def show_read_popup(
         pii_categories=pii_categories, visibility=visibility, claude_reason=claude_reason,
         seen_count=seen_count, content_kind=content_kind, pdf_bytes=pdf_bytes, connector=connector,
         preview_bytes=preview_bytes, preview_mime_type=preview_mime_type, new_info=new_info,
-        preview_tables=preview_tables,
+        preview_tables=preview_tables, preview_blocks=preview_blocks, table_only=table_only,
     )
 
 

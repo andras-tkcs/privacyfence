@@ -137,20 +137,25 @@ class TestDisclosureRowsFromVisibility:
 
 
 class TestSectionNumbering:
-    """Every section is numbered dynamically -- §4-equivalent risk cards
-    land on "03" instead of "04" whenever §3 didn't render (write-gate
-    calls, or a read-gate call with no `visibility` dict), matching the
-    design canvas's own numbering exactly."""
+    """Every section is numbered dynamically -- the risk card renders (and
+    is numbered) right after §2, *before* §3 -- pinned, never one scroll
+    away from being missed -- so §3 lands on "04" instead of "03" whenever
+    a risk card is also present. Absent a risk card, §3 (or nothing at
+    all) simply takes the next number, matching the design canvas's own
+    numbering."""
 
-    def test_read_call_with_disclosure_and_pii_numbers_04(self):
+    def test_read_call_with_disclosure_and_pii_numbers_pii_before_disclosure(self):
         html = build_card_stack_html(**_minimal_kwargs(
             disclosure_rows=[("Cell values", "Full cell values")],
             pii_categories=["Phone number"],
         ))
         assert "01 · What Claude already knows" in html
         assert "02 · Why Claude needs more data" in html
-        assert "03 · What will be provided to Claude" in html
-        assert "04 · Possible PII detected" in html
+        assert "03 · Possible PII detected" in html
+        assert "04 · What will be provided to Claude" in html
+        # Pinned before §3 in the actual rendered order too, not just numbered
+        # first -- see build_card_stack_html's docstring.
+        assert html.index("Possible PII detected") < html.index("What will be provided to Claude")
 
     def test_read_call_without_disclosure_but_with_pii_numbers_03(self):
         # A tool with nothing to disclose in §3 (empty disclosure_rows) whose
@@ -241,19 +246,34 @@ class TestLayoutShapes:
         assert "Preview (~2 sec read)" not in html
         assert "Synthetic event body text" not in html
 
-    def test_no_scroll_cap_by_default(self):
+    def test_no_section_3_cap_by_default(self):
         # columns_max_height defaults to 0 -- the common case, where the
-        # window was already sized to fit §1-§4 exactly, so no artificial
-        # cap is applied to either side (see build_card_stack_html's own
-        # docstring for why an unconditional cap risked clipping content
-        # over a few pixels of estimate-vs-actual rendering drift).
-        html = build_card_stack_html(**_minimal_kwargs(layout=WIDE))
-        assert "overflow-y:auto" not in html
-        assert "max-height" not in html
+        # window was already sized to fit header/§1/§2/risk/§3 exactly, so
+        # no artificial cap is applied to §3 (see build_card_stack_html's
+        # own docstring for why an unconditional cap risked clipping
+        # content over a few pixels of estimate-vs-actual rendering drift).
+        # The right pane's own (unconditional, see the next test) cap is
+        # the only "max-height" that should appear at all here.
+        html = build_card_stack_html(**_minimal_kwargs(
+            layout=WIDE, disclosure_rows=[("Cell values", "x")],
+        ))
+        assert html.count("max-height") == 1
 
-    def test_columns_max_height_caps_both_sides_when_given(self):
-        html = build_card_stack_html(**_minimal_kwargs(layout=WIDE, columns_max_height=300.0))
-        assert html.count("max-height:300px;overflow-y:auto") == 2
+    def test_right_pane_is_always_capped_for_wide_regardless_of_columns_max_height(self):
+        # Unlike §3, the right pane's cap is unconditional -- its content
+        # (an email/document/report) is unrelated in length to the left
+        # column and always needs its own scroll bound. See
+        # build_card_stack_html's own docstring.
+        html = build_card_stack_html(**_minimal_kwargs(layout=WIDE, right_pane_max_height=444.0))
+        assert "max-height:444px;overflow-y:auto" in html
+
+    def test_columns_max_height_caps_only_section_3_not_the_right_pane(self):
+        html = build_card_stack_html(**_minimal_kwargs(
+            layout=WIDE, disclosure_rows=[("Cell values", "x")],
+            columns_max_height=300.0, right_pane_max_height=444.0,
+        ))
+        assert html.count("max-height:300px;overflow-y:auto") == 1
+        assert html.count("max-height:444px;overflow-y:auto") == 1
 
     def test_narrow_columns_max_height_caps_the_single_column(self):
         html = build_card_stack_html(**_minimal_kwargs(layout=NARROW, columns_max_height=300.0))
@@ -364,6 +384,65 @@ class TestPreviewBody:
         body = build_preview_body_html("", tables=[{"rows": [["1", "2"]]}])
         assert "<thead>" not in body
         assert "<td>1</td>" in body
+
+
+class TestPreviewBlocks:
+    """blocks (text/field/table, in order) is what makes interleaving
+    possible -- text, then a table, then more text -- which a flat
+    details_text-then-tables split can't express. Takes full precedence
+    over details_text/tables when given."""
+
+    def test_text_block_renders_as_a_paragraph(self):
+        body = build_preview_body_html(blocks=[{"type": "text", "text": "Hello world."}])
+        assert 'class="pf-preview-paragraph"' in body
+        assert "Hello world." in body
+
+    def test_field_block_uses_the_shared_label_font(self):
+        body = build_preview_body_html(blocks=[{"type": "field", "label": "Reporter", "value": "Alice"}])
+        assert '<span class="pf-preview-label">Reporter:</span>' in body
+        assert "Alice" in body
+
+    def test_table_block_renders_as_a_real_table(self):
+        body = build_preview_body_html(
+            blocks=[{"type": "table", "headers": ["Author", "Comment"], "rows": [["Bob", "ack"]]}],
+        )
+        assert "<table" in body
+        assert "<th>Author</th>" in body
+
+    def test_heading_block_uses_the_shared_label_font_with_no_value(self):
+        body = build_preview_body_html(blocks=[{"type": "heading", "label": "Description"}])
+        assert '<div class="pf-preview-label"' in body
+        assert ">Description</div>" in body
+
+    def test_blocks_render_in_order_interleaved(self):
+        body = build_preview_body_html(blocks=[
+            {"type": "field", "label": "Reporter", "value": "Alice"},
+            {"type": "text", "text": "A long description."},
+            {"type": "table", "headers": ["Author"], "rows": [["Bob"]]},
+        ])
+        assert body.index("Reporter") < body.index("A long description.") < body.index("<table")
+
+    def test_blocks_take_priority_over_details_text_and_tables(self):
+        body = build_preview_body_html(
+            "should not appear",
+            tables=[{"headers": ["should not appear either"], "rows": [["x"]]}],
+            blocks=[{"type": "text", "text": "only this"}],
+        )
+        assert "only this" in body
+        assert "should not appear" not in body
+
+    def test_field_and_text_are_escaped(self):
+        body = build_preview_body_html(blocks=[
+            {"type": "field", "label": "<b>L</b>", "value": "<i>V</i>"},
+            {"type": "text", "text": "<script>alert(1)</script>"},
+        ])
+        assert "<b>" not in body
+        assert "<i>" not in body
+        assert "<script>alert(1)</script>" not in body
+
+    def test_unknown_block_type_renders_nothing(self):
+        body = build_preview_body_html(blocks=[{"type": "mystery"}])
+        assert body == ""
 
 
 class TestEscapingAndNoNetwork:

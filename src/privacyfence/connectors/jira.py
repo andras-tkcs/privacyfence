@@ -196,9 +196,10 @@ class JiraConnector(Connector):
         # Project/Key/Summary/Status/Assignee are all known for free via
         # jira_search_issues; Description and Comments are only learned
         # once this call is approved -- jira_search_issues never returns
-        # either. Comments have no fixed count, so §3 gets one fixed
-        # summary row rather than one row per comment (the real comment
-        # text lives in the right-pane preview/details_text instead).
+        # either. Neither has a fixed size (Description's length is
+        # unbounded, Comments has no fixed count), so §3 gets one fixed
+        # summary row for each rather than the literal text -- the real
+        # content lives in the right-pane preview/details_text instead.
         preview = {
             "Project": getattr(issue, "project_name", "") or issue_key.split("-")[0],
             "Key": issue.key,
@@ -207,7 +208,7 @@ class JiraConnector(Connector):
             "Assignee": getattr(issue, "assignee", "") or "(unassigned)",
         }
         new_info = {
-            "Description": getattr(issue, "description", "") or "",
+            "Description": "Full description text",
             "Comments": "Author, created date, and body per comment",
         }
         details_parts = []
@@ -219,23 +220,37 @@ class JiraConnector(Connector):
             f"Reporter: {getattr(issue, 'reporter', '')}\n\n"
             f"Description:\n{getattr(issue, 'description', '') or '(none)'}"
         )
-        # No inline comment dump here -- comments render as their own
-        # table (comments_table below) in the right-pane preview instead;
-        # pii_scan_text (set explicitly below) already covers comment
-        # bodies for scanning purposes independent of what's shown here.
+        # details_text/pii_scan_text stay a flat string -- kept for legacy
+        # display and the PII scan's default fallback, unrelated to how v2
+        # renders the same content (preview_blocks below).
         details = "".join(details_parts)
-        comments_table = {
-            "caption": f"Comments ({len(comments)})",
-            "headers": ["Author", "Date", "Comment"],
-            "rows": [
-                [getattr(c, "author", "unknown"), getattr(c, "created", ""), getattr(c, "body", "")]
-                for c in comments
-            ],
-        }
         pii_scan_text = (
             f"{getattr(issue, 'description', '') or ''}\n\n" +
             "\n".join(getattr(c, "body", "") or "" for c in comments)
         )
+        # v2's right pane: Reporter/Summary as standalone labeled fields
+        # (same font as a table header -- see approval_window_html.py's
+        # _field_block_html), Description as a heading + paragraph, then
+        # Comments as its own table -- interleaved via preview_blocks
+        # rather than one flat text blob, so "Reporter"/"Description"
+        # visually match "Author"/"Date"/"Comment" instead of looking like
+        # plain unstyled prose.
+        blocks = []
+        if len(issue.summary) > 80:
+            blocks.append({"type": "field", "label": "Summary", "value": issue.summary})
+        blocks.append({"type": "field", "label": "Reporter", "value": getattr(issue, "reporter", "") or ""})
+        blocks.append({"type": "heading", "label": "Description"})
+        blocks.append({"type": "text", "text": getattr(issue, "description", "") or "(none)"})
+        if comments:
+            blocks.append({
+                "type": "table",
+                "caption": f"Comments ({len(comments)})",
+                "headers": ["Author", "Date", "Comment"],
+                "rows": [
+                    [getattr(c, "author", "unknown"), getattr(c, "created", ""), getattr(c, "body", "")]
+                    for c in comments
+                ],
+            })
         return await gated_call(
             connector=self.name,
             tool="jira_get_issue",
@@ -249,7 +264,7 @@ class JiraConnector(Connector):
             new_info=new_info,
             details_text=details,
             pii_scan_text=pii_scan_text,
-            preview_tables=[comments_table] if comments else [],
+            preview_blocks=blocks,
             my_email=self.my_email,
             args={"issue_key": issue_key},
         )

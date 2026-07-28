@@ -493,6 +493,8 @@ class ApprovalWindowController(NSObject):
         self.upload_forced: bool = False
         self.new_info: dict[str, str] = {}
         self.preview_tables: list[dict] = []
+        self.preview_blocks: list[dict] = []
+        self.table_only: bool = False
         self.result = "deny"
         self.panel = None
         self._details_view = None
@@ -1262,11 +1264,13 @@ class ApprovalWindowController(NSObject):
             for label in labels
         )
 
-    def _estimate_left_column_height(self) -> float:
-        """Deterministic from field/section *counts* alone -- never from how
-        long any actual value is (every row is CSS-fixed-and-truncated, see
-        styles.css). See the _V2_* pixel constants' own comment for the
-        "assume worst case" reasoning."""
+    def _pinned_height_v2(self) -> float:
+        """Header, §1, §2, and the PII/content-flag risk card -- always
+        fully visible, never inside the scrollable region (see
+        approval_window_html.build_card_stack_html's own docstring for
+        why the risk card in particular must never be one scroll away
+        from being missed). Only §3 (self._scrollable_height_v2) ever
+        gets capped/scrolled."""
         height = _V2_HEADER_HEIGHT
         if self.seen_count > 0:
             height += _V2_SEEN_COUNT_HEIGHT
@@ -1274,12 +1278,26 @@ class ApprovalWindowController(NSObject):
             height += _V2_CARD_CHROME + self._rows_height(self.preview.keys())
         if self.claude_reason:
             height += _V2_QUOTE_CARD_HEIGHT
-        disclosure_rows = self._v2_disclosure_rows()
-        if disclosure_rows:
-            height += _V2_CARD_CHROME + self._rows_height(label for label, _ in disclosure_rows)
         if self.pii_categories or self.write_content_flags:
             height += _V2_RISK_CARD_BASE_HEIGHT
-        return max(_V2_MIN_CONTENT_HEIGHT, height)
+        return height
+
+    def _scrollable_height_v2(self) -> float:
+        """§3 ("What will be provided to Claude") alone -- the one card
+        whose row count genuinely varies per tool/call, and the only one
+        ever capped when the window's height is trimmed (see
+        _pinned_height_v2)."""
+        disclosure_rows = self._v2_disclosure_rows()
+        if not disclosure_rows:
+            return 0.0
+        return _V2_CARD_CHROME + self._rows_height(label for label, _ in disclosure_rows)
+
+    def _estimate_left_column_height(self) -> float:
+        """Deterministic from field/section *counts* alone -- never from how
+        long any actual value is (every row is CSS-fixed-and-truncated, see
+        styles.css). See the _V2_* pixel constants' own comment for the
+        "assume worst case" reasoning."""
+        return max(_V2_MIN_CONTENT_HEIGHT, self._pinned_height_v2() + self._scrollable_height_v2())
 
     def _window_height_v2(self) -> float:
         content_height = self._estimate_left_column_height()
@@ -1293,19 +1311,18 @@ class ApprovalWindowController(NSObject):
         """0 when the window is already tall enough for its own estimated
         content (the common case -- no artificial cap risked from Python's
         estimate not matching WebKit's real layout to the pixel); otherwise
-        the actual space left for §1-§4/the right pane once the screen-
-        height cap (_V2_MAX_WINDOW_HEIGHT_FRACTION) has trimmed the window
-        below what _estimate_left_column_height() says it needs -- passed
-        to build_card_stack_html so both columns share the *same* real
-        number instead of each guessing independently (see that function's
-        columns_max_height parameter for why: an old hardcoded 520px on
-        the right pane alone could stop short of a taller left column, or
-        waste space when the window was taller than 520px)."""
+        the actual space left for §3 once the screen-height cap
+        (_V2_MAX_WINDOW_HEIGHT_FRACTION) has trimmed the window below what
+        _estimate_left_column_height() says it needs. Only §3 is ever
+        affected -- header/§1/§2/the risk card are pinned and always get
+        their full _pinned_height_v2() (see approval_window_html.py's
+        build_card_stack_html for why), so a heavily-trimmed window would
+        show §3 with little to no visible room before it scrolls, never
+        by clipping the identifying context or a PII warning above it."""
         natural_content_height = self._estimate_left_column_height()
         if webview_height >= natural_content_height - 0.5:
             return 0.0
-        header_height = _V2_HEADER_HEIGHT + (_V2_SEEN_COUNT_HEIGHT if self.seen_count > 0 else 0.0)
-        return max(0.0, webview_height - header_height)
+        return max(0.0, webview_height - self._pinned_height_v2())
 
     def _build_content_view_v2(self, window_width: float, window_height: float):
         content = _FlippedView.alloc().initWithFrame_(NSMakeRect(0, 0, window_width, window_height))
@@ -1329,9 +1346,16 @@ class ApprovalWindowController(NSObject):
                 f"{base64.b64encode(self.preview_bytes).decode('ascii')}"
             )
 
+        # table_only suppresses details_text only when there's a real table
+        # to show instead -- and never when preview_blocks is set, which
+        # already controls exactly what renders on its own.
+        text_for_v2 = (
+            "" if self.table_only and self.preview_tables and not self.preview_blocks
+            else self.details_text
+        )
         preview_body_html = approval_window_html.build_preview_body_html(
-            self.details_text, image_data_uri=image_data_uri, pdf_data_uri=pdf_data_uri,
-            tables=self.preview_tables,
+            text_for_v2, image_data_uri=image_data_uri, pdf_data_uri=pdf_data_uri,
+            tables=self.preview_tables, blocks=self.preview_blocks,
         )
         disclosure_rows = self._v2_disclosure_rows()
 
@@ -1352,6 +1376,7 @@ class ApprovalWindowController(NSObject):
             preview_kicker=f"Preview ({_reading_time_label(self.details_text)})",
             preview_body_html=preview_body_html,
             columns_max_height=columns_max_height,
+            right_pane_max_height=webview_height,
         )
         # Kept purely for testability, same reasoning as the legacy layout's
         # own _details_html_string -- see test_approval_window_html.py for
@@ -1555,6 +1580,8 @@ def show_native_approval(
     upload_forced: bool = False,
     new_info: dict[str, str] | None = None,
     preview_tables: list[dict] | None = None,
+    preview_blocks: list[dict] | None = None,
+    table_only: bool = False,
 ) -> str:
     """Show the approval window and block until the user picks a button.
 
@@ -1577,8 +1604,13 @@ def show_native_approval(
     Description; falls back to a ``visibility``-derived policy summary when
     empty, see ApprovalWindowController._v2_disclosure_rows), and
     ``preview_tables`` (the WIDE right-pane preview as structured table(s)
-    instead of plain text -- see approval_window_html.py's _table_html)
-    only matter for a v2 ``layout``; they're no-ops under "legacy".
+    instead of plain text -- see approval_window_html.py's _table_html),
+    ``preview_blocks`` (an ordered list of text/field/table blocks, letting
+    them interleave -- takes full precedence over both ``details_text``
+    and ``preview_tables`` when given), and ``table_only`` (suppresses
+    ``details_text`` in the WIDE right pane when a table already covers
+    the same data -- no-op when ``preview_blocks`` is set) only matter for
+    a v2 ``layout``; they're no-ops under "legacy".
     """
     with _popup_lock:
         controller = ApprovalWindowController.alloc().init()
@@ -1602,6 +1634,8 @@ def show_native_approval(
         controller.upload_forced = upload_forced
         controller.new_info = new_info or {}
         controller.preview_tables = preview_tables or []
+        controller.preview_blocks = preview_blocks or []
+        controller.table_only = table_only
 
         controller.performSelectorOnMainThread_withObject_waitUntilDone_(
             "runApproval:", None, True

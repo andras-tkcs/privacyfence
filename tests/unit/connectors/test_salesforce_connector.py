@@ -158,6 +158,9 @@ class TestGetRecord:
         assert kwargs["preview_tables"] == [
             {"headers": ["Field", "Value"], "rows": [["Email", "bob@example.com"], ["Name", "Bob Smith"]]},
         ]
+        # v2's right pane shows only the table -- the plain-text field dump
+        # (details_text, kept for legacy/PII-scan) would just duplicate it.
+        assert kwargs["table_only"] is True
 
     async def test_unset_fields_excluded_from_field_list_and_table(self, gated_call_spy):
         connector, client = make_connector()
@@ -221,6 +224,11 @@ class TestRunReport:
         kwargs = gated_call_spy[0]
         assert kwargs["preview"]["Report"] == "Q3 Pipeline Report"
         assert kwargs["summary"] == "Run report: Q3 Pipeline Report"
+        # Same "keep the table, not both" reasoning as get_record/search --
+        # _report_tables() renders the exact factMap data details_text does,
+        # just structured as tables (falls back to details_text when
+        # preview_tables comes back empty, e.g. this fixture's factMap={}).
+        assert kwargs["table_only"] is True
 
     async def test_falls_back_to_top_level_name_if_present(self, gated_call_spy):
         connector, client = make_connector()
@@ -428,6 +436,7 @@ class TestSearch:
         assert kwargs["preview_tables"] == [
             {"headers": ["Object type", "Name", "ID"], "rows": [["Opportunity", "Big Deal", "006x"]]},
         ]
+        assert kwargs["table_only"] is True
 
     async def test_no_matches_produces_no_table(self, gated_call_spy):
         connector, client = make_connector()

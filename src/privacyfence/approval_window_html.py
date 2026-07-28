@@ -167,11 +167,51 @@ def _table_html(table: dict) -> str:
     return "".join(parts)
 
 
+def _field_block_html(label: str, value: str) -> str:
+    """A standalone ``Label: value`` line, e.g. Jira's "Reporter" or a
+    Gmail thread message's "From"/"Date" -- the label uses
+    ``.pf-preview-label``, the same font as a table's ``<th>``/caption, so
+    field names read identically everywhere in the right pane."""
+    return (
+        '<div class="pf-preview-field">'
+        f'<span class="pf-preview-label">{_html_escape(label)}:</span>'
+        f'<span class="pf-preview-field-value">{_html_escape(value)}</span>'
+        '</div>'
+    )
+
+
+def _text_block_html(text: str) -> str:
+    return f'<div class="pf-preview-paragraph">{_html_escape(text)}</div>'
+
+
+def _heading_block_html(label: str) -> str:
+    """A standalone section heading with no value on the same line, e.g.
+    Jira's "Description" heading above its (often multi-line) paragraph --
+    ``_field_block_html`` fits a short label:value pair on one line, but a
+    long paragraph needs its label on its own line first. Same
+    ``.pf-preview-label`` font as everywhere else in the right pane."""
+    return f'<div class="pf-preview-label" style="margin-bottom:6px">{_html_escape(label)}</div>'
+
+
+def _render_block(block: dict) -> str:
+    kind = block.get("type")
+    if kind == "text":
+        return _text_block_html(block.get("text", ""))
+    if kind == "field":
+        return _field_block_html(block.get("label", ""), block.get("value", ""))
+    if kind == "heading":
+        return _heading_block_html(block.get("label", ""))
+    if kind == "table":
+        return _table_html(block)
+    return ""
+
+
 def build_preview_body_html(
-    details_text: str, *,
+    details_text: str = "", *,
     image_data_uri: str = "",
     pdf_data_uri: str = "",
     tables: list[dict] | None = None,
+    blocks: list[dict] | None = None,
 ) -> str:
     """The inner-HTML fragment for ``WIDE`` layout's right-hand preview pane
     (``NARROW`` has no preview at all -- callers never need this for a
@@ -193,12 +233,26 @@ def build_preview_body_html(
     image decoding handle both directly, no extra native code needed.
 
     ``tables`` (see ``_table_html``) render after ``details_text`` --
-    together, not either/or, since some tools need both (e.g.
-    jira_get_issue's plain-text description followed by a comments table).
-    Neither is required; an empty details_text with one table is the normal
-    shape for tools whose entire "new" content is inherently record/list-
-    shaped (Salesforce record fields, Salesforce search results, Telegram
+    together, not either/or, since some tools need both. Neither is
+    required; an empty details_text with one table is the normal shape for
+    tools whose entire "new" content is inherently record/list-shaped
+    (Salesforce record fields, Salesforce search results, Telegram
     message lists).
+
+    ``blocks``, when given, takes full precedence over both
+    ``details_text`` and ``tables`` -- an ordered list of ``{"type":
+    "text", "text": ...}`` (a plain paragraph), ``{"type": "field",
+    "label": ..., "value": ...}`` (a standalone "Label: value" line, font-
+    matched to a table header/caption via ``.pf-preview-label`` -- see
+    ``_field_block_html``), or a table dict (same shape as one entry of
+    ``tables``, see ``_table_html``). This is what makes *interleaving*
+    possible -- text, then a table, then more text -- which a flat
+    details_text-then-tables split can't express: e.g. jira_get_issue's
+    Reporter field, then its Description paragraph, then its Comments
+    table; or a Gmail thread's per-message From/Date fields each followed
+    by that message's body. Tools whose right pane is simple prose or a
+    simple table-only list don't need this -- ``details_text``/``tables``
+    alone still cover those without the extra structure.
 
     No content_kind="email" structured header here (unlike the legacy
     layout's ``_details_html()``): under the §1/§3 knowledge-boundary split,
@@ -213,6 +267,8 @@ def build_preview_body_html(
         )
     if image_data_uri:
         return f'<img src="{image_data_uri}" style="max-width:100%;display:block">'
+    if blocks:
+        return "".join(_render_block(b) for b in blocks)
     tables_html = "".join(_table_html(t) for t in (tables or []))
     if not details_text and not tables_html:
         return _escaped_text_fragment(details_text)  # "(no details)" placeholder
@@ -347,6 +403,7 @@ def build_card_stack_html(
     preview_kicker: str,
     preview_body_html: str,
     columns_max_height: float = 0.0,
+    right_pane_max_height: float = 520.0,
 ) -> str:
     """Build the full HTML document for one approval window's content area.
 
@@ -367,18 +424,28 @@ def build_card_stack_html(
     ``columns_max_height``, when non-zero (approval_window.py's
     ApprovalWindowController._columns_max_height -- 0 in the common case,
     only set once the screen-height cap has actually trimmed the window
-    below what §1-§4 need), caps *both* the §1-§4 section stack (below the
-    always-visible header) and, for WIDE, the right-hand preview pane at
-    that same real pixel value, each independently scrolling past it. Both
-    sides sharing one real number is what keeps the two-column divider
-    (border-left on the right pane) reaching the actual bottom of
-    whichever column is taller, rather than an old hardcoded 520px on the
-    right pane alone, which had no relationship to the window's actual
-    size -- it could stop short of a taller left column, or waste space
-    when the window was taller than 520px. Zero means no cap at all: the
-    common case, where the window was already sized to fit §1-§4 exactly,
-    so an artificial cap would only risk clipping content over a few
-    pixels of Python-estimate-vs-WebKit-actual rendering drift.
+    below what everything needs), caps §3 alone (the one card whose row
+    count genuinely varies per tool/call) below the always-visible header/
+    §1/§2/risk-card stack, and, for WIDE, also caps the right-hand preview
+    pane -- independently of whether §3 needed capping, since a WIDE
+    tool's preview content (an email/document/report) is unrelated in
+    length to the left column and needs its own bound regardless. Zero
+    still means "no §3 cap" (§1/§2/risk fit comfortably in virtually every
+    case, so an artificial cap there would only risk clipping content over
+    a few pixels of Python-estimate-vs-WebKit-actual rendering drift) --
+    but the right pane, for WIDE, is *always* capped via
+    ``right_pane_max_height`` -- the real caller (approval_window.py)
+    always passes the actual webview_height there, since the right pane
+    never had the "already fits" guarantee §1-§4 do. The 520.0 default
+    here only matters for callers (tests, or a future WIDE caller) that
+    don't have a real webview_height on hand.
+
+    §1, §2, and the PII/content-flag risk card are always fully visible,
+    never inside the scrollable region -- only §3 ("What will be provided
+    to Claude") scrolls, and only once the cap above actually applies.
+    This also means the risk card renders *before* §3 now (previously
+    after it): the highest-consequence card is never one scroll away from
+    being missed.
 
     Exactly one of ``pii_categories``/``write_content_flags`` is ever
     non-empty for a given call (gate.py never populates both at once), and
@@ -393,27 +460,22 @@ def build_card_stack_html(
     # must reflect exactly what's on screen (see module docstring on why
     # §4's number is dynamic).
     next_number = 1
-    sections_html = []
+    pinned_html = []  # header, §1, §2, risk card -- always fully visible
+    scrollable_html = []  # §3 alone -- the only card that ever scrolls
 
     sec1 = _section_1_html(next_number, is_read, preview)
     if sec1:
-        sections_html.append(sec1)
+        pinned_html.append(sec1)
         next_number += 1
 
     sec2 = _section_2_html(next_number, is_read, claude_reason)
     if sec2:
-        sections_html.append(sec2)
+        pinned_html.append(sec2)
         next_number += 1
 
-    if is_read:
-        # Write-gate calls never get §3 at all -- the counter simply never
-        # advances for one, so the risk card below lands on "03" instead of
-        # "04", matching the design canvas's own write-gate numbering.
-        sec3 = _section_3_html(next_number, disclosure_rows)
-        if sec3:
-            sections_html.append(sec3)
-            next_number += 1
-
+    # Pinned, and numbered *before* §3 -- the highest-consequence card
+    # must never end up scrolled out of view, and reads that way too:
+    # right after "why Claude needs this," before the disclosure detail.
     if pii_categories:
         risk_html = _risk_section_html(next_number, pii_categories, variant="read")
     elif write_content_flags:
@@ -422,35 +484,51 @@ def build_card_stack_html(
     else:
         risk_html = ""
     if risk_html:
-        sections_html.append(risk_html)
+        pinned_html.append(risk_html)
+        next_number += 1
+
+    if is_read:
+        # Write-gate calls never get §3 at all -- the counter simply never
+        # advances for one.
+        sec3 = _section_3_html(next_number, disclosure_rows)
+        if sec3:
+            scrollable_html.append(sec3)
+            next_number += 1
 
     header_html = _header_html(title, connector_icon_data_uri, shield_icon_data_uri, seen_count_text)
-    sections_joined = "".join(sections_html)
-    # The header stays outside this cap -- always fully visible -- only the
-    # §1-§4 stack below it (and, for WIDE, the right pane) ever scrolls.
+    pinned_joined = "".join(pinned_html)
+    scrollable_joined = "".join(scrollable_html)
+    # Only §3 ever gets this cap -- header/§1/§2/risk are pinned above it,
+    # always fully visible (see this function's own docstring).
     scroll_style = f'max-height:{columns_max_height:.0f}px;overflow-y:auto' if columns_max_height else ""
-    sections_html_capped = f'<div style="{scroll_style}">{sections_joined}</div>' if scroll_style else sections_joined
-    left_column = header_html + sections_html_capped
+    scrollable_capped = f'<div style="{scroll_style}">{scrollable_joined}</div>' if scroll_style else scrollable_joined
+    left_column = header_html + pinned_joined + scrollable_capped
 
     if layout == WIDE:
         # Fixed left column width (_WIDE_LEFT_COLUMN_WIDTH) regardless of
         # the overall window width -- the design canvas's own two-column
         # cards used a fixed flex-basis the same way (350px there; widened
         # since, see that constant's own comment).
+        #
+        # right_pane_max_height is unconditional (unlike columns_max_height
+        # above) -- a WIDE tool's preview content (an email/document/report)
+        # is unrelated in length to the left column and virtually always
+        # needs its own scroll bound, regardless of whether §3 needed
+        # capping. Without an explicit cap here, a long preview would
+        # stretch the whole flex row (align-items:stretch) past the
+        # webview's own fixed native frame, falling back to the body's own
+        # overflow-y:auto -- a whole-page scroll instead of the right
+        # pane's own contained one.
         right_pane_style = (
             f'flex:1;min-width:0;border-left:1px solid var(--color-divider);padding-left:24px'
-            + (f';{scroll_style}' if scroll_style else "")
+            f';max-height:{right_pane_max_height:.0f}px;overflow-y:auto'
         )
         body_html = (
             # align-items defaults to "stretch" (deliberately not
             # overridden to "flex-start") so both columns match the height
             # of the taller one -- otherwise the right pane's border-left
             # divider only extends as far as its own (often shorter)
-            # content, instead of running the window's full height. When
-            # columns_max_height applies, both sides are also explicitly
-            # capped at that same real value (see this function's own
-            # docstring) so stretch can never be defeated by one side's
-            # cap being reached before the other's.
+            # content, instead of running the window's full height.
             '<div style="display:flex;gap:28px">'
             f'<div style="flex:0 0 {_WIDE_LEFT_COLUMN_WIDTH}px;min-width:0">{left_column}</div>'
             f'<div style="{right_pane_style}">'

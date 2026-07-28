@@ -1079,6 +1079,10 @@ class TestSheetsGatedTools:
         assert kwargs["filtered_data"] == [["a", "b"], ["1", "2"]]
         assert result == [["a", "b"], ["1", "2"]]
         assert kwargs["pii_scan_text"] == "a, b\n1, 2"  # rows only, not the "Owner: alice@example.com" header
+        # v2's right pane: actual cell data as a real (headerless) table,
+        # not the comma-joined details_text (kept for legacy/PII-scan).
+        assert kwargs["preview_tables"] == [{"rows": [["a", "b"], ["1", "2"]]}]
+        assert kwargs["table_only"] is True
 
     async def test_get_values_no_owner_shows_unknown(self, gated_call_spy):
         connector, client = make_connector()
@@ -1088,6 +1092,26 @@ class TestSheetsGatedTools:
         await connector.call("drive_sheets_get_values", {"spreadsheet_id": "sheet1", "range_a1": "A1:B2"})
 
         assert gated_call_spy[0]["preview"]["Owner"] == "(unknown)"
+
+    async def test_get_values_empty_produces_no_table(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file()
+        client.get_sheet_values.return_value = []
+
+        await connector.call("drive_sheets_get_values", {"spreadsheet_id": "sheet1", "range_a1": "A1:B2"})
+
+        assert gated_call_spy[0]["preview_tables"] == []
+
+    async def test_get_values_over_row_limit_gets_a_footer(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file()
+        client.get_sheet_values.return_value = [[str(i)] for i in range(60)]
+
+        await connector.call("drive_sheets_get_values", {"spreadsheet_id": "sheet1", "range_a1": "A1:A60"})
+
+        table = gated_call_spy[0]["preview_tables"][0]
+        assert len(table["rows"]) == 50
+        assert table["footer"] == "… and 10 more row(s)"
 
     async def test_write_range_gate_popup_and_valid_json(self, gated_call_spy):
         connector, client = make_connector()

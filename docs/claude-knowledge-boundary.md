@@ -68,7 +68,7 @@ drifts, don't trust it blindly.
 | `gmail_list_filters` | auto | full filter criteria + actions |
 | `gmail_list_labels` | auto | full label list (incl. nesting) |
 | `gmail_get_message` | review | **new:** full `body_text`, full `recipients`, `labels`; attachments repeated (same fields as the auto tool) |
-| `gmail_get_thread` | review | **new:** every message's body, sender, date; message count; attachments per message |
+| `gmail_get_thread` | review | **new:** every message's body, sender, date; message count; attachments per message. The thread's own subject is a partial exception -- `gmail_list_messages` returns `thread_id` per message, and a thread's replies conventionally share its subject (often "Re: `<subject>`"), so if Claude already listed even one message belonging to this thread (a common way to learn the `thread_id` in the first place), it already knows the subject -- same conditional-knowledge reasoning as Drive's file metadata below |
 | `gmail_download_attachment` | review | **new:** nothing to Claude — writes the file to disk and returns only `path`/`name`/`size_bytes`, never content bytes |
 
 ## Google Drive

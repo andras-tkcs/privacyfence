@@ -18,8 +18,6 @@ from AppKit import NSButton
 from WebKit import WKWebView
 
 from privacyfence.approval_window import (
-    _V2_HEADER_HEIGHT,
-    _V2_SEEN_COUNT_HEIGHT,
     _V2_WINDOW_WIDTH,
     ApprovalWindowController,
 )
@@ -50,6 +48,8 @@ def make_v2_controller(
     preview_bytes=b"",
     preview_mime_type="",
     preview_tables=None,
+    preview_blocks=None,
+    table_only=False,
 ):
     c = ApprovalWindowController.alloc().init()
     c.layout = layout
@@ -72,6 +72,8 @@ def make_v2_controller(
     c.preview_bytes = preview_bytes
     c.preview_mime_type = preview_mime_type
     c.preview_tables = preview_tables or []
+    c.preview_blocks = preview_blocks or []
+    c.table_only = table_only
     return c
 
 
@@ -310,31 +312,34 @@ class TestV2HeightEstimate:
 
 class TestV2ColumnsMaxHeight:
     """0 when the window already fits its own estimated content (the
-    common case); otherwise the real space left for §1-§4/the right pane
-    once the window's height was actually trimmed below that estimate --
-    see _columns_max_height's own docstring for why this must be a shared,
-    real number rather than an old hardcoded 520px on the right pane
-    alone."""
+    common case); otherwise the real space left for §3 alone once the
+    window's height was actually trimmed below that estimate -- header/
+    §1/§2/the risk card are pinned and always get their full
+    _pinned_height_v2(), never capped -- see _columns_max_height's own
+    docstring."""
 
     def test_zero_when_webview_height_already_fits_the_estimate(self):
-        controller = make_v2_controller(preview={"Title": "x"})
+        controller = make_v2_controller(preview={"Title": "x"}, new_info={"X": "y"})
         natural = controller._estimate_left_column_height()
         assert controller._columns_max_height(natural) == 0.0
         assert controller._columns_max_height(natural + 50.0) == 0.0
 
     def test_positive_when_webview_height_is_smaller_than_the_estimate(self):
         controller = make_v2_controller(
-            preview={"Title": "x"}, seen_count=3,
+            preview={"Title": "x"}, seen_count=3, new_info={"X": "y"},
         )
         natural = controller._estimate_left_column_height()
-        capped_webview_height = natural - 100.0
+        capped_webview_height = natural - 20.0
         result = controller._columns_max_height(capped_webview_height)
-        assert result == capped_webview_height - _V2_HEADER_HEIGHT - _V2_SEEN_COUNT_HEIGHT
+        assert result == capped_webview_height - controller._pinned_height_v2()
+        # Header/§1/§2 always keep their full height -- only §3's own
+        # budget shrinks.
+        assert result == controller._scrollable_height_v2() - 20.0
 
     def test_never_negative(self):
-        controller = make_v2_controller(preview={"Title": "x"})
+        controller = make_v2_controller(preview={"Title": "x"}, new_info={"X": "y"})
         natural = controller._estimate_left_column_height()
-        # A webview_height smaller than even just the header itself.
+        # A webview_height smaller than even just the pinned portion itself.
         result = controller._columns_max_height(natural - (natural + 1000.0))
         assert result == 0.0
 
@@ -353,6 +358,32 @@ class TestV2PreviewTables:
         controller = make_v2_controller(layout=WIDE)
         controller.build_panel()
         assert "<table" not in controller._details_html_string
+
+    def test_table_only_suppresses_details_text_in_the_right_pane(self):
+        controller = make_v2_controller(
+            layout=WIDE, details_text="should not appear in the right pane",
+            preview_tables=[{"headers": ["Field"], "rows": [["x"]]}],
+            table_only=True,
+        )
+        controller.build_panel()
+        assert "should not appear in the right pane" not in controller._details_html_string
+        assert "<table" in controller._details_html_string
+
+    def test_table_only_has_no_effect_without_a_table(self):
+        controller = make_v2_controller(
+            layout=WIDE, details_text="still shown", preview_tables=[], table_only=True,
+        )
+        controller.build_panel()
+        assert "still shown" in controller._details_html_string
+
+    def test_preview_blocks_render_and_take_priority_over_details_text(self):
+        controller = make_v2_controller(
+            layout=WIDE, details_text="should not appear",
+            preview_blocks=[{"type": "field", "label": "Reporter", "value": "Alice"}],
+        )
+        controller.build_panel()
+        assert "should not appear" not in controller._details_html_string
+        assert '<span class="pf-preview-label">Reporter:</span>' in controller._details_html_string
 
 
 class TestV2ButtonsDisabledUntilWebviewLoads:

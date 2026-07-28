@@ -1029,15 +1029,20 @@ def _scenarios(
             "Status": "To Do", "Assignee": "Unassigned",
         },
         new_info={
-            "Description": "Synthetic PrivacyFence QA test issue description. No real information.",
+            "Description": "Full description text",
             "Comments": "Author, created date, and body per comment",
         },
         details_text="Synthetic PrivacyFence QA test issue. No real information. Safe to comment "
                       "on, update, or transition by any automated test.",
-        preview_tables=[{
-            "caption": "Comments (1)", "headers": ["Author", "Date", "Comment"],
-            "rows": [[QA_PERSON, "2026-07-16", "Synthetic PrivacyFence QA test comment. No real information."]],
-        }],
+        preview_blocks=[
+            {"type": "field", "label": "Reporter", "value": QA_PERSON},
+            {"type": "heading", "label": "Description"},
+            {"type": "text", "text": "Synthetic PrivacyFence QA test issue description. No real information."},
+            {
+                "type": "table", "caption": "Comments (1)", "headers": ["Author", "Date", "Comment"],
+                "rows": [[QA_PERSON, "2026-07-16", "Synthetic PrivacyFence QA test comment. No real information."]],
+            },
+        ],
         allow_accept_all=True,
         connector="jira",
     ))
@@ -1094,6 +1099,7 @@ def _scenarios(
         preview_tables=[{
             "headers": ["Sender", "Date", "Message"], "rows": [[QA_PERSON, "2026-07-16", QA_TELEGRAM_SEED]],
         }],
+        table_only=True,
         allow_accept_all=True,
         connector="telegram",
     ))
@@ -1108,6 +1114,7 @@ def _scenarios(
         preview_tables=[{
             "headers": ["Sender", "Date", "Message"], "rows": [[QA_PERSON, "2026-07-16", QA_TELEGRAM_SEED]],
         }],
+        table_only=True,
         allow_accept_all=True,
         connector="telegram",
     ))
@@ -1122,6 +1129,7 @@ def _scenarios(
         preview_tables=[{
             "headers": ["Field", "Value"], "rows": [["Industry", "Technology"], ["Name", QA_ACCOUNT]],
         }],
+        table_only=True,
         allow_accept_all=True,
         connector="salesforce",
     ))
@@ -1137,6 +1145,7 @@ def _scenarios(
             "headers": ["Account Name", "Amount"], "rows": [[QA_ACCOUNT, "$1,000"]],
             "footer": "Total: $1,000",
         }],
+        table_only=True,
         allow_accept_all=True,
         connector="salesforce",
     ))
@@ -1157,6 +1166,7 @@ def _scenarios(
                 ["Account", "PrivacyFence QA — Globex Test Co [QATEST]", "001QA0000067890"],
             ],
         }],
+        table_only=True,
         allow_accept_all=True,
         connector="salesforce",
     ))
@@ -1210,14 +1220,19 @@ def _scenarios(
             "Status": "To Do", "Assignee": "Unassigned",
         },
         new_info={
-            "Description": QA_LONG_PARAGRAPH,
+            "Description": "Full description text",
             "Comments": "Author, created date, and body per comment",
         },
         details_text=f"Reporter: {QA_PERSON}\n\nDescription:\n{QA_LONG_PARAGRAPH}",
-        preview_tables=[{
-            "caption": f"Comments ({len(QA_MANY_COMMENTS)})", "headers": ["Author", "Date", "Comment"],
-            "rows": QA_MANY_COMMENTS,
-        }],
+        preview_blocks=[
+            {"type": "field", "label": "Reporter", "value": QA_PERSON},
+            {"type": "heading", "label": "Description"},
+            {"type": "text", "text": QA_LONG_PARAGRAPH},
+            {
+                "type": "table", "caption": f"Comments ({len(QA_MANY_COMMENTS)})",
+                "headers": ["Author", "Date", "Comment"], "rows": QA_MANY_COMMENTS,
+            },
+        ],
         allow_accept_all=True,
         connector="jira",
     ))
@@ -1231,14 +1246,19 @@ def _scenarios(
             "Status": "To Do", "Assignee": "Unassigned",
         },
         new_info={
-            "Description": f"{QA_LONG_PARAGRAPH} Reach the reporter at {QA_PHONE}.",
+            "Description": "Full description text",
             "Comments": "Author, created date, and body per comment",
         },
         details_text=f"Reporter: {QA_PERSON}\n\nDescription:\n{QA_LONG_PARAGRAPH} Reach the reporter at {QA_PHONE}.",
-        preview_tables=[{
-            "caption": f"Comments ({len(QA_MANY_COMMENTS)})", "headers": ["Author", "Date", "Comment"],
-            "rows": QA_MANY_COMMENTS,
-        }],
+        preview_blocks=[
+            {"type": "field", "label": "Reporter", "value": QA_PERSON},
+            {"type": "heading", "label": "Description"},
+            {"type": "text", "text": f"{QA_LONG_PARAGRAPH} Reach the reporter at {QA_PHONE}."},
+            {
+                "type": "table", "caption": f"Comments ({len(QA_MANY_COMMENTS)})",
+                "headers": ["Author", "Date", "Comment"], "rows": QA_MANY_COMMENTS,
+            },
+        ],
         allow_accept_all=True,
         pii_categories=["Phone number"],
         connector="jira",
@@ -1282,6 +1302,7 @@ def _scenarios(
         },
         details_text="\n".join(f"[{r[1]}] {r[0]}: {r[2]}" for r in QA_MANY_TELEGRAM_ROWS),
         preview_tables=[{"headers": ["Sender", "Date", "Message"], "rows": QA_MANY_TELEGRAM_ROWS}],
+        table_only=True,
         allow_accept_all=True,
         connector="telegram",
     ))
@@ -1301,6 +1322,7 @@ def _scenarios(
             "headers": ["Sender", "Date", "Message"],
             "rows": QA_MANY_TELEGRAM_ROWS + [[QA_PERSON, "2026-07-16T09:00:00Z", f"Call me at {QA_PHONE} when you land."]],
         }],
+        table_only=True,
         allow_accept_all=True,
         pii_categories=["Phone number"],
         connector="telegram",
@@ -1319,6 +1341,7 @@ def _scenarios(
             "headers": ["Field", "Value"],
             "rows": [[k, QA_MANY_SALESFORCE_FIELDS[k]] for k in sorted(QA_MANY_SALESFORCE_FIELDS)],
         }],
+        table_only=True,
         allow_accept_all=True,
         connector="salesforce",
     ))
@@ -1336,6 +1359,7 @@ def _scenarios(
             "headers": ["Field", "Value"],
             "rows": [[k, QA_MANY_SALESFORCE_FIELDS[k]] for k in sorted(QA_MANY_SALESFORCE_FIELDS)],
         }],
+        table_only=True,
         allow_accept_all=True,
         pii_categories=["Phone number"],
         connector="salesforce",
@@ -1353,6 +1377,7 @@ def _scenarios(
             "rows": QA_MANY_SALESFORCE_ROWS,
             "footer": "Total: $550,000",
         }],
+        table_only=True,
         allow_accept_all=True,
         connector="salesforce",
     ))
@@ -1369,6 +1394,7 @@ def _scenarios(
             "rows": QA_MANY_SALESFORCE_ROWS,
             "footer": "Total: $550,000",
         }],
+        table_only=True,
         allow_accept_all=True,
         pii_categories=["Phone number"],
         connector="salesforce",
@@ -1384,6 +1410,7 @@ def _scenarios(
         },
         details_text="\n".join(f"{r[0]} — {r[1]} (id={r[2]})" for r in QA_MANY_SEARCH_ROWS),
         preview_tables=[{"headers": ["Object type", "Name", "ID"], "rows": QA_MANY_SEARCH_ROWS}],
+        table_only=True,
         allow_accept_all=True,
         connector="salesforce",
     ))
@@ -1398,6 +1425,7 @@ def _scenarios(
         },
         details_text="\n".join(f"{r[0]} — {r[1]} (id={r[2]})" for r in QA_MANY_SEARCH_ROWS),
         preview_tables=[{"headers": ["Object type", "Name", "ID"], "rows": QA_MANY_SEARCH_ROWS}],
+        table_only=True,
         allow_accept_all=True,
         pii_categories=["Email address"],
         connector="salesforce",
@@ -1494,13 +1522,23 @@ def _scenarios(
         click_title="Always allow", expected="accept_all",
         title="Read Gmail Thread",
         preview={
-            "Participants": QA_EMAIL, "Dates": "2026-07-16 – 2026-07-16",
+            "Subject": QA_GMAIL_SUBJECT, "Participants": QA_EMAIL, "Dates": "2026-07-16 – 2026-07-16",
         },
-        new_info={"Subject": QA_GMAIL_SUBJECT, "Messages": "2"},
+        new_info={"Messages": "2"},
         details_text=f"From: {QA_EMAIL}\n{QA_GMAIL_BODY} The refund IBAN [QATEST] is attached.\n\n"
                       f"From: {QA_EMAIL}\nSynthetic PrivacyFence QA reply. No real information.",
+        preview_blocks=[
+            {"type": "heading", "label": "Message 1"},
+            {"type": "field", "label": "From", "value": QA_EMAIL},
+            {"type": "field", "label": "Date", "value": "2026-07-16"},
+            {"type": "text", "text": f"{QA_GMAIL_BODY} The refund IBAN [QATEST] is attached."},
+            {"type": "heading", "label": "Message 2"},
+            {"type": "field", "label": "From", "value": QA_EMAIL},
+            {"type": "field", "label": "Date", "value": "2026-07-16"},
+            {"type": "text", "text": "Synthetic PrivacyFence QA reply. No real information."},
+        ],
         allow_accept_all=True,
-        visibility={"Sender & metadata": "redact", "Thread messages": "allow", "Attachments": "block"},
+        visibility={"Thread messages": "allow", "Attachments": "block"},
         claude_reason="Checking recent QA thread activity as requested.",
         seen_count=2,
         pii_categories=["IBAN (bank account number)"],
@@ -1512,7 +1550,16 @@ def _scenarios(
         click_title="Allow once", expected="accept",
         title="Read Sheet Values",
         preview={"Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Range": "A1:C10"},
-        details_text="Synthetic PrivacyFence QA test spreadsheet values. No real information.",
+        # Real, A1:C10-shaped synthetic cell data -- not a plain sentence --
+        # so the right pane's table actually matches what "Range" claims.
+        details_text="\n".join(
+            ", ".join(row) for row in
+            [["Item", "Quantity", "Status"]] + [[f"QA Item {i} [QATEST]", str(i), "OK"] for i in range(1, 10)]
+        ),
+        preview_tables=[{
+            "rows": [["Item", "Quantity", "Status"]] + [[f"QA Item {i} [QATEST]", str(i), "OK"] for i in range(1, 10)],
+        }],
+        table_only=True,
         allow_accept_all=True,
         visibility={"Cell values": "allow"},
         connector="drive",
@@ -1527,8 +1574,13 @@ def _scenarios(
         click_title="Allow once", expected="accept",
         title="Read Slack Channel History",
         preview={"Channel": QA_SLACK_CHANNEL},
-        new_info={"Messages": "2", "First message": QA_SLACK_SEED},
+        new_info={"Messages": "2"},
         details_text=f"{QA_SLACK_SEED}\n{QA_SLACK_REPLY}",
+        preview_tables=[{
+            "headers": ["Sender", "Date", "Message"],
+            "rows": [[QA_PERSON, "2026-07-16", QA_SLACK_SEED], [QA_PERSON, "2026-07-16", QA_SLACK_REPLY]],
+        }],
+        table_only=True,
         allow_accept_all=True,
         visibility={"Message text": "allow", "Usernames": "redact"},
         claude_reason="Checking recent QA channel activity as requested.",
@@ -1541,8 +1593,13 @@ def _scenarios(
         click_title="Allow once", expected="accept",
         title="Read Slack Thread Replies",
         preview={"Channel": QA_SLACK_CHANNEL},
-        new_info={"Thread starter": QA_SLACK_SEED, "Replies": "1"},
+        new_info={"Replies": "1"},
         details_text=QA_SLACK_REPLY,
+        preview_tables=[{
+            "headers": ["Sender", "Date", "Message"],
+            "rows": [[QA_PERSON, "2026-07-16", QA_SLACK_SEED], [QA_PERSON, "2026-07-16", QA_SLACK_REPLY]],
+        }],
+        table_only=True,
         allow_accept_all=True,
         visibility={"Message text": "allow", "Usernames": "redact"},
         connector="slack",
@@ -1555,6 +1612,14 @@ def _scenarios(
         preview={"Query": "QATEST"},
         new_info={"Results": "2"},
         details_text=f"{QA_SLACK_SEED}\n{QA_SLACK_REPLY}",
+        preview_tables=[{
+            "headers": ["Channel", "Sender", "Date", "Message"],
+            "rows": [
+                [QA_SLACK_CHANNEL, QA_PERSON, "2026-07-16", QA_SLACK_SEED],
+                [QA_SLACK_CHANNEL, QA_PERSON, "2026-07-16", QA_SLACK_REPLY],
+            ],
+        }],
+        table_only=True,
         allow_accept_all=True,
         visibility={"Message text": "allow", "Usernames": "redact"},
         connector="slack",
@@ -1577,7 +1642,7 @@ def _scenarios(
         new_info={"To": QA_EMAIL, "Labels": "INBOX, IMPORTANT"},
         details_text=f"{QA_GMAIL_BODY} Call me back at 555-0142 [QATEST] to confirm.",
         allow_accept_all=True,
-        visibility={"Sender & metadata": "redact", "Message body": "allow", "Attachments": "block"},
+        visibility={"Message body": "allow", "Attachments": "block"},
         content_kind="email",
         pii_categories=["Phone number"],
         connector="gmail",

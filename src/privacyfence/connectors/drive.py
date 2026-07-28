@@ -51,7 +51,12 @@ def _parse_json_2d_list(value: str) -> list[list] | None:
     return parsed if isinstance(parsed, list) else None
 
 
-def _format_sheet_rows(rows: list[list], limit: int = 50) -> str:
+_SHEET_ROW_LIMIT = 50  # shared between _format_sheet_rows (legacy details_text) and
+# _sheets_get_values's own v2 preview_tables build, so the two can never disagree
+# about where the cap/"more row(s)" footer lands.
+
+
+def _format_sheet_rows(rows: list[list], limit: int = _SHEET_ROW_LIMIT) -> str:
     """Render 2D sheet cell data as comma-joined lines, capped at `limit` rows."""
     shown = "\n".join(", ".join(str(cell) for cell in row) for row in rows[:limit])
     if len(rows) > limit:
@@ -673,6 +678,16 @@ class DriveConnector(Connector):
         # values is the actual new content, covered by the visibility row.
         preview = {"Spreadsheet": name, "Owner": ", ".join(owners) or "(unknown)", "Range": range_a1}
         rows_preview = _format_sheet_rows(values)
+        # v2's right pane: actual cell data as a real table, not a comma-
+        # joined text dump -- there's no semantic "header row" to assume
+        # (the first row of an arbitrary A1:C10-style range is just more
+        # data, not necessarily a label), so this renders headerless, same
+        # as any other headerless table (see approval_window_html.py's
+        # _table_html). table_only since details_text (kept for legacy/
+        # PII-scan) would otherwise show the exact same values twice.
+        table = {"rows": [[str(cell) for cell in row] for row in values[:_SHEET_ROW_LIMIT]]}
+        if len(values) > _SHEET_ROW_LIMIT:
+            table["footer"] = f"… and {len(values) - _SHEET_ROW_LIMIT} more row(s)"
         return await gated_call(
             connector=self.name,
             tool="drive_sheets_get_values",
@@ -686,6 +701,8 @@ class DriveConnector(Connector):
             details_text=rows_preview,
             pii_scan_text=rows_preview,
             visibility={"Cell values": category_policy("drive_privacy", "file_content")},
+            preview_tables=[table] if values else [],
+            table_only=True,
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={"spreadsheet_id": spreadsheet_id, "range_a1": range_a1},
