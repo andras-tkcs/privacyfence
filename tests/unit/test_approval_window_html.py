@@ -10,6 +10,7 @@ module's TestDetailsPane for the precedent this file follows).
 from __future__ import annotations
 
 from privacyfence.approval_window_html import (
+    CONTENT_WIDTH,
     DEFAULT_LINE_CLAMP,
     NARROW,
     WIDE,
@@ -65,11 +66,42 @@ class TestLineClamp:
 
     def test_attendees_row_carries_its_own_inline_clamp_override(self):
         html = build_card_stack_html(**_minimal_kwargs(disclosure_rows=[("Attendees", "Alice, Bob")]))
-        assert '<span style="-webkit-line-clamp:3">Alice, Bob</span>' in html
+        assert '<span style="-webkit-line-clamp:3" title="Alice, Bob">Alice, Bob</span>' in html
 
     def test_description_row_carries_its_own_inline_clamp_override(self):
         html = build_card_stack_html(**_minimal_kwargs(disclosure_rows=[("Description", "A long paragraph.")]))
-        assert '<span style="-webkit-line-clamp:4">A long paragraph.</span>' in html
+        assert '<span style="-webkit-line-clamp:4" title="A long paragraph.">A long paragraph.</span>' in html
+
+
+class TestHoverTooltips:
+    """Truncated values need a way to read the full text -- since this
+    document runs with JavaScript disabled (approval_window.py's
+    setJavaScriptEnabled_(False)), a native title="..." attribute is the
+    only hover-tooltip mechanism available; WebKit shows it with no script
+    needed. Set unconditionally (not just when a value happens to actually
+    clamp) since predicting that in advance would need real text
+    measurement, which this layout deliberately avoids -- see
+    _kv_rows_html's own comment."""
+
+    def test_kv_row_value_has_a_title_attribute_with_the_full_text(self):
+        html = build_card_stack_html(**_minimal_kwargs(preview={"Title": "A fairly long event title"}))
+        assert 'title="A fairly long event title"' in html
+
+    def test_kv_row_title_is_escaped(self):
+        html = build_card_stack_html(**_minimal_kwargs(preview={"Title": '<script>alert(1)</script> & "x"'}))
+        assert 'title="&lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;x&quot;"' in html
+
+    def test_disclosure_row_value_has_a_title_attribute(self):
+        html = build_card_stack_html(**_minimal_kwargs(disclosure_rows=[("Attendees", "Alice, Bob, Carol")]))
+        assert 'title="Alice, Bob, Carol"' in html
+
+    def test_claude_reason_quote_has_a_title_attribute_with_the_full_text(self):
+        html = build_card_stack_html(**_minimal_kwargs(claude_reason="A fairly long stated reason."))
+        assert 'title="A fairly long stated reason."' in html
+
+    def test_claude_reason_title_is_escaped(self):
+        html = build_card_stack_html(**_minimal_kwargs(claude_reason='<script>alert(1)</script> & "x"'))
+        assert 'title="&lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;x&quot;"' in html
 
 
 class TestDisclosureRowsFromVisibility:
@@ -200,7 +232,7 @@ class TestLayoutShapes:
     def test_wide_layout_has_the_two_column_split(self):
         html = build_card_stack_html(**_minimal_kwargs(layout=WIDE))
         assert f"flex:0 0 {_WIDE_LEFT_COLUMN_WIDTH}px" in html
-        assert "width: 880px" in html
+        assert f"width: {CONTENT_WIDTH[WIDE]}px" in html
 
     def test_narrow_layout_has_no_preview_pane_at_all(self):
         # Not a smaller version of WIDE's preview -- genuinely absent, even
@@ -209,10 +241,26 @@ class TestLayoutShapes:
         assert "Preview (~2 sec read)" not in html
         assert "Synthetic event body text" not in html
 
-    def test_wide_preview_pane_scrolls_independently(self):
+    def test_no_scroll_cap_by_default(self):
+        # columns_max_height defaults to 0 -- the common case, where the
+        # window was already sized to fit §1-§4 exactly, so no artificial
+        # cap is applied to either side (see build_card_stack_html's own
+        # docstring for why an unconditional cap risked clipping content
+        # over a few pixels of estimate-vs-actual rendering drift).
         html = build_card_stack_html(**_minimal_kwargs(layout=WIDE))
-        assert "overflow-y:auto" in html
-        assert "max-height:520px" in html
+        assert "overflow-y:auto" not in html
+        assert "max-height" not in html
+
+    def test_columns_max_height_caps_both_sides_when_given(self):
+        html = build_card_stack_html(**_minimal_kwargs(layout=WIDE, columns_max_height=300.0))
+        assert html.count("max-height:300px;overflow-y:auto") == 2
+
+    def test_narrow_columns_max_height_caps_the_single_column(self):
+        html = build_card_stack_html(**_minimal_kwargs(layout=NARROW, columns_max_height=300.0))
+        assert "max-height:300px;overflow-y:auto" in html
+
+    def test_wide_preview_pane_still_renders_after_the_left_column(self):
+        html = build_card_stack_html(**_minimal_kwargs(layout=WIDE))
         assert html.index("Preview (~2 sec read)") > html.index("What Claude already knows")
 
 

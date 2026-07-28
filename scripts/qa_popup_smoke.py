@@ -554,6 +554,18 @@ QA_LONG_FILENAME = (
     "PrivacyFence-QA-Quarterly-Financial-Summary-And-Supporting-Documentation-Bundle-"
     "2026-Q3-Draft-v12-FINAL-FINAL [QATEST].pdf"
 )
+# §2's own stress fixture -- a plausible but over-explaining Claude reason,
+# long enough to exceed .pf-quote's 3-line clamp and get truncated with an
+# ellipsis, to check the new hover-tooltip mechanism against real §2
+# content specifically (every other stress scenario varies §1/§3/the right
+# pane instead).
+QA_LONG_CLAUDE_REASON = (
+    "Checking the QA event details as requested, since the calendar list view only exposed the "
+    "event's title and time slot and the user specifically asked whether any of the invited "
+    "guests have a conflicting commitment that day, whether the meeting still has an open "
+    "video-conferencing link attached, and whether the description contains any pre-reads or "
+    "agenda items that need to be reviewed before the call starts [QATEST]."
+)
 
 # A synthetic settings.yaml for the menu-bar scenario -- enough auto_accept_grants/auto_accept_
 # rules spread across a few connectors (gmail, drive, sheets, slack) that the Auto-accept Rules
@@ -983,6 +995,27 @@ def _scenarios(
         },
         details_text="Synthetic PrivacyFence QA test event. No real information.",
         claude_reason="Checking the QA event details as requested.",
+        allow_accept_all=True,
+        connector="calendar",
+    ))
+
+    results.append(run(
+        # §2 stress: everything else matches the plain baseline above --
+        # only claude_reason is long enough to exceed .pf-quote's 3-line
+        # clamp and get ellipsis-truncated, isolating that one variable
+        # (checks the new title="..." hover-tooltip mechanism against real
+        # §2 content, not just §1/§3 rows or the right pane).
+        "RG-1 · calendar_get_event_details (long §2 reason, truncated)",
+        click_title="Allow once", expected="accept",
+        title="Read Calendar Event",
+        preview={"Title": QA_EVENT, "Time": QA_EVENT_TIME},
+        new_info={
+            "Attendees": f"{QA_PERSON} (organizer), QA Contact <{QA_CONTACT_EMAIL}>",
+            "Location": "Remote",
+            "Description": "Synthetic PrivacyFence QA test event description. No real information.",
+        },
+        details_text="Synthetic PrivacyFence QA test event. No real information.",
+        claude_reason=QA_LONG_CLAUDE_REASON,
         allow_accept_all=True,
         connector="calendar",
     ))
@@ -2145,7 +2178,7 @@ def main() -> None:
         help="Run only the scenario(s) whose name contains this text (case-insensitive substring "
              "match against the scenario name shown in the report table, e.g. 'gmail_get_thread', "
              "'RG-4', or 'Menu bar' for the menu-bar/rules-window scenario), instead of the full "
-             "~81-scenario suite (80 tool-approval scenarios plus the one menu-bar scenario). For "
+             "~82-scenario suite (81 tool-approval scenarios plus the one menu-bar scenario). For "
              "grabbing a single updated screenshot -- e.g. for README.md -- without sitting "
              "through the whole run: --scenario 'gmail_get_thread' --screenshot-dir "
              "docs/images/screenshots. Matches nothing -> an empty report and a nonzero exit "

@@ -18,6 +18,8 @@ from AppKit import NSButton
 from WebKit import WKWebView
 
 from privacyfence.approval_window import (
+    _V2_HEADER_HEIGHT,
+    _V2_SEEN_COUNT_HEIGHT,
     _V2_WINDOW_WIDTH,
     ApprovalWindowController,
 )
@@ -92,7 +94,7 @@ class TestV2WindowShape:
     def test_wide_layout_window_width(self):
         controller = make_v2_controller(layout=WIDE)
         panel = controller.build_panel()
-        assert panel.frame().size.width == _V2_WINDOW_WIDTH[WIDE] == 880.0
+        assert panel.frame().size.width == _V2_WINDOW_WIDTH[WIDE] == 980.0
 
     def test_exactly_one_webview_renders_the_whole_content_area(self):
         # Unlike legacy (one NSBox/NSTextField per section), v2 has exactly
@@ -304,6 +306,37 @@ class TestV2HeightEstimate:
         short = make_v2_controller(preview={"Attendees": "Alice"})
         long = make_v2_controller(preview={"Attendees": "Alice, " * 200})
         assert short.build_panel().frame().size.height == long.build_panel().frame().size.height
+
+
+class TestV2ColumnsMaxHeight:
+    """0 when the window already fits its own estimated content (the
+    common case); otherwise the real space left for §1-§4/the right pane
+    once the window's height was actually trimmed below that estimate --
+    see _columns_max_height's own docstring for why this must be a shared,
+    real number rather than an old hardcoded 520px on the right pane
+    alone."""
+
+    def test_zero_when_webview_height_already_fits_the_estimate(self):
+        controller = make_v2_controller(preview={"Title": "x"})
+        natural = controller._estimate_left_column_height()
+        assert controller._columns_max_height(natural) == 0.0
+        assert controller._columns_max_height(natural + 50.0) == 0.0
+
+    def test_positive_when_webview_height_is_smaller_than_the_estimate(self):
+        controller = make_v2_controller(
+            preview={"Title": "x"}, seen_count=3,
+        )
+        natural = controller._estimate_left_column_height()
+        capped_webview_height = natural - 100.0
+        result = controller._columns_max_height(capped_webview_height)
+        assert result == capped_webview_height - _V2_HEADER_HEIGHT - _V2_SEEN_COUNT_HEIGHT
+
+    def test_never_negative(self):
+        controller = make_v2_controller(preview={"Title": "x"})
+        natural = controller._estimate_left_column_height()
+        # A webview_height smaller than even just the header itself.
+        result = controller._columns_max_height(natural - (natural + 1000.0))
+        assert result == 0.0
 
 
 class TestV2PreviewTables:

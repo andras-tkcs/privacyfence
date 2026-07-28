@@ -74,7 +74,12 @@ _STYLES_CSS = _STYLES_PATH.read_text(encoding="utf-8")
 NARROW = "narrow"
 WIDE = "wide"
 
-_CONTENT_WIDTH = {NARROW: 610, WIDE: 880}
+# Public (no leading underscore): approval_window.py's own _V2_WINDOW_WIDTH
+# derives from this directly rather than duplicating it, so the native
+# window frame and the HTML body rendered inside it can never drift out of
+# sync the way they once did (that dict still said 880 after this one was
+# bumped to 980 for a wider right pane).
+CONTENT_WIDTH = {NARROW: 610, WIDE: 980}
 
 # WIDE's left column width -- deliberately narrower than a full 550px
 # single-column tool's content width (matching the design canvas's own
@@ -227,9 +232,21 @@ def _kv_rows_html(pairs: list[tuple[str, str]]) -> str:
         # Inline override only when it actually differs from the CSS
         # default -- keeps the common case's markup uncluttered.
         style_attr = f' style="-webkit-line-clamp:{clamp}"' if clamp != DEFAULT_LINE_CLAMP else ""
+        # A native title="..." tooltip, not JS -- this document runs with
+        # JavaScript disabled (see build_card_stack_html's caller,
+        # approval_window.py's config.preferences().setJavaScriptEnabled_
+        # (False)), and WebKit already shows a hover tooltip for any
+        # element with a title attribute with no script needed. Set
+        # unconditionally rather than only when a value is actually
+        # clamped: knowing in advance whether a given string will exceed N
+        # lines at the rendered column width/font would need real text
+        # measurement, which this whole layout deliberately avoids (see
+        # this module's docstring) -- harmless on an untruncated value,
+        # since hovering it just repeats what's already fully visible.
+        v_str = str(v)
         rows.append(
             f'<div class="pf-kv"><span>{_html_escape(str(k))}</span>'
-            f'<span{style_attr}>{_html_escape(str(v))}</span></div>'
+            f'<span{style_attr} title="{_html_escape(v_str)}">{_html_escape(v_str)}</span></div>'
         )
     return "".join(rows)
 
@@ -250,8 +267,11 @@ def _section_2_html(number: int, is_read: bool, claude_reason: str) -> str:
     if not claude_reason:
         return ""
     kicker = f"{number:02d} · " + ("Why Claude needs more data" if is_read else "Details — data to write")
+    # title="..." tooltip, same reasoning as _kv_rows_html's own -- shows
+    # the full reason on hover with no JS, harmless when it isn't actually
+    # clamped.
     body = (
-        f'<p class="pf-quote">“{_html_escape(claude_reason)}”</p>'
+        f'<p class="pf-quote" title="{_html_escape(claude_reason)}">“{_html_escape(claude_reason)}”</p>'
         f'<div class="card-meta">Claude’s stated reason · unverified</div>'
     )
     return _card(kicker, body)
@@ -326,6 +346,7 @@ def build_card_stack_html(
     temp_accept_text: str,
     preview_kicker: str,
     preview_body_html: str,
+    columns_max_height: float = 0.0,
 ) -> str:
     """Build the full HTML document for one approval window's content area.
 
@@ -341,8 +362,23 @@ def build_card_stack_html(
     content vs. everything else) and approval_window.py's ``layout``
     parameter. No "Show more"/"Show less" control anywhere: progressive
     disclosure by area-expansion doesn't apply once every row has a fixed,
-    truncated size (see styles.css's ``.pf-kv``/``.pf-quote``) and the right
-    pane (WIDE only) already scrolls on its own.
+    truncated size (see styles.css's ``.pf-kv``/``.pf-quote``).
+
+    ``columns_max_height``, when non-zero (approval_window.py's
+    ApprovalWindowController._columns_max_height -- 0 in the common case,
+    only set once the screen-height cap has actually trimmed the window
+    below what §1-§4 need), caps *both* the §1-§4 section stack (below the
+    always-visible header) and, for WIDE, the right-hand preview pane at
+    that same real pixel value, each independently scrolling past it. Both
+    sides sharing one real number is what keeps the two-column divider
+    (border-left on the right pane) reaching the actual bottom of
+    whichever column is taller, rather than an old hardcoded 520px on the
+    right pane alone, which had no relationship to the window's actual
+    size -- it could stop short of a taller left column, or waste space
+    when the window was taller than 520px. Zero means no cap at all: the
+    common case, where the window was already sized to fit §1-§4 exactly,
+    so an artificial cap would only risk clipping content over a few
+    pixels of Python-estimate-vs-WebKit-actual rendering drift.
 
     Exactly one of ``pii_categories``/``write_content_flags`` is ever
     non-empty for a given call (gate.py never populates both at once), and
@@ -350,7 +386,7 @@ def build_card_stack_html(
     -- see _risk_section_html()'s docstring for what each combination
     renders.
     """
-    width = _CONTENT_WIDTH[layout]
+    width = CONTENT_WIDTH[layout]
     # A plain running counter, advanced only when a section actually
     # renders -- not itertools.count()'d speculatively, since §1/§2 are
     # effectively always present in production but §3/§4 aren't, and this
@@ -389,23 +425,35 @@ def build_card_stack_html(
         sections_html.append(risk_html)
 
     header_html = _header_html(title, connector_icon_data_uri, shield_icon_data_uri, seen_count_text)
-    left_column = header_html + "".join(sections_html)
+    sections_joined = "".join(sections_html)
+    # The header stays outside this cap -- always fully visible -- only the
+    # §1-§4 stack below it (and, for WIDE, the right pane) ever scrolls.
+    scroll_style = f'max-height:{columns_max_height:.0f}px;overflow-y:auto' if columns_max_height else ""
+    sections_html_capped = f'<div style="{scroll_style}">{sections_joined}</div>' if scroll_style else sections_joined
+    left_column = header_html + sections_html_capped
 
     if layout == WIDE:
         # Fixed left column width (_WIDE_LEFT_COLUMN_WIDTH) regardless of
-        # the overall 880px window width -- the design canvas's own two-
-        # column cards used a fixed flex-basis the same way (350px there;
-        # widened since, see that constant's own comment).
+        # the overall window width -- the design canvas's own two-column
+        # cards used a fixed flex-basis the same way (350px there; widened
+        # since, see that constant's own comment).
+        right_pane_style = (
+            f'flex:1;min-width:0;border-left:1px solid var(--color-divider);padding-left:24px'
+            + (f';{scroll_style}' if scroll_style else "")
+        )
         body_html = (
             # align-items defaults to "stretch" (deliberately not
             # overridden to "flex-start") so both columns match the height
             # of the taller one -- otherwise the right pane's border-left
             # divider only extends as far as its own (often shorter)
-            # content, instead of running the window's full height.
+            # content, instead of running the window's full height. When
+            # columns_max_height applies, both sides are also explicitly
+            # capped at that same real value (see this function's own
+            # docstring) so stretch can never be defeated by one side's
+            # cap being reached before the other's.
             '<div style="display:flex;gap:28px">'
             f'<div style="flex:0 0 {_WIDE_LEFT_COLUMN_WIDTH}px;min-width:0">{left_column}</div>'
-            '<div style="flex:1;min-width:0;border-left:1px solid var(--color-divider);'
-            'padding-left:24px;max-height:520px;overflow-y:auto">'
+            f'<div style="{right_pane_style}">'
             f'<div class="card-kicker" style="margin-bottom:8px">{_html_escape(preview_kicker)}</div>'
             f'{preview_body_html}'
             '</div></div>'
