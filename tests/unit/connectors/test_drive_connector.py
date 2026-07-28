@@ -665,7 +665,7 @@ class TestWriteToolsGateAndPreview:
     async def test_move_file_preview_shows_destination_folder_name(self, gated_call_spy):
         connector, client = make_connector()
         client.get_file_metadata.side_effect = [
-            make_file(),  # source file
+            make_file(),  # source file, no recorded parent_ids
             make_file(id="folderB", name="Archive", mime_type="application/vnd.google-apps.folder"),
         ]
         client.move_file.return_value = {"ok": True}
@@ -674,9 +674,24 @@ class TestWriteToolsGateAndPreview:
 
         kwargs = gated_call_spy[0]
         assert kwargs["gate"] == "popup"
-        assert kwargs["preview"]["Move to folder"] == "Archive"
+        # No parent_ids on the source file -- current folder is unknown,
+        # but the move (and its arrow) still shows unconditionally.
+        assert kwargs["preview"]["Folder"] == "(unknown) → Archive"
         assert kwargs["details_text"] == "File will be moved to the new folder; its content is unchanged."
         assert kwargs["args"] == {"file_id": "f1", "destination_folder_id": "folderB"}
+
+    async def test_move_file_shows_current_folder_name_when_known(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.side_effect = [
+            make_file(parent_ids=["folderA"]),
+            make_file(id="folderA", name="Inbox", mime_type="application/vnd.google-apps.folder"),
+            make_file(id="folderB", name="Archive", mime_type="application/vnd.google-apps.folder"),
+        ]
+        client.move_file.return_value = {"ok": True}
+
+        await connector.call("drive_move_file", {"file_id": "f1", "destination_folder_id": "folderB"})
+
+        assert gated_call_spy[0]["preview"]["Folder"] == "Inbox → Archive"
 
     async def test_move_file_falls_back_to_raw_folder_id_when_lookup_fails(self, gated_call_spy):
         connector, client = make_connector()
@@ -685,7 +700,20 @@ class TestWriteToolsGateAndPreview:
 
         await connector.call("drive_move_file", {"file_id": "f1", "destination_folder_id": "folderB"})
 
-        assert gated_call_spy[0]["preview"]["Move to folder"] == "folderB"
+        assert gated_call_spy[0]["preview"]["Folder"] == "(unknown) → folderB"
+
+    async def test_move_file_falls_back_to_raw_parent_id_when_current_lookup_fails(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.side_effect = [
+            make_file(parent_ids=["folderA"]),
+            DriveClientError("not found"),
+            make_file(id="folderB", name="Archive", mime_type="application/vnd.google-apps.folder"),
+        ]
+        client.move_file.return_value = {"ok": True}
+
+        await connector.call("drive_move_file", {"file_id": "f1", "destination_folder_id": "folderB"})
+
+        assert gated_call_spy[0]["preview"]["Folder"] == "folderA → Archive"
 
     async def test_add_comment_gate_popup(self, gated_call_spy):
         connector, client = make_connector()
@@ -1187,6 +1215,7 @@ class TestSheetsGatedTools:
     async def test_rename_sheet_gate_popup(self, gated_call_spy):
         connector, client = make_connector()
         client.get_file_metadata.return_value = make_file(name="Budget")
+        client.list_sheets.return_value = [{"sheet_id": 5, "title": "Sheet1"}]
         client.rename_sheet.return_value = {"sheet_id": 5, "title": "Renamed"}
 
         result = await connector.call(
@@ -1195,10 +1224,25 @@ class TestSheetsGatedTools:
 
         kwargs = gated_call_spy[0]
         assert kwargs["gate"] == "popup"
-        assert kwargs["preview"]["Tab id"] == 5
-        assert kwargs["preview"]["New title"] == "Renamed"
+        # "Tab id" (the raw numeric id) replaced with "Tab title": the
+        # current title resolved via list_sheets, old → new.
+        assert kwargs["preview"]["Tab title"] == "Sheet1 → Renamed"
+        assert "Tab id" not in kwargs["preview"]
+        assert "New title" not in kwargs["preview"]
         client.rename_sheet.assert_called_once_with("sheet1", 5, "Renamed")
         assert result == {"sheet_id": 5, "title": "Renamed"}
+
+    async def test_rename_sheet_falls_back_to_raw_id_when_title_lookup_fails(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file(name="Budget")
+        client.list_sheets.side_effect = DriveClientError("not found")
+        client.rename_sheet.return_value = {"sheet_id": 5, "title": "Renamed"}
+
+        await connector.call(
+            "drive_sheets_rename_sheet", {"spreadsheet_id": "sheet1", "sheet_id": 5, "new_title": "Renamed"}
+        )
+
+        assert gated_call_spy[0]["preview"]["Tab title"] == "5 → Renamed"
 
     async def test_format_range_gate_popup_summarizes_applied_changes(self, gated_call_spy):
         connector, client = make_connector()
@@ -1276,6 +1320,7 @@ class TestSheetsDimensionTools:
     async def test_insert_dimensions_gate_popup(self, gated_call_spy):
         connector, client = make_connector()
         client.get_file_metadata.return_value = make_file(name="Budget")
+        client.list_sheets.return_value = [{"sheet_id": 0, "title": "Sheet1"}]
         client.insert_dimensions.return_value = {"inserted": 2}
 
         result = await connector.call(
@@ -1285,6 +1330,10 @@ class TestSheetsDimensionTools:
 
         kwargs = gated_call_spy[0]
         assert kwargs["gate"] == "popup"
+        # "Tab id" (the raw numeric id) replaced with "Tab": the resolved
+        # current title, same lookup drive_sheets_rename_sheet uses.
+        assert kwargs["preview"]["Tab"] == "Sheet1"
+        assert "Tab id" not in kwargs["preview"]
         assert kwargs["preview"]["Action"] == "Insert 2 ROWS before index 5"
         assert kwargs["args"] == {
             "spreadsheet_id": "sheet1", "sheet_id": 0, "dimension": "ROWS", "start_index": 5, "count": 2,
@@ -1320,6 +1369,7 @@ class TestSheetsDimensionTools:
     async def test_delete_dimensions_gate_popup_and_warns_of_data_loss(self, gated_call_spy):
         connector, client = make_connector()
         client.get_file_metadata.return_value = make_file(name="Budget")
+        client.list_sheets.return_value = [{"sheet_id": 0, "title": "Sheet1"}]
         client.delete_dimensions.return_value = {"deleted": 3}
 
         result = await connector.call(
@@ -1329,6 +1379,8 @@ class TestSheetsDimensionTools:
 
         kwargs = gated_call_spy[0]
         assert kwargs["gate"] == "popup"
+        assert kwargs["preview"]["Tab"] == "Sheet1"
+        assert "Tab id" not in kwargs["preview"]
         assert kwargs["preview"]["Action"] == "Delete 3 COLUMNS starting at index 1"
         assert "not recoverable" in kwargs["details_text"]
         client.delete_dimensions.assert_called_once_with("sheet1", 0, "COLUMNS", 1, 3)

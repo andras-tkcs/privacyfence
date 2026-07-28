@@ -536,13 +536,23 @@ class CalendarConnector(Connector):
     ) -> Any:
         event = await self._fetch(self._calendar.get_event, calendar_id, event_id)
         room_list = [r.strip() for r in rooms.split(",") if r.strip()] if rooms else []
-        changes = {}
+        # Event/Start/End always appear (unlike Description/Location/
+        # Conferencing/Rooms below, which are only shown when actually
+        # provided) -- each is the plain current value if unchanged, or
+        # "old → new" if this call is changing it, so the reviewer always
+        # sees what the event's core identity/timing actually is, not just
+        # a partial list of what happens to be different this time.
+        def _diff_or_value(new_value: str, old_value: str) -> str:
+            return f"{old_value} → {new_value}" if new_value and new_value != old_value else old_value
+
+        changed_field_names = []
         if title and title != event.title:
-            changes["Title"] = f"{event.title} → {title}"
+            changed_field_names.append("Event")
         if start_time and start_time != event.start_time:
-            changes["Start"] = f"{event.start_time} → {start_time}"
+            changed_field_names.append("Start")
         if end_time and end_time != event.end_time:
-            changes["End"] = f"{event.end_time} → {end_time}"
+            changed_field_names.append("End")
+        changes = {}
         if description and description != event.description:
             changes["Description"] = "(changed)"
         if location and location != event.location:
@@ -551,7 +561,17 @@ class CalendarConnector(Connector):
             changes["Conferencing"] = "Add Google Meet"
         if room_list:
             changes["Rooms"] = f"Book: {', '.join(room_list)}"
-        preview = {"Event": event.title, "Calendar": await self._calendar_name_for(calendar_id), **changes}
+        changed_field_names.extend(changes.keys())
+        preview = {
+            "Event": _diff_or_value(title, event.title),
+            # Calendar can never change via this tool (no destination-
+            # calendar param) -- always the plain current value, same as
+            # an unchanged Event/Start/End would be.
+            "Calendar": await self._calendar_name_for(calendar_id),
+            "Start": _diff_or_value(start_time, event.start_time),
+            "End": _diff_or_value(end_time, event.end_time),
+            **changes,
+        }
         raw_data = {
             "calendar_id": calendar_id, "event_id": event_id,
             "current_title": event.title, "new_title": title,
@@ -564,7 +584,7 @@ class CalendarConnector(Connector):
         if description and description != event.description:
             details_text = description
         else:
-            changed_fields = ", ".join(changes.keys()) or "no fields"
+            changed_fields = ", ".join(changed_field_names) or "no fields"
             details_text = f"{changed_fields} will be updated; description is unchanged."
         await gated_call(
             connector=self.name,

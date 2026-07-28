@@ -477,16 +477,31 @@ class TestSendMessage:
         client.send_message.assert_called_once_with("C123", "hi there", "")
         assert kwargs["sender"] == "C123"
 
-    async def test_thread_reply_preview_includes_thread(self, gated_call_spy):
+    async def test_thread_reply_preview_shows_the_threads_first_message(self, gated_call_spy):
         connector, client = make_connector()
         client.send_message.return_value = {"ts": "123.456", "channel_id": "C123"}
+        client.get_thread_replies.return_value = [
+            make_message(text="Kicking off the thread"), make_message(text="a reply"),
+        ]
+
+        await connector.call(
+            "slack_send_message", {"channel_id": "C123", "text": "reply", "thread_ts": "100.001"}
+        )
+
+        assert gated_call_spy[0]["preview"]["In thread"] == "Kicking off the thread"
+        assert gated_call_spy[0]["args"]["thread_ts"] == "100.001"
+        client.get_thread_replies.assert_called_once_with("C123", "100.001")
+
+    async def test_thread_reply_preview_falls_back_to_raw_ts_when_lookup_fails(self, gated_call_spy):
+        connector, client = make_connector()
+        client.send_message.return_value = {"ts": "123.456", "channel_id": "C123"}
+        client.get_thread_replies.side_effect = SlackClientError("not found")
 
         await connector.call(
             "slack_send_message", {"channel_id": "C123", "text": "reply", "thread_ts": "100.001"}
         )
 
         assert gated_call_spy[0]["preview"]["In thread"] == "100.001"
-        assert gated_call_spy[0]["args"]["thread_ts"] == "100.001"
 
     async def test_summary_truncates_long_text(self, gated_call_spy):
         connector, client = make_connector()

@@ -162,7 +162,7 @@ class TestV2CardStackContent:
         controller = make_v2_controller(is_read=False, title="Create Calendar Event")
         controller.build_panel()
         assert "Action to perform" in controller._details_html_string
-        assert "Details — data to write" in controller._details_html_string
+        assert "Why Claude is doing this" in controller._details_html_string
 
     def test_new_info_becomes_the_disclosure_section_with_real_values(self):
         # §3 shows real values (calendar_get_event_details's Attendees/

@@ -220,14 +220,17 @@ async def gated_call(
         # {"caption": str (optional), "headers": [...], "rows": [[...], ...],
         # "footer": str (optional)}. For record/list-shaped "new" content with no
         # fixed field count (a Salesforce record's fields, search results, a
-        # message list) -- see approval_window_html.py's _table_html. Read-only
-        # (gate="review") calls only. v2 rendering only; the legacy layout ignores it.
+        # message list) -- see approval_window_html.py's _table_html. Valid on both
+        # gate="review" and gate="popup" calls (e.g. drive_sheets_write_range's own
+        # values-being-written table) -- v2 rendering only; the legacy layout ignores it.
     preview_blocks: list[dict] | None = None,  # v2 redesign's WIDE right-pane preview, as
         # an ordered list of {"type": "text"|"field"|"table", ...} blocks -- lets text
         # and tables interleave (e.g. Jira's Reporter field, then its Description
         # paragraph, then its Comments table), which details_text/preview_tables alone
         # can't express. Takes full precedence over both when given -- see
-        # approval_window_html.py's build_preview_body_html. v2 rendering only.
+        # approval_window_html.py's build_preview_body_html. Valid on both gate="review"
+        # and gate="popup" calls (e.g. jira_create_issue's own Description heading). v2
+        # rendering only.
     table_only: bool = False,  # v2 redesign: when True and preview_tables is non-empty,
         # the WIDE right pane shows *only* the table(s), not details_text too -- for tools
         # whose details_text is a full duplicate of the table's own data (a Salesforce
@@ -235,7 +238,8 @@ async def gated_call(
         # distinct content. details_text itself is untouched -- legacy and the PII scan's
         # default fallback still see it in full. No effect when preview_blocks is set
         # (blocks already control exactly what renders, no separate "hide text" concept
-        # needed) or when preview_tables is empty.
+        # needed) or when preview_tables is empty. Valid on both gate="review" and
+        # gate="popup" calls.
     details_text: str = "",       # full text shown inline or via TextEdit
     pii_scan_text: str | None = None,  # content-only text for the PII scan; defaults to details_text
     visibility: dict[str, str] | None = None,  # {label: "allow"|"redact"|"block"} -- the review
@@ -471,6 +475,8 @@ async def gated_call(
                     show_popup, popup_title, preview or {}, details, file_key is not None,
                     claude_reason, write_content_flags, seen_count, connector,
                     suggestion is not None, preview_bytes, preview_mime_type,
+                    preview_tables=preview_tables, preview_blocks=preview_blocks,
+                    table_only=table_only,
                 )
 
                 if decision in ("accept", "accept_all") and upload_pii_categories:

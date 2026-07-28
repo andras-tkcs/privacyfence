@@ -464,7 +464,13 @@ class TestUpdateEvent:
         })
 
         kwargs = gated_call_spy[0]
-        assert kwargs["preview"] == {"Event": "Old Title", "Calendar": "primary", "Title": "Old Title → New Title"}
+        # Event/Start/End always appear -- Event shows the old → new diff
+        # since title is changing; Start/End show the plain current value
+        # since neither is changing on this call.
+        assert kwargs["preview"] == {
+            "Event": "Old Title → New Title", "Calendar": "primary",
+            "Start": "2026-07-08T10:00:00+00:00", "End": "2026-07-08T11:00:00+00:00",
+        }
         assert kwargs["gate"] == "popup"
 
     async def test_no_changes_yields_empty_preview_diff(self, gated_call_spy):
@@ -476,7 +482,12 @@ class TestUpdateEvent:
         await connector.call("calendar_update_event", {"calendar_id": "primary", "event_id": "e1"})
 
         kwargs = gated_call_spy[0]
-        assert kwargs["preview"] == {"Event": "Q3 Planning", "Calendar": "primary"}
+        # Nothing changed -- Event/Start/End all show their plain current
+        # value, no diff arrows anywhere.
+        assert kwargs["preview"] == {
+            "Event": "Q3 Planning", "Calendar": "primary",
+            "Start": "2026-07-08T10:00:00+00:00", "End": "2026-07-08T11:00:00+00:00",
+        }
 
     async def test_add_google_meet_skipped_if_conferencing_already_exists(self, gated_call_spy):
         connector, client = make_connector()
@@ -529,7 +540,7 @@ class TestUpdateEvent:
             "calendar_id": "primary", "event_id": "e1", "title": "New Title",
         })
 
-        assert gated_call_spy[0]["details_text"] == "Title will be updated; description is unchanged."
+        assert gated_call_spy[0]["details_text"] == "Event will be updated; description is unchanged."
         assert "{" not in gated_call_spy[0]["details_text"]
 
     async def test_details_text_when_nothing_changed(self, gated_call_spy):

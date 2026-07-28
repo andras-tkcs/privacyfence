@@ -761,6 +761,7 @@ _TOOL_LAYOUT: dict[str, str] = {
     "drive_sheets_rename_sheet": "narrow", "drive_sheets_delete_dimensions": "narrow",
     "drive_sheets_format_range": "narrow", "drive_sheets_insert_dimensions": "narrow",
     "drive_add_comment": "wide",  # real comment body, like jira_add_comment (see that entry above)
+    "tasks_create_task": "wide", "tasks_update_task": "wide",  # real notes body, when notes are given
     "drive_docs_format_content": "narrow",  # formatting only, no new body text
     "calendar_update_event": "narrow", "calendar_create_out_of_office": "narrow",
     "calendar_set_working_location": "narrow", "calendar_set_event_visibility": "narrow",
@@ -768,7 +769,7 @@ _TOOL_LAYOUT: dict[str, str] = {
     "contacts_add_label": "narrow", "contacts_remove_label": "narrow",
     "jira_update_issue": "narrow", "jira_transition_issue": "narrow",  # field-change rows, not prose
     "confluence_update_page": "wide",  # editing page body, same as confluence_create_page
-    "tasks_create_task": "narrow", "tasks_update_task": "narrow", "tasks_complete_task": "narrow",
+    "tasks_complete_task": "narrow",
     "tasks_uncomplete_task": "narrow", "tasks_move_task": "narrow",
 }
 
@@ -1885,12 +1886,49 @@ def _scenarios(
         title="Upload Drive File",
         preview={
             "File": "PrivacyFence QA upload [QATEST].png", "Source": "~/Desktop/qa-smoke-test.png",
-            "Size": "1 KB", "Destination": QA_DRIVE_FOLDER,
+            "Size": "1 KB", "Folder": QA_DRIVE_FOLDER,
         },
         details_text="Synthetic PrivacyFence QA upload content. No real information.",
         allow_accept_all=False,
         connector="drive",
         preview_bytes=_TINY_PNG_BYTES, preview_mime_type="image/png",
+    ))
+
+    results.append(run(
+        # Long-text upload -- the read-side stress scenarios already cover
+        # long/many-row content; this is the write-side equivalent for
+        # drive_upload_file specifically.
+        "WG-1 · drive_upload_file (long text content)",
+        click_title="Allow once", expected="accept",
+        title="Upload Drive File",
+        preview={
+            "File": "PrivacyFence QA long upload [QATEST].txt", "Source": "~/Desktop/qa-long-upload.txt",
+            "Size": "4 KB", "Folder": QA_DRIVE_FOLDER,
+        },
+        details_text=(QA_LONG_PARAGRAPH + "\n\n") * 3 + "The final line, still present.",
+        allow_accept_all=False,
+        connector="drive",
+    ))
+
+    results.append(run(
+        # QuickLook-fallback mechanic for the *upload* side (see
+        # drive_download_file's own QuickLook scenario above for the
+        # download-side one) -- a non-image local file with no
+        # Drive-generated thumbnail (there can't be one yet; it hasn't
+        # been uploaded) falls back to a real quicklookd render of the
+        # same checked-in A4 lorem ipsum .docx fixture.
+        "WG-1 · drive_upload_file (+ QuickLook preview)",
+        click_title="Allow once", expected="accept",
+        title="Upload Drive File",
+        preview={
+            "File": "PrivacyFence QA test doc [QATEST].docx", "Source": "~/Desktop/lorem_ipsum.docx",
+            "Size": "36 KB", "Folder": QA_DRIVE_FOLDER,
+        },
+        details_text="Synthetic lorem ipsum content. No real information. Safe to read, "
+                      "upload, or preview by any automated test.",
+        allow_accept_all=False,
+        connector="drive",
+        preview_bytes=_quicklook_thumbnail_for_lorem_ipsum_docx(), preview_mime_type="image/png",
     ))
 
     results.append(run(
@@ -1907,7 +1945,7 @@ def _scenarios(
         "WG-1 · drive_move_file",
         click_title="Allow once", expected="accept",
         title="Move Drive File",
-        preview={"File": QA_DRIVE_FILE, "Owner": QA_EMAIL, "Move to folder": f"{QA_DRIVE_FOLDER} / Archive"},
+        preview={"File": QA_DRIVE_FILE, "Owner": QA_EMAIL, "Folder": f"{QA_DRIVE_FOLDER} → Archive [QATEST]"},
         details_text="File will be moved to the new folder; its content is unchanged.",
         allow_accept_all=False,
         connector="drive",
@@ -1931,7 +1969,7 @@ def _scenarios(
         click_title="Allow once", expected="accept",
         title="Rename Sheet Tab",
         preview={
-            "Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Tab id": "0", "New title": "QATEST renamed",
+            "Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Tab title": "Sheet1 → QATEST renamed",
         },
         details_text="The tab above will be renamed; its contents are unchanged.",
         allow_accept_all=False,
@@ -1943,7 +1981,7 @@ def _scenarios(
         click_title="Allow once", expected="accept",
         title="Delete Sheet Rows/Columns",
         preview={
-            "Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Tab id": "0",
+            "Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Tab": "Sheet1",
             "Action": "Delete 2 COLUMNS starting at index 3",
         },
         details_text="Synthetic PrivacyFence QA dimension delete. No real information.",
@@ -1955,9 +1993,25 @@ def _scenarios(
         "WG-1 · slack_send_message",
         click_title="Allow once", expected="accept",
         title="Send Slack Message",
-        preview={"Channel": QA_SLACK_CHANNEL, "In thread": "1700000001.000100"},
+        # "In thread" shows the thread's first message, not the raw
+        # timestamp id.
+        preview={"Channel": QA_SLACK_CHANNEL, "In thread": QA_SLACK_SEED},
         details_text="Synthetic PrivacyFence QA reply. No real information. [QATEST]",
         allow_accept_all=False,
+        connector="slack",
+    ))
+
+    results.append(run(
+        # Also the content-flag banner+badges mechanic, on a NARROW dialog
+        # (gmail_create_draft's own content-flag scenario is WIDE) --
+        # confirms the banner/badges render correctly in both shapes.
+        "WG-1 · slack_send_message (+ content-flag banner)",
+        click_title="Allow once", expected="accept",
+        title="Send Slack Message",
+        preview={"Channel": QA_SLACK_CHANNEL},
+        details_text="Here's the refund IBAN [QATEST].",
+        allow_accept_all=False,
+        write_content_flags=["IBAN (bank account number)"],
         connector="slack",
     ))
 
@@ -1976,11 +2030,37 @@ def _scenarios(
     ))
 
     results.append(run(
+        # Also the content-flag banner+badges mechanic.
+        "WG-1 · calendar_create_event (+ content-flag banner)",
+        click_title="Allow once", expected="accept",
+        title="Create Calendar Event",
+        preview={
+            "Title": "PrivacyFence QA dial-in [QATEST]",
+            "Time": "2027-04-01 09:00–09:30 (Europe/Budapest)",
+            "Calendar": QA_CALENDAR, "Location": "Remote",
+        },
+        details_text="Dial in with the conference PIN [QATEST] included in this invite.",
+        allow_accept_all=False,
+        write_content_flags=["PIN/access code"],
+        connector="calendar",
+    ))
+
+    results.append(run(
         "WG-1 · calendar_update_event",
         click_title="Allow once", expected="accept",
         title="Update Calendar Event",
-        preview={"Event": QA_EVENT, "Calendar": QA_CALENDAR, "Start": "2027-03-15 10:00 → 11:00"},
-        details_text="Synthetic PrivacyFence QA test event update. No real information.",
+        # Event/Calendar/Start/End always appear -- old → new only for the
+        # fields this call is actually changing (Event's title, Start);
+        # Calendar never changes (no destination-calendar param on this
+        # tool) and End isn't changing on this call, so both are the plain
+        # current value.
+        preview={
+            "Event": f"{QA_EVENT} → {QA_EVENT} (Rescheduled)",
+            "Calendar": QA_CALENDAR,
+            "Start": "2027-03-15T10:00:00+01:00 → 2027-03-15T14:00:00+01:00",
+            "End": "2027-03-15T11:00:00+01:00",
+        },
+        details_text="Event, Start will be updated; description is unchanged.",
         allow_accept_all=False,
         connector="calendar",
     ))
@@ -2022,8 +2102,16 @@ def _scenarios(
         "WG-1 · contacts_update",
         click_title="Allow once", expected="accept",
         title="Update Contact",
-        preview={"Contact": QA_CONTACT, "Emails": QA_CONTACT_EMAIL, "Phones": QA_PHONE},
-        details_text="Synthetic PrivacyFence QA contact update. No real information.",
+        # Name/Emails/Phones always appear -- old → new only for the
+        # fields this call is actually changing (Emails here); Name/Phones
+        # aren't changing on this call, so both are the plain current
+        # value.
+        preview={
+            "Name": QA_CONTACT,
+            "Emails": f"{QA_CONTACT_EMAIL} → qatest.updated@example.com",
+            "Phones": QA_PHONE,
+        },
+        details_text="Emails will be updated; notes unchanged.",
         allow_accept_all=False,
         connector="contacts",
     ))
@@ -2042,10 +2130,25 @@ def _scenarios(
     ))
 
     results.append(run(
+        # Also the content-flag banner+badges mechanic, on a NARROW dialog.
+        "WG-1 · contacts_create (+ content-flag banner)",
+        click_title="Allow once", expected="accept",
+        title="Create Contact",
+        preview={
+            "Name": "PrivacyFence QA New Contact [QATEST]", "Emails": "qatest.new@example.com",
+            "Phones": "555-0199",
+        },
+        details_text="Notes: SSN [QATEST] on file from the old contact card.",
+        allow_accept_all=False,
+        write_content_flags=["SSN (national ID)"],
+        connector="contacts",
+    ))
+
+    results.append(run(
         "WG-1 · contacts_add_label",
         click_title="Allow once", expected="accept",
         title="Add Contact Label",
-        preview={"Contact": QA_CONTACT, "Label": "QATEST"},
+        preview={"Name": QA_CONTACT, "Label": "QATEST"},
         details_text="Label will be added to this contact; no other fields change.",
         allow_accept_all=False,
         connector="contacts",
@@ -2055,7 +2158,7 @@ def _scenarios(
         "WG-1 · contacts_remove_label",
         click_title="Allow once", expected="accept",
         title="Remove Contact Label",
-        preview={"Contact": QA_CONTACT, "Label": "QATEST"},
+        preview={"Name": QA_CONTACT, "Label": "QATEST"},
         details_text="Label will be removed from this contact; no other fields change.",
         allow_accept_all=False,
         connector="contacts",
@@ -2080,6 +2183,12 @@ def _scenarios(
             "Priority": "Medium",
         },
         details_text="Synthetic PrivacyFence QA test issue. No real information.",
+        # v2's right pane: a label-styled "Description" heading above the
+        # body, same treatment jira_get_issue's own Description gets.
+        preview_blocks=[
+            {"type": "heading", "label": "Description"},
+            {"type": "text", "text": "Synthetic PrivacyFence QA test issue. No real information."},
+        ],
         allow_accept_all=False,
         connector="jira",
     ))
@@ -2091,6 +2200,21 @@ def _scenarios(
         preview={"Issue": QA_JIRA_KEY},
         details_text="Synthetic PrivacyFence QA comment. No real information. [QATEST]",
         allow_accept_all=False,
+        connector="jira",
+    ))
+
+    results.append(run(
+        # Also the content-flag banner+badges mechanic, on a WIDE dialog
+        # (jira_create_issue's own content-flag scenario is a plain preview
+        # field, not a details/comment body) -- confirms the banner renders
+        # correctly alongside a right-pane details column too.
+        "WG-1 · jira_add_comment (+ content-flag banner)",
+        click_title="Allow once", expected="accept",
+        title="Comment on Jira Issue",
+        preview={"Issue": QA_JIRA_KEY},
+        details_text="Customer's card is 4111 1111 1111 1111 [QATEST], please refund.",
+        allow_accept_all=False,
+        write_content_flags=["Card number"],
         connector="jira",
     ))
 
@@ -2125,6 +2249,18 @@ def _scenarios(
     ))
 
     results.append(run(
+        # Also the content-flag banner+badges mechanic, on a WIDE dialog.
+        "WG-1 · confluence_create_page (+ content-flag banner)",
+        click_title="Allow once", expected="accept",
+        title="Create Confluence Page",
+        preview={"Space": QA_SPACE, "Title": "PrivacyFence QA smoke page [QATEST]"},
+        details_text="Runbook step 3: rotate the API key [QATEST] shown on the vendor portal.",
+        allow_accept_all=False,
+        write_content_flags=["API key"],
+        connector="confluence",
+    ))
+
+    results.append(run(
         "WG-1 · confluence_update_page",
         click_title="Allow once", expected="accept",
         title="Update Confluence Page",
@@ -2141,7 +2277,13 @@ def _scenarios(
         preview={
             "Task list": QA_TASK_LIST, "Title": "PrivacyFence QA smoke task [QATEST]", "Due": "2027-03-20",
         },
-        details_text="Synthetic PrivacyFence QA test task. No real information.",
+        details_text="Synthetic PrivacyFence QA test task notes. No real information.",
+        # v2's right pane: a label-styled "Notes" heading above the body,
+        # same treatment jira_create_issue's Description gets.
+        preview_blocks=[
+            {"type": "heading", "label": "Notes"},
+            {"type": "text", "text": "Synthetic PrivacyFence QA test task notes. No real information."},
+        ],
         allow_accept_all=False,
         connector="tasks",
     ))
@@ -2150,11 +2292,18 @@ def _scenarios(
         "WG-1 · tasks_update_task",
         click_title="Allow once", expected="accept",
         title="Update Task",
+        # Task/Due only appear as old → new diffs since they're actually
+        # changing on this call; Task list never changes via this tool.
         preview={
-            "Task list": QA_TASK_LIST, "Task": QA_TASK,
-            "New title": f"{QA_TASK} (updated)",
+            "Task list": QA_TASK_LIST,
+            "Task": f"{QA_TASK} → {QA_TASK} (updated)",
+            "Due": "2027-03-15 → 2027-03-20",
         },
-        details_text="Synthetic PrivacyFence QA test task update. No real information.",
+        details_text="Synthetic PrivacyFence QA test task notes update. No real information.",
+        preview_blocks=[
+            {"type": "heading", "label": "Notes"},
+            {"type": "text", "text": "Synthetic PrivacyFence QA test task notes update. No real information."},
+        ],
         allow_accept_all=False,
         connector="tasks",
     ))
@@ -2183,7 +2332,7 @@ def _scenarios(
         "WG-1 · tasks_move_task",
         click_title="Allow once", expected="accept",
         title="Move Task",
-        preview={"Task": QA_TASK, "From list": QA_TASK_LIST, "To list": QA_CONTRAST_TASK_LIST},
+        preview={"Task": QA_TASK, "List": f"{QA_TASK_LIST} → {QA_CONTRAST_TASK_LIST}"},
         details_text="Task will be moved to the new list; title and notes are unchanged.",
         allow_accept_all=False,
         connector="tasks",
@@ -2255,7 +2404,7 @@ def _scenarios(
         click_title="Allow once", expected="accept",
         title="Insert Sheet Rows/Columns",
         preview={
-            "Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Tab id": "0",
+            "Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Tab": "Sheet1",
             "Action": "Insert 3 ROWS before index 5",
         },
         details_text="Synthetic PrivacyFence QA dimension insert. No real information.",

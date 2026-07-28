@@ -195,7 +195,7 @@ class TestListNameResolution:
         )
 
         assert gated_call_spy[0]["preview"] == {
-            "Task": "Buy milk", "From list": "Groceries", "To list": "Errands",
+            "Task": "Buy milk", "List": "Groceries → Errands",
         }
 
 
@@ -214,12 +214,27 @@ class TestCreateAndUpdate:
         assert kwargs["preview"] == {
             "Task list": "list1", "Title": "Buy milk", "Due": "2026-07-10T00:00:00Z",
         }
-        # Notes go into details_text (shown only after "Show Details"), never the preview.
+        # Notes go into details_text/preview_blocks (the WIDE right pane),
+        # never the left-column preview dict.
         assert "Secret grocery list details" not in kwargs["preview"].values()
         assert kwargs["details_text"] == "Secret grocery list details"
+        # v2's right pane: a label-styled "Notes" heading above the body,
+        # same treatment jira_create_issue's Description gets.
+        assert kwargs["preview_blocks"] == [
+            {"type": "heading", "label": "Notes"},
+            {"type": "text", "text": "Secret grocery list details"},
+        ]
         client.create_task.assert_called_once_with(
             "list1", "Buy milk", "Secret grocery list details", "2026-07-10T00:00:00Z"
         )
+
+    async def test_create_task_no_notes_produces_no_blocks(self, gated_call_spy):
+        connector, client = make_connector()
+        client.create_task.return_value = make_task()
+
+        await connector.call("tasks_create_task", {"task_list_id": "list1", "title": "Buy milk"})
+
+        assert gated_call_spy[0]["preview_blocks"] == []
 
     async def test_update_task_coerces_empty_strings_to_none(self, gated_call_spy):
         connector, client = make_connector()
@@ -229,7 +244,13 @@ class TestCreateAndUpdate:
         await connector.call("tasks_update_task", {"task_list_id": "list1", "task_id": "t1"})
 
         client.update_task.assert_called_once_with("list1", "t1", None, None, None)
-        assert gated_call_spy[0]["gate"] == "popup"
+        kwargs = gated_call_spy[0]
+        assert kwargs["gate"] == "popup"
+        # Nothing changing -- Task stays the plain current title, no Due
+        # row at all (never had a standing reason to appear unchanged),
+        # no Notes blocks.
+        assert kwargs["preview"] == {"Task list": "list1", "Task": "Buy milk"}
+        assert kwargs["preview_blocks"] == []
 
     async def test_update_task_passes_through_provided_values(self, gated_call_spy):
         connector, client = make_connector()
@@ -240,6 +261,15 @@ class TestCreateAndUpdate:
             "task_list_id": "list1", "task_id": "t1", "title": "New title", "notes": "n", "due": "d",
         })
 
+        kwargs = gated_call_spy[0]
+        # Task/Due only appear as old → new diffs because they're actually
+        # changing on this call (make_task()'s own title/due differ from
+        # the new values) -- Notes gets its own right-pane heading block.
+        assert kwargs["preview"]["Task"] == "Buy milk → New title"
+        assert kwargs["preview"]["Due"] == f"{make_task().due or '(none)'} → d"
+        assert kwargs["preview_blocks"] == [
+            {"type": "heading", "label": "Notes"}, {"type": "text", "text": "n"},
+        ]
         client.update_task.assert_called_once_with("list1", "t1", "New title", "n", "d")
 
 
@@ -283,7 +313,7 @@ class TestCompleteUncompleteMove:
         client.move_task.assert_called_once_with("list1", "t1", "list2")
         assert result["task_list_id"] == "list2"
         assert gated_call_spy[0]["preview"] == {
-            "Task": "Buy milk", "From list": "list1", "To list": "list2",
+            "Task": "Buy milk", "List": "list1 → list2",
         }
         assert gated_call_spy[0]["details_text"] == (
             "Task will be moved to the new list; title and notes are unchanged."

@@ -208,19 +208,38 @@ class ContactsConnector(Connector):
         emails_list: list[dict] | None = _parse_json_list(emails)
         phones_list: list[dict] | None = _parse_json_list(phones)
 
-        contact_name = await self._contact_name_for(resource_name)
+        existing = await self._fetch(self._contacts.get_contact, resource_name)
+        contact_name = existing.display_name or resource_name
 
-        preview = {"Contact": contact_name}
-        if display_name:
-            preview["Name"] = display_name
-        if emails_list:
-            preview["Emails"] = ", ".join(e.get("value", "") for e in emails_list)
-        if phones_list:
-            preview["Phones"] = ", ".join(p.get("value", "") for p in phones_list)
-        if organization:
-            preview["Organization"] = organization
-        if job_title:
-            preview["Job title"] = job_title
+        # Name/Emails/Phones always appear -- each is the plain current
+        # value if unchanged, or "old → new" if this call is changing it
+        # (same treatment as calendar_update_event's Event/Start/End),
+        # instead of the old separate "Contact" (always current name) plus
+        # a redundant "Name" row only when it happened to be changing.
+        # Organization/Job title stay conditional -- optional fields that
+        # are often blank entirely, unlike a contact's name/emails/phones.
+        def _diff_or_value(new_value: str, old_value: str) -> str:
+            return f"{old_value} → {new_value}" if new_value and new_value != old_value else old_value
+
+        old_emails = ", ".join(e.value for e in existing.emails) or "(none)"
+        old_phones = ", ".join(p.value for p in existing.phones) or "(none)"
+        new_emails = ", ".join(e.get("value", "") for e in emails_list) if emails_list else ""
+        new_phones = ", ".join(p.get("value", "") for p in phones_list) if phones_list else ""
+
+        preview = {
+            "Name": _diff_or_value(display_name, contact_name),
+            "Emails": _diff_or_value(new_emails, old_emails),
+            "Phones": _diff_or_value(new_phones, old_phones),
+        }
+        changed_field_names = [
+            k for k, v in preview.items() if " → " in v
+        ]
+        if organization and organization != existing.organization:
+            preview["Organization"] = f"{existing.organization or '(none)'} → {organization}"
+            changed_field_names.append("Organization")
+        if job_title and job_title != existing.job_title:
+            preview["Job title"] = f"{existing.job_title or '(none)'} → {job_title}"
+            changed_field_names.append("Job title")
 
         args = {
             "resource_name": resource_name, "display_name": display_name,
@@ -230,7 +249,7 @@ class ContactsConnector(Connector):
         if notes:
             details_text = notes
         else:
-            changed_fields = ", ".join(k for k in preview if k != "Contact") or "no fields"
+            changed_fields = ", ".join(changed_field_names) or "no fields"
             details_text = f"{changed_fields} will be updated; notes unchanged."
         await gated_call(
             connector=self.name,
@@ -317,7 +336,7 @@ class ContactsConnector(Connector):
             raw_data=args,
             filtered_data=None,
             gate="popup",
-            preview={"Contact": contact_name, "Label": label_name},
+            preview={"Name": contact_name, "Label": label_name},
             details_text="Label will be added to this contact; no other fields change.",
             my_email=self.my_email,
             args=args,
@@ -336,7 +355,7 @@ class ContactsConnector(Connector):
             raw_data=args,
             filtered_data=None,
             gate="popup",
-            preview={"Contact": contact_name, "Label": label_name},
+            preview={"Name": contact_name, "Label": label_name},
             details_text="Label will be removed from this contact; no other fields change.",
             my_email=self.my_email,
             args=args,

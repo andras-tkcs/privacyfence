@@ -289,6 +289,32 @@ class TestCreateIssue:
         assert result["key"] == "ENG-100"
         client.create_issue.assert_called_once_with("ENG", "New bug", "Task", "", "")
 
+    async def test_description_renders_as_a_labeled_heading_block(self, gated_call_spy):
+        # v2's right pane: a label-styled "Description" heading above the
+        # body, same treatment jira_get_issue's own Description gets --
+        # instead of plain unstyled prose with no field name at all.
+        connector, client = make_connector()
+        client.create_issue.return_value = make_issue(key="ENG-100")
+
+        await connector.call("jira_create_issue", {
+            "project_key": "ENG", "summary": "New bug", "description": "Steps to reproduce...",
+        })
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview_blocks"] == [
+            {"type": "heading", "label": "Description"},
+            {"type": "text", "text": "Steps to reproduce..."},
+        ]
+        assert kwargs["details_text"] == "Steps to reproduce..."
+
+    async def test_no_description_produces_no_blocks(self, gated_call_spy):
+        connector, client = make_connector()
+        client.create_issue.return_value = make_issue(key="ENG-100")
+
+        await connector.call("jira_create_issue", {"project_key": "ENG", "summary": "New bug"})
+
+        assert gated_call_spy[0]["preview_blocks"] == []
+
 
 class TestAddComment:
     async def test_preview_and_gate(self, gated_call_spy):

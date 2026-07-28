@@ -89,6 +89,9 @@ def show_popup(
     allow_accept_all: bool = False,
     preview_bytes: bytes = b"",
     preview_mime_type: str = "",
+    preview_tables: list[dict] | None = None,
+    preview_blocks: list[dict] | None = None,
+    table_only: bool = False,
 ) -> str:
     """Approval popup for write tools. No PII *gate* applies here -- see
     gate.py's module docstring for why the PII confirmation flow is
@@ -141,6 +144,12 @@ def show_popup(
     only ever set by upload-shaped write tools (drive_upload_file) whose
     payload never reaches Claude's context at all.
 
+    ``preview_tables``/``preview_blocks``/``table_only`` are v2 redesign's
+    WIDE right-pane preview, same as show_read_popup's own -- e.g.
+    drive_sheets_write_range's own values-being-written table, or
+    jira_create_issue's Description heading. See gate.py's gated_call
+    docstring for the exact shape of each. Legacy layout ignores all three.
+
     Returns 'accept', 'deny', or 'accept_all' (only offered when
     allow_accept_all is True).
     """
@@ -149,6 +158,7 @@ def show_popup(
         temp_accept_eligible=temp_accept_eligible, claude_reason=claude_reason,
         write_content_flags=write_content_flags, seen_count=seen_count, connector=connector,
         preview_bytes=preview_bytes, preview_mime_type=preview_mime_type,
+        preview_tables=preview_tables, preview_blocks=preview_blocks, table_only=table_only,
     )
 
 

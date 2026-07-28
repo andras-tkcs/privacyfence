@@ -1018,7 +1018,7 @@ class DriveConnector(Connector):
             "File": display_name,
             "Source": source,
             "Size": f"{size_bytes:,} bytes",
-            "Destination": parent_folder_id or "My Drive (root)",
+            "Folder": parent_folder_id or "My Drive (root)",
         }
         details = "The file above will be uploaded to the destination shown."
         await gated_call(
@@ -1078,15 +1078,31 @@ class DriveConnector(Connector):
         drive_file = await self._fetch(self._drive.get_file_metadata, file_id)
         name = getattr(drive_file, "name", file_id)
         owners = getattr(drive_file, "owners", [])
+        # "Folder": old → new -- a move always changes the folder (that's
+        # the whole point of the call), so this is always a diff, not
+        # conditional on whether anything changed the way Event/Start/etc.
+        # are elsewhere. Best-effort on both lookups: some folders (e.g. a
+        # Shared Drive root) aren't fetchable as a regular file, and a file
+        # with no recorded parent shows "(unknown)" rather than blocking
+        # the popup on a name lookup that can't succeed either way.
+        current_parent_id = (getattr(drive_file, "parent_ids", None) or [None])[0]
+        if current_parent_id:
+            try:
+                current_folder = await self._fetch(self._drive.get_file_metadata, current_parent_id)
+                current_name = getattr(current_folder, "name", "") or current_parent_id
+            except RuntimeError:
+                current_name = current_parent_id
+        else:
+            current_name = "(unknown)"
         try:
             destination_folder = await self._fetch(self._drive.get_file_metadata, destination_folder_id)
             destination_name = getattr(destination_folder, "name", "") or destination_folder_id
         except RuntimeError:
-            # Best-effort: some destinations (e.g. a Shared Drive root) aren't
-            # fetchable as a regular file. Fall back to the raw id rather than
-            # blocking the popup on a name lookup that can't succeed.
             destination_name = destination_folder_id
-        preview = {"File": name, "Owner": ", ".join(owners) or "(unknown)", "Move to folder": destination_name}
+        preview = {
+            "File": name, "Owner": ", ".join(owners) or "(unknown)",
+            "Folder": f"{current_name} → {destination_name}",
+        }
         await gated_call(
             connector=self.name,
             tool="drive_move_file",
@@ -1189,13 +1205,28 @@ class DriveConnector(Connector):
         )
         return await self._fetch(self._drive.add_sheet, spreadsheet_id, title, rows, cols)
 
+    async def _sheet_title_for(self, spreadsheet_id: str, sheet_id: int) -> str:
+        """Best-effort tab title for `sheet_id` (the numeric id every
+        sheets_* write tool takes, not a human-readable name on its own)
+        -- falls back to the raw id as a string if the spreadsheet's own
+        tab list can't be fetched, or none of its tabs match this id."""
+        try:
+            sheets = await self._fetch(self._drive.list_sheets, spreadsheet_id)
+        except RuntimeError:
+            return str(sheet_id)
+        for sheet in sheets:
+            if sheet.get("sheet_id") == sheet_id:
+                return sheet.get("title") or str(sheet_id)
+        return str(sheet_id)
+
     async def _sheets_rename_sheet(self, spreadsheet_id: str, sheet_id: int, new_title: str) -> Any:
         drive_file = await self._fetch(self._drive.get_file_metadata, spreadsheet_id)
         name = getattr(drive_file, "name", spreadsheet_id)
         owners = getattr(drive_file, "owners", [])
+        current_title = await self._sheet_title_for(spreadsheet_id, sheet_id)
         preview = {
             "Spreadsheet": name, "Owner": ", ".join(owners) or "(unknown)",
-            "Tab id": sheet_id, "New title": new_title,
+            "Tab title": f"{current_title} → {new_title}",
         }
         await gated_call(
             connector=self.name,
@@ -1310,9 +1341,10 @@ class DriveConnector(Connector):
         drive_file = await self._fetch(self._drive.get_file_metadata, spreadsheet_id)
         name = getattr(drive_file, "name", spreadsheet_id)
         owners = getattr(drive_file, "owners", [])
+        tab_title = await self._sheet_title_for(spreadsheet_id, sheet_id)
         preview = {
             "Spreadsheet": name, "Owner": ", ".join(owners) or "(unknown)",
-            "Tab id": sheet_id, "Action": f"Insert {count} {dimension} before index {start_index}",
+            "Tab": tab_title, "Action": f"Insert {count} {dimension} before index {start_index}",
         }
         await gated_call(
             connector=self.name,
@@ -1351,9 +1383,10 @@ class DriveConnector(Connector):
         drive_file = await self._fetch(self._drive.get_file_metadata, spreadsheet_id)
         name = getattr(drive_file, "name", spreadsheet_id)
         owners = getattr(drive_file, "owners", [])
+        tab_title = await self._sheet_title_for(spreadsheet_id, sheet_id)
         preview = {
             "Spreadsheet": name, "Owner": ", ".join(owners) or "(unknown)",
-            "Tab id": sheet_id, "Action": f"Delete {count} {dimension} starting at index {start_index}",
+            "Tab": tab_title, "Action": f"Delete {count} {dimension} starting at index {start_index}",
         }
         await gated_call(
             connector=self.name,

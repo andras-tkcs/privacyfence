@@ -387,7 +387,17 @@ class SlackConnector(Connector):
         channel_display = await self._channel_display(channel_id)
         preview = {"Channel": channel_display}
         if thread_ts:
-            preview["In thread"] = thread_ts
+            # The thread's first (root) message, not the raw timestamp id --
+            # conversations.replies (the same fetch _get_thread_replies uses
+            # for its own root message) returns it as the first entry.
+            # Best-effort: falls back to the raw thread_ts if the fetch
+            # fails, same as other lookups in this file.
+            try:
+                thread_messages = await self._fetch(self._slack.get_thread_replies, channel_id, thread_ts)
+                first_message_text = thread_messages[0].text if thread_messages else ""
+            except RuntimeError:
+                first_message_text = ""
+            preview["In thread"] = first_message_text or thread_ts
         if mark_unread:
             preview["Mark unread"] = "after sending"
         await gated_call(

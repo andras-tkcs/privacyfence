@@ -288,6 +288,16 @@ class JiraConnector(Connector):
         preview = {"Project": project_key, "Type": issue_type, "Summary": summary}
         if priority:
             preview["Priority"] = priority
+        # v2's right pane: a label-styled "Description" heading above the
+        # body text, same treatment jira_get_issue's own Description
+        # already gets (see approval_window_html.py's _field_block_html) --
+        # instead of plain unstyled prose with no field name at all. Empty
+        # when there's no description at all, same as get_issue's own
+        # blocks list (build_preview_body_html falls back to details_text).
+        blocks = []
+        if description:
+            blocks.append({"type": "heading", "label": "Description"})
+            blocks.append({"type": "text", "text": description})
         await gated_call(
             connector=self.name,
             tool="jira_create_issue",
@@ -299,6 +309,7 @@ class JiraConnector(Connector):
             gate="popup",
             preview=preview,
             details_text=description,
+            preview_blocks=blocks,
             my_email=self.my_email,
             args=payload,
         )

@@ -307,22 +307,46 @@ def _kv_rows_html(pairs: list[tuple[str, str]]) -> str:
     return "".join(rows)
 
 
-def _card(kicker: str, inner_html: str, *, style: str = "") -> str:
+def _card(kicker: str, inner_html: str, *, style: str = "", kicker_color: str = "") -> str:
     style_attr = f' style="{style}"' if style else ""
-    return f'<div class="card"{style_attr}><div class="card-kicker">{_html_escape(kicker)}</div>{inner_html}</div>'
+    kicker_style_attr = f' style="color:{kicker_color}"' if kicker_color else ""
+    return (
+        f'<div class="card"{style_attr}><div class="card-kicker"{kicker_style_attr}>'
+        f'{_html_escape(kicker)}</div>{inner_html}</div>'
+    )
+
+
+# §1/§2's kicker color for a write dialog -- read stays the plain
+# .card-kicker default (var(--color-accent), teal); write gets the same
+# accent-2 (magenta) family the pill/rail already use, so the two kinds
+# of dialog read as visually distinct at the section-header level too,
+# not just via the header pill/rail. Matches the design canvas's own
+# write-dialog mocks (turn 3's "Post Slack Message": card-kicker style=
+# "color:var(--color-accent-2-700)"), which this template hadn't carried
+# over until now.
+_WRITE_KICKER_COLOR = "var(--color-accent-2-700)"
 
 
 def _section_1_html(number: int, is_read: bool, preview: dict[str, str]) -> str:
     if not preview:
         return ""
     kicker = f"{number:02d} · " + ("What Claude already knows" if is_read else "Action to perform")
-    return _card(kicker, _kv_rows_html(list(preview.items())))
+    return _card(
+        kicker, _kv_rows_html(list(preview.items())),
+        kicker_color="" if is_read else _WRITE_KICKER_COLOR,
+    )
 
 
 def _section_2_html(number: int, is_read: bool, claude_reason: str) -> str:
     if not claude_reason:
         return ""
-    kicker = f"{number:02d} · " + ("Why Claude needs more data" if is_read else "Details — data to write")
+    # §2 always shows Claude's stated *reason* (the quote below), on both
+    # read and write -- "Details — data to write" (the design canvas's own
+    # original write-side title) described something this card never
+    # actually rendered, since the real write payload lives in §1/the
+    # right pane, not here. "Why Claude is doing this" matches what's
+    # actually on screen, same as read's "Why Claude needs more data".
+    kicker = f"{number:02d} · " + ("Why Claude needs more data" if is_read else "Why Claude is doing this")
     # title="..." tooltip, same reasoning as _kv_rows_html's own -- shows
     # the full reason on hover with no JS, harmless when it isn't actually
     # clamped.
@@ -330,7 +354,7 @@ def _section_2_html(number: int, is_read: bool, claude_reason: str) -> str:
         f'<p class="pf-quote" title="{_html_escape(claude_reason)}">“{_html_escape(claude_reason)}”</p>'
         f'<div class="card-meta">Claude’s stated reason · unverified</div>'
     )
-    return _card(kicker, body)
+    return _card(kicker, body, kicker_color="" if is_read else _WRITE_KICKER_COLOR)
 
 
 def _section_3_html(number: int, disclosure_rows: list[tuple[str, str]]) -> str:

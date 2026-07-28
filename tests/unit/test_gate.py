@@ -468,7 +468,7 @@ class TestAcceptAllWrites:
         monkeypatch.setattr(gate, "suggest_write_rule", lambda *a, **k: ("label_name_allowlist", ["Newsletters"]))
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False):
             captured["allow_accept_all"] = allow_accept_all
             return "accept"
 
@@ -483,7 +483,7 @@ class TestAcceptAllWrites:
         monkeypatch.setattr(gate, "suggest_write_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False):
             captured["allow_accept_all"] = allow_accept_all
             return "accept"
 
@@ -492,6 +492,37 @@ class TestAcceptAllWrites:
         await gate.gated_call(**base_kwargs(gate="popup", connector="gmail", tool="gmail_create_draft"))
 
         assert captured["allow_accept_all"] is False
+
+    async def test_show_popup_receives_preview_tables_and_blocks_and_table_only(self, monkeypatch, audit_dir):
+        # Regression: these three were threaded through show_read_popup
+        # (the review-gate branch below) but never forwarded to show_popup
+        # at all -- a write connector passing preview_tables/preview_blocks
+        # (e.g. drive_sheets_write_range's own values table, jira_create_
+        # issue's Description heading) had it silently dropped before ever
+        # reaching the real approval window, even though gated_call()'s own
+        # signature accepted the kwargs with no error.
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_write_rule", lambda *a, **k: None)
+        captured = {}
+
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False):
+            captured["preview_tables"] = preview_tables
+            captured["preview_blocks"] = preview_blocks
+            captured["table_only"] = table_only
+            return "accept"
+
+        monkeypatch.setattr(gate, "show_popup", fake_show_popup)
+        table = {"headers": ["A", "B"], "rows": [["1", "2"]]}
+        blocks = [{"type": "heading", "label": "Description"}]
+
+        await gate.gated_call(**base_kwargs(
+            gate="popup", connector="drive", tool="drive_sheets_write_range",
+            preview_tables=[table], preview_blocks=blocks, table_only=True,
+        ))
+
+        assert captured["preview_tables"] == [table]
+        assert captured["preview_blocks"] == blocks
+        assert captured["table_only"] is True
 
     async def test_pii_gate_never_applies_to_a_write_accept_all(self, monkeypatch, audit_dir):
         # Sanity check on the module docstring's own claim: the popup branch
@@ -718,7 +749,7 @@ class TestPopupGateWrites:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False):
             captured["details"] = details
             return "accept"
 
@@ -842,7 +873,7 @@ class TestUploadPiiGate:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False):
             captured["write_content_flags"] = write_content_flags
             return "accept"
 
@@ -922,7 +953,7 @@ class TestRequestFingerprint:
 
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False):
             captured["seen_count"] = seen_count
             return "accept"
 
@@ -961,7 +992,7 @@ class TestWriteContentFlags:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False):
             captured["write_content_flags"] = write_content_flags
             return "accept"
 
@@ -978,7 +1009,7 @@ class TestWriteContentFlags:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False):
             captured["write_content_flags"] = write_content_flags
             return "accept"
 
@@ -1031,7 +1062,7 @@ class TestWriteContentFlags:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False):
             captured["write_content_flags"] = write_content_flags
             return "accept"
 
@@ -1064,7 +1095,7 @@ class TestTempAccept:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False):
             captured["temp_accept_eligible"] = temp_accept_eligible
             return "deny"
 
@@ -1083,7 +1114,7 @@ class TestTempAccept:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False):
             captured["temp_accept_eligible"] = temp_accept_eligible
             return "deny"
 
@@ -1100,7 +1131,7 @@ class TestTempAccept:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False):
             captured["temp_accept_eligible"] = temp_accept_eligible
             return "deny"
 
@@ -1602,7 +1633,7 @@ class TestQueuedRequestReCheck:
 
         popup_calls = []
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False):
             popup_calls.append(title)
             wait_until(lambda: len(check_calls) >= 3, timeout=1.0)
             # Simulate a rule appearing (e.g. added from the menu bar) while
@@ -1951,7 +1982,7 @@ class TestClaudeReason:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False):
             captured["claude_reason"] = claude_reason
             return "accept"
 

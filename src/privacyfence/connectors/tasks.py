@@ -166,6 +166,14 @@ class TasksConnector(Connector):
         preview = {"Task list": await self._list_name_for(task_list_id), "Title": title}
         if due:
             preview["Due"] = due
+        # v2's right pane: a label-styled "Notes" heading above the body,
+        # same treatment jira_create_issue's Description gets -- empty when
+        # there are no notes at all (build_preview_body_html falls back to
+        # details_text).
+        blocks = []
+        if notes:
+            blocks.append({"type": "heading", "label": "Notes"})
+            blocks.append({"type": "text", "text": notes})
         await gated_call(
             connector=self.name,
             tool="tasks_create_task",
@@ -177,6 +185,7 @@ class TasksConnector(Connector):
             gate="popup",
             preview=preview,
             details_text=notes or "No notes provided; see preview for task details.",
+            preview_blocks=blocks,
             args={"task_list_id": task_list_id, "title": title},
         )
         result = await self._fetch(self._tasks.create_task, task_list_id, title, notes, due)
@@ -186,15 +195,33 @@ class TasksConnector(Connector):
         self, task_list_id: str, task_id: str, title: str = "", notes: str = "", due: str = ""
     ) -> Any:
         existing = await self._fetch(self._tasks.get_task, task_list_id, task_id)
+        # "Task" always appears (identifying context, like calendar_update_
+        # event's "Event" or contacts_update's "Name") -- becomes an
+        # old → new diff only when title is actually changing. "Due" only
+        # appears at all when it's changing (unlike Task, there's no
+        # standing identifying reason to show it otherwise), but shown as
+        # old → new rather than just the new value when it does.
+        changed_field_names = []
         preview = {"Task list": await self._list_name_for(task_list_id), "Task": existing.title}
-        if title:
-            preview["New title"] = title
-        if due:
-            preview["New due"] = due
+        if title and title != existing.title:
+            preview["Task"] = f"{existing.title} → {title}"
+            changed_field_names.append("Task")
+        if due and due != existing.due:
+            preview["Due"] = f"{existing.due or '(none)'} → {due}"
+            changed_field_names.append("Due")
+        # v2's right pane: a label-styled "Notes" heading above the body,
+        # same treatment jira_get_issue's Description/jira_create_issue's
+        # Description already get -- only when notes are actually changing
+        # (same "only changing" treatment as Due above).
+        blocks = []
+        if notes and notes != existing.notes:
+            changed_field_names.append("Notes")
+            blocks.append({"type": "heading", "label": "Notes"})
+            blocks.append({"type": "text", "text": notes})
         if notes and notes != existing.notes:
             details_text = notes
         else:
-            changed_fields = ", ".join(k for k in preview if k not in ("Task list", "Task")) or "no fields"
+            changed_fields = ", ".join(changed_field_names) or "no fields"
             details_text = f"{changed_fields} will be updated; notes unchanged."
         await gated_call(
             connector=self.name,
@@ -207,6 +234,7 @@ class TasksConnector(Connector):
             gate="popup",
             preview=preview,
             details_text=details_text,
+            preview_blocks=blocks,
             args={"task_list_id": task_list_id, "task_id": task_id},
         )
         result = await self._fetch(
@@ -257,10 +285,14 @@ class TasksConnector(Connector):
         self, source_list_id: str, task_id: str, destination_list_id: str
     ) -> Any:
         existing = await self._fetch(self._tasks.get_task, source_list_id, task_id)
+        # "List": old → new -- a move always changes the list (that's the
+        # whole point of the call), so this is always a diff, same
+        # reasoning as drive_move_file's own "Folder" field.
+        source_name = await self._list_name_for(source_list_id)
+        destination_name = await self._list_name_for(destination_list_id)
         preview = {
             "Task": existing.title,
-            "From list": await self._list_name_for(source_list_id),
-            "To list": await self._list_name_for(destination_list_id),
+            "List": f"{source_name} → {destination_name}",
         }
         await gated_call(
             connector=self.name,

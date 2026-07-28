@@ -252,6 +252,18 @@ class TestReadWriteDifferentiation:
         html = build_card_stack_html(**_minimal_kwargs(is_read=True, title="Read Calendar Event"))
         assert html.index("Read Calendar Event") < html.index('class="pf-pill"')
 
+    def test_read_section_kickers_use_the_plain_default_color(self):
+        html = build_card_stack_html(**_minimal_kwargs(
+            is_read=True, claude_reason="Checking as requested.",
+        ))
+        assert 'class="card-kicker" style="color:' not in html
+
+    def test_write_section_kickers_use_the_accent_2_color(self):
+        html = build_card_stack_html(**_minimal_kwargs(
+            is_read=False, claude_reason="Doing this as requested.",
+        ))
+        assert html.count('class="card-kicker" style="color:var(--color-accent-2-700)"') == 2
+
 
 class TestLayoutShapes:
     def test_narrow_layout_has_no_two_column_split(self):
