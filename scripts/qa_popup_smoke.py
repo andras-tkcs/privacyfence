@@ -31,9 +31,12 @@ Paste the printed report into the PR description under a "## Popup smoke
 check" heading -- see docs/testing-policy.md §2.2.
 
 _scenarios() has at least one entry per tool in docs/approval-window-content-reference.md's
-RG-1/RG-2/RG-3/RG-4/WG-1/WG-2 tables (62 tools total, including every RG-1 tool sharing a dialog
+RG-1/RG-2/WG-1/WG-2/WG-3 tables (62 tools total, including every RG-1 tool sharing a dialog
 shape, e.g. confluence_get_page/confluence_get_page_by_title) -- every dialog shape that doc
-documents gets a real on-screen click, not just a representative handful. A handful of RG-1 tools
+documents gets a real on-screen click, not just a representative handful. (RG-1 covers what used to
+be three separate legacy-only shapes -- see that doc's "View groups" section for why v2 collapses
+them; RG-2 is the one shape that's still genuinely distinct, the native-PDF body.) A handful of
+RG-1 tools
 additionally get two "RG-1 stress" readability variants (long text/many rows/columns, with and
 without a PII banner) beyond their one baseline entry -- see the "RG-1 stress" section below for
 why. Preview/details data is
@@ -84,6 +87,9 @@ has installed):
         --screenshot-dir docs/images/screenshots --pause-seconds 3
     .venv/bin/python scripts/qa_popup_smoke.py --scenario "Menu bar" \\
         --screenshot-dir docs/images/screenshots --pause-seconds 3
+    # Review-gate (read) dialogs only, or popup-gate (write) dialogs only:
+    .venv/bin/python scripts/qa_popup_smoke.py --group rg --layout v2 --screenshot-dir /tmp/rg_shots
+    .venv/bin/python scripts/qa_popup_smoke.py --group wg
 """
 from __future__ import annotations
 
@@ -894,10 +900,10 @@ def _run_menu_bar_scenario(
 
 def _scenarios(
     pause_seconds: float = 0.3, screenshot_dir: Path | None = None, only: str | None = None,
-    layout_mode: str = "legacy",
+    layout_mode: str = "legacy", group: str = "all",
 ) -> list[ScenarioResult]:
     """At least one scenario per tool in docs/approval-window-content-reference.md's RG-1/RG-2/
-    RG-3/RG-4/WG-1/WG-2 tables (61 tools total) -- every dialog *shape* that reference doc
+    WG-1/WG-2/WG-3 tables (61 tools total) -- every dialog *shape* that reference doc
     documents, not just a representative handful. A handful of RG-1 tools additionally get two
     "RG-1 stress" readability variants beyond their baseline entry -- see that section below.
     Cross-cutting mechanics that doc calls "automatic on every
@@ -914,15 +920,23 @@ def _scenarios(
     run(...) actually pops and clicks a real window, rather than after: skipped scenarios must
     never show a window at all, not just be dropped from the report.
 
+    `group` ("all"/"rg"/"wg", see main()'s --group flag) restricts this to scenarios whose name
+    starts with that literal prefix ("RG-"/"WG-") -- i.e. review-gate-only or popup-gate-only runs.
+    Combines with `only` (both must match); every scenario name below is authored with an "RG-N ·"
+    or "WG-N ·" prefix specifically so this prefix check is exact, not a heuristic.
+
     `layout_mode` ("legacy" or "v2", see main()'s --layout flag) is threaded straight through to
     _run_scenario, which does the actual per-tool layout/is_read/upload_forced injection -- no
     change needed to any of the individual scenario calls below to support it.
     """
     results = []
     only_lower = only.lower() if only else None
+    group_prefix = f"{group.upper()}-" if group != "all" else None
 
     def run(name: str, **kwargs) -> ScenarioResult | None:
         if only_lower is not None and only_lower not in name.lower():
+            return None
+        if group_prefix is not None and not name.startswith(group_prefix):
             return None
         return _run_scenario(
             name, pause_seconds=pause_seconds, screenshot_dir=screenshot_dir,
@@ -930,7 +944,12 @@ def _scenarios(
         )
 
     # ================================================================== #
-    # RG-1 -- plain review popup (summary box only, no AI-visibility checklist)
+    # RG-1 -- review popup (every read tool except drive_get_file_content,
+    # RG-2 below). Used to be three separate shapes here (no checklist /
+    # checklist / Gmail email header) -- v2 collapses all three into one
+    # (see docs/approval-window-content-reference.md's "View groups"
+    # section), so they're one group now; legacy still renders the old
+    # distinctions, noted inline at the scenarios that carry them.
     # ================================================================== #
 
     results.append(run(
@@ -971,6 +990,34 @@ def _scenarios(
             "Saved to": "~/Downloads/PrivacyFence QA test image [QATEST].png",
         },
         details_text="Ordinary, non-sensitive smoke-test file content.",
+        allow_accept_all=True,
+        connector="drive",
+        preview_bytes=_TINY_PNG_BYTES, preview_mime_type="image/png",
+    ))
+
+    results.append(run(
+        # The QuickLook-fallback mechanic (PR #100, quicklook_preview.py):
+        # a non-image file with no Drive-generated thumbnailLink falls back
+        # to a quicklookd-rendered thumbnail when QuickLook Previews is
+        # enabled from the menu bar -- generate_thumbnail() always returns
+        # PNG bytes, fed through the exact same preview_bytes/
+        # preview_mime_type channel a direct image preview uses (see
+        # drive.py's _download_file), so this scenario reuses _TINY_PNG_BYTES
+        # as a stand-in for a real quicklookd render rather than actually
+        # invoking QuickLook -- there's no separate rendering branch to
+        # exercise here, just this fixture's File/Type not being an image.
+        "RG-1 · drive_download_file (+ QuickLook preview)",
+        click_title="Allow once", expected="accept",
+        title="Download Drive File",
+        preview={
+            "File": "PrivacyFence QA test doc [QATEST].docx", "Owner": QA_EMAIL, "Size": "24 KB",
+            "Modified": "2026-07-16",
+        },
+        new_info={
+            "Content returned to Claude": "None — file bytes are never sent",
+            "Saved to": "~/Downloads/PrivacyFence QA test doc [QATEST].docx",
+        },
+        details_text="Ordinary, non-sensitive smoke-test Word document content.",
         allow_accept_all=True,
         connector="drive",
         preview_bytes=_TINY_PNG_BYTES, preview_mime_type="image/png",
@@ -1500,7 +1547,8 @@ def _scenarios(
     ))
 
     # ================================================================== #
-    # RG-2 -- review popup + "AI will receive" checklist, plain body
+    # RG-1 (continued) -- same shape as above, plus an "AI will receive"
+    # checklist appended to §3 (v2) / its own row-4 box (legacy only).
     # ================================================================== #
 
     results.append(run(
@@ -1510,15 +1558,16 @@ def _scenarios(
         # and 7 in docs/approval-window-content-reference.md's anatomy
         # table) -- plus the Always-allow-click mechanic riding along on
         # the same click. Nothing else in this file combines all five
-        # cards; the RG-3 gmail_get_message scenario below trades the
-        # summary box away for the email header (content_kind="email"
-        # suppresses it per that doc's row 3), and the write-side
+        # cards; the gmail_get_message scenario below trades the summary
+        # box away for the email header on legacy only (content_kind="email"
+        # suppresses it per that doc's row 3; v2 has no such special case),
+        # and the write-side
         # content-flag banner can't appear here at all (review-gate
         # only) -- see that doc's "Cross-cutting" section for exactly
         # which rows are mutually exclusive. This is also the one
         # scenario meant to be captured on its own via --scenario for a
         # README screenshot that shows every card at once.
-        "RG-2 · gmail_get_thread (+ reason, seen-count, PII banner, Always allow -- all cards)",
+        "RG-1 · gmail_get_thread (+ reason, seen-count, PII banner, Always allow -- all cards)",
         click_title="Always allow", expected="accept_all",
         title="Read Gmail Thread",
         preview={
@@ -1546,7 +1595,7 @@ def _scenarios(
     ))
 
     results.append(run(
-        "RG-2 · drive_sheets_get_values",
+        "RG-1 · drive_sheets_get_values",
         click_title="Allow once", expected="accept",
         title="Read Sheet Values",
         preview={"Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Range": "A1:C10"},
@@ -1570,7 +1619,7 @@ def _scenarios(
         # seen-count rendered together, alongside the visibility
         # checklist this view already has -- confirms the taller,
         # multi-section window still doesn't shift the button row.
-        "RG-2 · slack_get_channel_history (+ reason → seen-count)",
+        "RG-1 · slack_get_channel_history (+ reason → seen-count)",
         click_title="Allow once", expected="accept",
         title="Read Slack Channel History",
         preview={"Channel": QA_SLACK_CHANNEL},
@@ -1589,7 +1638,7 @@ def _scenarios(
     ))
 
     results.append(run(
-        "RG-2 · slack_get_thread_replies",
+        "RG-1 · slack_get_thread_replies",
         click_title="Allow once", expected="accept",
         title="Read Slack Thread Replies",
         preview={"Channel": QA_SLACK_CHANNEL},
@@ -1606,7 +1655,7 @@ def _scenarios(
     ))
 
     results.append(run(
-        "RG-2 · slack_search_messages",
+        "RG-1 · slack_search_messages",
         click_title="Allow once", expected="accept",
         title="Search Slack Messages",
         preview={"Query": "QATEST"},
@@ -1626,16 +1675,19 @@ def _scenarios(
     ))
 
     # ================================================================== #
-    # RG-3 -- review popup + checklist + Gmail-style email header body (no summary box)
+    # RG-1 (continued) -- gmail_get_message. Legacy-only quirk: content_kind
+    # ="email" renders a structured header instead of a summary box (see
+    # docs/approval-window-content-reference.md's row-8 note); v2 has no
+    # such special case, this is an ordinary RG-1 dialog there.
     # ================================================================== #
 
     results.append(run(
-        # Also the email-header mechanic (content_kind="email") and the
-        # PII banner+badges mechanic, composed together -- a realistic
-        # combination (a message body that happens to contain a phone
-        # number), and a case the design-review pass specifically wanted
-        # covered end to end.
-        "RG-3 · gmail_get_message (+ email header, + PII banner)",
+        # Also the email-header mechanic (content_kind="email", legacy
+        # only) and the PII banner+badges mechanic, composed together -- a
+        # realistic combination (a message body that happens to contain a
+        # phone number), and a case the design-review pass specifically
+        # wanted covered end to end.
+        "RG-1 · gmail_get_message (+ email header, + PII banner)",
         click_title="Allow once", expected="accept",
         title="Read Gmail Message",
         preview={"From": QA_EMAIL, "Subject": QA_GMAIL_SUBJECT, "Date": "2026-07-16"},
@@ -1649,12 +1701,14 @@ def _scenarios(
     ))
 
     # ================================================================== #
-    # RG-4 -- review popup + checklist + optional native PDFView body
+    # RG-2 -- review popup with native PDF body. The one review-gate shape
+    # that's still genuinely distinct on both legacy and v2 (see
+    # docs/approval-window-content-reference.md's "View groups" section).
     # ================================================================== #
 
     results.append(run(
         # Also the native-PDFView mechanic.
-        "RG-4 · drive_get_file_content (+ PDFView)",
+        "RG-2 · drive_get_file_content (+ PDFView)",
         click_title="Allow once", expected="accept",
         title="Read Drive File Content",
         preview={
@@ -2104,7 +2158,7 @@ def _scenarios(
         # Allow-once click. A write never gets the AI-visibility checklist
         # or the red PII banner (review-gate only -- see that doc's
         # "Cross-cutting" section), so this is the actual ceiling for a
-        # write dialog: the write-side counterpart to the RG-2
+        # write dialog: the write-side counterpart to the RG-1
         # gmail_get_thread "all cards" scenario above. Also the one
         # scenario meant to be captured on its own via --scenario for a
         # README screenshot showing a write dialog's full card set.
@@ -2189,10 +2243,12 @@ def _scenarios(
     # sit on screen alongside an approval popup -- _screenshot_own_window
     # assumes only one of our own windows is ever on screen at a time, and
     # this scenario cleans its own window/status item up on the way out
-    # rather than leaving them for whatever runs after it.
+    # rather than leaving them for whatever runs after it. Neither an "RG-"
+    # nor a "WG-" scenario, so a --group rg/wg run skips it entirely, same
+    # as every other group filter above.
     # ================================================================== #
     menu_bar_name = "Menu bar · status item → Manage Auto-accept Rules… window"
-    if only_lower is None or only_lower in menu_bar_name.lower():
+    if group_prefix is None and (only_lower is None or only_lower in menu_bar_name.lower()):
         results.append(
             _run_menu_bar_scenario(menu_bar_name, pause_seconds=pause_seconds, screenshot_dir=screenshot_dir)
         )
@@ -2241,13 +2297,21 @@ def main() -> None:
     parser.add_argument(
         "--scenario",
         help="Run only the scenario(s) whose name contains this text (case-insensitive substring "
-             "match against the scenario name shown in the report table, e.g. 'gmail_get_thread', "
-             "'RG-4', or 'Menu bar' for the menu-bar/rules-window scenario), instead of the full "
-             "~82-scenario suite (81 tool-approval scenarios plus the one menu-bar scenario). For "
-             "grabbing a single updated screenshot -- e.g. for README.md -- without sitting "
-             "through the whole run: --scenario 'gmail_get_thread' --screenshot-dir "
-             "docs/images/screenshots. Matches nothing -> an empty report and a nonzero exit "
-             "code, same as any other all-failed run.",
+             "match against the scenario name shown in the report table, e.g. 'gmail_get_thread' or "
+             "'Menu bar' for the menu-bar/rules-window scenario), instead of the full ~83-scenario "
+             "suite (82 tool-approval scenarios plus the one menu-bar scenario). For grabbing a "
+             "single updated screenshot -- e.g. for README.md -- without sitting through the whole "
+             "run: --scenario 'gmail_get_thread' --screenshot-dir docs/images/screenshots. "
+             "Combines with --group (both must match). Matches nothing -> an empty report and a "
+             "nonzero exit code, same as any other all-failed run.",
+    )
+    parser.add_argument(
+        "--group", choices=["all", "rg", "wg"], default="all",
+        help="'all' (default): every scenario. 'rg': review-gate (read) scenarios only -- those "
+             "whose name starts with 'RG-', per docs/approval-window-content-reference.md's view "
+             "groups. 'wg': popup-gate (write) scenarios only ('WG-' prefix). Either excludes the "
+             "menu-bar scenario, which is neither. Combines with --scenario (both must match) -- "
+             "e.g. --group rg --scenario gmail to see only Gmail's read-side dialogs.",
     )
     parser.add_argument(
         "--layout", choices=["legacy", "v2"], default="legacy",
@@ -2269,7 +2333,8 @@ def main() -> None:
             if args.screenshot_dir is not None:
                 args.screenshot_dir.mkdir(parents=True, exist_ok=True)
             results.extend(_scenarios(
-                args.pause_seconds, args.screenshot_dir, args.scenario, layout_mode=args.layout,
+                args.pause_seconds, args.screenshot_dir, args.scenario,
+                layout_mode=args.layout, group=args.group,
             ))
         except Exception as exc:  # noqa: BLE001 - surfaced via the report/exit code below, not swallowed
             print(f"qa_popup_smoke.py: scenario run raised {exc!r}", file=sys.stderr)

@@ -51,13 +51,15 @@ differs is which optional sections a given call populates. In display order:
 
 Row 8's body defaults to plain escaped text in a WKWebView. Two read-only tools override that:
 
-- **`content_kind="email"`** renders a structured From/To/Subject/Date header above the body
-  instead of plain text, and — since that header is built from the same `preview` dict the row-3
-  summary box would otherwise render — suppresses the summary box for that call, so the same
-  fields never appear twice on the dialog (`_show_summary_box()`). Only ever set by
+- **`content_kind="email"`**, on **legacy only**, renders a structured From/To/Subject/Date header
+  above the body instead of plain text, and — since that header is built from the same `preview`
+  dict the row-3 summary box would otherwise render — suppresses the summary box for that call, so
+  the same fields never appear twice on the dialog (`_show_summary_box()`). Only ever set by
   `gmail_get_message` — `gmail_get_thread` deliberately doesn't use it (a thread has several
   messages, each with its own sender, so a single header doesn't fit; it inlines per-message
-  `From:`/`Date:` lines in the body text instead, and keeps its own summary box).
+  `From:`/`Date:` lines in the body text instead, and keeps its own summary box). **v2 ignores
+  `content_kind` entirely** — `gmail_get_message` gets an ordinary row-3 card there, no header, no
+  suppression (see the "View groups" section below).
 - **`pdf_bytes`** (non-empty) renders a native `PDFView` instead of the WKWebView body entirely.
   Only ever set by `drive_get_file_content`, and only when the file is a PDF, wasn't truncated by
   the fetch, and `category_policy(..., "file_content") == "allow"` — the reviewer must never see a
@@ -65,59 +67,73 @@ Row 8's body defaults to plain escaped text in a WKWebView. Two read-only tools 
 
 ## View groups — review-gate (read) tools
 
-Grouped by which of rows 3/4/8 above actually render for that tool. Rows 2, 5, 7, 9 are automatic/
-data-driven on every group (any of them can show the seen-count caption, the red PII banner, or
-Claude's reason on a given call — that's about the *content* of a specific request, not the tool).
+`approval_window.py` renders every review-gate call through one of two `layout` variants:
+**legacy** (the original hand-laid-out `NSTextField`/`NSBox` stack, still the default today) and
+**v2** (the redesigned card-stack `WKWebView` template, `approval_window_html.py` — opt in today via
+`show_native_approval(layout="v2")`/`qa_popup_smoke.py --layout v2`, pending cutover per the redesign
+project). The two variants disagree about how many distinct dialog *shapes* exist:
 
-### RG-1 — Plain review popup (summary box only, no AI-visibility checklist)
+- **Legacy** still has three real shapes among the tools below, driven by whether row 4 (the "AI
+  will receive" checklist, a separate box) renders at all, and whether `content_kind="email"`
+  suppresses row 3's summary box in favor of a structured header. That's the RG-1/RG-2/RG-3 split
+  this section used to document as three groups.
+- **v2** collapses all three: its §3 ("What will be provided to Claude") is built from `new_info`
+  first and the checklist policy sentences *appended* to that same list only if `visibility` is set
+  (see `approval_window.py`'s `_v2_disclosure_rows()`) — so §3 renders for every tool below
+  regardless of whether it carries a checklist, not just the ones that used to get their own row-4
+  box. And v2 has no `content_kind="email"` special case at all (`gmail_get_message` gets an
+  ordinary §1 card there, same as everything else) — see `build_preview_body_html()`'s docstring.
+  The one dialog-shape difference that survives into v2 is body-content-type, not checklist
+  presence: whether the right pane renders a native PDF instead of text (formerly RG-4, now RG-2
+  below).
 
-No `visibility` passed — these specific tools never resolve a `privacy_filter.py` category policy
-for their own content, so there's no checklist to disclose here: Telegram and Salesforce entirely,
-Calendar's/Jira's review-gate tools, and Confluence's `get_page`/`get_page_by_title`. (Confluence's
-own auto-approved `confluence_search`/`confluence_cql_search` *do* now apply a category —
-`confluence_privacy.search_excerpt` — but that's enforced before those auto tools return, not
-surfaced as a review-gate checklist here; see
-[`claude-knowledge-boundary.md`](claude-knowledge-boundary.md#category-based-redaction-what-can-actually-be-blocked-or-redacted).)
+This section documents **v2's** two remaining shapes, since v2 is what the current redesign work
+targets. Legacy's extra RG-2/RG-3 distinction (checklist box present, and `gmail_get_message`'s
+suppressed summary box + email header) still applies unchanged on the legacy path today — noted
+inline below, not as separate groups, since it goes away entirely at cutover.
 
-| Tool | Preview summary fields |
-|---|---|
-| `gmail_download_attachment` | From, Subject, Attachment name, Type, Size, Will save to |
-| `drive_download_file` | File, Owner, Size, Modified, Saved to |
-| `calendar_get_event_details` | Title, Time, Organizer, Attendees, *Attachments (if any)* |
-| `jira_get_issue` | Project, Key, Summary (truncated 80 chars), Status, Assignee |
-| `confluence_get_page` / `confluence_get_page_by_title` | Title, Space, Author, Last modified |
-| `telegram_get_messages` | Chat, Messages (count) |
-| `telegram_search_messages` | Query, Results (count) |
-| `salesforce_get_record` | Object type, Name, Record ID |
-| `salesforce_run_report` | Report, Report ID |
-| `salesforce_search` | Search term, Object types, Results, *Account ID (if scoped)* |
+### RG-1 — Review popup
 
-### RG-2 — Review popup + "AI will receive" checklist, plain body
-
-Same as RG-1 plus row 4: a checklist of `{label: allow/redact/block}` from
-`privacy_filter.category_policy()`, one row per privacy category the connector defines.
+Every review-gate tool except `drive_get_file_content` (see RG-2 below). "AI-visibility checklist
+rows" lists the `{label: allow/redact/block}` sentences from `privacy_filter.category_policy()` that
+append to §3 when the connector passes a `visibility` dict — blank for tools that never resolve a
+category policy for their own content (Telegram and Salesforce entirely, Calendar, Jira, and
+Confluence's `get_page`/`get_page_by_title`). On **legacy**, a blank checklist column means no row-4
+box renders at all for that tool (the old RG-1 group); a non-blank one means it does (the old RG-2
+group) — on **v2**, §3 renders either way, just with fewer rows when blank.
 
 | Tool | Preview summary fields | AI-visibility checklist rows |
 |---|---|---|
-| `gmail_get_thread` | Subject, Participants, Messages (count), Dates (range) | Sender & metadata, Thread messages, Attachments |
+| `gmail_download_attachment` | From, Subject, Attachment name, Type, Size, Will save to | — |
+| `drive_download_file` | File, Owner, Size, Modified, Saved to | — |
+| `calendar_get_event_details` | Title, Time, Organizer, Attendees, *Attachments (if any)* | — |
+| `jira_get_issue` | Project, Key, Summary (truncated 80 chars), Status, Assignee | — |
+| `confluence_get_page` / `confluence_get_page_by_title` | Title, Space, Author, Last modified | — |
+| `telegram_get_messages` | Chat, Messages (count) | — |
+| `telegram_search_messages` | Query, Results (count) | — |
+| `salesforce_get_record` | Object type, Name, Record ID | — |
+| `salesforce_run_report` | Report, Report ID | — |
+| `salesforce_search` | Search term, Object types, Results, *Account ID (if scoped)* | — |
+| `gmail_get_thread` | Subject, Participants, Messages (count), Dates (range) | Thread messages, Attachments |
 | `drive_sheets_get_values` | Spreadsheet, Owner, Range | Cell values |
-| `slack_get_channel_history` | Channel, Messages (count), First message (80 chars) | Message text, Usernames |
-| `slack_get_thread_replies` | Channel, Thread starter (80 chars), Replies (count) | Reply text, Usernames |
+| `slack_get_channel_history` | Channel, Messages (count) | Message text, Usernames |
+| `slack_get_thread_replies` | Channel, Replies (count) | Reply text, Usernames |
 | `slack_search_messages` | Query, Results (count) | Message text, Usernames |
+| `gmail_get_message` | From, Date, Subject | Message body, Attachments |
 
-### RG-3 — Review popup + checklist + Gmail-style email header body (no summary box)
+`gmail_get_message` is the one row worth a callout: on **legacy only**, its preview dict (From, To,
+Date, Subject) renders as a structured header above the body instead of in a row-3 summary box,
+which is suppressed for that call (`_show_summary_box()`, `content_kind="email"`). On **v2** it's an
+ordinary row like every other tool above — no header, no suppression, To/Labels land in §3 like any
+other tool's `new_info`.
 
-One tool: **`gmail_get_message`**. No summary box — its preview dict (From, To, Date, Subject) is
-rendered once, as the structured header at the top of the details pane, instead of also appearing
-as row-3 label/value pairs (see row 3/row 8 in the anatomy table above). Checklist: Sender &
-metadata, Message body, Attachments.
-
-### RG-4 — Review popup + checklist + optional native PDFView body
+### RG-2 — Review popup with native PDF body
 
 One tool: **`drive_get_file_content`**. Preview: File, Owner, Size, Modified. Checklist: File
 metadata, Document content. Body pane is plain text (first ~2000 chars) *unless* the file is an
-unredacted, untruncated PDF, in which case it's a scrollable native PDF render instead (see row 8
-above).
+unredacted, untruncated PDF, in which case it's a scrollable native PDF render instead (a native
+`PDFView` on legacy; an inline `<embed>` data URI on v2 — see row 8 above and
+`_build_content_view_v2()`).
 
 ## View groups — popup-gate (write) tools
 
@@ -256,5 +272,7 @@ skips the grace window entirely in favor of a standing rule, same confirmation f
   `gate.py` for every gated call regardless of direction.
 - **content_kind email header / native PDFView**: review-gate only, and only for the two specific
   Gmail/Drive tools named above — no write tool renders anything but plain text in the details
-  pane. The email header is also the one case where row 3 (the summary box) is deliberately
-  suppressed rather than shown alongside it — see row 3 in the anatomy table above.
+  pane. The email header (legacy only, see row 8 above) is also the one case where row 3 (the
+  summary box) is deliberately suppressed rather than shown alongside it — see row 3 in the anatomy
+  table above. The native-PDF body, unlike the email header, is not legacy-only — it's RG-2 in the
+  "View groups" section below, on both layouts.
