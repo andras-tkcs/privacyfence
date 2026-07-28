@@ -9,10 +9,22 @@ always returned None and every call fell through to `str(content)`, the
 dataclass repr, both in the details popup and in the data actually
 returned to Claude on approval. Fixed in connectors/drive.py; the
 regression tests below pin the corrected behavior.
+
+A second real bug found later, while reviewing approval-window screenshots:
+`drive_list_files`/`drive_get_file_metadata`/`drive_list_folder` returned
+raw `DriveFile` dataclass instances instead of `asdict(f)` dicts, unlike
+every other connector's auto tools. ipc_server.py's final
+`json.dumps(msg, default=str)` silently turned each one into a Python
+repr() string (e.g. "DriveFile(id='f1', name='Q3 Report.pdf', size=4096,
+...)") rather than clean per-field JSON -- so every field, `size` included,
+was technically reaching Claude, just as one opaque string per file
+instead of structured data. Fixed alongside the asdict() rewrite; see
+TestAutoTools below for the regression coverage.
 """
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -73,7 +85,10 @@ class TestAutoTools:
 
         result = await connector.call("drive_list_files", {"query": "report", "max_results": 5})
 
-        assert result == [make_file()]
+        # A plain dict, not the raw DriveFile dataclass instance -- see this
+        # module's docstring for why that distinction matters (json.dumps
+        # would otherwise collapse it into an opaque repr() string).
+        assert result == [asdict(make_file())]
         client.list_files.assert_called_once_with("report", 5)
         entries = (tmp_path / f"{current_week()}.jsonl").read_text(encoding="utf-8").splitlines()
         assert '"decision": "auto_accepted"' in entries[0]
@@ -85,7 +100,7 @@ class TestAutoTools:
 
         result = await connector.call("drive_get_file_metadata", {"file_id": "f1"})
 
-        assert result.id == "f1"
+        assert result == asdict(make_file())
 
     async def test_list_folder_auto_accepts(self, tmp_path):
         init_audit_logger(str(tmp_path))
@@ -94,7 +109,7 @@ class TestAutoTools:
 
         result = await connector.call("drive_list_folder", {"folder_id": "folder1"})
 
-        assert result == [make_file()]
+        assert result == [asdict(make_file())]
         client.list_folder.assert_called_once_with("folder1", 50)
 
     async def test_list_shared_drives_auto_accepts(self, tmp_path):

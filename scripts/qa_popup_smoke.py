@@ -333,6 +333,23 @@ def _run_scenario(
     pause_seconds: float = 0.3, screenshot_dir: Path | None = None, layout_mode: str = "legacy",
     **popup_kwargs
 ) -> ScenarioResult:
+    # Every real gated call always carries a claude_reason -- "reason" is a
+    # required ToolSpec param on every tool, and gate.py's gated_call()
+    # unconditionally reads it via current_reason()/reason_scope() (set by
+    # ipc_server.py._call_connector() before any connector method runs), so
+    # §2 ("Why Claude needs more data") is never actually absent in
+    # production. Defaulted here (not per scenario below) so every one of
+    # the ~60 scenarios matches that guarantee without individually setting
+    # it -- an empty claude_reason would make §3's number collapse to "02"
+    # instead of "03" (the section-numbering counter only advances for
+    # sections that actually render), which is a QA-fixture artifact this
+    # exists to prevent, not something that happens for real.
+    tool_name_for_reason = _tool_name_from_scenario(name)
+    popup_kwargs.setdefault(
+        "claude_reason",
+        f"Checking {(tool_name_for_reason or 'this').replace('_', ' ')} as requested.",
+    )
+
     if layout_mode != "legacy":
         # Inject the redesigned rendering's params from the scenario name
         # alone -- see _TOOL_LAYOUT's docstring -- rather than editing all
@@ -881,10 +898,14 @@ def _scenarios(
         },
         new_info={
             "Description": "Synthetic PrivacyFence QA test issue description. No real information.",
-            "Comments": "All comments (author/body/timestamps)",
+            "Comments": "Author, created date, and body per comment",
         },
         details_text="Synthetic PrivacyFence QA test issue. No real information. Safe to comment "
                       "on, update, or transition by any automated test.",
+        preview_tables=[{
+            "caption": "Comments (1)", "headers": ["Author", "Date", "Comment"],
+            "rows": [[QA_PERSON, "2026-07-16", "Synthetic PrivacyFence QA test comment. No real information."]],
+        }],
         allow_accept_all=False,
         connector="jira",
     ))
@@ -899,10 +920,10 @@ def _scenarios(
         "RG-1 · confluence_get_page (+ Show more → Allow once)",
         click_title="Allow once", expected="accept", pre_click_title="Show more",
         title="Read Confluence Page",
-        preview={
-            "Title": QA_PAGE, "Space": QA_SPACE, "Author": QA_PERSON, "Last modified": "2026-07-16",
+        preview={"Title": QA_PAGE, "Space": QA_SPACE},
+        new_info={
+            "Author": QA_PERSON, "Last modified": "2026-07-16", "Page body": "Full page content",
         },
-        new_info={"Page body": "Full page content"},
         details_text=(QA_PAGE_BODY + "\n") * 60 + "the last line, still present",
         allow_accept_all=False,
         connector="confluence",
@@ -916,10 +937,10 @@ def _scenarios(
         "RG-1 · confluence_get_page_by_title",
         click_title="Allow once", expected="accept",
         title="Read Confluence Page",
-        preview={
-            "Title": QA_PAGE, "Space": QA_SPACE, "Author": QA_PERSON, "Last modified": "2026-07-16",
+        preview={"Title": QA_PAGE, "Space": QA_SPACE},
+        new_info={
+            "Author": QA_PERSON, "Last modified": "2026-07-16", "Page body": "Full page content",
         },
-        new_info={"Page body": "Full page content"},
         details_text=QA_PAGE_BODY,
         allow_accept_all=False,
         connector="confluence",
@@ -932,6 +953,9 @@ def _scenarios(
         preview={"Chat": "Saved Messages"},
         new_info={"Messages": "1", "Message text": "Full sender name, text, and date per message"},
         details_text=QA_TELEGRAM_SEED,
+        preview_tables=[{
+            "headers": ["Sender", "Date", "Message"], "rows": [[QA_PERSON, "2026-07-16", QA_TELEGRAM_SEED]],
+        }],
         allow_accept_all=False,
         connector="telegram",
     ))
@@ -943,6 +967,9 @@ def _scenarios(
         preview={"Query": "QATEST"},
         new_info={"Results": "1", "Message text": "Full sender name, text, and date per message"},
         details_text=QA_TELEGRAM_SEED,
+        preview_tables=[{
+            "headers": ["Sender", "Date", "Message"], "rows": [[QA_PERSON, "2026-07-16", QA_TELEGRAM_SEED]],
+        }],
         allow_accept_all=False,
         connector="telegram",
     ))
@@ -952,8 +979,11 @@ def _scenarios(
         click_title="Allow once", expected="accept",
         title="Read Salesforce Record",
         preview={"Object type": "Account", "Record ID": "001QA0000012345"},
-        new_info={"Name": QA_ACCOUNT, "Field values": "Full values for every field on the record"},
+        new_info={"Name": QA_ACCOUNT, "Field values": "Industry, Name"},
         details_text=f"Name: {QA_ACCOUNT}\nIndustry: (not set)",
+        preview_tables=[{
+            "headers": ["Field", "Value"], "rows": [["Industry", "Technology"], ["Name", QA_ACCOUNT]],
+        }],
         allow_accept_all=False,
         connector="salesforce",
     ))
@@ -965,6 +995,10 @@ def _scenarios(
         preview={"Report": QA_REPORT, "Report ID": "00OQA0000006789"},
         new_info={"Report data": "All report rows/aggregates"},
         details_text="1 row, 1 grouping -- synthetic PrivacyFence QA report output.",
+        preview_tables=[{
+            "headers": ["Account Name", "Amount"], "rows": [[QA_ACCOUNT, "$1,000"]],
+            "footer": "Total: $1,000",
+        }],
         allow_accept_all=False,
         connector="salesforce",
     ))
@@ -976,8 +1010,15 @@ def _scenarios(
         click_title="Deny", expected="deny",
         title="Search Salesforce",
         preview={"Search term": "PrivacyFence QA", "Object types": "Account"},
-        new_info={"Results": "2", "Search results": "Object type, name, and id per match"},
+        new_info={"Results": "2", "Search results": "Object type, Name, and id per match"},
         details_text=f"{QA_ACCOUNT}\nPrivacyFence QA — Globex Test Co [QATEST]",
+        preview_tables=[{
+            "headers": ["Object type", "Name", "ID"],
+            "rows": [
+                ["Account", QA_ACCOUNT, "001QA0000012345"],
+                ["Account", "PrivacyFence QA — Globex Test Co [QATEST]", "001QA0000067890"],
+            ],
+        }],
         allow_accept_all=False,
         connector="salesforce",
     ))

@@ -123,10 +123,41 @@ def line_clamp_for(label: str) -> int:
     return LINE_CLAMP_BY_LABEL.get(label, DEFAULT_LINE_CLAMP)
 
 
+def _table_html(table: dict) -> str:
+    """One ``<table>`` for the right-hand preview pane -- record field
+    lists, search results, message lists, report rows all read better as
+    an actual table than a plain-text dump (drive_upload_file's own
+    preview already established the precedent of a structured, non-prose
+    disclosure for this pane). ``table`` is ``{"caption": str (optional),
+    "headers": list[str], "rows": list[list[str]], "footer": str
+    (optional)}`` -- every cell individually escaped, header/footer text
+    included, same discipline as everywhere else in this module."""
+    caption = table.get("caption", "")
+    headers = table.get("headers") or []
+    rows = table.get("rows") or []
+    footer = table.get("footer", "")
+    parts = []
+    if caption:
+        parts.append(f'<div class="pf-table-caption">{_html_escape(caption)}</div>')
+    thead_html = ""
+    if headers:
+        header_html = "".join(f"<th>{_html_escape(str(h))}</th>" for h in headers)
+        thead_html = f"<thead><tr>{header_html}</tr></thead>"
+    rows_html = "".join(
+        "<tr>" + "".join(f"<td>{_html_escape(str(cell))}</td>" for cell in row) + "</tr>"
+        for row in rows
+    )
+    parts.append(f'<table class="pf-table">{thead_html}<tbody>{rows_html}</tbody></table>')
+    if footer:
+        parts.append(f'<div class="pf-table-footer">{_html_escape(footer)}</div>')
+    return "".join(parts)
+
+
 def build_preview_body_html(
     details_text: str, *,
     image_data_uri: str = "",
     pdf_data_uri: str = "",
+    tables: list[dict] | None = None,
 ) -> str:
     """The inner-HTML fragment for ``WIDE`` layout's right-hand preview pane
     (``NARROW`` has no preview at all -- callers never need this for a
@@ -138,7 +169,7 @@ def build_preview_body_html(
     treated as markup, only escaped and given ``white-space: pre-wrap``.
 
     ``pdf_data_uri`` takes priority over ``image_data_uri``, which takes
-    priority over plain ``details_text`` -- the same precedence
+    priority over plain ``details_text``/``tables`` -- the same precedence
     ``_build_details_view()`` already holds for the legacy layout's
     pdf_bytes-before-preview_bytes-before-text dispatch, just rendered
     inline via a standard ``<embed>``/``<img>`` data URI here instead of a
@@ -146,6 +177,14 @@ def build_preview_body_html(
     area is already one WKWebView, so there's no separate small pane for a
     native view to stand in for -- WebKit's own built-in PDF renderer and
     image decoding handle both directly, no extra native code needed.
+
+    ``tables`` (see ``_table_html``) render after ``details_text`` --
+    together, not either/or, since some tools need both (e.g.
+    jira_get_issue's plain-text description followed by a comments table).
+    Neither is required; an empty details_text with one table is the normal
+    shape for tools whose entire "new" content is inherently record/list-
+    shaped (Salesforce record fields, Salesforce search results, Telegram
+    message lists).
 
     No content_kind="email" structured header here (unlike the legacy
     layout's ``_details_html()``): under the §1/§3 knowledge-boundary split,
@@ -160,7 +199,11 @@ def build_preview_body_html(
         )
     if image_data_uri:
         return f'<img src="{image_data_uri}" style="max-width:100%;display:block">'
-    return _escaped_text_fragment(details_text)
+    tables_html = "".join(_table_html(t) for t in (tables or []))
+    if not details_text and not tables_html:
+        return _escaped_text_fragment(details_text)  # "(no details)" placeholder
+    text_html = _escaped_text_fragment(details_text) if details_text else ""
+    return text_html + tables_html
 
 
 def _escaped_text_fragment(text: str) -> str:
@@ -344,7 +387,12 @@ def build_card_stack_html(
         # (its two-column cards use flex:0 0 350px regardless of the overall
         # 880px window width) -- not derived from `width`.
         body_html = (
-            '<div style="display:flex;gap:28px;align-items:flex-start">'
+            # align-items defaults to "stretch" (deliberately not
+            # overridden to "flex-start") so both columns match the height
+            # of the taller one -- otherwise the right pane's border-left
+            # divider only extends as far as its own (often shorter)
+            # content, instead of running the window's full height.
+            '<div style="display:flex;gap:28px">'
             f'<div style="flex:0 0 350px;min-width:0">{left_column}</div>'
             '<div style="flex:1;min-width:0;border-left:1px solid var(--color-divider);'
             'padding-left:24px;max-height:520px;overflow-y:auto">'

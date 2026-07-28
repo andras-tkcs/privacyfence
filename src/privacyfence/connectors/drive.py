@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import time
+from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any
 
@@ -520,8 +521,15 @@ class DriveConnector(Connector):
         files = await self._fetch(self._drive.list_files, query, max_results)
         self._auto_audit("drive_list_files", "Search Drive Files",
                          f"List files: query={query!r}", f"{len(files)} result(s)", t0)
-        result = files if isinstance(files, list) else (files.to_dict() if hasattr(files, "to_dict") else files)
-        return apply_list("drive_privacy", "file_list", result) if isinstance(result, list) else result
+        # asdict(), not the raw DriveFile dataclass instances -- every other
+        # connector's auto tools already do this (e.g. calendar.py, jira.py),
+        # and ipc_server.py's json.dumps(..., default=str) would otherwise
+        # silently collapse each DriveFile into a Python repr() string
+        # instead of clean per-field JSON (confirmed: every field, including
+        # size, was already reaching Claude this way -- just unusably, as
+        # one opaque string per file, not structured data).
+        result = [asdict(f) for f in files]
+        return apply_list("drive_privacy", "file_list", result)
 
     async def _get_file_metadata(self, file_id: str) -> Any:
         t0 = time.time()
@@ -534,15 +542,15 @@ class DriveConnector(Connector):
         # record, so block collapses it to just the id (still needed to
         # correlate the call), not an empty value.
         if category_policy("drive_privacy", "file_metadata") == "allow":
-            return drive_file.to_dict() if hasattr(drive_file, "to_dict") else drive_file
-        return {"id": getattr(drive_file, "id", file_id)}
+            return asdict(drive_file)
+        return {"id": drive_file.id}
 
     async def _list_folder(self, folder_id: str, max_results: int = 50) -> Any:
         t0 = time.time()
         files = await self._fetch(self._drive.list_folder, folder_id, max_results)
         self._auto_audit("drive_list_folder", "List Drive Folder",
                          f"List folder: {folder_id}", f"{len(files)} item(s)", t0)
-        return apply_list("drive_privacy", "folder_structure", files)
+        return apply_list("drive_privacy", "folder_structure", [asdict(f) for f in files])
 
     async def _list_shared_drives(self, max_results: int = 50) -> Any:
         t0 = time.time()

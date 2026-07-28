@@ -171,6 +171,7 @@ def show_read_popup(
     preview_bytes: bytes = b"",
     preview_mime_type: str = "",
     new_info: dict[str, str] | None = None,
+    preview_tables: list[dict] | None = None,
 ) -> str:
     """Approval popup for read tools. Full content is always shown before the
     decision, in a scrollable pane — the user never has to click through to
@@ -200,6 +201,9 @@ def show_read_popup(
     ``new_info``, when given, is the v2 redesign's §3 ("What will be
     provided to Claude") real (label, value) pairs -- see gate.py's
     gated_call docstring. Ignored entirely by the legacy layout.
+    ``preview_tables``, when given, renders the WIDE right-pane preview as
+    structured table(s) instead of plain text -- see gate.py's gated_call
+    docstring. Also v2-only, also ignored by the legacy layout.
 
     Returns 'accept', 'deny', or 'accept_all' (only offered when
     allow_accept_all is True).
@@ -209,6 +213,7 @@ def show_read_popup(
         pii_categories=pii_categories, visibility=visibility, claude_reason=claude_reason,
         seen_count=seen_count, content_kind=content_kind, pdf_bytes=pdf_bytes, connector=connector,
         preview_bytes=preview_bytes, preview_mime_type=preview_mime_type, new_info=new_info,
+        preview_tables=preview_tables,
     )
 
 

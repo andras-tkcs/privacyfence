@@ -208,7 +208,7 @@ class JiraConnector(Connector):
         }
         new_info = {
             "Description": getattr(issue, "description", "") or "",
-            "Comments": "All comments (author/body/timestamps)",
+            "Comments": "Author, created date, and body per comment",
         }
         details_parts = []
         if len(issue.summary) > 80:
@@ -217,14 +217,21 @@ class JiraConnector(Connector):
             details_parts.append(f"Summary: {issue.summary}\n")
         details_parts.append(
             f"Reporter: {getattr(issue, 'reporter', '')}\n\n"
-            f"Description:\n{getattr(issue, 'description', '') or '(none)'}\n\n"
-            f"Comments ({len(comments)}):\n" +
-            "\n---\n".join(
-                f"{getattr(c, 'author', 'unknown')} [{getattr(c, 'created', '')}]:\n{getattr(c, 'body', '')}"
-                for c in comments
-            )
+            f"Description:\n{getattr(issue, 'description', '') or '(none)'}"
         )
+        # No inline comment dump here -- comments render as their own
+        # table (comments_table below) in the right-pane preview instead;
+        # pii_scan_text (set explicitly below) already covers comment
+        # bodies for scanning purposes independent of what's shown here.
         details = "".join(details_parts)
+        comments_table = {
+            "caption": f"Comments ({len(comments)})",
+            "headers": ["Author", "Date", "Comment"],
+            "rows": [
+                [getattr(c, "author", "unknown"), getattr(c, "created", ""), getattr(c, "body", "")]
+                for c in comments
+            ],
+        }
         pii_scan_text = (
             f"{getattr(issue, 'description', '') or ''}\n\n" +
             "\n".join(getattr(c, "body", "") or "" for c in comments)
@@ -242,6 +249,7 @@ class JiraConnector(Connector):
             new_info=new_info,
             details_text=details,
             pii_scan_text=pii_scan_text,
+            preview_tables=[comments_table] if comments else [],
             my_email=self.my_email,
             args={"issue_key": issue_key},
         )

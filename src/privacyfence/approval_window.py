@@ -487,6 +487,7 @@ class ApprovalWindowController(NSObject):
         self.is_read: bool = True
         self.upload_forced: bool = False
         self.new_info: dict[str, str] = {}
+        self.preview_tables: list[dict] = []
         self.result = "deny"
         self.panel = None
         self._details_view = None
@@ -1306,6 +1307,7 @@ class ApprovalWindowController(NSObject):
 
         preview_body_html = approval_window_html.build_preview_body_html(
             self.details_text, image_data_uri=image_data_uri, pdf_data_uri=pdf_data_uri,
+            tables=self.preview_tables,
         )
         disclosure_rows = self._v2_disclosure_rows()
 
@@ -1527,6 +1529,7 @@ def show_native_approval(
     is_read: bool = True,
     upload_forced: bool = False,
     new_info: dict[str, str] | None = None,
+    preview_tables: list[dict] | None = None,
 ) -> str:
     """Show the approval window and block until the user picks a button.
 
@@ -1544,11 +1547,13 @@ def show_native_approval(
     caller, byte-for-byte unchanged) or one of approval_window_html's
     NARROW/WIDE card-stack shapes (see ApprovalWindowController's v2
     methods and approval_window_html.py's module docstring). ``is_read``,
-    ``upload_forced``, and ``new_info`` (§3's real "what's new" field/value
+    ``upload_forced``, ``new_info`` (§3's real "what's new" field/value
     pairs -- e.g. calendar_get_event_details's Attendees/Location/
     Description; falls back to a ``visibility``-derived policy summary when
-    empty, see ApprovalWindowController._v2_disclosure_rows) only matter for
-    a v2 ``layout``; they're no-ops under "legacy".
+    empty, see ApprovalWindowController._v2_disclosure_rows), and
+    ``preview_tables`` (the WIDE right-pane preview as structured table(s)
+    instead of plain text -- see approval_window_html.py's _table_html)
+    only matter for a v2 ``layout``; they're no-ops under "legacy".
     """
     with _popup_lock:
         controller = ApprovalWindowController.alloc().init()
@@ -1571,6 +1576,7 @@ def show_native_approval(
         controller.is_read = is_read
         controller.upload_forced = upload_forced
         controller.new_info = new_info or {}
+        controller.preview_tables = preview_tables or []
 
         controller.performSelectorOnMainThread_withObject_waitUntilDone_(
             "runApproval:", None, True

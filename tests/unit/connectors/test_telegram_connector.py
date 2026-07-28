@@ -113,6 +113,18 @@ class TestGetMessages:
         # Data minimization: media metadata and internal ids are not
         # forwarded to Claude, only the whitelisted fields below.
         assert result == [{"id": 1, "sender_name": "Alice", "text": "see you tomorrow", "date": "2026-07-06T10:00:00Z"}]
+        assert kwargs["preview_tables"] == [{
+            "headers": ["Sender", "Date", "Message"],
+            "rows": [["Alice", "2026-07-06T10:00:00Z", "see you tomorrow"]],
+        }]
+
+    async def test_no_messages_produces_no_table(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_messages.return_value = []
+
+        await connector.call("telegram_get_messages", {"chat_id": 100})
+
+        assert gated_call_spy[0]["preview_tables"] == []
 
     async def test_pii_scan_text_is_message_text_only_not_sender_names(self, gated_call_spy):
         connector, client = make_connector()
@@ -161,6 +173,18 @@ class TestSearchMessages:
             "id": 1, "chat_name": "Family Group", "sender_name": "Alice",
             "text": "see you tomorrow", "date": "2026-07-06T10:00:00Z",
         }
+        assert kwargs["preview_tables"][0] == {
+            "headers": ["Sender", "Date", "Message"],
+            "rows": [["Alice", "2026-07-06T10:00:00Z", "see you tomorrow"], ["Alice", "2026-07-06T10:00:00Z", "see you tomorrow"]],
+        }
+
+    async def test_no_results_produces_no_table(self, gated_call_spy):
+        connector, client = make_connector()
+        client.search_messages.return_value = []
+
+        await connector.call("telegram_search_messages", {"query": "nothing"})
+
+        assert gated_call_spy[0]["preview_tables"] == []
 
     async def test_pii_scan_text_is_message_text_only(self, gated_call_spy):
         connector, client = make_connector()

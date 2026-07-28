@@ -263,6 +263,59 @@ class TestPreviewBody:
     def test_is_a_pure_function(self):
         assert build_preview_body_html("abc") == build_preview_body_html("abc")
 
+    def test_table_renders_headers_and_rows(self):
+        body = build_preview_body_html(
+            "", tables=[{"headers": ["Field", "Value"], "rows": [["Name", "Acme Corp"], ["Phone", "555-0100"]]}],
+        )
+        assert "<table" in body
+        assert "<th>Field</th>" in body
+        assert "<th>Value</th>" in body
+        assert "<td>Name</td>" in body
+        assert "<td>Acme Corp</td>" in body
+
+    def test_table_cells_are_escaped(self):
+        body = build_preview_body_html(
+            "", tables=[{"headers": ["X"], "rows": [["<script>alert(1)</script>"]]}],
+        )
+        assert "<script>alert(1)</script>" not in body
+        assert "&lt;script&gt;" in body
+
+    def test_table_caption_and_footer_render_when_given(self):
+        body = build_preview_body_html(
+            "", tables=[{"caption": "Group A", "headers": ["X"], "rows": [["1"]], "footer": "Total: 1"}],
+        )
+        assert "Group A" in body
+        assert "Total: 1" in body
+
+    def test_multiple_tables_all_render(self):
+        body = build_preview_body_html(
+            "", tables=[
+                {"caption": "First", "headers": ["A"], "rows": [["1"]]},
+                {"caption": "Second", "headers": ["B"], "rows": [["2"]]},
+            ],
+        )
+        assert "First" in body
+        assert "Second" in body
+        assert body.count("<table") == 2
+
+    def test_text_and_table_both_render_together(self):
+        body = build_preview_body_html("Some description.", tables=[{"headers": ["A"], "rows": [["1"]]}])
+        assert "Some description." in body
+        assert "<table" in body
+
+    def test_empty_text_and_no_tables_falls_back_to_placeholder(self):
+        assert "(no details)" in build_preview_body_html("", tables=[])
+        assert "(no details)" in build_preview_body_html("", tables=None)
+
+    def test_table_alone_does_not_show_no_details_placeholder(self):
+        body = build_preview_body_html("", tables=[{"headers": ["A"], "rows": [["1"]]}])
+        assert "(no details)" not in body
+
+    def test_table_without_headers_omits_thead(self):
+        body = build_preview_body_html("", tables=[{"rows": [["1", "2"]]}])
+        assert "<thead>" not in body
+        assert "<td>1</td>" in body
+
 
 class TestEscapingAndNoNetwork:
     """Defense in depth, same discipline _details_html() already holds:

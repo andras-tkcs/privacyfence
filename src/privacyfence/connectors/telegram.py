@@ -146,6 +146,14 @@ class TelegramConnector(Connector):
             }
             for m in messages
         ]
+        # Same plain-text list as before, unconditionally -- it's also the
+        # legacy layout's own display, so it can't be emptied out just
+        # because v2 also gets a nicer table alongside it (see
+        # connectors/salesforce.py's _search for the same reasoning).
+        table = {
+            "headers": ["Sender", "Date", "Message"],
+            "rows": [[getattr(m, "sender_name", "unknown"), str(getattr(m, "date", "")), getattr(m, "text", "")] for m in messages],
+        }
         return await gated_call(
             connector=self.name,
             tool="telegram_get_messages",
@@ -159,6 +167,7 @@ class TelegramConnector(Connector):
             new_info=new_info,
             details_text="\n".join(lines),
             pii_scan_text="\n".join(getattr(m, "text", "") or "" for m in messages),
+            preview_tables=[table] if messages else [],
             args={"chat_id": chat_id},
         )
 
@@ -190,6 +199,10 @@ class TelegramConnector(Connector):
             }
             for m in messages
         ]
+        table = {
+            "headers": ["Sender", "Date", "Message"],
+            "rows": [[getattr(m, "sender_name", "unknown"), str(getattr(m, "date", "")), getattr(m, "text", "")] for m in messages],
+        }
         return await gated_call(
             connector=self.name,
             tool="telegram_search_messages",
@@ -203,6 +216,7 @@ class TelegramConnector(Connector):
             new_info=new_info,
             details_text="\n".join(lines),
             pii_scan_text="\n".join(getattr(m, "text", "") or "" for m in messages),
+            preview_tables=[table] if messages else [],
             args={"query": query},
         )
 

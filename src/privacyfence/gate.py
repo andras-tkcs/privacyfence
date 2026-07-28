@@ -215,6 +215,13 @@ async def gated_call(
         # (gate="review") calls only, same reasoning as visibility below. Only consulted by
         # approval_window.py's layout="narrow"/"wide" v2 rendering (falls back to a
         # visibility-derived summary when empty); the legacy layout ignores it entirely.
+    preview_tables: list[dict] | None = None,  # v2 redesign's WIDE right-pane preview, as
+        # structured table(s) instead of a plain-text dump -- each dict is
+        # {"caption": str (optional), "headers": [...], "rows": [[...], ...],
+        # "footer": str (optional)}. For record/list-shaped "new" content with no
+        # fixed field count (a Salesforce record's fields, search results, a
+        # message list) -- see approval_window_html.py's _table_html. Read-only
+        # (gate="review") calls only. v2 rendering only; the legacy layout ignores it.
     details_text: str = "",       # full text shown inline or via TextEdit
     pii_scan_text: str | None = None,  # content-only text for the PII scan; defaults to details_text
     visibility: dict[str, str] | None = None,  # {label: "allow"|"redact"|"block"} -- the review
@@ -376,6 +383,7 @@ async def gated_call(
                     show_read_popup, popup_title, preview or {}, details, suggestion is not None,
                     pii_categories, visibility, claude_reason, seen_count, content_kind, pdf_bytes,
                     connector, preview_bytes, preview_mime_type, new_info=new_info,
+                    preview_tables=preview_tables,
                 )
 
                 if decision in ("accept", "accept_all") and pii_categories:

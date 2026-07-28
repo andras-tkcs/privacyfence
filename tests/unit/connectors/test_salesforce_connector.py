@@ -152,6 +152,25 @@ class TestGetRecord:
         assert kwargs["args"] == {"object_type": "Contact", "record_id": "003xx"}
         assert kwargs["raw_data"] == client.get_record.return_value
         assert result == {"object_type": "Contact", "id": "003xx", "fields": {"Name": "Bob Smith", "Email": "bob@example.com"}}
+        # §3 names which fields are actually on this record (alphabetized);
+        # the right-pane table carries the real values.
+        assert kwargs["new_info"]["Field values"] == "Email, Name"
+        assert kwargs["preview_tables"] == [
+            {"headers": ["Field", "Value"], "rows": [["Email", "bob@example.com"], ["Name", "Bob Smith"]]},
+        ]
+
+    async def test_unset_fields_excluded_from_field_list_and_table(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_record.return_value = SalesforceRecord(
+            object_type="Account", id="001xx",
+            fields={"Name": "Acme Corp", "Website": None, "Fax": ""},
+        )
+
+        await connector.call("salesforce_get_record", {"object_type": "Account", "record_id": "001xx"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["new_info"]["Field values"] == "Name"
+        assert kwargs["preview_tables"] == [{"headers": ["Field", "Value"], "rows": [["Name", "Acme Corp"]]}]
 
     async def test_client_error_becomes_runtime_error(self):
         connector, client = make_connector()
@@ -282,6 +301,20 @@ class TestRunReport:
         )
         assert "{" not in details
 
+        tables = gated_call_spy[0]["preview_tables"]
+        assert len(tables) == 1
+        assert tables[0]["headers"] == ["Opportunity Name", "Amount"]
+        assert tables[0]["rows"] == [["Acme Deal", "$10,000"], ["Globex Deal", "$5,000"]]
+        assert tables[0]["footer"] == "Total: $15,000"
+
+    async def test_empty_fact_map_produces_no_tables(self, gated_call_spy):
+        connector, client = make_connector()
+        client.run_report.return_value = {"reportMetadata": {"name": "Empty Report"}, "factMap": {}}
+
+        await connector.call("salesforce_run_report", {"report_id": "00O1"})
+
+        assert gated_call_spy[0]["preview_tables"] == []
+
     async def test_grouped_report_renders_group_labels_from_groupings_down(self, gated_call_spy):
         connector, client = make_connector()
         client.run_report.return_value = {
@@ -303,6 +336,11 @@ class TestRunReport:
         details = gated_call_spy[0]["details_text"]
         assert "Prospecting\nAcme Deal" in details
         assert "Negotiation\nGlobex Deal" in details
+
+        tables = gated_call_spy[0]["preview_tables"]
+        assert [t["caption"] for t in tables] == ["Prospecting", "Negotiation"]
+        assert tables[0]["rows"] == [["Acme Deal"]]
+        assert tables[1]["rows"] == [["Globex Deal"]]
 
     async def test_matrix_report_combines_down_and_across_grouping_labels(self, gated_call_spy):
         connector, client = make_connector()
@@ -365,6 +403,7 @@ class TestRunReport:
             "Report ran successfully — 2 data group(s). "
             "Structure too complex to preview here; open in Salesforce to view."
         )
+        assert gated_call_spy[0]["preview_tables"] == []
 
 
 class TestSearch:
@@ -386,6 +425,17 @@ class TestSearch:
         assert kwargs["args"] == {"search_term": "Big Deal", "object_types": "", "account_id": ""}
         client.search.assert_called_once_with("Big Deal", "", "", 20)
         assert result == [{"object_type": "Opportunity", "id": "006x", "fields": {"Id": "006x", "Name": "Big Deal"}}]
+        assert kwargs["preview_tables"] == [
+            {"headers": ["Object type", "Name", "ID"], "rows": [["Opportunity", "Big Deal", "006x"]]},
+        ]
+
+    async def test_no_matches_produces_no_table(self, gated_call_spy):
+        connector, client = make_connector()
+        client.search.return_value = []
+
+        await connector.call("salesforce_search", {"search_term": "nothing"})
+
+        assert gated_call_spy[0]["preview_tables"] == []
 
     async def test_details_list_one_match_per_line(self, gated_call_spy):
         connector, client = make_connector()

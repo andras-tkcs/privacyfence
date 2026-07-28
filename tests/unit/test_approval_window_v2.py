@@ -47,6 +47,7 @@ def make_v2_controller(
     connector="",
     preview_bytes=b"",
     preview_mime_type="",
+    preview_tables=None,
 ):
     c = ApprovalWindowController.alloc().init()
     c.layout = layout
@@ -68,6 +69,7 @@ def make_v2_controller(
     c.connector = connector
     c.preview_bytes = preview_bytes
     c.preview_mime_type = preview_mime_type
+    c.preview_tables = preview_tables or []
     return c
 
 
@@ -302,6 +304,22 @@ class TestV2HeightEstimate:
         short = make_v2_controller(preview={"Attendees": "Alice"})
         long = make_v2_controller(preview={"Attendees": "Alice, " * 200})
         assert short.build_panel().frame().size.height == long.build_panel().frame().size.height
+
+
+class TestV2PreviewTables:
+    def test_table_renders_in_the_wide_right_pane(self):
+        controller = make_v2_controller(
+            layout=WIDE,
+            preview_tables=[{"headers": ["Field", "Value"], "rows": [["Name", "Acme Corp"]]}],
+        )
+        controller.build_panel()
+        assert "<table" in controller._details_html_string
+        assert "Acme Corp" in controller._details_html_string
+
+    def test_no_table_by_default(self):
+        controller = make_v2_controller(layout=WIDE)
+        controller.build_panel()
+        assert "<table" not in controller._details_html_string
 
 
 class TestV2ButtonsDisabledUntilWebviewLoads:

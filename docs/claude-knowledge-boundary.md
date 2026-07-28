@@ -75,8 +75,8 @@ drifts, don't trust it blindly.
 
 | Tool | Gate | Fields Claude gets |
 |---|---|---|
-| `drive_list_files` | auto | `id`, `name`, `mime_type`, `owners`, sharing status |
-| `drive_get_file_metadata` | auto | full metadata record: name, owners, created/modified times, sharing status |
+| `drive_list_files` | auto | full `DriveFile` record per file: `id`, `name`, `mime_type`, `size`, `created_time`, `modified_time`, `owners`, `shared`, `web_view_link`, `parent_ids`, `drive_id`, `thumbnail_link` |
+| `drive_get_file_metadata` | auto | same full `DriveFile` record, for one file |
 | `drive_list_folder` | auto | same shape as `drive_list_files`, scoped to one folder's direct children |
 | `drive_list_shared_drives` | auto | `id`, `name` per Shared Drive |
 | `drive_sheets_get_metadata` | auto | per-tab `id`, `title`, `index`, row/column count |
@@ -179,10 +179,10 @@ lightweight Id/Name matches require approval, unlike Gmail/Drive/Jira's metadata
 | Tool | Gate | Fields Claude gets |
 |---|---|---|
 | `confluence_list_spaces` | auto | `key`, `name`, `type`, `description` |
-| `confluence_search` | auto | matching pages/blog posts **including a content excerpt** (`excerpt` field, straight from Confluence's search API, filtered through `confluence_privacy.search_excerpt`) |
+| `confluence_search` | auto | `id`, `title`, `content_type`, `space_key`, `space_name`, `url`, **and a content excerpt** (`excerpt`, straight from Confluence's search API, filtered through `confluence_privacy.search_excerpt`) — **no `author`, no `updated`**: `ConfluenceSearchResult` has no such fields at all (`_parse_search_result` never sets them) |
 | `confluence_cql_search` | auto | same shape as `confluence_search`, CQL-driven |
 | `confluence_list_pages` | auto | `title`, `id`, `version`, `space_key`, `author`, `created`, `updated`, `url` per page in a space — the v2-API page parser (`_parse_page_v2`) fills these in regardless of whether the body is fetched, and `confluence_list_pages` applies no redaction to any of them |
-| `confluence_get_page` / `confluence_get_page_by_title` | review | **new:** full page `body` (HTML storage format) — title/space/author/updated were already knowable via `confluence_list_pages` |
+| `confluence_get_page` / `confluence_get_page_by_title` | review | **new:** full page `body` (HTML storage format), `author`, `updated` — title/space were already knowable via either auto tool, but author/updated only via `confluence_list_pages`, not `confluence_search`/`confluence_cql_search` (a real, more likely discovery path for a page someone wants to read) — so they're treated as new here rather than assumed known |
 
 `confluence_search`/`confluence_cql_search` are the only auto tools across every connector that
 return actual content excerpts, not just structural metadata — `excerpt` is the one field filtered
