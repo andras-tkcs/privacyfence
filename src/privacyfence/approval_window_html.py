@@ -402,8 +402,6 @@ def build_card_stack_html(
     temp_accept_text: str,
     preview_kicker: str,
     preview_body_html: str,
-    columns_max_height: float = 0.0,
-    right_pane_max_height: float = 520.0,
 ) -> str:
     """Build the full HTML document for one approval window's content area.
 
@@ -421,31 +419,51 @@ def build_card_stack_html(
     disclosure by area-expansion doesn't apply once every row has a fixed,
     truncated size (see styles.css's ``.pf-kv``/``.pf-quote``).
 
-    ``columns_max_height``, when non-zero (approval_window.py's
-    ApprovalWindowController._columns_max_height -- 0 in the common case,
-    only set once the screen-height cap has actually trimmed the window
-    below what everything needs), caps §3 alone (the one card whose row
-    count genuinely varies per tool/call) below the always-visible header/
-    §1/§2/risk-card stack, and, for WIDE, also caps the right-hand preview
-    pane -- independently of whether §3 needed capping, since a WIDE
-    tool's preview content (an email/document/report) is unrelated in
-    length to the left column and needs its own bound regardless. Zero
-    still means "no §3 cap" (§1/§2/risk fit comfortably in virtually every
-    case, so an artificial cap there would only risk clipping content over
-    a few pixels of Python-estimate-vs-WebKit-actual rendering drift) --
-    but the right pane, for WIDE, is *always* capped via
-    ``right_pane_max_height`` -- the real caller (approval_window.py)
-    always passes the actual webview_height there, since the right pane
-    never had the "already fits" guarantee §1-§4 do. The 520.0 default
-    here only matters for callers (tests, or a future WIDE caller) that
-    don't have a real webview_height on hand.
+    Containment is pure CSS flexbox, not a Python-computed pixel cap --
+    ``<body>`` is ``height:100vh`` (the WKWebView's own real native frame,
+    not an estimate of it) and ``display:flex;flex-direction:column``. The
+    left column (header/§1/§2/risk-card/§3, all of it) is one
+    ``flex:1;min-height:0;overflow-y:auto`` region -- a single shared
+    scrollbar spans the whole column when its content is taller than the
+    real available height, rather than only §3 growing its own internal
+    one below an always-visible pinned block. For WIDE, the right-hand
+    preview pane gets the identical treatment (its own independent
+    ``flex:1;min-height:0;overflow-y:auto``) as a sibling of the left
+    column inside a row that itself fills the same real 100vh via
+    ``flex:1;min-height:0``. This replaced an earlier design
+    (``columns_max_height``/``right_pane_max_height`` params, since
+    removed) that capped each region to a *Python-estimated* pixel value:
+    that estimate is a worst-case row/section-count guess, never real text
+    measurement (see approval_window.py's ``_rows_height`` comment), and
+    when WebKit's real render of any single row came out even a few pixels
+    taller than guessed, the uncapped region had nowhere to grow but the
+    whole-page ``html, body`` fallback scroll -- dragging the *entire*
+    window (including the right pane) along with it. Flexbox has no such
+    estimate to be wrong about: the left column and the right pane always
+    get exactly "100vh," each with its own contained scroll, so a real
+    render coming out larger than any Python guess just means that
+    column's own scrollbar engages a little sooner -- the whole-page
+    scroll path is never reached at all now, from any single row anywhere
+    being off in either direction. Python's own height estimate
+    (``_estimate_left_column_height`` et al.) still exists, but purely to
+    pick a reasonable *initial* native window size -- it no longer has to
+    be exactly right for containment to hold.
 
-    §1, §2, and the PII/content-flag risk card are always fully visible,
-    never inside the scrollable region -- only §3 ("What will be provided
-    to Claude") scrolls, and only once the cap above actually applies.
-    This also means the risk card renders *before* §3 now (previously
-    after it): the highest-consequence card is never one scroll away from
-    being missed.
+    Trade-off worth knowing: because the left column is one shared scroll
+    region, §1/§2/the PII-or-content-flag risk card are *not* guaranteed to
+    stay on screen if the column's total content is taller than the
+    window -- scrolling to read the rest of §3 also scrolls them out of
+    view. An earlier version of this template kept those pinned and only
+    let §3 itself scroll internally, specifically so the risk card in
+    particular could never be scrolled out of sight; that version's own
+    trade-off was the opposite one -- a short, visually-inconsistent
+    internal scrollbar confined to §3's own card whenever the pinned block
+    above it took up most of the available height. This module now takes
+    the one-shared-scrollbar trade-off instead, matching the right pane's
+    own full-height scrollbar treatment. The risk card still renders
+    *before* §3 (not after) for the same reason as always: it's the
+    highest-consequence card, so it's the first thing scrolled past on the
+    way down, not the last.
 
     Exactly one of ``pii_categories``/``write_content_flags`` is ever
     non-empty for a given call (gate.py never populates both at once), and
@@ -498,42 +516,39 @@ def build_card_stack_html(
     header_html = _header_html(title, connector_icon_data_uri, shield_icon_data_uri, seen_count_text)
     pinned_joined = "".join(pinned_html)
     scrollable_joined = "".join(scrollable_html)
-    # Only §3 ever gets this cap -- header/§1/§2/risk are pinned above it,
-    # always fully visible (see this function's own docstring).
-    scroll_style = f'max-height:{columns_max_height:.0f}px;overflow-y:auto' if columns_max_height else ""
-    scrollable_capped = (
-        f'<div class="pf-scroll" style="{scroll_style}">{scrollable_joined}</div>'
-        if scroll_style else scrollable_joined
-    )
-    left_column = header_html + pinned_joined + scrollable_capped
+    # The whole left column -- header/§1/§2/risk-card *and* §3 together --
+    # is one shared scroll region, not split into an always-visible pinned
+    # part plus a separately-scrolling §3. See this function's own
+    # docstring for the trade-off this accepts (PII/§1/§2 can scroll out of
+    # view alongside §3 in an extreme case) in exchange for one scrollbar
+    # that visually spans the whole column, matching the right pane's own
+    # full-height one, instead of a short one confined to just §3's card.
+    left_column_content = header_html + pinned_joined + scrollable_joined
 
     if layout == WIDE:
         # Fixed left column width (_WIDE_LEFT_COLUMN_WIDTH) regardless of
         # the overall window width -- the design canvas's own two-column
         # cards used a fixed flex-basis the same way (350px there; widened
-        # since, see that constant's own comment).
-        #
-        # right_pane_max_height is unconditional (unlike columns_max_height
-        # above) -- a WIDE tool's preview content (an email/document/report)
-        # is unrelated in length to the left column and virtually always
-        # needs its own scroll bound, regardless of whether §3 needed
-        # capping. Without an explicit cap here, a long preview would
-        # stretch the whole flex row (align-items:stretch) past the
-        # webview's own fixed native frame, falling back to the body's own
-        # overflow-y:auto -- a whole-page scroll instead of the right
-        # pane's own contained one.
-        right_pane_style = (
-            f'flex:1;min-width:0;border-left:1px solid var(--color-divider);padding-left:24px'
-            f';max-height:{right_pane_max_height:.0f}px;overflow-y:auto'
+        # since, see that constant's own comment). overflow-y:auto +
+        # min-height:0 here (not split across a pinned/scrollable pair)
+        # is what makes this one shared scroll region.
+        left_column = (
+            f'<div class="pf-scroll" style="flex:0 0 {_WIDE_LEFT_COLUMN_WIDTH}px;min-width:0;'
+            f'overflow-y:auto;min-height:0">{left_column_content}</div>'
         )
+        right_pane_style = (
+            'flex:1;min-width:0;border-left:1px solid var(--color-divider);padding-left:24px'
+            ';overflow-y:auto;min-height:0'
+        )
+        # The outer row is flex:1;min-height:0 (fills the real 100vh body
+        # below temp_accept_text, if present -- see the returned document's
+        # <body> below) so align-items:stretch (default, kept deliberately)
+        # gives both the left column and the right pane that same real
+        # height -- not "whichever child is naturally taller," as a
+        # content-sized row would give them.
         body_html = (
-            # align-items defaults to "stretch" (deliberately not
-            # overridden to "flex-start") so both columns match the height
-            # of the taller one -- otherwise the right pane's border-left
-            # divider only extends as far as its own (often shorter)
-            # content, instead of running the window's full height.
-            '<div style="display:flex;gap:28px">'
-            f'<div style="flex:0 0 {_WIDE_LEFT_COLUMN_WIDTH}px;min-width:0">{left_column}</div>'
+            '<div style="display:flex;gap:28px;flex:1;min-height:0">'
+            f'{left_column}'
             f'<div class="pf-scroll" style="{right_pane_style}">'
             f'<div class="card-kicker" style="margin-bottom:8px">{_html_escape(preview_kicker)}</div>'
             f'{preview_body_html}'
@@ -541,12 +556,20 @@ def build_card_stack_html(
         )
     else:
         # NARROW: no preview pane at all -- preview_kicker/preview_body_html
-        # are simply not used. See module docstring.
-        body_html = left_column
+        # are simply not used. See module docstring. This whole block itself
+        # is the flex:1;min-height:0 child of <body> below (same shared
+        # scroll-region treatment as WIDE's left column).
+        body_html = (
+            '<div class="pf-scroll" style="flex:1;min-height:0;overflow-y:auto">'
+            f'{left_column_content}</div>'
+        )
 
     if temp_accept_text:
+        # flex:none -- a sibling of the row/column above inside <body>'s own
+        # flex column, not part of the scrollable region, always visible
+        # just above the (native, non-HTML) button row.
         body_html += (
-            f'<div style="margin-top:16px;font-size:11px;'
+            f'<div style="flex:none;margin-top:16px;font-size:11px;'
             f'color:color-mix(in srgb, var(--color-text) 55%, transparent)">'
             f'{_html_escape(temp_accept_text)}</div>'
         )
@@ -558,8 +581,18 @@ def build_card_stack_html(
 <meta name="color-scheme" content="light">
 <style>
 {_STYLES_CSS}
+html {{ height: 100%; }}
+/* overflow-y:auto here is now a last-resort fallback only, not the
+   containment mechanism -- see this function's own docstring. It should
+   be effectively unreachable: <body> is exactly 100vh (the WKWebView's
+   real native frame) and every region within it is a flex:1;min-height:0
+   overflow-y:auto child of its own, so any content taller than expected
+   grows that region's own internal scrollbar instead of this one. */
 html, body {{ overflow-y: auto; }}
-body {{ padding: 26px 30px 24px; width: {width}px; }}
+body {{
+  box-sizing: border-box; padding: 26px 30px 24px; width: {width}px; height: 100vh;
+  display: flex; flex-direction: column;
+}}
 </style>
 </head>
 <body>{body_html}</body>

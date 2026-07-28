@@ -246,38 +246,54 @@ class TestLayoutShapes:
         assert "Preview (~2 sec read)" not in html
         assert "Synthetic event body text" not in html
 
-    def test_no_section_3_cap_by_default(self):
-        # columns_max_height defaults to 0 -- the common case, where the
-        # window was already sized to fit header/§1/§2/risk/§3 exactly, so
-        # no artificial cap is applied to §3 (see build_card_stack_html's
-        # own docstring for why an unconditional cap risked clipping
-        # content over a few pixels of estimate-vs-actual rendering drift).
-        # The right pane's own (unconditional, see the next test) cap is
-        # the only "max-height" that should appear at all here.
+    def test_wide_left_column_is_one_shared_scroll_region(self):
+        # No Python-computed pixel cap anymore, and no split between an
+        # always-visible pinned block and a separately-scrolling §3 --
+        # header/§1/§2/risk-card/§3 all share one overflow-y:auto region
+        # spanning the whole column (see build_card_stack_html's own
+        # docstring for the trade-off this accepts). No max-height
+        # anywhere: the region is bounded by real flex layout, not a
+        # Python estimate.
         html = build_card_stack_html(**_minimal_kwargs(
             layout=WIDE, disclosure_rows=[("Cell values", "x")],
         ))
-        assert html.count("max-height") == 1
+        assert (
+            f'class="pf-scroll" style="flex:0 0 {_WIDE_LEFT_COLUMN_WIDTH}px;min-width:0;'
+            'overflow-y:auto;min-height:0"' in html
+        )
+        assert "max-height" not in html
 
-    def test_right_pane_is_always_capped_for_wide_regardless_of_columns_max_height(self):
-        # Unlike §3, the right pane's cap is unconditional -- its content
-        # (an email/document/report) is unrelated in length to the left
-        # column and always needs its own scroll bound. See
-        # build_card_stack_html's own docstring.
-        html = build_card_stack_html(**_minimal_kwargs(layout=WIDE, right_pane_max_height=444.0))
-        assert "max-height:444px;overflow-y:auto" in html
+    def test_left_column_is_still_one_shared_scroll_region_with_no_section_3(self):
+        # Unconditional -- the wrapper doesn't depend on §3 having content
+        # (unlike the old columns_max_height-only-when-needed cap).
+        html = build_card_stack_html(**_minimal_kwargs(layout=WIDE, disclosure_rows=[]))
+        assert (
+            f'class="pf-scroll" style="flex:0 0 {_WIDE_LEFT_COLUMN_WIDTH}px;min-width:0;'
+            'overflow-y:auto;min-height:0"' in html
+        )
 
-    def test_columns_max_height_caps_only_section_3_not_the_right_pane(self):
+    def test_right_pane_is_its_own_independent_scroll_region_for_wide(self):
+        # Unlike a Python-estimated pixel cap, this needs no numeric
+        # argument at all -- flex:1;min-height:0;overflow-y:auto always
+        # bounds the right pane to the row's own real height, independent
+        # of the left column's own scroll region.
+        html = build_card_stack_html(**_minimal_kwargs(layout=WIDE))
+        assert "flex:1;min-width:0;border-left:1px solid var(--color-divider);padding-left:24px;overflow-y:auto;min-height:0" in html
+
+    def test_wide_has_exactly_two_independent_scroll_regions(self):
+        # Left column and right pane -- always both, regardless of whether
+        # §3 has content, since neither wrapper is conditional anymore.
         html = build_card_stack_html(**_minimal_kwargs(
             layout=WIDE, disclosure_rows=[("Cell values", "x")],
-            columns_max_height=300.0, right_pane_max_height=444.0,
         ))
-        assert html.count("max-height:300px;overflow-y:auto") == 1
-        assert html.count("max-height:444px;overflow-y:auto") == 1
+        assert html.count('class="pf-scroll"') == 2
 
-    def test_narrow_columns_max_height_caps_the_single_column(self):
-        html = build_card_stack_html(**_minimal_kwargs(layout=NARROW, columns_max_height=300.0))
-        assert "max-height:300px;overflow-y:auto" in html
+    def test_narrow_left_column_is_the_one_shared_scroll_region(self):
+        html = build_card_stack_html(**_minimal_kwargs(
+            layout=NARROW, disclosure_rows=[("Cell values", "x")],
+        ))
+        assert 'class="pf-scroll" style="flex:1;min-height:0;overflow-y:auto"' in html
+        assert html.count('class="pf-scroll"') == 1
 
     def test_wide_preview_pane_still_renders_after_the_left_column(self):
         html = build_card_stack_html(**_minimal_kwargs(layout=WIDE))

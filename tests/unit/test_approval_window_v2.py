@@ -310,40 +310,6 @@ class TestV2HeightEstimate:
         assert short.build_panel().frame().size.height == long.build_panel().frame().size.height
 
 
-class TestV2ColumnsMaxHeight:
-    """0 when the window already fits its own estimated content (the
-    common case); otherwise the real space left for §3 alone once the
-    window's height was actually trimmed below that estimate -- header/
-    §1/§2/the risk card are pinned and always get their full
-    _pinned_height_v2(), never capped -- see _columns_max_height's own
-    docstring."""
-
-    def test_zero_when_webview_height_already_fits_the_estimate(self):
-        controller = make_v2_controller(preview={"Title": "x"}, new_info={"X": "y"})
-        natural = controller._estimate_left_column_height()
-        assert controller._columns_max_height(natural) == 0.0
-        assert controller._columns_max_height(natural + 50.0) == 0.0
-
-    def test_positive_when_webview_height_is_smaller_than_the_estimate(self):
-        controller = make_v2_controller(
-            preview={"Title": "x"}, seen_count=3, new_info={"X": "y"},
-        )
-        natural = controller._estimate_left_column_height()
-        capped_webview_height = natural - 20.0
-        result = controller._columns_max_height(capped_webview_height)
-        assert result == capped_webview_height - controller._pinned_height_v2()
-        # Header/§1/§2 always keep their full height -- only §3's own
-        # budget shrinks.
-        assert result == controller._scrollable_height_v2() - 20.0
-
-    def test_never_negative(self):
-        controller = make_v2_controller(preview={"Title": "x"}, new_info={"X": "y"})
-        natural = controller._estimate_left_column_height()
-        # A webview_height smaller than even just the pinned portion itself.
-        result = controller._columns_max_height(natural - (natural + 1000.0))
-        assert result == 0.0
-
-
 class TestV2PreviewTables:
     def test_table_renders_in_the_wide_right_pane(self):
         controller = make_v2_controller(

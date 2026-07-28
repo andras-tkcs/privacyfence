@@ -1307,28 +1307,9 @@ class ApprovalWindowController(NSObject):
             window_height = min(window_height, screen.frame().size.height * _V2_MAX_WINDOW_HEIGHT_FRACTION)
         return window_height
 
-    def _columns_max_height(self, webview_height: float) -> float:
-        """0 when the window is already tall enough for its own estimated
-        content (the common case -- no artificial cap risked from Python's
-        estimate not matching WebKit's real layout to the pixel); otherwise
-        the actual space left for §3 once the screen-height cap
-        (_V2_MAX_WINDOW_HEIGHT_FRACTION) has trimmed the window below what
-        _estimate_left_column_height() says it needs. Only §3 is ever
-        affected -- header/§1/§2/the risk card are pinned and always get
-        their full _pinned_height_v2() (see approval_window_html.py's
-        build_card_stack_html for why), so a heavily-trimmed window would
-        show §3 with little to no visible room before it scrolls, never
-        by clipping the identifying context or a PII warning above it."""
-        natural_content_height = self._estimate_left_column_height()
-        if webview_height >= natural_content_height - 0.5:
-            return 0.0
-        return max(0.0, webview_height - self._pinned_height_v2())
-
     def _build_content_view_v2(self, window_width: float, window_height: float):
         content = _FlippedView.alloc().initWithFrame_(NSMakeRect(0, 0, window_width, window_height))
-
         webview_height = window_height - _BUTTON_ROW_HEIGHT
-        columns_max_height = self._columns_max_height(webview_height)
 
         # pdf_bytes/preview_bytes render inline via a standard <embed>/<img>
         # data URI now -- no native PDFView/NSImageView overlay needed, v2's
@@ -1375,8 +1356,6 @@ class ApprovalWindowController(NSObject):
             temp_accept_text=_TEMP_ACCEPT_DISCLOSURE_TEXT if self.temp_accept_eligible else "",
             preview_kicker=f"Preview ({_reading_time_label(self.details_text)})",
             preview_body_html=preview_body_html,
-            columns_max_height=columns_max_height,
-            right_pane_max_height=webview_height,
         )
         # Kept purely for testability, same reasoning as the legacy layout's
         # own _details_html_string -- see test_approval_window_html.py for
