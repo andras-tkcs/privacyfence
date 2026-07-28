@@ -218,6 +218,20 @@ _V2_ROW_LINE_HEIGHT = 18.0  # one line of a .pf-kv value at 14px/~1.3 line-heigh
 _V2_QUOTE_CARD_HEIGHT = 96.0  # §2's whole card: chrome + 3-line-clamped quote + the "unverified" meta line
 _V2_RISK_CARD_BASE_HEIGHT = 96.0  # §4 card: chrome + the "⚠ ..." line + one row of category tags
 _V2_MIN_CONTENT_HEIGHT = 260.0
+# Every _V2_* constant above is a round-number guess, not a real text
+# measurement (see their own comments) -- since <body> is height:100vh
+# (build_card_stack_html's flex-based containment, not a per-region pixel
+# cap), a window sized to *exactly* the raw estimate leaves zero room for
+# WebKit's real render to land even a few px taller than guessed. That's
+# harmless for genuinely long content (its own flex:1;overflow-y:auto
+# region just grows an internal scrollbar, correctly), but for a short
+# dialog sitting right at _V2_MIN_CONTENT_HEIGHT's floor -- a couple of
+# .pf-kv rows and nothing else -- a few px of real-vs-estimated drift is
+# enough to trip a scrollbar on a dialog that's supposed to fit with
+# nothing to scroll. This margin is pure headroom against that drift, not
+# a per-section value -- it doesn't change how tall any card is *expected*
+# to be, only how much slack the actual window gets over that expectation.
+_V2_HEIGHT_SAFETY_MARGIN = 24.0
 _V2_MAX_WINDOW_HEIGHT_FRACTION = 0.8  # of the screen's height -- see _window_height_v2
 
 _popup_lock = threading.Lock()  # only one native window on screen at a time
@@ -1300,7 +1314,13 @@ class ApprovalWindowController(NSObject):
         return max(_V2_MIN_CONTENT_HEIGHT, self._pinned_height_v2() + self._scrollable_height_v2())
 
     def _window_height_v2(self) -> float:
-        content_height = self._estimate_left_column_height()
+        # _V2_HEIGHT_SAFETY_MARGIN added here, not inside
+        # _estimate_left_column_height() -- this is headroom for the
+        # actual window, not a change to what any card/row is expected to
+        # need (other callers of _estimate_left_column_height()/
+        # _pinned_height_v2()/_scrollable_height_v2() reason about relative
+        # proportions between sections, which this must leave alone).
+        content_height = self._estimate_left_column_height() + _V2_HEIGHT_SAFETY_MARGIN
         window_height = content_height + _BUTTON_ROW_HEIGHT
         screen = NSScreen.mainScreen()
         if screen is not None:

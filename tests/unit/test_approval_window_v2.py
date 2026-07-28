@@ -310,6 +310,37 @@ class TestV2HeightEstimate:
         assert short.build_panel().frame().size.height == long.build_panel().frame().size.height
 
 
+class TestV2WindowHeightSafetyMargin:
+    """<body> is height:100vh (build_card_stack_html's flex containment),
+    not a per-region pixel cap -- so a window sized to *exactly*
+    _estimate_left_column_height() leaves zero room for WebKit's real
+    render to land even a few px taller than the (unmeasured, round-number)
+    _V2_* guesses assume. A tiny dialog sitting right at
+    _V2_MIN_CONTENT_HEIGHT's floor has the least margin for that drift --
+    see _V2_HEIGHT_SAFETY_MARGIN's own comment."""
+
+    def test_window_height_exceeds_the_raw_estimate_by_the_safety_margin(self):
+        from privacyfence.approval_window import _V2_HEIGHT_SAFETY_MARGIN
+
+        controller = make_v2_controller(preview={"Contact": "x", "Label": "y"})
+        raw_estimate = controller._estimate_left_column_height()
+        webview_height = controller._window_height_v2() - 66.0
+        assert webview_height == raw_estimate + _V2_HEIGHT_SAFETY_MARGIN
+
+    def test_tiny_dialog_gets_real_slack_over_its_own_pinned_estimate(self):
+        # The reported case: a two-row preview, no reason/disclosure/PII --
+        # _V2_MIN_CONTENT_HEIGHT's floor wins over the raw pinned estimate,
+        # leaving very little native margin (12px, pre-fix) before real
+        # WebKit rendering drift could trip a scrollbar on a dialog with
+        # nothing that actually needs to scroll.
+        controller = make_v2_controller(
+            preview={"Contact": "PrivacyFence QA Contact [QATEST]", "Label": "QATEST"},
+            claude_reason="", new_info={}, pii_categories=[],
+        )
+        pinned = controller._pinned_height_v2()
+        webview_height = controller._window_height_v2() - 66.0
+        assert webview_height - pinned >= 24.0
+
 class TestV2PreviewTables:
     def test_table_renders_in_the_wide_right_pane(self):
         controller = make_v2_controller(
