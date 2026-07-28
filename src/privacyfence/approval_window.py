@@ -507,6 +507,16 @@ class ApprovalWindowController(NSObject):
     # Summary box
     # ------------------------------------------------------------------ #
 
+    def _legacy_preview(self) -> dict[str, str]:
+        """Legacy never distinguished "already known" (preview) from "new on
+        approval" (new_info) -- that split is v2-only (see
+        approval_window_html.py's module docstring). Legacy's summary box
+        and email header should keep showing exactly the field set they
+        always did, so this merges new_info back in for legacy's own
+        rendering only -- v2 reads self.preview/self.new_info separately
+        and unmerged, see _v2_disclosure_rows()."""
+        return {**self.new_info, **self.preview}
+
     def _show_summary_box(self) -> bool:
         """False for content_kind="email": gmail_get_message's preview dict
         is exactly {From, To, Date, Subject} -- the same four fields
@@ -515,13 +525,13 @@ class ApprovalWindowController(NSObject):
         box too would put every one of those fields on screen twice. No
         other content_kind's preview is a strict subset of what its details
         pane already shows, so this only ever suppresses the box for email."""
-        return bool(self.preview) and self.content_kind != "email"
+        return bool(self._legacy_preview()) and self.content_kind != "email"
 
     def _summary_rows(self, width: float) -> tuple[list[tuple[str, str, float]], float]:
         value_width = width - 2 * _SUMMARY_PAD - _SUMMARY_LABEL_WIDTH - 14.0
         font = NSFont.systemFontOfSize_(13)
         rows = []
-        for key, value in self.preview.items():
+        for key, value in self._legacy_preview().items():
             h = max(16.0, _text_height(str(value), value_width, font))
             rows.append((key, str(value), h))
         return rows, value_width
@@ -790,7 +800,7 @@ class ApprovalWindowController(NSObject):
         webview = WKWebView.alloc().initWithFrame_configuration_(
             NSMakeRect(_MARGIN, y, width, self._details_height), config
         )
-        html = _details_html(self.details_text, preview=self.preview, content_kind=self.content_kind)
+        html = _details_html(self.details_text, preview=self._legacy_preview(), content_kind=self.content_kind)
         # Kept purely for testability -- WKWebView's own loaded content
         # isn't synchronously readable back out the way NSTextView.string()
         # was, so tests assert against this instead of the live view. See
@@ -1212,17 +1222,20 @@ class ApprovalWindowController(NSObject):
 
     def _v2_disclosure_rows(self) -> list[tuple[str, str]]:
         """§3's rows -- ``new_info`` (real values a connector builds directly,
-        e.g. calendar_get_event_details's Attendees/Location/Description)
-        takes priority when given; falls back to the older
-        visibility-derived policy sentences for the handful of tools that
-        only have a privacy-category checklist and no explicit new_info
-        (Gmail/Drive/Slack/Contacts/Tasks/Confluence). Never both at once in
-        practice -- see approval_window_html.py's module docstring."""
+        e.g. calendar_get_event_details's Attendees/Location/Description, or
+        gmail_get_message's To/Labels) come first, followed by the
+        visibility-derived policy sentences for tools that also carry a
+        privacy-category checklist (Gmail/Drive/Slack/Contacts/Tasks/
+        Confluence). Several tools genuinely need both at once -- e.g.
+        gmail_get_message discloses a literal ``To`` alongside a policy
+        sentence for ``Message body`` -- so this concatenates rather than
+        picking one source over the other."""
         if not self.is_read:
             return []
-        if self.new_info:
-            return list(self.new_info.items())
-        return approval_window_html.disclosure_rows_from_visibility(self.visibility)
+        rows = list(self.new_info.items())
+        if self.visibility:
+            rows += approval_window_html.disclosure_rows_from_visibility(self.visibility)
+        return rows
 
     @staticmethod
     def _rows_height(labels) -> float:
@@ -1271,7 +1284,8 @@ class ApprovalWindowController(NSObject):
         # data URI now -- no native PDFView/NSImageView overlay needed, v2's
         # whole content area is already one WKWebView. Same precedence as
         # the legacy layout's _build_details_view(): pdf_bytes, then an
-        # image preview_bytes, then plain text/email.
+        # image preview_bytes, then plain text (no email-header special
+        # case in v2 -- see build_preview_body_html's docstring).
         pdf_data_uri = ""
         if self.pdf_bytes:
             pdf_data_uri = f"data:application/pdf;base64,{base64.b64encode(self.pdf_bytes).decode('ascii')}"
@@ -1283,8 +1297,7 @@ class ApprovalWindowController(NSObject):
             )
 
         preview_body_html = approval_window_html.build_preview_body_html(
-            self.details_text, content_kind=self.content_kind, preview=self.preview,
-            image_data_uri=image_data_uri, pdf_data_uri=pdf_data_uri,
+            self.details_text, image_data_uri=image_data_uri, pdf_data_uri=pdf_data_uri,
         )
         disclosure_rows = self._v2_disclosure_rows()
 

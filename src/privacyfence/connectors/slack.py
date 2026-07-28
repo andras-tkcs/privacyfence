@@ -241,8 +241,11 @@ class SlackConnector(Connector):
         is_group_dm = await self._fetch(self._slack.resolve_is_group_dm, channel_id)
         filtered = _apply_message_privacy([_message_to_dict(m) for m in messages], "message_content")
         first_preview = (filtered[0]["text"] or "")[:80] if filtered else ""
-        preview = {
-            "Channel": channel_display,
+        # Channel is known via slack_list_channels; Messages (count) and
+        # First message (actual message text) are only learned once this
+        # call is approved.
+        preview = {"Channel": channel_display}
+        new_info = {
             "Messages": str(n),
             "First message": first_preview or "(empty)",
         }
@@ -261,6 +264,7 @@ class SlackConnector(Connector):
             filtered_data=filtered,
             gate="review",
             preview=preview,
+            new_info=new_info,
             details_text=details,
             pii_scan_text="\n".join(d["text"] or "" for d in filtered),
             visibility={
@@ -278,8 +282,10 @@ class SlackConnector(Connector):
         is_group_dm = await self._fetch(self._slack.resolve_is_group_dm, channel_id)
         filtered = _apply_message_privacy([_message_to_dict(m) for m in messages], "thread_content")
         starter = (filtered[0]["text"] or "")[:80] if filtered else ""
-        preview = {
-            "Channel": channel_display,
+        # Channel is known via slack_list_channels; Thread starter (actual
+        # message text) and Replies (count) are only learned once approved.
+        preview = {"Channel": channel_display}
+        new_info = {
             "Thread starter": starter or "(empty)",
             "Replies": str(max(0, n - 1)),
         }
@@ -298,6 +304,7 @@ class SlackConnector(Connector):
             filtered_data=filtered,
             gate="review",
             preview=preview,
+            new_info=new_info,
             details_text=details,
             pii_scan_text="\n".join(d["text"] or "" for d in filtered),
             visibility={
@@ -312,10 +319,11 @@ class SlackConnector(Connector):
         messages = await self._fetch(self._slack.search_messages, query, count)
         n = len(messages)
         filtered = _apply_message_privacy([_message_to_dict(m) for m in messages], "message_content")
-        preview = {
-            "Query": query,
-            "Results": str(n),
-        }
+        # Query is Claude's own input (kept in §1 as identifying context,
+        # same reasoning as drive_sheets_get_values's Range); Results
+        # (count) is only learned once this call is approved.
+        preview = {"Query": query}
+        new_info = {"Results": str(n)}
         lines = [
             f"[{d['channel_name']}] {d['user_name'] or d['user_id'] or 'unknown'}: {d['text']}"
             for d in filtered
@@ -331,6 +339,7 @@ class SlackConnector(Connector):
             filtered_data=filtered,
             gate="review",
             preview=preview,
+            new_info=new_info,
             details_text=details,
             pii_scan_text="\n".join(d["text"] or "" for d in filtered),
             visibility={

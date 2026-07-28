@@ -241,24 +241,13 @@ class TestPreviewBody:
     def test_empty_details_text_falls_back_to_a_placeholder(self):
         assert "(no details)" in build_preview_body_html("")
 
-    def test_email_content_kind_prepends_a_structured_header(self):
+    def test_image_data_uri_takes_priority_over_text(self):
         body = build_preview_body_html(
-            "hello", content_kind="email",
-            preview={"From": "a@example.com", "To": "b@example.com", "Subject": "Hi", "Date": "2026-07-16"},
-        )
-        assert "a@example.com" in body
-        assert "b@example.com" in body
-        assert "hello" in body
-
-    def test_image_data_uri_takes_priority_over_text_and_email(self):
-        body = build_preview_body_html(
-            "should not appear", content_kind="email",
-            preview={"From": "a@example.com"},
+            "should not appear",
             image_data_uri="data:image/png;base64,AAAA",
         )
         assert "data:image/png;base64,AAAA" in body
         assert "should not appear" not in body
-        assert "a@example.com" not in body
 
     def test_pdf_data_uri_takes_priority_over_image_and_text(self):
         body = build_preview_body_html(

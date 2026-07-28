@@ -145,8 +145,8 @@ class TestGetChannelHistory:
         # Resolved from the fetched message's channel_name ("general", the
         # make_message() default), not the raw channel id -- no extra lookup.
         assert kwargs["preview"]["Channel"] == "#general"
-        assert kwargs["preview"]["Messages"] == "1"
-        assert kwargs["preview"]["First message"] == "a" * 80  # truncated to 80 chars
+        assert kwargs["new_info"]["Messages"] == "1"
+        assert kwargs["new_info"]["First message"] == "a" * 80  # truncated to 80 chars
         assert kwargs["raw_data"] == [make_message(text="a" * 100)]
         assert kwargs["args"] == {"channel_id": "C123", "is_group_dm": False}
         client.get_channel_history.assert_called_once_with("C123", 10)
@@ -185,8 +185,8 @@ class TestGetChannelHistory:
 
         await connector.call("slack_get_channel_history", {"channel_id": "C123"})
 
-        assert gated_call_spy[0]["preview"]["First message"] == "(empty)"
-        assert gated_call_spy[0]["preview"]["Messages"] == "0"
+        assert gated_call_spy[0]["new_info"]["First message"] == "(empty)"
+        assert gated_call_spy[0]["new_info"]["Messages"] == "0"
 
     async def test_empty_channel_falls_back_to_direct_name_lookup(self, gated_call_spy):
         # No messages means no channel_name to read off a message, so the
@@ -362,8 +362,8 @@ class TestGetThreadReplies:
         await connector.call("slack_get_thread_replies", {"channel_id": "C123", "thread_ts": "t1"})
 
         kwargs = gated_call_spy[0]
-        assert kwargs["preview"]["Thread starter"] == "starter"
-        assert kwargs["preview"]["Replies"] == "2"
+        assert kwargs["new_info"]["Thread starter"] == "starter"
+        assert kwargs["new_info"]["Replies"] == "2"
         assert kwargs["args"] == {"channel_id": "C123", "thread_ts": "t1", "is_group_dm": False}
 
     async def test_empty_thread_replies_count_never_negative(self, gated_call_spy):
@@ -372,8 +372,8 @@ class TestGetThreadReplies:
 
         await connector.call("slack_get_thread_replies", {"channel_id": "C123", "thread_ts": "t1"})
 
-        assert gated_call_spy[0]["preview"]["Replies"] == "0"
-        assert gated_call_spy[0]["preview"]["Thread starter"] == "(empty)"
+        assert gated_call_spy[0]["new_info"]["Replies"] == "0"
+        assert gated_call_spy[0]["new_info"]["Thread starter"] == "(empty)"
 
     async def test_pii_scan_text_is_message_text_only(self, gated_call_spy):
         connector, client = make_connector()
@@ -396,7 +396,8 @@ class TestSearchMessages:
         await connector.call("slack_search_messages", {"query": "budget", "count": 5})
 
         kwargs = gated_call_spy[0]
-        assert kwargs["preview"] == {"Query": "budget", "Results": "2"}
+        assert kwargs["preview"] == {"Query": "budget"}
+        assert kwargs["new_info"] == {"Results": "2"}
         assert kwargs["gate"] == "review"
         assert kwargs["args"] == {"query": "budget"}
         client.search_messages.assert_called_once_with("budget", 5)

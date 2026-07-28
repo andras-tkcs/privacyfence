@@ -103,7 +103,8 @@ class TestGetMessages:
         result = await connector.call("telegram_get_messages", {"chat_id": 100, "limit": 10})
 
         kwargs = gated_call_spy[0]
-        assert kwargs["preview"] == {"Chat": "Family Group", "Messages": "1"}
+        assert kwargs["preview"] == {"Chat": "Family Group"}
+        assert kwargs["new_info"]["Messages"] == "1"
         assert kwargs["gate"] == "review"
         assert kwargs["args"] == {"chat_id": 100}
         assert "my_email" not in kwargs  # telegram has no email-based auto-accept rules
@@ -133,7 +134,7 @@ class TestGetMessages:
         await connector.call("telegram_get_messages", {"chat_id": 555})
 
         assert gated_call_spy[0]["preview"]["Chat"] == "555"
-        assert gated_call_spy[0]["preview"]["Messages"] == "0"
+        assert gated_call_spy[0]["new_info"]["Messages"] == "0"
 
     async def test_client_error_becomes_runtime_error(self):
         connector, client = make_connector()
@@ -151,7 +152,8 @@ class TestSearchMessages:
         result = await connector.call("telegram_search_messages", {"query": "tomorrow", "limit": 5})
 
         kwargs = gated_call_spy[0]
-        assert kwargs["preview"] == {"Query": "tomorrow", "Results": "2"}
+        assert kwargs["preview"] == {"Query": "tomorrow"}
+        assert kwargs["new_info"]["Results"] == "2"
         assert kwargs["gate"] == "review"
         assert kwargs["args"] == {"query": "tomorrow"}
         client.search_messages.assert_called_once_with("tomorrow", 5)

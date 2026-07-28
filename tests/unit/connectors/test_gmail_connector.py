@@ -135,18 +135,33 @@ class TestGetMessagePreviewMinimization:
         await connector.call("gmail_get_message", {"message_id": "m1"})
 
         kwargs = gated_call_spy[0]
+        # §1 ("What Claude already knows"): only fields gmail_list_messages
+        # itself returns -- From/Date/Subject. To (recipients) isn't known
+        # for free, so it's a new_info (§3) field instead, not preview.
         assert kwargs["preview"] == {
             "From": "alice@example.com",
-            "To": "me@example.com",
             "Date": "Mon, 01 Jul 2026 10:00:00 +0000",
             "Subject": "Confidential Q3 numbers",
         }
+        assert kwargs["new_info"]["To"] == "me@example.com"
         assert "Secret body content" not in str(kwargs["preview"])
         assert "Secret body content" in kwargs["details_text"]  # full content still reachable via details
         assert kwargs["gate"] == "review"
         assert kwargs["raw_data"] is message
         assert kwargs["args"] == {"message_id": "m1"}
         assert kwargs["my_email"] == "me@example.com"
+
+    async def test_new_info_includes_labels(self, gated_call_spy):
+        connector, client = make_connector()
+        message = GmailMessage(
+            id="m1", thread_id="t1", subject="s", sender="a@b.com",
+            labels=["INBOX", "IMPORTANT"],
+        )
+        client.get_message.return_value = message
+
+        await connector.call("gmail_get_message", {"message_id": "m1"})
+
+        assert gated_call_spy[0]["new_info"]["Labels"] == "INBOX, IMPORTANT"
 
     async def test_content_kind_is_email(self, gated_call_spy):
         # gmail_get_message is the one call site that opts into the
@@ -254,10 +269,15 @@ class TestGetThread:
         await connector.call("gmail_get_thread", {"thread_id": "t1"})
 
         kwargs = gated_call_spy[0]
-        assert kwargs["preview"]["Subject"] == "Re: budget"
-        assert kwargs["preview"]["Messages"] == "2"
+        # Subject/Messages are new (not returned by gmail_list_threads);
+        # Participants/Dates are kept in §1 as identifying context even
+        # though they're never sent to Claude at all (see connectors/
+        # gmail.py's comment at this call site).
+        assert kwargs["new_info"]["Subject"] == "Re: budget"
+        assert kwargs["new_info"]["Messages"] == "2"
         assert set(kwargs["preview"]["Participants"].split(", ")) == {"alice@example.com", "bob@example.com"}
         assert "secret" not in str(kwargs["preview"])
+        assert "secret" not in str(kwargs["new_info"])
         assert "body one secret" in kwargs["details_text"]
         assert "body two secret" in kwargs["details_text"]
         assert kwargs["gate"] == "review"
@@ -508,7 +528,10 @@ class TestDownloadAttachment:
         assert kwargs["preview"]["Attachment"] == "report.pdf"
         assert kwargs["preview"]["Type"] == "application/octet-stream"
         assert kwargs["preview"]["Size"] == "1,024 bytes"
-        assert kwargs["preview"]["Will save to"] == "/tmp/report.pdf"
+        # Will save to / no-content-returned are new-on-approval facts, not
+        # already-known metadata -- see connectors/gmail.py's comment.
+        assert kwargs["new_info"]["Will save to"] == "/tmp/report.pdf"
+        assert "None" in kwargs["new_info"]["Content returned to Claude"]
         # MIME type used to only appear in details_text (duplicating the
         # rest of the preview fields); it now lives in preview only.
         assert kwargs["details_text"] == "The attachment above will be downloaded to the destination shown."

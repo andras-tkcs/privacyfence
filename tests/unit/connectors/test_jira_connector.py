@@ -143,6 +143,19 @@ class TestGetIssue:
         assert kwargs["args"] == {"issue_key": "ENG-42"}
         assert kwargs["sender"] == "alice@example.com"  # reporter takes priority
 
+    async def test_new_info_has_description_and_comments_summary(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_issue.return_value = make_issue()
+        client.get_issue_comments.return_value = [
+            JiraComment(id="c1", author="bob@example.com", body="Looking into it", created="2026-07-01"),
+        ]
+
+        await connector.call("jira_get_issue", {"issue_key": "ENG-42"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["new_info"]["Description"] == "Users can't log in with SSO."
+        assert kwargs["new_info"]["Comments"] == "All comments (author/body/timestamps)"
+
     async def test_summary_truncated_in_preview_but_full_in_details(self, gated_call_spy):
         connector, client = make_connector()
         long_summary = "x" * 100

@@ -658,6 +658,11 @@ class DriveConnector(Connector):
         owners = getattr(drive_file, "owners", [])
         raw_values = await self._fetch(self._drive.get_sheet_values, spreadsheet_id, range_a1)
         values = apply_list("drive_privacy", "file_content", raw_values)
+        # Spreadsheet/Owner are known via drive_get_file_metadata; Range is
+        # Claude's own input to this very call (kept in §1 as identifying
+        # context, not "new," since Claude already knows what it asked for
+        # -- same reasoning as Salesforce's own-input record id). Cell
+        # values is the actual new content, covered by the visibility row.
         preview = {"Spreadsheet": name, "Owner": ", ".join(owners) or "(unknown)", "Range": range_a1}
         rows_preview = _format_sheet_rows(values)
         return await gated_call(
@@ -688,11 +693,18 @@ class DriveConnector(Connector):
         dest_path = resolve_download_destination(drive_file, destination_dir)
         name = os.path.basename(dest_path)
 
+        # File/Owner/Size/Modified are known via drive_get_file_metadata (or
+        # this call's own fetch of it above); the only genuinely new facts
+        # from approving this call are that no file content reaches Claude,
+        # and where it'll be saved -- same pattern as gmail_download_attachment.
         preview = {
             "File": name,
             "Owner": ", ".join(owners) if owners else "(unknown)",
             "Size": f"{drive_file.size:,} bytes",
             "Modified": str(modified) if modified else "(unknown)",
+        }
+        new_info = {
+            "Content returned to Claude": "None — file bytes are never sent",
             "Saved to": dest_path,
         }
         details = "The file above will be downloaded to the destination shown."
@@ -760,6 +772,7 @@ class DriveConnector(Connector):
             filtered_data=None,
             gate="review",
             preview=preview,
+            new_info=new_info,
             details_text=details,
             pii_scan_text=pii_scan_text,
             preview_bytes=preview_bytes,

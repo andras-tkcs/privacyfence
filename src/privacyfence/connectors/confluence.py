@@ -214,12 +214,19 @@ class ConfluenceConnector(Connector):
     async def _get_page(self, page_id: str) -> Any:
         page = await self._fetch(self._confluence.get_page, page_id)
         data = asdict(page)
+        # Title/Space/Author/Last modified are all known for free via
+        # confluence_list_pages (same v2-API page parser as this call, minus
+        # the body -- see confluence_client.py's _parse_page_v2). Only the
+        # page body itself is new, and has no fixed size, so it gets one
+        # fixed summary row rather than a literal (possibly huge) value --
+        # the real content lives in the right-pane preview/details_text.
         preview_fields = {
             "Title": page.title or page_id,
             "Space": page.space_key or "(unknown)",
             "Author": page.author or "(unknown)",
             "Last modified": page.updated or "(unknown)",
         }
+        new_info = {"Page body": "Full page content"}
         body_text = getattr(page, "body", "") or getattr(page, "body_text", "") or ""
         return await gated_call(
             connector=self.name,
@@ -231,6 +238,7 @@ class ConfluenceConnector(Connector):
             filtered_data=data,
             gate="review",
             preview=preview_fields,
+            new_info=new_info,
             details_text=body_text,
             pii_scan_text=body_text,
             my_email=self.my_email,
@@ -240,12 +248,14 @@ class ConfluenceConnector(Connector):
     async def _get_page_by_title(self, space_key: str, title: str) -> Any:
         page = await self._fetch(self._confluence.get_page_by_title, space_key, title)
         data = asdict(page)
+        # Same knowledge boundary as _get_page above.
         preview_fields = {
             "Title": page.title or title,
             "Space": page.space_key or space_key,
             "Author": page.author or "(unknown)",
             "Last modified": page.updated or "(unknown)",
         }
+        new_info = {"Page body": "Full page content"}
         body_text = getattr(page, "body", "") or getattr(page, "body_text", "") or ""
         return await gated_call(
             connector=self.name,
@@ -257,6 +267,7 @@ class ConfluenceConnector(Connector):
             filtered_data=data,
             gate="review",
             preview=preview_fields,
+            new_info=new_info,
             details_text=body_text,
             pii_scan_text=body_text,
             my_email=self.my_email,

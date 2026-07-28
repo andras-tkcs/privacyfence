@@ -232,6 +232,7 @@ class TestGetPage:
         }
         assert "Confidential steps here" not in str(kwargs["preview"])
         assert "Confidential steps here" in kwargs["details_text"]
+        assert kwargs["new_info"] == {"Page body": "Full page content"}
         assert kwargs["gate"] == "review"
         assert kwargs["args"] == {"page_id": "p1"}
         assert kwargs["raw_data"] is kwargs["filtered_data"]

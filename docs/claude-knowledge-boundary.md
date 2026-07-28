@@ -181,8 +181,8 @@ lightweight Id/Name matches require approval, unlike Gmail/Drive/Jira's metadata
 | `confluence_list_spaces` | auto | `key`, `name`, `type`, `description` |
 | `confluence_search` | auto | matching pages/blog posts **including a content excerpt** (`excerpt` field, straight from Confluence's search API, filtered through `confluence_privacy.search_excerpt`) |
 | `confluence_cql_search` | auto | same shape as `confluence_search`, CQL-driven |
-| `confluence_list_pages` | auto | `title`, `id`, `version` per page in a space |
-| `confluence_get_page` / `confluence_get_page_by_title` | review | **new:** full page `body` (HTML storage format) |
+| `confluence_list_pages` | auto | `title`, `id`, `version`, `space_key`, `author`, `created`, `updated`, `url` per page in a space — the v2-API page parser (`_parse_page_v2`) fills these in regardless of whether the body is fetched, and `confluence_list_pages` applies no redaction to any of them |
+| `confluence_get_page` / `confluence_get_page_by_title` | review | **new:** full page `body` (HTML storage format) — title/space/author/updated were already knowable via `confluence_list_pages` |
 
 `confluence_search`/`confluence_cql_search` are the only auto tools across every connector that
 return actual content excerpts, not just structural metadata — `excerpt` is the one field filtered

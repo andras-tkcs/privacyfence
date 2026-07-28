@@ -193,12 +193,22 @@ class JiraConnector(Connector):
         issue = await self._fetch(self._jira.get_issue, issue_key)
         comments = await self._fetch(self._jira.get_issue_comments, issue_key)
         result = {**asdict(issue), "comments": [asdict(c) for c in comments]}
+        # Project/Key/Summary/Status/Assignee are all known for free via
+        # jira_search_issues; Description and Comments are only learned
+        # once this call is approved -- jira_search_issues never returns
+        # either. Comments have no fixed count, so §3 gets one fixed
+        # summary row rather than one row per comment (the real comment
+        # text lives in the right-pane preview/details_text instead).
         preview = {
             "Project": getattr(issue, "project_name", "") or issue_key.split("-")[0],
             "Key": issue.key,
             "Summary": (issue.summary[:80] + "…") if len(issue.summary) > 80 else issue.summary,
             "Status": getattr(issue, "status", "") or "",
             "Assignee": getattr(issue, "assignee", "") or "(unassigned)",
+        }
+        new_info = {
+            "Description": getattr(issue, "description", "") or "",
+            "Comments": "All comments (author/body/timestamps)",
         }
         details_parts = []
         if len(issue.summary) > 80:
@@ -229,6 +239,7 @@ class JiraConnector(Connector):
             filtered_data=result,
             gate="review",
             preview=preview,
+            new_info=new_info,
             details_text=details,
             pii_scan_text=pii_scan_text,
             my_email=self.my_email,

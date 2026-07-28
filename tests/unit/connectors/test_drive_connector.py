@@ -387,7 +387,10 @@ class TestDownloadFile:
         assert result == {"name": "Q3 Report.pdf", "path": "/tmp/Q3 Report.pdf", "size_bytes": 4096}
         kwargs = gated_call_spy[0]
         assert kwargs["gate"] == "review"
-        assert kwargs["preview"]["Saved to"] == "/tmp/Q3 Report.pdf"
+        # Saved to / no-content-returned are new-on-approval facts, not
+        # already-known metadata -- see connectors/drive.py's comment.
+        assert kwargs["new_info"]["Saved to"] == "/tmp/Q3 Report.pdf"
+        assert "None" in kwargs["new_info"]["Content returned to Claude"]
         assert kwargs["preview"]["Size"] == "4,096 bytes"
         assert kwargs["args"] == {"file_id": "f1", "destination_dir": "/tmp"}
         assert kwargs["pii_scan_text"] == ""  # empty content, nothing to scan
@@ -440,7 +443,7 @@ class TestDownloadFile:
 
         kwargs = gated_call_spy[0]
         assert kwargs["preview"]["File"] == "Q3 Report.txt"
-        assert kwargs["preview"]["Saved to"] == "/tmp/Q3 Report.txt"
+        assert kwargs["new_info"]["Saved to"] == "/tmp/Q3 Report.txt"
 
     async def test_thumbnail_link_present_fetches_a_preview(self, gated_call_spy):
         connector, client = make_connector()

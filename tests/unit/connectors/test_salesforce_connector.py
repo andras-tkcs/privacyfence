@@ -111,8 +111,10 @@ class TestGetRecord:
         await connector.call("salesforce_get_record", {"object_type": "Account", "record_id": "001xx0000012345"})
 
         kwargs = gated_call_spy[0]
-        assert kwargs["preview"]["Name"] == "Acme Corp"
-        assert kwargs["preview"]["Name"] != "001xx0000012345"
+        # Name isn't known via any auto tool (Salesforce has no auto search
+        # at all), so it's a new_info (§3) field, not preview.
+        assert kwargs["new_info"]["Name"] == "Acme Corp"
+        assert kwargs["new_info"]["Name"] != "001xx0000012345"
         assert kwargs["summary"] == "Read Account: Acme Corp"
 
     async def test_falls_back_to_record_id_when_no_name_field(self, gated_call_spy):
@@ -123,7 +125,7 @@ class TestGetRecord:
 
         await connector.call("salesforce_get_record", {"object_type": "Task", "record_id": "00T1"})
 
-        assert gated_call_spy[0]["preview"]["Name"] == "00T1"
+        assert gated_call_spy[0]["new_info"]["Name"] == "00T1"
 
     async def test_lowercase_name_field_also_recognized(self, gated_call_spy):
         connector, client = make_connector()
@@ -133,7 +135,7 @@ class TestGetRecord:
 
         await connector.call("salesforce_get_record", {"object_type": "CustomObject__c", "record_id": "a001"})
 
-        assert gated_call_spy[0]["preview"]["Name"] == "lowercase name"
+        assert gated_call_spy[0]["new_info"]["Name"] == "lowercase name"
 
     async def test_preview_and_gate(self, gated_call_spy):
         connector, client = make_connector()
@@ -377,8 +379,9 @@ class TestSearch:
         kwargs = gated_call_spy[0]
         assert kwargs["gate"] == "review"
         assert kwargs["preview"] == {
-            "Search term": "Big Deal", "Object types": "(default)", "Results": "1",
+            "Search term": "Big Deal", "Object types": "(default)",
         }
+        assert kwargs["new_info"]["Results"] == "1"
         assert "Account ID" not in kwargs["preview"]
         assert kwargs["args"] == {"search_term": "Big Deal", "object_types": "", "account_id": ""}
         client.search.assert_called_once_with("Big Deal", "", "", 20)

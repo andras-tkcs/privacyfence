@@ -124,8 +124,7 @@ def line_clamp_for(label: str) -> int:
 
 
 def build_preview_body_html(
-    details_text: str, *, content_kind: str = "generic",
-    preview: dict[str, str] | None = None,
+    details_text: str, *,
     image_data_uri: str = "",
     pdf_data_uri: str = "",
 ) -> str:
@@ -139,7 +138,7 @@ def build_preview_body_html(
     treated as markup, only escaped and given ``white-space: pre-wrap``.
 
     ``pdf_data_uri`` takes priority over ``image_data_uri``, which takes
-    priority over ``content_kind``/``details_text`` -- the same precedence
+    priority over plain ``details_text`` -- the same precedence
     ``_build_details_view()`` already holds for the legacy layout's
     pdf_bytes-before-preview_bytes-before-text dispatch, just rendered
     inline via a standard ``<embed>``/``<img>`` data URI here instead of a
@@ -147,6 +146,12 @@ def build_preview_body_html(
     area is already one WKWebView, so there's no separate small pane for a
     native view to stand in for -- WebKit's own built-in PDF renderer and
     image decoding handle both directly, no extra native code needed.
+
+    No content_kind="email" structured header here (unlike the legacy
+    layout's ``_details_html()``): under the §1/§3 knowledge-boundary split,
+    From/Subject/Date already render as §1 rows and To as a §3 row, so
+    repeating them a second time atop the body would just be duplication --
+    the right pane is plain body text for every WIDE tool, email included.
     """
     if pdf_data_uri:
         return (
@@ -155,34 +160,12 @@ def build_preview_body_html(
         )
     if image_data_uri:
         return f'<img src="{image_data_uri}" style="max-width:100%;display:block">'
-    if content_kind == "email":
-        return _email_header_fragment(preview or {}) + _escaped_text_fragment(details_text)
     return _escaped_text_fragment(details_text)
 
 
 def _escaped_text_fragment(text: str) -> str:
     escaped = _html_escape(text or "(no details)")
     return f'<div style="white-space:pre-wrap;word-wrap:break-word;font-size:13px;line-height:1.6">{escaped}</div>'
-
-
-def _email_header_fragment(preview: dict[str, str]) -> str:
-    """Structured From/To/Subject/Date header for content_kind="email" --
-    same field contract as approval_window.py's ``_email_header_html()``
-    (Gmail's preview dict shape, only ever set at gmail_get_message's call
-    site). Values are still individually escaped, never assumed to be valid
-    HTML themselves."""
-    from_ = _html_escape(preview.get("From", "") or "(unknown)")
-    to = _html_escape(preview.get("To", "") or "(unknown)")
-    subject = _html_escape(preview.get("Subject", "") or "(no subject)")
-    date = _html_escape(preview.get("Date", "") or "(unknown)")
-    return (
-        '<div style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--color-divider)">'
-        f'<div style="margin-bottom:4px"><span class="text-muted">From:</span> {from_}'
-        f'&nbsp;&nbsp;<span class="text-muted">To:</span> {to}</div>'
-        f'<div><span class="text-muted">Subject:</span> {subject}'
-        f'&nbsp;&nbsp;<span class="text-muted">Date:</span> {date}</div>'
-        '</div>'
-    )
 
 
 def _kv_rows_html(pairs: list[tuple[str, str]]) -> str:

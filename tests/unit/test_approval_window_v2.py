@@ -177,13 +177,13 @@ class TestV2CardStackContent:
         assert "What will be provided to Claude" in controller._details_html_string
         assert "Full cell values" in controller._details_html_string
 
-    def test_new_info_takes_priority_over_visibility_when_both_given(self):
+    def test_new_info_and_visibility_rows_both_render_when_both_given(self):
         controller = make_v2_controller(
             is_read=True, new_info={"Attendees": "Alice, Bob"}, visibility={"Cell values": "allow"},
         )
         controller.build_panel()
         assert "Alice, Bob" in controller._details_html_string
-        assert "Full cell values" not in controller._details_html_string
+        assert "Full cell values" in controller._details_html_string
 
     def test_pii_categories_render_the_read_variant_risk_card(self):
         controller = make_v2_controller(pii_categories=["Phone number"])

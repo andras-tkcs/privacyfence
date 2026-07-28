@@ -217,10 +217,22 @@ class SalesforceConnector(Connector):
         record_dict = asdict(record)
         record_fields = record_dict.get("fields", {})
         name = record_fields.get("Name") or record_fields.get("name") or record_id
+        # Salesforce has no auto/no-gate search or list of record contents at
+        # all (unlike every other connector's list_* tool) -- Object
+        # type/Record ID are Claude's own input to this very call (kept in
+        # §1 as identifying context, not "known"), but nothing about the
+        # record's actual fields, including its Name, is known beforehand.
+        # The record can have an arbitrary, per-object-type field set (not a
+        # fixed row count), so §3 gets one fixed summary row rather than one
+        # row per field -- the real values live in the right-pane preview
+        # (details_text) instead.
         preview = {
             "Object type": object_type,
-            "Name": str(name),
             "Record ID": record_id,
+        }
+        new_info = {
+            "Name": str(name),
+            "Field values": "Full values for every field on the record",
         }
         details = f"Fields:\n{_format_flat_fields(record_fields)}"
         return await gated_call(
@@ -233,6 +245,7 @@ class SalesforceConnector(Connector):
             filtered_data=record_dict,
             gate="review",
             preview=preview,
+            new_info=new_info,
             details_text=details,
             my_email=self.my_email,
             args={"object_type": object_type, "record_id": record_id},
@@ -253,10 +266,16 @@ class SalesforceConnector(Connector):
             or (result_dict.get("name") or result_dict.get("reportName") if isinstance(result_dict, dict) else None)
             or report_id
         )
+        # Report/Report ID are known via salesforce_list_reports; the
+        # report's actual data (rows/aggregates) is only learned once this
+        # call is approved, and -- like a record's fields -- has no fixed
+        # row count, so it gets one fixed summary row rather than per-row
+        # values (the real data lives in the right-pane preview instead).
         preview = {
             "Report": str(report_name),
             "Report ID": report_id,
         }
+        new_info = {"Report data": "All report rows/aggregates"}
         details = _format_report_details(result_dict)
         return await gated_call(
             connector=self.name,
@@ -268,6 +287,7 @@ class SalesforceConnector(Connector):
             filtered_data=result_dict,
             gate="review",
             preview=preview,
+            new_info=new_info,
             details_text=details,
             my_email=self.my_email,
             args={"report_id": report_id},
@@ -288,13 +308,20 @@ class SalesforceConnector(Connector):
         except SalesforceClientError as exc:
             raise RuntimeError(str(exc)) from exc
         result = [asdict(r) for r in records]
+        # Search term/Object types/Account ID are Claude's own input to this
+        # call (kept in §1 as identifying context); Results (count) and the
+        # actual match list are only learned once approved -- no auto/
+        # no-gate search exists for Salesforce at all.
         preview = {
             "Search term": search_term,
             "Object types": object_types or "(default)",
-            "Results": str(len(records)),
         }
         if account_id:
             preview["Account ID"] = account_id
+        new_info = {
+            "Results": str(len(records)),
+            "Search results": "Object type, name, and id per match",
+        }
         details = "\n".join(
             f"{r.object_type} — {r.fields.get('Name', '(no name)')} (id={r.id})" for r in records
         ) or "(no matches)"
@@ -308,6 +335,7 @@ class SalesforceConnector(Connector):
             filtered_data=result,
             gate="review",
             preview=preview,
+            new_info=new_info,
             details_text=details,
             my_email=self.my_email,
             args={"search_term": search_term, "object_types": object_types, "account_id": account_id},
