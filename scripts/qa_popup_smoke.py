@@ -131,6 +131,7 @@ from rumps import rumps as _rumps_internal  # noqa: E402
 
 from privacyfence import menu_bar  # noqa: E402
 from privacyfence.approval_window import show_native_approval  # noqa: E402
+from privacyfence.quicklook_preview import generate_thumbnail, init_quicklook_preview  # noqa: E402
 
 WINDOW_WAIT_TIMEOUT_SECONDS = 8.0
 
@@ -678,6 +679,35 @@ _TINY_PNG_BYTES = base64.b64decode(
     "yxOdgAG7AwSKBQy4uDzRCRiwO0CgWOAvMrINdTs38y8AAAAASUVORK5CYII="
 )
 
+# A real fixture file (checked in, not a base64 blob like _TINY_PDF_BYTES/
+# _TINY_PNG_BYTES above) for the QuickLook-fallback scenario below: an A4
+# (210x297mm), multi-paragraph .docx -- QuickLook renders the file's actual
+# page dimensions, so a real document here (as opposed to reusing
+# _TINY_PNG_BYTES, which is square) gives that scenario a genuinely
+# page-shaped thumbnail. Generated once via python-docx (not a runtime
+# dependency of this script -- see the file's own contents for exactly
+# what it holds).
+_LOREM_IPSUM_DOCX_PATH = (
+    Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "qa_assets" / "lorem_ipsum.docx"
+)
+
+
+def _quicklook_thumbnail_for_lorem_ipsum_docx() -> bytes:
+    """Real generate_thumbnail() call, not a stand-in -- QuickLook Previews
+    is off by default in production (menu-bar toggle), so this flips
+    quicklook_preview.py's in-process flag on for this one call, the same
+    way the menu bar's own toggle does, rather than touching settings.yaml
+    or any daemon state. Best-effort like the real connector call sites
+    (drive.py/gmail.py): returns b"" if quicklookd can't render it for any
+    reason (timeout, disabled, missing renderer) -- the scenario then falls
+    back to the plain metadata-only preview, exactly like a real miss
+    would in production, rather than silently substituting fake bytes.
+    """
+    init_quicklook_preview(True)
+    data = _LOREM_IPSUM_DOCX_PATH.read_bytes()
+    return generate_thumbnail(data, _LOREM_IPSUM_DOCX_PATH.name) or b""
+
+
 # --layout v2's per-tool narrow/wide assignment -- re-derived directly from the "Approval
 # windows design system" claude.ai/design project's own markup (turns 4-6: every .pf-win with an
 # inline style="width:880px" is wide, everything else is narrow), not from memory or a length
@@ -1002,25 +1032,28 @@ def _scenarios(
         # enabled from the menu bar -- generate_thumbnail() always returns
         # PNG bytes, fed through the exact same preview_bytes/
         # preview_mime_type channel a direct image preview uses (see
-        # drive.py's _download_file), so this scenario reuses _TINY_PNG_BYTES
-        # as a stand-in for a real quicklookd render rather than actually
-        # invoking QuickLook -- there's no separate rendering branch to
-        # exercise here, just this fixture's File/Type not being an image.
+        # drive.py's _download_file). Unlike the image-preview scenario
+        # above, this one calls the real generate_thumbnail() against a
+        # real, checked-in A4 .docx fixture (tests/fixtures/qa_assets/
+        # lorem_ipsum.docx) instead of reusing _TINY_PNG_BYTES -- a real
+        # quicklookd render is a genuinely page-shaped (portrait) thumbnail,
+        # not the square placeholder a reused image fixture would give.
         "RG-1 · drive_download_file (+ QuickLook preview)",
         click_title="Allow once", expected="accept",
         title="Download Drive File",
         preview={
-            "File": "PrivacyFence QA test doc [QATEST].docx", "Owner": QA_EMAIL, "Size": "24 KB",
+            "File": "PrivacyFence QA test doc [QATEST].docx", "Owner": QA_EMAIL, "Size": "36 KB",
             "Modified": "2026-07-16",
         },
         new_info={
             "Content returned to Claude": "None — file bytes are never sent",
             "Saved to": "~/Downloads/PrivacyFence QA test doc [QATEST].docx",
         },
-        details_text="Ordinary, non-sensitive smoke-test Word document content.",
+        details_text="Synthetic lorem ipsum content. No real information. Safe to read, "
+                      "download, or preview by any automated test.",
         allow_accept_all=True,
         connector="drive",
-        preview_bytes=_TINY_PNG_BYTES, preview_mime_type="image/png",
+        preview_bytes=_quicklook_thumbnail_for_lorem_ipsum_docx(), preview_mime_type="image/png",
     ))
 
     results.append(run(

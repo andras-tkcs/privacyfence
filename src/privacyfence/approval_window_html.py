@@ -501,7 +501,10 @@ def build_card_stack_html(
     # Only §3 ever gets this cap -- header/§1/§2/risk are pinned above it,
     # always fully visible (see this function's own docstring).
     scroll_style = f'max-height:{columns_max_height:.0f}px;overflow-y:auto' if columns_max_height else ""
-    scrollable_capped = f'<div style="{scroll_style}">{scrollable_joined}</div>' if scroll_style else scrollable_joined
+    scrollable_capped = (
+        f'<div class="pf-scroll" style="{scroll_style}">{scrollable_joined}</div>'
+        if scroll_style else scrollable_joined
+    )
     left_column = header_html + pinned_joined + scrollable_capped
 
     if layout == WIDE:
@@ -531,7 +534,7 @@ def build_card_stack_html(
             # content, instead of running the window's full height.
             '<div style="display:flex;gap:28px">'
             f'<div style="flex:0 0 {_WIDE_LEFT_COLUMN_WIDTH}px;min-width:0">{left_column}</div>'
-            f'<div style="{right_pane_style}">'
+            f'<div class="pf-scroll" style="{right_pane_style}">'
             f'<div class="card-kicker" style="margin-bottom:8px">{_html_escape(preview_kicker)}</div>'
             f'{preview_body_html}'
             '</div></div>'
