@@ -910,6 +910,16 @@ def _run_menu_bar_scenario(
         # function reference, reassigning it here is enough (nothing else
         # in this short-lived process depends on the original).
         menu_bar.load_org_config = lambda: {}
+        # PrivacyFenceMenuBar.__init__ fires an immediate, real,
+        # background-threaded GitHub update check whose completion
+        # callback calls self._rebuild() -- unrelated to anything this
+        # scenario tests, but if it lands while the status-bar dropdown is
+        # open (its own completion timing depends on network latency, not
+        # anything under our control) it mutates the menu items AppKit is
+        # actively tracking, which visually collapses the open menu before
+        # a screenshot can be taken. Stubbed to a no-op for the same
+        # reason load_org_config is above.
+        menu_bar.PrivacyFenceMenuBar._on_update_check_timer = lambda self, _timer=None: None
         app = menu_bar.PrivacyFenceMenuBar(
             config_path, connectors=["gmail", "drive", "slack"],
             ipc_server=fake_ipc_server, connector_objs=[],
