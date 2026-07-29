@@ -170,8 +170,8 @@ async def test_bridge_lists_and_calls_the_real_daemons_tools(running_daemon, bui
             assert "privacyfence_end_unattended_session" in names
 
             result = await session.call_tool("contract_test_echo", {"message": "hello from the real daemon"})
-            assert result.is_error is not True
-            assert result.structured_content == {"echoed": {"message": "hello from the real daemon"}}
+            assert result.isError is not True
+            assert result.structuredContent == {"echoed": {"message": "hello from the real daemon"}}
 
     assert running_daemon.calls == [("contract_test_echo", {"message": "hello from the real daemon"})]
 

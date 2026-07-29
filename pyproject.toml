@@ -60,7 +60,12 @@ test = [
     # tests/integration/test_bridge_daemon_contract.py to drive the real
     # Node bridge over real MCP-over-stdio. Never shipped in the daemon or
     # the bridge (see docs on dropping fastmcp/mcp from the MCP side).
-    "mcp>=1.0.0",
+    # Capped below 2.0: v2 (released 2026-07-28) removes ClientSession,
+    # stdio_client, and StdioServerParameters in favor of a unified Client/
+    # open_session() API and renames isError -> is_error, which would break
+    # test_bridge_daemon_contract.py's imports outright. Bump the cap only
+    # alongside a rewrite of that test's client-side calls.
+    "mcp>=1.28,<2.0.0",
     "freezegun>=1.5",
 ]
 

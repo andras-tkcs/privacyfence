@@ -589,10 +589,15 @@ class ApprovalWindowController(NSObject):
         webview = WKWebView.alloc().initWithFrame_configuration_(
             NSMakeRect(0, 0, window_width, webview_height), config
         )
-        # loadHTMLString_baseURL_ is asynchronous even for this fully local,
-        # self-contained document (parsing the embedded base64 fonts/CSS
-        # alone takes a beat) -- the navigation delegate below is what
-        # re-enables the buttons once it's actually done, not a timer/guess.
+        # Explicit, not inferred from view-hierarchy timing: loadHTMLString_
+        # baseURL_ below evaluates the page's `prefers-color-scheme` media
+        # query immediately, and at that point this view has no superview/
+        # window yet (content.addSubview_ hasn't run) -- left to infer its
+        # own appearance it resolves to the WebKit default (light) rather
+        # than the panel's actual one, which is how dark mode broke here
+        # before. Setting it directly from the panel sidesteps that timing
+        # entirely rather than depending on subview-then-load ordering.
+        webview.setAppearance_(self.panel.effectiveAppearance())
         webview.setNavigationDelegate_(self)
         webview.loadHTMLString_baseURL_(html, None)
         self._details_view = webview
