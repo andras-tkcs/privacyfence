@@ -90,6 +90,55 @@
   --radius-lg: 4px;
 }
 
+/* Dark palette -- each ramp is the light palette's own nine hex values in
+   reversed order (100<->900, 200<->800, ...), so anything keyed to e.g.
+   --color-neutral-700 for "medium-dark" in light mode lands on the
+   mirror-image lightness step in dark mode instead of an unrelated color.
+   --color-bg/--color-text swap with the light palette's --color-text/
+   --color-bg; --color-surface sits one step lighter than --color-bg for
+   card elevation (dark UIs read surfaces as raised via lightness, the
+   opposite of light mode's slightly-recessed --color-surface). */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #201e1d;
+    --color-surface: #2d2b2b;
+    --color-text: #f3f2f2;
+    --color-accent: #62c5ee;
+    --color-accent-2: #ff90b1;
+    --color-divider: color-mix(in srgb, #f3f2f2 16%, transparent);
+
+    --color-neutral-100: #2d2b2b;
+    --color-neutral-200: #444141;
+    --color-neutral-300: #605d5d;
+    --color-neutral-400: #7d7979;
+    --color-neutral-500: #9b9797;
+    --color-neutral-600: #bab6b6;
+    --color-neutral-700: #d7d3d3;
+    --color-neutral-800: #eae7e7;
+    --color-neutral-900: #f8f4f4;
+
+    --color-accent-100: #0a303e;
+    --color-accent-200: #004961;
+    --color-accent-300: #006786;
+    --color-accent-400: #1186ac;
+    --color-accent-500: #38a6cf;
+    --color-accent-600: #62c5ee;
+    --color-accent-700: #99e0ff;
+    --color-accent-800: #cbeeff;
+    --color-accent-900: #e9f8ff;
+
+    --color-accent-2-100: #4b1528;
+    --color-accent-2-200: #790e3d;
+    --color-accent-2-300: #aa0b56;
+    --color-accent-2-400: #d82071;
+    --color-accent-2-500: #ff458e;
+    --color-accent-2-600: #ff90b1;
+    --color-accent-2-700: #ffc0d0;
+    --color-accent-2-800: #ffdee6;
+    --color-accent-2-900: #fff1f4;
+  }
+}
+
 *, *::before, *::after { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
 body {
