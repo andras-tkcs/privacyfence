@@ -593,7 +593,8 @@ class TestDownloadAttachment:
 
         with pytest.raises(RuntimeError, match="disk full"):
             await connector.call(
-                "gmail_download_attachment", {"message_id": "m1", "attachment_name": "report.pdf"}
+                "gmail_download_attachment",
+                {"message_id": "m1", "attachment_name": "report.pdf", "destination_dir": "/tmp"},
             )
 
     async def test_image_attachment_under_size_cap_gets_a_preview(self, gated_call_spy):
