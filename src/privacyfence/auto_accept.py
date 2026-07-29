@@ -1290,17 +1290,21 @@ _RULE_DESCRIPTIONS: dict[str, str] = {
     "i_am_owner":            "Drive file reads for files you own",
     "approved_folder":       "Drive file reads for files in folder(s): {value}",
     "dm_with_myself":        "Slack reads in your own DM channel",
+    "group_dm":              "Slack reads in your own group DMs",
     "approved_channel":      "Slack reads in channel(s): {value}",
+    "approved_channel_all_results": "Slack searches where every result is from channel(s): {value}",
     "i_am_organizer":        "Calendar event reads for events you organize",
     "no_external_attendees": "Calendar event reads with no external attendees",
     "non_private_event":     "Calendar event reads where the event is not marked private",
     "approved_object_types": "Salesforce record reads for object type(s): {value}",
+    "approved_report_ids":   "Salesforce report reads for report(s): {value}",
     "i_am_reporter":         "Jira issue reads where you are the reporter",
     "i_am_assignee":         "Jira issue reads where you are the assignee",
     "approved_project_keys": "Jira issue reads in project(s): {value}",
     "i_am_author":           "Confluence page reads where you are the author",
     "approved_space_keys":   "Confluence page reads in space(s): {value}",
     "approved_chats":        "Telegram chat reads in chat(s): {value}",
+    "approved_chats_all_results": "Telegram searches where every result is from chat(s): {value}",
 }
 
 
@@ -1314,6 +1318,63 @@ def describe_rule(rule_name: str, value: Any) -> str:
     """Human-readable description of a proposed auto-accept rule."""
     template = _RULE_DESCRIPTIONS.get(rule_name, rule_name)
     return "Auto-accept future " + template.format(value=_format_rule_value(value))
+
+
+# Short, button-label-appropriate phrase for each rule name -- the
+# "Always allow" button itself shows one of these (e.g. "Always allow —
+# if I'm sender") so the reviewer knows roughly what standing rule they're
+# about to create *before* clicking, not just in the confirmation dialog
+# that follows. Deliberately generic per rule *type*, not the specific
+# instance value (a folder id, a full project-key list) -- matches the
+# categories a reviewer actually reasons in ("this folder," not "folder
+# 0ABCxyz"), and keeps the button's own width predictable regardless of
+# how long any one call's real value happens to be. Covers every read-side
+# rule name in _RULE_DESCRIPTIONS above plus every write-side rule name in
+# WRITE_RULE_SUGGESTIONS below -- "always_allow" is deliberately absent:
+# it's the one unconditional rule with nothing to name a category for, so
+# the button just stays plain "Always allow" for it (see
+# describe_rule_short's own docstring).
+_RULE_SHORT_HINTS: dict[str, str] = {
+    # Read
+    "i_am_sender": "if I'm sender",
+    "trusted_sender_domain": "this sender domain",
+    "i_am_owner": "if I own it",
+    "approved_folder": "this folder",
+    "dm_with_myself": "my own DM",
+    "group_dm": "this group DM",
+    "approved_channel": "this channel",
+    "approved_channel_all_results": "this channel",
+    "i_am_organizer": "if I organize it",
+    "no_external_attendees": "no external attendees",
+    "non_private_event": "non-private events",
+    "approved_object_types": "this object type",
+    "approved_report_ids": "this report",
+    "i_am_reporter": "if I'm reporter",
+    "i_am_assignee": "if I'm assignee",
+    "approved_project_keys": "this project",
+    "i_am_author": "if I'm author",
+    "approved_space_keys": "this space",
+    "approved_chats": "this chat",
+    "approved_chats_all_results": "this chat",
+    # Write
+    "label_name_allowlist": "this label",
+    "personal_calendar": "this calendar",
+    "approved_sandbox_folder": "this folder",
+    "parent_folder_allowlist": "this folder",
+    "move_within_approved_folders": "this folder",
+    "approved_task_list": "this list",
+}
+
+
+def describe_rule_short(rule_name: str) -> str:
+    """Short phrase for the "Always allow" button's own label -- see
+    _RULE_SHORT_HINTS' own comment for why this is a fixed per-type phrase,
+    not the specific instance value. Returns "" for "always_allow" (no
+    category to name -- the button stays plain "Always allow") and for any
+    future rule name this dict hasn't caught up with yet, so an unmapped
+    name degrades to the same plain button rather than showing something
+    broken."""
+    return _RULE_SHORT_HINTS.get(rule_name, "")
 
 
 def describe_rule_change(

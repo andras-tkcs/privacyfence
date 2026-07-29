@@ -89,6 +89,14 @@ from . import approval_window_html
 _MARGIN = 28.0
 _BUTTON_ROW_HEIGHT = 66.0
 
+# NSButton tags for buttonClicked_'s dispatch -- not title-string matching,
+# since Always allow's own title can now vary per call (accept_all_hint).
+# NSButton's own default tag is 0, so Deny (the safe fallback direction)
+# doesn't need its own constant set explicitly anywhere it's built.
+_TAG_DENY = 0
+_TAG_ACCEPT = 1
+_TAG_ACCEPT_ALL = 2
+
 # Shown above the button row, in place of the old separate "Allow for 5 min"
 # button, for the operations auto_accept.TEMP_ACCEPT_ELIGIBLE_OPERATIONS
 # lists. Deliberately vague about the exact duration (gate.py/auto_accept.py
@@ -300,6 +308,7 @@ class ApprovalWindowController(NSObject):
         self.preview_tables: list[dict] = []
         self.preview_blocks: list[dict] = []
         self.table_only: bool = False
+        self.accept_all_hint: str = ""
         self.result = "deny"
         self.panel = None
         self._details_view = None
@@ -326,9 +335,12 @@ class ApprovalWindowController(NSObject):
     # Buttons
     # ------------------------------------------------------------------ #
 
-    def _build_button(self, title: str, *, primary: bool = False, danger: bool = False) -> NSButton:
+    def _build_button(
+        self, title: str, *, tag: int, primary: bool = False, danger: bool = False,
+    ) -> NSButton:
         btn = NSButton.alloc().init()
         btn.setTitle_(title)
+        btn.setTag_(tag)
         btn.setBezelStyle_(NSBezelStyleRounded)
         btn.setTarget_(self)
         btn.setAction_("buttonClicked:")
@@ -354,7 +366,7 @@ class ApprovalWindowController(NSObject):
                 btn.setContentTintColor_(NSColor.systemRedColor())
         return btn
 
-    def _build_link_button(self, title: str) -> NSButton:
+    def _build_link_button(self, title: str, *, tag: int) -> NSButton:
         """Small, borderless "link"-style control for the low-frequency,
         high-consequence standing-rule action (Always allow) -- deliberately
         not the same pill styling as Deny/Allow once, so a fast, confident
@@ -362,10 +374,12 @@ class ApprovalWindowController(NSObject):
         existing precedent for a link-style NSButton in this codebase: built
         via an attributed title rather than a bezel style, since
         NSBezelStyleRounded has no "no border, small, underlined" variant.
-        Dispatch is unaffected -- buttonClicked_ keys on sender.title(),
-        which stays the plain string even with an attributed title set."""
+        Dispatch is via ``tag``, not ``title()`` -- this button's title can
+        now vary per call (see _build_content_view_v2's accept_all_hint
+        comment), so buttonClicked_ can't key on an exact string anymore."""
         btn = NSButton.alloc().init()
         btn.setBordered_(False)
+        btn.setTag_(tag)
         btn.setTarget_(self)
         btn.setAction_("buttonClicked:")
         attrs = {
@@ -590,11 +604,11 @@ class ApprovalWindowController(NSObject):
         # webView_didFinishNavigation_ fires below -- see _action_buttons'
         # own comment in init().
         self._action_buttons = []
-        accept_btn = self._build_button("Allow once", primary=True)
+        accept_btn = self._build_button("Allow once", tag=_TAG_ACCEPT, primary=True)
         button_h = accept_btn.frame().size.height
         button_y = y + (_BUTTON_ROW_HEIGHT - button_h) / 2.0
 
-        deny_btn = self._build_button("Deny", danger=True)
+        deny_btn = self._build_button("Deny", tag=_TAG_DENY, danger=True)
         deny_btn.setFrameOrigin_((_MARGIN, button_y))
         content.addSubview_(deny_btn)
         self._action_buttons.append(deny_btn)
@@ -605,8 +619,20 @@ class ApprovalWindowController(NSObject):
         self._action_buttons.append(accept_btn)
 
         if self.allow_accept_all:
+            # Names the specific rule this would create (e.g. "Always
+            # allow — this folder") instead of a plain, unspecific "Always
+            # allow" -- so the reviewer knows roughly what standing rule
+            # they're about to create before clicking, not only in the
+            # confirmation dialog that follows. Falls back to the plain
+            # label when gate.py has no hint for this rule (the one
+            # unconditional rule, always_allow, or any future rule name
+            # describe_rule_short doesn't recognize yet -- see its own
+            # docstring).
+            accept_all_label = (
+                f"Always allow — {self.accept_all_hint}" if self.accept_all_hint else "Always allow"
+            )
             link_x = _MARGIN + deny_btn.frame().size.width + 16.0
-            accept_all_btn = self._build_link_button("Always allow")
+            accept_all_btn = self._build_link_button(accept_all_label, tag=_TAG_ACCEPT_ALL)
             link_y = y + (_BUTTON_ROW_HEIGHT - accept_all_btn.frame().size.height) / 2.0
             accept_all_btn.setFrameOrigin_((link_x, link_y))
             content.addSubview_(accept_all_btn)
@@ -671,17 +697,19 @@ class ApprovalWindowController(NSObject):
 
     def buttonClicked_(self, sender) -> None:
         # Internal result values ("accept"/"accept_all"/"deny") stay as-is --
-        # gate.py/audit_log.py/tests key on them throughout. Only the button
-        # labels themselves ("Allow once" / "Always allow") are user-facing.
-        # There used to be a third "accept_temp" outcome from a distinct
-        # "Allow for 5 min" button; that choice is gone (see
-        # temp_accept_eligible above) -- clicking Allow once now silently
-        # covers it for the operations that need it, decided in gate.py, not
-        # here.
-        title = str(sender.title())
-        if title == "Always allow":
+        # gate.py/audit_log.py/tests key on them throughout. Dispatch is via
+        # sender.tag() (_TAG_DENY/_TAG_ACCEPT/_TAG_ACCEPT_ALL), not the
+        # button's displayed title -- Always allow's own title now varies
+        # per call (accept_all_hint), so an exact-string match would
+        # silently fall through to "deny" the moment that title stopped
+        # being the literal word "Always allow". Any tag this doesn't
+        # recognize (there used to be a third "accept_temp" outcome from a
+        # distinct "Allow for 5 min" button; that choice is gone, see
+        # temp_accept_eligible above) still defaults to the safe direction.
+        tag = sender.tag()
+        if tag == _TAG_ACCEPT_ALL:
             self.result = "accept_all"
-        elif title == "Allow once":
+        elif tag == _TAG_ACCEPT:
             self.result = "accept"
         else:
             self.result = "deny"
@@ -712,6 +740,7 @@ def show_native_approval(
     preview_tables: list[dict] | None = None,
     preview_blocks: list[dict] | None = None,
     table_only: bool = False,
+    accept_all_hint: str = "",
 ) -> str:
     """Show the approval window and block until the user picks a button.
 
@@ -742,6 +771,13 @@ def show_native_approval(
     and ``preview_tables`` when given), and ``table_only`` (suppresses
     ``details_text`` in the WIDE right pane when a table already covers
     the same data -- no-op when ``preview_blocks`` is set).
+
+    ``accept_all_hint``, when set (and ``allow_accept_all`` is True),
+    renders as part of the Always allow button's own label (e.g. "Always
+    allow — this folder") instead of the plain "Always allow" -- see
+    _build_content_view_v2's own comment for the exact format. Empty for
+    the one unconditional rule (``always_allow``) with no category to
+    name, and always empty when ``allow_accept_all`` is False.
     """
     with _popup_lock:
         controller = ApprovalWindowController.alloc().init()
@@ -767,6 +803,7 @@ def show_native_approval(
         controller.preview_tables = preview_tables or []
         controller.preview_blocks = preview_blocks or []
         controller.table_only = table_only
+        controller.accept_all_hint = accept_all_hint or ""
 
         controller.performSelectorOnMainThread_withObject_waitUntilDone_(
             "runApproval:", None, True

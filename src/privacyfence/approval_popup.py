@@ -95,6 +95,7 @@ def show_popup(
     table_only: bool = False,
     upload_forced: bool = False,
     layout: str = NARROW,
+    accept_all_hint: str = "",
 ) -> str:
     """Approval popup for write tools. No PII *gate* applies here -- see
     gate.py's module docstring for why the PII confirmation flow is
@@ -166,6 +167,15 @@ def show_popup(
     this per tool from its own _TOOL_LAYOUT table, same as show_read_popup's
     own.
 
+    ``accept_all_hint``, when set, is a short phrase naming the specific
+    rule Always allow would create (e.g. "this folder", "if I'm sender") --
+    shown right on the button itself, not just in the confirmation dialog
+    after clicking. gate.py derives this from the same ``suggest_write_
+    rule()`` result that decides ``allow_accept_all`` -- empty whenever
+    that's False, and also empty for the one unconditional rule
+    (``always_allow``, e.g. gmail_create_draft) that has no category to
+    name. See auto_accept.describe_rule_short's own docstring.
+
     Returns 'accept', 'deny', or 'accept_all' (only offered when
     allow_accept_all is True).
     """
@@ -175,7 +185,7 @@ def show_popup(
         write_content_flags=write_content_flags, seen_count=seen_count, connector=connector,
         preview_bytes=preview_bytes, preview_mime_type=preview_mime_type,
         preview_tables=preview_tables, preview_blocks=preview_blocks, table_only=table_only,
-        upload_forced=upload_forced, layout=layout,
+        upload_forced=upload_forced, layout=layout, accept_all_hint=accept_all_hint,
         # show_popup is unconditionally the write-gate popup -- is_read is a
         # property of which of the two show_* functions was called, not a
         # per-call choice gate.py makes.
@@ -206,6 +216,7 @@ def show_read_popup(
     preview_blocks: list[dict] | None = None,
     table_only: bool = False,
     layout: str = NARROW,
+    accept_all_hint: str = "",
 ) -> str:
     """Approval popup for read tools. Full content is always shown before the
     decision, in a scrollable pane — the user never has to click through to
@@ -247,6 +258,13 @@ def show_read_popup(
     ``layout`` selects the NARROW/WIDE card-stack shape -- gate.py picks
     this per tool from its own _TOOL_LAYOUT table.
 
+    ``accept_all_hint``, when set, is a short phrase naming the specific
+    rule Always allow would create (e.g. "this folder", "if I'm sender") --
+    shown right on the button itself, not just in the confirmation dialog
+    after clicking. gate.py derives this from the same ``suggest_rule()``
+    result that decides ``allow_accept_all``. See show_popup's matching
+    docstring and auto_accept.describe_rule_short.
+
     Returns 'accept', 'deny', or 'accept_all' (only offered when
     allow_accept_all is True).
     """
@@ -256,7 +274,7 @@ def show_read_popup(
         seen_count=seen_count, content_kind=content_kind, pdf_bytes=pdf_bytes, connector=connector,
         preview_bytes=preview_bytes, preview_mime_type=preview_mime_type, new_info=new_info,
         preview_tables=preview_tables, preview_blocks=preview_blocks, table_only=table_only,
-        layout=layout,
+        layout=layout, accept_all_hint=accept_all_hint,
         # show_read_popup is unconditionally the review-gate popup -- see
         # show_popup's own matching comment.
         is_read=True,

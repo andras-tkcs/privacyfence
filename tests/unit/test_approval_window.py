@@ -80,6 +80,7 @@ def make_controller(
     preview_tables=None,
     preview_blocks=None,
     table_only=False,
+    accept_all_hint="",
 ):
     c = ApprovalWindowController.alloc().init()
     c.layout = layout
@@ -104,6 +105,7 @@ def make_controller(
     c.preview_tables = preview_tables or []
     c.preview_blocks = preview_blocks or []
     c.table_only = table_only
+    c.accept_all_hint = accept_all_hint
     return c
 
 
@@ -184,6 +186,46 @@ class TestV2Buttons:
         titles = buttons_by_title(views)
         assert titles["Deny"].keyEquivalent() == "\x1b"
         assert titles["Allow once"].keyEquivalent() != "\r"
+
+
+class TestAlwaysAllowVerboseLabel:
+    """The Always allow button names the specific rule it would create
+    (gate.py's accept_all_hint) instead of a plain, unspecific label -- see
+    _build_content_view_v2's own comment. Dispatch is tag-based (see
+    TestButtonClicked), so a non-literal title here doesn't break the
+    click -- these tests confirm the *display* side of that."""
+
+    def test_hint_appends_to_the_plain_label(self):
+        views, _ = build_views(make_controller(allow_accept_all=True, accept_all_hint="this folder"))
+        titles = buttons_by_title(views)
+        assert "Always allow — this folder" in titles
+        assert "Always allow" not in titles
+
+    def test_no_hint_keeps_the_plain_label(self):
+        # The unconditional always_allow rule (e.g. gmail_create_draft) has
+        # no category to name -- gate.py sends an empty hint for it, and
+        # the button must stay exactly "Always allow", not "Always allow —"
+        # with a dangling separator.
+        views, _ = build_views(make_controller(allow_accept_all=True, accept_all_hint=""))
+        titles = buttons_by_title(views)
+        assert "Always allow" in titles
+
+    def test_hint_is_ignored_when_always_allow_is_not_offered(self):
+        # A hint with nothing to attach to (allow_accept_all False) must
+        # never leak a floating "— this folder" button onto the row.
+        views, _ = build_views(make_controller(allow_accept_all=False, accept_all_hint="this folder"))
+        titles = buttons_by_title(views)
+        assert not any(t.startswith("Always allow") for t in titles)
+
+    def test_verbose_button_still_dispatches_to_accept_all_when_clicked(self):
+        # End-to-end: the real (non-fake-sender) button built with a
+        # verbose title still resolves correctly via its tag.
+        controller = make_controller(allow_accept_all=True, accept_all_hint="this project")
+        views, _ = build_views(controller)
+        titles = buttons_by_title(views)
+        btn = titles["Always allow — this project"]
+        controller.buttonClicked_(btn)
+        assert controller.result == "accept_all"
 
 
 class TestV2CardStackContent:
@@ -518,42 +560,48 @@ class TestReadingTimeLabel:
 
 class TestButtonClicked:
     """Doesn't need build_panel() at all -- buttonClicked_ only reads
-    sender.title(), so a minimal fake sender is enough. Locks in the title
-    -> result mapping approval_popup.py's return-value contract depends on
-    (show_native_approval() just returns controller.result)."""
+    sender.tag(), so a minimal fake sender is enough. Locks in the tag ->
+    result mapping approval_popup.py's return-value contract depends on
+    (show_native_approval() just returns controller.result). Dispatch is
+    tag-based, not title-based -- Always allow's own displayed title now
+    varies per call (accept_all_hint), so it can't be the dispatch key."""
 
     class _FakeSender:
-        def __init__(self, title):
+        def __init__(self, tag, title="irrelevant"):
+            self._tag = tag
             self._title = title
+
+        def tag(self):
+            return self._tag
 
         def title(self):
             return self._title
 
     @pytest.mark.parametrize(
-        "button_title,expected_result",
+        "tag,expected_result",
         [
-            ("Allow once", "accept"),
-            ("Deny", "deny"),
-            ("Always allow", "accept_all"),
+            (1, "accept"),       # _TAG_ACCEPT
+            (0, "deny"),         # _TAG_DENY
+            (2, "accept_all"),   # _TAG_ACCEPT_ALL
         ],
     )
-    def test_title_maps_to_the_documented_result(self, button_title, expected_result):
+    def test_tag_maps_to_the_documented_result(self, tag, expected_result):
         controller = make_controller()
-        controller.buttonClicked_(self._FakeSender(button_title))
+        controller.buttonClicked_(self._FakeSender(tag))
         assert controller.result == expected_result
 
-    def test_old_allow_for_5_min_title_now_falls_through_to_deny(self):
-        # There's no button left that produces this title, but locking in
-        # the fallback matters: if some stale caller ever raced a click in
-        # with this title, it must resolve to the safe default (deny), not
-        # to a mysteriously-still-alive "accept_temp".
+    def test_always_allow_button_with_a_verbose_title_still_resolves_via_tag(self):
+        # The whole point of tag-based dispatch: a title that no longer
+        # reads as the literal word "Always allow" (accept_all_hint
+        # appended) must still resolve to accept_all, not silently fall
+        # through to deny.
         controller = make_controller()
-        controller.buttonClicked_(self._FakeSender("Allow for 5 min"))
-        assert controller.result == "deny"
+        controller.buttonClicked_(self._FakeSender(2, title="Always allow — this folder"))
+        assert controller.result == "accept_all"
 
-    def test_unrecognized_title_defaults_to_deny(self):
+    def test_unrecognized_tag_defaults_to_deny(self):
         # Defensive default, not a reachable case with the fixed button set
         # this window ever creates -- see _build_button.
         controller = make_controller()
-        controller.buttonClicked_(self._FakeSender("Something else entirely"))
+        controller.buttonClicked_(self._FakeSender(99))
         assert controller.result == "deny"

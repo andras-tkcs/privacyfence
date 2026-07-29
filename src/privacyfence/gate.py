@@ -104,6 +104,7 @@ from .auto_accept import (
     add_auto_accept_rule,
     describe_rule,
     describe_rule_change,
+    describe_rule_short,
     get_auto_accept_evaluator,
     known_rule_names,
     mutate_grants,
@@ -426,6 +427,15 @@ async def gated_call(
 
         if gate == "review":
             suggestion = suggest_rule(operation_key, ctx)
+            # Short, button-label phrase for the specific rule Always allow
+            # would create (e.g. "if I'm sender") -- shown on the button
+            # itself, before the click, not just in the confirmation dialog
+            # that already used describe_rule() for the full sentence. When
+            # 2+ candidates actually match, this still describes only the
+            # top-priority one, same as allow_accept_all's own derivation
+            # below -- the "which one?" choice is only surfaced after the
+            # click (suggest_rule_choices()), unchanged by this.
+            accept_all_hint = describe_rule_short(suggestion[0]) if suggestion else ""
             # Everything interactive for this item — including the PII
             # confirmation, the "Always allow" confirmation, and persisting
             # the resulting rule — stays inside one continuous lock
@@ -456,7 +466,7 @@ async def gated_call(
                     pii_categories, visibility, claude_reason, seen_count, content_kind, pdf_bytes,
                     connector, preview_bytes, preview_mime_type, new_info=new_info,
                     preview_tables=preview_tables, preview_blocks=preview_blocks,
-                    table_only=table_only, layout=layout,
+                    table_only=table_only, layout=layout, accept_all_hint=accept_all_hint,
                 )
 
                 if decision in ("accept", "accept_all") and pii_categories:
@@ -509,6 +519,8 @@ async def gated_call(
             # exception, drive_upload_file only.
             file_key = temp_accept_key(operation_key, ctx)
             suggestion = suggest_write_rule(operation_key, ctx)
+            # See the review branch's matching comment above.
+            accept_all_hint = describe_rule_short(suggestion[0]) if suggestion else ""
             # Same "everything interactive stays inside one lock acquisition"
             # reasoning as the review branch above -- the accept-all
             # confirmation and rule persistence must not happen after
@@ -530,7 +542,7 @@ async def gated_call(
                     claude_reason, write_content_flags, seen_count, connector,
                     suggestion is not None, preview_bytes, preview_mime_type,
                     preview_tables=preview_tables, preview_blocks=preview_blocks,
-                    table_only=table_only, layout=layout,
+                    table_only=table_only, layout=layout, accept_all_hint=accept_all_hint,
                     # upload_forced selects the distinct "write-forced" PII card (see
                     # show_popup's own docstring) -- upload_pii_categories is only
                     # ever non-empty for drive_upload_file's real PII match, the one write

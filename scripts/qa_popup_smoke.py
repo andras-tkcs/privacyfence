@@ -126,6 +126,11 @@ from rumps import rumps as _rumps_internal  # noqa: E402
 
 from privacyfence import menu_bar  # noqa: E402
 from privacyfence.approval_window import show_native_approval  # noqa: E402
+from privacyfence.auto_accept import (  # noqa: E402
+    TOOL_TO_OPERATION,
+    WRITE_RULE_SUGGESTIONS,
+    describe_rule_short,
+)
 from privacyfence.quicklook_preview import generate_thumbnail, init_quicklook_preview  # noqa: E402
 
 WINDOW_WAIT_TIMEOUT_SECONDS = 8.0
@@ -395,6 +400,28 @@ def _run_scenario(
     popup_kwargs.setdefault("layout", _TOOL_LAYOUT.get(tool_name, "narrow"))
     popup_kwargs.setdefault("is_read", name.startswith("RG-"))
     popup_kwargs.setdefault("upload_forced", tool_name == "drive_upload_file")
+    # Always allow's own verbose button label (accept_all_hint) -- derived
+    # the same way gate.py derives it for real write calls (from
+    # WRITE_RULE_SUGGESTIONS' rule_name), not a second hardcoded copy per
+    # scenario that could drift from that table. Only meaningful when the
+    # scenario itself also sets allow_accept_all=True; harmless (ignored)
+    # otherwise. Read-gate scenarios don't get one here -- suggest_rule()'s
+    # own top match depends on live per-call data (e.g. whether the
+    # fixture's sender matches my_email), not a static per-tool table like
+    # WRITE_RULE_SUGGESTIONS, so each read scenario below sets its own
+    # accept_all_hint directly where relevant instead.
+    operation_key = TOOL_TO_OPERATION.get(tool_name or "")
+    write_suggestion = WRITE_RULE_SUGGESTIONS.get(operation_key) if operation_key else None
+    if write_suggestion is not None:
+        popup_kwargs.setdefault("accept_all_hint", describe_rule_short(write_suggestion.rule_name))
+    elif tool_name in _READ_ACCEPT_ALL_TOP_RULE:
+        # Read tools' own top-priority rule name, per
+        # docs/always-allow-rules-reference.md's Read tools tables -- not
+        # a live suggest_rule() re-evaluation (that depends on per-call
+        # data this synthetic fixture doesn't fully model, e.g. whether
+        # the sender equals my_email), just the same representative
+        # top-of-priority-order candidate the doc documents for each tool.
+        popup_kwargs.setdefault("accept_all_hint", describe_rule_short(_READ_ACCEPT_ALL_TOP_RULE[tool_name]))
 
     pid = os.getpid()
     click_status_box: list[str] = []
@@ -766,6 +793,31 @@ _TOOL_LAYOUT: dict[str, str] = {
     "confluence_update_page": "wide",  # editing page body, same as confluence_create_page
     "tasks_complete_task": "narrow",
     "tasks_uncomplete_task": "narrow", "tasks_move_task": "narrow",
+}
+
+# Read tools' own top-priority Always-allow rule name, per
+# docs/always-allow-rules-reference.md's Read tools tables -- the
+# WRITE_RULE_SUGGESTIONS-equivalent for the read side, except there's no
+# single shared Python dict to derive this from directly (suggest_rule()'s
+# actual pick depends on live per-call data via SUGGESTION_FAMILIES'
+# priority order, not a static tool->rule mapping) -- so unlike
+# _TOOL_LAYOUT above, this is one, kept in sync with that reference doc's
+# own tables by hand. Tools with no read-gate Always-allow at all (none
+# currently -- every RG-1/RG-2 tool has at least one candidate) simply
+# don't appear here.
+_READ_ACCEPT_ALL_TOP_RULE: dict[str, str] = {
+    "gmail_get_message": "i_am_sender", "gmail_get_thread": "i_am_sender",
+    "gmail_download_attachment": "i_am_sender",
+    "drive_get_file_content": "i_am_owner", "drive_download_file": "i_am_owner",
+    "drive_sheets_get_values": "i_am_owner",
+    "slack_get_channel_history": "dm_with_myself", "slack_get_thread_replies": "dm_with_myself",
+    "slack_search_messages": "approved_channel_all_results",
+    "calendar_get_event_details": "i_am_organizer",
+    "salesforce_get_record": "approved_object_types", "salesforce_run_report": "approved_report_ids",
+    "salesforce_search": "approved_object_types",
+    "jira_get_issue": "i_am_reporter",
+    "confluence_get_page": "i_am_author", "confluence_get_page_by_title": "i_am_author",
+    "telegram_get_messages": "approved_chats", "telegram_search_messages": "approved_chats_all_results",
 }
 
 _SCENARIO_TOOL_RE = re.compile(r"^\S+-\d+\s*·\s*([a-z_]+)")
@@ -1745,58 +1797,69 @@ def _scenarios(
     ))
 
     # ================================================================== #
-    # WG-1 -- popup-gate, Deny / Allow once (38 tools)
+    # WG-1 and WG-2 -- popup-gate, Deny / Allow once (WG-1: never Always
+    # allow) or Deny / Allow once / conditionally Always allow (WG-2: 26
+    # tools across auto_accept.WRITE_RULE_SUGGESTIONS) -- grouped by
+    # connector below rather than split into two contiguous blocks, so
+    # each tool's scenario sits next to its sibling tools from the same
+    # connector; see each scenario's own "WG-1 ·"/"WG-2 ·" name prefix
+    # for which group it's actually in, and
+    # docs/always-allow-rules-reference.md for the exact rule each WG-2
+    # tool's Always allow proposes. allow_accept_all=True on every WG-2
+    # scenario below -- see gate.py's own allow_accept_all = (suggest_
+    # write_rule(...) is not None) for why that's unconditional per tool,
+    # not a per-scenario author's choice.
     # ================================================================== #
 
     results.append(run(
         # Also the content-flag banner+badges mechanic.
-        "WG-1 · gmail_create_draft (+ content-flag banner)",
+        "WG-2 · gmail_create_draft (+ content-flag banner)",
         click_title="Allow once", expected="accept",
         title="Create Gmail Draft",
         preview={"To": QA_EMAIL, "Cc": QA_CC_EMAIL, "Subject": f"Re: {QA_GMAIL_SUBJECT}"},
         details_text="Please wire the deposit per the attached IBAN [QATEST].",
-        allow_accept_all=False,
+        allow_accept_all=True,
         write_content_flags=["IBAN (bank account number)"],
         connector="gmail",
     ))
 
     results.append(run(
-        "WG-1 · gmail_reply_draft",
+        "WG-2 · gmail_reply_draft",
         click_title="Allow once", expected="accept",
         title="Create Gmail Reply Draft",
         preview={"In reply to": QA_GMAIL_SUBJECT, "To": QA_EMAIL},
         details_text="Synthetic PrivacyFence QA reply draft. No real information.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="gmail",
     ))
 
     results.append(run(
-        "WG-1 · gmail_reply_all_draft",
+        "WG-2 · gmail_reply_all_draft",
         click_title="Allow once", expected="accept",
         title="Create Gmail Reply-All Draft",
         preview={"In reply to": QA_GMAIL_SUBJECT, "To": QA_EMAIL, "Also to": QA_CC_EMAIL},
         details_text="Synthetic PrivacyFence QA reply-all draft. No real information.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="gmail",
     ))
 
     results.append(run(
-        "WG-1 · gmail_add_label",
+        "WG-2 · gmail_add_label",
         click_title="Allow once", expected="accept",
         title="Add Gmail Label",
         preview={"From": QA_EMAIL, "Subject": QA_GMAIL_SUBJECT, "Label": "QATEST"},
         details_text="Label will be added; no other content changes.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="gmail",
     ))
 
     results.append(run(
-        "WG-1 · gmail_remove_label",
+        "WG-2 · gmail_remove_label",
         click_title="Allow once", expected="accept",
         title="Remove Gmail Label",
         preview={"From": QA_EMAIL, "Subject": QA_GMAIL_SUBJECT, "Label": "QATEST"},
         details_text="Label will be removed; no other content changes.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="gmail",
     ))
 
@@ -1843,19 +1906,19 @@ def _scenarios(
     ))
 
     results.append(run(
-        "WG-1 · drive_write_doc_content",
+        "WG-2 · drive_write_doc_content",
         click_title="Allow once", expected="accept",
         title="Write Google Doc Content",
         preview={"File": QA_DRIVE_DOC, "Owner": QA_EMAIL},
         details_text="Synthetic PrivacyFence QA doc content. No real information.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="drive",
     ))
 
     results.append(run(
         # Also the preview_bytes/preview_mime_type image-render mechanic --
         # see the gmail_download_attachment RG-1 scenario above for why.
-        "WG-1 · drive_upload_file (+ image preview)",
+        "WG-2 · drive_upload_file (+ image preview)",
         click_title="Allow once", expected="accept",
         title="Upload Drive File",
         preview={
@@ -1863,7 +1926,7 @@ def _scenarios(
             "Size": "1 KB", "Folder": QA_DRIVE_FOLDER,
         },
         details_text="Synthetic PrivacyFence QA upload content. No real information.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="drive",
         preview_bytes=_TINY_PNG_BYTES, preview_mime_type="image/png",
     ))
@@ -1872,7 +1935,7 @@ def _scenarios(
         # Long-text upload -- the read-side stress scenarios already cover
         # long/many-row content; this is the write-side equivalent for
         # drive_upload_file specifically.
-        "WG-1 · drive_upload_file (long text content)",
+        "WG-2 · drive_upload_file (long text content)",
         click_title="Allow once", expected="accept",
         title="Upload Drive File",
         preview={
@@ -1880,7 +1943,7 @@ def _scenarios(
             "Size": "4 KB", "Folder": QA_DRIVE_FOLDER,
         },
         details_text=(QA_LONG_PARAGRAPH + "\n\n") * 3 + "The final line, still present.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="drive",
     ))
 
@@ -1891,7 +1954,7 @@ def _scenarios(
         # Drive-generated thumbnail (there can't be one yet; it hasn't
         # been uploaded) falls back to a real quicklookd render of the
         # same checked-in A4 lorem ipsum .docx fixture.
-        "WG-1 · drive_upload_file (+ QuickLook preview)",
+        "WG-2 · drive_upload_file (+ QuickLook preview)",
         click_title="Allow once", expected="accept",
         title="Upload Drive File",
         preview={
@@ -1900,33 +1963,33 @@ def _scenarios(
         },
         details_text="Synthetic lorem ipsum content. No real information. Safe to read, "
                       "upload, or preview by any automated test.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="drive",
         preview_bytes=_quicklook_thumbnail_for_lorem_ipsum_docx(), preview_mime_type="image/png",
     ))
 
     results.append(run(
-        "WG-1 · drive_write_file_content",
+        "WG-2 · drive_write_file_content",
         click_title="Allow once", expected="accept",
         title="Write Drive File Content",
         preview={"File": QA_DRIVE_FILE, "Owner": QA_EMAIL},
         details_text="Synthetic PrivacyFence QA file content. No real information.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="drive",
     ))
 
     results.append(run(
-        "WG-1 · drive_move_file",
+        "WG-2 · drive_move_file",
         click_title="Allow once", expected="accept",
         title="Move Drive File",
         preview={"File": QA_DRIVE_FILE, "Owner": QA_EMAIL, "Folder": f"{QA_DRIVE_FOLDER} → Archive [QATEST]"},
         details_text="File will be moved to the new folder; its content is unchanged.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="drive",
     ))
 
     results.append(run(
-        "WG-1 · drive_sheets_add_sheet",
+        "WG-2 · drive_sheets_add_sheet",
         click_title="Allow once", expected="accept",
         title="Add Sheet Tab",
         preview={
@@ -1934,24 +1997,24 @@ def _scenarios(
             "Size": "26 columns x 1000 rows",
         },
         details_text="A new tab will be added with the settings shown above.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="drive",
     ))
 
     results.append(run(
-        "WG-1 · drive_sheets_rename_sheet",
+        "WG-2 · drive_sheets_rename_sheet",
         click_title="Allow once", expected="accept",
         title="Rename Sheet Tab",
         preview={
             "Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Tab title": "Sheet1 → QATEST renamed",
         },
         details_text="The tab above will be renamed; its contents are unchanged.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="drive",
     ))
 
     results.append(run(
-        "WG-1 · drive_sheets_delete_dimensions",
+        "WG-2 · drive_sheets_delete_dimensions",
         click_title="Allow once", expected="accept",
         title="Delete Sheet Rows/Columns",
         preview={
@@ -1959,7 +2022,7 @@ def _scenarios(
             "Action": "Delete 2 COLUMNS starting at index 3",
         },
         details_text="Synthetic PrivacyFence QA dimension delete. No real information.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="drive",
     ))
 
@@ -1990,7 +2053,7 @@ def _scenarios(
     ))
 
     results.append(run(
-        "WG-1 · calendar_create_event",
+        "WG-2 · calendar_create_event",
         click_title="Allow once", expected="accept",
         title="Create Calendar Event",
         preview={
@@ -1999,13 +2062,13 @@ def _scenarios(
             "Calendar": QA_CALENDAR, "Location": "Remote",
         },
         details_text="Synthetic PrivacyFence QA test event. No real information.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="calendar",
     ))
 
     results.append(run(
         # Also the content-flag banner+badges mechanic.
-        "WG-1 · calendar_create_event (+ content-flag banner)",
+        "WG-2 · calendar_create_event (+ content-flag banner)",
         click_title="Allow once", expected="accept",
         title="Create Calendar Event",
         preview={
@@ -2014,13 +2077,13 @@ def _scenarios(
             "Calendar": QA_CALENDAR, "Location": "Remote",
         },
         details_text="Dial in with the conference PIN [QATEST] included in this invite.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         write_content_flags=["PIN/access code"],
         connector="calendar",
     ))
 
     results.append(run(
-        "WG-1 · calendar_update_event",
+        "WG-2 · calendar_update_event",
         click_title="Allow once", expected="accept",
         title="Update Calendar Event",
         # Event/Calendar/Start/End always appear -- old → new only for the
@@ -2035,7 +2098,7 @@ def _scenarios(
             "End": "2027-03-15T11:00:00+01:00",
         },
         details_text="Event, Start will be updated; description is unchanged.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="calendar",
     ))
 
@@ -2063,12 +2126,12 @@ def _scenarios(
     ))
 
     results.append(run(
-        "WG-1 · calendar_set_event_visibility",
+        "WG-2 · calendar_set_event_visibility",
         click_title="Allow once", expected="accept",
         title="Set Event Visibility",
         preview={"Event": QA_EVENT, "Calendar": QA_CALENDAR, "Visibility": "default → private"},
         details_text="Only the event's visibility will change; no other fields are affected.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="calendar",
     ))
 
@@ -2149,7 +2212,7 @@ def _scenarios(
     ))
 
     results.append(run(
-        "WG-1 · jira_create_issue",
+        "WG-2 · jira_create_issue",
         click_title="Allow once", expected="accept",
         title="Create Jira Issue",
         preview={
@@ -2163,17 +2226,17 @@ def _scenarios(
             {"type": "heading", "label": "Description"},
             {"type": "text", "text": "Synthetic PrivacyFence QA test issue. No real information."},
         ],
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="jira",
     ))
 
     results.append(run(
-        "WG-1 · jira_add_comment",
+        "WG-2 · jira_add_comment",
         click_title="Allow once", expected="accept",
         title="Comment on Jira Issue",
         preview={"Issue": QA_JIRA_KEY},
         details_text="Synthetic PrivacyFence QA comment. No real information. [QATEST]",
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="jira",
     ))
 
@@ -2182,70 +2245,70 @@ def _scenarios(
         # (jira_create_issue's own content-flag scenario is a plain preview
         # field, not a details/comment body) -- confirms the banner renders
         # correctly alongside a right-pane details column too.
-        "WG-1 · jira_add_comment (+ content-flag banner)",
+        "WG-2 · jira_add_comment (+ content-flag banner)",
         click_title="Allow once", expected="accept",
         title="Comment on Jira Issue",
         preview={"Issue": QA_JIRA_KEY},
         details_text="Customer's card is 4111 1111 1111 1111 [QATEST], please refund.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         write_content_flags=["Card number"],
         connector="jira",
     ))
 
     results.append(run(
-        "WG-1 · jira_update_issue",
+        "WG-2 · jira_update_issue",
         click_title="Allow once", expected="accept",
         title="Update Jira Issue",
         preview={"Issue": QA_JIRA_KEY, "Priority": "Medium → High"},
         details_text="Synthetic PrivacyFence QA issue update. No real information.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="jira",
     ))
 
     results.append(run(
-        "WG-1 · jira_transition_issue",
+        "WG-2 · jira_transition_issue",
         click_title="Allow once", expected="accept",
         title="Transition Jira Issue",
         preview={"Issue": QA_JIRA_KEY, "Status": "To Do → In Progress"},
         details_text="The status change above is the only change; no other fields are affected.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="jira",
     ))
 
     results.append(run(
-        "WG-1 · confluence_create_page",
+        "WG-2 · confluence_create_page",
         click_title="Allow once", expected="accept",
         title="Create Confluence Page",
         preview={"Space": QA_SPACE, "Title": "PrivacyFence QA smoke page [QATEST]"},
         details_text="Synthetic PrivacyFence QA test page. No real information.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="confluence",
     ))
 
     results.append(run(
         # Also the content-flag banner+badges mechanic, on a WIDE dialog.
-        "WG-1 · confluence_create_page (+ content-flag banner)",
+        "WG-2 · confluence_create_page (+ content-flag banner)",
         click_title="Allow once", expected="accept",
         title="Create Confluence Page",
         preview={"Space": QA_SPACE, "Title": "PrivacyFence QA smoke page [QATEST]"},
         details_text="Runbook step 3: rotate the API key [QATEST] shown on the vendor portal.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         write_content_flags=["API key"],
         connector="confluence",
     ))
 
     results.append(run(
-        "WG-1 · confluence_update_page",
+        "WG-2 · confluence_update_page",
         click_title="Allow once", expected="accept",
         title="Update Confluence Page",
         preview={"Page ID": "qa-placeholder-id-3", "Space": QA_SPACE, "Title": QA_PAGE},
         details_text=QA_PAGE_BODY,
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="confluence",
     ))
 
     results.append(run(
-        "WG-1 · tasks_create_task",
+        "WG-2 · tasks_create_task",
         click_title="Allow once", expected="accept",
         title="Create Task",
         preview={
@@ -2258,12 +2321,12 @@ def _scenarios(
             {"type": "heading", "label": "Notes"},
             {"type": "text", "text": "Synthetic PrivacyFence QA test task notes. No real information."},
         ],
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="tasks",
     ))
 
     results.append(run(
-        "WG-1 · tasks_update_task",
+        "WG-2 · tasks_update_task",
         click_title="Allow once", expected="accept",
         title="Update Task",
         # Task/Due only appear as old → new diffs since they're actually
@@ -2278,45 +2341,47 @@ def _scenarios(
             {"type": "heading", "label": "Notes"},
             {"type": "text", "text": "Synthetic PrivacyFence QA test task notes update. No real information."},
         ],
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="tasks",
     ))
 
     results.append(run(
-        "WG-1 · tasks_complete_task",
+        "WG-2 · tasks_complete_task",
         click_title="Allow once", expected="accept",
         title="Complete Task",
         preview={"Task list": QA_TASK_LIST, "Task": QA_TASK},
         details_text="Task will be marked as completed; title and notes are unchanged.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="tasks",
     ))
 
     results.append(run(
-        "WG-1 · tasks_uncomplete_task",
+        "WG-2 · tasks_uncomplete_task",
         click_title="Allow once", expected="accept",
         title="Uncomplete Task",
         preview={"Task list": QA_TASK_LIST, "Task": QA_TASK},
         details_text="Task will be marked as not completed; title and notes are unchanged.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="tasks",
     ))
 
     results.append(run(
-        "WG-1 · tasks_move_task",
+        "WG-2 · tasks_move_task",
         click_title="Allow once", expected="accept",
         title="Move Task",
         preview={"Task": QA_TASK, "List": f"{QA_TASK_LIST} → {QA_CONTRAST_TASK_LIST}"},
         details_text="Task will be moved to the new list; title and notes are unchanged.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         connector="tasks",
     ))
 
     # ================================================================== #
-    # WG-2 -- popup-gate, Deny / Allow once (temp-accept-eligible: Allow
-    # once also arms a 5-minute same-file grace window, disclosed via a
-    # caption above the buttons rather than a separate button -- there is
-    # no "Allow for 5 min" click to test anymore, see gate.py) (6 tools)
+    # WG-3 -- popup-gate, Deny / Allow once / conditionally Always allow,
+    # *and* the temp-accept disclosure caption (Allow once also arms a
+    # 5-minute same-file grace window, disclosed via a caption above the
+    # buttons rather than a separate button -- there is no "Allow for 5
+    # min" click to test anymore, see gate.py) (6 tools, all also in
+    # auto_accept.WRITE_RULE_SUGGESTIONS -- allow_accept_all=True below)
     # ================================================================== #
 
     results.append(run(
@@ -2332,7 +2397,7 @@ def _scenarios(
         # gmail_get_thread "all cards" scenario above. Also the one
         # scenario meant to be captured on its own via --scenario for a
         # README screenshot showing a write dialog's full card set.
-        "WG-2 · drive_sheets_write_range (+ reason, seen-count, content-flag banner, temp-accept disclosure -- all cards)",
+        "WG-3 · drive_sheets_write_range (+ reason, seen-count, content-flag banner, temp-accept disclosure -- all cards)",
         click_title="Allow once", expected="accept",
         title="Write Sheet Range",
         preview={"Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Range": "A1:C10"},
@@ -2352,7 +2417,7 @@ def _scenarios(
             ),
         }],
         table_only=True,
-        allow_accept_all=False,
+        allow_accept_all=True,
         temp_accept_eligible=True,
         write_content_flags=["Financial figures (currency amounts)"],
         claude_reason="Filling in the QA budget row as requested.",
@@ -2361,20 +2426,20 @@ def _scenarios(
     ))
 
     results.append(run(
-        "WG-2 · drive_sheets_format_range",
+        "WG-3 · drive_sheets_format_range",
         click_title="Allow once", expected="accept",
         title="Format Sheet Range",
         preview={
             "Spreadsheet": QA_SHEET, "Owner": QA_EMAIL, "Range": "A1:C10", "Format": "Bold header row",
         },
         details_text="The formatting above will be applied to the range; other formatting is unchanged.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         temp_accept_eligible=True,
         connector="drive",
     ))
 
     results.append(run(
-        "WG-2 · drive_sheets_insert_dimensions",
+        "WG-3 · drive_sheets_insert_dimensions",
         click_title="Allow once", expected="accept",
         title="Insert Sheet Rows/Columns",
         preview={
@@ -2382,40 +2447,40 @@ def _scenarios(
             "Action": "Insert 3 ROWS before index 5",
         },
         details_text="Synthetic PrivacyFence QA dimension insert. No real information.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         temp_accept_eligible=True,
         connector="drive",
     ))
 
     results.append(run(
-        "WG-2 · drive_add_comment",
+        "WG-3 · drive_add_comment",
         click_title="Allow once", expected="accept",
         title="Add Drive Comment",
         preview={"File": QA_DRIVE_FILE, "Owner": QA_EMAIL},
         details_text="Synthetic PrivacyFence QA comment. No real information. [QATEST]",
-        allow_accept_all=False,
+        allow_accept_all=True,
         temp_accept_eligible=True,
         connector="drive",
     ))
 
     results.append(run(
-        "WG-2 · drive_docs_edit_content",
+        "WG-3 · drive_docs_edit_content",
         click_title="Allow once", expected="accept",
         title="Edit Google Doc Content",
         preview={"File": QA_DRIVE_DOC, "Owner": QA_EMAIL, "Match": "the one matching occurrence"},
         details_text="Synthetic PrivacyFence QA doc edit. No real information.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         temp_accept_eligible=True,
         connector="drive",
     ))
 
     results.append(run(
-        "WG-2 · drive_docs_format_content",
+        "WG-3 · drive_docs_format_content",
         click_title="Allow once", expected="accept",
         title="Format Google Doc Content",
         preview={"File": QA_DRIVE_DOC, "Owner": QA_EMAIL, "Format": "Italic selection"},
         details_text="Synthetic PrivacyFence QA doc formatting. No real information.",
-        allow_accept_all=False,
+        allow_accept_all=True,
         temp_accept_eligible=True,
         connector="drive",
     ))

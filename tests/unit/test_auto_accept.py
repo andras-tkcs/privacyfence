@@ -21,11 +21,13 @@ from privacyfence.auto_accept import (
     SUGGESTION_FAMILIES,
     TOOL_TO_GATE,
     TOOL_TO_OPERATION,
+    WRITE_RULE_SUGGESTIONS,
     AutoAcceptEvaluator,
     TEMP_ACCEPT_ELIGIBLE_OPERATIONS,
     add_auto_accept_rule,
     describe_rule,
     describe_rule_change,
+    describe_rule_short,
     get_auto_accept_evaluator,
     get_current_config,
     init_auto_accept_evaluator,
@@ -1023,6 +1025,45 @@ class TestSuggestRule:
 
     def test_describe_rule_unknown_name_falls_back_to_raw_name(self):
         assert describe_rule("some_future_rule", "x") == "Auto-accept future some_future_rule"
+
+
+class TestDescribeRuleShort:
+    """The Always-allow button's own pre-click label -- see gate.py's
+    accept_all_hint comment and approval_window.py's _build_content_view_v2
+    for where this actually renders."""
+
+    def test_read_rule_names_have_short_hints(self):
+        assert describe_rule_short("i_am_sender") == "if I'm sender"
+        assert describe_rule_short("approved_folder") == "this folder"
+        assert describe_rule_short("i_am_owner") == "if I own it"
+        assert describe_rule_short("approved_project_keys") == "this project"
+
+    def test_write_rule_names_have_short_hints(self):
+        assert describe_rule_short("approved_sandbox_folder") == "this folder"
+        assert describe_rule_short("parent_folder_allowlist") == "this folder"
+        assert describe_rule_short("label_name_allowlist") == "this label"
+        assert describe_rule_short("approved_task_list") == "this list"
+
+    def test_unconditional_always_allow_has_no_hint(self):
+        # No category to name for the one rule with nothing to scope --
+        # the button stays plain "Always allow" for this one.
+        assert describe_rule_short("always_allow") == ""
+
+    def test_unknown_rule_name_has_no_hint(self):
+        # Degrades to the plain button rather than showing something
+        # broken for a rule name this dict hasn't caught up with yet.
+        assert describe_rule_short("some_future_rule") == ""
+
+    def test_every_write_rule_suggestion_name_has_a_hint_or_is_always_allow(self):
+        # Exhaustive: every rule name WRITE_RULE_SUGGESTIONS can actually
+        # propose must resolve to either a real hint or the one deliberate
+        # exception (always_allow) -- never silently fall back to "" for a
+        # rule that really does have a resource to name.
+        for suggestion in WRITE_RULE_SUGGESTIONS.values():
+            rule_name = suggestion.rule_name
+            if rule_name == "always_allow":
+                continue
+            assert describe_rule_short(rule_name) != "", f"{rule_name!r} has no short hint"
 
 
 # --------------------------------------------------------------------------- #

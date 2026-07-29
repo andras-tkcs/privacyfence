@@ -181,7 +181,7 @@ class TestReviewGateDecisions:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: ("i_am_sender", None))
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             captured["allow_accept_all"] = allow_accept_all
             return "deny"
 
@@ -197,7 +197,7 @@ class TestReviewGateDecisions:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             captured["allow_accept_all"] = allow_accept_all
             return "deny"
 
@@ -207,6 +207,42 @@ class TestReviewGateDecisions:
             await gate.gated_call(**base_kwargs(gate="review"))
 
         assert captured["allow_accept_all"] is False
+
+    async def test_show_read_popup_receives_the_short_rule_hint_for_the_top_suggestion(
+        self, monkeypatch, audit_dir,
+    ):
+        # The Always-allow button itself needs to know which specific rule
+        # it would create -- see gate.py's own accept_all_hint comment.
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: ("i_am_sender", None))
+        captured = {}
+
+        def fake_show_read_popup(*args, **kwargs):
+            captured.update(kwargs)
+            return "deny"
+
+        monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
+
+        with pytest.raises(RuntimeError):
+            await gate.gated_call(**base_kwargs(gate="review"))
+
+        assert captured["accept_all_hint"] == "if I'm sender"
+
+    async def test_show_read_popup_receives_an_empty_hint_without_a_suggestion(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        captured = {}
+
+        def fake_show_read_popup(*args, **kwargs):
+            captured.update(kwargs)
+            return "deny"
+
+        monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
+
+        with pytest.raises(RuntimeError):
+            await gate.gated_call(**base_kwargs(gate="review"))
+
+        assert captured["accept_all_hint"] == ""
 
 
 class TestAcceptAll:
@@ -468,7 +504,7 @@ class TestAcceptAllWrites:
         monkeypatch.setattr(gate, "suggest_write_rule", lambda *a, **k: ("label_name_allowlist", ["Newsletters"]))
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             captured["allow_accept_all"] = allow_accept_all
             return "accept"
 
@@ -483,7 +519,7 @@ class TestAcceptAllWrites:
         monkeypatch.setattr(gate, "suggest_write_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             captured["allow_accept_all"] = allow_accept_all
             return "accept"
 
@@ -492,6 +528,46 @@ class TestAcceptAllWrites:
         await gate.gated_call(**base_kwargs(gate="popup", connector="gmail", tool="gmail_create_draft"))
 
         assert captured["allow_accept_all"] is False
+
+    async def test_show_popup_receives_the_short_rule_hint_for_the_top_suggestion(self, monkeypatch, audit_dir):
+        # The write-gate counterpart to the review-gate's own equivalent
+        # test above -- same accept_all_hint derivation, from suggest_
+        # write_rule() instead of suggest_rule().
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_write_rule", lambda *a, **k: ("label_name_allowlist", ["Newsletters"]))
+        captured = {}
+
+        def fake_show_popup(*args, **kwargs):
+            captured.update(kwargs)
+            return "accept"
+
+        monkeypatch.setattr(gate, "show_popup", fake_show_popup)
+
+        await gate.gated_call(**base_kwargs(gate="popup", connector="gmail", tool="gmail_add_label"))
+
+        assert captured["accept_all_hint"] == "this label"
+
+    async def test_show_popup_receives_an_empty_hint_for_the_unconditional_always_allow_rule(
+        self, monkeypatch, audit_dir,
+    ):
+        # gmail_create_draft's real suggestion is always_allow -- the one
+        # rule with no category to name, so the button stays plain "Always
+        # allow" even though allow_accept_all is True for it.
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_write_rule", lambda *a, **k: ("always_allow", None))
+        captured = {}
+
+        def fake_show_popup(*args, **kwargs):
+            captured["allow_accept_all"] = args[8]  # positional -- see gate.py's own call
+            captured.update(kwargs)
+            return "accept"
+
+        monkeypatch.setattr(gate, "show_popup", fake_show_popup)
+
+        await gate.gated_call(**base_kwargs(gate="popup", connector="gmail", tool="gmail_create_draft"))
+
+        assert captured["allow_accept_all"] is True
+        assert captured["accept_all_hint"] == ""
 
     async def test_show_popup_receives_preview_tables_and_blocks_and_table_only(self, monkeypatch, audit_dir):
         # Regression: these three were threaded through show_read_popup
@@ -505,7 +581,7 @@ class TestAcceptAllWrites:
         monkeypatch.setattr(gate, "suggest_write_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             captured["preview_tables"] = preview_tables
             captured["preview_blocks"] = preview_blocks
             captured["table_only"] = table_only
@@ -749,7 +825,7 @@ class TestPopupGateWrites:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             captured["details"] = details
             return "accept"
 
@@ -914,7 +990,7 @@ class TestUploadPiiGate:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             captured["write_content_flags"] = write_content_flags
             return "accept"
 
@@ -938,7 +1014,7 @@ class TestRequestFingerprint:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             captured["seen_count"] = seen_count
             return "accept"
 
@@ -959,7 +1035,7 @@ class TestRequestFingerprint:
 
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             captured["seen_count"] = seen_count
             return "accept"
 
@@ -977,7 +1053,7 @@ class TestRequestFingerprint:
 
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             captured["seen_count"] = seen_count
             return "accept"
 
@@ -994,7 +1070,7 @@ class TestRequestFingerprint:
 
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             captured["seen_count"] = seen_count
             return "accept"
 
@@ -1013,7 +1089,7 @@ class TestRequestFingerprint:
 
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             captured["seen_count"] = seen_count
             return "accept"
 
@@ -1033,7 +1109,7 @@ class TestWriteContentFlags:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             captured["write_content_flags"] = write_content_flags
             return "accept"
 
@@ -1050,7 +1126,7 @@ class TestWriteContentFlags:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             captured["write_content_flags"] = write_content_flags
             return "accept"
 
@@ -1071,7 +1147,7 @@ class TestWriteContentFlags:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             return "accept"
 
         monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
@@ -1103,7 +1179,7 @@ class TestWriteContentFlags:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             captured["write_content_flags"] = write_content_flags
             return "accept"
 
@@ -1136,7 +1212,7 @@ class TestTempAccept:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             captured["temp_accept_eligible"] = temp_accept_eligible
             return "deny"
 
@@ -1155,7 +1231,7 @@ class TestTempAccept:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             captured["temp_accept_eligible"] = temp_accept_eligible
             return "deny"
 
@@ -1172,7 +1248,7 @@ class TestTempAccept:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             captured["temp_accept_eligible"] = temp_accept_eligible
             return "deny"
 
@@ -1298,7 +1374,7 @@ class TestPIIGate:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             captured["pii_categories"] = pii_categories
             return "deny"
 
@@ -1314,7 +1390,7 @@ class TestPIIGate:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             captured["pii_categories"] = pii_categories
             return "deny"
 
@@ -1484,7 +1560,7 @@ class TestPiiScanText:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             captured["pii_categories"] = pii_categories
             return "deny"
 
@@ -1504,7 +1580,7 @@ class TestPiiScanText:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             captured["pii_categories"] = pii_categories
             return "deny"
 
@@ -1524,7 +1600,7 @@ class TestPiiScanText:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             captured["pii_categories"] = pii_categories
             return "deny"
 
@@ -1546,7 +1622,7 @@ class TestPiiScanText:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             captured["pii_categories"] = pii_categories
             return "deny"
 
@@ -1566,7 +1642,7 @@ class TestPopupSerialization:
         concurrent = 0
         max_concurrent = 0
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             nonlocal concurrent, max_concurrent
             concurrent += 1
             max_concurrent = max(max_concurrent, concurrent)
@@ -1617,7 +1693,7 @@ class TestQueuedRequestReCheck:
 
         popup_calls = []
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             popup_calls.append(title)
             return "accept_all"
 
@@ -1674,7 +1750,7 @@ class TestQueuedRequestReCheck:
 
         popup_calls = []
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             popup_calls.append(title)
             wait_until(lambda: len(check_calls) >= 3, timeout=1.0)
             # Simulate a rule appearing (e.g. added from the menu bar) while
@@ -2008,7 +2084,7 @@ class TestClaudeReason:
         monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             captured["claude_reason"] = claude_reason
             return "accept"
 
@@ -2023,7 +2099,7 @@ class TestClaudeReason:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
             captured["claude_reason"] = claude_reason
             return "accept"
 

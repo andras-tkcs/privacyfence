@@ -182,7 +182,7 @@ class TestShowPopupAndShowReadPopup:
             "temp_accept_eligible": False, "claude_reason": "", "write_content_flags": None, "seen_count": 0,
             "connector": "", "preview_bytes": b"", "preview_mime_type": "",
             "preview_tables": None, "preview_blocks": None, "table_only": False,
-            "upload_forced": False, "layout": "narrow", "is_read": False,
+            "upload_forced": False, "layout": "narrow", "is_read": False, "accept_all_hint": "",
         }
         assert result == "accept"
 
