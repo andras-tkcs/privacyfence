@@ -12,7 +12,10 @@ scripts/dev_env.sh
 # User configuration (keep only the .example)
 config/settings.yaml
 config/settings.local.yaml
+
+# Local runtime caches (dev-mode data_dir() is the repo root -- see paths.py)
 resource_name_cache.json
+update_check_cache.json
 
 # QA fixture manifest (keep only the .example) -- reveals which real
 # project/space/folder/calendar/list/channel/chat a QA environment uses,
