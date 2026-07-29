@@ -131,6 +131,10 @@ what actually prompts. This is the only thing that exercises the gate, the popup
 log end to end — none of tiers 1 or 2 do. Run it before a release, or after any change to
 `gate.py`/`auto_accept.py`/`resource_grants.py`/menu-bar auto-accept UI broadly, not on every PR.
 
+Before a release specifically, run tiers 1 and 2 across every connector too, not just the ones a
+recent PR touched — see [manual-pre-release-test-plan.md](manual-pre-release-test-plan.md) for the
+full release-time checklist tying all three tiers together.
+
 ## Quick reference
 
 | Check | Runs in CI? | When |
