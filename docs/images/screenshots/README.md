@@ -23,7 +23,7 @@ while it runs.
 
 `--scenario` matches by case-insensitive substring against the scenario name shown in the printed
 report table, so each command above only pops the one relevant window/menu instead of sitting
-through the full ~63-scenario suite. Each run writes its screenshot(s) under the name of the
+through the full 90-scenario suite. Each run writes its screenshot(s) under the name of the
 scenario that produced them (see `_slugify()` in the script); rename the output to the filename
 in the table above before committing it here.
 
