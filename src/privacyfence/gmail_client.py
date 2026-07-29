@@ -53,6 +53,10 @@ _UNFOLDED_POLICY = email.policy.compat32.clone(max_line_length=None)
 def resolve_attachment_destination(filename: str, destination_dir: str = "") -> str:
     """Compute where an attachment will be saved, without touching disk.
 
+    ``destination_dir`` is mandatory -- there is no default. Callers must
+    deliberately choose between a location the user will find (e.g.
+    ~/Downloads) and Claude's own working/scratch directory, rather than a
+    file silently landing in Downloads just because nobody thought about it.
     ``filename`` comes from the sender's MIME headers and is untrusted, so
     only its basename is kept - this is what stops a crafted name like
     "../../.ssh/authorized_keys" from writing outside ``destination_dir``.
@@ -60,7 +64,15 @@ def resolve_attachment_destination(filename: str, destination_dir: str = "") -> 
     ``download_attachment`` to actually write the file, so the two never
     disagree.
     """
-    dest_dir = os.path.expanduser(destination_dir.strip() or "~/Downloads")
+    if not destination_dir.strip():
+        raise GmailClientError(
+            "download_attachment requires a non-empty destination_dir -- "
+            "there is no default. Pass ~/Downloads (or another location the "
+            "user asked for) if this attachment is a deliverable the user "
+            "should find afterward, or your own working/scratch directory "
+            "if you're only downloading it to read or process it yourself."
+        )
+    dest_dir = os.path.expanduser(destination_dir.strip())
     safe_name = os.path.basename(filename) or "attachment"
     return os.path.join(dest_dir, safe_name)
 
@@ -352,8 +364,8 @@ class GmailClient:
     ) -> dict:
         """Save already-fetched attachment bytes to a local directory.
 
-        If ``destination_dir`` is empty, defaults to ``~/Downloads``. Returns a
-        dict with ``path``, ``name``, and ``size_bytes``.
+        ``destination_dir`` is mandatory -- see ``resolve_attachment_destination``.
+        Returns a dict with ``path``, ``name``, and ``size_bytes``.
         """
         dest_path = resolve_attachment_destination(filename, destination_dir)
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
@@ -371,8 +383,8 @@ class GmailClient:
     ) -> dict:
         """Fetch an attachment's bytes and save it to a local directory.
 
-        If ``destination_dir`` is empty, defaults to ``~/Downloads``. Returns a
-        dict with ``path``, ``name``, and ``size_bytes``. See
+        ``destination_dir`` is mandatory -- see ``resolve_attachment_destination``.
+        Returns a dict with ``path``, ``name``, and ``size_bytes``. See
         ``fetch_attachment_bytes``/``save_attachment_bytes`` if the caller
         already fetched the bytes for a preview and wants to avoid fetching
         them twice.

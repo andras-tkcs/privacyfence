@@ -101,13 +101,28 @@ class GmailConnector(Connector):
                     "Download a Gmail attachment's content to a local directory "
                     "and return the saved file path. Identify the attachment by "
                     "the name returned from gmail_list_message_attachments. "
-                    "destination_dir defaults to ~/Downloads. Requires user "
-                    "approval."
+                    "destination_dir is required -- there is no default, so choose "
+                    "deliberately: pass ~/Downloads (or another path the user asked "
+                    "for) when this attachment is a deliverable the user should "
+                    "find afterward, or your own working/scratch directory when "
+                    "you're only downloading it to read or process it yourself. "
+                    "Requires user approval."
                 ),
                 params=[
                     ToolParam("message_id", "str"),
                     ToolParam("attachment_name", "str"),
-                    ToolParam("destination_dir", "str", required=False, default=""),
+                    ToolParam(
+                        "destination_dir",
+                        "str",
+                        required=True,
+                        description=(
+                            "Where to save the attachment -- required, no default. "
+                            "Use ~/Downloads (or a path the user specified) if the "
+                            "user should find this file afterward; use your own "
+                            "working/scratch directory if it's only for you to read "
+                            "or process."
+                        ),
+                    ),
                     ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
