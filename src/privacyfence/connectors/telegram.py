@@ -146,10 +146,11 @@ class TelegramConnector(Connector):
             }
             for m in messages
         ]
-        # Same plain-text list as before, unconditionally -- it's also the
-        # legacy layout's own display, so it can't be emptied out just
-        # because v2 also gets a nicer table alongside it (see
-        # connectors/salesforce.py's _search for the same reasoning).
+        # Built unconditionally, even though the table below is the nicer
+        # rendering: this plain-text list is also the PII scan's fallback
+        # source (see connectors/salesforce.py's _search for the same
+        # reasoning), so it can't be emptied out just because a table is
+        # also shown.
         table = {
             "headers": ["Sender", "Date", "Message"],
             "rows": [[getattr(m, "sender_name", "unknown"), str(getattr(m, "date", "")), getattr(m, "text", "")] for m in messages],

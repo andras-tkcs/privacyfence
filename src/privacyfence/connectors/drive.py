@@ -794,10 +794,9 @@ class DriveConnector(Connector):
             pass
 
         # Gate before touching disk: gated_call raises on denial, and only a
-        # decision made here should ever cause the file to be written. This
-        # used to download the file first and gate afterward, so a Deny still
-        # left the file on disk -- mirrors gmail.py's _download_attachment,
-        # which already got this ordering right.
+        # decision made here should ever cause the file to be written --
+        # otherwise a Deny would still leave the file on disk. Mirrors
+        # gmail.py's _download_attachment, which uses the same ordering.
         await gated_call(
             connector=self.name,
             tool="drive_download_file",

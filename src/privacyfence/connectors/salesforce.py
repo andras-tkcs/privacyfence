@@ -373,10 +373,10 @@ class SalesforceConnector(Connector):
             "Results": str(len(records)),
             "Search results": "Object type, Name, and id per match",
         }
-        # Same plain-text list as before, unconditionally -- it's also the
-        # legacy layout's own display and (absent an explicit
-        # pii_scan_text) the PII scan's fallback source, so it can't be
-        # emptied out just because v2 also gets a nicer table alongside it.
+        # Built unconditionally, even though the table below is the nicer
+        # rendering: absent an explicit pii_scan_text, this plain-text list
+        # is also the PII scan's fallback source, so it can't be emptied
+        # out just because a table is also shown.
         details = "\n".join(
             f"{r.object_type} — {r.fields.get('Name', '(no name)')} (id={r.id})" for r in records
         ) or "(no matches)"

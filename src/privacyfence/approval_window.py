@@ -6,12 +6,13 @@ the whole content area — kicker/icon/title, then §1 (WHAT), §2 (Claude's
 stated reason), an optional §3 disclosure card (review-gate calls only:
 "what will be provided to Claude") or §4 PII/content-flag risk card, and a
 scrollable right-hand preview pane for WIDE-shaped tools — with native
-Deny/Allow once/Always allow buttons in a fixed band below it. This
-replaces the AppleScript `display dialog` popups that used to live in
-approval_popup.py — those had no room for a real layout, an icon, or a
-genuinely scrollable body. See docs/approval-window-content-reference.md
-for exactly what each tool renders, and approval_window_html.py's own
-module docstring for the card-stack template itself.
+Deny/Allow once/Always allow buttons in a fixed band below it. AppleScript
+`display dialog` popups (still used elsewhere in approval_popup.py for
+secondary confirmations) have no room for a real layout, an icon, or a
+genuinely scrollable body — this module renders the whole content area as
+one WKWebView instead. See docs/approval-window-content-reference.md for
+exactly what each tool renders, and approval_window_html.py's own module
+docstring for the card-stack template itself.
 
 The §3 disclosure card renders real per-tool "what's new" values
 (``new_info``) or, as a fallback, privacy_filter.category_policy()'s
@@ -42,9 +43,8 @@ AppKit windows must be created and driven on the main thread, but gate.py
 calls in here from the IPC server thread (via asyncio.to_thread). show_native_
 approval() hands the actual window-building to the main thread with
 performSelectorOnMainThread_withObject_waitUntilDone_(waitUntilDone=True),
-which blocks the calling thread until the modal session ends — the same
-synchronous contract the old osascript-based popups had, so gate.py needs no
-changes beyond where it imports from.
+which blocks the calling thread until the modal session ends, so gate.py's
+calling convention stays synchronous.
 """
 from __future__ import annotations
 
@@ -90,16 +90,18 @@ _MARGIN = 28.0
 _BUTTON_ROW_HEIGHT = 66.0
 
 # NSButton tags for buttonClicked_'s dispatch -- not title-string matching,
-# since Always allow's own title can now vary per call (accept_all_hint).
-# NSButton's own default tag is 0, so Deny (the safe fallback direction)
-# doesn't need its own constant set explicitly anywhere it's built.
+# since Always allow's own title varies per call (accept_all_hint), so
+# dispatch can't key on an exact string. NSButton's own default tag is 0,
+# so Deny (the safe fallback direction) doesn't need its own constant set
+# explicitly anywhere it's built.
 _TAG_DENY = 0
 _TAG_ACCEPT = 1
 _TAG_ACCEPT_ALL = 2
 
-# Shown above the button row, in place of the old separate "Allow for 5 min"
-# button, for the operations auto_accept.TEMP_ACCEPT_ELIGIBLE_OPERATIONS
-# lists. Deliberately vague about the exact duration (gate.py/auto_accept.py
+# Shown above the button row for operations
+# auto_accept.TEMP_ACCEPT_ELIGIBLE_OPERATIONS lists -- Allow once itself
+# also arms a 5-minute, same-file auto-accept window for these.
+# Deliberately vague about the exact duration (gate.py/auto_accept.py
 # still enforce a precise 5-minute TTL) -- the point is disclosure that
 # Allow once covers more than this one call, not a number to remember.
 _TEMP_ACCEPT_DISCLOSURE_TEXT = (
@@ -129,9 +131,8 @@ _BLUE = NSColor.colorWithSRGBRed_green_blue_alpha_(0x5B / 255, 0xA4 / 255, 0xFF 
 # ---------------------------------------------------------------------------- #
 # Derived from approval_window_html.CONTENT_WIDTH, not a second hardcoded
 # copy of it -- the native window and the HTML body rendered inside it
-# must always agree on width, and two independently-maintained constants
-# already drifted out of sync once (this dict still said 880.0 after
-# CONTENT_WIDTH[WIDE] was bumped to 980 for a wider right pane).
+# must always agree on width, and these two values must stay in sync: see
+# CONTENT_WIDTH, the single source of truth this dict is derived from.
 _WINDOW_WIDTH = {layout: float(width) for layout, width in approval_window_html.CONTENT_WIDTH.items()}
 
 # Pixel constants behind _estimate_left_column_height() -- deliberately
@@ -141,9 +142,9 @@ _WINDOW_WIDTH = {layout: float(width) for layout, width in approval_window_html.
 # estimate can never disagree) rather than measured, so a short value never
 # causes clipping; the cost is a little unused whitespace when a row's real
 # content is shorter than its allowance, never the other direction.
-# Re-derived empirically against real qa_popup_smoke.py --layout v2
-# screenshots, not computed from the CSS alone -- adjust here if a future
-# style change to styles.css's card/row rules drifts from these.
+# Re-derived empirically against real qa_popup_smoke.py screenshots, not
+# computed from the CSS alone -- adjust here if a future style change to
+# styles.css's card/row rules drifts from these.
 _HEADER_HEIGHT = 90.0
 _SEEN_COUNT_HEIGHT = 22.0
 _CARD_CHROME = 62.0  # card padding (2x15) + margin-bottom (18) + kicker line (~14)
@@ -374,9 +375,9 @@ class ApprovalWindowController(NSObject):
         existing precedent for a link-style NSButton in this codebase: built
         via an attributed title rather than a bezel style, since
         NSBezelStyleRounded has no "no border, small, underlined" variant.
-        Dispatch is via ``tag``, not ``title()`` -- this button's title can
-        now vary per call (see _build_content_view's accept_all_hint
-        comment), so buttonClicked_ can't key on an exact string anymore."""
+        Dispatch is via ``tag``, not ``title()`` -- this button's title
+        varies per call (see _build_content_view's accept_all_hint
+        comment), so buttonClicked_ can't key on an exact string."""
         btn = NSButton.alloc().init()
         btn.setBordered_(False)
         btn.setTag_(tag)
@@ -573,11 +574,10 @@ class ApprovalWindowController(NSObject):
             preview_kicker=f"Preview ({_reading_time_label(self.details_text)})",
             preview_body_html=preview_body_html,
         )
-        # Kept purely for testability, same reasoning as the legacy layout's
-        # own _details_html_string -- see test_approval_window_html.py for
-        # build_card_stack_html()'s own direct pure-function coverage; this
-        # just confirms the controller actually hands the real thing to
-        # loadHTMLString_baseURL_.
+        # Kept purely for testability -- see test_approval_window_html.py
+        # for build_card_stack_html()'s own direct pure-function coverage;
+        # this just confirms the controller actually hands the real thing
+        # to loadHTMLString_baseURL_.
         self._details_html_string = html
 
         config = WKWebViewConfiguration.alloc().init()
@@ -594,9 +594,8 @@ class ApprovalWindowController(NSObject):
         # query immediately, and at that point this view has no superview/
         # window yet (content.addSubview_ hasn't run) -- left to infer its
         # own appearance it resolves to the WebKit default (light) rather
-        # than the panel's actual one, which is how dark mode broke here
-        # before. Setting it directly from the panel sidesteps that timing
-        # entirely rather than depending on subview-then-load ordering.
+        # than the panel's actual one. Setting it directly from the panel
+        # sidesteps that timing entirely.
         webview.setAppearance_(self.panel.effectiveAppearance())
         webview.setNavigationDelegate_(self)
         webview.loadHTMLString_baseURL_(html, None)
@@ -653,8 +652,7 @@ class ApprovalWindowController(NSObject):
         actually finished loading and painting, so it's now safe to let
         Deny/Allow once/Always allow be clicked -- see _build_content_view
         (where they start disabled) and _action_buttons' comment in
-        init() for why. Never wired up for the legacy layout, so this only
-        ever fires for v2's full-window webview."""
+        init() for why."""
         self._enable_action_buttons()
 
     def webView_didFailNavigation_withError_(self, webView, navigation, error) -> None:
@@ -704,11 +702,10 @@ class ApprovalWindowController(NSObject):
         # Internal result values ("accept"/"accept_all"/"deny") stay as-is --
         # gate.py/audit_log.py/tests key on them throughout. Dispatch is via
         # sender.tag() (_TAG_DENY/_TAG_ACCEPT/_TAG_ACCEPT_ALL), not the
-        # button's displayed title -- Always allow's own title now varies
-        # per call (accept_all_hint), so an exact-string match would
-        # silently fall through to "deny" the moment that title stopped
-        # being the literal word "Always allow". Any tag this doesn't
-        # recognize still defaults to the safe direction.
+        # button's displayed title -- Always allow's own title varies per
+        # call (accept_all_hint), so an exact-string match on the title
+        # would be fragile. Any tag this doesn't recognize still defaults
+        # to the safe direction.
         tag = sender.tag()
         if tag == _TAG_ACCEPT_ALL:
             self.result = "accept_all"
@@ -748,9 +745,10 @@ def show_native_approval(
     """Show the approval window and block until the user picks a button.
 
     Returns 'accept', 'deny', or 'accept_all' (only reachable when
-    allow_accept_all is True). ``temp_accept_eligible`` no longer changes
-    the button set -- it only adds an informational disclosure caption
-    above the buttons (see ApprovalWindowController._build_content_view).
+    allow_accept_all is True). ``temp_accept_eligible`` adds an
+    informational disclosure caption above the buttons (see
+    ApprovalWindowController._build_content_view); it doesn't change which
+    buttons render.
     Whether Allow once also arms auto_accept.py's 5-minute, same-file grace
     window is decided by gate.py after the fact, from the same eligibility
     check that produced this flag -- not from a distinct user choice here.

@@ -44,12 +44,11 @@ specific call's data happens to be. Rows are never omitted for having an
 empty value either (a missing Location still gets its own blank row) --
 only the section as a whole disappears when it has no fields at all.
 
-drive_upload_file's PII card is a second known placeholder: gate.py routes
-its own PII match through the same forced second-confirmation flow the
-read-gate case gets, but no distinct design exists for it yet (a design-canvas
-edit is planned). ``upload_forced=True`` reuses the read-gate's own
-(unchanged, accent-2) card styling as an interim stand-in -- not a final
-answer, see that parameter's docstring.
+drive_upload_file's PII card reuses the read-gate's own accent-2 card
+styling: gate.py routes its own PII match through the same forced
+second-confirmation flow the read-gate case gets, and
+``upload_forced=True`` selects that same styling for it -- see that
+parameter's docstring.
 """
 from __future__ import annotations
 
@@ -107,11 +106,9 @@ _DISCLOSURE_BLOCK = "None — not disclosed to Claude"
 def disclosure_rows_from_visibility(visibility: dict[str, str]) -> list[tuple[str, str]]:
     """Translate the existing ``{label: allow/redact/block}`` policy dict
     (privacy_filter.category_policy()'s ground truth, unchanged) into §3's
-    plain "what's disclosed" sentence per field -- the structural change
-    turn 5 makes (dropping the old checklist's per-row ✓/✗/◐ icons for
-    prose), even though the exact wording here is generic rather than
-    hand-tuned per tool (see module docstring). Pure function, order-
-    preserving, same testability contract as _details_html()."""
+    plain "what's disclosed" sentence per field (prose, not per-row icons),
+    even though the exact wording here is generic rather than hand-tuned
+    per tool (see module docstring). Pure function, order-preserving."""
     rows = []
     for label, policy in visibility.items():
         if policy == "allow":
@@ -128,7 +125,7 @@ def disclosure_rows_from_visibility(visibility: dict[str, str]) -> list[tuple[st
 # (styles.css's .pf-kv default is 2 lines) instead of growing the row or the
 # window -- keyed by exact label text, since some fields are known to
 # reliably carry longer content than a typical short structured field.
-# Provisional: extend here as more tools are built out; approval_window.py's
+# Extend here as more tools need a taller allowance; approval_window.py's
 # own height estimate calls this too, so the two never disagree about how
 # tall a given row's worst case is.
 DEFAULT_LINE_CLAMP = 2
@@ -220,22 +217,16 @@ def build_preview_body_html(
 ) -> str:
     """The inner-HTML fragment for ``WIDE`` layout's right-hand preview pane
     (``NARROW`` has no preview at all -- callers never need this for a
-    narrow-shape tool) -- the ``build_card_stack_html()``-embeddable
-    counterpart to approval_window.py's ``_details_html()``,
-    which builds a *full standalone document* for its own separate small
-    WKWebView instead. Same escaping/whitespace discipline: ``details_text``
+    narrow-shape tool). Same escaping/whitespace discipline: ``details_text``
     is already HTML-stripped plain text (see html_to_text.py) and is never
     treated as markup, only escaped and given ``white-space: pre-wrap``.
 
     ``pdf_data_uri`` takes priority over ``image_data_uri``, which takes
-    priority over plain ``details_text``/``tables`` -- the same precedence
-    ``_build_details_view()`` already holds for the legacy layout's
-    pdf_bytes-before-preview_bytes-before-text dispatch, just rendered
-    inline via a standard ``<embed>``/``<img>`` data URI here instead of a
-    separate native ``PDFView``/``NSImageView`` overlay: v2's whole content
-    area is already one WKWebView, so there's no separate small pane for a
-    native view to stand in for -- WebKit's own built-in PDF renderer and
-    image decoding handle both directly, no extra native code needed.
+    priority over plain ``details_text``/``tables`` -- rendered inline via
+    a standard ``<embed>``/``<img>`` data URI: the whole content area is
+    already one WKWebView, so WebKit's own built-in PDF renderer and image
+    decoding handle both directly, no native PDFView/NSImageView overlay
+    needed.
 
     ``tables`` (see ``_table_html``) render after ``details_text`` --
     together, not either/or, since some tools need both. Neither is
@@ -259,9 +250,9 @@ def build_preview_body_html(
     simple table-only list don't need this -- ``details_text``/``tables``
     alone still cover those without the extra structure.
 
-    No content_kind="email" structured header here (unlike the legacy
-    layout's ``_details_html()``): under the §1/§3 knowledge-boundary split,
-    From/Subject/Date already render as §1 rows and To as a §3 row, so
+    No content_kind="email" structured header here: under the §1/§3
+    knowledge-boundary split, From/Subject/Date already render as §1 rows
+    and To as a §3 row, so
     repeating them a second time atop the body would just be duplication --
     the right pane is plain body text for every WIDE tool, email included.
     """
@@ -375,16 +366,13 @@ def _risk_section_html(
 ) -> str:
     """§4 (or §3, if §3 above didn't render): the PII/content-flag card.
     ``variant`` is one of:
-      - "read": review-gate PII match. Unchanged from earlier design turns
-        (accent-2 tokens) -- see module docstring, this card's job is to
-        look distinct from "write" below, which it already does.
+      - "read": review-gate PII match. Accent-2 tokens -- see module
+        docstring, this card's job is to look distinct from "write" below.
       - "write": popup-gate content-flag match, informational only. Uses
-        the new pii-write-bg amber/ochre tokens.
+        the pii-write-bg amber/ochre tokens.
       - "write-forced": drive_upload_file's own PII match, which forces the
         same second-confirmation flow "read" does despite being a write --
-        no distinct design exists yet (a design-canvas edit is planned), so
-        this reuses "read"'s styling as an interim placeholder. See module
-        docstring.
+        reuses "read"'s styling. See module docstring.
     """
     if not categories:
         return ""
@@ -430,8 +418,7 @@ def build_card_stack_html(
     """Build the full HTML document for one approval window's content area.
 
     Pure function -- no AppKit, no filesystem access beyond the module-level
-    styles.css already read at import time -- directly unit-testable, same
-    contract ``_details_html()`` already holds in approval_window.py.
+    styles.css already read at import time -- directly unit-testable.
 
     ``layout`` is ``NARROW`` (§1-§4 only, no preview pane at all --
     ``preview_kicker``/``preview_body_html`` are ignored entirely) or
@@ -454,40 +441,37 @@ def build_card_stack_html(
     preview pane gets the identical treatment (its own independent
     ``flex:1;min-height:0;overflow-y:auto``) as a sibling of the left
     column inside a row that itself fills the same real 100vh via
-    ``flex:1;min-height:0``. This replaced an earlier design
-    (``columns_max_height``/``right_pane_max_height`` params, since
-    removed) that capped each region to a *Python-estimated* pixel value:
-    that estimate is a worst-case row/section-count guess, never real text
-    measurement (see approval_window.py's ``_rows_height`` comment), and
-    when WebKit's real render of any single row came out even a few pixels
-    taller than guessed, the uncapped region had nowhere to grow but the
-    whole-page ``html, body`` fallback scroll -- dragging the *entire*
-    window (including the right pane) along with it. Flexbox has no such
-    estimate to be wrong about: the left column and the right pane always
-    get exactly "100vh," each with its own contained scroll, so a real
-    render coming out larger than any Python guess just means that
-    column's own scrollbar engages a little sooner -- the whole-page
-    scroll path is never reached at all now, from any single row anywhere
-    being off in either direction. Python's own height estimate
+    ``flex:1;min-height:0``. Containment is pure CSS flexbox, not a
+    Python-computed pixel cap on each region: a Python-estimated
+    worst-case row/section-count guess (see approval_window.py's
+    ``_rows_height`` comment) is never real text measurement, so a pixel
+    cap based on it would leave an uncapped region nowhere to grow but the
+    whole-page ``html, body`` fallback scroll the moment WebKit's real
+    render of any single row came out even a few pixels taller than
+    guessed -- dragging the *entire* window (including the right pane)
+    along with it. Flexbox has no such estimate to be wrong about: the
+    left column and the right pane always get exactly "100vh," each with
+    its own contained scroll, so a real render coming out larger than any
+    Python guess just means that column's own scrollbar engages a little
+    sooner -- the whole-page scroll path is never reached, regardless of
+    which row is off or in which direction. Python's own height estimate
     (``_estimate_left_column_height`` et al.) still exists, but purely to
-    pick a reasonable *initial* native window size -- it no longer has to
+    pick a reasonable *initial* native window size -- it doesn't have to
     be exactly right for containment to hold.
 
     Trade-off worth knowing: because the left column is one shared scroll
     region, §1/§2/the PII-or-content-flag risk card are *not* guaranteed to
     stay on screen if the column's total content is taller than the
     window -- scrolling to read the rest of §3 also scrolls them out of
-    view. An earlier version of this template kept those pinned and only
-    let §3 itself scroll internally, specifically so the risk card in
-    particular could never be scrolled out of sight; that version's own
-    trade-off was the opposite one -- a short, visually-inconsistent
-    internal scrollbar confined to §3's own card whenever the pinned block
-    above it took up most of the available height. This module now takes
-    the one-shared-scrollbar trade-off instead, matching the right pane's
-    own full-height scrollbar treatment. The risk card still renders
-    *before* §3 (not after) for the same reason as always: it's the
-    highest-consequence card, so it's the first thing scrolled past on the
-    way down, not the last.
+    view. The alternative (pinning those cards and only letting §3 scroll
+    internally) trades this for a different problem: a short,
+    visually-inconsistent internal scrollbar confined to §3's own card
+    whenever the pinned block above it takes up most of the available
+    height. This module takes the one-shared-scrollbar trade-off instead,
+    matching the right pane's own full-height scrollbar treatment. The
+    risk card still renders *before* §3 (not after) for the same reason as
+    always: it's the highest-consequence card, so it's the first thing
+    scrolled past on the way down, not the last.
 
     Exactly one of ``pii_categories``/``write_content_flags`` is ever
     non-empty for a given call (gate.py never populates both at once), and

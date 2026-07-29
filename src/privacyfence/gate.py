@@ -25,10 +25,9 @@ release gated data on its own.
       concession instead of a standing Always allow rule: clicking Allow
       once on one of these also auto-accepts further calls of the same
       operation against that same file for 5 minutes, in memory only
-      (never written to settings.yaml, gone on daemon restart). This used
-      to be a distinct "Allow for 5 min" button the user had to choose
-      instead of Allow once; it's now folded into Allow once itself -- the
-      popup only discloses it with a plain caption
+      (never written to settings.yaml, gone on daemon restart). Clicking
+      Allow once on one of these operations arms this grace window
+      automatically -- the popup discloses it with a plain caption
       (approval_window.py's temp_accept_eligible), not a separate control.
     - A separate, small set of operations that already have a
       resource-identity-scoped auto-accept rule (see
@@ -291,11 +290,10 @@ async def gated_call(
         # (gate="review") calls only: a popup-gate write already shows exactly what's being sent,
         # since the human is looking at content Claude itself just drafted, not something read
         # from an external source and potentially filtered on the way in.
-    content_kind: str = "generic",  # "generic" | "email" -- has no effect on the current
-        # approval_window.py rendering (see approval_popup.show_read_popup's docstring). Kept
-        # threaded through from gmail.py so a future body-pane rendering hint has an existing
-        # plumbing path to reuse instead of a new parameter. Read-only (gate="review") calls only,
-        # same reasoning as visibility above -- a write is Claude's own drafted content, not
+    content_kind: str = "generic",  # "generic" | "email" -- accepted but currently unused
+        # by approval_window.py's rendering (see approval_popup.show_read_popup's docstring);
+        # threaded through from gmail.py. Read-only (gate="review") calls only, same
+        # reasoning as visibility above -- a write is Claude's own drafted content, not
         # something this pane needs a per-surface reading affordance for.
     pdf_bytes: bytes = b"",  # Raw PDF bytes for a native PDFView embed, instead of the
         # "[binary content...]" placeholder text.
@@ -580,10 +578,10 @@ async def gated_call(
             if decision == "accept":
                 if file_key is not None:
                     # Eligible for the same-file grace window (see module
-                    # docstring) -- no separate "Allow for 5 min" click
-                    # anymore, a plain Allow once on one of these operations
-                    # arms it too, so Claude's follow-up calls against this
-                    # same file don't reprompt for the next 5 minutes.
+                    # docstring) -- a plain Allow once on one of these
+                    # operations arms it, so Claude's follow-up calls
+                    # against this same file don't reprompt for the next
+                    # 5 minutes.
                     evaluator.register_temp_accept(operation_key, file_key)
                     audit(
                         decision="accepted_via_temp_session", auto_accept_rule="session_temp_accept",
@@ -629,7 +627,8 @@ async def propose_rule_change(
     propose an add/update/remove to auto_accept_rules or auto_accept_grants,
     but never apply it without a human confirming via the same
     show_rule_confirmation_popup() dialog gated_call() uses for "Always
-    allow" -- this is the "gate only" write path issue #61 asks for. Unlike
+    allow" -- this is a "gate only" write path: config changes go through
+    the approval gate without a real tool call behind them. Unlike
     gated_call(), there's no underlying tool call or auto-accept
     short-circuit here: every proposal reaches a human (or is denied
     outright in an unattended session, same as gated_call), even if an
