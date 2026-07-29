@@ -463,8 +463,6 @@ comes back empty, or hits `FORBIDDEN` until you seed data:
       throwaway second one only if `PFQA` would otherwise be the only space in your site
 - [ ] Confirm `i_am_author` needs no setup — any page you create in `PFQA` satisfies it
       automatically
-- [ ] Confirm the daemon build under test has the Confluence v1→v2 API migration (commit `34e7108`
-      in this repo) — `confluence_get_page`/`create_page`/`update_page` return 410 without it
 - [ ] For the recorder: create one dedicated seed page in `PFQA`:
       ```
       Title: PrivacyFence QA seed page [QATEST]

@@ -867,12 +867,13 @@ other connector's writes, each independently configurable via the
    Phase 14 flag. I'll Allow once.
 4. `telegram_search_messages` with a query that matches the seed message from
    setup, in `telegram_approved_chat_id` only — same explicit popup check,
-   same Phase 14 flag. `telegram_search_messages` now shares the
-   `telegram.read_chat_messages` operation key with `telegram_get_messages`
-   (it used to have its own key), so if `telegram_approved_chat_id` came from
-   `auto_accept_grants.telegram.chats` (`read: true`), the grant now compiles
+   same Phase 14 flag. `telegram_search_messages` shares the
+   `telegram.read_chat_messages` operation key with `telegram_get_messages`,
+   so if `telegram_approved_chat_id` came from
+   `auto_accept_grants.telegram.chats` (`read: true`), the grant compiles
    both `approved_chats` and `approved_chats_all_results` and this should NOT
-   prompt; from the legacy rule-only form, expect it to still prompt (Allow
+   prompt; from the older, still-supported rule-only form (an
+   `auto_accept_rules` entry with no matching grant), expect it to still prompt (Allow
    once). Repeat with a query broadened to also reach
    `telegram_control_chat_id` — should always prompt, same reasoning as
    Phase 3 step 4.
@@ -1247,40 +1248,14 @@ when they're really something else:
   client code, not the gate. That pattern is what led to the Confluence and
   Gmail fixes below.
 
-## Example findings from the 2026-07 run
+## What this method catches that the unit suite can't
 
-Running this method surfaced, in one pass:
-
-- **Confluence's entire page-content path was broken.** `list_pages_in_space`,
-  `get_page`, `get_page_by_title`, `create_page`, and `update_page` all called
-  a Confluence v1 REST endpoint Atlassian has since removed (410 Gone) — only
-  the space/search list tools, already migrated to v2, worked. Fixed in
-  [`confluence_client.py`](../src/privacyfence/confluence_client.py) by
-  porting the remaining five methods to the v2 API.
-- **`gmail_reply_draft` failed with "Invalid To header"** for senders with a
-  non-ASCII display name (e.g. an accented Hungarian name). Root cause:
-  assigning `"Name <addr>"` straight to a `Message` header RFC-2047-encodes
-  the *whole* string once it contains non-ASCII text, including the
-  address — Gmail's parser then rejects the encoded blob as an invalid
-  addr-spec. Fixed by routing To/Cc through `parseaddr`/`formataddr` so only
-  the display name gets encoded.
-- **`contacts_update` leaked a raw `'NoneType' object is not iterable`**
-  instead of a clean error — and the daemon's own dispatch-error log only
-  recorded the message, not a traceback, which is why the exact trigger
-  couldn't be pinned down from the log alone. Hardened the update path to
-  fail cleanly, and fixed `ipc_server.py` to log `exc_info=True` so the next
-  occurrence is actually diagnosable.
-- **The README's auto-accept-rules section had drifted from the code**: a
-  stale footnote claimed Telegram's read tools were unconditionally
-  auto-accepted (only `telegram_list_chats` is) and that Tasks writes needed
-  popup approval like every other connector (a later doc-only edit briefly
-  reverted this footnote to claim all 8 Tasks tools were auto — they aren't;
-  the 5 write tools are `popup`-gated in `tasks.py`, matching the table
-  elsewhere in the README). The same cross-check also turned up real,
-  working auto-accept rule evaluators for Jira, Confluence, Telegram, and
-  Contacts in `auto_accept.py` that were entirely missing from the README's
-  rule tables.
-
-None of these were caught by the unit test suite, because the unit tests mock
-each connector's client — they verify the code does what it's told, not that
-what it's told still matches the live API or the live docs.
+The unit tests mock each connector's client — they verify the code does what
+it's told, not that what it's told still matches the live provider API. A
+live run against real accounts is what catches a provider API migrating out
+from under a connector (a REST endpoint the provider removed), an encoding
+edge case only real non-ASCII data triggers, an error path that leaks an
+unhandled exception instead of failing cleanly, or a doc (README, Technical
+Reference) that's drifted from what the code actually implements. Treat any
+of those categories as a real finding, not noise, when they turn up during a
+run.

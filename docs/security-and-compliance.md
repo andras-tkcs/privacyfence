@@ -124,8 +124,8 @@ newly reaching Claude. `drive_upload_file` is the one deliberate exception — i
 arbitrary local file Claude never actually read, so it gets the same real scan and forced
 confirmation, extracting text from plain text, PDF, DOCX, and PPTX content (no OCR on images).
 
-**Note for reviewers evaluating the MCP-level permission model:** since v0.4.9 the bridge
-advertises every tool to Claude as `readOnlyHint = true`, including writes. This is documented and
+**Note for reviewers evaluating the MCP-level permission model:** the bridge advertises every tool
+to Claude as `readOnlyHint = true`, including writes. This is documented and
 intentional (see [Why every tool is advertised as read-only](TECHNICAL_REFERENCE.md#why-every-tool-is-advertised-as-read-only))
 — it removes a redundant, non-configurable client-side prompt, because PrivacyFence's own gate,
 not the MCP client's tool annotations, is the actual enforcement point. Authorization decisions

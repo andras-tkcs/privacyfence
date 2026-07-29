@@ -156,8 +156,7 @@ mode denies unmatched requests immediately instead of leaving a popup open for n
 | Connector | Examples of governed capabilities |
 |---|---|
 | Gmail | Read messages and threads, download attachments, create drafts and replies, manage labels, archive messages, create and update filters |
-| Google Drive & Docs | Read, download, upload, move, and write files; write, partially edit, and format (including highlight) Google Docs; add comments |
-| Google Sheets | Read ranges, write and format ranges, add and rename tabs, insert and delete rows/columns |
+| Google Drive, Docs & Sheets | Read, download, upload, move, and write files; write, partially edit, and format (including highlight) Google Docs; add comments; read, write, and format Sheets ranges; add and rename tabs; insert and delete rows/columns |
 | Google Calendar | Read event details, get/set event visibility, create and update events, create out-of-office entries, set working location |
 | Google Contacts | Read, create, update, and label contacts |
 | Slack | List channels, DMs, and group chats (filterable by participant), read channels and threads, search messages, send messages |
@@ -271,6 +270,7 @@ Continue with the organization configuration and connector authentication steps 
 - [Atlassian setup](docs/atlassian-setup.md)
 - [Telegram setup](docs/telegram-setup.md)
 - [Connector QA testing](docs/connector-qa-testing.md)
+- [Manual pre-release test plan](docs/manual-pre-release-test-plan.md)
 - [Approval window content reference](docs/approval-window-content-reference.md) — what each approval dialog shows, grouped by dialog shape
 - [Development vs. installed configuration](docs/dev-vs-live-setup.md)
 - [Contributing](CONTRIBUTING.md)
@@ -279,9 +279,9 @@ Continue with the organization configuration and connector authentication steps 
 
 ## Status and scope
 
-PrivacyFence has a stable connector and policy interface as of 1.0. It remains under active
-development, and you should review the limitations and security model before using it with
-production or regulated data.
+PrivacyFence has a stable connector and policy interface. It remains under active development, and
+you should review the limitations and security model before using it with production or regulated
+data.
 
 Current implementation assumptions:
 

@@ -1,10 +1,9 @@
 # File type support: attachment previews & PII scanning
 
-Two independent capabilities were added across a series of backend PRs preparing for the
-"Approval windows design system" UI redesign — a content **preview** (image render) and a
-**PII scan** of file content — for the three tools that move file bytes across the gate:
-`drive_download_file`, `gmail_download_attachment`, `drive_upload_file`. They cover different file
-types for different reasons, summarized here. See
+PrivacyFence previews and PII-scans file content for the three tools that move file bytes across
+the gate: `drive_download_file`, `gmail_download_attachment`, `drive_upload_file`. A content
+**preview** (image render) and a **PII scan** of file content cover different file types for
+different reasons, summarized here. See
 [`approval-window-content-reference.md`](approval-window-content-reference.md) for how the preview
 renders in the approval window, and
 [`TECHNICAL_REFERENCE.md`'s PII detection gate section](TECHNICAL_REFERENCE.md#pii-detection-gate)
