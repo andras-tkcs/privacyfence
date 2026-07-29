@@ -19,6 +19,8 @@ itself -- see test_tasks_client.py's module docstring for why.
 from __future__ import annotations
 
 import base64
+import email
+import email.policy
 import json
 import os
 import stat
@@ -655,6 +657,39 @@ class TestCreateDraft:
         with pytest.raises(GmailClientError, match="create_draft failed"):
             client.create_draft(to="a@x.com", subject="s", body="b")
 
+    def test_many_non_ascii_recipients_stay_on_one_unfolded_to_line(self):
+        # RFC 2047 encoded-word display names push the "To" line well past
+        # the 78-char default fold point. Apple Mail doesn't reliably
+        # reassemble folded continuation lines in address headers, so
+        # recipients silently disappear and the thread becomes unrepliable.
+        # Regression coverage for keeping the header on a single line.
+        service = MagicMock()
+        service.users.return_value.drafts.return_value.create.return_value.execute.return_value = {"id": "d1"}
+        client = make_client(service)
+        to = (
+            "Szabolcs Patay <szabolcs.patay@commsignia.com>, "
+            "László Virág <laszlo.virag@commsignia.com>, "
+            "Balázs Sarlós <balazs.sarlos@commsignia.com>, "
+            "Dorottya dr. Szilágyi <dorottya.szilagyi@commsignia.com>"
+        )
+
+        client.create_draft(to=to, subject="DRAFT // Board MM 2026-07-22", body="body text")
+
+        raw = service.users.return_value.drafts.return_value.create.call_args.kwargs["body"]["message"]["raw"]
+        raw_bytes = base64.urlsafe_b64decode(raw.encode())
+        header_lines = raw_bytes.decode().split("\r\n" if b"\r\n" in raw_bytes else "\n")
+        to_lines = [line for line in header_lines if line.lower().startswith("to:")]
+        assert len(to_lines) == 1, "the To header must not fold across continuation lines"
+
+        parsed = email.message_from_bytes(raw_bytes, policy=email.policy.default)
+        addresses = {a.addr_spec: a.display_name for a in parsed["to"].addresses}
+        assert addresses == {
+            "szabolcs.patay@commsignia.com": "Szabolcs Patay",
+            "laszlo.virag@commsignia.com": "László Virág",
+            "balazs.sarlos@commsignia.com": "Balázs Sarlós",
+            "dorottya.szilagyi@commsignia.com": "Dorottya dr. Szilágyi",
+        }
+
 
 # ---------------------------------------------------------------------------- #
 # create_reply_draft: threading headers + reply-all address dedup
@@ -705,6 +740,35 @@ class TestCreateReplyDraft:
         to_header = next(line for line in decoded.splitlines() if line.lower().startswith("to:"))
         assert "<kazmer@x.com>" in to_header
         assert "kazmer@x.com" not in to_header.split("<")[0]
+
+    def test_reply_all_with_many_non_ascii_cc_recipients_stays_on_one_unfolded_line(self):
+        # Same folding hazard as create_draft's To header, but for the Cc
+        # header built from reply-all's deduped candidate list.
+        service = make_reply_service({
+            "Subject": "Original", "From": "sender@x.com",
+            "To": (
+                "me@x.com, "
+                "László Virág <laszlo.virag@commsignia.com>, "
+                "Balázs Sarlós <balazs.sarlos@commsignia.com>, "
+                "Dorottya dr. Szilágyi <dorottya.szilagyi@commsignia.com>"
+            ),
+        })
+        client = make_client(service)
+        client.create_reply_draft("m1", body="b", reply_all=True, my_email="me@x.com")
+
+        raw = service.users.return_value.drafts.return_value.create.call_args.kwargs["body"]["message"]["raw"]
+        raw_bytes = base64.urlsafe_b64decode(raw.encode())
+        header_lines = raw_bytes.decode().split("\r\n" if b"\r\n" in raw_bytes else "\n")
+        cc_lines = [line for line in header_lines if line.lower().startswith("cc:")]
+        assert len(cc_lines) == 1, "the Cc header must not fold across continuation lines"
+
+        parsed = email.message_from_bytes(raw_bytes, policy=email.policy.default)
+        addresses = {a.addr_spec: a.display_name for a in parsed["cc"].addresses}
+        assert addresses == {
+            "laszlo.virag@commsignia.com": "László Virág",
+            "balazs.sarlos@commsignia.com": "Balázs Sarlós",
+            "dorottya.szilagyi@commsignia.com": "Dorottya dr. Szilágyi",
+        }
 
     def test_subject_already_prefixed_with_re_is_not_doubled(self):
         service = make_reply_service({"Subject": "Re: Original", "From": "s@x.com", "To": "me@x.com"})
