@@ -696,7 +696,18 @@ class ApprovalWindowController(NSObject):
         panel.setLevel_(NSFloatingWindowLevel)
         app.activateIgnoringOtherApps_(True)
         app.runModalForWindow_(panel)
-        panel.orderOut_(None)
+        # close(), not just orderOut_() -- orderOut_() only hides the
+        # window, it never actually tears down its view hierarchy (the
+        # WKWebView included). A fresh panel/webview is built for every
+        # single call here, never reused, so leaving the old one merely
+        # hidden means many approval popups shown back to back accumulate
+        # windows AppKit still considers alive, without a matching
+        # explicit release -- see qa_popup_smoke.py's full-suite run,
+        # which segfaults deep in AppKit's tracking-area management after
+        # enough popups (each with its own hover-tooltip-bearing webview)
+        # have been shown and hidden this way. close() actually releases
+        # the window (NSWindow's default isReleasedWhenClosed) instead.
+        panel.close()
 
     def buttonClicked_(self, sender) -> None:
         # Internal result values ("accept"/"accept_all"/"deny") stay as-is --
