@@ -244,10 +244,7 @@ class SalesforceConnector(Connector):
 
     async def _list_reports(self) -> Any:
         t0 = time.time()
-        try:
-            reports = await asyncio.to_thread(self._sf.list_reports)
-        except SalesforceClientError as exc:
-            raise RuntimeError(str(exc)) from exc
+        reports = await self._fetch(self._sf.list_reports)
         result = [asdict(r) for r in reports]
         self._auto_audit("salesforce_list_reports", "List Salesforce Reports",
                          "List all reports", f"{len(reports)} report(s)", t0)
@@ -258,10 +255,7 @@ class SalesforceConnector(Connector):
     # ------------------------------------------------------------------ #
 
     async def _get_record(self, object_type: str, record_id: str) -> Any:
-        try:
-            record = await asyncio.to_thread(self._sf.get_record, object_type, record_id)
-        except SalesforceClientError as exc:
-            raise RuntimeError(str(exc)) from exc
+        record = await self._fetch(self._sf.get_record, object_type, record_id)
         record_dict = asdict(record)
         record_fields = record_dict.get("fields", {})
         name = record_fields.get("Name") or record_fields.get("name") or record_id
@@ -307,10 +301,7 @@ class SalesforceConnector(Connector):
         )
 
     async def _run_report(self, report_id: str) -> Any:
-        try:
-            result = await asyncio.to_thread(self._sf.run_report, report_id)
-        except SalesforceClientError as exc:
-            raise RuntimeError(str(exc)) from exc
+        result = await self._fetch(self._sf.run_report, report_id)
         result_dict = asdict(result) if hasattr(result, "__dataclass_fields__") else result
         # Salesforce's report-run response nests the report's name under
         # reportMetadata.name, not at the top level -- report_dict.get("name")
@@ -366,12 +357,7 @@ class SalesforceConnector(Connector):
         # call shouldn't cost the user an unnecessary approval decision.
         if account_id and not object_types.strip():
             raise ValueError("salesforce_search: account_id requires object_types to be specified")
-        try:
-            records = await asyncio.to_thread(
-                self._sf.search, search_term, object_types, account_id, max_results
-            )
-        except SalesforceClientError as exc:
-            raise RuntimeError(str(exc)) from exc
+        records = await self._fetch(self._sf.search, search_term, object_types, account_id, max_results)
         result = [asdict(r) for r in records]
         # Search term/Object types/Account ID are Claude's own input to this
         # call (kept in §1 as identifying context); Results (count) and the
@@ -419,6 +405,12 @@ class SalesforceConnector(Connector):
     # ------------------------------------------------------------------ #
     # Helpers
     # ------------------------------------------------------------------ #
+
+    async def _fetch(self, func, *args) -> Any:
+        try:
+            return await asyncio.to_thread(func, *args)
+        except SalesforceClientError as exc:
+            raise RuntimeError(str(exc)) from exc
 
     def _auto_audit(
         self, tool: str, tool_name: str, summary: str, sender: str, created_at: float

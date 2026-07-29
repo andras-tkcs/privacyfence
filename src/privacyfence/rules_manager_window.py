@@ -1,9 +1,9 @@
 """Native window for managing auto-accept rules and trusted-resource grants.
 
-Replaces the old "Auto-accept Rules" cascading NSMenu (connector -> Filters
--> operation -> rule -> value -> Remove, five to seven levels deep -- see
-the menu bar redesign review) with one searchable window: a sidebar of
-connectors and a scrollable list of that connector's grants/rules.
+One searchable window: a sidebar of connectors and a scrollable list of that
+connector's grants/rules -- deliberately not a cascading NSMenu (connector ->
+Filters -> operation -> rule -> value -> Remove would run five to seven
+levels deep).
 
 Pure view layer, deliberately. This module has no idea what an
 auto_accept_rule or a Trusted-resource grant actually is -- it only knows

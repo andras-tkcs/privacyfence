@@ -119,19 +119,14 @@ from .resource_grants import apply_grant_removal, apply_grant_upsert, describe_g
 
 logger = logging.getLogger(__name__)
 
-# Per-tool NARROW/WIDE card-stack shape -- re-derived directly from the
-# "Approval windows design system" claude.ai/design project's own markup
-# (turns 4-6: every .pf-win with an inline style="width:880px" is wide,
-# everything else is narrow), ported verbatim from scripts/qa_popup_smoke.py's
-# own _TOOL_LAYOUT (that script's own comment explains the handful of
-# deviations from the canvas's own mock, e.g. slack_send_message/
-# telegram_send_message/jira_add_comment being wide despite the canvas
-# mocking them narrow, since NARROW has no mechanism at all to show a real
-# message/comment body). Confirmed against a full --layout v2 screenshot
-# set and visually signed off before this table was promoted here from
-# that QA-only copy -- keep the two in sync if either ever changes; this is
-# the one gate.py consults for real production calls, qa_popup_smoke.py's
-# own copy is for local screenshot iteration only.
+# Per-tool NARROW/WIDE card-stack shape, ported verbatim from
+# scripts/qa_popup_smoke.py's own _TOOL_LAYOUT (that script's own comment
+# explains the handful of tools that render WIDE despite otherwise looking
+# like a NARROW case, e.g. slack_send_message/telegram_send_message/
+# jira_add_comment, since NARROW has no mechanism at all to show a real
+# message/comment body) -- keep the two in sync if either ever changes;
+# this is the one gate.py consults for real production calls,
+# qa_popup_smoke.py's own copy is for local screenshot iteration only.
 _TOOL_LAYOUT: dict[str, str] = {
     "gmail_get_message": WIDE, "gmail_get_thread": WIDE,
     "gmail_download_attachment": WIDE, "drive_download_file": WIDE,
@@ -259,34 +254,33 @@ async def gated_call(
     filtered_data: Any,
     gate: str = "review",         # "review" | "popup"
     preview: dict | None = None,  # fields shown in the review-gate dialog
-    new_info: dict[str, str] | None = None,  # v2 redesign's §3 ("What will be provided to
+    new_info: dict[str, str] | None = None,  # §3 ("What will be provided to
         # Claude") -- real (label, value) pairs a connector builds directly, e.g.
         # calendar_get_event_details's Attendees/Location/Description. Read-only
         # (gate="review") calls only, same reasoning as visibility below. Only consulted by
-        # approval_window.py's layout="narrow"/"wide" v2 rendering (falls back to a
-        # visibility-derived summary when empty); the legacy layout ignores it entirely.
-    preview_tables: list[dict] | None = None,  # v2 redesign's WIDE right-pane preview, as
+        # approval_window.py's layout="narrow"/"wide" rendering (falls back to a
+        # visibility-derived summary when empty).
+    preview_tables: list[dict] | None = None,  # WIDE right-pane preview, as
         # structured table(s) instead of a plain-text dump -- each dict is
         # {"caption": str (optional), "headers": [...], "rows": [[...], ...],
         # "footer": str (optional)}. For record/list-shaped "new" content with no
         # fixed field count (a Salesforce record's fields, search results, a
         # message list) -- see approval_window_html.py's _table_html. Valid on both
         # gate="review" and gate="popup" calls (e.g. drive_sheets_write_range's own
-        # values-being-written table) -- v2 rendering only; the legacy layout ignores it.
-    preview_blocks: list[dict] | None = None,  # v2 redesign's WIDE right-pane preview, as
+        # values-being-written table).
+    preview_blocks: list[dict] | None = None,  # WIDE right-pane preview, as
         # an ordered list of {"type": "text"|"field"|"table", ...} blocks -- lets text
         # and tables interleave (e.g. Jira's Reporter field, then its Description
         # paragraph, then its Comments table), which details_text/preview_tables alone
         # can't express. Takes full precedence over both when given -- see
         # approval_window_html.py's build_preview_body_html. Valid on both gate="review"
-        # and gate="popup" calls (e.g. jira_create_issue's own Description heading). v2
-        # rendering only.
-    table_only: bool = False,  # v2 redesign: when True and preview_tables is non-empty,
+        # and gate="popup" calls (e.g. jira_create_issue's own Description heading).
+    table_only: bool = False,  # When True and preview_tables is non-empty,
         # the WIDE right pane shows *only* the table(s), not details_text too -- for tools
         # whose details_text is a full duplicate of the table's own data (a Salesforce
         # record's plain-text field dump, a Telegram message list) rather than genuinely
-        # distinct content. details_text itself is untouched -- legacy and the PII scan's
-        # default fallback still see it in full. No effect when preview_blocks is set
+        # distinct content. details_text itself is untouched -- the PII scan's
+        # default fallback still sees it in full. No effect when preview_blocks is set
         # (blocks already control exactly what renders, no separate "hide text" concept
         # needed) or when preview_tables is empty. Valid on both gate="review" and
         # gate="popup" calls.
@@ -297,13 +291,12 @@ async def gated_call(
         # (gate="review") calls only: a popup-gate write already shows exactly what's being sent,
         # since the human is looking at content Claude itself just drafted, not something read
         # from an external source and potentially filtered on the way in.
-    content_kind: str = "generic",  # "generic" | "email" -- selects a per-surface body-pane
-        # rendering in approval_window.py's WKWebView. Explicit, connector-set hint rather than
-        # guessed from preview's shape, so a
-        # future connector that happens to reuse label names like "From"/"Subject" can't
-        # accidentally get styled as an email. Read-only (gate="review") calls only, same
-        # reasoning as visibility above -- a write is Claude's own drafted content, not something
-        # this pane needs a per-surface reading affordance for.
+    content_kind: str = "generic",  # "generic" | "email" -- has no effect on the current
+        # approval_window.py rendering (see approval_popup.show_read_popup's docstring). Kept
+        # threaded through from gmail.py so a future body-pane rendering hint has an existing
+        # plumbing path to reuse instead of a new parameter. Read-only (gate="review") calls only,
+        # same reasoning as visibility above -- a write is Claude's own drafted content, not
+        # something this pane needs a per-surface reading affordance for.
     pdf_bytes: bytes = b"",  # Raw PDF bytes for a native PDFView embed, instead of the
         # "[binary content...]" placeholder text.
         # Read-only (gate="review") calls only. The caller (drive.py's _get_file_content) must
@@ -353,9 +346,7 @@ async def gated_call(
     details = details_text or _default_details(raw_data)
     # No "PrivacyFence — " prefix here -- the "PrivacyFence" kicker line
     # directly above this title in approval_window.py already says that;
-    # repeating it in the title itself was the redundant "before" state a
-    # design review (see the menu bar/approval pane redesign session) called
-    # out, never actually fixed until now.
+    # repeating it in the title itself would be redundant.
     popup_title = tool_name
     # NARROW/WIDE card-stack shape, keyed by tool name -- see _TOOL_LAYOUT's
     # own comment. Falls back to NARROW for any tool not yet in that table

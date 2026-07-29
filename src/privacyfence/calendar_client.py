@@ -18,7 +18,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import date as _date
 from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import Any
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials

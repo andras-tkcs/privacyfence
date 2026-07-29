@@ -1,32 +1,24 @@
-"""Card-stack HTML template for the redesigned approval window.
+"""Card-stack HTML template for the approval window.
 
 Renders the *entire* content area of a review-gate or popup-gate dialog as one
-self-contained HTML document for a single full-window WKWebView, replacing the
-hand-laid-out NSTextField/NSBox stack ``approval_window.py`` builds for
-``layout="legacy"``. Buttons stay native (see approval_window.py's module
-docstring for why) -- nothing here renders Deny/Allow once/Always allow.
+self-contained HTML document for a single full-window WKWebView. Buttons stay
+native (see approval_window.py's module docstring for why) -- nothing here
+renders Deny/Allow once/Always allow.
 
-Source of truth for the visual design: the "Approval windows design system"
-claude.ai/design project (``12d94c54-621e-48ce-b836-a687e0a10ed7``, turns 5
-and 6), built on the "Broadsheet" design-system project
-(``96120b24-3fd3-4cc7-b48c-109e89968d8e``) for tokens/components -- vendored
-into ``resources/approval_window/`` (styles.css, with Source Serif 4 embedded
-as base64 data URIs; see that directory's fonts/OFL.txt for licensing). Two
-deliberate departures from the design canvas, per the redesign's own
-implementation notes: ``.pf-bar`` (the mock's own 3-dot chrome row) is
-dropped in favor of the real window's native title bar, and Google Fonts'
-``@import`` is replaced with the vendored local ``@font-face`` -- this
-document must never trigger a network fetch just to render a popup.
+Visual design assets (styles.css, with Source Serif 4 embedded as base64 data
+URIs; see that directory's fonts/OFL.txt for licensing) are vendored into
+``resources/approval_window/``. Google Fonts' ``@import`` is replaced with the
+vendored local ``@font-face`` -- this document must never trigger a network
+fetch just to render a popup.
 
 Every section is numbered dynamically (a running counter, not literal
 "01"/"02"/"03"/"04" strings) because which sections actually render varies by
 tool and by direction: §3 ("What will be provided to Claude") only ever
 renders for a review-gate call carrying a ``visibility`` dict today (see
 ``disclosure_rows`` below), so the §4-equivalent risk card that follows it
-lands on "03" instead of "04" whenever §3 is absent -- confirmed against the
-design canvas itself, which numbers write-gate PII cards "03" (no §3 exists
-on the write side at all) but read-gate ones "04" wherever a §3 card also
-rendered on that same tool.
+lands on "03" instead of "04" whenever §3 is absent -- a write-gate PII card
+is numbered "03" (no §3 exists on the write side at all), while a read-gate
+one is "04" wherever a §3 card also rendered on that same tool.
 
 §3's rows are real values (the same rendering as §1's ``.pf-kv`` rows, just
 meaning "new to Claude" instead of "already known"), not an abstract policy
@@ -74,11 +66,10 @@ _STYLES_CSS = _STYLES_PATH.read_text(encoding="utf-8")
 NARROW = "narrow"
 WIDE = "wide"
 
-# Public (no leading underscore): approval_window.py's own _V2_WINDOW_WIDTH
+# Public (no leading underscore): approval_window.py's own _WINDOW_WIDTH
 # derives from this directly rather than duplicating it, so the native
 # window frame and the HTML body rendered inside it can never drift out of
-# sync the way they once did (that dict still said 880 after this one was
-# bumped to 980 for a wider right pane).
+# sync.
 CONTENT_WIDTH = {NARROW: 610, WIDE: 980}
 
 # <body>'s own vertical padding (see build_card_stack_html's <style> block,
@@ -98,18 +89,16 @@ BODY_PADDING_BOTTOM = 24
 BODY_VERTICAL_PADDING = BODY_PADDING_TOP + BODY_PADDING_BOTTOM
 
 # WIDE's left column width -- deliberately narrower than a full 550px
-# single-column tool's content width (matching the design canvas's own
-# flex:0 0 350px would have been even narrower still), bumped to give §1-§4's
-# rows more room without pushing the window's overall width past what
-# comfortably fits on a scaled-resolution laptop display (see the redesign
-# discussion: a symmetric 550/550 split would need an ~1200px window, too
-# wide for common 1280/1440-logical-point MacBook screens).
+# single-column tool's content width, giving §1-§4's rows enough room without
+# pushing the window's overall width past what comfortably fits on a
+# scaled-resolution laptop display (a symmetric 550/550 split would need an
+# ~1200px window, too wide for common 1280/1440-logical-point MacBook
+# screens).
 _WIDE_LEFT_COLUMN_WIDTH = 420
 
 # §3's generic allow/redact/block -> disclosure-sentence mapping. A
-# deliberate, generic rule rather than hand-authored per-tool prose (compare
-# the design canvas's bespoke wording, e.g. "Full values for range") -- see
-# this module's docstring for why the exact wording isn't tool-specific yet.
+# deliberate, generic rule rather than hand-authored per-tool prose -- see
+# this module's docstring for why the exact wording isn't tool-specific.
 _DISCLOSURE_ALLOW = "Full {label_lower}"
 _DISCLOSURE_REDACT = "{label}, with some fields redacted"
 _DISCLOSURE_BLOCK = "None — not disclosed to Claude"
@@ -336,10 +325,7 @@ def _card(kicker: str, inner_html: str, *, style: str = "", kicker_color: str = 
 # .card-kicker default (var(--color-accent), teal); write gets the same
 # accent-2 (magenta) family the pill/rail already use, so the two kinds
 # of dialog read as visually distinct at the section-header level too,
-# not just via the header pill/rail. Matches the design canvas's own
-# write-dialog mocks (turn 3's "Post Slack Message": card-kicker style=
-# "color:var(--color-accent-2-700)"), which this template hadn't carried
-# over until now.
+# not just via the header pill/rail.
 _WRITE_KICKER_COLOR = "var(--color-accent-2-700)"
 
 
@@ -357,11 +343,9 @@ def _section_2_html(number: int, is_read: bool, claude_reason: str) -> str:
     if not claude_reason:
         return ""
     # §2 always shows Claude's stated *reason* (the quote below), on both
-    # read and write -- "Details — data to write" (the design canvas's own
-    # original write-side title) described something this card never
-    # actually rendered, since the real write payload lives in §1/the
-    # right pane, not here. "Why Claude is doing this" matches what's
-    # actually on screen, same as read's "Why Claude needs more data".
+    # read and write. "Why Claude is doing this" matches what's actually
+    # on screen -- the real write payload lives in §1/the right pane, not
+    # here -- same as read's "Why Claude needs more data".
     kicker = f"{number:02d} · " + ("Why Claude needs more data" if is_read else "Why Claude is doing this")
     # title="..." tooltip, same reasoning as _kv_rows_html's own -- shows
     # the full reason on hover with no JS, harmless when it isn't actually
@@ -566,12 +550,11 @@ def build_card_stack_html(
     left_column_content = header_html + pinned_joined + scrollable_joined
 
     if layout == WIDE:
-        # Fixed left column width (_WIDE_LEFT_COLUMN_WIDTH) regardless of
-        # the overall window width -- the design canvas's own two-column
-        # cards used a fixed flex-basis the same way (350px there; widened
-        # since, see that constant's own comment). overflow-y:auto +
-        # min-height:0 here (not split across a pinned/scrollable pair)
-        # is what makes this one shared scroll region.
+        # Fixed left column width (_WIDE_LEFT_COLUMN_WIDTH, see that
+        # constant's own comment) regardless of the overall window width --
+        # a fixed flex-basis. overflow-y:auto + min-height:0 here (not
+        # split across a pinned/scrollable pair) is what makes this one
+        # shared scroll region.
         left_column = (
             f'<div class="pf-scroll" style="flex:0 0 {_WIDE_LEFT_COLUMN_WIDTH}px;min-width:0;'
             f'overflow-y:auto;min-height:0">{left_column_content}</div>'
@@ -614,11 +597,11 @@ def build_card_stack_html(
             f'{_html_escape(temp_accept_text)}</div>'
         )
 
-    # Read/write side rail (design canvas turn 3, option "3b"), paired with
-    # the header's same-colored pill above -- 6px, on the window's left
-    # edge, cyan/accent for reads and magenta/accent-2 for writes. Left
-    # padding is reduced by the rail's own width so the total left inset
-    # (rail + padding) still matches the original 30px everywhere else.
+    # Read/write side rail, paired with the header's same-colored pill
+    # above -- 6px, on the window's left edge, cyan/accent for reads and
+    # magenta/accent-2 for writes. Left padding is reduced by the rail's
+    # own width so the total left inset (rail + padding) still matches the
+    # 30px used everywhere else.
     rail_color = "var(--color-accent-500)" if is_read else "var(--color-accent-2-500)"
     return f"""<!DOCTYPE html>
 <html>
@@ -665,12 +648,11 @@ def _header_html(
         f'{_html_escape(seen_count_text)}</div>'
         if seen_count_text else ""
     )
-    # Read/Write pill (design canvas turn 3, option "3b" -- colored side
-    # rail + pill), paired with the same-colored rail on <body> below --
+    # Read/Write pill, paired with the same-colored rail on <body> below --
     # cyan/accent for reads, magenta/accent-2 for writes, the same two
     # token families the rest of this template already uses (e.g. the read
-    # vs write PII/content-flag card variants), just made visible on every
-    # dialog now, not only ones carrying a PII match.
+    # vs write PII/content-flag card variants), visible on every dialog,
+    # not only ones carrying a PII match.
     pill_bg = "var(--color-accent-100)" if is_read else "var(--color-accent-2-100)"
     pill_color = "var(--color-accent-700)" if is_read else "var(--color-accent-2-700)"
     pill_label = "Read" if is_read else "Write"

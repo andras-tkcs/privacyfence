@@ -27,7 +27,7 @@ def _merged_attendees_display(event) -> str:
     """One UI-facing "Attendees" value combining the organizer and the
     attendee list, marking the organizer inline (e.g. "Alice <a@x.com>
     (organizer), Bob <b@x.com>") -- there is no separate "Organizer" row on
-    the approval window (redesign decision: merge, don't show both).
+    the approval window; the two are merged instead of shown separately.
 
     Google's Calendar API normally includes the organizer as one of the
     `attendees` entries (flagged `organizer: true`), but omits the whole
@@ -408,10 +408,8 @@ class CalendarConnector(Connector):
         # Attendees (see _merged_attendees_display's docstring for why a
         # naive "just use the attendees list" merge isn't enough on its
         # own). conference_link/hangout_link/attachments are deliberately
-        # not surfaced here (nor in filtered_data below) -- narrower
-        # disclosure than this tool used to have; attachments in particular
-        # used to let Claude follow a meeting's attached notes/transcript
-        # via drive_get_file_content, a capability this removes.
+        # not surfaced here (nor in filtered_data below) -- Claude gets no
+        # path from this tool to a meeting's attached notes/transcript.
         new_info = {
             "Attendees": _merged_attendees_display(event),
             "Location": event.location or "",

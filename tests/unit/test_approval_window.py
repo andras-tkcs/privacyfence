@@ -24,15 +24,10 @@ without any new Accessibility permission or interactive session: it's the
 same "real framework, no blocking UI" precedent test_approval_popup_
 escaping.py already established for osascript.
 
-This module used to carry a separate legacy-layout test suite alongside a
-"_v2" one (test_approval_window_v2.py) from when the redesign was an
-opt-in ``layout="legacy"``/``"narrow"``/``"wide"`` choice. The legacy
-rendering (and its own hand-laid-out NSTextField/NSBox construction) has
-since been removed from approval_window.py entirely -- this file now covers
-the one rendering that exists, folding in the couple of genuinely
-layout-agnostic pieces (buttonClicked_'s title->result mapping,
-_connector_icon_path's pure-function contract) the old legacy-only file
-used to carry.
+approval_window.py has a single rendering (``layout="narrow"``/``"wide"``,
+both rendered as one WKWebView card stack) -- this file covers it,
+including the couple of genuinely layout-agnostic pieces (buttonClicked_'s
+title->result mapping, _connector_icon_path's pure-function contract).
 """
 from __future__ import annotations
 
@@ -44,7 +39,7 @@ from AppKit import NSButton
 from WebKit import WKWebView
 
 from privacyfence.approval_window import (
-    _V2_WINDOW_WIDTH,
+    _WINDOW_WIDTH,
     ApprovalWindowController,
     _connector_icon_path,
     _reading_time_label,
@@ -130,16 +125,16 @@ _TINY_PNG_BYTES = base64.b64decode(
 )
 
 
-class TestV2WindowShape:
+class TestWindowShape:
     def test_narrow_layout_window_width(self):
         controller = make_controller(layout=NARROW)
         panel = controller.build_panel()
-        assert panel.frame().size.width == _V2_WINDOW_WIDTH[NARROW] == 610.0
+        assert panel.frame().size.width == _WINDOW_WIDTH[NARROW] == 610.0
 
     def test_wide_layout_window_width(self):
         controller = make_controller(layout=WIDE)
         panel = controller.build_panel()
-        assert panel.frame().size.width == _V2_WINDOW_WIDTH[WIDE] == 980.0
+        assert panel.frame().size.width == _WINDOW_WIDTH[WIDE] == 980.0
 
     def test_exactly_one_webview_renders_the_whole_content_area(self):
         # Everything except the native buttons lives in one WKWebView.
@@ -153,7 +148,7 @@ class TestV2WindowShape:
         assert webview.configuration().preferences().javaScriptEnabled() is False
 
 
-class TestV2Buttons:
+class TestButtons:
     def test_deny_and_allow_once_are_present(self):
         views, _ = build_views(make_controller())
         titles = buttons_by_title(views)
@@ -191,7 +186,7 @@ class TestV2Buttons:
 class TestAlwaysAllowVerboseLabel:
     """The Always allow button names the specific rule it would create
     (gate.py's accept_all_hint) instead of a plain, unspecific label -- see
-    _build_content_view_v2's own comment. Dispatch is tag-based (see
+    _build_content_view's own comment. Dispatch is tag-based (see
     TestButtonClicked), so a non-literal title here doesn't break the
     click -- these tests confirm the *display* side of that."""
 
@@ -228,7 +223,7 @@ class TestAlwaysAllowVerboseLabel:
         assert controller.result == "accept_all"
 
 
-class TestV2CardStackContent:
+class TestCardStackContent:
     """These assert against controller._details_html_string -- the exact
     string handed to loadHTMLString_baseURL_, since WKWebView's own loaded
     content isn't synchronously readable back out."""
@@ -338,7 +333,7 @@ class TestRequestFingerprint:
         assert with_seen.build_panel().frame().size.height > base.build_panel().frame().size.height
 
 
-class TestV2ImageAndPdfPreview:
+class TestImageAndPdfPreview:
     """Image/PDF preview content renders inline via a data URI (<img>/
     <embed>), never a native NSImageView/PDFView overlay. Only meaningful
     for WIDE -- NARROW has no preview pane at all to render into."""
@@ -377,7 +372,7 @@ class TestV2ImageAndPdfPreview:
         assert not [v for v in views if isinstance(v, PDFView)]
 
 
-class TestV2HeightEstimate:
+class TestHeightEstimate:
     """The window height is deterministic from field/section *counts*
     alone (see _estimate_left_column_height's docstring) -- never from how
     long any actual value is, since every row is CSS-fixed-and-truncated
@@ -412,32 +407,32 @@ class TestV2HeightEstimate:
         assert short.build_panel().frame().size.height == long.build_panel().frame().size.height
 
 
-class TestV2WindowHeightSafetyMargin:
+class TestWindowHeightSafetyMargin:
     """<body> is height:100vh (build_card_stack_html's flex containment),
     not a per-region pixel cap -- so a window sized to *exactly*
     _estimate_left_column_height() leaves zero room for WebKit's real
     render to land even a few px taller than the (unmeasured, round-number)
-    _V2_* guesses assume. A tiny dialog sitting right at
-    _V2_MIN_CONTENT_HEIGHT's floor has the least margin for that drift --
-    see _V2_HEIGHT_SAFETY_MARGIN's own comment."""
+    these constants' guesses assume. A tiny dialog sitting right at
+    _MIN_CONTENT_HEIGHT's floor has the least margin for that drift --
+    see _HEIGHT_SAFETY_MARGIN's own comment."""
 
     def test_window_height_exceeds_the_raw_estimate_by_the_safety_margin_and_body_padding(self):
         # webview_height must cover both the WebKit-render-drift margin AND
         # body's own fixed vertical CSS padding (box-sizing:border-box
         # carves that out of the 100vh before .pf-scroll ever sees it) --
-        # see _window_height_v2's own comment for the real overflow this
+        # see _window_height's own comment for the real overflow this
         # was found from when only the drift margin was reserved.
-        from privacyfence.approval_window import _V2_HEIGHT_SAFETY_MARGIN
+        from privacyfence.approval_window import _HEIGHT_SAFETY_MARGIN
         from privacyfence.approval_window_html import BODY_VERTICAL_PADDING
 
         controller = make_controller(preview={"Contact": "x", "Label": "y"})
         raw_estimate = controller._estimate_left_column_height()
-        webview_height = controller._window_height_v2() - 66.0
-        assert webview_height == raw_estimate + _V2_HEIGHT_SAFETY_MARGIN + BODY_VERTICAL_PADDING
+        webview_height = controller._window_height() - 66.0
+        assert webview_height == raw_estimate + _HEIGHT_SAFETY_MARGIN + BODY_VERTICAL_PADDING
 
     def test_tiny_dialog_gets_real_slack_over_its_own_pinned_estimate(self):
         # The reported case: a two-row preview, no reason/disclosure/PII --
-        # _V2_MIN_CONTENT_HEIGHT's floor wins over the raw pinned estimate,
+        # _MIN_CONTENT_HEIGHT's floor wins over the raw pinned estimate,
         # leaving very little native margin (12px, pre-fix) before real
         # WebKit rendering drift could trip a scrollbar on a dialog with
         # nothing that actually needs to scroll.
@@ -445,12 +440,12 @@ class TestV2WindowHeightSafetyMargin:
             preview={"Contact": "PrivacyFence QA Contact [QATEST]", "Label": "QATEST"},
             claude_reason="", new_info={}, pii_categories=[],
         )
-        pinned = controller._pinned_height_v2()
-        webview_height = controller._window_height_v2() - 66.0
+        pinned = controller._pinned_height()
+        webview_height = controller._window_height() - 66.0
         assert webview_height - pinned >= 24.0
 
 
-class TestV2PreviewTables:
+class TestPreviewTables:
     def test_table_renders_in_the_wide_right_pane(self):
         controller = make_controller(
             layout=WIDE,
@@ -492,13 +487,13 @@ class TestV2PreviewTables:
         assert '<span class="pf-preview-label">Reporter:</span>' in controller._details_html_string
 
 
-class TestV2ButtonsDisabledUntilWebviewLoads:
+class TestButtonsDisabledUntilWebviewLoads:
     """webView_didFinishNavigation_ is what re-enables Deny/Allow once/
     Always allow once the card-stack webview has actually painted --
     loadHTMLString_baseURL_ is asynchronous even for this fully local
     document (base64 fonts, full CSS bundle), so without this a fast or
     reflexive click could resolve the decision before the reviewer has
-    seen any content at all. See _build_content_view_v2's own comment."""
+    seen any content at all. See _build_content_view's own comment."""
 
     def test_buttons_start_disabled(self):
         controller = make_controller(allow_accept_all=True)

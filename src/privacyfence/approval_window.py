@@ -132,7 +132,7 @@ _BLUE = NSColor.colorWithSRGBRed_green_blue_alpha_(0x5B / 255, 0xA4 / 255, 0xFF 
 # must always agree on width, and two independently-maintained constants
 # already drifted out of sync once (this dict still said 880.0 after
 # CONTENT_WIDTH[WIDE] was bumped to 980 for a wider right pane).
-_V2_WINDOW_WIDTH = {layout: float(width) for layout, width in approval_window_html.CONTENT_WIDTH.items()}
+_WINDOW_WIDTH = {layout: float(width) for layout, width in approval_window_html.CONTENT_WIDTH.items()}
 
 # Pixel constants behind _estimate_left_column_height() -- deliberately
 # "assume every row is at its own label's line-clamp maximum"
@@ -144,29 +144,29 @@ _V2_WINDOW_WIDTH = {layout: float(width) for layout, width in approval_window_ht
 # Re-derived empirically against real qa_popup_smoke.py --layout v2
 # screenshots, not computed from the CSS alone -- adjust here if a future
 # style change to styles.css's card/row rules drifts from these.
-_V2_HEADER_HEIGHT = 90.0
-_V2_SEEN_COUNT_HEIGHT = 22.0
-_V2_CARD_CHROME = 62.0  # card padding (2x15) + margin-bottom (18) + kicker line (~14)
-_V2_ROW_BASE_HEIGHT = 12.0  # a .pf-kv row's share of the card's own gap, on top of its clamped lines
-_V2_ROW_LINE_HEIGHT = 18.0  # one line of a .pf-kv value at 14px/~1.3 line-height
-_V2_QUOTE_CARD_HEIGHT = 96.0  # §2's whole card: chrome + 3-line-clamped quote + the "unverified" meta line
-_V2_RISK_CARD_BASE_HEIGHT = 96.0  # §4 card: chrome + the "⚠ ..." line + one row of category tags
-_V2_MIN_CONTENT_HEIGHT = 260.0
-# Every _V2_* constant above is a round-number guess, not a real text
+_HEADER_HEIGHT = 90.0
+_SEEN_COUNT_HEIGHT = 22.0
+_CARD_CHROME = 62.0  # card padding (2x15) + margin-bottom (18) + kicker line (~14)
+_ROW_BASE_HEIGHT = 12.0  # a .pf-kv row's share of the card's own gap, on top of its clamped lines
+_ROW_LINE_HEIGHT = 18.0  # one line of a .pf-kv value at 14px/~1.3 line-height
+_QUOTE_CARD_HEIGHT = 96.0  # §2's whole card: chrome + 3-line-clamped quote + the "unverified" meta line
+_RISK_CARD_BASE_HEIGHT = 96.0  # §4 card: chrome + the "⚠ ..." line + one row of category tags
+_MIN_CONTENT_HEIGHT = 260.0
+# Every constant above is a round-number guess, not a real text
 # measurement (see their own comments) -- since <body> is height:100vh
 # (build_card_stack_html's flex-based containment, not a per-region pixel
 # cap), a window sized to *exactly* the raw estimate leaves zero room for
 # WebKit's real render to land even a few px taller than guessed. That's
 # harmless for genuinely long content (its own flex:1;overflow-y:auto
 # region just grows an internal scrollbar, correctly), but for a short
-# dialog sitting right at _V2_MIN_CONTENT_HEIGHT's floor -- a couple of
+# dialog sitting right at _MIN_CONTENT_HEIGHT's floor -- a couple of
 # .pf-kv rows and nothing else -- a few px of real-vs-estimated drift is
 # enough to trip a scrollbar on a dialog that's supposed to fit with
 # nothing to scroll. This margin is pure headroom against that drift, not
 # a per-section value -- it doesn't change how tall any card is *expected*
 # to be, only how much slack the actual window gets over that expectation.
-_V2_HEIGHT_SAFETY_MARGIN = 24.0
-_V2_MAX_WINDOW_HEIGHT_FRACTION = 0.8  # of the screen's height -- see _window_height_v2
+_HEIGHT_SAFETY_MARGIN = 24.0
+_MAX_WINDOW_HEIGHT_FRACTION = 0.8  # of the screen's height -- see _window_height
 
 _popup_lock = threading.Lock()  # only one native window on screen at a time
 
@@ -375,7 +375,7 @@ class ApprovalWindowController(NSObject):
         via an attributed title rather than a bezel style, since
         NSBezelStyleRounded has no "no border, small, underlined" variant.
         Dispatch is via ``tag``, not ``title()`` -- this button's title can
-        now vary per call (see _build_content_view_v2's accept_all_hint
+        now vary per call (see _build_content_view's accept_all_hint
         comment), so buttonClicked_ can't key on an exact string anymore."""
         btn = NSButton.alloc().init()
         btn.setBordered_(False)
@@ -408,11 +408,11 @@ class ApprovalWindowController(NSObject):
         nothing but this, then the actual show/activate/modal-block/hide
         sequence.
         """
-        return self._build_panel_v2()
+        return self._build_panel()
 
-    def _build_panel_v2(self):
-        window_width = _V2_WINDOW_WIDTH[self.layout]
-        window_height = self._window_height_v2()
+    def _build_panel(self):
+        window_width = _WINDOW_WIDTH[self.layout]
+        window_height = self._window_height()
 
         panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, window_width, window_height),
@@ -426,13 +426,13 @@ class ApprovalWindowController(NSObject):
         panel.center()
         self.panel = panel
 
-        content = self._build_content_view_v2(window_width, window_height)
+        content = self._build_content_view(window_width, window_height)
         panel.setContentView_(content)
         if self._details_view is not None:
             panel.setInitialFirstResponder_(self._details_view)
         return panel
 
-    def _v2_disclosure_rows(self) -> list[tuple[str, str]]:
+    def _disclosure_rows(self) -> list[tuple[str, str]]:
         """§3's rows -- ``new_info`` (real values a connector builds directly,
         e.g. calendar_get_event_details's Attendees/Location/Description, or
         gmail_get_message's To/Labels) come first, followed by the
@@ -456,51 +456,51 @@ class ApprovalWindowController(NSObject):
         more room than a typical short field; see that function's own
         comment), never a single uniform per-row constant."""
         return sum(
-            _V2_ROW_BASE_HEIGHT + approval_window_html.line_clamp_for(str(label)) * _V2_ROW_LINE_HEIGHT
+            _ROW_BASE_HEIGHT + approval_window_html.line_clamp_for(str(label)) * _ROW_LINE_HEIGHT
             for label in labels
         )
 
-    def _pinned_height_v2(self) -> float:
+    def _pinned_height(self) -> float:
         """Header, §1, §2, and the PII/content-flag risk card -- always
         fully visible, never inside the scrollable region (see
         approval_window_html.build_card_stack_html's own docstring for
         why the risk card in particular must never be one scroll away
-        from being missed). Only §3 (self._scrollable_height_v2) ever
+        from being missed). Only §3 (self._scrollable_height) ever
         gets capped/scrolled."""
-        height = _V2_HEADER_HEIGHT
+        height = _HEADER_HEIGHT
         if self.seen_count > 0:
-            height += _V2_SEEN_COUNT_HEIGHT
+            height += _SEEN_COUNT_HEIGHT
         if self.preview:
-            height += _V2_CARD_CHROME + self._rows_height(self.preview.keys())
+            height += _CARD_CHROME + self._rows_height(self.preview.keys())
         if self.claude_reason:
-            height += _V2_QUOTE_CARD_HEIGHT
+            height += _QUOTE_CARD_HEIGHT
         if self.pii_categories or self.write_content_flags:
-            height += _V2_RISK_CARD_BASE_HEIGHT
+            height += _RISK_CARD_BASE_HEIGHT
         return height
 
-    def _scrollable_height_v2(self) -> float:
+    def _scrollable_height(self) -> float:
         """§3 ("What will be provided to Claude") alone -- the one card
         whose row count genuinely varies per tool/call, and the only one
         ever capped when the window's height is trimmed (see
-        _pinned_height_v2)."""
-        disclosure_rows = self._v2_disclosure_rows()
+        _pinned_height)."""
+        disclosure_rows = self._disclosure_rows()
         if not disclosure_rows:
             return 0.0
-        return _V2_CARD_CHROME + self._rows_height(label for label, _ in disclosure_rows)
+        return _CARD_CHROME + self._rows_height(label for label, _ in disclosure_rows)
 
     def _estimate_left_column_height(self) -> float:
         """Deterministic from field/section *counts* alone -- never from how
         long any actual value is (every row is CSS-fixed-and-truncated, see
-        styles.css). See the _V2_* pixel constants' own comment for the
+        styles.css). See these pixel constants' own comments for the
         "assume worst case" reasoning."""
-        return max(_V2_MIN_CONTENT_HEIGHT, self._pinned_height_v2() + self._scrollable_height_v2())
+        return max(_MIN_CONTENT_HEIGHT, self._pinned_height() + self._scrollable_height())
 
-    def _window_height_v2(self) -> float:
-        # _V2_HEIGHT_SAFETY_MARGIN added here, not inside
+    def _window_height(self) -> float:
+        # _HEIGHT_SAFETY_MARGIN added here, not inside
         # _estimate_left_column_height() -- this is headroom for the
         # actual window, not a change to what any card/row is expected to
         # need (other callers of _estimate_left_column_height()/
-        # _pinned_height_v2()/_scrollable_height_v2() reason about relative
+        # _pinned_height()/_scrollable_height() reason about relative
         # proportions between sections, which this must leave alone). Body's
         # own vertical CSS padding is carved out of its 100vh (box-sizing:
         # border-box -- see build_card_stack_html's <style> block) before the
@@ -509,22 +509,22 @@ class ApprovalWindowController(NSObject):
         # real scrollHeight/clientHeight measurement showing a NARROW write
         # dialog (a short preview + reason + risk card, not enough of its
         # own estimate-vs-real-content slack to also absorb this) overflowing
-        # its .pf-scroll container by a few px despite _V2_HEIGHT_SAFETY_
-        # MARGIN, because that margin was only ever sized for WebKit's own
+        # its .pf-scroll container by a few px despite _HEIGHT_SAFETY_MARGIN,
+        # because that margin was only ever sized for WebKit's own
         # render drift, never for this separate, fixed, previously-
         # nowhere-accounted-for amount.
         content_height = (
             self._estimate_left_column_height()
-            + _V2_HEIGHT_SAFETY_MARGIN
+            + _HEIGHT_SAFETY_MARGIN
             + approval_window_html.BODY_VERTICAL_PADDING
         )
         window_height = content_height + _BUTTON_ROW_HEIGHT
         screen = NSScreen.mainScreen()
         if screen is not None:
-            window_height = min(window_height, screen.frame().size.height * _V2_MAX_WINDOW_HEIGHT_FRACTION)
+            window_height = min(window_height, screen.frame().size.height * _MAX_WINDOW_HEIGHT_FRACTION)
         return window_height
 
-    def _build_content_view_v2(self, window_width: float, window_height: float):
+    def _build_content_view(self, window_width: float, window_height: float):
         content = _FlippedView.alloc().initWithFrame_(NSMakeRect(0, 0, window_width, window_height))
         webview_height = window_height - _BUTTON_ROW_HEIGHT
 
@@ -546,15 +546,15 @@ class ApprovalWindowController(NSObject):
         # table_only suppresses details_text only when there's a real table
         # to show instead -- and never when preview_blocks is set, which
         # already controls exactly what renders on its own.
-        text_for_v2 = (
+        body_text = (
             "" if self.table_only and self.preview_tables and not self.preview_blocks
             else self.details_text
         )
         preview_body_html = approval_window_html.build_preview_body_html(
-            text_for_v2, image_data_uri=image_data_uri, pdf_data_uri=pdf_data_uri,
+            body_text, image_data_uri=image_data_uri, pdf_data_uri=pdf_data_uri,
             tables=self.preview_tables, blocks=self.preview_blocks,
         )
-        disclosure_rows = self._v2_disclosure_rows()
+        disclosure_rows = self._disclosure_rows()
 
         html = approval_window_html.build_card_stack_html(
             layout=self.layout,
@@ -646,7 +646,7 @@ class ApprovalWindowController(NSObject):
     def webView_didFinishNavigation_(self, webView, navigation) -> None:
         """WKNavigationDelegate callback: the card-stack webview has
         actually finished loading and painting, so it's now safe to let
-        Deny/Allow once/Always allow be clicked -- see _build_content_view_v2
+        Deny/Allow once/Always allow be clicked -- see _build_content_view
         (where they start disabled) and _action_buttons' comment in
         init() for why. Never wired up for the legacy layout, so this only
         ever fires for v2's full-window webview."""
@@ -703,9 +703,7 @@ class ApprovalWindowController(NSObject):
         # per call (accept_all_hint), so an exact-string match would
         # silently fall through to "deny" the moment that title stopped
         # being the literal word "Always allow". Any tag this doesn't
-        # recognize (there used to be a third "accept_temp" outcome from a
-        # distinct "Allow for 5 min" button; that choice is gone, see
-        # temp_accept_eligible above) still defaults to the safe direction.
+        # recognize still defaults to the safe direction.
         tag = sender.tag()
         if tag == _TAG_ACCEPT_ALL:
             self.result = "accept_all"
@@ -747,7 +745,7 @@ def show_native_approval(
     Returns 'accept', 'deny', or 'accept_all' (only reachable when
     allow_accept_all is True). ``temp_accept_eligible`` no longer changes
     the button set -- it only adds an informational disclosure caption
-    above the buttons (see ApprovalWindowController._build_content_view_v2).
+    above the buttons (see ApprovalWindowController._build_content_view).
     Whether Allow once also arms auto_accept.py's 5-minute, same-file grace
     window is decided by gate.py after the fact, from the same eligibility
     check that produced this flag -- not from a distinct user choice here.
@@ -763,7 +761,7 @@ def show_native_approval(
     per-tool choice. ``upload_forced``, ``new_info`` (§3's real "what's new"
     field/value pairs -- e.g. calendar_get_event_details's Attendees/
     Location/Description; falls back to a ``visibility``-derived policy
-    summary when empty, see ApprovalWindowController._v2_disclosure_rows),
+    summary when empty, see ApprovalWindowController._disclosure_rows),
     ``preview_tables`` (the WIDE right-pane preview as structured table(s)
     instead of plain text -- see approval_window_html.py's _table_html),
     ``preview_blocks`` (an ordered list of text/field/table blocks, letting
@@ -775,7 +773,7 @@ def show_native_approval(
     ``accept_all_hint``, when set (and ``allow_accept_all`` is True),
     renders as part of the Always allow button's own label (e.g. "Always
     allow — this folder") instead of the plain "Always allow" -- see
-    _build_content_view_v2's own comment for the exact format. Empty for
+    _build_content_view's own comment for the exact format. Empty for
     the one unconditional rule (``always_allow``) with no category to
     name, and always empty when ``allow_accept_all`` is False.
     """

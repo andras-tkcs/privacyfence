@@ -430,10 +430,9 @@ class GmailConnector(Connector):
                 "Message body": category_policy("privacy", "body"),
                 "Attachments": category_policy("privacy", "attachments"),
             },
-            # Only the legacy (layout="legacy") rendering path still reads
-            # this -- v2's build_preview_body_html no longer has an email
-            # special case (From/Subject/Date are §1, To is §3 now), so this
-            # only preserves today's live legacy header until cutover.
+            # No effect on the current rendering (build_preview_body_html has no
+            # email special case -- From/Subject/Date are §1, To is §3) -- see
+            # gate.py's content_kind docstring.
             content_kind="email",
             my_email=self.my_email,
             args={"message_id": message_id},

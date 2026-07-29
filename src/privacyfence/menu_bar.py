@@ -815,12 +815,11 @@ class PrivacyFenceMenuBar(rumps.App):
         self._run_async(work, done)
 
     def _build_org_menu(self, org_config: dict[str, Any]) -> rumps.MenuItem:
-        """Single top-level item, not a submenu -- the old version held only
-        two static status lines plus one action, exactly the kind of shallow
-        "menu wearing a data-browser's clothes" the menu bar redesign review
-        flagged (see that review's item 1, generalized). Clicking shows
-        status first (if any config is installed) before handing off to the
-        unchanged install/update flow."""
+        """Single top-level item, not a submenu -- a submenu holding only two
+        static status lines plus one action would be a menu wearing a
+        data-browser's clothes for no real navigational benefit. Clicking
+        shows status first (if any config is installed) before handing off
+        to the install/update flow."""
         label = "Organization Config…" if org_config else "Install Organization Config…"
         item = rumps.MenuItem(label)
         item.set_callback(self._open_org_config)

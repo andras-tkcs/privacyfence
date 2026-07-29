@@ -1,21 +1,16 @@
-/* Approval window design tokens/components — vendored from the "Broadsheet"
-   claude.ai/design system (project 96120b24-3fd3-4cc7-b48c-109e89968d8e) and the
-   "Approval windows design system" project (12d94c54-621e-48ce-b836-a687e0a10ed7),
-   trimmed to only the tokens/components the approval window actually uses (no
-   deck/landing/print treatments, no form controls, no nav/table — this window
-   never renders any of those). Inlined into every popup's HTML document rather
-   than linked, so the WKWebView keeps loading via loadHTMLString_baseURL_(html,
-   None) with no external references at all -- see approval_window.py's module
-   docstring for why that matters (no network access, nothing to even attempt to
-   load out to).
+/* Approval window design tokens/components, trimmed to only the tokens/
+   components the approval window actually uses (no deck/landing/print
+   treatments, no form controls, no nav/table — this window never renders
+   any of those). Inlined into every popup's HTML document rather than
+   linked, so the WKWebView keeps loading via loadHTMLString_baseURL_(html,
+   None) with no external references at all -- see approval_window.py's
+   module docstring for why that matters (no network access, nothing to
+   even attempt to load out to).
 
-   Fonts are Source Serif 4 (OFL-licensed, see fonts/OFL.txt), instanced from
-   Google Fonts' variable-font release down to the two static weights this
-   design actually uses (400/600) plus a 400 italic, subset to Latin, and
-   embedded below as base64 data URIs -- never fetched from Google Fonts or any
-   other network source at render time. Regenerate with:
-   see fonts/OFL.txt for provenance; re-subsetting instructions live in the
-   redesign implementation notes, not shipped here to keep this file lean. */
+   Fonts are Source Serif 4 (OFL-licensed, see fonts/OFL.txt), subset to the
+   two static weights this design actually uses (400/600) plus a 400
+   italic, subset to Latin, and embedded below as base64 data URIs -- never
+   fetched from Google Fonts or any other network source at render time. */
 
 @font-face {
   font-family: "Source Serif 4";
@@ -135,13 +130,13 @@ img { display: block; max-width: 100%; }
   width: fit-content;
 }
 
-/* — approval-window-specific, from the "Approval windows design system" project — */
+/* — approval-window-specific — */
 .pf-head { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 22px; }
 .pf-head h2 { margin: 0; font-size: 25px; white-space: nowrap; }
-/* Read/Write pill, design canvas turn 3 option "3b" -- paired with the
-   same-colored rail on <body> (see approval_window_html.py's
-   build_card_stack_html). Background/color set inline per call (accent
-   vs accent-2 tokens), only the shape/type is shared here. */
+/* Read/Write pill, paired with the same-colored rail on <body> (see
+   approval_window_html.py's build_card_stack_html). Background/color set
+   inline per call (accent vs accent-2 tokens), only the shape/type is
+   shared here. */
 .pf-pill {
   display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
   font: 600 11px ui-monospace, Menlo, monospace; letter-spacing: 0.05em; text-transform: uppercase;
@@ -219,8 +214,9 @@ img { display: block; max-width: 100%; }
 }
 .pf-preview-field-value { word-break: break-word; }
 
-/* Write-gate PII card — distinct from the (unchanged, --color-accent-2-*)
-   read-gate one, per the redesign's gap #1 resolution. */
+/* Write-gate PII card — distinct from the (--color-accent-2-*) read-gate
+   one: a write's flagged content is informational, not a forced
+   confirmation, so it gets its own, lower-alarm color. */
 .pii-write-bg {
   --pii-w-bg: oklch(96% 0.05 96); --pii-w-border: oklch(87% 0.09 92);
   --pii-w-ink: oklch(40% 0.10 78); --pii-w-tagbg: oklch(90% 0.08 90);
