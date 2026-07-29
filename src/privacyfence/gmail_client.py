@@ -12,6 +12,7 @@ google-auth-oauthlib installed-app flow.
 from __future__ import annotations
 
 import base64
+import email.policy
 import logging
 import os
 import threading
@@ -38,6 +39,15 @@ SCOPES = [
 
 class GmailClientError(Exception):
     """Raised for unrecoverable Gmail client problems (auth, config, API)."""
+
+
+# Apple Mail (Mail.app and especially iOS Mail) doesn't reliably reassemble
+# folded continuation lines in address headers once RFC 2047 encoded-words
+# are involved -- recipients silently drop out and the thread becomes
+# unrepliable, even though the folded form is valid RFC 5322. Keeping
+# To/Cc/Bcc on a single unfolded line sidesteps the client bug without
+# affecting compliant parsers (Gmail, strict RFC 5322 parsers) either way.
+_UNFOLDED_POLICY = email.policy.compat32.clone(max_line_length=None)
 
 
 def resolve_attachment_destination(filename: str, destination_dir: str = "") -> str:
@@ -381,7 +391,7 @@ class GmailClient:
         import email.mime.multipart
         import base64
 
-        msg = email.mime.text.MIMEText(body)
+        msg = email.mime.text.MIMEText(body, policy=_UNFOLDED_POLICY)
         msg["to"] = self._encode_addresses(to)
         msg["subject"] = subject
         if cc:
@@ -461,7 +471,7 @@ class GmailClient:
             seen.add(key)
             final_cc.append(addr)
 
-        msg = email.mime.text.MIMEText(body)
+        msg = email.mime.text.MIMEText(body, policy=_UNFOLDED_POLICY)
         msg["to"] = self._encode_address(to_addr)
         msg["subject"] = subject
         if final_cc:
