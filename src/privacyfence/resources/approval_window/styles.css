@@ -270,6 +270,17 @@ img { display: block; max-width: 100%; }
   --pii-w-bg: oklch(96% 0.05 96); --pii-w-border: oklch(87% 0.09 92);
   --pii-w-ink: oklch(40% 0.10 78); --pii-w-tagbg: oklch(90% 0.08 90);
 }
+@media (prefers-color-scheme: dark) {
+  /* Same hue/chroma as the light card above, lightness inverted to match
+     this file's dark palette (--color-bg/--color-surface land around
+     13-17% L against a light-mode ~92-96% L) -- amber background darkens,
+     ink lightens for contrast, border/tag chip sit at mid-lightness so
+     they stay visible against both the card and the dark page behind it. */
+  .pii-write-bg {
+    --pii-w-bg: oklch(22% 0.04 96); --pii-w-border: oklch(45% 0.09 92);
+    --pii-w-ink: oklch(88% 0.06 78); --pii-w-tagbg: oklch(30% 0.07 90);
+  }
+}
 
 /* Applied to both of build_card_stack_html's two scrollable containers
    (§3's cap and the WIDE right pane) whenever they're actually capped --

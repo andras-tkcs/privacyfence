@@ -2257,6 +2257,19 @@ class TestUpdateAvailableDialog:
 
         assert open_calls == [["open", "https://github.com/x/releases/tag/v2.2.0"]]
 
+    def test_non_http_release_url_falls_back_to_releases_page(self, app, monkeypatch):
+        monkeypatch.setattr(menu_bar.rumps, "alert", lambda **kw: 1)
+        open_calls = []
+        monkeypatch.setattr(menu_bar.subprocess, "run", lambda args, **kw: open_calls.append(args))
+        result = update_checker.UpdateCheckResult(
+            latest_version="v2.2.0", release_url="file:///etc/passwd",
+            is_beta=False, is_update_available=True,
+        )
+
+        app._show_update_available_alert(result)
+
+        assert open_calls == [["open", menu_bar.REPO_RELEASES_URL_FALLBACK]]
+
     def test_skip_marks_version_skipped_without_opening(self, app, monkeypatch):
         monkeypatch.setattr(menu_bar.rumps, "alert", lambda **kw: 0)
         skipped = []
