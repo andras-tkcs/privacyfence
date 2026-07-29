@@ -81,6 +81,22 @@ WIDE = "wide"
 # bumped to 980 for a wider right pane).
 CONTENT_WIDTH = {NARROW: 610, WIDE: 980}
 
+# <body>'s own vertical padding (see build_card_stack_html's <style> block,
+# "padding-top: {BODY_PADDING_TOP}px ... padding-bottom: {BODY_PADDING_BOTTOM}px").
+# box-sizing:border-box means this is carved *out of* body's 100vh before
+# any flex child (the .pf-scroll left column, or WIDE's right pane) ever
+# sees a pixel of it -- approval_window.py's own window-height estimate
+# must reserve this same amount on top of its content-height guess and its
+# own WebKit-render-drift margin, or a real render can overflow its
+# .pf-scroll container by exactly this much even when the content estimate
+# itself was generous. Found via a real scrollHeight/clientHeight
+# measurement on a NARROW write dialog (contacts_create) whose estimate's
+# usual slack over real content wasn't enough to also absorb this
+# previously-nowhere-accounted-for padding.
+BODY_PADDING_TOP = 26
+BODY_PADDING_BOTTOM = 24
+BODY_VERTICAL_PADDING = BODY_PADDING_TOP + BODY_PADDING_BOTTOM
+
 # WIDE's left column width -- deliberately narrower than a full 550px
 # single-column tool's content width (matching the design canvas's own
 # flex:0 0 350px would have been even narrower still), bumped to give §1-§4's
@@ -621,7 +637,8 @@ html {{ height: 100%; }}
 html, body {{ overflow-y: auto; }}
 body {{
   box-sizing: border-box; width: {width}px; height: 100vh;
-  padding-top: 26px; padding-right: 30px; padding-bottom: 24px; padding-left: 24px;
+  padding-top: {BODY_PADDING_TOP}px; padding-right: 30px;
+  padding-bottom: {BODY_PADDING_BOTTOM}px; padding-left: 24px;
   border-left: 6px solid {rail_color};
   display: flex; flex-direction: column;
 }}

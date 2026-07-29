@@ -487,8 +487,23 @@ class ApprovalWindowController(NSObject):
         # actual window, not a change to what any card/row is expected to
         # need (other callers of _estimate_left_column_height()/
         # _pinned_height_v2()/_scrollable_height_v2() reason about relative
-        # proportions between sections, which this must leave alone).
-        content_height = self._estimate_left_column_height() + _V2_HEIGHT_SAFETY_MARGIN
+        # proportions between sections, which this must leave alone). Body's
+        # own vertical CSS padding is carved out of its 100vh (box-sizing:
+        # border-box -- see build_card_stack_html's <style> block) before the
+        # .pf-scroll flex child ever sees a pixel of the window's assigned
+        # height, so it has to be reserved here explicitly -- found via a
+        # real scrollHeight/clientHeight measurement showing a NARROW write
+        # dialog (a short preview + reason + risk card, not enough of its
+        # own estimate-vs-real-content slack to also absorb this) overflowing
+        # its .pf-scroll container by a few px despite _V2_HEIGHT_SAFETY_
+        # MARGIN, because that margin was only ever sized for WebKit's own
+        # render drift, never for this separate, fixed, previously-
+        # nowhere-accounted-for amount.
+        content_height = (
+            self._estimate_left_column_height()
+            + _V2_HEIGHT_SAFETY_MARGIN
+            + approval_window_html.BODY_VERTICAL_PADDING
+        )
         window_height = content_height + _BUTTON_ROW_HEIGHT
         screen = NSScreen.mainScreen()
         if screen is not None:

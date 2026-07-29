@@ -379,13 +379,19 @@ class TestV2WindowHeightSafetyMargin:
     _V2_MIN_CONTENT_HEIGHT's floor has the least margin for that drift --
     see _V2_HEIGHT_SAFETY_MARGIN's own comment."""
 
-    def test_window_height_exceeds_the_raw_estimate_by_the_safety_margin(self):
+    def test_window_height_exceeds_the_raw_estimate_by_the_safety_margin_and_body_padding(self):
+        # webview_height must cover both the WebKit-render-drift margin AND
+        # body's own fixed vertical CSS padding (box-sizing:border-box
+        # carves that out of the 100vh before .pf-scroll ever sees it) --
+        # see _window_height_v2's own comment for the real overflow this
+        # was found from when only the drift margin was reserved.
         from privacyfence.approval_window import _V2_HEIGHT_SAFETY_MARGIN
+        from privacyfence.approval_window_html import BODY_VERTICAL_PADDING
 
         controller = make_controller(preview={"Contact": "x", "Label": "y"})
         raw_estimate = controller._estimate_left_column_height()
         webview_height = controller._window_height_v2() - 66.0
-        assert webview_height == raw_estimate + _V2_HEIGHT_SAFETY_MARGIN
+        assert webview_height == raw_estimate + _V2_HEIGHT_SAFETY_MARGIN + BODY_VERTICAL_PADDING
 
     def test_tiny_dialog_gets_real_slack_over_its_own_pinned_estimate(self):
         # The reported case: a two-row preview, no reason/disclosure/PII --
