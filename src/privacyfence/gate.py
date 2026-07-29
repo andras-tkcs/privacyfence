@@ -96,6 +96,7 @@ from .approval_popup import (
     show_rule_choice_popup,
     show_rule_confirmation_popup,
 )
+from .approval_window_html import NARROW, WIDE
 from .audit_log import AuditEntry, current_week, get_audit_logger
 from .auto_accept import (
     TOOL_TO_OPERATION,
@@ -116,6 +117,54 @@ from .pii_detector import detect_pii_categories
 from .resource_grants import apply_grant_removal, apply_grant_upsert, describe_grant_change, resource_type
 
 logger = logging.getLogger(__name__)
+
+# Per-tool NARROW/WIDE card-stack shape -- re-derived directly from the
+# "Approval windows design system" claude.ai/design project's own markup
+# (turns 4-6: every .pf-win with an inline style="width:880px" is wide,
+# everything else is narrow), ported verbatim from scripts/qa_popup_smoke.py's
+# own _TOOL_LAYOUT (that script's own comment explains the handful of
+# deviations from the canvas's own mock, e.g. slack_send_message/
+# telegram_send_message/jira_add_comment being wide despite the canvas
+# mocking them narrow, since NARROW has no mechanism at all to show a real
+# message/comment body). Confirmed against a full --layout v2 screenshot
+# set and visually signed off before this table was promoted here from
+# that QA-only copy -- keep the two in sync if either ever changes; this is
+# the one gate.py consults for real production calls, qa_popup_smoke.py's
+# own copy is for local screenshot iteration only.
+_TOOL_LAYOUT: dict[str, str] = {
+    "gmail_get_message": WIDE, "gmail_get_thread": WIDE,
+    "gmail_download_attachment": WIDE, "drive_download_file": WIDE,
+    "salesforce_get_record": WIDE, "salesforce_search": WIDE, "salesforce_run_report": WIDE,
+    "jira_get_issue": WIDE, "confluence_get_page": WIDE, "confluence_get_page_by_title": WIDE,
+    "telegram_get_messages": WIDE, "telegram_search_messages": WIDE,
+    "drive_sheets_get_values": WIDE, "slack_get_channel_history": WIDE,
+    "slack_get_thread_replies": WIDE, "slack_search_messages": WIDE,
+    "drive_get_file_content": WIDE,
+    "gmail_create_draft": WIDE, "gmail_reply_draft": WIDE,
+    "drive_sheets_write_range": WIDE, "drive_upload_file": WIDE,
+    "jira_create_issue": WIDE, "confluence_create_page": WIDE,
+    "calendar_get_event_details": NARROW, "calendar_create_event": NARROW,
+    "slack_send_message": WIDE, "telegram_send_message": WIDE, "jira_add_comment": WIDE,
+    "gmail_reply_all_draft": WIDE,
+    "gmail_add_label": NARROW, "gmail_remove_label": NARROW, "gmail_archive_message": NARROW,
+    "gmail_create_filter": NARROW, "gmail_update_filter": NARROW, "gmail_create_label": NARROW,
+    "drive_write_doc_content": WIDE, "drive_write_file_content": WIDE,
+    "drive_docs_edit_content": WIDE,
+    "drive_move_file": NARROW, "drive_sheets_add_sheet": NARROW,
+    "drive_sheets_rename_sheet": NARROW, "drive_sheets_delete_dimensions": NARROW,
+    "drive_sheets_format_range": NARROW, "drive_sheets_insert_dimensions": NARROW,
+    "drive_add_comment": WIDE,
+    "tasks_create_task": WIDE, "tasks_update_task": WIDE,
+    "drive_docs_format_content": NARROW,
+    "calendar_update_event": NARROW, "calendar_create_out_of_office": NARROW,
+    "calendar_set_working_location": NARROW, "calendar_set_event_visibility": NARROW,
+    "contacts_update": NARROW, "contacts_create": NARROW,
+    "contacts_add_label": NARROW, "contacts_remove_label": NARROW,
+    "jira_update_issue": NARROW, "jira_transition_issue": NARROW,
+    "confluence_update_page": WIDE,
+    "tasks_complete_task": NARROW,
+    "tasks_uncomplete_task": NARROW, "tasks_move_task": NARROW,
+}
 
 _popup_lock = asyncio.Lock()  # only one native dialog on screen at a time
 
@@ -307,6 +356,11 @@ async def gated_call(
     # design review (see the menu bar/approval pane redesign session) called
     # out, never actually fixed until now.
     popup_title = tool_name
+    # NARROW/WIDE card-stack shape, keyed by tool name -- see _TOOL_LAYOUT's
+    # own comment. Falls back to NARROW for any tool not yet in that table
+    # (shouldn't happen -- it's kept exhaustive against every gated tool --
+    # but a missing entry should degrade to the smaller shape, not raise).
+    layout = _TOOL_LAYOUT.get(tool, NARROW)
     # Only the review (read) gate scans for PII -- see module docstring.
     pii_categories = (
         detect_pii_categories(details if pii_scan_text is None else pii_scan_text)
@@ -402,7 +456,7 @@ async def gated_call(
                     pii_categories, visibility, claude_reason, seen_count, content_kind, pdf_bytes,
                     connector, preview_bytes, preview_mime_type, new_info=new_info,
                     preview_tables=preview_tables, preview_blocks=preview_blocks,
-                    table_only=table_only,
+                    table_only=table_only, layout=layout,
                 )
 
                 if decision in ("accept", "accept_all") and pii_categories:
@@ -476,9 +530,9 @@ async def gated_call(
                     claude_reason, write_content_flags, seen_count, connector,
                     suggestion is not None, preview_bytes, preview_mime_type,
                     preview_tables=preview_tables, preview_blocks=preview_blocks,
-                    table_only=table_only,
-                    # upload_forced selects the v2 redesign's distinct "write-forced" PII
-                    # card (see show_popup's own docstring) -- upload_pii_categories is only
+                    table_only=table_only, layout=layout,
+                    # upload_forced selects the distinct "write-forced" PII card (see
+                    # show_popup's own docstring) -- upload_pii_categories is only
                     # ever non-empty for drive_upload_file's real PII match, the one write
                     # call that forces the same second confirmation the read side gets.
                     upload_forced=bool(upload_pii_categories),

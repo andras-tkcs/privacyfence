@@ -56,17 +56,15 @@ Auto-accept Rules…" window (see _run_menu_bar_scenario's docstring) -- the men
 #60) has the same "real click actually reaching it" gap the rest of this script covers for
 approval popups, just never exercised end to end before now.
 
---layout v2 (default: "legacy", every existing scenario's rendering unchanged) switches every
-tool-approval scenario to the redesigned card-stack rendering (approval_window_html.py) instead of
-the original hand-laid-out NSTextField/NSBox stack -- this is the visual-review surface for the
-approval-window redesign, per that project's own implementation plan: iterate here, with
---screenshot-dir, before any of it touches gate.py or the real daemon. Each scenario's
-narrow/wide shape (_TOOL_LAYOUT below) is a fixed, explicit per-tool assignment re-derived
-directly from the "Approval windows design system" claude.ai/design project's own markup (turns
-4-6) for every one of the 30 dialog shapes that project actually mocked; tools it didn't
-explicitly mock get a best-effort classification by analogy to the closest mocked sibling
-(documented inline at _TOOL_LAYOUT) and should be treated as provisional until reviewed against
-real screenshots. --layout v2 has no effect on the menu-bar scenario (unrelated window).
+Every tool-approval scenario renders through the one real card-stack rendering
+(approval_window_html.py) -- the original hand-laid-out NSTextField/NSBox layout this replaced has
+been fully removed from approval_window.py after visual sign-off. Each scenario's narrow/wide
+shape (_TOOL_LAYOUT below) is a fixed, explicit per-tool assignment re-derived directly from the
+"Approval windows design system" claude.ai/design project's own markup (turns 4-6) for every one
+of the 30 dialog shapes that project actually mocked; tools it didn't explicitly mock got a
+best-effort classification by analogy to the closest mocked sibling (documented inline at
+_TOOL_LAYOUT), since confirmed correct against real screenshots and promoted into gate.py's own
+copy of this table (kept in sync -- see gate.py's own _TOOL_LAYOUT comment).
 
 Usage (the project's own venv, not a bare system python3 -- this needs the
 same pyobjc/AppKit packages the app itself depends on, which only the venv
@@ -75,9 +73,6 @@ has installed):
     .venv/bin/python scripts/qa_popup_smoke.py --report-file /tmp/popup_smoke.md
     .venv/bin/python scripts/qa_popup_smoke.py --pause-seconds 3   # slow down to actually look
     .venv/bin/python scripts/qa_popup_smoke.py --screenshot-dir /tmp/popup_smoke_shots
-    # The redesigned rendering, full screenshot set for visual review:
-    .venv/bin/python scripts/qa_popup_smoke.py --layout v2 --screenshot-dir /tmp/popup_smoke_v2 \\
-        --pause-seconds 2
     # One scenario only, e.g. to refresh a single README.md screenshot -- the three screenshots
     # README.md actually uses (as of this writing) come from these three scenario names, one
     # popup-gate, one review-gate, one menu-bar:
@@ -88,7 +83,7 @@ has installed):
     .venv/bin/python scripts/qa_popup_smoke.py --scenario "Menu bar" \\
         --screenshot-dir docs/images/screenshots --pause-seconds 3
     # Review-gate (read) dialogs only, or popup-gate (write) dialogs only:
-    .venv/bin/python scripts/qa_popup_smoke.py --group rg --layout v2 --screenshot-dir /tmp/rg_shots
+    .venv/bin/python scripts/qa_popup_smoke.py --group rg --screenshot-dir /tmp/rg_shots
     .venv/bin/python scripts/qa_popup_smoke.py --group wg
 """
 from __future__ import annotations
@@ -367,7 +362,7 @@ def _screenshot_own_window(pid: int, path: Path) -> bool:
 
 def _run_scenario(
     name: str, *, click_title: str, expected: str, pre_click_title: str | None = None,
-    pause_seconds: float = 0.3, screenshot_dir: Path | None = None, layout_mode: str = "legacy",
+    pause_seconds: float = 0.3, screenshot_dir: Path | None = None,
     **popup_kwargs
 ) -> ScenarioResult:
     # Every real gated call always carries a claude_reason -- "reason" is a
@@ -387,18 +382,19 @@ def _run_scenario(
         f"Checking {(tool_name_for_reason or 'this').replace('_', ' ')} as requested.",
     )
 
-    if layout_mode != "legacy":
-        # Inject the redesigned rendering's params from the scenario name
-        # alone -- see _TOOL_LAYOUT's docstring -- rather than editing every
-        # individual scenario call below. is_read is derived from the
-        # "RG-"/"WG-" prefix every real tool scenario name already carries
-        # (docs/approval-window-content-reference.md's own grouping);
-        # upload_forced only ever applies to drive_upload_file (see gap #4
-        # in the redesign's implementation plan).
-        tool_name = _tool_name_from_scenario(name)
-        popup_kwargs.setdefault("layout", _TOOL_LAYOUT.get(tool_name, "narrow"))
-        popup_kwargs.setdefault("is_read", name.startswith("RG-"))
-        popup_kwargs.setdefault("upload_forced", tool_name == "drive_upload_file")
+    # Inject the real rendering's params from the scenario name alone -- see
+    # _TOOL_LAYOUT's docstring -- rather than editing every individual
+    # scenario call below. is_read is derived from the "RG-"/"WG-" prefix
+    # every real tool scenario name already carries (docs/approval-window-
+    # content-reference.md's own grouping); upload_forced only ever applies
+    # to drive_upload_file (see gap #4 in the redesign's implementation
+    # plan). Mirrors exactly what gate.py itself now does in production
+    # (its own _TOOL_LAYOUT is this same table, promoted there after this
+    # script's own screenshot-driven sign-off).
+    tool_name = _tool_name_from_scenario(name)
+    popup_kwargs.setdefault("layout", _TOOL_LAYOUT.get(tool_name, "narrow"))
+    popup_kwargs.setdefault("is_read", name.startswith("RG-"))
+    popup_kwargs.setdefault("upload_forced", tool_name == "drive_upload_file")
 
     pid = os.getpid()
     click_status_box: list[str] = []
@@ -627,9 +623,8 @@ _TINY_PDF_BYTES = (
 # A real, visually-distinguishable PNG (240x160, nested blue/white/magenta
 # squares -- Broadsheet's own accent/accent-2 colors) -- for
 # gmail_download_attachment/drive_download_file/drive_upload_file's
-# preview_bytes/preview_mime_type, so --layout v2's (and, for that matter,
-# today's legacy layout's own already-merged _build_details_image_view)
-# image-render branch has something actually *visible* on screen, not a
+# preview_bytes/preview_mime_type, so approval_window.py's image-render
+# branch has something actually *visible* on screen, not a
 # 1x1-transparent-pixel stand-in that "renders" but shows nothing to look at
 # in a screenshot. See docs/file-type-support.md for the real feature this
 # stands in for.
@@ -708,11 +703,12 @@ def _quicklook_thumbnail_for_lorem_ipsum_docx() -> bytes:
     return generate_thumbnail(data, _LOREM_IPSUM_DOCX_PATH.name) or b""
 
 
-# --layout v2's per-tool narrow/wide assignment -- re-derived directly from the "Approval
-# windows design system" claude.ai/design project's own markup (turns 4-6: every .pf-win with an
-# inline style="width:880px" is wide, everything else is narrow), not from memory or a length
-# heuristic. Keyed by the bare tool name _tool_name_from_scenario() extracts from each scenario's
-# own name string.
+# Per-tool narrow/wide assignment -- re-derived directly from the "Approval windows design
+# system" claude.ai/design project's own markup (turns 4-6: every .pf-win with an inline
+# style="width:880px" is wide, everything else is narrow), not from memory or a length heuristic.
+# Keyed by the bare tool name _tool_name_from_scenario() extracts from each scenario's own name
+# string. Confirmed against real screenshots and promoted verbatim into gate.py's own copy of this
+# table for production use -- keep the two in sync if either ever changes.
 #
 # All 17 read-gate tools the design canvas mocked are wide except calendar_get_event_details; all
 # 13 write-gate tools it mocked are wide except calendar_create_event. The canvas's own mock also
@@ -728,8 +724,7 @@ def _quicklook_thumbnail_for_lorem_ipsum_docx() -> bytes:
 # are a best-effort classification by analogy to the closest mocked sibling from the same connector
 # -- wide only for tools that write/return a genuine prose body (doc/file content, page content,
 # sheet cell values, chat/comment text); narrow for short structured field changes or a fixed
-# disclosure sentence with nothing to actually preview. Provisional until reviewed against real
-# --layout v2 screenshots.
+# disclosure sentence with nothing to actually preview.
 _TOOL_LAYOUT: dict[str, str] = {
     # Confirmed wide from the design canvas directly (turns 4-6):
     "gmail_get_message": "wide", "gmail_get_thread": "wide",
@@ -945,7 +940,7 @@ def _run_menu_bar_scenario(
 
 def _scenarios(
     pause_seconds: float = 0.3, screenshot_dir: Path | None = None, only: str | None = None,
-    layout_mode: str = "legacy", group: str = "all",
+    group: str = "all",
 ) -> list[ScenarioResult]:
     """At least one scenario per tool in docs/approval-window-content-reference.md's RG-1/RG-2/
     WG-1/WG-2/WG-3 tables (61 tools total) -- every dialog *shape* that reference doc
@@ -970,9 +965,9 @@ def _scenarios(
     Combines with `only` (both must match); every scenario name below is authored with an "RG-N ·"
     or "WG-N ·" prefix specifically so this prefix check is exact, not a heuristic.
 
-    `layout_mode` ("legacy" or "v2", see main()'s --layout flag) is threaded straight through to
-    _run_scenario, which does the actual per-tool layout/is_read/upload_forced injection -- no
-    change needed to any of the individual scenario calls below to support it.
+    Every scenario renders through the one real rendering approval_window.py has --
+    _run_scenario does the per-tool layout/is_read/upload_forced injection itself (see its own
+    comment), so no change is needed to any of the individual scenario calls below for that.
     """
     results = []
     only_lower = only.lower() if only else None
@@ -984,25 +979,22 @@ def _scenarios(
         if group_prefix is not None and not name.startswith(group_prefix):
             return None
         return _run_scenario(
-            name, pause_seconds=pause_seconds, screenshot_dir=screenshot_dir,
-            layout_mode=layout_mode, **kwargs,
+            name, pause_seconds=pause_seconds, screenshot_dir=screenshot_dir, **kwargs,
         )
 
     # ================================================================== #
     # RG-1 -- review popup (every read tool except drive_get_file_content,
     # RG-2 below). Used to be three separate shapes here (no checklist /
-    # checklist / Gmail email header) -- v2 collapses all three into one
-    # (see docs/approval-window-content-reference.md's "View groups"
-    # section), so they're one group now; legacy still renders the old
-    # distinctions, noted inline at the scenarios that carry them.
+    # checklist / Gmail email header) -- collapsed into one (see
+    # docs/approval-window-content-reference.md's "View groups" section).
     # ================================================================== #
 
     results.append(run(
         # Also the preview_bytes/preview_mime_type image-render mechanic
         # (merged via #96-#97 -- see the redesign's implementation plan):
-        # _TINY_PNG_BYTES gives approval_window.py's image branch (legacy's
-        # native NSImageView, v2's inline <img> data URI) something real to
-        # render instead of falling back to the plain-metadata view.
+        # _TINY_PNG_BYTES gives approval_window.py's image branch (an
+        # inline <img> data URI) something real to render instead of
+        # falling back to the plain-metadata view.
         "RG-1 · gmail_download_attachment (+ image preview)",
         click_title="Allow once", expected="accept",
         title="Download Gmail Attachment",
@@ -1143,20 +1135,8 @@ def _scenarios(
     ))
 
     results.append(run(
-        # Also the progressive-disclosure mechanic: "Show more" is a
-        # non-terminal click that must resize the window in place without
-        # resolving the modal loop, so the following "Allow once" click
-        # still has to land on the same (now taller) window -- exactly
-        # the kind of thing a title-bar-height miscalculation in
-        # _rebuild_content would silently break. Legacy-only: v2 has no
-        # "Show more"/"Show less" anywhere (full content is always shown
-        # up front via truncation instead, see approval_window_html.py's
-        # module docstring) -- pre_click_title is None under --layout v2
-        # so this scenario just becomes a plain "Allow once" click there,
-        # instead of failing on a button that was never going to exist.
-        "RG-1 · confluence_get_page (+ Show more → Allow once)",
+        "RG-1 · confluence_get_page",
         click_title="Allow once", expected="accept",
-        pre_click_title=("Show more" if layout_mode == "legacy" else None),
         title="Read Confluence Page",
         preview={"Title": QA_PAGE, "Space": QA_SPACE},
         new_info={
@@ -1596,7 +1576,7 @@ def _scenarios(
 
     # ================================================================== #
     # RG-1 (continued) -- same shape as above, plus an "AI will receive"
-    # checklist appended to §3 (v2) / its own row-4 box (legacy only).
+    # checklist appended to §3.
     # ================================================================== #
 
     results.append(run(
@@ -1606,14 +1586,10 @@ def _scenarios(
         # and 7 in docs/approval-window-content-reference.md's anatomy
         # table) -- plus the Always-allow-click mechanic riding along on
         # the same click. Nothing else in this file combines all five
-        # cards; the gmail_get_message scenario below trades the summary
-        # box away for the email header on legacy only (content_kind="email"
-        # suppresses it per that doc's row 3; v2 has no such special case),
-        # and the write-side
-        # content-flag banner can't appear here at all (review-gate
-        # only) -- see that doc's "Cross-cutting" section for exactly
-        # which rows are mutually exclusive. This is also the one
-        # scenario meant to be captured on its own via --scenario for a
+        # cards; the write-side content-flag banner can't appear here at
+        # all (review-gate only) -- see that doc's "Cross-cutting" section
+        # for exactly which rows are mutually exclusive. This is also the
+        # one scenario meant to be captured on its own via --scenario for a
         # README screenshot that shows every card at once.
         "RG-1 · gmail_get_thread (+ reason, seen-count, PII banner, Always allow -- all cards)",
         click_title="Always allow", expected="accept_all",
@@ -1723,18 +1699,16 @@ def _scenarios(
     ))
 
     # ================================================================== #
-    # RG-1 (continued) -- gmail_get_message. Legacy-only quirk: content_kind
-    # ="email" renders a structured header instead of a summary box (see
-    # docs/approval-window-content-reference.md's row-8 note); v2 has no
-    # such special case, this is an ordinary RG-1 dialog there.
+    # RG-1 (continued) -- gmail_get_message. content_kind="email" is passed
+    # here since gmail.py's real call site still sets it, but it has no
+    # rendering effect today -- see docs/approval-window-content-
+    # reference.md's row-8 note. This is an ordinary RG-1 dialog.
     # ================================================================== #
 
     results.append(run(
-        # Also the email-header mechanic (content_kind="email", legacy
-        # only) and the PII banner+badges mechanic, composed together -- a
-        # realistic combination (a message body that happens to contain a
-        # phone number), and a case the design-review pass specifically
-        # wanted covered end to end.
+        # Also the PII banner+badges mechanic -- a realistic combination (a
+        # message body that happens to contain a phone number), and a case
+        # the design-review pass specifically wanted covered end to end.
         "RG-1 · gmail_get_message (+ email header, + PII banner)",
         click_title="Allow once", expected="accept",
         title="Read Gmail Message",
@@ -1750,8 +1724,8 @@ def _scenarios(
 
     # ================================================================== #
     # RG-2 -- review popup with native PDF body. The one review-gate shape
-    # that's still genuinely distinct on both legacy and v2 (see
-    # docs/approval-window-content-reference.md's "View groups" section).
+    # that's still genuinely distinct (see docs/approval-window-content-
+    # reference.md's "View groups" section).
     # ================================================================== #
 
     results.append(run(
@@ -2524,15 +2498,6 @@ def main() -> None:
              "menu-bar scenario, which is neither. Combines with --scenario (both must match) -- "
              "e.g. --group rg --scenario gmail to see only Gmail's read-side dialogs.",
     )
-    parser.add_argument(
-        "--layout", choices=["legacy", "v2"], default="legacy",
-        help="'legacy' (default): every scenario renders exactly as it does today. 'v2': every "
-             "tool-approval scenario renders through the redesigned card-stack template "
-             "(approval_window_html.py) instead -- the visual-review surface for the "
-             "approval-window redesign; see this script's own module docstring and _TOOL_LAYOUT "
-             "for how each scenario's narrow/wide shape is chosen. No effect on the menu-bar "
-             "scenario.",
-    )
     args = parser.parse_args()
 
     results: list[ScenarioResult] = []
@@ -2545,7 +2510,7 @@ def main() -> None:
                 args.screenshot_dir.mkdir(parents=True, exist_ok=True)
             results.extend(_scenarios(
                 args.pause_seconds, args.screenshot_dir, args.scenario,
-                layout_mode=args.layout, group=args.group,
+                group=args.group,
             ))
         except Exception as exc:  # noqa: BLE001 - surfaced via the report/exit code below, not swallowed
             print(f"qa_popup_smoke.py: scenario run raised {exc!r}", file=sys.stderr)
