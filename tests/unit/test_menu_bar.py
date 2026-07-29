@@ -30,7 +30,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from privacyfence import auto_accept, menu_bar, resource_names
+from privacyfence import auto_accept, menu_bar, resource_names, update_checker
 
 
 def wait_until(predicate, timeout=2.0, interval=0.005) -> bool:
@@ -52,6 +52,13 @@ def app(tmp_path, monkeypatch):
     # redirect it into this test's own tmp_path so a test that resolves a
     # name doesn't write resource_name_cache.json into the real checkout.
     monkeypatch.setattr(resource_names, "_cache_file", lambda: tmp_path / "resource_name_cache.json")
+    # Likewise for the update checker's on-disk cache.
+    monkeypatch.setattr(update_checker, "_cache_file", lambda: tmp_path / "update_check_cache.json")
+    # PrivacyFenceMenuBar.__init__ fires an immediate update check -- default
+    # it to a no-op so constructing `app` never makes a real network call in
+    # every other test in this file; tests that actually exercise the update
+    # checker override this themselves (see TestUpdateCheckTimer etc.).
+    monkeypatch.setattr(menu_bar, "check_for_update", lambda **kw: None)
 
     config_path = tmp_path / "settings.yaml"
     config_path.write_text("auto_accept_rules: {}\nconnectors: {}\n", encoding="utf-8")
@@ -2026,6 +2033,273 @@ class TestBuildQuicklookMenu:
         assert bool(quicklook_item["Enabled"].state) is False
 
 
+class TestToggleUpdateCheck:
+    def test_flips_enabled_flag_and_saves(self, app):
+        app._toggle_update_check()
+
+        cfg = app._load_config()
+        assert cfg["update_check"]["enabled"] is False
+
+    def test_toggling_twice_re_enables(self, app):
+        app._toggle_update_check()
+        app._toggle_update_check()
+
+        assert app._load_config()["update_check"]["enabled"] is True
+
+    def test_defaults_to_enabled_when_unset(self, app):
+        assert "update_check" not in app._load_config()
+
+        app._toggle_update_check()
+
+        assert app._load_config()["update_check"]["enabled"] is False
+
+    def test_menu_item_state_reflects_config(self, app):
+        app._toggle_update_check()  # now disabled
+
+        item = app.menu["Check for Updates"]["Enabled"]
+        assert bool(item.state) is False
+
+
+class TestToggleUpdateCheckBeta:
+    def test_flips_include_beta_flag_and_saves(self, app):
+        app._toggle_update_check_beta()
+
+        cfg = app._load_config()
+        assert cfg["update_check"]["include_beta"] is True
+
+    def test_toggling_twice_re_disables(self, app):
+        app._toggle_update_check_beta()
+        app._toggle_update_check_beta()
+
+        assert app._load_config()["update_check"]["include_beta"] is False
+
+    def test_defaults_to_disabled_when_unset(self, app):
+        assert "update_check" not in app._load_config()
+
+        app._toggle_update_check_beta()
+
+        assert app._load_config()["update_check"]["include_beta"] is True
+
+    def test_menu_item_state_reflects_config(self, app):
+        app._toggle_update_check_beta()  # now enabled
+
+        item = app.menu["Check for Updates"]["Receive Beta Releases"]
+        assert bool(item.state) is True
+
+    def test_toggling_channel_triggers_an_immediate_recheck(self, app, monkeypatch):
+        # A same-day stable-channel cache exists; flipping the beta toggle
+        # should still trigger a real (channel-mismatched) check right away
+        # rather than waiting for the next timer pulse -- see
+        # update_checker.check_for_update()'s channel-mismatch bypass.
+        calls = []
+        monkeypatch.setattr(app, "_run_async", lambda *a, **kw: calls.append((a, kw)))
+
+        app._toggle_update_check_beta()
+
+        assert len(calls) == 1
+
+
+class TestBuildUpdateCheckMenu:
+    def test_enabled_item_state_reflects_config(self, app):
+        item = app._build_update_check_menu({"enabled": True})
+        assert bool(item["Enabled"].state) is True
+
+        item = app._build_update_check_menu({"enabled": False})
+        assert bool(item["Enabled"].state) is False
+
+    def test_beta_item_state_reflects_config(self, app):
+        item = app._build_update_check_menu({"include_beta": True})
+        assert bool(item["Receive Beta Releases"].state) is True
+
+        item = app._build_update_check_menu({"include_beta": False})
+        assert bool(item["Receive Beta Releases"].state) is False
+
+    def test_defaults_when_config_empty(self, app):
+        item = app._build_update_check_menu({})
+        assert bool(item["Enabled"].state) is True
+        assert bool(item["Receive Beta Releases"].state) is False
+
+
+class TestUpdateCheckTimer:
+    def test_disabled_never_calls_run_async(self, app, monkeypatch):
+        cfg = app._load_config()
+        cfg["update_check"] = {"enabled": False}
+        app._save_config(cfg)
+        run_async_calls = []
+        monkeypatch.setattr(app, "_run_async", lambda *a, **kw: run_async_calls.append((a, kw)))
+
+        app._on_update_check_timer()
+
+        assert run_async_calls == []
+
+    def test_enabled_calls_run_async_with_check_for_update(self, app, monkeypatch):
+        run_async_calls = []
+        monkeypatch.setattr(app, "_run_async", lambda *a, **kw: run_async_calls.append((a, kw)))
+
+        app._on_update_check_timer()
+
+        assert len(run_async_calls) == 1
+
+    def test_passes_include_beta_from_config(self, app, monkeypatch):
+        cfg = app._load_config()
+        cfg["update_check"] = {"enabled": True, "include_beta": True}
+        app._save_config(cfg)
+        captured_work = {}
+
+        def fake_run_async(work, on_done):
+            captured_work["include_beta"] = work.keywords.get("include_beta")
+
+        monkeypatch.setattr(app, "_run_async", fake_run_async)
+        monkeypatch.setattr(menu_bar, "check_for_update", lambda **kw: None)
+
+        app._on_update_check_timer()
+
+        assert captured_work["include_beta"] is True
+
+
+class TestUpdateCheckDone:
+    def _fake_result(self, available=True, is_beta=False, version="v2.2.0"):
+        return update_checker.UpdateCheckResult(
+            latest_version=version, release_url="https://x/tag/" + version,
+            is_beta=is_beta, is_update_available=available,
+        )
+
+    def test_failure_logs_and_does_not_touch_latest_update(self, app):
+        app._latest_update = None
+
+        app._on_update_check_done(False, RuntimeError("boom"))
+
+        assert app._latest_update is None
+
+    def test_success_with_no_update_available_stores_result_without_alert(self, app, monkeypatch):
+        alerts = []
+        monkeypatch.setattr(menu_bar.rumps, "alert", lambda **kw: alerts.append(kw) or 0)
+
+        app._on_update_check_done(True, self._fake_result(available=False))
+
+        assert app._latest_update.is_update_available is False
+        assert alerts == []
+
+    def test_success_with_update_available_shows_alert(self, app, monkeypatch):
+        alerts = []
+        monkeypatch.setattr(menu_bar.rumps, "alert", lambda **kw: alerts.append(kw) or 0)
+
+        app._on_update_check_done(True, self._fake_result(available=True))
+
+        assert len(alerts) == 1
+        assert "2.2.0" in alerts[0]["message"]
+
+    def test_remind_later_suppresses_the_alert_until_it_elapses(self, app, monkeypatch):
+        monkeypatch.setattr(menu_bar, "should_notify_now", lambda: False)
+        alerts = []
+        monkeypatch.setattr(menu_bar.rumps, "alert", lambda **kw: alerts.append(kw) or 0)
+
+        app._on_update_check_done(True, self._fake_result(available=True))
+
+        assert alerts == []
+
+    def test_none_result_is_stored_without_alert(self, app, monkeypatch):
+        alerts = []
+        monkeypatch.setattr(menu_bar.rumps, "alert", lambda **kw: alerts.append(kw) or 0)
+
+        app._on_update_check_done(True, None)
+
+        assert app._latest_update is None
+        assert alerts == []
+
+
+class TestUpdateAvailableMenuItem:
+    def test_shown_when_update_available(self, app):
+        app._latest_update = update_checker.UpdateCheckResult(
+            latest_version="v2.2.0", release_url="https://x", is_beta=False, is_update_available=True
+        )
+        app._rebuild()
+
+        assert any("Update Available" in t for t in app.menu.keys())
+
+    def test_hidden_when_not_available(self, app):
+        app._latest_update = update_checker.UpdateCheckResult(
+            latest_version="v2.2.0", release_url="https://x", is_beta=False, is_update_available=False
+        )
+        app._rebuild()
+
+        assert not any("Update Available" in t for t in app.menu.keys())
+
+    def test_hidden_when_none(self, app):
+        app._latest_update = None
+        app._rebuild()
+
+        assert not any("Update Available" in t for t in app.menu.keys())
+
+    def test_beta_label_noted(self, app):
+        app._latest_update = update_checker.UpdateCheckResult(
+            latest_version="v2.2.0-beta.1", release_url="https://x", is_beta=True, is_update_available=True
+        )
+        app._rebuild()
+
+        title = next(t for t in app.menu.keys() if "Update Available" in t)
+        assert "(beta)" in title
+
+
+class TestUpdateAvailableDialog:
+    def _result(self):
+        return update_checker.UpdateCheckResult(
+            latest_version="v2.2.0", release_url="https://github.com/x/releases/tag/v2.2.0",
+            is_beta=False, is_update_available=True,
+        )
+
+    def test_download_opens_release_url(self, app, monkeypatch):
+        monkeypatch.setattr(menu_bar.rumps, "alert", lambda **kw: 1)
+        open_calls = []
+        monkeypatch.setattr(menu_bar.subprocess, "run", lambda args, **kw: open_calls.append(args))
+
+        app._show_update_available_alert(self._result())
+
+        assert open_calls == [["open", "https://github.com/x/releases/tag/v2.2.0"]]
+
+    def test_skip_marks_version_skipped_without_opening(self, app, monkeypatch):
+        monkeypatch.setattr(menu_bar.rumps, "alert", lambda **kw: 0)
+        skipped = []
+        monkeypatch.setattr(menu_bar, "mark_skipped", lambda version: skipped.append(version))
+        open_calls = []
+        monkeypatch.setattr(menu_bar.subprocess, "run", lambda args, **kw: open_calls.append(args))
+
+        app._show_update_available_alert(self._result())
+
+        assert skipped == ["v2.2.0"]
+        assert open_calls == []
+
+    def test_remind_later_marks_remind_without_opening(self, app, monkeypatch):
+        monkeypatch.setattr(menu_bar.rumps, "alert", lambda **kw: -1)
+        remind_calls = []
+        monkeypatch.setattr(menu_bar, "mark_remind_later", lambda: remind_calls.append(1))
+        open_calls = []
+        monkeypatch.setattr(menu_bar.subprocess, "run", lambda args, **kw: open_calls.append(args))
+
+        app._show_update_available_alert(self._result())
+
+        assert remind_calls == [1]
+        assert open_calls == []
+
+    def test_menu_item_click_reopens_dialog(self, app, monkeypatch):
+        app._latest_update = self._result()
+        shown = []
+        monkeypatch.setattr(app, "_show_update_available_alert", lambda result: shown.append(result))
+
+        app._show_update_dialog_from_menu()
+
+        assert shown == [app._latest_update]
+
+    def test_menu_item_click_does_nothing_without_a_result(self, app, monkeypatch):
+        app._latest_update = None
+        shown = []
+        monkeypatch.setattr(app, "_show_update_available_alert", lambda result: shown.append(result))
+
+        app._show_update_dialog_from_menu()
+
+        assert shown == []
+
+
 class TestTogglePiiCategory:
     def test_flips_category_flag_and_saves(self, app):
         app._toggle_pii_category("detect_ip_addresses")
@@ -2342,6 +2616,13 @@ class TestUnattendedIndicator:
     def test_registers_a_listener_with_the_ipc_server_on_init(self, tmp_path, monkeypatch):
         monkeypatch.setattr(menu_bar, "_find_icon", lambda: None)
         monkeypatch.setattr(menu_bar, "load_org_config", lambda: {})
+        # Constructs PrivacyFenceMenuBar directly rather than via the `app`
+        # fixture (to isolate exactly what __init__ does), so it needs the
+        # same update-check guards the fixture normally provides -- __init__
+        # fires an immediate check_for_update() call, which without these
+        # would make a real network call and write a real cache file here.
+        monkeypatch.setattr(update_checker, "_cache_file", lambda: tmp_path / "update_check_cache.json")
+        monkeypatch.setattr(menu_bar, "check_for_update", lambda **kw: None)
         config_path = tmp_path / "settings.yaml"
         config_path.write_text("auto_accept_rules: {}\nconnectors: {}\n", encoding="utf-8")
 

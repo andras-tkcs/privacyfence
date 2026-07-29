@@ -83,6 +83,13 @@ from .rules_manager_window import RulesManagerWindowController, Row, Section
 from .salesforce_client import authorize_interactive as salesforce_authorize_interactive
 from .slack_client import authorize_interactive as slack_authorize_interactive
 from .tasks_client import TasksClient
+from .update_checker import (
+    UpdateCheckResult,
+    check_for_update,
+    mark_remind_later,
+    mark_skipped,
+    should_notify_now,
+)
 
 if TYPE_CHECKING:
     from .ipc_server import IPCServer
@@ -91,6 +98,10 @@ logger = logging.getLogger(__name__)
 
 REPO_URL = "https://github.com/andras-tkcs/privacyfence"
 LICENSE_NAME = "Apache-2.0"
+
+# Periodic "is it time to check yet?" pulse for the update checker (see
+# __init__) -- deliberately shorter than update_checker.CHECK_INTERVAL_SECONDS.
+UPDATE_CHECK_TIMER_INTERVAL_SECONDS = 6 * 60 * 60
 
 # ---------------------------------------------------------------------------- #
 # Rule metadata
@@ -492,6 +503,11 @@ class PrivacyFenceMenuBar(rumps.App):
         # _rules_manager above, a separate instance of the same generic
         # window class (see rules_manager_window.py's window_title param).
         self._privacy_manager: RulesManagerWindowController | None = None
+        # Latest known update-check outcome, refreshed by _on_update_check_timer
+        # via _run_async -- None until the first check completes (or forever,
+        # if update checking is disabled). Not a module-level singleton: it's
+        # plain instance state, like _connector_objs/_rules_manager above.
+        self._latest_update: UpdateCheckResult | None = None
         icon_path = _find_icon()
         super().__init__(
             name="PrivacyFence",
@@ -507,6 +523,16 @@ class PrivacyFenceMenuBar(rumps.App):
         self._rebuild()
         set_rules_changed_listener(self._on_rules_changed)
         self._ipc_server.set_unattended_changed_listener(self._on_unattended_changed)
+        # Periodic "is it time to check yet?" pulse -- deliberately shorter
+        # than update_checker.CHECK_INTERVAL_SECONDS (24h). check_for_update()
+        # re-derives whether 24h have actually passed from its own on-disk
+        # timestamp, so this is robust to sleep/wake and doesn't need to match
+        # the real interval exactly.
+        self._update_check_timer = rumps.Timer(
+            self._on_update_check_timer, UPDATE_CHECK_TIMER_INTERVAL_SECONDS
+        )
+        self._update_check_timer.start()
+        self._on_update_check_timer()
 
     def _on_rules_changed(self) -> None:
         """Fired by auto_accept.reload_rules(), possibly from the IPC
@@ -552,6 +578,7 @@ class PrivacyFenceMenuBar(rumps.App):
         pii_enabled: bool = pii_cfg.get("enabled", True)
         quicklook_cfg: dict[str, Any] = cfg.get("quicklook_preview", {}) or {}
         quicklook_enabled: bool = quicklook_cfg.get("enabled", False)
+        update_check_cfg: dict[str, Any] = cfg.get("update_check", {}) or {}
 
         org_item = self._build_org_menu(org_config)
         connectors_parent = self._build_connectors_menu(org_config, connectors_cfg)
@@ -560,13 +587,14 @@ class PrivacyFenceMenuBar(rumps.App):
 
         pii_item = self._build_pii_menu(pii_cfg, pii_enabled)
         quicklook_item = self._build_quicklook_menu(quicklook_enabled)
+        update_check_item = self._build_update_check_menu(update_check_cfg)
 
-        self.menu.clear()
-        self.menu = [
+        items: list[Any] = [
             rumps.MenuItem(self._status_label()),
             rumps.separator,
             pii_item,
             quicklook_item,
+            update_check_item,
             rumps.separator,
             connectors_parent,
             rules_item,
@@ -574,10 +602,19 @@ class PrivacyFenceMenuBar(rumps.App):
             org_item,
             rumps.separator,
             rumps.MenuItem("Export Audit Log…", callback=self.export_audit_log),
-            rumps.MenuItem("About PrivacyFence", callback=self.show_about),
-            rumps.separator,
-            rumps.MenuItem("Quit PrivacyFence", callback=self.quit_app),
         ]
+        if self._latest_update is not None and self._latest_update.is_update_available:
+            suffix = " (beta)" if self._latest_update.is_beta else ""
+            items.append(rumps.MenuItem(
+                f"Update Available: {self._latest_update.latest_version}{suffix}…",
+                callback=self._show_update_dialog_from_menu,
+            ))
+        items.append(rumps.MenuItem("About PrivacyFence", callback=self.show_about))
+        items.append(rumps.separator)
+        items.append(rumps.MenuItem("Quit PrivacyFence", callback=self.quit_app))
+
+        self.menu.clear()
+        self.menu = items
         # The rules-manager window (if open) shows the same connector/rule
         # state as the menu -- refresh it on every path that gets here,
         # rather than duplicating this call at each of _rebuild()'s many
@@ -1364,6 +1401,78 @@ class PrivacyFenceMenuBar(rumps.App):
         self._save_config(cfg)
         set_quicklook_enabled(enabled)
         self._rebuild()
+
+    # ------------------------------------------------------------------ #
+    # Update checker (see update_checker.py)
+    # ------------------------------------------------------------------ #
+
+    def _build_update_check_menu(self, update_check_cfg: dict[str, Any]) -> rumps.MenuItem:
+        update_check_item = rumps.MenuItem("Check for Updates")
+        enabled_item = rumps.MenuItem("Enabled", callback=self._toggle_update_check)
+        enabled_item.state = update_check_cfg.get("enabled", True)
+        update_check_item.add(enabled_item)
+        beta_item = rumps.MenuItem("Receive Beta Releases", callback=self._toggle_update_check_beta)
+        beta_item.state = update_check_cfg.get("include_beta", False)
+        update_check_item.add(beta_item)
+        return update_check_item
+
+    def _toggle_update_check(self, _sender: Any = None) -> None:
+        cfg = self._load_config()
+        update_check_cfg = cfg.setdefault("update_check", {})
+        update_check_cfg["enabled"] = not update_check_cfg.get("enabled", True)
+        self._save_config(cfg)
+        self._rebuild()
+
+    def _toggle_update_check_beta(self, _sender: Any = None) -> None:
+        cfg = self._load_config()
+        update_check_cfg = cfg.setdefault("update_check", {})
+        update_check_cfg["include_beta"] = not update_check_cfg.get("include_beta", False)
+        self._save_config(cfg)
+        self._rebuild()
+        # The toggle itself is a channel switch -- check right away instead of
+        # waiting for the next timer pulse (check_for_update()'s own
+        # channel-mismatch check makes this a real network call, not a no-op).
+        self._on_update_check_timer()
+
+    def _on_update_check_timer(self, _timer: Any = None) -> None:
+        cfg = self._load_config()
+        update_check_cfg = cfg.get("update_check", {}) or {}
+        if not update_check_cfg.get("enabled", True):
+            return
+        include_beta = update_check_cfg.get("include_beta", False)
+        self._run_async(
+            partial(check_for_update, include_beta=include_beta), self._on_update_check_done
+        )
+
+    def _on_update_check_done(self, ok: bool, result: Any) -> None:
+        if not ok:
+            logger.warning("Update check failed: %s", result)
+            return
+        self._latest_update = result
+        self._rebuild()
+        if result is not None and result.is_update_available and should_notify_now():
+            self._show_update_available_alert(result)
+
+    def _show_update_dialog_from_menu(self, _sender: Any = None) -> None:
+        if self._latest_update is not None:
+            self._show_update_available_alert(self._latest_update)
+
+    def _show_update_available_alert(self, result: UpdateCheckResult) -> None:
+        beta_note = " (beta)" if result.is_beta else ""
+        resp = rumps.alert(
+            title="Update Available",
+            message=f"PrivacyFence {result.latest_version}{beta_note} is available "
+                     f"(you have {__version__}).",
+            ok="Download",
+            cancel="Skip This Version",
+            other="Remind Me Later",
+        )
+        if resp == 1:
+            subprocess.run(["open", result.release_url], check=False)
+        elif resp == 0:
+            mark_skipped(result.latest_version)
+        else:
+            mark_remind_later()
 
     # ------------------------------------------------------------------ #
     # Privacy filter (privacy / drive_privacy / slack_privacy)
