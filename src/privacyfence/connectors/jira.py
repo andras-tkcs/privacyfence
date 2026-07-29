@@ -193,12 +193,23 @@ class JiraConnector(Connector):
         issue = await self._fetch(self._jira.get_issue, issue_key)
         comments = await self._fetch(self._jira.get_issue_comments, issue_key)
         result = {**asdict(issue), "comments": [asdict(c) for c in comments]}
+        # Project/Key/Summary/Status/Assignee are all known for free via
+        # jira_search_issues; Description and Comments are only learned
+        # once this call is approved -- jira_search_issues never returns
+        # either. Neither has a fixed size (Description's length is
+        # unbounded, Comments has no fixed count), so §3 gets one fixed
+        # summary row for each rather than the literal text -- the real
+        # content lives in the right-pane preview/details_text instead.
         preview = {
             "Project": getattr(issue, "project_name", "") or issue_key.split("-")[0],
             "Key": issue.key,
             "Summary": (issue.summary[:80] + "…") if len(issue.summary) > 80 else issue.summary,
             "Status": getattr(issue, "status", "") or "",
             "Assignee": getattr(issue, "assignee", "") or "(unassigned)",
+        }
+        new_info = {
+            "Description": "Full description text",
+            "Comments": "Author, created date, and body per comment",
         }
         details_parts = []
         if len(issue.summary) > 80:
@@ -207,18 +218,39 @@ class JiraConnector(Connector):
             details_parts.append(f"Summary: {issue.summary}\n")
         details_parts.append(
             f"Reporter: {getattr(issue, 'reporter', '')}\n\n"
-            f"Description:\n{getattr(issue, 'description', '') or '(none)'}\n\n"
-            f"Comments ({len(comments)}):\n" +
-            "\n---\n".join(
-                f"{getattr(c, 'author', 'unknown')} [{getattr(c, 'created', '')}]:\n{getattr(c, 'body', '')}"
-                for c in comments
-            )
+            f"Description:\n{getattr(issue, 'description', '') or '(none)'}"
         )
+        # details_text/pii_scan_text stay a flat string -- kept for legacy
+        # display and the PII scan's default fallback, unrelated to how v2
+        # renders the same content (preview_blocks below).
         details = "".join(details_parts)
         pii_scan_text = (
             f"{getattr(issue, 'description', '') or ''}\n\n" +
             "\n".join(getattr(c, "body", "") or "" for c in comments)
         )
+        # v2's right pane: Reporter/Summary as standalone labeled fields
+        # (same font as a table header -- see approval_window_html.py's
+        # _field_block_html), Description as a heading + paragraph, then
+        # Comments as its own table -- interleaved via preview_blocks
+        # rather than one flat text blob, so "Reporter"/"Description"
+        # visually match "Author"/"Date"/"Comment" instead of looking like
+        # plain unstyled prose.
+        blocks = []
+        if len(issue.summary) > 80:
+            blocks.append({"type": "field", "label": "Summary", "value": issue.summary})
+        blocks.append({"type": "field", "label": "Reporter", "value": getattr(issue, "reporter", "") or ""})
+        blocks.append({"type": "heading", "label": "Description"})
+        blocks.append({"type": "text", "text": getattr(issue, "description", "") or "(none)"})
+        if comments:
+            blocks.append({
+                "type": "table",
+                "caption": f"Comments ({len(comments)})",
+                "headers": ["Author", "Date", "Comment"],
+                "rows": [
+                    [getattr(c, "author", "unknown"), getattr(c, "created", ""), getattr(c, "body", "")]
+                    for c in comments
+                ],
+            })
         return await gated_call(
             connector=self.name,
             tool="jira_get_issue",
@@ -229,8 +261,10 @@ class JiraConnector(Connector):
             filtered_data=result,
             gate="review",
             preview=preview,
+            new_info=new_info,
             details_text=details,
             pii_scan_text=pii_scan_text,
+            preview_blocks=blocks,
             my_email=self.my_email,
             args={"issue_key": issue_key},
         )
@@ -254,6 +288,16 @@ class JiraConnector(Connector):
         preview = {"Project": project_key, "Type": issue_type, "Summary": summary}
         if priority:
             preview["Priority"] = priority
+        # v2's right pane: a label-styled "Description" heading above the
+        # body text, same treatment jira_get_issue's own Description
+        # already gets (see approval_window_html.py's _field_block_html) --
+        # instead of plain unstyled prose with no field name at all. Empty
+        # when there's no description at all, same as get_issue's own
+        # blocks list (build_preview_body_html falls back to details_text).
+        blocks = []
+        if description:
+            blocks.append({"type": "heading", "label": "Description"})
+            blocks.append({"type": "text", "text": description})
         await gated_call(
             connector=self.name,
             tool="jira_create_issue",
@@ -265,6 +309,7 @@ class JiraConnector(Connector):
             gate="popup",
             preview=preview,
             details_text=description,
+            preview_blocks=blocks,
             my_email=self.my_email,
             args=payload,
         )

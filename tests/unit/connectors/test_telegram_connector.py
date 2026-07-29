@@ -103,7 +103,8 @@ class TestGetMessages:
         result = await connector.call("telegram_get_messages", {"chat_id": 100, "limit": 10})
 
         kwargs = gated_call_spy[0]
-        assert kwargs["preview"] == {"Chat": "Family Group", "Messages": "1"}
+        assert kwargs["preview"] == {"Chat": "Family Group"}
+        assert kwargs["new_info"]["Messages"] == "1"
         assert kwargs["gate"] == "review"
         assert kwargs["args"] == {"chat_id": 100}
         assert "my_email" not in kwargs  # telegram has no email-based auto-accept rules
@@ -112,6 +113,19 @@ class TestGetMessages:
         # Data minimization: media metadata and internal ids are not
         # forwarded to Claude, only the whitelisted fields below.
         assert result == [{"id": 1, "sender_name": "Alice", "text": "see you tomorrow", "date": "2026-07-06T10:00:00Z"}]
+        assert kwargs["preview_tables"] == [{
+            "headers": ["Sender", "Date", "Message"],
+            "rows": [["Alice", "2026-07-06T10:00:00Z", "see you tomorrow"]],
+        }]
+        assert kwargs["table_only"] is True
+
+    async def test_no_messages_produces_no_table(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_messages.return_value = []
+
+        await connector.call("telegram_get_messages", {"chat_id": 100})
+
+        assert gated_call_spy[0]["preview_tables"] == []
 
     async def test_pii_scan_text_is_message_text_only_not_sender_names(self, gated_call_spy):
         connector, client = make_connector()
@@ -133,7 +147,7 @@ class TestGetMessages:
         await connector.call("telegram_get_messages", {"chat_id": 555})
 
         assert gated_call_spy[0]["preview"]["Chat"] == "555"
-        assert gated_call_spy[0]["preview"]["Messages"] == "0"
+        assert gated_call_spy[0]["new_info"]["Messages"] == "0"
 
     async def test_client_error_becomes_runtime_error(self):
         connector, client = make_connector()
@@ -151,7 +165,8 @@ class TestSearchMessages:
         result = await connector.call("telegram_search_messages", {"query": "tomorrow", "limit": 5})
 
         kwargs = gated_call_spy[0]
-        assert kwargs["preview"] == {"Query": "tomorrow", "Results": "2"}
+        assert kwargs["preview"] == {"Query": "tomorrow"}
+        assert kwargs["new_info"]["Results"] == "2"
         assert kwargs["gate"] == "review"
         assert kwargs["args"] == {"query": "tomorrow"}
         client.search_messages.assert_called_once_with("tomorrow", 5)
@@ -159,6 +174,19 @@ class TestSearchMessages:
             "id": 1, "chat_name": "Family Group", "sender_name": "Alice",
             "text": "see you tomorrow", "date": "2026-07-06T10:00:00Z",
         }
+        assert kwargs["preview_tables"][0] == {
+            "headers": ["Sender", "Date", "Message"],
+            "rows": [["Alice", "2026-07-06T10:00:00Z", "see you tomorrow"], ["Alice", "2026-07-06T10:00:00Z", "see you tomorrow"]],
+        }
+        assert kwargs["table_only"] is True
+
+    async def test_no_results_produces_no_table(self, gated_call_spy):
+        connector, client = make_connector()
+        client.search_messages.return_value = []
+
+        await connector.call("telegram_search_messages", {"query": "nothing"})
+
+        assert gated_call_spy[0]["preview_tables"] == []
 
     async def test_pii_scan_text_is_message_text_only(self, gated_call_spy):
         connector, client = make_connector()

@@ -143,6 +143,45 @@ class TestGetIssue:
         assert kwargs["args"] == {"issue_key": "ENG-42"}
         assert kwargs["sender"] == "alice@example.com"  # reporter takes priority
 
+    async def test_new_info_has_description_and_comments_summary(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_issue.return_value = make_issue()
+        client.get_issue_comments.return_value = [
+            JiraComment(id="c1", author="bob@example.com", body="Looking into it", created="2026-07-01"),
+        ]
+
+        await connector.call("jira_get_issue", {"issue_key": "ENG-42"})
+
+        kwargs = gated_call_spy[0]
+        # Fixed summary sentences, not the literal text -- the real
+        # description/comment content lives only in preview_blocks below
+        # (duplicating it into new_info too would just repeat the same full
+        # text twice, same reasoning Comments already had).
+        assert kwargs["new_info"]["Description"] == "Full description text"
+        assert kwargs["new_info"]["Comments"] == "Author, created date, and body per comment"
+        # v2's right pane: Reporter as a label-styled field, Description as
+        # a heading + paragraph, Comments as its own table -- interleaved
+        # via preview_blocks, not a flat text blob (see connectors/jira.py).
+        assert kwargs["preview_blocks"] == [
+            {"type": "field", "label": "Reporter", "value": "alice@example.com"},
+            {"type": "heading", "label": "Description"},
+            {"type": "text", "text": "Users can't log in with SSO."},
+            {
+                "type": "table", "caption": "Comments (1)", "headers": ["Author", "Date", "Comment"],
+                "rows": [["bob@example.com", "2026-07-01", "Looking into it"]],
+            },
+        ]
+
+    async def test_no_comments_produces_no_table_block(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_issue.return_value = make_issue()
+        client.get_issue_comments.return_value = []
+
+        await connector.call("jira_get_issue", {"issue_key": "ENG-42"})
+
+        blocks = gated_call_spy[0]["preview_blocks"]
+        assert all(b["type"] != "table" for b in blocks)
+
     async def test_summary_truncated_in_preview_but_full_in_details(self, gated_call_spy):
         connector, client = make_connector()
         long_summary = "x" * 100
@@ -249,6 +288,32 @@ class TestCreateIssue:
 
         assert result["key"] == "ENG-100"
         client.create_issue.assert_called_once_with("ENG", "New bug", "Task", "", "")
+
+    async def test_description_renders_as_a_labeled_heading_block(self, gated_call_spy):
+        # v2's right pane: a label-styled "Description" heading above the
+        # body, same treatment jira_get_issue's own Description gets --
+        # instead of plain unstyled prose with no field name at all.
+        connector, client = make_connector()
+        client.create_issue.return_value = make_issue(key="ENG-100")
+
+        await connector.call("jira_create_issue", {
+            "project_key": "ENG", "summary": "New bug", "description": "Steps to reproduce...",
+        })
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview_blocks"] == [
+            {"type": "heading", "label": "Description"},
+            {"type": "text", "text": "Steps to reproduce..."},
+        ]
+        assert kwargs["details_text"] == "Steps to reproduce..."
+
+    async def test_no_description_produces_no_blocks(self, gated_call_spy):
+        connector, client = make_connector()
+        client.create_issue.return_value = make_issue(key="ENG-100")
+
+        await connector.call("jira_create_issue", {"project_key": "ENG", "summary": "New bug"})
+
+        assert gated_call_spy[0]["preview_blocks"] == []
 
 
 class TestAddComment:

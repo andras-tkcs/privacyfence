@@ -96,6 +96,7 @@ from .approval_popup import (
     show_rule_choice_popup,
     show_rule_confirmation_popup,
 )
+from .approval_window_html import NARROW, WIDE
 from .audit_log import AuditEntry, current_week, get_audit_logger
 from .auto_accept import (
     TOOL_TO_OPERATION,
@@ -103,6 +104,7 @@ from .auto_accept import (
     add_auto_accept_rule,
     describe_rule,
     describe_rule_change,
+    describe_rule_short,
     get_auto_accept_evaluator,
     known_rule_names,
     mutate_grants,
@@ -116,6 +118,54 @@ from .pii_detector import detect_pii_categories
 from .resource_grants import apply_grant_removal, apply_grant_upsert, describe_grant_change, resource_type
 
 logger = logging.getLogger(__name__)
+
+# Per-tool NARROW/WIDE card-stack shape -- re-derived directly from the
+# "Approval windows design system" claude.ai/design project's own markup
+# (turns 4-6: every .pf-win with an inline style="width:880px" is wide,
+# everything else is narrow), ported verbatim from scripts/qa_popup_smoke.py's
+# own _TOOL_LAYOUT (that script's own comment explains the handful of
+# deviations from the canvas's own mock, e.g. slack_send_message/
+# telegram_send_message/jira_add_comment being wide despite the canvas
+# mocking them narrow, since NARROW has no mechanism at all to show a real
+# message/comment body). Confirmed against a full --layout v2 screenshot
+# set and visually signed off before this table was promoted here from
+# that QA-only copy -- keep the two in sync if either ever changes; this is
+# the one gate.py consults for real production calls, qa_popup_smoke.py's
+# own copy is for local screenshot iteration only.
+_TOOL_LAYOUT: dict[str, str] = {
+    "gmail_get_message": WIDE, "gmail_get_thread": WIDE,
+    "gmail_download_attachment": WIDE, "drive_download_file": WIDE,
+    "salesforce_get_record": WIDE, "salesforce_search": WIDE, "salesforce_run_report": WIDE,
+    "jira_get_issue": WIDE, "confluence_get_page": WIDE, "confluence_get_page_by_title": WIDE,
+    "telegram_get_messages": WIDE, "telegram_search_messages": WIDE,
+    "drive_sheets_get_values": WIDE, "slack_get_channel_history": WIDE,
+    "slack_get_thread_replies": WIDE, "slack_search_messages": WIDE,
+    "drive_get_file_content": WIDE,
+    "gmail_create_draft": WIDE, "gmail_reply_draft": WIDE,
+    "drive_sheets_write_range": WIDE, "drive_upload_file": WIDE,
+    "jira_create_issue": WIDE, "confluence_create_page": WIDE,
+    "calendar_get_event_details": NARROW, "calendar_create_event": NARROW,
+    "slack_send_message": WIDE, "telegram_send_message": WIDE, "jira_add_comment": WIDE,
+    "gmail_reply_all_draft": WIDE,
+    "gmail_add_label": NARROW, "gmail_remove_label": NARROW, "gmail_archive_message": NARROW,
+    "gmail_create_filter": NARROW, "gmail_update_filter": NARROW, "gmail_create_label": NARROW,
+    "drive_write_doc_content": WIDE, "drive_write_file_content": WIDE,
+    "drive_docs_edit_content": WIDE,
+    "drive_move_file": NARROW, "drive_sheets_add_sheet": NARROW,
+    "drive_sheets_rename_sheet": NARROW, "drive_sheets_delete_dimensions": NARROW,
+    "drive_sheets_format_range": NARROW, "drive_sheets_insert_dimensions": NARROW,
+    "drive_add_comment": WIDE,
+    "tasks_create_task": WIDE, "tasks_update_task": WIDE,
+    "drive_docs_format_content": NARROW,
+    "calendar_update_event": NARROW, "calendar_create_out_of_office": NARROW,
+    "calendar_set_working_location": NARROW, "calendar_set_event_visibility": NARROW,
+    "contacts_update": NARROW, "contacts_create": NARROW,
+    "contacts_add_label": NARROW, "contacts_remove_label": NARROW,
+    "jira_update_issue": NARROW, "jira_transition_issue": NARROW,
+    "confluence_update_page": WIDE,
+    "tasks_complete_task": NARROW,
+    "tasks_uncomplete_task": NARROW, "tasks_move_task": NARROW,
+}
 
 _popup_lock = asyncio.Lock()  # only one native dialog on screen at a time
 
@@ -209,6 +259,37 @@ async def gated_call(
     filtered_data: Any,
     gate: str = "review",         # "review" | "popup"
     preview: dict | None = None,  # fields shown in the review-gate dialog
+    new_info: dict[str, str] | None = None,  # v2 redesign's §3 ("What will be provided to
+        # Claude") -- real (label, value) pairs a connector builds directly, e.g.
+        # calendar_get_event_details's Attendees/Location/Description. Read-only
+        # (gate="review") calls only, same reasoning as visibility below. Only consulted by
+        # approval_window.py's layout="narrow"/"wide" v2 rendering (falls back to a
+        # visibility-derived summary when empty); the legacy layout ignores it entirely.
+    preview_tables: list[dict] | None = None,  # v2 redesign's WIDE right-pane preview, as
+        # structured table(s) instead of a plain-text dump -- each dict is
+        # {"caption": str (optional), "headers": [...], "rows": [[...], ...],
+        # "footer": str (optional)}. For record/list-shaped "new" content with no
+        # fixed field count (a Salesforce record's fields, search results, a
+        # message list) -- see approval_window_html.py's _table_html. Valid on both
+        # gate="review" and gate="popup" calls (e.g. drive_sheets_write_range's own
+        # values-being-written table) -- v2 rendering only; the legacy layout ignores it.
+    preview_blocks: list[dict] | None = None,  # v2 redesign's WIDE right-pane preview, as
+        # an ordered list of {"type": "text"|"field"|"table", ...} blocks -- lets text
+        # and tables interleave (e.g. Jira's Reporter field, then its Description
+        # paragraph, then its Comments table), which details_text/preview_tables alone
+        # can't express. Takes full precedence over both when given -- see
+        # approval_window_html.py's build_preview_body_html. Valid on both gate="review"
+        # and gate="popup" calls (e.g. jira_create_issue's own Description heading). v2
+        # rendering only.
+    table_only: bool = False,  # v2 redesign: when True and preview_tables is non-empty,
+        # the WIDE right pane shows *only* the table(s), not details_text too -- for tools
+        # whose details_text is a full duplicate of the table's own data (a Salesforce
+        # record's plain-text field dump, a Telegram message list) rather than genuinely
+        # distinct content. details_text itself is untouched -- legacy and the PII scan's
+        # default fallback still see it in full. No effect when preview_blocks is set
+        # (blocks already control exactly what renders, no separate "hide text" concept
+        # needed) or when preview_tables is empty. Valid on both gate="review" and
+        # gate="popup" calls.
     details_text: str = "",       # full text shown inline or via TextEdit
     pii_scan_text: str | None = None,  # content-only text for the PII scan; defaults to details_text
     visibility: dict[str, str] | None = None,  # {label: "allow"|"redact"|"block"} -- the review
@@ -276,6 +357,11 @@ async def gated_call(
     # design review (see the menu bar/approval pane redesign session) called
     # out, never actually fixed until now.
     popup_title = tool_name
+    # NARROW/WIDE card-stack shape, keyed by tool name -- see _TOOL_LAYOUT's
+    # own comment. Falls back to NARROW for any tool not yet in that table
+    # (shouldn't happen -- it's kept exhaustive against every gated tool --
+    # but a missing entry should degrade to the smaller shape, not raise).
+    layout = _TOOL_LAYOUT.get(tool, NARROW)
     # Only the review (read) gate scans for PII -- see module docstring.
     pii_categories = (
         detect_pii_categories(details if pii_scan_text is None else pii_scan_text)
@@ -341,6 +427,15 @@ async def gated_call(
 
         if gate == "review":
             suggestion = suggest_rule(operation_key, ctx)
+            # Short, button-label phrase for the specific rule Always allow
+            # would create (e.g. "if I'm sender") -- shown on the button
+            # itself, before the click, not just in the confirmation dialog
+            # that already used describe_rule() for the full sentence. When
+            # 2+ candidates actually match, this still describes only the
+            # top-priority one, same as allow_accept_all's own derivation
+            # below -- the "which one?" choice is only surfaced after the
+            # click (suggest_rule_choices()), unchanged by this.
+            accept_all_hint = describe_rule_short(suggestion[0]) if suggestion else ""
             # Everything interactive for this item — including the PII
             # confirmation, the "Always allow" confirmation, and persisting
             # the resulting rule — stays inside one continuous lock
@@ -369,7 +464,9 @@ async def gated_call(
                 decision = await asyncio.to_thread(
                     show_read_popup, popup_title, preview or {}, details, suggestion is not None,
                     pii_categories, visibility, claude_reason, seen_count, content_kind, pdf_bytes,
-                    connector, preview_bytes, preview_mime_type,
+                    connector, preview_bytes, preview_mime_type, new_info=new_info,
+                    preview_tables=preview_tables, preview_blocks=preview_blocks,
+                    table_only=table_only, layout=layout, accept_all_hint=accept_all_hint,
                 )
 
                 if decision in ("accept", "accept_all") and pii_categories:
@@ -422,6 +519,8 @@ async def gated_call(
             # exception, drive_upload_file only.
             file_key = temp_accept_key(operation_key, ctx)
             suggestion = suggest_write_rule(operation_key, ctx)
+            # See the review branch's matching comment above.
+            accept_all_hint = describe_rule_short(suggestion[0]) if suggestion else ""
             # Same "everything interactive stays inside one lock acquisition"
             # reasoning as the review branch above -- the accept-all
             # confirmation and rule persistence must not happen after
@@ -442,6 +541,13 @@ async def gated_call(
                     show_popup, popup_title, preview or {}, details, file_key is not None,
                     claude_reason, write_content_flags, seen_count, connector,
                     suggestion is not None, preview_bytes, preview_mime_type,
+                    preview_tables=preview_tables, preview_blocks=preview_blocks,
+                    table_only=table_only, layout=layout, accept_all_hint=accept_all_hint,
+                    # upload_forced selects the distinct "write-forced" PII card (see
+                    # show_popup's own docstring) -- upload_pii_categories is only
+                    # ever non-empty for drive_upload_file's real PII match, the one write
+                    # call that forces the same second confirmation the read side gets.
+                    upload_forced=bool(upload_pii_categories),
                 )
 
                 if decision in ("accept", "accept_all") and upload_pii_categories:

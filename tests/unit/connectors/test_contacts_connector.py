@@ -214,7 +214,14 @@ class TestContactsUpdate:
         await connector.call("contacts_update", {"resource_name": "people/c1", "job_title": "Senior Engineer"})
 
         kwargs = gated_call_spy[0]
-        assert kwargs["preview"] == {"Contact": "Bob Smith", "Job title": "Senior Engineer"}
+        # Name/Emails/Phones always appear (plain current value, since none
+        # of them are changing on this call); Job title -- the one field
+        # actually changing -- shows as old → new; Organization stays
+        # absent since it wasn't touched.
+        assert kwargs["preview"] == {
+            "Name": "Bob Smith", "Emails": "bob@example.com", "Phones": "+1 555 0100",
+            "Job title": "Engineer → Senior Engineer",
+        }
         assert kwargs["gate"] == "popup"
 
     async def test_preview_includes_parsed_emails_and_phones(self, gated_call_spy):
@@ -229,8 +236,8 @@ class TestContactsUpdate:
         })
 
         kwargs = gated_call_spy[0]
-        assert kwargs["preview"]["Emails"] == "new@example.com"
-        assert kwargs["preview"]["Phones"] == "+1 555 0199"
+        assert kwargs["preview"]["Emails"] == "bob@example.com → new@example.com"
+        assert kwargs["preview"]["Phones"] == "+1 555 0100 → +1 555 0199"
         client.update_contact.assert_called_once_with(
             "people/c1", None,
             [{"value": "new@example.com", "type": "home"}],
@@ -238,7 +245,7 @@ class TestContactsUpdate:
             None, None, None,
         )
 
-    async def test_invalid_json_emails_are_dropped_not_shown_and_passed_as_none(self, gated_call_spy):
+    async def test_invalid_json_emails_falls_back_to_current_value_not_a_bogus_diff(self, gated_call_spy):
         connector, client = make_connector()
         client.get_contact.return_value = make_contact()
         client.update_contact.return_value = make_contact()
@@ -246,18 +253,23 @@ class TestContactsUpdate:
         await connector.call("contacts_update", {"resource_name": "people/c1", "emails": "not valid json"})
 
         kwargs = gated_call_spy[0]
-        assert "Emails" not in kwargs["preview"]
+        # Emails always appears -- invalid JSON is dropped (same as before),
+        # so it shows the current value plainly, not a diff against nothing.
+        assert kwargs["preview"]["Emails"] == "bob@example.com"
         client.update_contact.assert_called_once_with("people/c1", None, None, None, None, None, None)
 
-    async def test_contact_name_falls_back_to_resource_name_when_lookup_fails(self, gated_call_spy):
+    async def test_lookup_failure_becomes_runtime_error(self, gated_call_spy):
+        # Unlike the old display-name-only lookup, this call now needs the
+        # existing contact's full field values to build the old → new
+        # diffs, so a failed lookup can't silently fall back to the raw
+        # resource_name anymore -- same "let it propagate" behavior
+        # calendar_update_event/jira_update_issue already have for their
+        # own get_event/get_issue fetch.
         connector, client = make_connector()
         client.get_contact.side_effect = ContactsClientError("not found")
-        client.update_contact.return_value = make_contact()
 
-        await connector.call("contacts_update", {"resource_name": "people/c999", "display_name": "New Name"})
-
-        assert gated_call_spy[0]["preview"]["Contact"] == "people/c999"
-        assert gated_call_spy[0]["summary"] == "Update contact: people/c999"
+        with pytest.raises(RuntimeError, match="not found"):
+            await connector.call("contacts_update", {"resource_name": "people/c999", "display_name": "New Name"})
 
     async def test_args_carry_raw_unparsed_json_strings(self, gated_call_spy):
         connector, client = make_connector()
@@ -340,7 +352,7 @@ class TestContactsAddLabel:
         result = await connector.call("contacts_add_label", {"resource_name": "people/c1", "label_name": "VIP"})
 
         kwargs = gated_call_spy[0]
-        assert kwargs["preview"] == {"Contact": "Bob Smith", "Label": "VIP"}
+        assert kwargs["preview"] == {"Name": "Bob Smith", "Label": "VIP"}
         assert kwargs["gate"] == "popup"
         assert kwargs["summary"] == "Add label 'VIP' to: Bob Smith"
         assert kwargs["details_text"] == "Label will be added to this contact; no other fields change."
@@ -354,7 +366,7 @@ class TestContactsAddLabel:
 
         await connector.call("contacts_add_label", {"resource_name": "people/c999", "label_name": "VIP"})
 
-        assert gated_call_spy[0]["preview"]["Contact"] == "people/c999"
+        assert gated_call_spy[0]["preview"]["Name"] == "people/c999"
 
 
 class TestContactsRemoveLabel:
@@ -366,7 +378,7 @@ class TestContactsRemoveLabel:
         result = await connector.call("contacts_remove_label", {"resource_name": "people/c1", "label_name": "VIP"})
 
         kwargs = gated_call_spy[0]
-        assert kwargs["preview"] == {"Contact": "Bob Smith", "Label": "VIP"}
+        assert kwargs["preview"] == {"Name": "Bob Smith", "Label": "VIP"}
         assert kwargs["gate"] == "popup"
         assert kwargs["summary"] == "Remove label 'VIP' from: Bob Smith"
         assert kwargs["details_text"] == "Label will be removed from this contact; no other fields change."

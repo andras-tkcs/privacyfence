@@ -122,7 +122,17 @@ class TelegramConnector(Connector):
         if messages and hasattr(messages[0], "chat_name"):
             chat_name = messages[0].chat_name or chat_name
         n = len(messages)
-        preview = {"Chat": chat_name, "Messages": str(n)}
+        # Chat is known via telegram_list_chats; Messages (count) and the
+        # actual message content are only learned once this call is
+        # approved -- Telegram has no privacy-category schema, so the
+        # message content gets one fixed summary row rather than a
+        # per-message value (the real text lives in the right-pane preview/
+        # details_text instead).
+        preview = {"Chat": chat_name}
+        new_info = {
+            "Messages": str(n),
+            "Message text": "Full sender name, text, and date per message",
+        }
         lines = [
             f"[{getattr(m, 'date', '')}] {getattr(m, 'sender_name', 'unknown')}: {getattr(m, 'text', '')}"
             for m in messages
@@ -136,6 +146,14 @@ class TelegramConnector(Connector):
             }
             for m in messages
         ]
+        # Same plain-text list as before, unconditionally -- it's also the
+        # legacy layout's own display, so it can't be emptied out just
+        # because v2 also gets a nicer table alongside it (see
+        # connectors/salesforce.py's _search for the same reasoning).
+        table = {
+            "headers": ["Sender", "Date", "Message"],
+            "rows": [[getattr(m, "sender_name", "unknown"), str(getattr(m, "date", "")), getattr(m, "text", "")] for m in messages],
+        }
         return await gated_call(
             connector=self.name,
             tool="telegram_get_messages",
@@ -146,8 +164,11 @@ class TelegramConnector(Connector):
             filtered_data=result,
             gate="review",
             preview=preview,
+            new_info=new_info,
             details_text="\n".join(lines),
             pii_scan_text="\n".join(getattr(m, "text", "") or "" for m in messages),
+            preview_tables=[table] if messages else [],
+            table_only=True,
             args={"chat_id": chat_id},
         )
 
@@ -157,7 +178,14 @@ class TelegramConnector(Connector):
         except TelegramClientError as exc:
             raise RuntimeError(str(exc)) from exc
         n = len(messages)
-        preview = {"Query": query, "Results": str(n)}
+        # Query is Claude's own input (kept in §1 as identifying context);
+        # Results (count) and the actual message content are only learned
+        # once approved.
+        preview = {"Query": query}
+        new_info = {
+            "Results": str(n),
+            "Message text": "Full sender name, text, and date per message",
+        }
         lines = [
             f"[{getattr(m, 'chat_name', '')}] {getattr(m, 'sender_name', 'unknown')}: {getattr(m, 'text', '')}"
             for m in messages
@@ -172,6 +200,10 @@ class TelegramConnector(Connector):
             }
             for m in messages
         ]
+        table = {
+            "headers": ["Sender", "Date", "Message"],
+            "rows": [[getattr(m, "sender_name", "unknown"), str(getattr(m, "date", "")), getattr(m, "text", "")] for m in messages],
+        }
         return await gated_call(
             connector=self.name,
             tool="telegram_search_messages",
@@ -182,8 +214,11 @@ class TelegramConnector(Connector):
             filtered_data=result,
             gate="review",
             preview=preview,
+            new_info=new_info,
             details_text="\n".join(lines),
             pii_scan_text="\n".join(getattr(m, "text", "") or "" for m in messages),
+            preview_tables=[table] if messages else [],
+            table_only=True,
             args={"query": query},
         )
 

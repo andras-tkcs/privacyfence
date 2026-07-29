@@ -135,18 +135,33 @@ class TestGetMessagePreviewMinimization:
         await connector.call("gmail_get_message", {"message_id": "m1"})
 
         kwargs = gated_call_spy[0]
+        # §1 ("What Claude already knows"): only fields gmail_list_messages
+        # itself returns -- From/Date/Subject. To (recipients) isn't known
+        # for free, so it's a new_info (§3) field instead, not preview.
         assert kwargs["preview"] == {
             "From": "alice@example.com",
-            "To": "me@example.com",
             "Date": "Mon, 01 Jul 2026 10:00:00 +0000",
             "Subject": "Confidential Q3 numbers",
         }
+        assert kwargs["new_info"]["To"] == "me@example.com"
         assert "Secret body content" not in str(kwargs["preview"])
         assert "Secret body content" in kwargs["details_text"]  # full content still reachable via details
         assert kwargs["gate"] == "review"
         assert kwargs["raw_data"] is message
         assert kwargs["args"] == {"message_id": "m1"}
         assert kwargs["my_email"] == "me@example.com"
+
+    async def test_new_info_includes_labels(self, gated_call_spy):
+        connector, client = make_connector()
+        message = GmailMessage(
+            id="m1", thread_id="t1", subject="s", sender="a@b.com",
+            labels=["INBOX", "IMPORTANT"],
+        )
+        client.get_message.return_value = message
+
+        await connector.call("gmail_get_message", {"message_id": "m1"})
+
+        assert gated_call_spy[0]["new_info"]["Labels"] == "INBOX, IMPORTANT"
 
     async def test_content_kind_is_email(self, gated_call_spy):
         # gmail_get_message is the one call site that opts into the
@@ -254,10 +269,18 @@ class TestGetThread:
         await connector.call("gmail_get_thread", {"thread_id": "t1"})
 
         kwargs = gated_call_spy[0]
+        # Subject is conditionally known -- gmail_list_messages returns
+        # thread_id per message, and a thread's replies conventionally
+        # share its subject, so kept in §1 (same reasoning as Drive's
+        # file metadata). Messages (count) has no equivalent free source
+        # and stays new. Participants/Dates are kept in §1 as identifying
+        # context even though they're never sent to Claude at all (see
+        # connectors/gmail.py's comment at this call site).
         assert kwargs["preview"]["Subject"] == "Re: budget"
-        assert kwargs["preview"]["Messages"] == "2"
+        assert kwargs["new_info"]["Messages"] == "2"
         assert set(kwargs["preview"]["Participants"].split(", ")) == {"alice@example.com", "bob@example.com"}
         assert "secret" not in str(kwargs["preview"])
+        assert "secret" not in str(kwargs["new_info"])
         assert "body one secret" in kwargs["details_text"]
         assert "body two secret" in kwargs["details_text"]
         assert kwargs["gate"] == "review"
@@ -268,6 +291,19 @@ class TestGetThread:
         assert "body two secret" in kwargs["pii_scan_text"]
         assert "alice@example.com" not in kwargs["pii_scan_text"]
         assert "bob@example.com" not in kwargs["pii_scan_text"]
+        # v2's right pane: From/Date as standalone labeled fields (same
+        # font as a table header), one heading+field+field+text group per
+        # message -- not one flat text blob.
+        assert kwargs["preview_blocks"] == [
+            {"type": "heading", "label": "Message 1"},
+            {"type": "field", "label": "From", "value": "alice@example.com"},
+            {"type": "field", "label": "Date", "value": "d1"},
+            {"type": "text", "text": "body one secret"},
+            {"type": "heading", "label": "Message 2"},
+            {"type": "field", "label": "From", "value": "bob@example.com"},
+            {"type": "field", "label": "Date", "value": "d2"},
+            {"type": "text", "text": "body two secret"},
+        ]
         # Unlike gmail_get_message, a thread has several messages each with
         # their own sender -- doesn't fit one single-message From/To header,
         # so this doesn't opt into content_kind="email" (see gate.py's
@@ -383,7 +419,10 @@ class TestGmailPrivacyFilter:
         visibility = gated_call_spy[0]["visibility"]
         assert visibility["Message body"] == "block"
         assert visibility["Attachments"] == "redact"
-        assert visibility["Sender & metadata"] == "allow"  # unconfigured -> default_policy allow
+        # No "Sender & metadata" row -- From/Date/Subject are already §1 and
+        # To is already a concrete value in new_info, so an abstract policy
+        # row here would just restate them.
+        assert "Sender & metadata" not in visibility
 
     async def test_thread_visibility_uses_thread_history_not_body(self, gated_call_spy):
         connector, client = make_connector()
@@ -508,7 +547,10 @@ class TestDownloadAttachment:
         assert kwargs["preview"]["Attachment"] == "report.pdf"
         assert kwargs["preview"]["Type"] == "application/octet-stream"
         assert kwargs["preview"]["Size"] == "1,024 bytes"
-        assert kwargs["preview"]["Will save to"] == "/tmp/report.pdf"
+        # Will save to / no-content-returned are new-on-approval facts, not
+        # already-known metadata -- see connectors/gmail.py's comment.
+        assert kwargs["new_info"]["Will save to"] == "/tmp/report.pdf"
+        assert "None" in kwargs["new_info"]["Content returned to Claude"]
         # MIME type used to only appear in details_text (duplicating the
         # rest of the preview fields); it now lives in preview only.
         assert kwargs["details_text"] == "The attachment above will be downloaded to the destination shown."

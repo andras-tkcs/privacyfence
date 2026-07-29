@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import time
+from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any
 
@@ -50,12 +51,33 @@ def _parse_json_2d_list(value: str) -> list[list] | None:
     return parsed if isinstance(parsed, list) else None
 
 
-def _format_sheet_rows(rows: list[list], limit: int = 50) -> str:
+_SHEET_ROW_LIMIT = 50  # shared between _format_sheet_rows (legacy details_text) and
+# _sheets_get_values's own v2 preview_tables build, so the two can never disagree
+# about where the cap/"more row(s)" footer lands.
+
+
+def _format_sheet_rows(rows: list[list], limit: int = _SHEET_ROW_LIMIT) -> str:
     """Render 2D sheet cell data as comma-joined lines, capped at `limit` rows."""
     shown = "\n".join(", ".join(str(cell) for cell in row) for row in rows[:limit])
     if len(rows) > limit:
         shown += f"\n… and {len(rows) - limit} more row(s)"
     return shown
+
+
+def _sheet_values_table(values: list[list], limit: int = _SHEET_ROW_LIMIT) -> dict:
+    """The same 2D cell data _format_sheet_rows renders as a comma-joined
+    text dump, instead built as a preview_tables-shaped table dict --
+    headerless, since an arbitrary A1-notation range has no guaranteed
+    header row (the first row is just more data, not necessarily a label,
+    same reasoning _sheets_get_values already used), capped at `limit`
+    rows with a footer noting the rest. Shared by every sheet tool --
+    read (_sheets_get_values) and write (_sheets_write_range) -- that
+    shows real cell data in v2's right pane, so they can never disagree
+    about where the cap/footer lands."""
+    table = {"rows": [[str(cell) for cell in row] for row in values[:limit]]}
+    if len(values) > limit:
+        table["footer"] = f"… and {len(values) - limit} more row(s)"
+    return table
 
 
 class DriveConnector(Connector):
@@ -520,8 +542,15 @@ class DriveConnector(Connector):
         files = await self._fetch(self._drive.list_files, query, max_results)
         self._auto_audit("drive_list_files", "Search Drive Files",
                          f"List files: query={query!r}", f"{len(files)} result(s)", t0)
-        result = files if isinstance(files, list) else (files.to_dict() if hasattr(files, "to_dict") else files)
-        return apply_list("drive_privacy", "file_list", result) if isinstance(result, list) else result
+        # asdict(), not the raw DriveFile dataclass instances -- every other
+        # connector's auto tools already do this (e.g. calendar.py, jira.py),
+        # and ipc_server.py's json.dumps(..., default=str) would otherwise
+        # silently collapse each DriveFile into a Python repr() string
+        # instead of clean per-field JSON (confirmed: every field, including
+        # size, was already reaching Claude this way -- just unusably, as
+        # one opaque string per file, not structured data).
+        result = [asdict(f) for f in files]
+        return apply_list("drive_privacy", "file_list", result)
 
     async def _get_file_metadata(self, file_id: str) -> Any:
         t0 = time.time()
@@ -534,15 +563,15 @@ class DriveConnector(Connector):
         # record, so block collapses it to just the id (still needed to
         # correlate the call), not an empty value.
         if category_policy("drive_privacy", "file_metadata") == "allow":
-            return drive_file.to_dict() if hasattr(drive_file, "to_dict") else drive_file
-        return {"id": getattr(drive_file, "id", file_id)}
+            return asdict(drive_file)
+        return {"id": drive_file.id}
 
     async def _list_folder(self, folder_id: str, max_results: int = 50) -> Any:
         t0 = time.time()
         files = await self._fetch(self._drive.list_folder, folder_id, max_results)
         self._auto_audit("drive_list_folder", "List Drive Folder",
                          f"List folder: {folder_id}", f"{len(files)} item(s)", t0)
-        return apply_list("drive_privacy", "folder_structure", files)
+        return apply_list("drive_privacy", "folder_structure", [asdict(f) for f in files])
 
     async def _list_shared_drives(self, max_results: int = 50) -> Any:
         t0 = time.time()
@@ -658,8 +687,18 @@ class DriveConnector(Connector):
         owners = getattr(drive_file, "owners", [])
         raw_values = await self._fetch(self._drive.get_sheet_values, spreadsheet_id, range_a1)
         values = apply_list("drive_privacy", "file_content", raw_values)
+        # Spreadsheet/Owner are known via drive_get_file_metadata; Range is
+        # Claude's own input to this very call (kept in §1 as identifying
+        # context, not "new," since Claude already knows what it asked for
+        # -- same reasoning as Salesforce's own-input record id). Cell
+        # values is the actual new content, covered by the visibility row.
         preview = {"Spreadsheet": name, "Owner": ", ".join(owners) or "(unknown)", "Range": range_a1}
         rows_preview = _format_sheet_rows(values)
+        # v2's right pane: actual cell data as a real table, not a comma-
+        # joined text dump (see _sheet_values_table's own docstring).
+        # table_only since details_text (kept for legacy/PII-scan) would
+        # otherwise show the exact same values twice.
+        table = _sheet_values_table(values)
         return await gated_call(
             connector=self.name,
             tool="drive_sheets_get_values",
@@ -673,6 +712,8 @@ class DriveConnector(Connector):
             details_text=rows_preview,
             pii_scan_text=rows_preview,
             visibility={"Cell values": category_policy("drive_privacy", "file_content")},
+            preview_tables=[table] if values else [],
+            table_only=True,
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={"spreadsheet_id": spreadsheet_id, "range_a1": range_a1},
@@ -688,11 +729,18 @@ class DriveConnector(Connector):
         dest_path = resolve_download_destination(drive_file, destination_dir)
         name = os.path.basename(dest_path)
 
+        # File/Owner/Size/Modified are known via drive_get_file_metadata (or
+        # this call's own fetch of it above); the only genuinely new facts
+        # from approving this call are that no file content reaches Claude,
+        # and where it'll be saved -- same pattern as gmail_download_attachment.
         preview = {
             "File": name,
             "Owner": ", ".join(owners) if owners else "(unknown)",
             "Size": f"{drive_file.size:,} bytes",
             "Modified": str(modified) if modified else "(unknown)",
+        }
+        new_info = {
+            "Content returned to Claude": "None — file bytes are never sent",
             "Saved to": dest_path,
         }
         details = "The file above will be downloaded to the destination shown."
@@ -760,6 +808,7 @@ class DriveConnector(Connector):
             filtered_data=None,
             gate="review",
             preview=preview,
+            new_info=new_info,
             details_text=details,
             pii_scan_text=pii_scan_text,
             preview_bytes=preview_bytes,
@@ -969,7 +1018,7 @@ class DriveConnector(Connector):
             "File": display_name,
             "Source": source,
             "Size": f"{size_bytes:,} bytes",
-            "Destination": parent_folder_id or "My Drive (root)",
+            "Folder": parent_folder_id or "My Drive (root)",
         }
         details = "The file above will be uploaded to the destination shown."
         await gated_call(
@@ -1029,15 +1078,31 @@ class DriveConnector(Connector):
         drive_file = await self._fetch(self._drive.get_file_metadata, file_id)
         name = getattr(drive_file, "name", file_id)
         owners = getattr(drive_file, "owners", [])
+        # "Folder": old → new -- a move always changes the folder (that's
+        # the whole point of the call), so this is always a diff, not
+        # conditional on whether anything changed the way Event/Start/etc.
+        # are elsewhere. Best-effort on both lookups: some folders (e.g. a
+        # Shared Drive root) aren't fetchable as a regular file, and a file
+        # with no recorded parent shows "(unknown)" rather than blocking
+        # the popup on a name lookup that can't succeed either way.
+        current_parent_id = (getattr(drive_file, "parent_ids", None) or [None])[0]
+        if current_parent_id:
+            try:
+                current_folder = await self._fetch(self._drive.get_file_metadata, current_parent_id)
+                current_name = getattr(current_folder, "name", "") or current_parent_id
+            except RuntimeError:
+                current_name = current_parent_id
+        else:
+            current_name = "(unknown)"
         try:
             destination_folder = await self._fetch(self._drive.get_file_metadata, destination_folder_id)
             destination_name = getattr(destination_folder, "name", "") or destination_folder_id
         except RuntimeError:
-            # Best-effort: some destinations (e.g. a Shared Drive root) aren't
-            # fetchable as a regular file. Fall back to the raw id rather than
-            # blocking the popup on a name lookup that can't succeed.
             destination_name = destination_folder_id
-        preview = {"File": name, "Owner": ", ".join(owners) or "(unknown)", "Move to folder": destination_name}
+        preview = {
+            "File": name, "Owner": ", ".join(owners) or "(unknown)",
+            "Folder": f"{current_name} → {destination_name}",
+        }
         await gated_call(
             connector=self.name,
             tool="drive_move_file",
@@ -1087,6 +1152,13 @@ class DriveConnector(Connector):
                 "drive_sheets_write_range: 'values' must be a JSON 2D array, e.g. [[\"a\",\"b\"]]"
             )
         preview = {"Spreadsheet": name, "Owner": ", ".join(owners) or "(unknown)", "Range": range_a1}
+        # v2's right pane: the actual values being written as a real table,
+        # not a comma-joined text dump -- same treatment and same
+        # reasoning as _sheets_get_values's own table (see
+        # _sheet_values_table's docstring). table_only since details_text
+        # (kept for legacy/PII-scan) would otherwise show the exact same
+        # values twice.
+        table = _sheet_values_table(parsed_values)
         await gated_call(
             connector=self.name,
             tool="drive_sheets_write_range",
@@ -1098,6 +1170,8 @@ class DriveConnector(Connector):
             gate="popup",
             preview=preview,
             details_text=_format_sheet_rows(parsed_values),
+            preview_tables=[table] if parsed_values else [],
+            table_only=True,
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={"spreadsheet_id": spreadsheet_id, "range_a1": range_a1},
@@ -1131,13 +1205,28 @@ class DriveConnector(Connector):
         )
         return await self._fetch(self._drive.add_sheet, spreadsheet_id, title, rows, cols)
 
+    async def _sheet_title_for(self, spreadsheet_id: str, sheet_id: int) -> str:
+        """Best-effort tab title for `sheet_id` (the numeric id every
+        sheets_* write tool takes, not a human-readable name on its own)
+        -- falls back to the raw id as a string if the spreadsheet's own
+        tab list can't be fetched, or none of its tabs match this id."""
+        try:
+            sheets = await self._fetch(self._drive.list_sheets, spreadsheet_id)
+        except RuntimeError:
+            return str(sheet_id)
+        for sheet in sheets:
+            if sheet.get("sheet_id") == sheet_id:
+                return sheet.get("title") or str(sheet_id)
+        return str(sheet_id)
+
     async def _sheets_rename_sheet(self, spreadsheet_id: str, sheet_id: int, new_title: str) -> Any:
         drive_file = await self._fetch(self._drive.get_file_metadata, spreadsheet_id)
         name = getattr(drive_file, "name", spreadsheet_id)
         owners = getattr(drive_file, "owners", [])
+        current_title = await self._sheet_title_for(spreadsheet_id, sheet_id)
         preview = {
             "Spreadsheet": name, "Owner": ", ".join(owners) or "(unknown)",
-            "Tab id": sheet_id, "New title": new_title,
+            "Tab title": f"{current_title} → {new_title}",
         }
         await gated_call(
             connector=self.name,
@@ -1252,9 +1341,10 @@ class DriveConnector(Connector):
         drive_file = await self._fetch(self._drive.get_file_metadata, spreadsheet_id)
         name = getattr(drive_file, "name", spreadsheet_id)
         owners = getattr(drive_file, "owners", [])
+        tab_title = await self._sheet_title_for(spreadsheet_id, sheet_id)
         preview = {
             "Spreadsheet": name, "Owner": ", ".join(owners) or "(unknown)",
-            "Tab id": sheet_id, "Action": f"Insert {count} {dimension} before index {start_index}",
+            "Tab": tab_title, "Action": f"Insert {count} {dimension} before index {start_index}",
         }
         await gated_call(
             connector=self.name,
@@ -1293,9 +1383,10 @@ class DriveConnector(Connector):
         drive_file = await self._fetch(self._drive.get_file_metadata, spreadsheet_id)
         name = getattr(drive_file, "name", spreadsheet_id)
         owners = getattr(drive_file, "owners", [])
+        tab_title = await self._sheet_title_for(spreadsheet_id, sheet_id)
         preview = {
             "Spreadsheet": name, "Owner": ", ".join(owners) or "(unknown)",
-            "Tab id": sheet_id, "Action": f"Delete {count} {dimension} starting at index {start_index}",
+            "Tab": tab_title, "Action": f"Delete {count} {dimension} starting at index {start_index}",
         }
         await gated_call(
             connector=self.name,

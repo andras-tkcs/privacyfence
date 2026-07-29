@@ -23,6 +23,31 @@ def _day_of_week(iso_str: str) -> str:
         return ""
 
 
+def _merged_attendees_display(event) -> str:
+    """One UI-facing "Attendees" value combining the organizer and the
+    attendee list, marking the organizer inline (e.g. "Alice <a@x.com>
+    (organizer), Bob <b@x.com>") -- there is no separate "Organizer" row on
+    the approval window (redesign decision: merge, don't show both).
+
+    Google's Calendar API normally includes the organizer as one of the
+    `attendees` entries (flagged `organizer: true`), but omits the whole
+    `attendees` array entirely for events with no other guests -- checked
+    directly in calendar_client.py's _parse_event. Relying on `attendees`
+    alone would then silently drop the organizer's identity for that common
+    (solo-event) case, so this synthesizes an organizer-only entry when
+    `attendees` doesn't already include one flagged organizer=True.
+    """
+    entries = list(event.attendees or [])
+    has_organizer_entry = any(a.organizer for a in entries)
+    parts = []
+    if not has_organizer_entry and event.organizer_email:
+        parts.append(f"{event.organizer_email} (organizer)")
+    for a in entries:
+        label = f"{a.display_name} <{a.email}>" if a.display_name else a.email
+        parts.append(f"{label} (organizer)" if a.organizer else label)
+    return ", ".join(parts)
+
+
 def _downgrade_to_busy_only(entry: dict) -> dict:
     """Collapse a colleague's 'events'-sourced free/busy entry (full event
     title/status) down to the same busy-slot-only shape a 'free_busy'-
@@ -365,35 +390,40 @@ class CalendarConnector(Connector):
 
     async def _get_event_details(self, calendar_id: str, event_id: str) -> Any:
         event = await self._fetch(self._calendar.get_event, calendar_id, event_id)
-        attendee_count = len(event.attendees) if hasattr(event, "attendees") else 0
-        attachments = event.attachments or []
+        # §1 ("What Claude already knows"): exactly calendar_list_events'
+        # own fields (id/title/start/end/day_of_week/all_day/status) -- see
+        # claude-knowledge-boundary.md's Calendar section. Everything else
+        # below is new only once this call is approved.
         preview = {
             "Title": event.title or "(untitled)",
             "Time": f"{event.start_time} – {event.end_time}",
-            "Organizer": event.organizer_email or "(unknown)",
-            "Attendees": str(attendee_count),
         }
-        if attachments:
-            preview["Attachments"] = str(len(attachments))
-        attendee_lines = [
-            f"  {a.display_name or a.email} <{a.email}> [{a.response_status}]"
-            for a in (event.attendees or [])
-        ]
-        attachment_lines = [
-            f"  {a.title or '(untitled)'} [{a.mime_type or 'unknown type'}] file_id={a.file_id}"
-            for a in attachments
-        ]
+        # §3 ("What will be provided to Claude"): the real values that will
+        # actually reach Claude, not a policy summary -- Calendar has no
+        # privacy-category schema (see claude-knowledge-boundary.md's
+        # redaction-scope section), so there's no redact/block placeholder
+        # to show here, just the data itself. Every row always present, even
+        # when empty (e.g. no location) -- the row structure is fixed per
+        # tool, only values vary. No separate "Organizer" row: merged into
+        # Attendees (see _merged_attendees_display's docstring for why a
+        # naive "just use the attendees list" merge isn't enough on its
+        # own). conference_link/hangout_link/attachments are deliberately
+        # not surfaced here (nor in filtered_data below) -- narrower
+        # disclosure than this tool used to have; attachments in particular
+        # used to let Claude follow a meeting's attached notes/transcript
+        # via drive_get_file_content, a capability this removes.
+        new_info = {
+            "Attendees": _merged_attendees_display(event),
+            "Location": event.location or "",
+            "Description": event.description or "",
+        }
         details_lines = [
             f"Location: {event.location or '(none)'}",
-            f"Conferencing: {event.conference_link or event.hangout_link or '(none)'}",
             "",
             f"Description:\n{event.description or '(none)'}",
             "",
             "Attendees:",
-        ] + (attendee_lines or ["  (none)"]) + [
-            "",
-            "Attachments (use drive_get_file_content with file_id to read):",
-        ] + (attachment_lines or ["  (none)"])
+        ] + ([f"  {p}" for p in _merged_attendees_display(event).split(", ")] if event.attendees or event.organizer_email else ["  (none)"])
         filtered_data = {
             "id": event.id,
             "calendar_id": event.calendar_id,
@@ -410,15 +440,8 @@ class CalendarConnector(Connector):
                 for a in (event.attendees or [])
             ],
             "location": event.location,
-            "hangout_link": event.hangout_link,
-            "conference_link": event.conference_link,
             "status": event.status,
             "html_link": event.html_link,
-            "attachments": [
-                {"file_id": a.file_id, "title": a.title,
-                 "mime_type": a.mime_type, "file_url": a.file_url}
-                for a in attachments
-            ],
         }
         return await gated_call(
             connector=self.name,
@@ -430,6 +453,7 @@ class CalendarConnector(Connector):
             filtered_data=filtered_data,
             gate="review",
             preview=preview,
+            new_info=new_info,
             details_text="\n".join(details_lines),
             pii_scan_text=event.description or "",
             my_email=self.my_email,
@@ -512,13 +536,23 @@ class CalendarConnector(Connector):
     ) -> Any:
         event = await self._fetch(self._calendar.get_event, calendar_id, event_id)
         room_list = [r.strip() for r in rooms.split(",") if r.strip()] if rooms else []
-        changes = {}
+        # Event/Start/End always appear (unlike Description/Location/
+        # Conferencing/Rooms below, which are only shown when actually
+        # provided) -- each is the plain current value if unchanged, or
+        # "old → new" if this call is changing it, so the reviewer always
+        # sees what the event's core identity/timing actually is, not just
+        # a partial list of what happens to be different this time.
+        def _diff_or_value(new_value: str, old_value: str) -> str:
+            return f"{old_value} → {new_value}" if new_value and new_value != old_value else old_value
+
+        changed_field_names = []
         if title and title != event.title:
-            changes["Title"] = f"{event.title} → {title}"
+            changed_field_names.append("Event")
         if start_time and start_time != event.start_time:
-            changes["Start"] = f"{event.start_time} → {start_time}"
+            changed_field_names.append("Start")
         if end_time and end_time != event.end_time:
-            changes["End"] = f"{event.end_time} → {end_time}"
+            changed_field_names.append("End")
+        changes = {}
         if description and description != event.description:
             changes["Description"] = "(changed)"
         if location and location != event.location:
@@ -527,7 +561,17 @@ class CalendarConnector(Connector):
             changes["Conferencing"] = "Add Google Meet"
         if room_list:
             changes["Rooms"] = f"Book: {', '.join(room_list)}"
-        preview = {"Event": event.title, "Calendar": await self._calendar_name_for(calendar_id), **changes}
+        changed_field_names.extend(changes.keys())
+        preview = {
+            "Event": _diff_or_value(title, event.title),
+            # Calendar can never change via this tool (no destination-
+            # calendar param) -- always the plain current value, same as
+            # an unchanged Event/Start/End would be.
+            "Calendar": await self._calendar_name_for(calendar_id),
+            "Start": _diff_or_value(start_time, event.start_time),
+            "End": _diff_or_value(end_time, event.end_time),
+            **changes,
+        }
         raw_data = {
             "calendar_id": calendar_id, "event_id": event_id,
             "current_title": event.title, "new_title": title,
@@ -540,7 +584,7 @@ class CalendarConnector(Connector):
         if description and description != event.description:
             details_text = description
         else:
-            changed_fields = ", ".join(changes.keys()) or "no fields"
+            changed_fields = ", ".join(changed_field_names) or "no fields"
             details_text = f"{changed_fields} will be updated; description is unchanged."
         await gated_call(
             connector=self.name,

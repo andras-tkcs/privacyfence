@@ -209,7 +209,7 @@ class TestGetPage:
         await connector.call("confluence_get_page", {"page_id": "p1"})
 
         kwargs = gated_call_spy[0]
-        assert kwargs["preview"]["Last modified"] == "2026-07-01T00:00:00Z"
+        assert kwargs["new_info"]["Last modified"] == "2026-07-01T00:00:00Z"
 
     async def test_last_modified_placeholder_when_missing(self, gated_call_spy):
         connector, client = make_connector()
@@ -217,7 +217,7 @@ class TestGetPage:
 
         await connector.call("confluence_get_page", {"page_id": "p1"})
 
-        assert gated_call_spy[0]["preview"]["Last modified"] == "(unknown)"
+        assert gated_call_spy[0]["new_info"]["Last modified"] == "(unknown)"
 
     async def test_preview_excludes_body_details_include_it(self, gated_call_spy):
         connector, client = make_connector()
@@ -226,12 +226,16 @@ class TestGetPage:
         await connector.call("confluence_get_page", {"page_id": "p1"})
 
         kwargs = gated_call_spy[0]
-        assert kwargs["preview"] == {
-            "Title": "Runbook", "Space": "ENG", "Author": "alice@example.com",
-            "Last modified": "2026-07-01T00:00:00Z",
-        }
+        # Title/Space are known via either confluence_list_pages or
+        # confluence_search; Author/Last modified only via list_pages (not
+        # search), so they're new_info here -- see connectors/confluence.py.
+        assert kwargs["preview"] == {"Title": "Runbook", "Space": "ENG"}
         assert "Confidential steps here" not in str(kwargs["preview"])
         assert "Confidential steps here" in kwargs["details_text"]
+        assert kwargs["new_info"] == {
+            "Author": "alice@example.com", "Last modified": "2026-07-01T00:00:00Z",
+            "Page body": "Full page content",
+        }
         assert kwargs["gate"] == "review"
         assert kwargs["args"] == {"page_id": "p1"}
         assert kwargs["raw_data"] is kwargs["filtered_data"]
@@ -246,7 +250,7 @@ class TestGetPage:
 
         kwargs = gated_call_spy[0]
         assert kwargs["pii_scan_text"] == "nothing sensitive here"
-        assert kwargs["preview"]["Author"] == "alice@example.com"  # still shown in the popup
+        assert kwargs["new_info"]["Author"] == "alice@example.com"  # still shown in the popup
         assert "alice@example.com" not in kwargs["pii_scan_text"]
 
     async def test_client_error_becomes_runtime_error(self):
@@ -265,7 +269,7 @@ class TestGetPageByTitle:
         await connector.call("confluence_get_page_by_title", {"space_key": "ENG", "title": "Runbook"})
 
         kwargs = gated_call_spy[0]
-        assert kwargs["preview"]["Last modified"] == "2026-07-01T00:00:00Z"
+        assert kwargs["new_info"]["Last modified"] == "2026-07-01T00:00:00Z"
         assert kwargs["args"] == {"space_key": "ENG", "title": "Runbook"}
         client.get_page_by_title.assert_called_once_with("ENG", "Runbook")
 

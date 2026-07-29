@@ -36,6 +36,17 @@ operation key a resource touches from one place, is a separate mechanism set up 
 menu bar's Trusted-\* submenus — the popup button itself never writes there. See
 [Auto-accept grants](TECHNICAL_REFERENCE.md#auto-accept-grants) for that alternative.
 
+**The button itself names the specific rule it would create, before you click it** — e.g. "Always
+allow — if I'm sender" or "Always allow — this folder," not a plain, unspecific "Always allow." This
+is `gate.py`'s `accept_all_hint`, derived from the same `suggest_rule()`/`suggest_write_rule()` result
+that decides whether the button appears at all, run through `auto_accept.describe_rule_short()` — a
+short, per-rule-*type* phrase (never the specific instance value: "this folder," not the folder's own
+name or id, so the button's width stays predictable regardless of how long any one call's real value
+is). The one exception is `always_allow` (`gmail_create_draft` and its two reply variants): there's no
+category to name for an unconditional rule, so the button stays plain "Always allow" for those three.
+The confirmation dialog after clicking still shows the full sentence (`describe_rule()`/
+`describe_rule_change()`, unchanged) — this hint is purely the pre-click preview.
+
 ---
 
 ## Read tools

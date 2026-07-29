@@ -68,15 +68,15 @@ drifts, don't trust it blindly.
 | `gmail_list_filters` | auto | full filter criteria + actions |
 | `gmail_list_labels` | auto | full label list (incl. nesting) |
 | `gmail_get_message` | review | **new:** full `body_text`, full `recipients`, `labels`; attachments repeated (same fields as the auto tool) |
-| `gmail_get_thread` | review | **new:** every message's body, sender, date; message count; attachments per message |
+| `gmail_get_thread` | review | **new:** every message's body, sender, date; message count; attachments per message. The thread's own subject is a partial exception -- `gmail_list_messages` returns `thread_id` per message, and a thread's replies conventionally share its subject (often "Re: `<subject>`"), so if Claude already listed even one message belonging to this thread (a common way to learn the `thread_id` in the first place), it already knows the subject -- same conditional-knowledge reasoning as Drive's file metadata below |
 | `gmail_download_attachment` | review | **new:** nothing to Claude — writes the file to disk and returns only `path`/`name`/`size_bytes`, never content bytes |
 
 ## Google Drive
 
 | Tool | Gate | Fields Claude gets |
 |---|---|---|
-| `drive_list_files` | auto | `id`, `name`, `mime_type`, `owners`, sharing status |
-| `drive_get_file_metadata` | auto | full metadata record: name, owners, created/modified times, sharing status |
+| `drive_list_files` | auto | full `DriveFile` record per file: `id`, `name`, `mime_type`, `size`, `created_time`, `modified_time`, `owners`, `shared`, `web_view_link`, `parent_ids`, `drive_id`, `thumbnail_link` |
+| `drive_get_file_metadata` | auto | same full `DriveFile` record, for one file |
 | `drive_list_folder` | auto | same shape as `drive_list_files`, scoped to one folder's direct children |
 | `drive_list_shared_drives` | auto | `id`, `name` per Shared Drive |
 | `drive_sheets_get_metadata` | auto | per-tab `id`, `title`, `index`, row/column count |
@@ -124,7 +124,7 @@ search by *who's in a conversation* directly, without first listing everything.
 | `calendar_get_free_busy` | auto | **for colleagues the authenticated account has calendar access to: full event `title`, time, and `status`** (not just busy/free blocks) — *unless* `calendar.free_busy_full_event_details` is set to `false`, in which case every entry is downgraded to a busy/free-only block regardless of access (default `true`, preserving the behavior above) |
 | `calendar_list_rooms` | auto | room `resource_email`, `resource_name`, building, floor, capacity, description — served from a static directory IT syncs into `org_config.json` (`scripts/sync_room_directory.py`), not a live API call, so it's empty until IT has synced one, and only ever reflects that last sync |
 | `calendar_get_event_visibility` | auto | just the `visibility` field |
-| `calendar_get_event_details` | review | **new:** `description`, full `attendees` (email, display name, response status), `location`, conferencing link, file attachments (`file_id`, `title`, `mime_type` — not their content; that's a separate `drive_get_file_content` gate) |
+| `calendar_get_event_details` | review | **new:** `organizer_email`, full `attendees` (email, display name, response status), `location`, `description` — conferencing link and file attachments are deliberately **not** disclosed here (redesign decision: the attachments path used to let Claude follow a meeting's attached notes/transcript via `drive_get_file_content`; that capability was removed along with the field) |
 
 `calendar.free_busy_full_event_details` is a single settings.yaml boolean, not a `privacy_filter.py`
 category — Calendar has no category schema (see the redaction section below).
@@ -179,10 +179,10 @@ lightweight Id/Name matches require approval, unlike Gmail/Drive/Jira's metadata
 | Tool | Gate | Fields Claude gets |
 |---|---|---|
 | `confluence_list_spaces` | auto | `key`, `name`, `type`, `description` |
-| `confluence_search` | auto | matching pages/blog posts **including a content excerpt** (`excerpt` field, straight from Confluence's search API, filtered through `confluence_privacy.search_excerpt`) |
+| `confluence_search` | auto | `id`, `title`, `content_type`, `space_key`, `space_name`, `url`, **and a content excerpt** (`excerpt`, straight from Confluence's search API, filtered through `confluence_privacy.search_excerpt`) — **no `author`, no `updated`**: `ConfluenceSearchResult` has no such fields at all (`_parse_search_result` never sets them) |
 | `confluence_cql_search` | auto | same shape as `confluence_search`, CQL-driven |
-| `confluence_list_pages` | auto | `title`, `id`, `version` per page in a space |
-| `confluence_get_page` / `confluence_get_page_by_title` | review | **new:** full page `body` (HTML storage format) |
+| `confluence_list_pages` | auto | `title`, `id`, `version`, `space_key`, `author`, `created`, `updated`, `url` per page in a space — the v2-API page parser (`_parse_page_v2`) fills these in regardless of whether the body is fetched, and `confluence_list_pages` applies no redaction to any of them |
+| `confluence_get_page` / `confluence_get_page_by_title` | review | **new:** full page `body` (HTML storage format), `author`, `updated` — title/space were already knowable via either auto tool, but author/updated only via `confluence_list_pages`, not `confluence_search`/`confluence_cql_search` (a real, more likely discovery path for a page someone wants to read) — so they're treated as new here rather than assumed known |
 
 `confluence_search`/`confluence_cql_search` are the only auto tools across every connector that
 return actual content excerpts, not just structural metadata — `excerpt` is the one field filtered

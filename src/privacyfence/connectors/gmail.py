@@ -383,11 +383,18 @@ class GmailConnector(Connector):
         raw_body = message.body_text or html_to_text(message.body_html) or ""
         body = apply_text("privacy", "body", raw_body)
         attachments = apply_list("privacy", "attachments", message.attachments or [])
+        labels = ", ".join(message.labels or []) if message.labels else ""
+        # From/Date/Subject are known for free via gmail_list_messages; To
+        # (recipients) and Labels are not returned by any auto tool, so they
+        # move to new_info (§3) below instead of this §1 preview.
         preview = {
             "From": sender or "(unknown)",
-            "To": recipients or "(unknown)",
             "Date": date or "(unknown)",
             "Subject": subject or "(no subject)",
+        }
+        new_info = {
+            "To": recipients or "(unknown)",
+            "Labels": labels,
         }
         filtered = {
             "id": message.id,
@@ -410,21 +417,23 @@ class GmailConnector(Connector):
             filtered_data=filtered,
             gate="review",
             preview=preview,
+            new_info=new_info,
             details_text=body or "(no body)",
             pii_scan_text=body,
+            # No "Sender & metadata" row here: From/Date/Subject are already
+            # in §1 (known via gmail_list_messages) and To is already a
+            # concrete recipient list in new_info above -- an abstract
+            # "Full sender & metadata" disclosure sentence would just
+            # restate what's already shown as real values, not add
+            # information.
             visibility={
-                "Sender & metadata": category_policy("privacy", "metadata"),
                 "Message body": category_policy("privacy", "body"),
                 "Attachments": category_policy("privacy", "attachments"),
             },
-            # Renders a structured From/To/Subject/Date header in the
-            # details pane instead of plain text alone -- preview's shape
-            # above (From/To/Date/Subject) is exactly what that header
-            # reads. gmail_get_thread
-            # doesn't get this: a thread is several messages each with their
-            # own sender, which doesn't fit one single-message header -- it
-            # already renders per-message "From:"/"Date:" lines inline in
-            # details_text below instead.
+            # Only the legacy (layout="legacy") rendering path still reads
+            # this -- v2's build_preview_body_html no longer has an email
+            # special case (From/Subject/Date are §1, To is §3 now), so this
+            # only preserves today's live legacy header until cutover.
             content_kind="email",
             my_email=self.my_email,
             args={"message_id": message_id},
@@ -446,15 +455,33 @@ class GmailConnector(Connector):
         dates = [m.date for m in messages if hasattr(m, "date") and m.date]
         date_range_raw = f"{dates[0]} – {dates[-1]}" if len(dates) > 1 else (dates[0] if dates else "")
         date_range = apply_text("privacy", "metadata", date_range_raw)
+        # gmail_list_threads itself only ever returns id+snippet -- but
+        # gmail_list_messages returns thread_id per message, and Gmail
+        # convention is that a thread's replies share its subject (often
+        # "Re: <subject>") -- so if Claude has already listed even one
+        # message belonging to this thread (a common path to learning this
+        # thread_id in the first place), it already knows the subject,
+        # same "conditionally known via a call that commonly precedes this
+        # one" reasoning already applied to Drive's file metadata. Kept in
+        # §1 on that basis. Participants/Dates are never sent to Claude at
+        # all (computed purely for the human reviewer, never part of
+        # filtered_data below) -- kept in §1 anyway as identifying context
+        # (same reasoning as Salesforce's own-input record id: useful to
+        # the reviewer even though it isn't "Claude already knows this").
+        # Messages (count) has no equivalent free source anywhere and
+        # stays genuinely new (§3).
         preview = {
             "Subject": subject,
             "Participants": participants or "(unknown)",
-            "Messages": str(len(messages)),
             "Dates": date_range,
+        }
+        new_info = {
+            "Messages": str(len(messages)),
         }
         lines = []
         bodies = []
         filtered_messages = []
+        blocks = []
         for i, m in enumerate(messages, 1):
             sender = apply_text("privacy", "metadata", getattr(m, "sender", "") or "")
             date = apply_text("privacy", "metadata", getattr(m, "date", "") or "")
@@ -478,6 +505,16 @@ class GmailConnector(Connector):
                 "body_text": body,
                 "attachments": attachments,
             })
+            # v2's right pane: From/Date as standalone labeled fields (same
+            # font as a table header, see approval_window_html.py's
+            # _field_block_html), interleaved per message via
+            # preview_blocks rather than one flat text blob -- details_text
+            # (built from `lines` above) stays a flat string for legacy
+            # display and the PII scan's default fallback.
+            blocks.append({"type": "heading", "label": f"Message {i}"})
+            blocks.append({"type": "field", "label": "From", "value": sender})
+            blocks.append({"type": "field", "label": "Date", "value": date})
+            blocks.append({"type": "text", "text": body})
         details = "\n".join(lines)
         filtered = {"id": thread.id, "subject": subject, "messages": filtered_messages}
         return await gated_call(
@@ -490,13 +527,19 @@ class GmailConnector(Connector):
             filtered_data=filtered,
             gate="review",
             preview=preview,
+            new_info=new_info,
             details_text=details,
             pii_scan_text="\n".join(bodies),
+            # No "Sender & metadata" row here either (see gmail_get_message's
+            # same fix): Subject/Participants/Dates are already §1, and each
+            # message's From/Date are already concrete fields in the
+            # preview_blocks right pane below -- an abstract policy row would
+            # just restate them.
             visibility={
-                "Sender & metadata": category_policy("privacy", "metadata"),
                 "Thread messages": category_policy("privacy", "thread_history"),
                 "Attachments": category_policy("privacy", "attachments"),
             },
+            preview_blocks=blocks,
             my_email=self.my_email,
             args={"thread_id": thread_id},
         )
@@ -513,12 +556,22 @@ class GmailConnector(Connector):
                 f"No attachment named {attachment_name!r} on message {message_id}"
             )
         dest_path = resolve_attachment_destination(attachment.name, destination_dir)
+        # Every one of these is already known for free by the time this
+        # gates: From/Subject via gmail_list_messages, Attachment/Type/Size
+        # via gmail_list_message_attachments -- see
+        # claude-knowledge-boundary.md's Gmail worked example ("by the time
+        # gmail_download_attachment gates, none of that metadata is new").
+        # The only genuinely new facts from approving this call are that no
+        # file content reaches Claude, and where it'll be saved.
         preview = {
             "From": message.sender or "(unknown)",
             "Subject": message.subject or "(no subject)",
             "Attachment": attachment.name,
             "Type": attachment.mime_type,
             "Size": f"{attachment.size:,} bytes",
+        }
+        new_info = {
+            "Content returned to Claude": "None — file bytes are never sent",
             "Will save to": dest_path,
         }
         details = "The attachment above will be downloaded to the destination shown."
@@ -579,6 +632,7 @@ class GmailConnector(Connector):
             filtered_data=None,
             gate="review",
             preview=preview,
+            new_info=new_info,
             details_text=details,
             pii_scan_text=pii_scan_text,
             preview_bytes=preview_bytes,

@@ -214,11 +214,24 @@ class ConfluenceConnector(Connector):
     async def _get_page(self, page_id: str) -> Any:
         page = await self._fetch(self._confluence.get_page, page_id)
         data = asdict(page)
+        # Title/Space are known for free via either confluence_list_pages OR
+        # confluence_search/confluence_cql_search. Author/Last modified are
+        # only ever known via confluence_list_pages -- confluence_search's
+        # own ConfluenceSearchResult has no author/updated field at all (see
+        # claude-knowledge-boundary.md) -- so, unlike Drive's "known if that
+        # other call happened first" caveat, there's a real, likely path
+        # (search) that never surfaces them, and they're treated as new
+        # rather than assumed known. Page body has no fixed size, so it gets
+        # one fixed summary row rather than a literal (possibly huge) value
+        # -- the real content lives in the right-pane preview/details_text.
         preview_fields = {
             "Title": page.title or page_id,
             "Space": page.space_key or "(unknown)",
+        }
+        new_info = {
             "Author": page.author or "(unknown)",
             "Last modified": page.updated or "(unknown)",
+            "Page body": "Full page content",
         }
         body_text = getattr(page, "body", "") or getattr(page, "body_text", "") or ""
         return await gated_call(
@@ -231,6 +244,7 @@ class ConfluenceConnector(Connector):
             filtered_data=data,
             gate="review",
             preview=preview_fields,
+            new_info=new_info,
             details_text=body_text,
             pii_scan_text=body_text,
             my_email=self.my_email,
@@ -240,11 +254,15 @@ class ConfluenceConnector(Connector):
     async def _get_page_by_title(self, space_key: str, title: str) -> Any:
         page = await self._fetch(self._confluence.get_page_by_title, space_key, title)
         data = asdict(page)
+        # Same knowledge boundary as _get_page above.
         preview_fields = {
             "Title": page.title or title,
             "Space": page.space_key or space_key,
+        }
+        new_info = {
             "Author": page.author or "(unknown)",
             "Last modified": page.updated or "(unknown)",
+            "Page body": "Full page content",
         }
         body_text = getattr(page, "body", "") or getattr(page, "body_text", "") or ""
         return await gated_call(
@@ -257,6 +275,7 @@ class ConfluenceConnector(Connector):
             filtered_data=data,
             gate="review",
             preview=preview_fields,
+            new_info=new_info,
             details_text=body_text,
             pii_scan_text=body_text,
             my_email=self.my_email,

@@ -16,6 +16,14 @@ from ..salesforce_client import SalesforceClient, SalesforceClientError
 logger = logging.getLogger(__name__)
 
 
+def _populated_field_names(fields: dict[str, Any]) -> list[str]:
+    """Alphabetized names of the fields that actually have a value -- same
+    "skip unset ones" filter _format_flat_fields uses, factored out so §3's
+    field-name list and the preview table can never disagree about which
+    fields count as "on this record"."""
+    return sorted(key for key, value in fields.items() if value not in (None, ""))
+
+
 def _format_flat_fields(fields: dict[str, Any]) -> str:
     """Render a Salesforce record's (flat, scalar-valued) fields dict as one
     'Field: value' line per field, alphabetized, skipping unset ones."""
@@ -73,6 +81,46 @@ def _format_report_rows(rows: list[dict], limit: int = 50) -> str:
     if len(rows) > limit:
         text += f"\n… and {len(rows) - limit} more row(s)"
     return text
+
+
+def _report_tables(result_dict: dict, limit: int = 50) -> list[dict]:
+    """The same factMap/groupingsDown/groupingsAcross structure
+    _format_report_details renders as plain text, instead built as
+    preview_tables-shaped table dicts (one per fact_map group, captioned
+    with its grouping label, aggregates as a footer line) -- see that
+    function's own docstring for the envelope shape and fallback
+    reasoning. Returns [] (not a fallback string) on any mismatch --
+    _format_report_details's own plain-text fallback already covers the
+    human-readable summary in that case, so the right pane just shows text
+    only, no empty/broken table."""
+    try:
+        fact_map = result_dict.get("factMap") if isinstance(result_dict, dict) else None
+        if not isinstance(fact_map, dict) or not fact_map:
+            return []
+        columns = _report_column_labels(result_dict)
+        tables = []
+        for fact_key in sorted(fact_map.keys()):
+            group = fact_map[fact_key] or {}
+            rows = (group.get("rows") or [])[:limit]
+            table_rows = [
+                [str(cell.get("label", "")) for cell in (row.get("dataCells") or [])]
+                for row in rows
+            ]
+            aggregates = group.get("aggregates") or []
+            footer_parts = []
+            if len(group.get("rows") or []) > limit:
+                footer_parts.append(f"… and {len(group['rows']) - limit} more row(s)")
+            if aggregates:
+                footer_parts.append("Total: " + " | ".join(str(a.get("label", "")) for a in aggregates))
+            tables.append({
+                "caption": "" if fact_key == "T!T" else _report_group_label(result_dict, fact_key),
+                "headers": columns if fact_key == "T!T" else [],
+                "rows": table_rows,
+                "footer": " — ".join(footer_parts),
+            })
+        return tables
+    except Exception:
+        return []
 
 
 def _format_report_details(result_dict: dict) -> str:
@@ -217,12 +265,29 @@ class SalesforceConnector(Connector):
         record_dict = asdict(record)
         record_fields = record_dict.get("fields", {})
         name = record_fields.get("Name") or record_fields.get("name") or record_id
+        # Salesforce has no auto/no-gate search or list of record contents at
+        # all (unlike every other connector's list_* tool) -- Object
+        # type/Record ID are Claude's own input to this very call (kept in
+        # §1 as identifying context, not "known"), but nothing about the
+        # record's actual fields, including its Name, is known beforehand.
+        # The record can have an arbitrary, per-object-type field set (not a
+        # fixed row count), so §3 names which fields are on this record
+        # (not a fixed row per field), and the actual values render as a
+        # Field/Value table in the right-pane preview instead of a text dump.
+        field_names = _populated_field_names(record_fields)
         preview = {
             "Object type": object_type,
-            "Name": str(name),
             "Record ID": record_id,
         }
+        new_info = {
+            "Name": str(name),
+            "Field values": ", ".join(field_names) if field_names else "(no populated fields)",
+        }
         details = f"Fields:\n{_format_flat_fields(record_fields)}"
+        table = {
+            "headers": ["Field", "Value"],
+            "rows": [[key, record_fields[key]] for key in field_names],
+        }
         return await gated_call(
             connector=self.name,
             tool="salesforce_get_record",
@@ -233,7 +298,10 @@ class SalesforceConnector(Connector):
             filtered_data=record_dict,
             gate="review",
             preview=preview,
+            new_info=new_info,
             details_text=details,
+            preview_tables=[table],
+            table_only=True,
             my_email=self.my_email,
             args={"object_type": object_type, "record_id": record_id},
         )
@@ -253,10 +321,16 @@ class SalesforceConnector(Connector):
             or (result_dict.get("name") or result_dict.get("reportName") if isinstance(result_dict, dict) else None)
             or report_id
         )
+        # Report/Report ID are known via salesforce_list_reports; the
+        # report's actual data (rows/aggregates) is only learned once this
+        # call is approved, and -- like a record's fields -- has no fixed
+        # row count, so it gets one fixed summary row rather than per-row
+        # values (the real data lives in the right-pane preview instead).
         preview = {
             "Report": str(report_name),
             "Report ID": report_id,
         }
+        new_info = {"Report data": "All report rows/aggregates"}
         details = _format_report_details(result_dict)
         return await gated_call(
             connector=self.name,
@@ -268,7 +342,18 @@ class SalesforceConnector(Connector):
             filtered_data=result_dict,
             gate="review",
             preview=preview,
+            new_info=new_info,
             details_text=details,
+            # _report_tables() renders the exact same factMap data
+            # _format_report_details() does, just structured as tables
+            # instead of plain text -- same "keep the table, not both"
+            # reasoning as salesforce_get_record/_search. Falls back to the
+            # plain-text details automatically when _report_tables()
+            # returns [] (non-matching/complex report shape), since
+            # table_only only suppresses details_text when preview_tables
+            # is actually non-empty.
+            preview_tables=_report_tables(result_dict),
+            table_only=True,
             my_email=self.my_email,
             args={"report_id": report_id},
         )
@@ -288,16 +373,31 @@ class SalesforceConnector(Connector):
         except SalesforceClientError as exc:
             raise RuntimeError(str(exc)) from exc
         result = [asdict(r) for r in records]
+        # Search term/Object types/Account ID are Claude's own input to this
+        # call (kept in §1 as identifying context); Results (count) and the
+        # actual match list are only learned once approved -- no auto/
+        # no-gate search exists for Salesforce at all.
         preview = {
             "Search term": search_term,
             "Object types": object_types or "(default)",
-            "Results": str(len(records)),
         }
         if account_id:
             preview["Account ID"] = account_id
+        new_info = {
+            "Results": str(len(records)),
+            "Search results": "Object type, Name, and id per match",
+        }
+        # Same plain-text list as before, unconditionally -- it's also the
+        # legacy layout's own display and (absent an explicit
+        # pii_scan_text) the PII scan's fallback source, so it can't be
+        # emptied out just because v2 also gets a nicer table alongside it.
         details = "\n".join(
             f"{r.object_type} — {r.fields.get('Name', '(no name)')} (id={r.id})" for r in records
         ) or "(no matches)"
+        table = {
+            "headers": ["Object type", "Name", "ID"],
+            "rows": [[r.object_type, r.fields.get("Name", "(no name)"), r.id] for r in records],
+        }
         return await gated_call(
             connector=self.name,
             tool="salesforce_search",
@@ -308,7 +408,10 @@ class SalesforceConnector(Connector):
             filtered_data=result,
             gate="review",
             preview=preview,
+            new_info=new_info,
             details_text=details,
+            preview_tables=[table] if records else [],
+            table_only=True,
             my_email=self.my_email,
             args={"search_term": search_term, "object_types": object_types, "account_id": account_id},
         )

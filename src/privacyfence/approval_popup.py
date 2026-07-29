@@ -17,6 +17,7 @@ import subprocess
 import tempfile
 
 from .approval_window import show_native_approval
+from .approval_window_html import NARROW
 
 
 def _as_str(s: str) -> str:
@@ -89,6 +90,12 @@ def show_popup(
     allow_accept_all: bool = False,
     preview_bytes: bytes = b"",
     preview_mime_type: str = "",
+    preview_tables: list[dict] | None = None,
+    preview_blocks: list[dict] | None = None,
+    table_only: bool = False,
+    upload_forced: bool = False,
+    layout: str = NARROW,
+    accept_all_hint: str = "",
 ) -> str:
     """Approval popup for write tools. No PII *gate* applies here -- see
     gate.py's module docstring for why the PII confirmation flow is
@@ -141,6 +148,34 @@ def show_popup(
     only ever set by upload-shaped write tools (drive_upload_file) whose
     payload never reaches Claude's context at all.
 
+    ``preview_tables``/``preview_blocks``/``table_only`` are the WIDE
+    right-pane preview, same as show_read_popup's own -- e.g.
+    drive_sheets_write_range's own values-being-written table, or
+    jira_create_issue's Description heading. See gate.py's gated_call
+    docstring for the exact shape of each.
+
+    ``upload_forced`` selects the distinct "write-forced" PII card styling
+    (an interim placeholder reusing the read-gate's own look -- see
+    approval_window_html.py's _risk_section_html docstring) for
+    drive_upload_file's own real PII match, which -- unlike every other
+    write tool's informational ``write_content_flags`` banner -- forces the
+    same second "Are you sure?" confirmation the read side gets. gate.py
+    sets this from whether ``upload_pii_categories`` is non-empty, the one
+    signal unique to that call site.
+
+    ``layout`` selects the NARROW/WIDE card-stack shape -- gate.py picks
+    this per tool from its own _TOOL_LAYOUT table, same as show_read_popup's
+    own.
+
+    ``accept_all_hint``, when set, is a short phrase naming the specific
+    rule Always allow would create (e.g. "this folder", "if I'm sender") --
+    shown right on the button itself, not just in the confirmation dialog
+    after clicking. gate.py derives this from the same ``suggest_write_
+    rule()`` result that decides ``allow_accept_all`` -- empty whenever
+    that's False, and also empty for the one unconditional rule
+    (``always_allow``, e.g. gmail_create_draft) that has no category to
+    name. See auto_accept.describe_rule_short's own docstring.
+
     Returns 'accept', 'deny', or 'accept_all' (only offered when
     allow_accept_all is True).
     """
@@ -149,6 +184,12 @@ def show_popup(
         temp_accept_eligible=temp_accept_eligible, claude_reason=claude_reason,
         write_content_flags=write_content_flags, seen_count=seen_count, connector=connector,
         preview_bytes=preview_bytes, preview_mime_type=preview_mime_type,
+        preview_tables=preview_tables, preview_blocks=preview_blocks, table_only=table_only,
+        upload_forced=upload_forced, layout=layout, accept_all_hint=accept_all_hint,
+        # show_popup is unconditionally the write-gate popup -- is_read is a
+        # property of which of the two show_* functions was called, not a
+        # per-call choice gate.py makes.
+        is_read=False,
     )
 
 
@@ -170,6 +211,12 @@ def show_read_popup(
     connector: str = "",
     preview_bytes: bytes = b"",
     preview_mime_type: str = "",
+    new_info: dict[str, str] | None = None,
+    preview_tables: list[dict] | None = None,
+    preview_blocks: list[dict] | None = None,
+    table_only: bool = False,
+    layout: str = NARROW,
+    accept_all_hint: str = "",
 ) -> str:
     """Approval popup for read tools. Full content is always shown before the
     decision, in a scrollable pane — the user never has to click through to
@@ -182,20 +229,41 @@ def show_read_popup(
     for the call -- unverified, see gate.py's reason_scope docstring.
     ``seen_count`` is the request-fingerprint feature (AuditLogger.
     recent_matches) -- how many times this exact (connector, tool, summary)
-    was already approved this week. ``content_kind`` selects a per-surface
-    body-pane rendering ("email" gets a structured From/To/Date/Subject
-    header above the body) -- an explicit connector-set hint, not guessed
-    from preview's shape.
-    ``pdf_bytes``, when non-empty, renders a native PDFView instead of the
-    body pane's usual WKWebView text -- see gate.py's gated_call docstring
-    for the privacy-policy condition its only caller (drive.py) must check
-    before ever setting it.
+    was already approved this week. ``content_kind``/``pdf_bytes`` are a
+    legacy-layout-only body rendering hint and native-PDFView payload,
+    respectively -- ``pdf_bytes`` still renders inline via an <embed> data
+    URI (see approval_window.py's _build_content_view_v2), but
+    ``content_kind`` has no effect on the current rendering (see
+    build_preview_body_html's docstring).
     ``connector`` (e.g. "gmail", "drive") selects the top-left brand icon
     -- see approval_window.py's _connector_icon_path() docstring for the
     silent-skip fallback when no asset exists yet for it.
     ``preview_bytes``/``preview_mime_type``, when set, render a native image
     view instead -- see gate.py's gated_call docstring for why these carry
     no AI-visibility parity constraint, unlike ``pdf_bytes``.
+    ``new_info``, when given, is §3's ("What will be provided to Claude")
+    real (label, value) pairs -- see gate.py's gated_call docstring.
+    ``preview_tables``, when given, renders the WIDE right-pane preview as
+    structured table(s) instead of plain text -- see gate.py's gated_call
+    docstring.
+    ``preview_blocks``, when given, takes full precedence over both
+    ``details_text`` and ``preview_tables`` for the WIDE right pane --
+    an ordered list of text/field/table blocks, letting them interleave.
+    See gate.py's gated_call docstring.
+    ``table_only``, when True (and ``preview_tables`` is non-empty, and
+    ``preview_blocks`` isn't set), shows only the table(s) in the WIDE
+    right pane, not ``details_text`` too -- for tools whose details_text
+    fully duplicates the table's own data. See gate.py's gated_call
+    docstring.
+    ``layout`` selects the NARROW/WIDE card-stack shape -- gate.py picks
+    this per tool from its own _TOOL_LAYOUT table.
+
+    ``accept_all_hint``, when set, is a short phrase naming the specific
+    rule Always allow would create (e.g. "this folder", "if I'm sender") --
+    shown right on the button itself, not just in the confirmation dialog
+    after clicking. gate.py derives this from the same ``suggest_rule()``
+    result that decides ``allow_accept_all``. See show_popup's matching
+    docstring and auto_accept.describe_rule_short.
 
     Returns 'accept', 'deny', or 'accept_all' (only offered when
     allow_accept_all is True).
@@ -204,7 +272,12 @@ def show_read_popup(
         title=title, preview=preview, details_text=details_text, allow_accept_all=allow_accept_all,
         pii_categories=pii_categories, visibility=visibility, claude_reason=claude_reason,
         seen_count=seen_count, content_kind=content_kind, pdf_bytes=pdf_bytes, connector=connector,
-        preview_bytes=preview_bytes, preview_mime_type=preview_mime_type,
+        preview_bytes=preview_bytes, preview_mime_type=preview_mime_type, new_info=new_info,
+        preview_tables=preview_tables, preview_blocks=preview_blocks, table_only=table_only,
+        layout=layout, accept_all_hint=accept_all_hint,
+        # show_read_popup is unconditionally the review-gate popup -- see
+        # show_popup's own matching comment.
+        is_read=True,
     )
 
 
