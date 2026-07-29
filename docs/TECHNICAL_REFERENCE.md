@@ -39,9 +39,8 @@ The sections below preserve the complete tool-level and implementation-level beh
 ## Review model
 
 Every tool call passes through one of three gate values. `review` and `popup` are both native
-macOS popups PrivacyFence shows itself (via `osascript`) — there is no separate Claude
-Cowork-side approval step for either one. What differs between them is direction and button
-set (see below).
+macOS popups PrivacyFence shows itself — there is no separate Claude Cowork-side approval step
+for either one. What differs between them is direction and button set (see below).
 
 | Gate | Behaviour |
 |------|-----------|
@@ -1229,8 +1228,10 @@ See [`config/settings.yaml.example`](../src/privacyfence/resources/settings.yaml
 
 - The bridge is stateless and disposable — Claude can kill and restart it at any time without losing any state. All state (credentials, tokens, filters, queue) lives in the daemon.
 - IPC between the bridge and the daemon uses a newline-delimited JSON protocol over a Unix domain socket (`~/.privacyfence/privacyfence.sock`).
-- The daemon uses two threads: the main thread runs the rumps menu bar app (a hard macOS requirement for AppKit) and an IPC thread runs the asyncio event loop serving the bridge socket. Approval popups are shown via `osascript` subprocesses and can be called from any thread.
+- The daemon uses two threads: the main thread runs the rumps menu bar app (a hard macOS requirement for AppKit) and an IPC thread runs the asyncio event loop serving the bridge socket. The main approval window is native AppKit/WKWebView (see `approval_window.py`), shown from any thread via `performSelectorOnMainThread_withObject_waitUntilDone_`; a few secondary confirmation dialogs (PII confirmation, rule confirmation) still use `osascript display dialog` subprocesses (`approval_popup.py`).
 - All tools are advertised to Claude with `readOnlyHint = true` — see below.
+- The approval window follows the system's light/dark appearance automatically — no config or menu bar toggle, it reads `NSApp`'s current appearance.
+- The daemon checks GitHub Releases once a day for a newer version (`update_checker.py`) and shows a menu item / one-time dialog if one is found — never downloads or installs anything automatically. On by default; toggle from the menu bar's "Check for Updates" or `update_check.enabled` in `settings.yaml`. See [security-and-compliance.md](security-and-compliance.md) for what this network call does and doesn't send.
 
 ### Why every tool is advertised as read-only
 

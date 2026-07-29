@@ -33,7 +33,7 @@ it reaches the AI or the external service.
 | Where data is stored | Locally: OS credential storage / local token files, and a local audit log (`logs/audit/*.jsonl`, `*.xlsx`) |
 | Vendor-operated infrastructure | None. There is no multi-tenant service, no hosted database, and no PrivacyFence API that traffic passes through |
 | Network path for a tool call | `Claude → local MCP bridge → local Unix domain socket → local daemon → the connector's own cloud API (Google, Slack, Salesforce, Atlassian, Telegram) directly` |
-| Telemetry / analytics / phone-home | None built in — the codebase contains no telemetry, crash-reporting, or usage-analytics client shipping data to the author or any third party |
+| Telemetry / analytics / phone-home | No usage analytics or crash reporting. One narrow exception: a once-a-day unauthenticated `GET` to `api.github.com` checking for a newer release (`update_checker.py`) — no user, organization, or connector data is included or ever sent, only PrivacyFence's own version string is compared against the response locally. On by default; disable from the menu bar's "Check for Updates" > "Enabled" or `update_check.enabled: false` in `settings.yaml` |
 
 This is the architectural reason PrivacyFence can make a stronger data-residency claim than a
 typical SaaS AI add-on: there is no vendor server in the request path to compromise, subpoena, or
@@ -281,7 +281,7 @@ involved.
 | Question | Answer |
 |---|---|
 | Is this a SaaS product? | No. It's local software; there is no vendor-operated backend at all. |
-| Does our data leave our own approved cloud providers? | No new destination is added — data flows only between the employee's device and the same Google/Slack/Salesforce/Atlassian/Telegram accounts your organization already uses. |
+| Does our data leave our own approved cloud providers? | Organization/connector data does not — it flows only between the employee's device and the same Google/Slack/Salesforce/Atlassian/Telegram accounts your organization already uses. The one exception is the update checker's own daily version check against `api.github.com` (see §2's Telemetry row) — no organization or connector data is included in it, and it can be disabled. |
 | Can an employee connect a service IT didn't approve? | No — a connector only exists as an option if IT included it in the organization config bundle. |
 | Can the AI read or write data without a human seeing it first? | Only for narrowly-scoped, IT/user-configured `auto` rules, which are still logged; sensitive reads and all writes require explicit approval (`review`/`popup`). |
 | Is there a central admin console with visibility into every employee's approvals? | Not currently — audit logs are local per device. Plan for separate centralized log collection if your compliance program requires it. |

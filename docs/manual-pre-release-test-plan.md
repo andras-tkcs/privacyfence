@@ -85,6 +85,10 @@ and one wide representative scenario is enough to confirm the mechanism itself s
       the one menu-bar scenario).
 - [ ] Requires macOS and Accessibility permission granted to your terminal/IDE — grant it once from
       System Settings → Privacy & Security → Accessibility if you haven't already.
+- [ ] Repeat one of the two scenarios above with your Mac in dark mode (System Settings →
+      Appearance → Dark), and again in light mode if you started in dark — confirm every card,
+      the risk/PII banners, and the button row all render with readable contrast in both, since
+      this isn't covered by any automated test.
 
 ## 3. "QA prompt" manual test — representative live connector pass
 
