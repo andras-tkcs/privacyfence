@@ -41,6 +41,10 @@ jobs:
         run: npm test
         working-directory: bridge
 
+      - name: Type-check bridge
+        run: npm run typecheck
+        working-directory: bridge
+
       # tests/integration/test_bridge_daemon_contract.py spawns the real
       # built bridge.js against a real IPCServer, so the bridge needs to be
       # built before pytest runs (the test builds it lazily on a cache miss
