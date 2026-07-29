@@ -212,8 +212,6 @@ def _wait_for_button_enabled(pid: int, title: str) -> str:
     it for certain, only makes the race less likely to lose. Called both
     by the screenshot step (clicker(), below) and by _click_button()
     before it actually clicks, so neither can act on a stale window state.
-    Legacy's buttons are never disabled, so this returns "ready" on its
-    first check for that layout -- no behavior change there.
     """
     script = f'''
     tell application "System Events"
@@ -413,6 +411,16 @@ def _run_scenario(
         # the sender equals my_email), just the same representative
         # top-of-priority-order candidate the doc documents for each tool.
         popup_kwargs.setdefault("accept_all_hint", describe_rule_short(_READ_ACCEPT_ALL_TOP_RULE[tool_name]))
+
+    # A bare click_title="Always allow" only matches the real on-screen
+    # button when accept_all_hint is empty -- once one is set (by either
+    # branch above, or by a scenario setting accept_all_hint itself), the
+    # button's actual title includes it (see approval_window.py's
+    # _action_buttons: f"Always allow — {hint}"). Keep the two in sync
+    # here instead of requiring every such scenario to hardcode the exact
+    # hinted string, which would silently drift from _RULE_SHORT_HINTS.
+    if click_title == "Always allow" and popup_kwargs.get("accept_all_hint"):
+        click_title = f"Always allow — {popup_kwargs['accept_all_hint']}"
 
     pid = os.getpid()
     click_status_box: list[str] = []
@@ -1020,9 +1028,8 @@ def _scenarios(
 
     # ================================================================== #
     # RG-1 -- review popup (every read tool except drive_get_file_content,
-    # RG-2 below). Used to be three separate shapes here (no checklist /
-    # checklist / Gmail email header) -- collapsed into one (see
-    # docs/approval-window-content-reference.md's "View groups" section).
+    # RG-2 below) -- see docs/approval-window-content-reference.md's
+    # "View groups" section.
     # ================================================================== #
 
     results.append(run(
