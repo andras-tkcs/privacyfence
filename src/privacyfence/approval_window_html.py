@@ -624,7 +624,7 @@ def build_card_stack_html(
 <html>
 <head>
 <meta charset="utf-8">
-<meta name="color-scheme" content="light">
+<meta name="color-scheme" content="light dark">
 <style>
 {_STYLES_CSS}
 html {{ height: 100%; }}
