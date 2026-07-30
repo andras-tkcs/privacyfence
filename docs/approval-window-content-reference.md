@@ -36,7 +36,7 @@ preview/details sections at all, so there's nothing to group — see their docst
 ## Anatomy of the main window, top to bottom
 
 Both the review-gate and popup-gate windows are the *same* `ApprovalWindowController`, built from
-the same section order (`approval_window.py`'s `_build_content_view_v2`); what differs is which
+the same section order (`approval_window.py`'s `_build_content_view`); what differs is which
 optional sections a given call populates. In display order:
 
 | # | Section | Appears when | Review-gate only? | Popup-gate only? | Per-tool opt-in, or automatic? |
@@ -44,8 +44,8 @@ optional sections a given call populates. In display order:
 | 1 | Kicker + fence icon + title | always | – | – | Kicker text/color differ by direction: "What Claude already knows" / "Why Claude needs more data" (review-gate) vs. "Action to perform" / "Why Claude is doing this" (popup-gate) — see `is_read` |
 | 2 | "Seen N times this week" caption | `seen_count > 0` | no | no | **Automatic** — computed centrally in `gate.py` from the audit log for every call |
 | 3 | §1 preview card (the "WHAT") | `preview` dict is non-empty | no | no | Per-tool — each connector call site builds its own `preview` dict |
-| 4 | §2 "Claude says" reason card | `claude_reason` non-empty | no | no | **Automatic** — every gated tool's schema requires a `reason` param (Phase 1b); self-reported, never verified |
-| 5 | §3 disclosure card ("What will be provided to Claude") | `new_info` and/or `visibility` non-empty | **yes** | – | Per-tool — built from `new_info` (real per-tool values) first, then `visibility`-derived policy sentences appended if also set (`_v2_disclosure_rows()`). Never present for a write — `show_popup` never sets either |
+| 4 | §2 "Claude says" reason card | `claude_reason` non-empty | no | no | **Automatic** — every gated tool's schema requires a `reason` param; self-reported, never verified |
+| 5 | §3 disclosure card ("What will be provided to Claude") | `new_info` and/or `visibility` non-empty | **yes** | – | Per-tool — built from `new_info` (real per-tool values) first, then `visibility`-derived policy sentences appended if also set (`_disclosure_rows()`). Never present for a write — `show_popup` never sets either |
 | 6 | §4 PII/content-flag risk card | PII detector flagged the scanned content | – | – | **Automatic** — `gate.py` runs `detect_pii_categories()` on every call's content (review-gate: `pii_categories`, forces a second confirmation; popup-gate: `write_content_flags`, informational only — see Cross-cutting below) |
 | 7 | Right-hand preview pane (WIDE layout only; reading-time estimate) | `layout == "wide"` for this tool | no | no | Per-tool, fixed — see `_TOOL_LAYOUT` in `gate.py`/`scripts/qa_popup_smoke.py`. NARROW-layout tools have no preview pane at all |
 | 8 | Temp-accept disclosure caption (plain text, not a control) | `temp_accept_eligible` | – | **yes** | **Automatic** — `gate.py` sets it from `auto_accept.temp_accept_key()` resolving for the six WG-3 tools below. Not offered as a button: clicking Allow once on one of these silently also arms the 5-minute same-file grace window this caption describes — see WG-3 below |
@@ -205,10 +205,9 @@ canned templates are read-direction-only English.
 
 The six operations in `auto_accept.TEMP_ACCEPT_ELIGIBLE_OPERATIONS` — repeat calls against the
 same file are common enough to warrant a narrower, memory-only 5-minute auto-accept instead of
-either a full standing rule or re-approving every single call. There used to be a separate "Allow
-for 5 min" button for these; clicking Allow once on one of them now silently arms the same grace
-window instead, and the dialog only discloses that with a plain caption above the buttons (row 8),
-not a distinct control. All six are *also* in `WRITE_RULE_SUGGESTIONS` (they propose
+either a full standing rule or re-approving every single call. Clicking Allow once on one of them
+silently arms this grace window, and the dialog only discloses that with a plain caption above the
+buttons (row 8), not a distinct control. All six are *also* in `WRITE_RULE_SUGGESTIONS` (they propose
 `approved_sandbox_folder` from the file's current parent folder), so this is the one group where the
 Always-allow button and the temp-accept caption can both be showing on the same popup at once:
 

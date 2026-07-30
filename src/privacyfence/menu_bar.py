@@ -84,6 +84,7 @@ from .salesforce_client import authorize_interactive as salesforce_authorize_int
 from .slack_client import authorize_interactive as slack_authorize_interactive
 from .tasks_client import TasksClient
 from .update_checker import (
+    REPO_RELEASES_URL_FALLBACK,
     UpdateCheckResult,
     check_for_update,
     mark_remind_later,
@@ -248,9 +249,8 @@ ALL_CONNECTORS: list[str] = [
 # Drive's OAuth grant), but their rules live under their own "sheets.*"/
 # "docs.*" operation keys (see TOOL_TO_OPERATION in auto_accept.py) rather
 # than nested under "drive.*", so _build_rules_menu's connector-prefix
-# grouping needs them listed here or the whole bucket is silently dropped
-# (never iterated, so never rendered) -- exactly what happened before this
-# constant existed.
+# grouping needs them listed here, or the whole bucket is silently dropped
+# (never iterated, so never rendered).
 RULES_MENU_GROUPS: list[str] = [
     "gmail", "drive", "sheets", "docs", "contacts", "calendar", "tasks",
     "slack", "jira", "confluence", "salesforce", "telegram",
@@ -372,11 +372,11 @@ PRIVACY_CATEGORY_LABELS: dict[str, dict[str, str]] = {
     },
 }
 
-# Rule names now configured through a Trusted-resource grant (see
-# resource_grants.py) instead of by hand. Hidden from "+ Add rule…" so there
-# isn't a second, more tedious way to do the same thing — existing entries
-# under these names (hand-authored, or left behind by a partial migration —
-# see resource_grants.migrate_rules_to_grants) still display and can still be
+# Rule names configured through a Trusted-resource grant (see
+# resource_grants.py), not by hand. Hidden from "+ Add rule…" so there
+# isn't a second, more tedious way to do the same thing — existing
+# hand-authored or partially-migrated entries under these names (see
+# resource_grants.migrate_rules_to_grants) still display and can still be
 # removed, just not created fresh from here.
 GRANT_COVERED_RULE_NAMES: set[str] = {
     rule_name
@@ -682,15 +682,12 @@ class PrivacyFenceMenuBar(rumps.App):
         return result
 
     def _gather_connector_sections(self, cname: str) -> list[Section]:
-        """Data for the rules-manager window's main pane -- the same
-        connector/grant/rule iteration the old cascading "Auto-accept Rules"
-        NSMenu used to do, just producing Section/Row data instead of
-        rumps.MenuItem objects. Every
-        row action below is one of this class's own existing mutation
-        methods (see "Rule actions"/"Grant actions"), unchanged -- only how
-        they're triggered (a window row's link button, not a menu click)
-        and how the result gets back on screen (see _rebuild's
-        _refresh_window() call) is new."""
+        """Data for the rules-manager window's main pane: the
+        connector/grant/rule iteration that produces Section/Row data for
+        the window. Every row action below is one of this class's own
+        existing mutation methods (see "Rule actions"/"Grant actions"),
+        triggered by a window row's link button; _rebuild's
+        _refresh_window() call keeps the window in sync with the menu."""
         cfg = self._load_config()
         rules_cfg: dict[str, list[dict]] = cfg.get("auto_accept_rules", {}) or {}
         grants_cfg: dict[str, Any] = cfg.get("auto_accept_grants", {}) or {}
@@ -852,12 +849,11 @@ class PrivacyFenceMenuBar(rumps.App):
         self._run_async(work, done)
 
     def _build_org_menu(self, org_config: dict[str, Any]) -> rumps.MenuItem:
-        """Single top-level item, not a submenu -- the old version held only
-        two static status lines plus one action, exactly the kind of shallow
-        "menu wearing a data-browser's clothes" the menu bar redesign review
-        flagged (see that review's item 1, generalized). Clicking shows
-        status first (if any config is installed) before handing off to the
-        unchanged install/update flow."""
+        """Single top-level item, not a submenu -- a submenu holding only two
+        static status lines plus one action would be a menu wearing a
+        data-browser's clothes for no real navigational benefit. Clicking
+        shows status first (if any config is installed) before handing off
+        to the install/update flow."""
         label = "Organization Config…" if org_config else "Install Organization Config…"
         item = rumps.MenuItem(label)
         item.set_callback(self._open_org_config)
@@ -1468,7 +1464,14 @@ class PrivacyFenceMenuBar(rumps.App):
             other="Remind Me Later",
         )
         if resp == 1:
-            subprocess.run(["open", result.release_url], check=False)
+            # release_url comes from GitHub's API response (html_url) --
+            # restrict to http(s) before handing it to `open`, which will
+            # invoke whatever URL-scheme handler is registered for
+            # anything else, not just a browser.
+            url = result.release_url
+            if not url.startswith(("http://", "https://")):
+                url = REPO_RELEASES_URL_FALLBACK
+            subprocess.run(["open", url], check=False)
         elif resp == 0:
             mark_skipped(result.latest_version)
         else:
@@ -1920,7 +1923,13 @@ def _osascript_pick(title: str, prompt: str, options: list[str], default: str | 
     item (AppleScript's "default items") -- purely cosmetic, existing
     callers that don't pass it see no change in behavior."""
     opts_as = "{" + ", ".join(f'"{o}"' for o in options) + "}"
-    default_clause = f' with default items {{"{default}"}}' if default in options else ""
+    # AppleScript's "choose from list" parameter is `default items`, not
+    # `with default items` -- the leading "with" is only valid there for
+    # boolean parameters (e.g. "with multiple selections allowed"). Getting
+    # this wrong is a silent no-op: _osascript_pick doesn't surface
+    # osascript's stderr/exit code, so a syntax error here just makes the
+    # picker never appear, with nothing printed anywhere.
+    default_clause = f' default items {{"{default}"}}' if default in options else ""
     script = (
         f'set opts to {opts_as}\n'
         f'set chosen to (choose from list opts '

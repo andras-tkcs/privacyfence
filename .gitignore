@@ -8,11 +8,18 @@ org/*
 *.p12
 src/privacyfence/_telegram_credentials.py
 scripts/dev_env.sh
+# scripts/sync_room_directory.py's OAuth token for the admin-scoped Google
+# Cloud project it syncs the room directory from -- dev-mode data_dir() is
+# the repo root, same as the other credential paths above.
+.room_sync_token.json
 
 # User configuration (keep only the .example)
 config/settings.yaml
 config/settings.local.yaml
+
+# Local runtime caches (dev-mode data_dir() is the repo root -- see paths.py)
 resource_name_cache.json
+update_check_cache.json
 
 # QA fixture manifest (keep only the .example) -- reveals which real
 # project/space/folder/calendar/list/channel/chat a QA environment uses,

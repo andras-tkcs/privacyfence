@@ -18,7 +18,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import date as _date
 from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import Any
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -631,13 +631,56 @@ class CalendarClient:
             "transparency": "transparent",
             "workingLocationProperties": working_location_properties,
         }
+        # Calendar's insert API has no "one working-location event per day"
+        # constraint of its own -- calling this twice for the same date
+        # would otherwise leave two overlapping all-day entries instead of
+        # one, unlike the Calendar web UI's own "set your working location"
+        # picker, which always replaces the day's existing entry. Look for
+        # one first and update it in place when found.
+        existing_id = self._find_working_location_event_id(date, end_date)
         try:
-            raw = self._get_service().events().insert(calendarId="primary", body=body).execute()
+            if existing_id is not None:
+                raw = (
+                    self._get_service()
+                    .events()
+                    .update(calendarId="primary", eventId=existing_id, body=body)
+                    .execute()
+                )
+            else:
+                raw = self._get_service().events().insert(calendarId="primary", body=body).execute()
         except HttpError as exc:
             raise CalendarClientError(f"set_working_location failed: {exc}") from exc
         event = self._parse_event(raw, "primary")
-        logger.info("set_working_location: %s on %s", location, date)
+        logger.info(
+            "set_working_location: %s on %s (%s)", location, date,
+            "replaced existing entry" if existing_id is not None else "created new entry",
+        )
         return event
+
+    def _find_working_location_event_id(self, date: str, end_date: str) -> str | None:
+        """The id of an existing workingLocation event already covering
+        this exact day, if any -- see set_working_location()'s own comment
+        for why it needs to update that instead of inserting a duplicate.
+        Returns the first match if more than one somehow already exists
+        (pre-existing duplicates aren't cleaned up here, only prevented
+        going forward)."""
+        try:
+            result = (
+                self._get_service()
+                .events()
+                .list(
+                    calendarId="primary",
+                    timeMin=f"{date}T00:00:00Z",
+                    timeMax=f"{end_date}T00:00:00Z",
+                    eventTypes=["workingLocation"],
+                    singleEvents=True,
+                )
+                .execute()
+            )
+        except HttpError as exc:
+            raise CalendarClientError(f"set_working_location lookup failed: {exc}") from exc
+        items = result.get("items", [])
+        return items[0]["id"] if items else None
 
     # ------------------------------------------------------------------ #
     # Parsing helpers

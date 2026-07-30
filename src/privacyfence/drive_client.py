@@ -85,6 +85,10 @@ def resolve_download_name(metadata: Any) -> str:
 def resolve_download_destination(metadata: Any, destination_dir: str = "") -> str:
     """Compute where ``download_file`` will save this file, without touching disk.
 
+    ``destination_dir`` is mandatory -- there is no default. Callers must
+    deliberately choose between a location the user will find (e.g.
+    ~/Downloads) and Claude's own working/scratch directory, rather than a
+    file silently landing in Downloads just because nobody thought about it.
     ``metadata.name`` comes from Drive and is untrusted -- a file can be
     renamed to anything, including path separators -- so only the basename of
     the resolved download name is kept. This is the same protection
@@ -92,7 +96,15 @@ def resolve_download_destination(metadata: Any, destination_dir: str = "") -> st
     names, and for the same reason: it's what stops a file renamed to
     "../../.ssh/authorized_keys" from writing outside ``destination_dir``.
     """
-    dest_dir = os.path.expanduser(destination_dir.strip() or "~/Downloads")
+    if not destination_dir.strip():
+        raise DriveClientError(
+            "download_file requires a non-empty destination_dir -- there is "
+            "no default. Pass ~/Downloads (or another location the user "
+            "asked for) if this file is a deliverable the user should find "
+            "afterward, or your own working/scratch directory if you're "
+            "only downloading it to read or process it yourself."
+        )
+    dest_dir = os.path.expanduser(destination_dir.strip())
     safe_name = os.path.basename(resolve_download_name(metadata)) or metadata.id or "file"
     return os.path.join(dest_dir, safe_name)
 
@@ -416,12 +428,19 @@ def _extract_tables(markdown: str) -> tuple[str, list[TableBlock]]:
     return "\n".join(out_lines), tables
 
 
-def _table_cell_start_indices(doc: dict, table_start_index: int) -> list[list[int]]:
+def _table_cell_start_indices(doc: dict, insert_location_index: int) -> list[list[int]]:
     """Return the just-inserted table's cell start indices as doc[row][col],
     read back from a fresh ``documents().get()`` response -- Docs assigns
     these itself and doesn't return them from the insertTable request, so
     this is the only reliable way to know where to insert each cell's text.
+
+    ``insert_location_index`` is the ``location.index`` the insertTable
+    request itself used, not the table's own resulting ``startIndex`` --
+    the Docs API always inserts a newline immediately before a table (so it
+    never merges into the preceding paragraph), so the table structural
+    element actually starts one index past where it was requested.
     """
+    table_start_index = insert_location_index + 1
     for element in doc.get("body", {}).get("content", []):
         table = element.get("table")
         if table is None or element.get("startIndex") != table_start_index:
@@ -821,7 +840,7 @@ class DriveClient:
     ) -> dict[str, Any]:
         """Download a file to a local directory and return the saved path.
 
-        If ``destination_dir`` is empty, defaults to ``~/Downloads``.
+        ``destination_dir`` is mandatory -- see ``resolve_download_destination``.
         Google Workspace documents are exported as text (Docs/Slides → .txt,
         Sheets → .csv). Binary files are saved with their original extension.
         Returns a dict with ``path``, ``name``, ``size_bytes``, and

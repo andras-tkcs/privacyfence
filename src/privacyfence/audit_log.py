@@ -41,7 +41,7 @@ class AuditEntry:
                             # "unattended_session_started" | "unattended_session_ended" |
                             # "rule_changed_via_bridge_proposal" | "rule_removed_via_bridge_proposal" |
                             # "grant_changed_via_bridge_proposal" | "grant_removed_via_bridge_proposal" |
-                            # "error"
+                            # "bridge_proposal_no_op" | "error"
                             # ("error": gate.py's gated_call exited without reaching a normal decision
                             #  branch -- a fallback so an unanticipated failure still leaves a trail)
                             # ("denied_unattended": gate.py denied the call without ever prompting,
@@ -61,8 +61,15 @@ class AuditEntry:
                             #  "grant_changed_via_bridge_proposal"/"grant_removed_via_bridge_proposal":
                             #  gate.py's propose_rule_change() -- a bridge-initiated auto_accept_rules/
                             #  auto_accept_grants edit that a human confirmed via the same
-                            #  show_rule_confirmation_popup() the "Always allow" flow uses. "rejected"
-                            #  is reused, not a new value, when the human declines instead)
+                            #  show_rule_confirmation_popup() the "Always allow" flow uses, and that
+                            #  actually changed something (config's own `changed` return value was
+                            #  True). "rejected" is reused, not a new value, when the human declines
+                            #  instead)
+                            # ("bridge_proposal_no_op": same propose_rule_change() confirmation flow,
+                            #  but the human's "yes" didn't actually change anything -- e.g. Claude
+                            #  proposed removing a rule/grant value that was already gone. Distinct
+                            #  from "rejected" (the human said no) and from the four decisions above
+                            #  (a real change happened) -- confirmed and yet a no-op is its own case)
     auto_accept_rule: str   # rule name if auto_accepted, else ""
     latency_seconds: float
     pii_detected: bool = False  # True if pii_detector.py flagged the content before this decision
@@ -153,6 +160,7 @@ class AuditLogger:
             "rule_removed_via_bridge_proposal":   PatternFill("solid", fgColor="FFF3CD"),
             "grant_changed_via_bridge_proposal":  PatternFill("solid", fgColor="FFF3CD"),
             "grant_removed_via_bridge_proposal":  PatternFill("solid", fgColor="FFF3CD"),
+            "bridge_proposal_no_op": PatternFill("solid", fgColor="F1F3F5"),
             "error":                 PatternFill("solid", fgColor="FF6B6B"),
         }
 

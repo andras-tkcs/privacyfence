@@ -39,9 +39,8 @@ The sections below preserve the complete tool-level and implementation-level beh
 ## Review model
 
 Every tool call passes through one of three gate values. `review` and `popup` are both native
-macOS popups PrivacyFence shows itself (via `osascript`) — there is no separate Claude
-Cowork-side approval step for either one. What differs between them is direction and button
-set (see below).
+macOS popups PrivacyFence shows itself — there is no separate Claude Cowork-side approval step
+for either one. What differs between them is direction and button set (see below).
 
 | Gate | Behaviour |
 |------|-----------|
@@ -51,7 +50,7 @@ set (see below).
 
 ### Two flows by direction
 
-> **Note on MCP annotations (since v0.4.9):** the bridge advertises *every*
+> **Note on MCP annotations:** the bridge advertises *every*
 > tool — reads and writes alike — to Claude as `readOnlyHint = true` /
 > `destructiveHint = false`. This is intentional. See
 > [Why every tool is advertised as read-only](#why-every-tool-is-advertised-as-read-only) below.
@@ -414,8 +413,8 @@ passed through as-is and surface Jira's own validation error if the shape is wro
 Trusting a specific resource — a Drive folder, a Google Tasks list, a Slack channel, a Jira
 project, ... — is configured **once per resource**, under `auto_accept_grants` in
 `config/settings.yaml`, rather than by adding the same ID to every operation key that resource
-happens to touch (see [Auto-accept rules](#auto-accept-rules) below for what that used to require).
-This is also what the menu bar's **Manage Auto-accept Rules… → \<Connector\> → Trusted \<Resource\>**
+happens to touch (see [Auto-accept rules](#auto-accept-rules) below for the older, still-supported
+per-operation form). This is also what the menu bar's **Manage Auto-accept Rules… → \<Connector\> → Trusted \<Resource\>**
 sections read and write — editing the YAML directly and editing from that window are equivalent.
 
 ```yaml
@@ -615,7 +614,7 @@ covered above — enabling its `write` capability auto-accepts `drive.comment_fi
 `docs.edit_content`/`docs.format_content`, `drive.upload_file`, and `drive.move_file` too, alongside
 `drive.write_file`/`drive.write_doc` and every `sheets.*` write.
 
-**All of Drive's write ops now offer Always allow too** — see
+**Every one of Drive's write ops offers Always allow** — see
 [Always allow for writes](#always-allow-for-writes) below for the full table; most propose
 `approved_sandbox_folder` from the file's current parent folder(s), `drive.upload_file` proposes
 `parent_folder_allowlist` from the upload's destination folder, and `drive.move_file` proposes
@@ -647,9 +646,9 @@ with no undo path through PrivacyFence, so it only ever gets the standing-rule t
 | `reply_in_existing_thread` | Message is a reply (has `thread_ts`) |
 
 `group_dm` recognizes the group-DM *shape* itself as a trustable category, rather than requiring
-each group's channel ID to be individually allowlisted under `approved_channel` the way a channel
-or a group DM previously had to be. Channel type isn't derivable from the ID alone (a legacy private
-channel can share the same `G`-prefixed shape a group DM uses), so `slack_get_channel_history`/
+each group's channel ID to be individually allowlisted under `approved_channel` the way a regular
+channel is. Channel type isn't derivable from the ID alone (a private channel can share the same
+`G`-prefixed shape a group DM uses), so `slack_get_channel_history`/
 `slack_get_thread_replies` resolve it via `SlackClient.resolve_is_group_dm()` (a cached
 `conversations.info` lookup) before the call reaches the gate, alongside the channel-name lookup
 `slack.py`'s preview text already does.
@@ -762,8 +761,8 @@ the project from `issue_key` the same way `jira_get_issue`/`jira_update_issue` d
 > `telegram.read_chat_messages` and `telegram.send_message`.
 
 `telegram_search_messages` shares the `telegram.read_chat_messages` operation key with
-`telegram_get_messages` (it used to have its own `telegram.search_messages` key — upgrading
-migrates any existing rules onto the shared key automatically, see
+`telegram_get_messages` (an upgrade from an older release with a separate `telegram.search_messages`
+key migrates any existing rules onto the shared key automatically, see
 `auto_accept.migrate_telegram_search_operation_key()`), the same way `slack_search_messages`
 already shares `slack.read_messages`. `approved_chats` reads a single `chat_id` out of the call's
 arguments, which a search never provides (it can match across any number of chats); configuring it
@@ -877,10 +876,10 @@ unaffected and their popups are visually unchanged (Deny / Allow once only).
 
 ## Reading and proposing auto-accept changes from the bridge
 
-Until now, `auto_accept_rules`/`auto_accept_grants` were only readable/writable from the daemon
-side — the menu bar's Rules Manager window (`rules_manager_window.py`) or the "Always allow"
-confirmation described above. Two more bridge meta-tools close that gap, so Claude can inspect and
-propose changes to this config directly:
+`auto_accept_rules`/`auto_accept_grants` are readable/writable from the daemon side — the menu
+bar's Rules Manager window (`rules_manager_window.py`) or the "Always allow" confirmation described
+above — and, additionally, from two bridge meta-tools, so Claude can inspect and propose changes to
+this config directly:
 
 ### `privacyfence_list_auto_accept_rules` — read
 
@@ -927,10 +926,12 @@ gated tool call already follows.
 Applying the change reuses the exact same persistence functions the menu bar's editor and the
 "Always allow" flow already use (`auto_accept.add_auto_accept_rule`/`remove_auto_accept_rule`,
 `resource_grants.apply_grant_upsert`/`apply_grant_removal`), so a bridge-proposed change hot-reloads
-the live evaluator the same way. It's recorded as one of four new audit decisions —
-`rule_changed_via_bridge_proposal`, `rule_removed_via_bridge_proposal`,
+the live evaluator the same way. When it actually changes something, it's recorded as one of four
+audit decisions — `rule_changed_via_bridge_proposal`, `rule_removed_via_bridge_proposal`,
 `grant_changed_via_bridge_proposal`, `grant_removed_via_bridge_proposal` — distinguishable from a
-UI-originated change; a decline reuses the existing `rejected` decision rather than a new value.
+UI-originated change. A confirmed proposal that turns out to be a no-op (e.g. removing a rule/grant
+value that was already gone) is `bridge_proposal_no_op` instead — distinct from both a real change
+and from a decline, which reuses the existing `rejected` decision rather than a new value.
 
 Motivating example: a user's config can accumulate many individual `sheets.*` operations each
 hand-pinned to `approved_sandbox_folder` (see the callout under
@@ -1036,14 +1037,15 @@ and `policy_check` (a `privacyfence_check_policy` preflight call — not a real 
 for pattern-spotting only). Both get their own row on the Summary sheet and their own colour on
 the Decisions sheet.
 
-Five more relate to
+Six more relate to
 [reading/proposing auto-accept changes from the bridge](#reading-and-proposing-auto-accept-changes-from-the-bridge):
 `rules_listed` (a `privacyfence_list_auto_accept_rules` call — like `policy_check`, not a real
 decision, recorded because it discloses the full current rule set) and, once a
 `privacyfence_propose_auto_accept_rule_change` proposal is confirmed,
 `rule_changed_via_bridge_proposal` / `rule_removed_via_bridge_proposal` /
-`grant_changed_via_bridge_proposal` / `grant_removed_via_bridge_proposal`. A declined proposal
-reuses the existing `rejected` decision rather than a new value.
+`grant_changed_via_bridge_proposal` / `grant_removed_via_bridge_proposal` when it actually changed
+something, or `bridge_proposal_no_op` when it didn't (e.g. removing a rule/grant value that was
+already gone). A declined proposal reuses the existing `rejected` decision rather than a new value.
 
 See [connector-qa-testing.md](connector-qa-testing.md) for a Claude Cowork prompt that drives every connector's tools end to end against real accounts — the fastest way to catch a gate, auto-accept rule, or connector client that's drifted from what's documented here.
 
@@ -1229,14 +1231,16 @@ See [`config/settings.yaml.example`](../src/privacyfence/resources/settings.yaml
 
 - The bridge is stateless and disposable — Claude can kill and restart it at any time without losing any state. All state (credentials, tokens, filters, queue) lives in the daemon.
 - IPC between the bridge and the daemon uses a newline-delimited JSON protocol over a Unix domain socket (`~/.privacyfence/privacyfence.sock`).
-- The daemon uses two threads: the main thread runs the rumps menu bar app (a hard macOS requirement for AppKit) and an IPC thread runs the asyncio event loop serving the bridge socket. Approval popups are shown via `osascript` subprocesses and can be called from any thread.
+- The daemon uses two threads: the main thread runs the rumps menu bar app (a hard macOS requirement for AppKit) and an IPC thread runs the asyncio event loop serving the bridge socket. The main approval window is native AppKit/WKWebView (see `approval_window.py`), shown from any thread via `performSelectorOnMainThread_withObject_waitUntilDone_`; a few secondary confirmation dialogs (PII confirmation, rule confirmation) still use `osascript display dialog` subprocesses (`approval_popup.py`).
 - All tools are advertised to Claude with `readOnlyHint = true` — see below.
+- The approval window follows the system's light/dark appearance automatically — no config or menu bar toggle, it reads `NSApp`'s current appearance.
+- The daemon checks GitHub Releases once a day for a newer version (`update_checker.py`) and shows a menu item / one-time dialog if one is found — never downloads or installs anything automatically. On by default; toggle from the menu bar's "Check for Updates" or `update_check.enabled` in `settings.yaml`. See [security-and-compliance.md](security-and-compliance.md) for what this network call does and doesn't send.
 
 ### Why every tool is advertised as read-only
 
-Since **v0.4.9**, the bridge annotates *every* registered tool — reads and
-writes alike — as `readOnlyHint = true`, `destructiveHint = false`,
-`idempotentHint = true`, regardless of the tool's real `read_only` flag.
+The bridge annotates *every* registered tool — reads and writes alike — as
+`readOnlyHint = true`, `destructiveHint = false`, `idempotentHint = true`,
+regardless of the tool's real `read_only` flag.
 
 This is a deliberate trick, and it is safe because **PrivacyFence — not
 Claude — performs the actual authorization**:

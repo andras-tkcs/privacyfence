@@ -455,7 +455,13 @@ class TestOsascriptPick:
             lambda cmd, **kw: (captured.__setitem__("cmd", cmd), SimpleNamespace(stdout="a\n"))[1],
         )
         menu_bar._osascript_pick("T", "P", ["a", "b"], default="b")
-        assert "with default items" in captured["cmd"][2]
+        # Not "with default items" -- AppleScript's "choose from list" only
+        # takes a bare "default items" clause; "with" there is a syntax
+        # error (osascript -2741), which silently killed every Privacy
+        # Filter "Change..." picker since _osascript_pick doesn't surface
+        # osascript's stderr/exit code to the caller.
+        assert "default items" in captured["cmd"][2]
+        assert "with default items" not in captured["cmd"][2]
         assert '{"b"}' in captured["cmd"][2]
 
     def test_default_absent_from_options_omits_default_items_clause(self, monkeypatch):
@@ -465,7 +471,7 @@ class TestOsascriptPick:
             lambda cmd, **kw: (captured.__setitem__("cmd", cmd), SimpleNamespace(stdout="a\n"))[1],
         )
         menu_bar._osascript_pick("T", "P", ["a", "b"], default="not-an-option")
-        assert "with default items" not in captured["cmd"][2]
+        assert "default items" not in captured["cmd"][2]
 
     def test_no_default_omits_default_items_clause(self, monkeypatch):
         captured = {}
@@ -474,7 +480,7 @@ class TestOsascriptPick:
             lambda cmd, **kw: (captured.__setitem__("cmd", cmd), SimpleNamespace(stdout="a\n"))[1],
         )
         menu_bar._osascript_pick("T", "P", ["a", "b"])
-        assert "with default items" not in captured["cmd"][2]
+        assert "default items" not in captured["cmd"][2]
 
 
 class TestConfigHelpers:
@@ -2256,6 +2262,19 @@ class TestUpdateAvailableDialog:
         app._show_update_available_alert(self._result())
 
         assert open_calls == [["open", "https://github.com/x/releases/tag/v2.2.0"]]
+
+    def test_non_http_release_url_falls_back_to_releases_page(self, app, monkeypatch):
+        monkeypatch.setattr(menu_bar.rumps, "alert", lambda **kw: 1)
+        open_calls = []
+        monkeypatch.setattr(menu_bar.subprocess, "run", lambda args, **kw: open_calls.append(args))
+        result = update_checker.UpdateCheckResult(
+            latest_version="v2.2.0", release_url="file:///etc/passwd",
+            is_beta=False, is_update_available=True,
+        )
+
+        app._show_update_available_alert(result)
+
+        assert open_calls == [["open", menu_bar.REPO_RELEASES_URL_FALLBACK]]
 
     def test_skip_marks_version_skipped_without_opening(self, app, monkeypatch):
         monkeypatch.setattr(menu_bar.rumps, "alert", lambda **kw: 0)

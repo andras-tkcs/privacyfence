@@ -789,7 +789,10 @@ class TestTableCellStartIndices:
             "body": {
                 "content": [
                     {
-                        "startIndex": 5,
+                        # Docs always inserts a newline immediately before a table, so a
+                        # table requested at location.index=5 actually starts at 6 -- see
+                        # _table_cell_start_indices' own docstring.
+                        "startIndex": 6,
                         "table": {
                             "tableRows": [
                                 {
@@ -814,7 +817,7 @@ class TestTableCellStartIndices:
         doc = {
             "body": {
                 "content": [
-                    {"startIndex": 5, "table": {"tableRows": [{"tableCells": [{"content": []}]}]}}
+                    {"startIndex": 6, "table": {"tableRows": [{"tableCells": [{"content": []}]}]}}
                 ]
             }
         }
@@ -935,7 +938,9 @@ class TestWriteDocRichContent:
             "body": {
                 "content": [
                     {
-                        "startIndex": 1,
+                        # Docs always inserts a newline immediately before a table, so a
+                        # table requested at location.index=1 actually starts at 2.
+                        "startIndex": 2,
                         "table": {
                             "tableRows": [
                                 {"tableCells": [
@@ -1026,7 +1031,7 @@ class TestWriteDocRichContent:
         wrong_shape_doc = {
             "body": {
                 "content": [
-                    {"startIndex": 1, "table": {"tableRows": [
+                    {"startIndex": 2, "table": {"tableRows": [
                         {"tableCells": [{"content": [{"startIndex": 3}]}]},
                     ]}},
                 ]
@@ -1115,7 +1120,7 @@ class TestWriteDocRichContent:
         }
         doc_with_table = {
             "body": {"content": [
-                {"startIndex": 1, "table": {"tableRows": [
+                {"startIndex": 2, "table": {"tableRows": [
                     {"tableCells": [{"content": [{"startIndex": 3}]}]},
                     {"tableCells": [{"content": [{"startIndex": 6}]}]},
                 ]}},
@@ -1149,7 +1154,7 @@ class TestWriteDocRichContent:
         }
         doc_with_table = {
             "body": {"content": [
-                {"startIndex": 1, "table": {"tableRows": [
+                {"startIndex": 2, "table": {"tableRows": [
                     {"tableCells": [
                         {"content": [{"startIndex": 3}]},
                         {"content": [{"startIndex": 6}]},
@@ -1220,9 +1225,13 @@ class TestResolveDownloadDestination:
         result = resolve_download_destination(make_file(name="/etc/passwd"), str(tmp_path))
         assert result == str(tmp_path / "passwd")
 
-    def test_empty_destination_dir_defaults_to_downloads(self, monkeypatch):
-        monkeypatch.setattr(os.path, "expanduser", lambda p: "/home/user/Downloads" if p == "~/Downloads" else p)
-        assert resolve_download_destination(make_file(name="report.pdf"), "") == "/home/user/Downloads/report.pdf"
+    def test_empty_destination_dir_raises(self):
+        with pytest.raises(DriveClientError, match="destination_dir"):
+            resolve_download_destination(make_file(name="report.pdf"), "")
+
+    def test_whitespace_only_destination_dir_raises(self):
+        with pytest.raises(DriveClientError, match="destination_dir"):
+            resolve_download_destination(make_file(name="report.pdf"), "   ")
 
 
 # ---------------------------------------------------------------------------- #
@@ -1288,21 +1297,16 @@ class TestDownloadFile:
         assert "export" in captured_urls[0]
         assert os.path.exists(os.path.join(str(tmp_path), "MyDoc.txt"))
 
-    def test_defaults_to_downloads_directory_when_no_destination_given(self, tmp_path, monkeypatch):
+    def test_raises_when_destination_dir_omitted(self, monkeypatch):
         service = MagicMock()
         service.files.return_value.get.return_value.execute.return_value = {
             "id": "f1", "name": "f.bin", "mimeType": "application/octet-stream",
         }
         client = make_client(service)
         monkeypatch.setattr(client, "_load_credentials", lambda: MagicMock())
-        monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~/Downloads" else p)
 
-        fake_session = MagicMock()
-        fake_session.get.return_value = _FakeStreamResponse([b"x"])
-        monkeypatch.setattr(drive_client_module, "AuthorizedSession", lambda creds: fake_session)
-
-        result = client.download_file("f1")
-        assert result["path"] == os.path.join(str(tmp_path), "f.bin")
+        with pytest.raises(DriveClientError, match="destination_dir"):
+            client.download_file("f1")
 
     def test_streaming_failure_becomes_drive_client_error(self, tmp_path, monkeypatch):
         service = MagicMock()

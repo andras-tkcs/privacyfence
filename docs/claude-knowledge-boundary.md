@@ -124,7 +124,7 @@ search by *who's in a conversation* directly, without first listing everything.
 | `calendar_get_free_busy` | auto | **for colleagues the authenticated account has calendar access to: full event `title`, time, and `status`** (not just busy/free blocks) — *unless* `calendar.free_busy_full_event_details` is set to `false`, in which case every entry is downgraded to a busy/free-only block regardless of access (default `true`, preserving the behavior above) |
 | `calendar_list_rooms` | auto | room `resource_email`, `resource_name`, building, floor, capacity, description — served from a static directory IT syncs into `org_config.json` (`scripts/sync_room_directory.py`), not a live API call, so it's empty until IT has synced one, and only ever reflects that last sync |
 | `calendar_get_event_visibility` | auto | just the `visibility` field |
-| `calendar_get_event_details` | review | **new:** `organizer_email`, full `attendees` (email, display name, response status), `location`, `description` — conferencing link and file attachments are deliberately **not** disclosed here (redesign decision: the attachments path used to let Claude follow a meeting's attached notes/transcript via `drive_get_file_content`; that capability was removed along with the field) |
+| `calendar_get_event_details` | review | **new:** `organizer_email`, full `attendees` (email, display name, response status), `location`, `description` — conferencing link and file attachments are deliberately **not** disclosed here |
 
 `calendar.free_busy_full_event_details` is a single settings.yaml boolean, not a `privacy_filter.py`
 category — Calendar has no category schema (see the redaction section below).

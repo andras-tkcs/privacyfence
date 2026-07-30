@@ -1,10 +1,10 @@
 {
-  "etag": "\"JakAltpkQI8\"",
+  "etag": "\"KHQMfIKg9oI\"",
   "id": "qa-placeholder-id-1",
   "kind": "tasks#task",
   "links": [],
   "notes": "Synthetic PrivacyFence QA test task. No real information.",
-  "position": "00000000000000000000",
+  "position": "00000000000000000001",
   "selfLink": "https://example.com/qa-placeholder",
   "status": "needsAction",
   "title": "PrivacyFence QA seed task [QATEST]",

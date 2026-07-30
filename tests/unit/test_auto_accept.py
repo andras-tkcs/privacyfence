@@ -1029,7 +1029,7 @@ class TestSuggestRule:
 
 class TestDescribeRuleShort:
     """The Always-allow button's own pre-click label -- see gate.py's
-    accept_all_hint comment and approval_window.py's _build_content_view_v2
+    accept_all_hint comment and approval_window.py's _build_content_view
     for where this actually renders."""
 
     def test_read_rule_names_have_short_hints(self):

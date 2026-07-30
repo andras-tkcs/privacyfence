@@ -12,6 +12,7 @@ this document is about which ones run automatically versus which ones a human ha
 
 ```bash
 npm test              # bridge/, Node's built-in test runner
+npm run typecheck     # bridge/, tsc --noEmit
 pytest -v --cov=src/privacyfence --cov-report=term-missing
 ```
 
@@ -40,6 +41,9 @@ manual steps. It includes:
 - `bridge/test/*.test.ts` (`npm test`, run from `bridge/`) — the Node/TypeScript MCP bridge's own
   suite: IPC framing, error propagation, and tool dispatch, run against `bridge/src/*.ts` directly
   (no build step) via hand-written Node fakes of the daemon (`bridge/test/testDaemon.ts`).
+- `npm run typecheck` (`tsc --noEmit`, run from `bridge/`) — catches type errors across
+  `bridge/src/*.ts` that `npm test`'s runtime coverage wouldn't necessarily hit (an unreachable
+  branch, a type mismatch in an untested code path).
 - `tests/integration/test_bridge_daemon_contract.py` — spawns the real built `bridge/dist/bridge.js`
   against a real `privacyfence.ipc_server.IPCServer` and drives it with the official `mcp` Python
   client over real MCP-over-stdio, proving the two independently-maintained protocol
@@ -131,12 +135,17 @@ what actually prompts. This is the only thing that exercises the gate, the popup
 log end to end — none of tiers 1 or 2 do. Run it before a release, or after any change to
 `gate.py`/`auto_accept.py`/`resource_grants.py`/menu-bar auto-accept UI broadly, not on every PR.
 
+Before a release specifically, run tiers 1 and 2 across every connector too, not just the ones a
+recent PR touched — see [manual-pre-release-test-plan.md](manual-pre-release-test-plan.md) for the
+full release-time checklist tying all three tiers together.
+
 ## Quick reference
 
 | Check | Runs in CI? | When |
 |---|---|---|
 | `pytest` (full suite, incl. the bridge/daemon contract test) | Yes, every PR | Always — this is the merge gate |
 | `npm test` (bridge/'s own suite) | Yes, every PR | Always — this is the merge gate |
+| `npm run typecheck` (bridge/) | Yes, every PR | Always — this is the merge gate |
 | `qa_fixture_recorder.py --check` | No | PR touches a `*_client.py`/`connectors/**` file |
 | `qa_popup_smoke.py` | No | PR touches `approval_window.py`'s modal-loop plumbing |
 | `connector-qa-testing.md`'s live Cowork pass | No | Before a release, or a broad gate/auto-accept change |

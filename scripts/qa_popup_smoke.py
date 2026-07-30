@@ -33,13 +33,11 @@ check" heading -- see docs/testing-policy.md §2.2.
 _scenarios() has at least one entry per tool in docs/approval-window-content-reference.md's
 RG-1/RG-2/WG-1/WG-2/WG-3 tables (62 tools total, including every RG-1 tool sharing a dialog
 shape, e.g. confluence_get_page/confluence_get_page_by_title) -- every dialog shape that doc
-documents gets a real on-screen click, not just a representative handful. (RG-1 covers what used to
-be three separate legacy-only shapes -- see that doc's "View groups" section for why v2 collapses
-them; RG-2 is the one shape that's still genuinely distinct, the native-PDF body.) A handful of
-RG-1 tools
-additionally get two "RG-1 stress" readability variants (long text/many rows/columns, with and
-without a PII banner) beyond their one baseline entry -- see the "RG-1 stress" section below for
-why. Preview/details data is
+documents gets a real on-screen click, not just a representative handful. (RG-2 is the one shape
+that's genuinely distinct from RG-1's, the native-PDF body -- see that doc's "View groups"
+section.) A handful of RG-1 tools additionally get two "RG-1 stress" readability variants (long
+text/many rows/columns, with and without a PII banner) beyond their one baseline entry -- see the
+"RG-1 stress" section below for why. Preview/details data is
 realistic-but-synthetic, sourced from tests/fixtures/live/*/*.json (recorded, redacted real API
 responses -- see scripts/qa_fixture_recorder.py) and docs/qa-environment-setup.md's own PFQA/
 [QATEST] naming conventions, rather than generic placeholder strings -- see that doc's "one rule
@@ -52,19 +50,14 @@ scenarios rather than kept as separate generic ones -- see the inline comment at
 scenario in _scenarios().
 
 One more, non-tool scenario runs last: the actual menu bar status item and, from it, the "Manage
-Auto-accept Rules…" window (see _run_menu_bar_scenario's docstring) -- the menu bar redesign (PR
-#60) has the same "real click actually reaching it" gap the rest of this script covers for
-approval popups, just never exercised end to end before now.
+Auto-accept Rules…" window (see _run_menu_bar_scenario's docstring) -- exercising that real click
+end to end the same way the rest of this script does for approval popups. 90 scenarios total: 89
+tool-approval scenarios plus this one.
 
 Every tool-approval scenario renders through the one real card-stack rendering
-(approval_window_html.py) -- the original hand-laid-out NSTextField/NSBox layout this replaced has
-been fully removed from approval_window.py after visual sign-off. Each scenario's narrow/wide
-shape (_TOOL_LAYOUT below) is a fixed, explicit per-tool assignment re-derived directly from the
-"Approval windows design system" claude.ai/design project's own markup (turns 4-6) for every one
-of the 30 dialog shapes that project actually mocked; tools it didn't explicitly mock got a
-best-effort classification by analogy to the closest mocked sibling (documented inline at
-_TOOL_LAYOUT), since confirmed correct against real screenshots and promoted into gate.py's own
-copy of this table (kept in sync -- see gate.py's own _TOOL_LAYOUT comment).
+(approval_window_html.py). Each scenario's narrow/wide shape (_TOOL_LAYOUT below) is a fixed,
+explicit per-tool assignment, documented inline at _TOOL_LAYOUT and kept in sync with gate.py's own
+copy of the same table (see gate.py's own _TOOL_LAYOUT comment).
 
 Usage (the project's own venv, not a bare system python3 -- this needs the
 same pyobjc/AppKit packages the app itself depends on, which only the venv
@@ -219,8 +212,6 @@ def _wait_for_button_enabled(pid: int, title: str) -> str:
     it for certain, only makes the race less likely to lose. Called both
     by the screenshot step (clicker(), below) and by _click_button()
     before it actually clicks, so neither can act on a stale window state.
-    Legacy's buttons are never disabled, so this returns "ready" on its
-    first check for that layout -- no behavior change there.
     """
     script = f'''
     tell application "System Events"
@@ -392,10 +383,8 @@ def _run_scenario(
     # scenario call below. is_read is derived from the "RG-"/"WG-" prefix
     # every real tool scenario name already carries (docs/approval-window-
     # content-reference.md's own grouping); upload_forced only ever applies
-    # to drive_upload_file (see gap #4 in the redesign's implementation
-    # plan). Mirrors exactly what gate.py itself now does in production
-    # (its own _TOOL_LAYOUT is this same table, promoted there after this
-    # script's own screenshot-driven sign-off).
+    # to drive_upload_file. Mirrors exactly what gate.py itself does in
+    # production (its own _TOOL_LAYOUT is this same table).
     tool_name = _tool_name_from_scenario(name)
     popup_kwargs.setdefault("layout", _TOOL_LAYOUT.get(tool_name, "narrow"))
     popup_kwargs.setdefault("is_read", name.startswith("RG-"))
@@ -422,6 +411,16 @@ def _run_scenario(
         # the sender equals my_email), just the same representative
         # top-of-priority-order candidate the doc documents for each tool.
         popup_kwargs.setdefault("accept_all_hint", describe_rule_short(_READ_ACCEPT_ALL_TOP_RULE[tool_name]))
+
+    # A bare click_title="Always allow" only matches the real on-screen
+    # button when accept_all_hint is empty -- once one is set (by either
+    # branch above, or by a scenario setting accept_all_hint itself), the
+    # button's actual title includes it (see approval_window.py's
+    # _action_buttons: f"Always allow — {hint}"). Keep the two in sync
+    # here instead of requiring every such scenario to hardcode the exact
+    # hinted string, which would silently drift from _RULE_SHORT_HINTS.
+    if click_title == "Always allow" and popup_kwargs.get("accept_all_hint"):
+        click_title = f"Always allow — {popup_kwargs['accept_all_hint']}"
 
     pid = os.getpid()
     click_status_box: list[str] = []
@@ -730,30 +729,24 @@ def _quicklook_thumbnail_for_lorem_ipsum_docx() -> bytes:
     return generate_thumbnail(data, _LOREM_IPSUM_DOCX_PATH.name) or b""
 
 
-# Per-tool narrow/wide assignment -- re-derived directly from the "Approval windows design
-# system" claude.ai/design project's own markup (turns 4-6: every .pf-win with an inline
-# style="width:880px" is wide, everything else is narrow), not from memory or a length heuristic.
-# Keyed by the bare tool name _tool_name_from_scenario() extracts from each scenario's own name
-# string. Confirmed against real screenshots and promoted verbatim into gate.py's own copy of this
-# table for production use -- keep the two in sync if either ever changes.
+# Per-tool narrow/wide assignment, not from memory or a length heuristic. Keyed by the bare tool
+# name _tool_name_from_scenario() extracts from each scenario's own name string. Confirmed against
+# real screenshots and promoted verbatim into gate.py's own copy of this table for production use
+# -- keep the two in sync if either ever changes.
 #
-# All 17 read-gate tools the design canvas mocked are wide except calendar_get_event_details; all
-# 13 write-gate tools it mocked are wide except calendar_create_event. The canvas's own mock also
-# had slack_send_message/telegram_send_message/jira_add_comment as narrow, but that mock rendered
-# the message/comment body inline inside its own §2 card via a "Show more" progressive-disclosure
-# toggle this template deliberately never carried over (see build_card_stack_html's own docstring
-# -- "no Show more/less anywhere ... every row has a fixed, truncated size"). Since our narrow
-# layout genuinely has no mechanism at all to show details_text (see that function's own docstring:
-# "no preview pane at all"), keeping these three narrow would silently drop the one thing being
-# approved -- the actual message/comment text -- so they're wide here instead, same as every other
-# tool whose details_text is real free-text content rather than a fixed disclosure sentence. Tools
-# the canvas never mocked at all (everything below the first blank line in each connector's block)
-# are a best-effort classification by analogy to the closest mocked sibling from the same connector
-# -- wide only for tools that write/return a genuine prose body (doc/file content, page content,
-# sheet cell values, chat/comment text); narrow for short structured field changes or a fixed
-# disclosure sentence with nothing to actually preview.
+# slack_send_message/telegram_send_message/jira_add_comment render their message/comment body
+# via details_text, and NARROW has no mechanism at all to show details_text (see
+# build_card_stack_html's own docstring: "no preview pane at all" -- every row has a fixed,
+# truncated size, no "Show more/less" progressive-disclosure escape hatch). Keeping these three
+# narrow would silently drop the one thing being approved -- the actual message/comment text -- so
+# they're wide here instead, same as every other tool whose details_text is real free-text content
+# rather than a fixed disclosure sentence. Every other tool not directly confirmed against a
+# screenshot gets a best-effort classification by analogy to the closest sibling from the same
+# connector -- wide only for tools that write/return a genuine prose body (doc/file content, page
+# content, sheet cell values, chat/comment text); narrow for short structured field changes or a
+# fixed disclosure sentence with nothing to actually preview.
 _TOOL_LAYOUT: dict[str, str] = {
-    # Confirmed wide from the design canvas directly (turns 4-6):
+    # Confirmed wide against a real screenshot:
     "gmail_get_message": "wide", "gmail_get_thread": "wide",
     "gmail_download_attachment": "wide", "drive_download_file": "wide",
     "salesforce_get_record": "wide", "salesforce_search": "wide", "salesforce_run_report": "wide",
@@ -767,13 +760,12 @@ _TOOL_LAYOUT: dict[str, str] = {
     "jira_create_issue": "wide", "confluence_create_page": "wide",
     "calendar_get_event_details": "narrow", "calendar_create_event": "narrow",
     #
-    # Deviates from the design canvas's own (narrow) mock -- see the
-    # docstring above for why: our narrow layout has no mechanism at all to
+    # See the docstring above for why: NARROW has no mechanism at all to
     # show details_text, and these three carry a real message/comment body,
     # not a fixed disclosure sentence.
     "slack_send_message": "wide", "telegram_send_message": "wide", "jira_add_comment": "wide",
     #
-    # Not mocked by the design canvas -- best-effort by analogy (see docstring above):
+    # Not directly confirmed -- best-effort by analogy (see docstring above):
     "gmail_reply_all_draft": "wide",  # same shape as gmail_reply_draft
     "gmail_add_label": "narrow", "gmail_remove_label": "narrow", "gmail_archive_message": "narrow",
     "gmail_create_filter": "narrow", "gmail_update_filter": "narrow", "gmail_create_label": "narrow",
@@ -871,15 +863,15 @@ def _run_menu_bar_scenario(
     name: str, *, pause_seconds: float = 0.3, screenshot_dir: Path | None = None
 ) -> ScenarioResult:
     """Not a tool-approval dialog -- exercises the actual menu bar status
-    item and, from it, the "Manage Auto-accept Rules..." window (rules_
-    manager_window.py, added by the menu bar redesign in PR #60): a real
-    click on the real on-screen status item, then a real click on a real
-    menu item within the menu that click opens, exactly the "did a real
-    click actually reach it" concern this script's module docstring raises
-    about approval windows -- the redesign has no construction-only test
-    covering that its own menu wiring still resolves to a click landing on
-    the right window, the same gap this whole script exists to cover for
-    approval popups. Screenshots twice: the open status-item menu (the
+    item and, from it, the "Manage Auto-accept Rules..." window
+    (rules_manager_window.py): a real click on the real on-screen status
+    item, then a real click on a real menu item within the menu that click
+    opens, exactly the "did a real click actually reach it" concern this
+    script's module docstring raises about approval windows -- there's no
+    construction-only test covering that the menu wiring resolves to a
+    click landing on the right window, the same gap this whole script
+    exists to cover for approval popups. Screenshots twice: the open
+    status-item menu (the
     "menu layout"), then the rules window it opens into -- see main()'s
     --screenshot-dir.
 
@@ -918,6 +910,16 @@ def _run_menu_bar_scenario(
         # function reference, reassigning it here is enough (nothing else
         # in this short-lived process depends on the original).
         menu_bar.load_org_config = lambda: {}
+        # PrivacyFenceMenuBar.__init__ fires an immediate, real,
+        # background-threaded GitHub update check whose completion
+        # callback calls self._rebuild() -- unrelated to anything this
+        # scenario tests, but if it lands while the status-bar dropdown is
+        # open (its own completion timing depends on network latency, not
+        # anything under our control) it mutates the menu items AppKit is
+        # actively tracking, which visually collapses the open menu before
+        # a screenshot can be taken. Stubbed to a no-op for the same
+        # reason load_org_config is above.
+        menu_bar.PrivacyFenceMenuBar._on_update_check_timer = lambda self, _timer=None: None
         app = menu_bar.PrivacyFenceMenuBar(
             config_path, connectors=["gmail", "drive", "slack"],
             ipc_server=fake_ipc_server, connector_objs=[],
@@ -995,7 +997,7 @@ def _scenarios(
     group: str = "all",
 ) -> list[ScenarioResult]:
     """At least one scenario per tool in docs/approval-window-content-reference.md's RG-1/RG-2/
-    WG-1/WG-2/WG-3 tables (61 tools total) -- every dialog *shape* that reference doc
+    WG-1/WG-2/WG-3 tables (62 tools total) -- every dialog *shape* that reference doc
     documents, not just a representative handful. A handful of RG-1 tools additionally get two
     "RG-1 stress" readability variants beyond their baseline entry -- see that section below.
     Cross-cutting mechanics that doc calls "automatic on every
@@ -1036,14 +1038,12 @@ def _scenarios(
 
     # ================================================================== #
     # RG-1 -- review popup (every read tool except drive_get_file_content,
-    # RG-2 below). Used to be three separate shapes here (no checklist /
-    # checklist / Gmail email header) -- collapsed into one (see
-    # docs/approval-window-content-reference.md's "View groups" section).
+    # RG-2 below) -- see docs/approval-window-content-reference.md's
+    # "View groups" section.
     # ================================================================== #
 
     results.append(run(
-        # Also the preview_bytes/preview_mime_type image-render mechanic
-        # (merged via #96-#97 -- see the redesign's implementation plan):
+        # Also the preview_bytes/preview_mime_type image-render mechanic:
         # _TINY_PNG_BYTES gives approval_window.py's image branch (an
         # inline <img> data URI) something real to render instead of
         # falling back to the plain-metadata view.
@@ -1085,7 +1085,7 @@ def _scenarios(
     ))
 
     results.append(run(
-        # The QuickLook-fallback mechanic (PR #100, quicklook_preview.py):
+        # The QuickLook-fallback mechanic (quicklook_preview.py):
         # a non-image file with no Drive-generated thumbnailLink falls back
         # to a quicklookd-rendered thumbnail when QuickLook Previews is
         # enabled from the menu bar -- generate_thumbnail() always returns
@@ -1116,7 +1116,7 @@ def _scenarios(
     ))
 
     results.append(run(
-        # Also the redesign's new_info (§3) mechanic: real values (not an
+        # Also the new_info (§3) mechanic: real values (not an
         # abstract policy sentence), merged Attendees+Organizer (no separate
         # Organizer field on the UI), and allow_accept_all=True -- matches
         # auto_accept.py's real calendar.read_event_details rule for an
@@ -2548,8 +2548,8 @@ def main() -> None:
         "--scenario",
         help="Run only the scenario(s) whose name contains this text (case-insensitive substring "
              "match against the scenario name shown in the report table, e.g. 'gmail_get_thread' or "
-             "'Menu bar' for the menu-bar/rules-window scenario), instead of the full ~83-scenario "
-             "suite (82 tool-approval scenarios plus the one menu-bar scenario). For grabbing a "
+             "'Menu bar' for the menu-bar/rules-window scenario), instead of the full 90-scenario "
+             "suite (89 tool-approval scenarios plus the one menu-bar scenario). For grabbing a "
              "single updated screenshot -- e.g. for README.md -- without sitting through the whole "
              "run: --scenario 'gmail_get_thread' --screenshot-dir docs/images/screenshots. "
              "Combines with --group (both must match). Matches nothing -> an empty report and a "

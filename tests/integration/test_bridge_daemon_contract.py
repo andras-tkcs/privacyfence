@@ -126,6 +126,8 @@ def built_bridge_entry() -> Path:
     the way the unbundled dev path can (see
     test_bridge_refuses_a_stale_daemon_version).
     """
+    if shutil.which("npm") is None:
+        pytest.skip("npm not on PATH -- this fixture builds the bridge via `npm install`/`npm run build`")
     try:
         subprocess.run(
             ["npm", "install", "--silent"], cwd=BRIDGE_DIR, check=True, capture_output=True, timeout=180

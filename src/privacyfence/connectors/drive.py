@@ -292,7 +292,11 @@ class DriveConnector(Connector):
                     "Download a Drive file to a local directory and return the saved "
                     "file path. Use this for large files (e.g. >100 KB) that cannot "
                     "be returned inline. Google Workspace documents are exported as "
-                    "text/CSV. destination_dir defaults to ~/Downloads. "
+                    "text/CSV. destination_dir is required -- there is no default, so "
+                    "choose deliberately: pass ~/Downloads (or another path the user "
+                    "asked for) when this file is a deliverable the user should find "
+                    "afterward, or your own working/scratch directory when you're "
+                    "only downloading it to read or process it yourself. "
                     "Requires user approval."
                 ),
                 params=[
@@ -300,8 +304,14 @@ class DriveConnector(Connector):
                     ToolParam(
                         "destination_dir",
                         "str",
-                        required=False,
-                        default="",
+                        required=True,
+                        description=(
+                            "Where to save the file -- required, no default. Use "
+                            "~/Downloads (or a path the user specified) if the user "
+                            "should find this file afterward; use your own "
+                            "working/scratch directory if it's only for you to read "
+                            "or process."
+                        ),
                     ),
                     ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
@@ -794,10 +804,9 @@ class DriveConnector(Connector):
             pass
 
         # Gate before touching disk: gated_call raises on denial, and only a
-        # decision made here should ever cause the file to be written. This
-        # used to download the file first and gate afterward, so a Deny still
-        # left the file on disk -- mirrors gmail.py's _download_attachment,
-        # which already got this ordering right.
+        # decision made here should ever cause the file to be written --
+        # otherwise a Deny would still leave the file on disk. Mirrors
+        # gmail.py's _download_attachment, which uses the same ordering.
         await gated_call(
             connector=self.name,
             tool="drive_download_file",

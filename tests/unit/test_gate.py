@@ -663,6 +663,27 @@ class TestProposeRuleChange:
         entries = read_audit_entries(audit_dir)
         assert entries[0]["decision"] == "rule_removed_via_bridge_proposal"
 
+    async def test_confirmed_rule_remove_that_changes_nothing_audits_as_no_op(self, monkeypatch, audit_dir):
+        # remove_auto_accept_rule() returns False when the named rule/value
+        # never matched anything to begin with (e.g. Claude proposed
+        # removing a value that was already gone) -- the human still said
+        # yes, but config didn't actually change, so this must not be
+        # recorded as though a removal happened.
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
+        monkeypatch.setattr(gate, "remove_auto_accept_rule", lambda op, name, value=None: False)
+
+        result = await gate.propose_rule_change(
+            target="rule", operation="remove", reason="Cleaning up.",
+            operation_key="sheets.format_range", rule_name="approved_sandbox_folder", value=["folder1"],
+        )
+
+        assert result == {
+            "confirmed": True, "changed": False,
+            "description": "Remove auto-accept rule 'approved_sandbox_folder' = folder1 from 'sheets.format_range'",
+        }
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "bridge_proposal_no_op"
+
     async def test_rule_update_removes_old_value_then_adds_new_one(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
         calls = []
@@ -709,6 +730,20 @@ class TestProposeRuleChange:
         assert result["confirmed"] is True
         entries = read_audit_entries(audit_dir)
         assert entries[0]["decision"] == "grant_removed_via_bridge_proposal"
+
+    async def test_confirmed_grant_remove_that_changes_nothing_audits_as_no_op(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
+        monkeypatch.setattr(gate, "mutate_grants", lambda mutator: False)
+
+        result = await gate.propose_rule_change(
+            target="grant", operation="remove", reason="No longer needed.",
+            connector="drive", config_key="sandbox_folders", resource_id="folder1",
+        )
+
+        assert result["confirmed"] is True
+        assert result["changed"] is False
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "bridge_proposal_no_op"
 
     async def test_unknown_rule_name_raises_value_error_without_showing_a_popup(self, monkeypatch):
         # rule_name comes straight from Claude here, unlike the "Always

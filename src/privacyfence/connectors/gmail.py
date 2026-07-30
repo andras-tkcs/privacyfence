@@ -101,13 +101,28 @@ class GmailConnector(Connector):
                     "Download a Gmail attachment's content to a local directory "
                     "and return the saved file path. Identify the attachment by "
                     "the name returned from gmail_list_message_attachments. "
-                    "destination_dir defaults to ~/Downloads. Requires user "
-                    "approval."
+                    "destination_dir is required -- there is no default, so choose "
+                    "deliberately: pass ~/Downloads (or another path the user asked "
+                    "for) when this attachment is a deliverable the user should "
+                    "find afterward, or your own working/scratch directory when "
+                    "you're only downloading it to read or process it yourself. "
+                    "Requires user approval."
                 ),
                 params=[
                     ToolParam("message_id", "str"),
                     ToolParam("attachment_name", "str"),
-                    ToolParam("destination_dir", "str", required=False, default=""),
+                    ToolParam(
+                        "destination_dir",
+                        "str",
+                        required=True,
+                        description=(
+                            "Where to save the attachment -- required, no default. "
+                            "Use ~/Downloads (or a path the user specified) if the "
+                            "user should find this file afterward; use your own "
+                            "working/scratch directory if it's only for you to read "
+                            "or process."
+                        ),
+                    ),
                     ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
@@ -430,10 +445,9 @@ class GmailConnector(Connector):
                 "Message body": category_policy("privacy", "body"),
                 "Attachments": category_policy("privacy", "attachments"),
             },
-            # Only the legacy (layout="legacy") rendering path still reads
-            # this -- v2's build_preview_body_html no longer has an email
-            # special case (From/Subject/Date are §1, To is §3 now), so this
-            # only preserves today's live legacy header until cutover.
+            # No effect on the current rendering (build_preview_body_html has no
+            # email special case -- From/Subject/Date are §1, To is §3) -- see
+            # gate.py's content_kind docstring.
             content_kind="email",
             my_email=self.my_email,
             args={"message_id": message_id},

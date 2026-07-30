@@ -1,11 +1,9 @@
 """Tests for approval_window_html.py -- the card-stack HTML template for the
-redesigned (layout="narrow"/"wide") approval window.
+layout="narrow"/"wide" approval window.
 
 Pure-function module, no AppKit -- unlike test_approval_window.py, none of
 this needs macOS/PyObjC or a real view tree; it asserts directly on the
-generated HTML strings, the same "pure function, directly unit-testable"
-contract approval_window.py's own _details_html() already holds (see that
-module's TestDetailsPane for the precedent this file follows).
+generated HTML strings.
 """
 from __future__ import annotations
 
@@ -214,9 +212,8 @@ class TestRiskCardVariants:
 
     def test_upload_forced_placeholder_reuses_read_styling_not_write(self):
         # drive_upload_file's own PII match forces the same second-
-        # confirmation flow the read side gets -- no distinct design exists
-        # yet, so this is a deliberate interim stand-in (see module
-        # docstring), not the final answer.
+        # confirmation flow the read side gets, and reuses its styling --
+        # see module docstring.
         html = build_card_stack_html(**_minimal_kwargs(
             is_read=False, write_content_flags=["Phone number"], upload_forced=True,
         ))
@@ -499,11 +496,11 @@ class TestPreviewBlocks:
 
 
 class TestEscapingAndNoNetwork:
-    """Defense in depth, same discipline _details_html() already holds:
-    every dynamic string reaching the document must be escaped, and the
-    document must never be able to reach out to the network -- fonts are
-    embedded as base64 data URIs (see resources/approval_window/styles.css),
-    never linked, and there is no <script> tag anywhere."""
+    """Defense in depth: every dynamic string reaching the document must be
+    escaped, and the document must never be able to reach out to the
+    network -- fonts are embedded as base64 data URIs (see
+    resources/approval_window/styles.css), never linked, and there is no
+    <script> tag anywhere."""
 
     def test_title_is_escaped(self):
         html = build_card_stack_html(**_minimal_kwargs(title="<b>hi</b> & \"x\""))

@@ -232,7 +232,7 @@ def show_read_popup(
     was already approved this week. ``content_kind``/``pdf_bytes`` are a
     legacy-layout-only body rendering hint and native-PDFView payload,
     respectively -- ``pdf_bytes`` still renders inline via an <embed> data
-    URI (see approval_window.py's _build_content_view_v2), but
+    URI (see approval_window.py's _build_content_view), but
     ``content_kind`` has no effect on the current rendering (see
     build_preview_body_html's docstring).
     ``connector`` (e.g. "gmail", "drive") selects the top-left brand icon

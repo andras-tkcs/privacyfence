@@ -1258,13 +1258,13 @@ class TestResolveAttachmentDestination:
     def test_empty_filename_falls_back_to_generic_name(self, tmp_path):
         assert resolve_attachment_destination("", str(tmp_path)) == str(tmp_path / "attachment")
 
-    def test_empty_destination_dir_defaults_to_downloads(self, monkeypatch):
-        monkeypatch.setattr(os.path, "expanduser", lambda p: "/home/user/Downloads" if p == "~/Downloads" else p)
-        assert resolve_attachment_destination("report.pdf", "") == "/home/user/Downloads/report.pdf"
+    def test_empty_destination_dir_raises(self):
+        with pytest.raises(GmailClientError, match="destination_dir"):
+            resolve_attachment_destination("report.pdf", "")
 
-    def test_whitespace_only_destination_dir_defaults_to_downloads(self, monkeypatch):
-        monkeypatch.setattr(os.path, "expanduser", lambda p: "/home/user/Downloads" if p == "~/Downloads" else p)
-        assert resolve_attachment_destination("report.pdf", "   ") == "/home/user/Downloads/report.pdf"
+    def test_whitespace_only_destination_dir_raises(self):
+        with pytest.raises(GmailClientError, match="destination_dir"):
+            resolve_attachment_destination("report.pdf", "   ")
 
 
 # ---------------------------------------------------------------------------- #
