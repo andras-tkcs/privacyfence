@@ -30,6 +30,29 @@ logger = logging.getLogger(__name__)
 # local_path can point at an arbitrarily large file on disk.
 _UPLOAD_PREVIEW_MAX_BYTES = 5_000_000
 
+# drive_wait_for_file's fixed poll cadence -- not exposed as tool params
+# (see its ToolSpec) so a scheduled/unattended Cowork task can't be talked
+# into hammering the Drive API or pinning a daemon connection indefinitely.
+# Module-level globals, read directly inside _wait_for_file's loop body
+# (not bound as default parameter values) specifically so tests can
+# monkeypatch them to near-zero and exercise multiple poll iterations
+# without a real multi-minute sleep.
+_WAIT_FOR_FILE_POLL_INTERVAL_SECONDS = 5 * 60
+_WAIT_FOR_FILE_TIMEOUT_SECONDS = 3 * 60 * 60
+# How many same-name matches to pull per poll before picking the most
+# recently created one -- list_files has no orderBy param of its own (it's
+# shared with drive_list_files, a tool Claude calls directly), and a file
+# name is not unique within a folder, so this is a best-effort tiebreak
+# rather than a guarantee only one match ever exists.
+_WAIT_FOR_FILE_CANDIDATES = 10
+
+
+def _escape_drive_query_value(value: str) -> str:
+    """Escape a literal value for Drive API 'q' string syntax (backslash
+    then single-quote, in that order -- reversing it would double-escape
+    a value that already contains a backslash)."""
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
 
 def _parse_json_str_list(value: str) -> list[str] | None:
     """Parse a JSON array-of-strings tool argument, or None if empty/invalid."""
@@ -128,6 +151,35 @@ class DriveConnector(Connector):
                 params=[
                     ToolParam("folder_id", "str"),
                     ToolParam("max_results", "int", required=False, default=50),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
+                ],
+                read_only=True,
+            ),
+            ToolSpec(
+                name="drive_wait_for_file",
+                description=(
+                    "Block until a file named file_name appears as a direct "
+                    "child of folder_id, or return not-found after a fixed "
+                    f"~{_WAIT_FOR_FILE_TIMEOUT_SECONDS // 3600}h timeout -- "
+                    "for a scheduled/unattended Cowork task that should wait "
+                    "for an upload rather than exit and re-run on a tight "
+                    "schedule. Polls roughly every "
+                    f"{_WAIT_FOR_FILE_POLL_INTERVAL_SECONDS // 60} minutes; "
+                    "the interval and timeout are fixed, not caller-"
+                    "configurable. folder_id must be a real Drive folder id, "
+                    "not a folder name -- resolve it first with "
+                    "drive_list_files (e.g. \"mimeType = "
+                    "'application/vnd.google-apps.folder' and name = "
+                    "'Folder Name'\") if you only know the folder's name. "
+                    "Matches on exact file name; if more than one file with "
+                    "that name exists in the folder, the most recently "
+                    "created one wins. Auto-approved, same as "
+                    "drive_list_folder — this only reveals that a file with "
+                    "the given name exists, not its content."
+                ),
+                params=[
+                    ToolParam("folder_id", "str"),
+                    ToolParam("file_name", "str"),
                     ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
@@ -503,6 +555,8 @@ class DriveConnector(Connector):
             return await self._get_file_content(**args)
         if tool == "drive_list_folder":
             return await self._list_folder(**args)
+        if tool == "drive_wait_for_file":
+            return await self._wait_for_file(**args)
         if tool == "drive_create_blank_file":
             return await self._create_blank_file(**args)
         if tool == "drive_write_file_content":
@@ -582,6 +636,47 @@ class DriveConnector(Connector):
         self._auto_audit("drive_list_folder", "List Drive Folder",
                          f"List folder: {folder_id}", f"{len(files)} item(s)", t0)
         return apply_list("drive_privacy", "folder_structure", [asdict(f) for f in files])
+
+    async def _wait_for_file(self, folder_id: str, file_name: str) -> Any:
+        t0 = time.time()
+        deadline = t0 + _WAIT_FOR_FILE_TIMEOUT_SECONDS
+        query = (
+            f"'{folder_id}' in parents and name = "
+            f"'{_escape_drive_query_value(file_name)}' and trashed = false"
+        )
+        drive_file = None
+        while True:
+            candidates = await self._fetch(self._drive.list_files, query, _WAIT_FOR_FILE_CANDIDATES)
+            if candidates:
+                # Most recently created wins when the name isn't unique in
+                # the folder -- created_time is ISO 8601, sortable as a
+                # plain string. A candidate with no created_time (shouldn't
+                # happen against a real API, but list_files' contract
+                # doesn't rule it out) sorts first, not last, so it never
+                # silently wins over a candidate that does have one.
+                drive_file = max(candidates, key=lambda f: f.created_time)
+                break
+            if time.time() >= deadline:
+                break
+            await asyncio.sleep(min(_WAIT_FOR_FILE_POLL_INTERVAL_SECONDS, deadline - time.time()))
+
+        found = drive_file is not None
+        elapsed = round(time.time() - t0)
+        self._auto_audit(
+            "drive_wait_for_file", "Wait for Drive File",
+            f"Wait for {file_name!r} in folder {folder_id}",
+            f"found after {elapsed}s" if found else f"not found after {elapsed}s",
+            t0,
+        )
+        if not found:
+            return {"found": False, "folder_id": folder_id, "file_name": file_name, "waited_seconds": elapsed}
+        # Same metadata-or-id-only split as _get_file_metadata -- this call
+        # discloses exactly the same class of information (a file's
+        # existence + metadata), just reached by polling instead of a
+        # direct id lookup, so it goes through the same privacy policy.
+        if category_policy("drive_privacy", "file_metadata") == "allow":
+            return {"found": True, "waited_seconds": elapsed, "file": asdict(drive_file)}
+        return {"found": True, "waited_seconds": elapsed, "file": {"id": drive_file.id}}
 
     async def _list_shared_drives(self, max_results: int = 50) -> Any:
         t0 = time.time()
