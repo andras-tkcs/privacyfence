@@ -211,6 +211,7 @@ layout and optional sections (AI-visibility checklist, PII banner, etc.), see
 | `drive_list_files` | read | auto | — | — |
 | `drive_get_file_metadata` | read | auto | — | — |
 | `drive_list_folder` | read | auto | — | — |
+| `drive_wait_for_file` | read | auto | — | — |
 | `drive_list_shared_drives` | read | auto | — | — |
 | `drive_create_blank_file` | write | auto | — | — |
 | `drive_get_file_content` | read | review | file name, owner, size, modified date | First ~500 chars of content |
@@ -238,6 +239,17 @@ intentionally no delete-sheet tool: `drive_sheets_rename_sheet` is the sanctione
 tab for removal (e.g. rename it to `TO BE DELETED - <original title>`) — you delete it by hand
 in the Sheets UI. `drive_sheets_write_range` has no separate "set formula" tool either — a cell
 string starting with `=` is evaluated as a formula, exactly like typing it into the Sheets UI.
+
+`drive_wait_for_file` is the one Drive tool that deliberately blocks the calling connection for a
+long time (up to three hours) instead of returning immediately: it polls the given folder every
+five minutes for a file with the given name and returns once it appears, or a not-found result
+once the timeout elapses. It exists for a [scheduled/unattended Cowork
+task](#scheduled--unattended-cowork-tasks) that needs to wait for an upload rather than exit and
+get re-invoked on a tight polling schedule of its own. The poll interval and timeout are fixed
+constants, not tool parameters — a scheduled task can't be talked into polling faster than that or
+waiting longer than three hours. It's `auto`-gated like `drive_list_folder`: no popup, on either an
+attended or unattended connection, since it discloses nothing beyond one file's existence and
+metadata once found.
 
 `drive_docs_edit_content` and `drive_docs_format_content` locate existing text in a Google Doc by
 exact match against its plain text (the same representation `drive_get_file_content` returns) —

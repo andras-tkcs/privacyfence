@@ -121,6 +121,81 @@ class TestAutoTools:
 
         assert result == [{"id": "d1", "name": "Team Drive"}]
 
+    async def test_wait_for_file_found_immediately(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        client.list_files.return_value = [make_file()]
+
+        result = await connector.call(
+            "drive_wait_for_file", {"folder_id": "folder1", "file_name": "Q3 Report.gdoc"}
+        )
+
+        assert result["found"] is True
+        assert result["file"] == asdict(make_file())
+        client.list_files.assert_called_once_with(
+            "'folder1' in parents and name = 'Q3 Report.gdoc' and trashed = false", 10,
+        )
+        entries = (tmp_path / f"{current_week()}.jsonl").read_text(encoding="utf-8").splitlines()
+        assert '"decision": "auto_accepted"' in entries[0]
+
+    async def test_wait_for_file_escapes_single_quote_in_file_name(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        client.list_files.return_value = [make_file()]
+
+        await connector.call(
+            "drive_wait_for_file", {"folder_id": "folder1", "file_name": "O'Brien's notes"}
+        )
+
+        client.list_files.assert_called_once_with(
+            "'folder1' in parents and name = 'O\\'Brien\\'s notes' and trashed = false", 10,
+        )
+
+    async def test_wait_for_file_picks_most_recently_created_match(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        older = make_file(id="old", created_time="2026-01-01T00:00:00Z")
+        newer = make_file(id="new", created_time="2026-06-01T00:00:00Z")
+        client.list_files.return_value = [older, newer]
+
+        result = await connector.call(
+            "drive_wait_for_file", {"folder_id": "folder1", "file_name": "dup.txt"}
+        )
+
+        assert result["file"]["id"] == "new"
+
+    async def test_wait_for_file_polls_until_found(self, tmp_path, monkeypatch):
+        init_audit_logger(str(tmp_path))
+        monkeypatch.setattr(drive_module, "_WAIT_FOR_FILE_POLL_INTERVAL_SECONDS", 0.001)
+        connector, client = make_connector()
+        client.list_files.side_effect = [[], [], [make_file()]]
+
+        result = await connector.call(
+            "drive_wait_for_file", {"folder_id": "folder1", "file_name": "Q3 Report.gdoc"}
+        )
+
+        assert result["found"] is True
+        assert client.list_files.call_count == 3
+
+    async def test_wait_for_file_times_out(self, tmp_path, monkeypatch):
+        init_audit_logger(str(tmp_path))
+        monkeypatch.setattr(drive_module, "_WAIT_FOR_FILE_POLL_INTERVAL_SECONDS", 0.01)
+        monkeypatch.setattr(drive_module, "_WAIT_FOR_FILE_TIMEOUT_SECONDS", 0.05)
+        connector, client = make_connector()
+        client.list_files.return_value = []
+
+        result = await connector.call(
+            "drive_wait_for_file", {"folder_id": "folder1", "file_name": "never-arrives.txt"}
+        )
+
+        assert result == {
+            "found": False, "folder_id": "folder1", "file_name": "never-arrives.txt",
+            "waited_seconds": result["waited_seconds"],
+        }
+        assert client.list_files.call_count >= 2
+        entries = (tmp_path / f"{current_week()}.jsonl").read_text(encoding="utf-8").splitlines()
+        assert '"decision": "auto_accepted"' in entries[0]
+
     async def test_create_blank_file_tracks_session_created_id(self, tmp_path):
         init_audit_logger(str(tmp_path))
         connector, client = make_connector()
@@ -238,6 +313,19 @@ class TestDrivePrivacyFilter:
         client.get_file_metadata.return_value = make_file()
         result = await connector.call("drive_get_file_metadata", {"file_id": "f1"})
         assert result == {"id": "f1"}
+
+    async def test_wait_for_file_metadata_blocked_returns_id_only(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        init_privacy_filter({"drive_privacy": {"categories": {"file_metadata": "block"}}})
+        connector, client = make_connector()
+        client.list_files.return_value = [make_file()]
+
+        result = await connector.call(
+            "drive_wait_for_file", {"folder_id": "folder1", "file_name": "Q3 Report.gdoc"}
+        )
+
+        assert result["found"] is True
+        assert result["file"] == {"id": "f1"}
 
     async def test_file_list_blocked_empties_auto_accepted_result(self, tmp_path):
         init_audit_logger(str(tmp_path))
@@ -1538,6 +1626,11 @@ class TestEveryToolIsAudited:
         # real DriveFile back.
         client.get_file_metadata.return_value = make_file()
         client.download_file.return_value = {"name": "f.txt", "path": "/tmp/f.txt", "size_bytes": 100}
+        # An unconfigured MagicMock().list_files(...) call returns an empty
+        # iterable, which is a real ("no match yet") result for every other
+        # tool here but sends drive_wait_for_file into its real 5-minute
+        # poll sleep -- give it an immediate match so this sweep stays fast.
+        client.list_files.return_value = [make_file()]
 
         await assert_all_tools_leave_an_audit_trail(
             connector, drive_module, monkeypatch, tmp_path,
