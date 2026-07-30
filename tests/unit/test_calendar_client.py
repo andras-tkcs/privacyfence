@@ -910,6 +910,7 @@ class TestSetWorkingLocation:
 
     def test_home_office_sets_type_and_visibility(self):
         service = MagicMock()
+        service.events.return_value.list.return_value.execute.return_value = {"items": []}
         service.events.return_value.insert.return_value.execute.return_value = {"id": "wl1"}
         client = make_client(service)
 
@@ -927,6 +928,7 @@ class TestSetWorkingLocation:
 
     def test_office_location_includes_building_and_label_only_when_given(self):
         service = MagicMock()
+        service.events.return_value.list.return_value.execute.return_value = {"items": []}
         service.events.return_value.insert.return_value.execute.return_value = {"id": "wl1"}
         client = make_client(service)
 
@@ -942,6 +944,7 @@ class TestSetWorkingLocation:
 
     def test_http_error_becomes_calendar_client_error(self):
         service = MagicMock()
+        service.events.return_value.list.return_value.execute.return_value = {"items": []}
         service.events.return_value.insert.return_value.execute.side_effect = http_error(400)
         client = make_client(service)
         with pytest.raises(CalendarClientError, match="set_working_location failed"):
@@ -949,6 +952,7 @@ class TestSetWorkingLocation:
 
     def test_end_date_rolls_over_month_boundary(self):
         service = MagicMock()
+        service.events.return_value.list.return_value.execute.return_value = {"items": []}
         service.events.return_value.insert.return_value.execute.return_value = {"id": "wl1"}
         client = make_client(service)
 
@@ -957,6 +961,39 @@ class TestSetWorkingLocation:
         body = service.events.return_value.insert.call_args.kwargs["body"]
         assert body["start"] == {"date": "2026-08-31"}
         assert body["end"] == {"date": "2026-09-01"}
+
+    def test_existing_entry_for_the_day_is_updated_not_duplicated(self):
+        # Calling this twice for the same date must replace the day's
+        # working-location event, not insert a second, overlapping one --
+        # see set_working_location's own comment.
+        service = MagicMock()
+        service.events.return_value.list.return_value.execute.return_value = {
+            "items": [{"id": "existing-wl-event"}]
+        }
+        service.events.return_value.update.return_value.execute.return_value = {"id": "existing-wl-event"}
+        client = make_client(service)
+
+        client.set_working_location("2026-08-01", "office", building_id="b1")
+
+        service.events.return_value.insert.assert_not_called()
+        list_kwargs = service.events.return_value.list.call_args.kwargs
+        assert list_kwargs["calendarId"] == "primary"
+        assert list_kwargs["timeMin"] == "2026-08-01T00:00:00Z"
+        assert list_kwargs["timeMax"] == "2026-08-02T00:00:00Z"
+        assert list_kwargs["eventTypes"] == ["workingLocation"]
+        update_kwargs = service.events.return_value.update.call_args.kwargs
+        assert update_kwargs["calendarId"] == "primary"
+        assert update_kwargs["eventId"] == "existing-wl-event"
+        assert update_kwargs["body"]["workingLocationProperties"] == {
+            "type": "officeLocation", "officeLocation": {"buildingId": "b1"},
+        }
+
+    def test_lookup_http_error_becomes_calendar_client_error(self):
+        service = MagicMock()
+        service.events.return_value.list.return_value.execute.side_effect = http_error(500)
+        client = make_client(service)
+        with pytest.raises(CalendarClientError, match="set_working_location lookup failed"):
+            client.set_working_location("2026-08-01", "home")
 
 
 # ---------------------------------------------------------------------------- #
