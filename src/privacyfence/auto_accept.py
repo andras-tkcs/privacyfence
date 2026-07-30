@@ -145,7 +145,6 @@ TOOL_TO_GATE: dict[str, str] = {
     "drive_list_files":                "auto",
     "drive_get_file_metadata":         "auto",
     "drive_list_folder":               "auto",
-    "drive_wait_for_file":             "auto",
     "drive_list_shared_drives":        "auto",
     "drive_create_blank_file":         "auto",
     "drive_get_file_content":          "review",
