@@ -428,12 +428,19 @@ def _extract_tables(markdown: str) -> tuple[str, list[TableBlock]]:
     return "\n".join(out_lines), tables
 
 
-def _table_cell_start_indices(doc: dict, table_start_index: int) -> list[list[int]]:
+def _table_cell_start_indices(doc: dict, insert_location_index: int) -> list[list[int]]:
     """Return the just-inserted table's cell start indices as doc[row][col],
     read back from a fresh ``documents().get()`` response -- Docs assigns
     these itself and doesn't return them from the insertTable request, so
     this is the only reliable way to know where to insert each cell's text.
+
+    ``insert_location_index`` is the ``location.index`` the insertTable
+    request itself used, not the table's own resulting ``startIndex`` --
+    the Docs API always inserts a newline immediately before a table (so it
+    never merges into the preceding paragraph), so the table structural
+    element actually starts one index past where it was requested.
     """
+    table_start_index = insert_location_index + 1
     for element in doc.get("body", {}).get("content", []):
         table = element.get("table")
         if table is None or element.get("startIndex") != table_start_index:

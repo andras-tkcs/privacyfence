@@ -789,7 +789,10 @@ class TestTableCellStartIndices:
             "body": {
                 "content": [
                     {
-                        "startIndex": 5,
+                        # Docs always inserts a newline immediately before a table, so a
+                        # table requested at location.index=5 actually starts at 6 -- see
+                        # _table_cell_start_indices' own docstring.
+                        "startIndex": 6,
                         "table": {
                             "tableRows": [
                                 {
@@ -814,7 +817,7 @@ class TestTableCellStartIndices:
         doc = {
             "body": {
                 "content": [
-                    {"startIndex": 5, "table": {"tableRows": [{"tableCells": [{"content": []}]}]}}
+                    {"startIndex": 6, "table": {"tableRows": [{"tableCells": [{"content": []}]}]}}
                 ]
             }
         }
@@ -935,7 +938,9 @@ class TestWriteDocRichContent:
             "body": {
                 "content": [
                     {
-                        "startIndex": 1,
+                        # Docs always inserts a newline immediately before a table, so a
+                        # table requested at location.index=1 actually starts at 2.
+                        "startIndex": 2,
                         "table": {
                             "tableRows": [
                                 {"tableCells": [
@@ -1026,7 +1031,7 @@ class TestWriteDocRichContent:
         wrong_shape_doc = {
             "body": {
                 "content": [
-                    {"startIndex": 1, "table": {"tableRows": [
+                    {"startIndex": 2, "table": {"tableRows": [
                         {"tableCells": [{"content": [{"startIndex": 3}]}]},
                     ]}},
                 ]
@@ -1115,7 +1120,7 @@ class TestWriteDocRichContent:
         }
         doc_with_table = {
             "body": {"content": [
-                {"startIndex": 1, "table": {"tableRows": [
+                {"startIndex": 2, "table": {"tableRows": [
                     {"tableCells": [{"content": [{"startIndex": 3}]}]},
                     {"tableCells": [{"content": [{"startIndex": 6}]}]},
                 ]}},
@@ -1149,7 +1154,7 @@ class TestWriteDocRichContent:
         }
         doc_with_table = {
             "body": {"content": [
-                {"startIndex": 1, "table": {"tableRows": [
+                {"startIndex": 2, "table": {"tableRows": [
                     {"tableCells": [
                         {"content": [{"startIndex": 3}]},
                         {"content": [{"startIndex": 6}]},
