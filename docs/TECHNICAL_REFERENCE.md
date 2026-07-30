@@ -926,10 +926,12 @@ gated tool call already follows.
 Applying the change reuses the exact same persistence functions the menu bar's editor and the
 "Always allow" flow already use (`auto_accept.add_auto_accept_rule`/`remove_auto_accept_rule`,
 `resource_grants.apply_grant_upsert`/`apply_grant_removal`), so a bridge-proposed change hot-reloads
-the live evaluator the same way. It's recorded as one of four audit decisions —
-`rule_changed_via_bridge_proposal`, `rule_removed_via_bridge_proposal`,
+the live evaluator the same way. When it actually changes something, it's recorded as one of four
+audit decisions — `rule_changed_via_bridge_proposal`, `rule_removed_via_bridge_proposal`,
 `grant_changed_via_bridge_proposal`, `grant_removed_via_bridge_proposal` — distinguishable from a
-UI-originated change; a decline reuses the existing `rejected` decision rather than a new value.
+UI-originated change. A confirmed proposal that turns out to be a no-op (e.g. removing a rule/grant
+value that was already gone) is `bridge_proposal_no_op` instead — distinct from both a real change
+and from a decline, which reuses the existing `rejected` decision rather than a new value.
 
 Motivating example: a user's config can accumulate many individual `sheets.*` operations each
 hand-pinned to `approved_sandbox_folder` (see the callout under
@@ -1035,14 +1037,15 @@ and `policy_check` (a `privacyfence_check_policy` preflight call — not a real 
 for pattern-spotting only). Both get their own row on the Summary sheet and their own colour on
 the Decisions sheet.
 
-Five more relate to
+Six more relate to
 [reading/proposing auto-accept changes from the bridge](#reading-and-proposing-auto-accept-changes-from-the-bridge):
 `rules_listed` (a `privacyfence_list_auto_accept_rules` call — like `policy_check`, not a real
 decision, recorded because it discloses the full current rule set) and, once a
 `privacyfence_propose_auto_accept_rule_change` proposal is confirmed,
 `rule_changed_via_bridge_proposal` / `rule_removed_via_bridge_proposal` /
-`grant_changed_via_bridge_proposal` / `grant_removed_via_bridge_proposal`. A declined proposal
-reuses the existing `rejected` decision rather than a new value.
+`grant_changed_via_bridge_proposal` / `grant_removed_via_bridge_proposal` when it actually changed
+something, or `bridge_proposal_no_op` when it didn't (e.g. removing a rule/grant value that was
+already gone). A declined proposal reuses the existing `rejected` decision rather than a new value.
 
 See [connector-qa-testing.md](connector-qa-testing.md) for a Claude Cowork prompt that drives every connector's tools end to end against real accounts — the fastest way to catch a gate, auto-accept rule, or connector client that's drifted from what's documented here.
 

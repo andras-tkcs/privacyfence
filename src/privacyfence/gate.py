@@ -693,7 +693,7 @@ async def propose_rule_change(
                 remove_auto_accept_rule(operation_key, rule_name, old_value)
             add_auto_accept_rule(operation_key, rule_name, value)
             changed = True
-        decision = "rule_removed_via_bridge_proposal" if operation == "remove" else "rule_changed_via_bridge_proposal"
+        applied_decision = "rule_removed_via_bridge_proposal" if operation == "remove" else "rule_changed_via_bridge_proposal"
         applied_rule_name = rule_name
     else:
         if operation == "remove":
@@ -704,15 +704,28 @@ async def propose_rule_change(
                     cfg, rt, resource_id, name=name, tab=tab, capabilities=capabilities
                 )
             )
-        decision = "grant_removed_via_bridge_proposal" if operation == "remove" else "grant_changed_via_bridge_proposal"
+        applied_decision = "grant_removed_via_bridge_proposal" if operation == "remove" else "grant_changed_via_bridge_proposal"
         applied_rule_name = resource_id
+
+    # A confirmed "remove" can still be a no-op (the rule/grant named didn't
+    # actually match anything, e.g. Claude proposed removing a value that
+    # was already gone) -- `changed` already tells the two branches above
+    # apart correctly, but the decision string didn't consult it at all
+    # before this, so the audit log claimed a removal/change happened even
+    # when config verifiably didn't change. "confirmed" (this function's
+    # own return value) still means "the human said yes", so this stays
+    # distinct from "rejected".
+    decision = applied_decision if changed else "bridge_proposal_no_op"
 
     _audit(
         created_at=created_at, request_id=request_id, connector=connector or target, tool="",
         tool_name="", summary=summary, sender="", decision=decision,
         auto_accept_rule=applied_rule_name, pii_detected=False, claude_reason=reason,
     )
-    logger.info("Bridge-proposed %s %s confirmed and applied: %s", operation, target, description)
+    logger.info(
+        "Bridge-proposed %s %s confirmed%s: %s",
+        operation, target, " and applied" if changed else " but was a no-op", description,
+    )
     return {"confirmed": True, "changed": changed, "description": description}
 
 
