@@ -1920,7 +1920,13 @@ def _osascript_pick(title: str, prompt: str, options: list[str], default: str | 
     item (AppleScript's "default items") -- purely cosmetic, existing
     callers that don't pass it see no change in behavior."""
     opts_as = "{" + ", ".join(f'"{o}"' for o in options) + "}"
-    default_clause = f' with default items {{"{default}"}}' if default in options else ""
+    # AppleScript's "choose from list" parameter is `default items`, not
+    # `with default items` -- the leading "with" is only valid there for
+    # boolean parameters (e.g. "with multiple selections allowed"). Getting
+    # this wrong is a silent no-op: _osascript_pick doesn't surface
+    # osascript's stderr/exit code, so a syntax error here just makes the
+    # picker never appear, with nothing printed anywhere.
+    default_clause = f' default items {{"{default}"}}' if default in options else ""
     script = (
         f'set opts to {opts_as}\n'
         f'set chosen to (choose from list opts '
