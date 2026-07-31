@@ -336,7 +336,8 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
    The other `WRITE_RULE_SUGGESTIONS` operations
    (`calendar_create_event`/`update_event`/`set_event_visibility`, all four
    Jira write tools, both Confluence write tools, all five Tasks write tools,
-   `gmail_create_draft`/its two reply variants, and all 13 Drive/Sheets/Docs
+   `gmail_create_draft`/its two reply variants/their three `_with_attachments` counterparts, and all
+   13 Drive/Sheets/Docs
    write tools — see [Phase 2](#phase-2--drive--sheets)) work identically —
    this one demonstration is representative, no need to repeat it in every
    later phase.

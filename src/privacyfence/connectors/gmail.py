@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -24,6 +26,30 @@ logger = logging.getLogger(__name__)
 # partial-fetch API), so this bounds how much we'll pull down before the
 # human has decided anything.
 _ATTACHMENT_PREFETCH_MAX_BYTES = 5_000_000
+
+
+def _parse_attachment_paths(value: str) -> list[str]:
+    """Parse the ``attachments`` tool argument: a JSON array of local file paths.
+
+    Raises ``ValueError`` (rather than drive.py's ``_parse_json_str_list``
+    silent-None-on-invalid-input pattern) because an empty or malformed
+    ``attachments`` value on one of these tools means the whole point of
+    calling it -- attaching something -- silently didn't happen; that should
+    fail loudly, not fall back to a draft with no attachments.
+    """
+    if not value or not value.strip():
+        raise ValueError(
+            'attachments: provide a JSON array of local file paths, e.g. ["/path/to/file.pdf"]'
+        )
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(f"attachments: invalid JSON array: {exc}") from exc
+    if not isinstance(parsed, list) or not all(isinstance(v, str) for v in parsed):
+        raise ValueError("attachments: must be a JSON array of strings (local file paths)")
+    if not parsed:
+        raise ValueError("attachments: at least one file path is required")
+    return parsed
 
 
 class GmailConnector(Connector):
@@ -171,6 +197,80 @@ class GmailConnector(Connector):
                 ],
             ),
             ToolSpec(
+                name="gmail_create_draft_with_attachments",
+                description=(
+                    "Create a Gmail draft with one or more local-file attachments. "
+                    "Parallel to gmail_create_draft -- use this variant only when "
+                    "there is something to attach; use gmail_create_draft when "
+                    "there isn't, so a draft doesn't need this tool's extra "
+                    "attachments argument for nothing. Requires user approval."
+                ),
+                params=[
+                    ToolParam("to", "str"),
+                    ToolParam("subject", "str"),
+                    ToolParam("body", "str"),
+                    ToolParam(
+                        "attachments", "str",
+                        description=(
+                            'JSON array of local file paths to attach, e.g. '
+                            '["/path/to/report.pdf"]. At least one required.'
+                        ),
+                    ),
+                    ToolParam("cc", "str", required=False, default=""),
+                    ToolParam("bcc", "str", required=False, default=""),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
+                ],
+            ),
+            ToolSpec(
+                name="gmail_reply_draft_with_attachments",
+                description=(
+                    "Create a Gmail draft replying to a single message, staying in "
+                    "the same thread, with one or more local-file attachments. "
+                    "Parallel to gmail_reply_draft -- use this variant only when "
+                    "there is something to attach. Addressed only to the original "
+                    "sender. Requires user approval."
+                ),
+                params=[
+                    ToolParam("message_id", "str"),
+                    ToolParam("body", "str"),
+                    ToolParam(
+                        "attachments", "str",
+                        description=(
+                            'JSON array of local file paths to attach, e.g. '
+                            '["/path/to/report.pdf"]. At least one required.'
+                        ),
+                    ),
+                    ToolParam("cc", "str", required=False, default=""),
+                    ToolParam("bcc", "str", required=False, default=""),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
+                ],
+            ),
+            ToolSpec(
+                name="gmail_reply_all_draft_with_attachments",
+                description=(
+                    "Create a Gmail draft replying to all participants of a message "
+                    "(original sender plus To/Cc recipients, excluding yourself), "
+                    "staying in the same thread, with one or more local-file "
+                    "attachments. Parallel to gmail_reply_all_draft -- use this "
+                    "variant only when there is something to attach. Requires user "
+                    "approval."
+                ),
+                params=[
+                    ToolParam("message_id", "str"),
+                    ToolParam("body", "str"),
+                    ToolParam(
+                        "attachments", "str",
+                        description=(
+                            'JSON array of local file paths to attach, e.g. '
+                            '["/path/to/report.pdf"]. At least one required.'
+                        ),
+                    ),
+                    ToolParam("cc", "str", required=False, default=""),
+                    ToolParam("bcc", "str", required=False, default=""),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
+                ],
+            ),
+            ToolSpec(
                 name="gmail_add_label",
                 description="Add a label to a Gmail message. Requires user approval.",
                 params=[
@@ -298,6 +398,12 @@ class GmailConnector(Connector):
             return await self._reply_draft(**args)
         if tool == "gmail_reply_all_draft":
             return await self._reply_all_draft(**args)
+        if tool == "gmail_create_draft_with_attachments":
+            return await self._create_draft_with_attachments(**args)
+        if tool == "gmail_reply_draft_with_attachments":
+            return await self._reply_draft_with_attachments(**args)
+        if tool == "gmail_reply_all_draft_with_attachments":
+            return await self._reply_all_draft_with_attachments(**args)
         if tool == "gmail_add_label":
             return await self._add_label(**args)
         if tool == "gmail_remove_label":
@@ -697,15 +803,7 @@ class GmailConnector(Connector):
     async def _reply_draft(
         self, message_id: str, body: str, cc: str = "", bcc: str = ""
     ) -> Any:
-        message = await self._fetch(self._gmail.get_message, message_id)
-        preview = {
-            "In reply to": message.subject or "(no subject)",
-            "To": message.sender or "(unknown)",
-        }
-        if cc:
-            preview["Cc"] = cc
-        if bcc:
-            preview["Bcc"] = bcc
+        message, preview, to_arg = await self._reply_preview_and_to(message_id, cc, bcc, reply_all=False)
         await gated_call(
             connector=self.name,
             tool="gmail_reply_draft",
@@ -718,7 +816,7 @@ class GmailConnector(Connector):
             preview=preview,
             details_text=body,
             my_email=self.my_email,
-            args={"message_id": message_id, "to": message.sender or ""},
+            args={"message_id": message_id, "to": to_arg},
         )
         return await self._fetch(
             self._gmail.create_reply_draft, message_id, body, False, self.my_email, cc, bcc
@@ -727,15 +825,138 @@ class GmailConnector(Connector):
     async def _reply_all_draft(
         self, message_id: str, body: str, cc: str = "", bcc: str = ""
     ) -> Any:
-        message = await self._fetch(self._gmail.get_message, message_id)
-        recipients = (
-            message.recipients if isinstance(message.recipients, str) else ", ".join(message.recipients or [])
+        message, preview, to_arg = await self._reply_preview_and_to(message_id, cc, bcc, reply_all=True)
+        await gated_call(
+            connector=self.name,
+            tool="gmail_reply_all_draft",
+            tool_name="Create Gmail Reply-All Draft",
+            summary=f"Reply-all draft: {message.subject or '(no subject)'}",
+            sender=message.sender or "",
+            raw_data={"message_id": message_id, "body": body, "cc": cc, "bcc": bcc},
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text=body,
+            my_email=self.my_email,
+            args={"message_id": message_id, "to": to_arg},
         )
+        return await self._fetch(
+            self._gmail.create_reply_draft, message_id, body, True, self.my_email, cc, bcc
+        )
+
+    async def _create_draft_with_attachments(
+        self, to: str, subject: str, body: str, attachments: str = "", cc: str = "", bcc: str = ""
+    ) -> Any:
+        paths = _parse_attachment_paths(attachments)
+        attachment_info = self._stat_attachments(paths)
+        preview = {"To": to}
+        if cc:
+            preview["Cc"] = cc
+        if bcc:
+            preview["Bcc"] = bcc
+        preview["Subject"] = subject
+        preview["Attachments"] = self._format_attachment_preview(attachment_info)
+        await gated_call(
+            connector=self.name,
+            tool="gmail_create_draft_with_attachments",
+            tool_name="Create Gmail Draft with Attachments",
+            summary=f"Create draft with {len(paths)} attachment(s): {subject}",
+            sender=to,
+            raw_data={
+                "to": to, "subject": subject, "body": body, "cc": cc, "bcc": bcc, "attachments": paths,
+            },
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text=body,
+            my_email=self.my_email,
+            args={"to": to, "subject": subject},
+        )
+        return await self._fetch(
+            self._gmail.create_draft_with_attachments, to, subject, body, paths, cc, bcc
+        )
+
+    async def _reply_draft_with_attachments(
+        self, message_id: str, body: str, attachments: str = "", cc: str = "", bcc: str = ""
+    ) -> Any:
+        paths = _parse_attachment_paths(attachments)
+        attachment_info = self._stat_attachments(paths)
+        message, preview, to_arg = await self._reply_preview_and_to(message_id, cc, bcc, reply_all=False)
+        preview["Attachments"] = self._format_attachment_preview(attachment_info)
+        await gated_call(
+            connector=self.name,
+            tool="gmail_reply_draft_with_attachments",
+            tool_name="Create Gmail Reply Draft with Attachments",
+            summary=f"Reply draft with {len(paths)} attachment(s): {message.subject or '(no subject)'}",
+            sender=message.sender or "",
+            raw_data={
+                "message_id": message_id, "body": body, "cc": cc, "bcc": bcc, "attachments": paths,
+            },
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text=body,
+            my_email=self.my_email,
+            args={"message_id": message_id, "to": to_arg},
+        )
+        return await self._fetch(
+            self._gmail.create_reply_draft_with_attachments,
+            message_id, body, paths, False, self.my_email, cc, bcc,
+        )
+
+    async def _reply_all_draft_with_attachments(
+        self, message_id: str, body: str, attachments: str = "", cc: str = "", bcc: str = ""
+    ) -> Any:
+        paths = _parse_attachment_paths(attachments)
+        attachment_info = self._stat_attachments(paths)
+        message, preview, to_arg = await self._reply_preview_and_to(message_id, cc, bcc, reply_all=True)
+        preview["Attachments"] = self._format_attachment_preview(attachment_info)
+        await gated_call(
+            connector=self.name,
+            tool="gmail_reply_all_draft_with_attachments",
+            tool_name="Create Gmail Reply-All Draft with Attachments",
+            summary=f"Reply-all draft with {len(paths)} attachment(s): {message.subject or '(no subject)'}",
+            sender=message.sender or "",
+            raw_data={
+                "message_id": message_id, "body": body, "cc": cc, "bcc": bcc, "attachments": paths,
+            },
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text=body,
+            my_email=self.my_email,
+            args={"message_id": message_id, "to": to_arg},
+        )
+        return await self._fetch(
+            self._gmail.create_reply_draft_with_attachments,
+            message_id, body, paths, True, self.my_email, cc, bcc,
+        )
+
+    async def _reply_preview_and_to(
+        self, message_id: str, cc: str, bcc: str, reply_all: bool
+    ) -> tuple[Any, dict[str, str], Any]:
+        """Fetch the message being replied to and build the preview dict plus
+        the gate's ``args["to"]`` -- shared by gmail_reply_draft/
+        gmail_reply_all_draft and their _with_attachments counterparts, since
+        only the message construction (plain text vs. multipart) differs
+        between them.
+        """
+        message = await self._fetch(self._gmail.get_message, message_id)
         preview = {
             "In reply to": message.subject or "(no subject)",
             "To": message.sender or "(unknown)",
-            "Also to": recipients or "(none)",
         }
+        if not reply_all:
+            if cc:
+                preview["Cc"] = cc
+            if bcc:
+                preview["Bcc"] = bcc
+            return message, preview, message.sender or ""
+
+        recipients = (
+            message.recipients if isinstance(message.recipients, str) else ", ".join(message.recipients or [])
+        )
+        preview["Also to"] = recipients or "(none)"
         if cc:
             preview["Cc"] = cc
         if bcc:
@@ -756,23 +977,26 @@ class GmailConnector(Connector):
             r for r in all_recipients
             if r and (not self.my_email or my_email_lower not in r.lower())
         ]
-        await gated_call(
-            connector=self.name,
-            tool="gmail_reply_all_draft",
-            tool_name="Create Gmail Reply-All Draft",
-            summary=f"Reply-all draft: {message.subject or '(no subject)'}",
-            sender=message.sender or "",
-            raw_data={"message_id": message_id, "body": body, "cc": cc, "bcc": bcc},
-            filtered_data=None,
-            gate="popup",
-            preview=preview,
-            details_text=body,
-            my_email=self.my_email,
-            args={"message_id": message_id, "to": expanded_to or [message.sender or ""]},
-        )
-        return await self._fetch(
-            self._gmail.create_reply_draft, message_id, body, True, self.my_email, cc, bcc
-        )
+        return message, preview, expanded_to or [message.sender or ""]
+
+    @staticmethod
+    def _stat_attachments(paths: list[str]) -> list[dict[str, Any]]:
+        """Stat each attachment path so the approval popup shows real
+        filenames/sizes before gating -- doesn't read file content, which
+        only happens in GmailClient after approval, when the draft is
+        actually built.
+        """
+        info = []
+        for path in paths:
+            expanded = os.path.expanduser(path.strip())
+            if not os.path.isfile(expanded):
+                raise ValueError(f"attachments: no such file: {path!r}")
+            info.append({"name": os.path.basename(expanded), "size_bytes": os.path.getsize(expanded)})
+        return info
+
+    @staticmethod
+    def _format_attachment_preview(attachment_info: list[dict[str, Any]]) -> str:
+        return ", ".join(f"{a['name']} ({a['size_bytes']:,} bytes)" for a in attachment_info)
 
     async def _add_label(self, message_id: str, label_name: str) -> Any:
         message = await self._fetch(self._gmail.get_message, message_id)

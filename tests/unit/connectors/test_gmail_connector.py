@@ -1084,6 +1084,153 @@ class TestWriteToolsGateAndPreview:
         assert gated_call_spy == []
 
 
+class TestWriteToolsWithAttachmentsGateAndPreview:
+    """gmail_create_draft_with_attachments/gmail_reply_draft_with_attachments/
+    gmail_reply_all_draft_with_attachments -- the additive tools from issue
+    #113. Parallel to TestWriteToolsGateAndPreview's plain-draft coverage,
+    plus: the attachments arg is a JSON array of local file paths, stat'd
+    (not read) before gating so the popup shows real filenames/sizes without
+    the connector reading file content pre-approval.
+    """
+
+    async def test_create_draft_with_attachments_preview_and_args(self, gated_call_spy, tmp_path):
+        connector, client = make_connector()
+        attachment = tmp_path / "report.pdf"
+        attachment.write_bytes(b"x" * 10)
+        client.create_draft_with_attachments.return_value = {"draft_id": "d1"}
+
+        await connector.call(
+            "gmail_create_draft_with_attachments",
+            {
+                "to": "alice@example.com", "subject": "Hi", "body": "Secret plan details",
+                "attachments": json.dumps([str(attachment)]), "cc": "bob@example.com",
+            },
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["gate"] == "popup"
+        assert "Secret plan details" not in str(kwargs["preview"])
+        assert kwargs["details_text"] == "Secret plan details"
+        assert kwargs["preview"]["To"] == "alice@example.com"
+        assert kwargs["preview"]["Cc"] == "bob@example.com"
+        assert kwargs["preview"]["Subject"] == "Hi"
+        assert kwargs["preview"]["Attachments"] == "report.pdf (10 bytes)"
+        assert kwargs["args"] == {"to": "alice@example.com", "subject": "Hi"}
+        client.create_draft_with_attachments.assert_called_once_with(
+            "alice@example.com", "Hi", "Secret plan details", [str(attachment)], "bob@example.com", "",
+        )
+
+    async def test_create_draft_with_attachments_bcc_included_when_provided(self, gated_call_spy, tmp_path):
+        connector, client = make_connector()
+        attachment = tmp_path / "f.txt"
+        attachment.write_bytes(b"x")
+        client.create_draft_with_attachments.return_value = {"draft_id": "d1"}
+
+        await connector.call(
+            "gmail_create_draft_with_attachments",
+            {
+                "to": "a@x.com", "subject": "s", "body": "b",
+                "attachments": json.dumps([str(attachment)]), "bcc": "hidden@x.com",
+            },
+        )
+
+        assert gated_call_spy[0]["preview"]["Bcc"] == "hidden@x.com"
+
+    async def test_create_draft_with_attachments_missing_file_denied_before_gate(self, gated_call_spy):
+        connector, _client = make_connector()
+        with pytest.raises(ValueError, match="no such file"):
+            await connector.call(
+                "gmail_create_draft_with_attachments",
+                {"to": "a@x.com", "subject": "s", "body": "b", "attachments": json.dumps(["/no/such/file"])},
+            )
+        assert gated_call_spy == []
+
+    async def test_create_draft_with_attachments_invalid_json_denied_before_gate(self, gated_call_spy):
+        connector, _client = make_connector()
+        with pytest.raises(ValueError, match="invalid JSON array"):
+            await connector.call(
+                "gmail_create_draft_with_attachments",
+                {"to": "a@x.com", "subject": "s", "body": "b", "attachments": "not json"},
+            )
+        assert gated_call_spy == []
+
+    async def test_create_draft_with_attachments_empty_list_denied_before_gate(self, gated_call_spy):
+        connector, _client = make_connector()
+        with pytest.raises(ValueError, match="at least one file path"):
+            await connector.call(
+                "gmail_create_draft_with_attachments",
+                {"to": "a@x.com", "subject": "s", "body": "b", "attachments": "[]"},
+            )
+        assert gated_call_spy == []
+
+    async def test_create_draft_with_attachments_blank_string_denied_before_gate(self, gated_call_spy):
+        connector, _client = make_connector()
+        with pytest.raises(ValueError, match="provide a JSON array"):
+            await connector.call(
+                "gmail_create_draft_with_attachments",
+                {"to": "a@x.com", "subject": "s", "body": "b", "attachments": "   "},
+            )
+        assert gated_call_spy == []
+
+    async def test_create_draft_with_attachments_non_string_list_items_denied_before_gate(self, gated_call_spy):
+        connector, _client = make_connector()
+        with pytest.raises(ValueError, match="array of strings"):
+            await connector.call(
+                "gmail_create_draft_with_attachments",
+                {"to": "a@x.com", "subject": "s", "body": "b", "attachments": "[1, 2]"},
+            )
+        assert gated_call_spy == []
+
+    async def test_reply_draft_with_attachments_args_to_is_original_sender_only(self, gated_call_spy, tmp_path):
+        connector, client = make_connector()
+        attachment = tmp_path / "f.txt"
+        attachment.write_bytes(b"hi")
+        client.get_message.return_value = GmailMessage(
+            id="m1", thread_id="t1", subject="Re: hi", sender="alice@example.com",
+        )
+        client.create_reply_draft_with_attachments.return_value = {"draft_id": "d2"}
+
+        await connector.call(
+            "gmail_reply_draft_with_attachments",
+            {"message_id": "m1", "body": "ok", "attachments": json.dumps([str(attachment)])},
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["gate"] == "popup"
+        assert kwargs["args"] == {"message_id": "m1", "to": "alice@example.com"}
+        assert kwargs["preview"]["Attachments"] == "f.txt (2 bytes)"
+        client.create_reply_draft_with_attachments.assert_called_once_with(
+            "m1", "ok", [str(attachment)], False, "me@example.com", "", "",
+        )
+
+    async def test_reply_all_draft_with_attachments_expands_recipients_excluding_self(self, gated_call_spy, tmp_path):
+        connector, client = make_connector(my_email="me@example.com")
+        attachment = tmp_path / "f.txt"
+        attachment.write_bytes(b"hi")
+        client.get_message.return_value = GmailMessage(
+            id="m1", thread_id="t1", subject="Re: hi", sender="alice@example.com",
+            recipients=["me@example.com", "bob@example.com"],
+        )
+        client.create_reply_draft_with_attachments.return_value = {"draft_id": "d3"}
+
+        await connector.call(
+            "gmail_reply_all_draft_with_attachments",
+            {
+                "message_id": "m1", "body": "ok", "attachments": json.dumps([str(attachment)]),
+                "cc": "eve@example.com",
+            },
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["gate"] == "popup"
+        assert set(kwargs["args"]["to"]) == {"alice@example.com", "bob@example.com", "eve@example.com"}
+        assert "me@example.com" not in kwargs["args"]["to"]
+        assert "Also to" in kwargs["preview"]
+        client.create_reply_draft_with_attachments.assert_called_once_with(
+            "m1", "ok", [str(attachment)], True, "me@example.com", "eve@example.com", "",
+        )
+
+
 class TestFieldCompleteness:
     """End to end: a fully-populated raw Gmail API message -> the real
     GmailClient._parse_message -> the real connector's popup preview -- not
@@ -1155,5 +1302,18 @@ class TestEveryToolIsAudited:
         # gmail_create_label checks for an existing label of the same name
         # before gating; an empty list means the generic stub name is "new".
         client.list_labels.return_value = []
+        # The *_with_attachments tools stat their attachments before gating,
+        # so the generic "stub" string arg (not valid JSON) needs overriding
+        # with a JSON array pointing at a real file.
+        stub_attachment = tmp_path / "stub-attachment.txt"
+        stub_attachment.write_text("stub")
+        attachments_arg = json.dumps([str(stub_attachment)])
 
-        await assert_all_tools_leave_an_audit_trail(connector, gmail_module, monkeypatch, tmp_path)
+        await assert_all_tools_leave_an_audit_trail(
+            connector, gmail_module, monkeypatch, tmp_path,
+            arg_overrides={
+                "gmail_create_draft_with_attachments": {"attachments": attachments_arg},
+                "gmail_reply_draft_with_attachments": {"attachments": attachments_arg},
+                "gmail_reply_all_draft_with_attachments": {"attachments": attachments_arg},
+            },
+        )

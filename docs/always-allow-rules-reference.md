@@ -17,10 +17,10 @@ remains splits into two sections:
   `suggest_rule()` can derive a plausible rule from the specific item being read; otherwise the
   button doesn't appear, and the row is empty.
 - **[Write tools](#write-tools)** (`popup` gate) — most write popups never offer Always allow at
-  all; 32 tools across 29 operation keys are a narrow exception (`suggest_write_rule()`), each
+  all; 35 tools across 29 operation keys are a narrow exception (`suggest_write_rule()`), each
   proposing a rule scoped to the one folder/label/calendar/project/space/task-list the call just
-  touched (`gmail_create_draft` and its two reply variants are the one exception — see their row
-  below).
+  touched (`gmail_create_draft`, its two reply variants, and their three `_with_attachments`
+  counterparts are the one exception — see their rows below).
 
 Where a tool can produce more than one rule, they're checked in priority order and the first match
 wins — clicking Always allow on a message where you're the sender proposes `i_am_sender`, not
@@ -42,8 +42,9 @@ is `gate.py`'s `accept_all_hint`, derived from the same `suggest_rule()`/`sugges
 that decides whether the button appears at all, run through `auto_accept.describe_rule_short()` — a
 short, per-rule-*type* phrase (never the specific instance value: "this folder," not the folder's own
 name or id, so the button's width stays predictable regardless of how long any one call's real value
-is). The one exception is `always_allow` (`gmail_create_draft` and its two reply variants): there's no
-category to name for an unconditional rule, so the button stays plain "Always allow" for those three.
+is). The one exception is `always_allow` (`gmail_create_draft`, its two reply variants, and their
+three `_with_attachments` counterparts): there's no category to name for an unconditional rule, so
+the button stays plain "Always allow" for those six.
 The confirmation dialog after clicking still shows the full sentence (`describe_rule()`/
 `describe_rule_change()`, unchanged) — this hint is purely the pre-click preview.
 
@@ -194,11 +195,12 @@ candidate matches, nothing about today's flow changes.
 ## Write tools
 
 Most write tools never offer **Always allow** — auto-accepting a write silently is a materially
-bigger blast radius than auto-accepting a read. 32 tools across 29 operation keys are a narrow,
+bigger blast radius than auto-accepting a read. 35 tools across 29 operation keys are a narrow,
 deliberate exception (`auto_accept.WRITE_RULE_SUGGESTIONS`): all but one propose an already-existing
 rule scoped to the one folder/label/calendar/project/space/task-list the call just touched — never
-a bare "accept every future write of this type" toggle (`gmail_create_draft` and its two reply
-variants are the deliberate exception to that — see below). Every other write tool below offers
+a bare "accept every future write of this type" toggle (`gmail_create_draft`, its two reply
+variants, and their three `_with_attachments` counterparts are the deliberate exception to that —
+see below). Every other write tool below offers
 exactly Deny / Allow once, with an empty **Always allow rule created** column. A handful of tools
 also have a separate, non-persisted grace-window behavior tucked into their "Allow once" instead —
 see [Related but distinct mechanisms](#related-but-distinct-mechanisms) for what that is; it isn't
@@ -211,6 +213,9 @@ an Always-allow rule and doesn't belong in this column.
 | `gmail_create_draft` | `always_allow` (unconditional) |
 | `gmail_reply_draft` | `always_allow` (unconditional) |
 | `gmail_reply_all_draft` | `always_allow` (unconditional) |
+| `gmail_create_draft_with_attachments` | `always_allow` (unconditional) |
+| `gmail_reply_draft_with_attachments` | `always_allow` (unconditional) |
+| `gmail_reply_all_draft_with_attachments` | `always_allow` (unconditional) |
 | `gmail_add_label` | `label_name_allowlist` (that label) |
 | `gmail_remove_label` | `label_name_allowlist` (that label) |
 | `gmail_archive_message` | |
@@ -218,7 +223,8 @@ an Always-allow rule and doesn't belong in this column.
 | `gmail_update_filter` | |
 | `gmail_create_label` | |
 
-`gmail_create_draft`/`gmail_reply_draft`/`gmail_reply_all_draft` (`gmail.create_draft`) propose a
+`gmail_create_draft`/`gmail_reply_draft`/`gmail_reply_all_draft` and their `_with_attachments`
+counterparts (all six share the `gmail.create_draft` operation key) propose a
 plain, unconditional `always_allow` rule — no recipient check at all, broader than
 `to_is_myself`/`approved_recipient_domain`, which are both conditional on who the draft goes to.
 It's the one entry in `WRITE_RULE_SUGGESTIONS` that isn't resource-identity-scoped: drafting has no
