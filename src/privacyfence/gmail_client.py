@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import email.policy
 import logging
+import mimetypes
 import os
 import threading
 from dataclasses import dataclass, field
@@ -75,6 +76,60 @@ def resolve_attachment_destination(filename: str, destination_dir: str = "") -> 
     dest_dir = os.path.expanduser(destination_dir.strip())
     safe_name = os.path.basename(filename) or "attachment"
     return os.path.join(dest_dir, safe_name)
+
+
+# Gmail's own draft/message size cap is ~25MB, which has to cover the raw
+# attachment bytes *plus* base64 encoding overhead (~33%) plus headers --
+# capping the raw bytes we'll read well under that leaves margin for both.
+_MAX_TOTAL_ATTACHMENT_BYTES = 18_000_000
+
+
+def _read_local_attachment(path: str) -> tuple[str, bytes]:
+    """Read one local attachment file from disk, sanitizing only its own name.
+
+    Unlike ``resolve_attachment_destination`` (an inbound filename from a
+    remote sender, untrusted), ``path`` here is a location Claude was told to
+    read by the caller -- but the resulting attachment name still shouldn't
+    leak the full local path into the outgoing message, so only the basename
+    is kept, same reasoning as the inbound case.
+    """
+    if not path or not path.strip():
+        raise GmailClientError("attachments: empty file path")
+    expanded = os.path.expanduser(path.strip())
+    if not os.path.isfile(expanded):
+        raise GmailClientError(f"attachments: no such file: {path!r}")
+    with open(expanded, "rb") as fh:
+        data = fh.read()
+    return os.path.basename(expanded), data
+
+
+def _attach_files(msg, attachments: list[str]) -> None:
+    """Read each attachment from disk and attach it as a MIME part of ``msg``.
+
+    Raises ``GmailClientError`` if a file is missing or the running total
+    exceeds Gmail's draft size cap -- see ``_MAX_TOTAL_ATTACHMENT_BYTES``.
+    """
+    import email.encoders
+    import email.mime.base
+
+    total_bytes = 0
+    for path in attachments:
+        name, data = _read_local_attachment(path)
+        total_bytes += len(data)
+        if total_bytes > _MAX_TOTAL_ATTACHMENT_BYTES:
+            raise GmailClientError(
+                f"attachments: total size exceeds the "
+                f"{_MAX_TOTAL_ATTACHMENT_BYTES // 1_000_000}MB limit this draft "
+                "can carry (Gmail's own cap is ~25MB including base64 encoding "
+                "overhead)"
+            )
+        mime_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        maintype, _, subtype = mime_type.partition("/")
+        part = email.mime.base.MIMEBase(maintype, subtype or "octet-stream")
+        part.set_payload(data)
+        email.encoders.encode_base64(part)
+        part.add_header("Content-Disposition", "attachment", filename=name)
+        msg.attach(part)
 
 
 @dataclass
@@ -426,6 +481,50 @@ class GmailClient:
         logger.info("create_draft: draft_id=%s to=%s", draft_id, to)
         return {"draft_id": draft_id, "to": to, "subject": subject}
 
+    def create_draft_with_attachments(
+        self, to: str, subject: str, body: str, attachments: list[str], cc: str = "", bcc: str = ""
+    ) -> dict:
+        """Create a Gmail draft with one or more local-file attachments.
+
+        Kept as a separate method from ``create_draft`` (mirroring it rather
+        than adding an ``attachments=None`` branch to it) so the plain
+        MIMEText draft path stays completely untouched -- see
+        ``connectors/gmail.py``'s Gmail tool docstrings for why.
+        """
+        import email.mime.multipart
+        import email.mime.text
+
+        if not attachments:
+            raise GmailClientError("create_draft_with_attachments requires at least one attachment")
+
+        msg = email.mime.multipart.MIMEMultipart("mixed", policy=_UNFOLDED_POLICY)
+        msg["to"] = self._encode_addresses(to)
+        msg["subject"] = subject
+        if cc:
+            msg["cc"] = self._encode_addresses(cc)
+        if bcc:
+            msg["bcc"] = self._encode_addresses(bcc)
+        msg.attach(email.mime.text.MIMEText(body))
+        _attach_files(msg, attachments)
+
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+        service = self._get_service()
+        try:
+            draft = (
+                service.users()
+                .drafts()
+                .create(userId="me", body={"message": {"raw": raw}})
+                .execute()
+            )
+        except HttpError as exc:
+            raise GmailClientError(f"create_draft_with_attachments failed: {exc}") from exc
+        draft_id = draft.get("id", "")
+        logger.info(
+            "create_draft_with_attachments: draft_id=%s to=%s attachments=%d",
+            draft_id, to, len(attachments),
+        )
+        return {"draft_id": draft_id, "to": to, "subject": subject}
+
     def create_reply_draft(
         self,
         message_id: str,
@@ -445,6 +544,123 @@ class GmailClient:
         carry them.
         """
         import email.mime.text
+
+        target = self._resolve_reply_target(message_id, reply_all, my_email, cc)
+
+        msg = email.mime.text.MIMEText(body, policy=_UNFOLDED_POLICY)
+        msg["to"] = self._encode_address(target["to_addr"])
+        msg["subject"] = target["subject"]
+        if target["final_cc"]:
+            msg["cc"] = ", ".join(self._encode_address(addr) for addr in target["final_cc"])
+        if bcc:
+            msg["bcc"] = self._encode_addresses(bcc)
+        if target["original_message_id"]:
+            msg["In-Reply-To"] = target["original_message_id"]
+            msg["References"] = target["references"]
+
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+        message_body: dict[str, Any] = {"raw": raw}
+        if target["thread_id"]:
+            message_body["threadId"] = target["thread_id"]
+
+        service = self._get_service()
+        try:
+            draft = (
+                service.users()
+                .drafts()
+                .create(userId="me", body={"message": message_body})
+                .execute()
+            )
+        except HttpError as exc:
+            raise GmailClientError(f"create_reply_draft failed: {exc}") from exc
+        draft_id = draft.get("id", "")
+        logger.info(
+            "create_reply_draft: draft_id=%s thread_id=%s to=%s reply_all=%s",
+            draft_id, target["thread_id"], target["to_addr"], reply_all,
+        )
+        return {
+            "draft_id": draft_id,
+            "thread_id": target["thread_id"],
+            "to": target["to_addr"],
+            "cc": ", ".join(target["final_cc"]),
+            "subject": target["subject"],
+        }
+
+    def create_reply_draft_with_attachments(
+        self,
+        message_id: str,
+        body: str,
+        attachments: list[str],
+        reply_all: bool = False,
+        my_email: str = "",
+        cc: str = "",
+        bcc: str = "",
+    ) -> dict:
+        """Create a reply draft with one or more local-file attachments.
+
+        Parallel to ``create_reply_draft`` -- shares its threading/address
+        resolution via ``_resolve_reply_target`` but builds a
+        ``MIMEMultipart`` instead of a bare ``MIMEText`` so attachments have
+        somewhere to go. See ``create_draft_with_attachments`` for why this
+        stays a separate method rather than a branch on the existing one.
+        """
+        import email.mime.multipart
+        import email.mime.text
+
+        if not attachments:
+            raise GmailClientError("create_reply_draft_with_attachments requires at least one attachment")
+
+        target = self._resolve_reply_target(message_id, reply_all, my_email, cc)
+
+        msg = email.mime.multipart.MIMEMultipart("mixed", policy=_UNFOLDED_POLICY)
+        msg["to"] = self._encode_address(target["to_addr"])
+        msg["subject"] = target["subject"]
+        if target["final_cc"]:
+            msg["cc"] = ", ".join(self._encode_address(addr) for addr in target["final_cc"])
+        if bcc:
+            msg["bcc"] = self._encode_addresses(bcc)
+        if target["original_message_id"]:
+            msg["In-Reply-To"] = target["original_message_id"]
+            msg["References"] = target["references"]
+        msg.attach(email.mime.text.MIMEText(body))
+        _attach_files(msg, attachments)
+
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+        message_body: dict[str, Any] = {"raw": raw}
+        if target["thread_id"]:
+            message_body["threadId"] = target["thread_id"]
+
+        service = self._get_service()
+        try:
+            draft = (
+                service.users()
+                .drafts()
+                .create(userId="me", body={"message": message_body})
+                .execute()
+            )
+        except HttpError as exc:
+            raise GmailClientError(f"create_reply_draft_with_attachments failed: {exc}") from exc
+        draft_id = draft.get("id", "")
+        logger.info(
+            "create_reply_draft_with_attachments: draft_id=%s thread_id=%s to=%s reply_all=%s attachments=%d",
+            draft_id, target["thread_id"], target["to_addr"], reply_all, len(attachments),
+        )
+        return {
+            "draft_id": draft_id,
+            "thread_id": target["thread_id"],
+            "to": target["to_addr"],
+            "cc": ", ".join(target["final_cc"]),
+            "subject": target["subject"],
+        }
+
+    def _resolve_reply_target(
+        self, message_id: str, reply_all: bool, my_email: str, cc: str
+    ) -> dict[str, Any]:
+        """Fetch reply headers and compute the to/cc/subject/threading fields
+        shared by ``create_reply_draft`` and ``create_reply_draft_with_attachments``
+        -- only the message construction (plain text vs. multipart) differs
+        between them.
+        """
         import email.utils
 
         if not message_id:
@@ -483,47 +699,19 @@ class GmailClient:
             seen.add(key)
             final_cc.append(addr)
 
-        msg = email.mime.text.MIMEText(body, policy=_UNFOLDED_POLICY)
-        msg["to"] = self._encode_address(to_addr)
-        msg["subject"] = subject
-        if final_cc:
-            msg["cc"] = ", ".join(self._encode_address(addr) for addr in final_cc)
-        if bcc:
-            msg["bcc"] = self._encode_addresses(bcc)
-        if original_message_id:
-            msg["In-Reply-To"] = original_message_id
-            msg["References"] = (
-                f"{original_references} {original_message_id}".strip()
-                if original_references
-                else original_message_id
-            )
-
-        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
-        message_body: dict[str, Any] = {"raw": raw}
-        if thread_id:
-            message_body["threadId"] = thread_id
-
-        service = self._get_service()
-        try:
-            draft = (
-                service.users()
-                .drafts()
-                .create(userId="me", body={"message": message_body})
-                .execute()
-            )
-        except HttpError as exc:
-            raise GmailClientError(f"create_reply_draft failed: {exc}") from exc
-        draft_id = draft.get("id", "")
-        logger.info(
-            "create_reply_draft: draft_id=%s thread_id=%s to=%s reply_all=%s",
-            draft_id, thread_id, to_addr, reply_all,
+        references = (
+            f"{original_references} {original_message_id}".strip()
+            if original_references
+            else original_message_id
         )
+
         return {
-            "draft_id": draft_id,
             "thread_id": thread_id,
-            "to": to_addr,
-            "cc": ", ".join(final_cc),
+            "original_message_id": original_message_id,
+            "references": references,
             "subject": subject,
+            "to_addr": to_addr,
+            "final_cc": final_cc,
         }
 
     def _get_reply_headers(self, message_id: str) -> dict[str, str]:

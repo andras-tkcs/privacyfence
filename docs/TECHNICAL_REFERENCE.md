@@ -75,10 +75,10 @@ content (e.g. the email body) up front, offering:
 Claude already describes the action it is about to take in the chat. PrivacyFence opens a native
 popup showing the full action details with **Allow once** or **Deny** — auto-accepting a write
 silently is a materially bigger blast radius than auto-accepting a read, so most write popups have
-no **Always allow** at all. 32 tools across 29 operation keys are a narrow, deliberate exception —
+no **Always allow** at all. 35 tools across 29 operation keys are a narrow, deliberate exception —
 each proposing a rule scoped to the one folder/label/calendar/project/space/task-list the call just
-touched, never a bare "accept every future write of this type" toggle (`gmail_create_draft` and its
-two reply variants are the sole exception to that). See
+touched, never a bare "accept every future write of this type" toggle (`gmail_create_draft`, its two
+reply variants, and their three `_with_attachments` counterparts are the sole exception to that). See
 [Always allow for writes](#always-allow-for-writes) for the full list and how each rule's value is
 derived.
 
@@ -193,6 +193,9 @@ layout and optional sections (AI-visibility checklist, PII banner, etc.), see
 | `gmail_create_draft` | write | popup | — | To, cc, subject, full body |
 | `gmail_reply_draft` | write | popup | — | In reply to, to, cc/bcc, full reply body |
 | `gmail_reply_all_draft` | write | popup | — | In reply to, to, also-to (expanded participants), cc/bcc, full reply body |
+| `gmail_create_draft_with_attachments` | write | popup | — | To, cc, subject, attachment names/sizes, full body |
+| `gmail_reply_draft_with_attachments` | write | popup | — | In reply to, to, cc/bcc, attachment names/sizes, full reply body |
+| `gmail_reply_all_draft_with_attachments` | write | popup | — | In reply to, to, also-to (expanded participants), cc/bcc, attachment names/sizes, full reply body |
 | `gmail_add_label` | write | popup | — | From, subject, label name |
 | `gmail_remove_label` | write | popup | — | From, subject, label name |
 | `gmail_archive_message` | write | popup | — | From, subject, confirmation that message stays in All Mail |
@@ -543,8 +546,8 @@ request is logged as `auto_accepted`.
 | `no_attachments` | Message has no attachments |
 
 These apply to Gmail's read tools. Gmail's write tools (`gmail_create_draft`, `gmail_reply_draft`,
-`gmail_reply_all_draft`, `gmail_add_label`, `gmail_remove_label`, `gmail_create_label`) have their
-own rules:
+`gmail_reply_all_draft` and their `_with_attachments` counterparts, `gmail_add_label`,
+`gmail_remove_label`, `gmail_create_label`) have their own rules:
 
 | Rule | Matches when… |
 |------|--------------|

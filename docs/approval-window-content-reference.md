@@ -22,7 +22,7 @@ Every gated tool call resolves through exactly one of these:
 | Dialog | Built by | Used for | Buttons |
 |---|---|---|---|
 | **Review-gate window** | `approval_popup.show_read_popup` | `gate="review"` tools — reads | Deny, Allow once, *Always allow* (conditional) |
-| **Popup-gate window** | `approval_popup.show_popup` | `gate="popup"` tools — writes | Deny, Allow once, *Always allow* (conditional — WG-2/WG-3 below, 32 tools; see row 9 below), *temp-accept disclosure caption shown above the buttons for WG-3 instead — conditional, see row 8 below; no separate button for that* |
+| **Popup-gate window** | `approval_popup.show_popup` | `gate="popup"` tools — writes | Deny, Allow once, *Always allow* (conditional — WG-2/WG-3 below, 35 tools; see row 9 below), *temp-accept disclosure caption shown above the buttons for WG-3 instead — conditional, see row 8 below; no separate button for that* |
 | **PII confirmation** | `approval_popup.show_pii_confirmation_popup` | second-step check after Allow/Always-allow on a review-gate call whose content matched the PII detector | Cancel (default), Proceed |
 | **Rule confirmation** | `approval_popup.show_rule_confirmation_popup` | second-step check after clicking Always allow | Cancel (default), Confirm |
 
@@ -156,7 +156,7 @@ rather than WG-2.
 
 ### WG-2 — Deny / Allow once, conditionally Always allow
 
-26 tools across `auto_accept.WRITE_RULE_SUGGESTIONS` — the narrow, deliberate exception to "writes
+29 tools across `auto_accept.WRITE_RULE_SUGGESTIONS` — the narrow, deliberate exception to "writes
 never get Always allow" (see [Always allow for writes](TECHNICAL_REFERENCE.md#always-allow-for-writes)).
 The button only renders when `suggest_write_rule()` can actually derive a value from this call's own
 args or current state (e.g. `jira_create_issue` always can; `jira_add_comment` can't if `issue_key`
@@ -169,6 +169,9 @@ on the read side.
 | `gmail_create_draft` | To, [Cc], [Bcc], Subject |
 | `gmail_reply_draft` | In reply to, To, [Cc], [Bcc] |
 | `gmail_reply_all_draft` | In reply to, To, Also to, [Cc], [Bcc] |
+| `gmail_create_draft_with_attachments` | To, [Cc], [Bcc], Subject, Attachments (names/sizes) |
+| `gmail_reply_draft_with_attachments` | In reply to, To, [Cc], [Bcc], Attachments (names/sizes) |
+| `gmail_reply_all_draft_with_attachments` | In reply to, To, Also to, [Cc], [Bcc], Attachments (names/sizes) |
 | `gmail_add_label` | From, Subject, Label |
 | `gmail_remove_label` | From, Subject, Label |
 | `drive_write_doc_content` | File, Owner |
@@ -193,9 +196,10 @@ on the read side.
 | `tasks_uncomplete_task` | Task list, Task |
 | `tasks_move_task` | Task, List (old → new — a move always changes it) |
 
-`gmail_create_draft`/`gmail_reply_draft`/`gmail_reply_all_draft` propose the one unconditional
-entry in this whole group, `always_allow` (no recipient check at all) — every other row proposes a
-rule scoped to the one folder/label/calendar/project/space/task-list the call touched.
+`gmail_create_draft`/`gmail_reply_draft`/`gmail_reply_all_draft` and their `_with_attachments`
+counterparts propose the one unconditional entry in this whole group, `always_allow` (no recipient
+check at all) — every other row proposes a rule scoped to the one
+folder/label/calendar/project/space/task-list the call touched.
 
 Clicking Always allow here goes through the same second-confirmation dialog
 (`show_rule_confirmation_popup`) and persistence path (`add_auto_accept_rule`) the review-gate's own
