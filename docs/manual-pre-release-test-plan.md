@@ -9,6 +9,12 @@ Do these in order — each step's prerequisites are satisfied by the one before 
 
 ## 0. Before you start
 
+- [ ] Run `.venv/bin/python scripts/pre_release_check.py` from the repo root. It reruns CI's
+      automated suite (`pytest`, `npm test`, `npm run typecheck`) locally and checks that
+      `pyproject.toml`'s version and `src/privacyfence/__init__.py`'s `__version__` agree — so a
+      broken build or a stale version string fails fast, before sinking time into the manual
+      sections below. It does not replace any section below; nothing in it needs a real screen or
+      real accounts.
 - [ ] Confirm you're on Account 1 ("developer/test") per `docs/dev-vs-live-setup.md`, running from
       source via `scripts/dev_start.sh`, not a bundled install — this plan's paths assume that.
 - [ ] Confirm `tests/fixtures/qa_environment.yaml` exists and is filled in (copy from
