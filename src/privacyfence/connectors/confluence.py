@@ -13,6 +13,7 @@ from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..confluence_client import ConfluenceClient, ConfluenceClientError
 from ..connector import Connector, ToolParam, ToolSpec
 from ..gate import current_reason, gated_call
+from ..html_to_text import html_to_text
 from ..privacy_filter import apply_text
 
 logger = logging.getLogger(__name__)
@@ -233,7 +234,8 @@ class ConfluenceConnector(Connector):
             "Last modified": page.updated or "(unknown)",
             "Page body": "Full page content",
         }
-        body_text = getattr(page, "body", "") or getattr(page, "body_text", "") or ""
+        body_raw = getattr(page, "body", "") or getattr(page, "body_text", "") or ""
+        body_text = html_to_text(body_raw)
         return await gated_call(
             connector=self.name,
             tool="confluence_get_page",
@@ -264,7 +266,8 @@ class ConfluenceConnector(Connector):
             "Last modified": page.updated or "(unknown)",
             "Page body": "Full page content",
         }
-        body_text = getattr(page, "body", "") or getattr(page, "body_text", "") or ""
+        body_raw = getattr(page, "body", "") or getattr(page, "body_text", "") or ""
+        body_text = html_to_text(body_raw)
         return await gated_call(
             connector=self.name,
             tool="confluence_get_page_by_title",

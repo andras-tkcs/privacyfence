@@ -240,6 +240,30 @@ class TestGetPage:
         assert kwargs["args"] == {"page_id": "p1"}
         assert kwargs["raw_data"] is kwargs["filtered_data"]
 
+    async def test_storage_format_markup_is_converted_to_plain_text(self, gated_call_spy):
+        # Regression test for issue #112: confluence_get_page's details_text/
+        # pii_scan_text were fed raw Confluence storage-format XHTML (with
+        # unstripped <ac:*> macro tags) straight into the approval popup and
+        # the PII scanner. body must be run through html_to_text() first so
+        # the reviewer sees readable prose, not tag soup, and the scanner
+        # sees the actual text rather than XML markup.
+        connector, client = make_connector()
+        client.get_page.return_value = make_page(
+            body='<p>Confidential steps here</p>'
+            '<ac:structured-macro ac:name="info">'
+            '<ac:rich-text-body><p>Rotate the secret</p></ac:rich-text-body>'
+            "</ac:structured-macro>"
+        )
+
+        await connector.call("confluence_get_page", {"page_id": "p1"})
+
+        kwargs = gated_call_spy[0]
+        assert "<p>" not in kwargs["details_text"]
+        assert "<ac:structured-macro" not in kwargs["details_text"]
+        assert "Confidential steps here" in kwargs["details_text"]
+        assert "Rotate the secret" in kwargs["details_text"]
+        assert kwargs["pii_scan_text"] == kwargs["details_text"]
+
     async def test_pii_scan_text_is_body_only_not_author(self, gated_call_spy):
         # author defaults to an email address, present on every page
         # regardless of content -- the PII scan must not see it.
@@ -280,6 +304,19 @@ class TestGetPageByTitle:
         await connector.call("confluence_get_page_by_title", {"space_key": "ENG", "title": "Runbook"})
 
         assert gated_call_spy[0]["sender"] == "ENG"
+
+    async def test_storage_format_markup_is_converted_to_plain_text(self, gated_call_spy):
+        # Same regression as TestGetPage's test of the same name (issue #112).
+        connector, client = make_connector()
+        client.get_page_by_title.return_value = make_page(
+            body='<ul><li>Confidential item</li></ul>'
+        )
+
+        await connector.call("confluence_get_page_by_title", {"space_key": "ENG", "title": "Runbook"})
+
+        kwargs = gated_call_spy[0]
+        assert "<ul>" not in kwargs["details_text"]
+        assert "Confidential item" in kwargs["details_text"]
 
 
 class TestCreatePage:
