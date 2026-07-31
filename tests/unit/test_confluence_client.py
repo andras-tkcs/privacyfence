@@ -579,31 +579,16 @@ class TestListAttachments:
         client = make_client()
         client._client.get.return_value = {
             "results": [
-                {
-                    "title": "diagram.png", "mediaType": "image/png", "fileSize": 2048,
-                    "_links": {"download": "/download/attachments/1/diagram.png"},
-                },
+                {"id": "att1", "title": "diagram.png", "mediaType": "image/png", "fileSize": 2048},
             ],
         }
         attachments = client.list_attachments("1")
         assert attachments == [
             ConfluenceAttachment(
-                name="diagram.png", media_type="image/png", size=2048,
-                download_url="/download/attachments/1/diagram.png",
+                name="diagram.png", media_type="image/png", size=2048, attachment_id="att1",
             ),
         ]
         assert client._client.get.call_args.args[0] == "api/v2/pages/1/attachments"
-
-    def test_falls_back_to_top_level_download_link(self):
-        client = make_client()
-        client._client.get.return_value = {
-            "results": [{
-                "title": "f.pdf", "mediaType": "application/pdf", "fileSize": 10,
-                "downloadLink": "/download/attachments/1/f.pdf",
-            }],
-        }
-        attachments = client.list_attachments("1")
-        assert attachments[0].download_url == "/download/attachments/1/f.pdf"
 
     def test_missing_size_defaults_to_zero(self):
         client = make_client()
@@ -658,34 +643,31 @@ class TestResolveAttachmentDestination:
 # ---------------------------------------------------------------------------- #
 
 class TestFetchAttachmentBytes:
-    def test_requires_download_url(self):
+    def test_requires_page_id_and_attachment_id(self):
         client = make_client()
-        with pytest.raises(ConfluenceClientError, match="non-empty download_url"):
-            client.fetch_attachment_bytes("")
+        with pytest.raises(ConfluenceClientError, match="non-empty page_id and attachment_id"):
+            client.fetch_attachment_bytes("", "att1")
+        with pytest.raises(ConfluenceClientError, match="non-empty page_id and attachment_id"):
+            client.fetch_attachment_bytes("1", "")
 
-    def test_fetches_relative_url_against_api_base(self):
+    def test_fetches_via_the_v1_download_redirect_endpoint(self):
+        # Deliberately NOT the v2 attachments-list response's own
+        # _links.download/downloadLink -- that link 401s for an OAuth 3LO
+        # bearer token regardless of scope (browser/cookie-session only).
+        # This is Atlassian's actual supported replacement for 3LO apps.
         client = make_client()
         response = MagicMock(content=b"file bytes")
         client._session = MagicMock()
         client._session.get.return_value = response
 
-        data = client.fetch_attachment_bytes("/download/attachments/1/f.pdf")
+        data = client.fetch_attachment_bytes("1", "att1")
 
         assert data == b"file bytes"
         client._session.get.assert_called_once_with(
-            "https://api.atlassian.com/ex/confluence/cloud-1/wiki/download/attachments/1/f.pdf"
+            "https://api.atlassian.com/ex/confluence/cloud-1/wiki"
+            "/rest/api/content/1/child/attachment/att1/download"
         )
         response.raise_for_status.assert_called_once()
-
-    def test_absolute_url_used_as_is(self):
-        client = make_client()
-        response = MagicMock(content=b"bytes")
-        client._session = MagicMock()
-        client._session.get.return_value = response
-
-        client.fetch_attachment_bytes("https://example.com/f.pdf")
-
-        client._session.get.assert_called_once_with("https://example.com/f.pdf")
 
     def test_http_error_becomes_confluence_client_error(self):
         client = make_client()
@@ -695,7 +677,7 @@ class TestFetchAttachmentBytes:
         client._session.get.return_value = response
 
         with pytest.raises(ConfluenceClientError, match="fetch_attachment_bytes"):
-            client.fetch_attachment_bytes("/x")
+            client.fetch_attachment_bytes("1", "att1")
 
 
 class TestSaveAttachmentBytes:
@@ -723,11 +705,15 @@ class TestDownloadAttachment:
         client._session = MagicMock()
         client._session.get.return_value = response
 
-        result = client.download_attachment("/download/attachments/1/report.pdf", "report.pdf", str(tmp_path))
+        result = client.download_attachment("1", "att1", "report.pdf", str(tmp_path))
 
         dest = tmp_path / "report.pdf"
         assert dest.read_bytes() == b"file contents"
         assert result == {"path": str(dest), "name": "report.pdf", "size_bytes": len(b"file contents")}
+        client._session.get.assert_called_once_with(
+            "https://api.atlassian.com/ex/confluence/cloud-1/wiki"
+            "/rest/api/content/1/child/attachment/att1/download"
+        )
 
     def test_sanitizes_filename_before_writing(self, tmp_path):
         client = make_client()
@@ -735,7 +721,7 @@ class TestDownloadAttachment:
         client._session = MagicMock()
         client._session.get.return_value = response
 
-        result = client.download_attachment("/x", "../../evil.txt", str(tmp_path))
+        result = client.download_attachment("1", "att1", "../../evil.txt", str(tmp_path))
 
         assert result == {"path": str(tmp_path / "evil.txt"), "name": "evil.txt", "size_bytes": 4}
 
@@ -749,7 +735,7 @@ class TestDownloadAttachment:
         # download_attachment delegates the actual fetch to
         # fetch_attachment_bytes -- the error originates there.
         with pytest.raises(ConfluenceClientError, match="fetch_attachment_bytes"):
-            client.download_attachment("/x", "f.pdf", str(tmp_path))
+            client.download_attachment("1", "att1", "f.pdf", str(tmp_path))
 
 
 class TestLiveFixtureParsing:

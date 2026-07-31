@@ -866,18 +866,27 @@ class TestGatherPrivacySections:
             assert ": allow" in row.text
 
     def test_new_groups_appear_with_their_one_category(self, app):
-        # contacts_privacy/tasks_privacy/confluence_privacy each define a
-        # single category -- confirms they're wired the same way the
-        # original three groups are, not just present in the group list.
+        # contacts_privacy/tasks_privacy each define a single category --
+        # confirms they're wired the same way the original three groups are,
+        # not just present in the group list.
         for group, label in [
             ("contacts_privacy", "Contact notes"),
             ("tasks_privacy", "Task notes"),
-            ("confluence_privacy", "Search result excerpt"),
         ]:
             rows = app._gather_privacy_sections(group)[0].rows
             assert rows[0].text == "Default: allow"
             assert len(rows) == 2
             assert rows[1].text.startswith(label)
+
+    def test_confluence_privacy_has_two_categories(self, app):
+        # confluence_privacy defines search_excerpt and (as of the
+        # attachment-download tools) attachments -- both must be wired
+        # into the window, not just search_excerpt.
+        rows = app._gather_privacy_sections("confluence_privacy")[0].rows
+        assert rows[0].text == "Default: allow"
+        assert len(rows) == 3
+        assert rows[1].text.startswith("Search result excerpt")
+        assert rows[2].text.startswith("Attachment metadata")
 
     def test_explicit_default_and_overrides_are_reflected(self, app):
         cfg = {"drive_privacy": {

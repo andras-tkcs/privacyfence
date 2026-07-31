@@ -139,7 +139,13 @@ class ConfluenceAttachment:
     name: str
     media_type: str
     size: int  # bytes, as reported by Confluence (0 if unknown)
-    download_url: str = ""  # relative link from the v2 API, used to fetch content on demand
+    # Confluence's own attachment id, from the v2 attachments-list response --
+    # NOT that same response's _links.download/downloadLink, which is a
+    # browser/cookie-session-only link that 401s for an OAuth 3LO bearer
+    # token regardless of scope. fetch_attachment_bytes() instead uses this
+    # id against the dedicated v1 download-redirect endpoint, the one
+    # Atlassian actually supports for 3LO apps.
+    attachment_id: str = ""
 
     def short_summary(self) -> str:
         return f"{self.name} ({self.media_type}, {self.size} bytes)"
@@ -464,19 +470,34 @@ class ConfluenceClient:
         logger.info("list_attachments %s returned %d attachment(s)", page_id, len(attachments))
         return attachments
 
-    def fetch_attachment_bytes(self, download_url: str) -> bytes:
-        """Fetch an attachment's raw bytes given the ``download_url`` from a
-        ``ConfluenceAttachment`` (relative to the OAuth-proxy API base, or
-        already absolute).
+    def fetch_attachment_bytes(self, page_id: str, attachment_id: str) -> bytes:
+        """Fetch an attachment's raw bytes via Confluence's dedicated
+        download-redirect endpoint.
+
+        Deliberately NOT the v2 attachments-list response's own
+        ``_links.download``/``downloadLink`` field -- that link is
+        browser/cookie-session-only and 401s for an OAuth 3LO bearer token
+        no matter what scope is granted (confirmed against multiple
+        Atlassian Developer Community reports of the legacy
+        ``/wiki/download/attachments/...`` path being deprecated for
+        API/scoped callers). The endpoint below
+        (``rest/api/content/{id}/child/attachment/{id}/download``) is
+        Atlassian's own supported replacement for 3LO apps: it 302-redirects
+        to the actual binary, which ``requests`` follows automatically.
+        Needs the ``read:attachment:confluence`` scope (see
+        ``atlassian_oauth.DEFAULT_SCOPES``) -- existing users must
+        Reconnect to pick up a token with it.
 
         Factored out of ``download_attachment`` so a caller can fetch bytes
         once for a pre-approval preview and reuse them for the actual save
         on approval, via ``save_attachment_bytes``, instead of fetching
         twice -- same split as GmailClient's attachment methods.
         """
-        if not download_url:
-            raise ConfluenceClientError("fetch_attachment_bytes requires a non-empty download_url")
-        url = download_url if download_url.startswith("http") else f"{self._api_url}{download_url}"
+        if not page_id or not attachment_id:
+            raise ConfluenceClientError(
+                "fetch_attachment_bytes requires a non-empty page_id and attachment_id"
+            )
+        url = f"{self._api_url}/rest/api/content/{page_id}/child/attachment/{attachment_id}/download"
 
         def _get() -> requests.Response:
             response = self._session.get(url)
@@ -506,7 +527,7 @@ class ConfluenceClient:
         return {"path": dest_path, "name": name, "size_bytes": len(data)}
 
     def download_attachment(
-        self, download_url: str, filename: str, destination_dir: str = ""
+        self, page_id: str, attachment_id: str, filename: str, destination_dir: str = ""
     ) -> dict:
         """Fetch an attachment's bytes and save it to a local directory.
 
@@ -516,7 +537,7 @@ class ConfluenceClient:
         already fetched the bytes for a preview and wants to avoid fetching
         them twice.
         """
-        data = self.fetch_attachment_bytes(download_url)
+        data = self.fetch_attachment_bytes(page_id, attachment_id)
         return self.save_attachment_bytes(data, filename, destination_dir)
 
     # ------------------------------------------------------------------ #
@@ -588,21 +609,16 @@ class ConfluenceClient:
         )
 
     def _parse_attachment(self, raw: dict[str, Any]) -> ConfluenceAttachment:
-        """Parse a v2 attachment resource
-        (``api/v2/pages/{id}/attachments`` shape).
+        """Parse a v2 attachment resource (``api/v2/pages/{id}/attachments`` shape).
 
-        ``download_url`` prefers ``_links.download`` (the field the v2
-        attachments endpoint is documented to return); ``downloadLink`` is
-        checked as a fallback in case a deployment surfaces it at the top
-        level instead -- both shapes appear across Confluence API docs/
-        versions and there's no live tenant here to confirm which one this
-        one returns.
+        Only ``id`` is kept for fetching content -- see
+        ``ConfluenceAttachment.attachment_id``'s docstring for why this
+        response's own ``_links.download``/``downloadLink`` is deliberately
+        not used.
         """
-        links = raw.get("_links") or {}
-        download_url = links.get("download", "") or raw.get("downloadLink", "")
         return ConfluenceAttachment(
             name=raw.get("title", ""),
             media_type=raw.get("mediaType", ""),
             size=int(raw.get("fileSize", 0) or 0),
-            download_url=download_url,
+            attachment_id=raw.get("id", ""),
         )

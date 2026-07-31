@@ -154,7 +154,7 @@ class TestListAttachments:
         init_audit_logger(str(tmp_path))
         connector, client = make_connector()
         client.list_attachments.return_value = [
-            ConfluenceAttachment(name="diagram.png", media_type="image/png", size=2048, download_url="/x"),
+            ConfluenceAttachment(name="diagram.png", media_type="image/png", size=2048, attachment_id="att-x"),
         ]
 
         result = await connector.call("confluence_list_attachments", {"page_id": "p1"})
@@ -368,8 +368,7 @@ class TestGetPageByTitle:
 class TestDownloadAttachment:
     def _attachment(self, **overrides):
         defaults = dict(
-            name="report.pdf", media_type="application/pdf", size=1024,
-            download_url="/download/attachments/p1/report.pdf",
+            name="report.pdf", media_type="application/pdf", size=1024, attachment_id="att-1",
         )
         defaults.update(overrides)
         return ConfluenceAttachment(**defaults)
@@ -412,9 +411,7 @@ class TestDownloadAttachment:
         assert kwargs["sender"] == "alice@example.com"
         assert result == {"path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024}
         assert kwargs["pii_scan_text"] == ""  # unrecognized type, nothing prefetched to scan
-        client.download_attachment.assert_called_once_with(
-            "/download/attachments/p1/report.pdf", "report.pdf", "/tmp",
-        )
+        client.download_attachment.assert_called_once_with("p1", "att-1", "report.pdf", "/tmp")
 
     async def test_unknown_attachment_name_raises_without_gating(self, gated_call_spy):
         connector, client = make_connector()
@@ -443,7 +440,7 @@ class TestDownloadAttachment:
         connector, client = make_connector()
         client.get_page.return_value = make_page()
         client.list_attachments.return_value = [
-            self._attachment(name="photo.png", media_type="image/png", size=1024, download_url="/x/photo.png"),
+            self._attachment(name="photo.png", media_type="image/png", size=1024, attachment_id="att-2"),
         ]
         client.fetch_attachment_bytes.return_value = b"\x89PNGfakebytes"
         client.save_attachment_bytes.return_value = {
@@ -458,7 +455,7 @@ class TestDownloadAttachment:
         kwargs = gated_call_spy[0]
         assert kwargs["preview_bytes"] == b"\x89PNGfakebytes"
         assert kwargs["preview_mime_type"] == "image/png"
-        client.fetch_attachment_bytes.assert_called_once_with("/x/photo.png")
+        client.fetch_attachment_bytes.assert_called_once_with("p1", "att-2")
         # Already fetched for the preview -- must reuse those bytes, not
         # fetch the same attachment from Confluence a second time.
         client.save_attachment_bytes.assert_called_once_with(b"\x89PNGfakebytes", "photo.png", "/tmp")
@@ -512,7 +509,7 @@ class TestDownloadAttachment:
         connector, client = make_connector()
         client.get_page.return_value = make_page()
         client.list_attachments.return_value = [
-            self._attachment(name="photo.png", media_type="image/png", size=1024, download_url="/x/photo.png"),
+            self._attachment(name="photo.png", media_type="image/png", size=1024, attachment_id="att-2"),
         ]
         client.fetch_attachment_bytes.side_effect = ConfluenceClientError("expired token")
         client.download_attachment.return_value = {
@@ -529,7 +526,7 @@ class TestDownloadAttachment:
         assert kwargs["preview_mime_type"] == ""
         # Falls back to the original single-call path since no preview bytes
         # were actually obtained.
-        client.download_attachment.assert_called_once_with("/x/photo.png", "photo.png", "/tmp")
+        client.download_attachment.assert_called_once_with("p1", "att-2", "photo.png", "/tmp")
         assert result == {"path": "/tmp/photo.png", "name": "photo.png", "size_bytes": 1024}
 
 
@@ -543,7 +540,7 @@ class TestAttachmentPiiScanWiring:
         connector, client = make_connector()
         client.get_page.return_value = make_page()
         client.list_attachments.return_value = [
-            ConfluenceAttachment(name="notes.txt", media_type="text/plain", size=1024, download_url="/x/notes.txt"),
+            ConfluenceAttachment(name="notes.txt", media_type="text/plain", size=1024, attachment_id="att-3"),
         ]
         client.fetch_attachment_bytes.return_value = b"Please wire the deposit to DE89370400440532013000."
         client.save_attachment_bytes.return_value = {
@@ -564,7 +561,7 @@ class TestAttachmentPiiScanWiring:
         connector, client = make_connector()
         client.get_page.return_value = make_page()
         client.list_attachments.return_value = [
-            ConfluenceAttachment(name="report.pdf", media_type="application/pdf", size=1024, download_url="/x/report.pdf"),
+            ConfluenceAttachment(name="report.pdf", media_type="application/pdf", size=1024, attachment_id="att-4"),
         ]
         client.fetch_attachment_bytes.return_value = b"%PDF-1.4 fake"
         client.save_attachment_bytes.return_value = {
@@ -576,7 +573,7 @@ class TestAttachmentPiiScanWiring:
             {"page_id": "p1", "attachment_name": "report.pdf", "destination_dir": "/tmp"},
         )
 
-        client.fetch_attachment_bytes.assert_called_once_with("/x/report.pdf")
+        client.fetch_attachment_bytes.assert_called_once_with("p1", "att-4")
         client.save_attachment_bytes.assert_called_once_with(b"%PDF-1.4 fake", "report.pdf", "/tmp")
         client.download_attachment.assert_not_called()
         assert result == {"path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024}
@@ -585,7 +582,7 @@ class TestAttachmentPiiScanWiring:
         connector, client = make_connector()
         client.get_page.return_value = make_page()
         client.list_attachments.return_value = [
-            ConfluenceAttachment(name="photo.png", media_type="image/png", size=1024, download_url="/x/photo.png"),
+            ConfluenceAttachment(name="photo.png", media_type="image/png", size=1024, attachment_id="att-photo"),
         ]
         client.fetch_attachment_bytes.return_value = b"\x89PNGfakebytes"
         client.save_attachment_bytes.return_value = {
@@ -604,7 +601,7 @@ class TestAttachmentPiiScanWiring:
         connector, client = make_connector()
         client.get_page.return_value = make_page()
         client.list_attachments.return_value = [
-            ConfluenceAttachment(name="report.pdf", media_type="application/pdf", size=1024, download_url="/x/report.pdf"),
+            ConfluenceAttachment(name="report.pdf", media_type="application/pdf", size=1024, attachment_id="att-report"),
         ]
         client.fetch_attachment_bytes.side_effect = ConfluenceClientError("expired token")
         client.download_attachment.return_value = {
@@ -745,7 +742,7 @@ class TestEveryToolIsAudited:
         # mocked client -- same reasoning as gmail_download_attachment's
         # equivalent fixup in test_gmail_connector.py.
         client.list_attachments.return_value = [
-            ConfluenceAttachment(name="stub", media_type="application/octet-stream", size=1, download_url="/x"),
+            ConfluenceAttachment(name="stub", media_type="application/octet-stream", size=1, attachment_id="att-x"),
         ]
 
         await assert_all_tools_leave_an_audit_trail(connector, confluence_module, monkeypatch, tmp_path)
