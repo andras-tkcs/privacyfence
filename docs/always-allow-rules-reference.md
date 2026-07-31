@@ -136,10 +136,12 @@ asks which one to create — see [Multiple matching candidates](#multiple-matchi
 |---|---|
 | `confluence_get_page` | `i_am_author` (you wrote it), else `approved_space_keys` (page's space) |
 | `confluence_get_page_by_title` | `i_am_author`, else `approved_space_keys` |
+| `confluence_download_attachment` | `i_am_author` (you wrote the page), else `approved_space_keys` (page's space) |
 
 This priority order is configurable via **Confluence → Always-allow Suggestion Order** /
-`rule_suggestion_priority.confluence_read_page`. When 2+ of these actually match the page, Always
-allow asks which one to create — see [Multiple matching candidates](#multiple-matching-candidates).
+`rule_suggestion_priority.confluence_read_page` — shared by all three tools above, including
+`confluence_download_attachment`. When 2+ of these actually match the page, Always allow asks
+which one to create — see [Multiple matching candidates](#multiple-matching-candidates).
 
 > Google Contacts and Google Tasks have no `review`-gate tools at all — their only reads
 > (`contacts_list`/`contacts_search`/`contacts_get`, `tasks_list_task_lists`/`tasks_list_tasks`/

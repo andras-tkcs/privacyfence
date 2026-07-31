@@ -10,13 +10,23 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..audit_log import AuditEntry, current_week, get_audit_logger
-from ..confluence_client import ConfluenceClient, ConfluenceClientError
+from ..confluence_client import ConfluenceClient, ConfluenceClientError, resolve_attachment_destination
 from ..connector import Connector, ToolParam, ToolSpec
 from ..gate import current_reason, gated_call
 from ..html_to_text import html_to_text
-from ..privacy_filter import apply_text
+from ..privacy_filter import apply_list, apply_text
+from ..quicklook_preview import generate_thumbnail, is_quicklook_enabled
+from ..text_extraction import extract_text, is_prefetch_worthy
 
 logger = logging.getLogger(__name__)
+
+# Cap on how big an attachment we'll fetch pre-approval -- for a preview
+# (images) or a PII scan (text/PDF/DOCX/PPTX). Same reasoning and value as
+# gmail.py's _ATTACHMENT_PREFETCH_MAX_BYTES: confluence_download_attachment's
+# gate has to fully fetch the attachment to do either at all (no
+# partial-fetch API), so this bounds how much we'll pull down before the
+# human has decided anything.
+_ATTACHMENT_PREFETCH_MAX_BYTES = 5_000_000
 
 
 class ConfluenceConnector(Connector):
@@ -89,6 +99,53 @@ class ConfluenceConnector(Connector):
             read_only=True,
             ),
             ToolSpec(
+                name="confluence_list_attachments",
+                description=(
+                    "List attachment names, media types, and sizes for a "
+                    "Confluence page. Auto-approved -- metadata only, no "
+                    "attachment content is returned. Use "
+                    "confluence_download_attachment to fetch the actual file."
+                ),
+                params=[
+                    ToolParam("page_id", "str"),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
+                ],
+            read_only=True,
+            ),
+            ToolSpec(
+                name="confluence_download_attachment",
+                description=(
+                    "Download a Confluence page attachment's content to a "
+                    "local directory and return the saved file path. Identify "
+                    "the attachment by the name returned from "
+                    "confluence_list_attachments. destination_dir is required "
+                    "-- there is no default, so choose deliberately: pass "
+                    "~/Downloads (or another path the user asked for) when "
+                    "this attachment is a deliverable the user should find "
+                    "afterward, or your own working/scratch directory when "
+                    "you're only downloading it to read or process it "
+                    "yourself. Requires user approval."
+                ),
+                params=[
+                    ToolParam("page_id", "str"),
+                    ToolParam("attachment_name", "str"),
+                    ToolParam(
+                        "destination_dir",
+                        "str",
+                        required=True,
+                        description=(
+                            "Where to save the attachment -- required, no default. "
+                            "Use ~/Downloads (or a path the user specified) if the "
+                            "user should find this file afterward; use your own "
+                            "working/scratch directory if it's only for you to read "
+                            "or process."
+                        ),
+                    ),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
+                ],
+            read_only=True,
+            ),
+            ToolSpec(
                 name="confluence_get_page",
                 description=(
                     "Fetch the full content of a Confluence page by page ID. "
@@ -152,6 +209,10 @@ class ConfluenceConnector(Connector):
             return await self._cql_search(**args)
         if tool == "confluence_list_pages":
             return await self._list_pages(**args)
+        if tool == "confluence_list_attachments":
+            return await self._list_attachments(**args)
+        if tool == "confluence_download_attachment":
+            return await self._download_attachment(**args)
         if tool == "confluence_get_page":
             return await self._get_page(**args)
         if tool == "confluence_get_page_by_title":
@@ -207,6 +268,19 @@ class ConfluenceConnector(Connector):
             f"{len(pages)} page(s)", t0,
         )
         return data
+
+    async def _list_attachments(self, page_id: str) -> Any:
+        t0 = time.time()
+        attachments = await self._fetch(self._confluence.list_attachments, page_id)
+        data = apply_list(
+            "confluence_privacy", "attachments",
+            [{"name": a.name, "media_type": a.media_type, "size": a.size} for a in attachments],
+        )
+        self._auto_audit(
+            "confluence_list_attachments", "List Confluence Attachments",
+            f"List attachments: page {page_id}", page_id, t0,
+        )
+        return {"page_id": page_id, "attachments": data}
 
     # ------------------------------------------------------------------ #
     # Gated
@@ -283,6 +357,107 @@ class ConfluenceConnector(Connector):
             pii_scan_text=body_text,
             my_email=self.my_email,
             args={"space_key": space_key, "title": title},
+        )
+
+    async def _download_attachment(
+        self, page_id: str, attachment_name: str, destination_dir: str = ""
+    ) -> Any:
+        page = await self._fetch(self._confluence.get_page, page_id)
+        attachments = await self._fetch(self._confluence.list_attachments, page_id)
+        attachment = next((a for a in attachments if a.name == attachment_name), None)
+        if attachment is None:
+            raise RuntimeError(f"No attachment named {attachment_name!r} on page {page_id}")
+        dest_path = resolve_attachment_destination(attachment.name, destination_dir)
+        # Title/Space are known for free via confluence_list_pages/
+        # confluence_search; Attachment/Type/Size are known for free via
+        # confluence_list_attachments -- same knowledge-boundary reasoning
+        # as gmail_download_attachment (see claude-knowledge-boundary.md's
+        # Gmail worked example). The only genuinely new facts from approving
+        # this call are that no file content reaches Claude, and where it'll
+        # be saved.
+        preview = {
+            "Title": page.title or page_id,
+            "Space": page.space_key or "(unknown)",
+            "Attachment": attachment.name,
+            "Type": attachment.media_type,
+            "Size": f"{attachment.size:,} bytes",
+        }
+        new_info = {
+            "Content returned to Claude": "None — file bytes are never sent",
+            "Will save to": dest_path,
+        }
+        details = "The attachment above will be downloaded to the destination shown."
+
+        # Confluence's attachment download link has no partial/range fetch --
+        # previewing or PII-scanning means fully fetching the attachment
+        # before the human has decided anything, same tradeoff
+        # gmail_download_attachment makes. Only worth it for types
+        # is_prefetch_worthy() recognizes, under a sane size cap; anything
+        # else keeps a metadata-only preview and unscanned content.
+        preview_bytes = b""
+        preview_mime_type = ""
+        pii_scan_text = ""
+        fetched_bytes: bytes | None = None
+        if (
+            is_prefetch_worthy(attachment.media_type)
+            and 0 < attachment.size <= _ATTACHMENT_PREFETCH_MAX_BYTES
+        ):
+            try:
+                fetched_bytes = await self._fetch(
+                    self._confluence.fetch_attachment_bytes, attachment.download_url,
+                )
+            except RuntimeError:
+                # _fetch() already turned the underlying ConfluenceClientError
+                # into a RuntimeError and logged it -- this is a best-effort
+                # preview/scan, not the actual download, so fall back to
+                # today's metadata-only preview instead of failing the call.
+                pass
+            else:
+                if attachment.media_type.startswith("image/"):
+                    preview_bytes = fetched_bytes
+                    preview_mime_type = attachment.media_type
+                elif is_quicklook_enabled():
+                    # Not an image -- QuickLook (off by default, menu-bar
+                    # toggle) is the fallback preview source for anything its
+                    # own renderer recognizes (PDFs, Office docs, and more).
+                    # asyncio.to_thread, not a direct call: generate_thumbnail
+                    # can block its calling thread for the full timeout, and
+                    # this is an async def -- calling it directly would stall
+                    # the whole daemon's event loop, not just this request.
+                    thumbnail = await asyncio.to_thread(generate_thumbnail, fetched_bytes, attachment.name)
+                    if thumbnail is not None:
+                        preview_bytes = thumbnail
+                        preview_mime_type = "image/png"
+                pii_scan_text = extract_text(fetched_bytes, attachment.media_type)
+
+        # Gate before touching disk: gated_call raises on denial, and only a
+        # decision made here should ever cause the attachment to be written.
+        await gated_call(
+            connector=self.name,
+            tool="confluence_download_attachment",
+            tool_name="Download Confluence Attachment",
+            summary=f"Download attachment '{attachment.name}' from: {page.title or page_id}",
+            sender=page.author or page_id,
+            raw_data=asdict(page),
+            filtered_data=None,
+            gate="review",
+            preview=preview,
+            new_info=new_info,
+            details_text=details,
+            pii_scan_text=pii_scan_text,
+            preview_bytes=preview_bytes,
+            preview_mime_type=preview_mime_type,
+            my_email=self.my_email,
+            args={"page_id": page_id, "attachment_name": attachment_name},
+        )
+        if fetched_bytes is not None:
+            # Already fetched above for the preview/scan -- reuse it instead
+            # of fetching the same attachment from Confluence a second time.
+            return await self._fetch(
+                self._confluence.save_attachment_bytes, fetched_bytes, attachment.name, destination_dir,
+            )
+        return await self._fetch(
+            self._confluence.download_attachment, attachment.download_url, attachment.name, destination_dir,
         )
 
     async def _create_page(

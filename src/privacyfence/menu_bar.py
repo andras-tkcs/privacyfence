@@ -153,6 +153,7 @@ OPERATION_LABELS: dict[str, str] = {
     "jira.update_issue":           "Jira – Update issue",
     "jira.transition_issue":       "Jira – Transition issue",
     "confluence.read_page":        "Confluence – Read page",
+    "confluence.download_attachment": "Confluence – Download attachment",
     "confluence.create_page":      "Confluence – Create page",
     "confluence.update_page":      "Confluence – Update page",
     # telegram_search_messages shares this key with telegram_get_messages
@@ -212,6 +213,7 @@ RULES_BY_OPERATION: dict[str, list[str]] = {
     "jira.update_issue":            ["approved_project_keys"],
     "jira.transition_issue":        ["approved_project_keys"],
     "confluence.read_page":         ["i_am_author", "approved_space_keys"],
+    "confluence.download_attachment": ["i_am_author", "approved_space_keys"],
     "confluence.create_page":       ["approved_space_keys"],
     "confluence.update_page":       ["approved_space_keys"],
     "telegram.read_chat_messages":  ["approved_chats", "approved_chats_all_results", "no_media_attachments"],

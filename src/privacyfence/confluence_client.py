@@ -20,6 +20,7 @@ Optional config keys (needed to refresh an expired access token — see
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -58,6 +59,32 @@ _STALE_TOKEN_STATUS_CODES = (401, 403, 404)
 
 class ConfluenceClientError(Exception):
     """Raised for unrecoverable Confluence client problems (auth, config, API)."""
+
+
+def resolve_attachment_destination(filename: str, destination_dir: str = "") -> str:
+    """Compute where an attachment will be saved, without touching disk.
+
+    ``destination_dir`` is mandatory -- there is no default. Callers must
+    deliberately choose between a location the user will find (e.g.
+    ~/Downloads) and Claude's own working/scratch directory, rather than a
+    file silently landing in Downloads just because nobody thought about it.
+    ``filename`` comes from Confluence and is untrusted, so only its basename
+    is kept -- this is what stops a crafted name like
+    "../../.ssh/authorized_keys" from writing outside ``destination_dir``.
+    Same shape and reasoning as ``gmail_client.resolve_attachment_destination``
+    / ``drive_client.resolve_download_destination``.
+    """
+    if not destination_dir.strip():
+        raise ConfluenceClientError(
+            "download_attachment requires a non-empty destination_dir -- "
+            "there is no default. Pass ~/Downloads (or another location the "
+            "user asked for) if this attachment is a deliverable the user "
+            "should find afterward, or your own working/scratch directory "
+            "if you're only downloading it to read or process it yourself."
+        )
+    dest_dir = os.path.expanduser(destination_dir.strip())
+    safe_name = os.path.basename(filename) or "attachment"
+    return os.path.join(dest_dir, safe_name)
 
 
 @dataclass
@@ -105,6 +132,19 @@ class ConfluenceSearchResult:
         return f"[{self.space_key}] {title}"
 
 
+@dataclass
+class ConfluenceAttachment:
+    """Attachment metadata. Content is intentionally never carried here."""
+
+    name: str
+    media_type: str
+    size: int  # bytes, as reported by Confluence (0 if unknown)
+    download_url: str = ""  # relative link from the v2 API, used to fetch content on demand
+
+    def short_summary(self) -> str:
+        return f"{self.name} ({self.media_type}, {self.size} bytes)"
+
+
 class ConfluenceClient:
     """Confluence Cloud client backed by an Atlassian OAuth 2.0 bearer token.
 
@@ -133,6 +173,13 @@ class ConfluenceClient:
         # atlassian-python-api library only auto-appends it for atlassian.net /
         # jira.com URLs — not for this api.atlassian.com OAuth proxy URL.
         api_url = f"https://api.atlassian.com/ex/confluence/{cloud_id}/wiki"
+        # Kept distinct from _base_url: page/space URLs below are built for
+        # human consumption (site_url when given), but attachment downloads
+        # must go through this OAuth-proxy URL -- site_url is normally
+        # cookie/session authenticated, not bearer-token authenticated, and
+        # this is the only base _session's Authorization header is valid
+        # against.
+        self._api_url = api_url
         self._base_url = site_url or api_url
         self._session = requests.Session()
         self._session.headers["Authorization"] = f"Bearer {access_token}"
@@ -397,6 +444,82 @@ class ConfluenceClient:
         return self.get_page(page_id)
 
     # ------------------------------------------------------------------ #
+    # Attachments
+    # ------------------------------------------------------------------ #
+
+    def list_attachments(self, page_id: str, max_results: int = 50) -> list[ConfluenceAttachment]:
+        if not page_id:
+            raise ConfluenceClientError("list_attachments requires a page_id")
+        max_results = max(1, min(max_results, 250))  # v2 API page size cap
+        try:
+            raw = self._request(
+                self._client.get,
+                f"{_V2_PAGES_PATH}/{page_id}/attachments",
+                params={"limit": max_results},
+            )
+            results = (raw or {}).get("results") or []
+        except Exception as exc:
+            raise ConfluenceClientError(f"list_attachments({page_id!r}) failed: {exc}") from exc
+        attachments = [self._parse_attachment(a) for a in results]
+        logger.info("list_attachments %s returned %d attachment(s)", page_id, len(attachments))
+        return attachments
+
+    def fetch_attachment_bytes(self, download_url: str) -> bytes:
+        """Fetch an attachment's raw bytes given the ``download_url`` from a
+        ``ConfluenceAttachment`` (relative to the OAuth-proxy API base, or
+        already absolute).
+
+        Factored out of ``download_attachment`` so a caller can fetch bytes
+        once for a pre-approval preview and reuse them for the actual save
+        on approval, via ``save_attachment_bytes``, instead of fetching
+        twice -- same split as GmailClient's attachment methods.
+        """
+        if not download_url:
+            raise ConfluenceClientError("fetch_attachment_bytes requires a non-empty download_url")
+        url = download_url if download_url.startswith("http") else f"{self._api_url}{download_url}"
+
+        def _get() -> requests.Response:
+            response = self._session.get(url)
+            response.raise_for_status()
+            return response
+
+        try:
+            response = self._request(_get)
+        except Exception as exc:
+            raise ConfluenceClientError(f"fetch_attachment_bytes failed: {exc}") from exc
+        return response.content
+
+    def save_attachment_bytes(
+        self, data: bytes, filename: str, destination_dir: str = ""
+    ) -> dict:
+        """Save already-fetched attachment bytes to a local directory.
+
+        ``destination_dir`` is mandatory -- see ``resolve_attachment_destination``.
+        Returns a dict with ``path``, ``name``, and ``size_bytes``.
+        """
+        dest_path = resolve_attachment_destination(filename, destination_dir)
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        with open(dest_path, "wb") as fh:
+            fh.write(data)
+        name = os.path.basename(dest_path)
+        logger.info("save_attachment_bytes: name=%s size=%d", name, len(data))
+        return {"path": dest_path, "name": name, "size_bytes": len(data)}
+
+    def download_attachment(
+        self, download_url: str, filename: str, destination_dir: str = ""
+    ) -> dict:
+        """Fetch an attachment's bytes and save it to a local directory.
+
+        ``destination_dir`` is mandatory -- see ``resolve_attachment_destination``.
+        Returns a dict with ``path``, ``name``, and ``size_bytes``. See
+        ``fetch_attachment_bytes``/``save_attachment_bytes`` if the caller
+        already fetched the bytes for a preview and wants to avoid fetching
+        them twice.
+        """
+        data = self.fetch_attachment_bytes(download_url)
+        return self.save_attachment_bytes(data, filename, destination_dir)
+
+    # ------------------------------------------------------------------ #
     # Parsing helpers
     # ------------------------------------------------------------------ #
 
@@ -462,4 +585,24 @@ class ConfluenceClient:
             space_name=space_name,
             excerpt=raw.get("excerpt", ""),
             url=url,
+        )
+
+    def _parse_attachment(self, raw: dict[str, Any]) -> ConfluenceAttachment:
+        """Parse a v2 attachment resource
+        (``api/v2/pages/{id}/attachments`` shape).
+
+        ``download_url`` prefers ``_links.download`` (the field the v2
+        attachments endpoint is documented to return); ``downloadLink`` is
+        checked as a fallback in case a deployment surfaces it at the top
+        level instead -- both shapes appear across Confluence API docs/
+        versions and there's no live tenant here to confirm which one this
+        one returns.
+        """
+        links = raw.get("_links") or {}
+        download_url = links.get("download", "") or raw.get("downloadLink", "")
+        return ConfluenceAttachment(
+            name=raw.get("title", ""),
+            media_type=raw.get("mediaType", ""),
+            size=int(raw.get("fileSize", 0) or 0),
+            download_url=download_url,
         )

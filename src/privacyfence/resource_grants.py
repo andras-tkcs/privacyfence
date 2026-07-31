@@ -339,6 +339,7 @@ GRANT_RESOURCE_TYPES: tuple[GrantResourceType, ...] = (
         capabilities={
             "read": GrantCapability("Read auto-accept", (
                 ("confluence.read_page", "approved_space_keys"),
+                ("confluence.download_attachment", "approved_space_keys"),
             )),
             "create": GrantCapability("Auto-accept new pages", (
                 ("confluence.create_page", "approved_space_keys"),

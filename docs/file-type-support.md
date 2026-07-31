@@ -1,7 +1,8 @@
 # File type support: attachment previews & PII scanning
 
-PrivacyFence previews and PII-scans file content for the three tools that move file bytes across
-the gate: `drive_download_file`, `gmail_download_attachment`, `drive_upload_file`. A content
+PrivacyFence previews and PII-scans file content for the four tools that move file bytes across
+the gate: `drive_download_file`, `gmail_download_attachment`, `confluence_download_attachment`,
+`drive_upload_file`. A content
 **preview** (image render) and a **PII scan** of file content cover different file types for
 different reasons, summarized here. See
 [`approval-window-content-reference.md`](approval-window-content-reference.md) for how the preview
@@ -19,13 +20,15 @@ destination, etc.) regardless of type; that part is unaffected by any of this.
 |---|---|---|---|---|
 | Download | `drive_download_file` | Drive's own `thumbnailLink` (a small, pre-generated preview image Drive serves for many file types) | Whatever Drive generated a thumbnail for — commonly Docs, Sheets, Slides, images, PDFs; not guaranteed for every file | No `thumbnailLink` present, or the fetch fails, and QuickLook (below) is off or also misses |
 | Download | `gmail_download_attachment` | The attachment's own bytes, fetched in full | `image/*` only, ≤5MB | Any non-image type, or size over the cap, or the fetch fails, and QuickLook also misses |
+| Download | `confluence_download_attachment` | The attachment's own bytes, fetched in full via its Confluence download link | `image/*` only, ≤5MB | Any non-image type, or size over the cap, or the fetch fails, and QuickLook also misses |
 | Upload (`local_path`) | `drive_upload_file` | The local file's own bytes, read from disk | `image/*` only (via `mimetypes.guess_type` on the file name), ≤5MB | Any non-image type, unreadable file, or size over the cap, and QuickLook also misses |
 | Upload (`content_base64`) | `drive_upload_file` | The already-decoded inline bytes | `image/*` only (via `mimetypes.guess_type` on the `name` argument) | Non-image type, or no `name` given to guess from, and QuickLook also misses |
 
 Note the asymmetry: Drive downloads get the broadest coverage because Drive itself generates the
 thumbnail server-side (so a Doc, Slide, or PDF can get a real preview without PrivacyFence knowing
-how to render that format at all) — Gmail attachments and Drive uploads have no such service to
-lean on, so the only images that decode without a renderer of our own are literal image files.
+how to render that format at all) — Gmail attachments, Confluence attachments, and Drive uploads
+have no such service to lean on, so the only images that decode without a renderer of our own are
+literal image files.
 
 Pre-existing and unrelated to this work: `drive_get_file_content` already renders PDFs via a native
 `PDFView` when Drive's own category policy allows it (`pdf_bytes`) — a different tool, a different
@@ -75,6 +78,9 @@ the detector.
   when the attachment is `image/*`, `text/*`, PDF, DOCX, or PPTX, and ≤5MB (Gmail has no partial-fetch
   API, so scanning means fully fetching the attachment first). Any other type keeps today's
   unscanned, no-preview behavior.
+- `confluence_download_attachment` applies the exact same `is_prefetch_worthy()`/≤5MB gate as
+  `gmail_download_attachment`, for the same reason: Confluence's attachment download link has no
+  partial-fetch/range support either.
 - `drive_upload_file` gates the two input paths differently. For `local_path`, the same
   `is_prefetch_worthy()`/size-cap check as the preview table above gates the disk read itself (an
   unbounded local file, so it's worth guarding before reading at all) — the extracted mime type is
