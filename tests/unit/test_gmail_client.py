@@ -856,6 +856,197 @@ class TestCreateReplyDraft:
 
 
 # ---------------------------------------------------------------------------- #
+# create_draft_with_attachments / create_reply_draft_with_attachments
+# ---------------------------------------------------------------------------- #
+
+def _extract_parts(raw_b64: str):
+    import email as email_module
+
+    raw_bytes = base64.urlsafe_b64decode(raw_b64.encode())
+    return email_module.message_from_bytes(raw_bytes), raw_bytes
+
+
+class TestCreateDraftWithAttachments:
+    def test_requires_at_least_one_attachment(self):
+        client = make_client(MagicMock())
+        with pytest.raises(GmailClientError, match="at least one attachment"):
+            client.create_draft_with_attachments(to="a@x.com", subject="s", body="b", attachments=[])
+
+    def test_builds_multipart_message_with_attachment_content(self, tmp_path):
+        attachment = tmp_path / "report.txt"
+        attachment.write_bytes(b"attachment file contents")
+        service = MagicMock()
+        service.users.return_value.drafts.return_value.create.return_value.execute.return_value = {"id": "d1"}
+        client = make_client(service)
+
+        result = client.create_draft_with_attachments(
+            to="a@x.com", subject="Hi", body="body text", attachments=[str(attachment)],
+        )
+
+        assert result == {"draft_id": "d1", "to": "a@x.com", "subject": "Hi"}
+        raw = service.users.return_value.drafts.return_value.create.call_args.kwargs["body"]["message"]["raw"]
+        parsed, _raw_bytes = _extract_parts(raw)
+        assert parsed.is_multipart()
+        assert parsed["to"] == "a@x.com"
+        assert parsed["subject"] == "Hi"
+        text_parts = [p for p in parsed.walk() if p.get_content_type() == "text/plain" and p.get_filename() is None]
+        assert text_parts[0].get_payload(decode=True) == b"body text"
+        attachment_parts = [p for p in parsed.walk() if p.get_filename() == "report.txt"]
+        assert len(attachment_parts) == 1
+        assert attachment_parts[0].get_payload(decode=True) == b"attachment file contents"
+
+    def test_multiple_attachments_all_present(self, tmp_path):
+        first = tmp_path / "a.txt"
+        first.write_bytes(b"AAA")
+        second = tmp_path / "b.txt"
+        second.write_bytes(b"BBB")
+        service = MagicMock()
+        service.users.return_value.drafts.return_value.create.return_value.execute.return_value = {"id": "d1"}
+        client = make_client(service)
+
+        client.create_draft_with_attachments(
+            to="a@x.com", subject="s", body="b", attachments=[str(first), str(second)],
+        )
+
+        raw = service.users.return_value.drafts.return_value.create.call_args.kwargs["body"]["message"]["raw"]
+        parsed, _ = _extract_parts(raw)
+        names = sorted(p.get_filename() for p in parsed.walk() if p.get_filename())
+        assert names == ["a.txt", "b.txt"]
+
+    def test_cc_and_bcc_included_when_provided(self, tmp_path):
+        attachment = tmp_path / "f.txt"
+        attachment.write_bytes(b"x")
+        service = MagicMock()
+        service.users.return_value.drafts.return_value.create.return_value.execute.return_value = {"id": "d1"}
+        client = make_client(service)
+
+        client.create_draft_with_attachments(
+            to="a@x.com", subject="s", body="b", attachments=[str(attachment)],
+            cc="c@x.com", bcc="d@x.com",
+        )
+
+        raw = service.users.return_value.drafts.return_value.create.call_args.kwargs["body"]["message"]["raw"]
+        parsed, _ = _extract_parts(raw)
+        assert parsed["cc"] == "c@x.com"
+        assert parsed["bcc"] == "d@x.com"
+
+    def test_missing_attachment_file_raises(self):
+        client = make_client(MagicMock())
+        with pytest.raises(GmailClientError, match="no such file"):
+            client.create_draft_with_attachments(
+                to="a@x.com", subject="s", body="b", attachments=["/no/such/file.pdf"],
+            )
+
+    def test_total_size_over_cap_raises(self, tmp_path, monkeypatch):
+        import privacyfence.gmail_client as gmail_client_module
+
+        monkeypatch.setattr(gmail_client_module, "_MAX_TOTAL_ATTACHMENT_BYTES", 10)
+        attachment = tmp_path / "big.bin"
+        attachment.write_bytes(b"x" * 100)
+        client = make_client(MagicMock())
+        with pytest.raises(GmailClientError, match="exceeds the"):
+            client.create_draft_with_attachments(
+                to="a@x.com", subject="s", body="b", attachments=[str(attachment)],
+            )
+
+    def test_http_error_becomes_gmail_client_error(self, tmp_path):
+        attachment = tmp_path / "f.txt"
+        attachment.write_bytes(b"x")
+        service = MagicMock()
+        service.users.return_value.drafts.return_value.create.return_value.execute.side_effect = http_error(400)
+        client = make_client(service)
+        with pytest.raises(GmailClientError, match="create_draft_with_attachments failed"):
+            client.create_draft_with_attachments(
+                to="a@x.com", subject="s", body="b", attachments=[str(attachment)],
+            )
+
+
+class TestCreateReplyDraftWithAttachments:
+    def test_requires_at_least_one_attachment(self):
+        client = make_client(MagicMock())
+        with pytest.raises(GmailClientError, match="at least one attachment"):
+            client.create_reply_draft_with_attachments("m1", body="b", attachments=[])
+
+    def test_empty_message_id_raises(self, tmp_path):
+        attachment = tmp_path / "f.txt"
+        attachment.write_bytes(b"x")
+        client = make_client(MagicMock())
+        with pytest.raises(GmailClientError, match="non-empty message_id"):
+            client.create_reply_draft_with_attachments("", body="b", attachments=[str(attachment)])
+
+    def test_reply_to_original_sender_only_with_attachment(self, tmp_path):
+        attachment = tmp_path / "f.txt"
+        attachment.write_bytes(b"attached")
+        service = make_reply_service({
+            "Subject": "Original", "From": "sender@x.com", "To": "me@x.com",
+            "Message-ID": "<orig@x.com>",
+        })
+        client = make_client(service)
+
+        result = client.create_reply_draft_with_attachments(
+            "m1", body="reply body", attachments=[str(attachment)], my_email="me@x.com",
+        )
+
+        assert result["to"] == "sender@x.com"
+        assert result["cc"] == ""
+        assert result["subject"] == "Re: Original"
+        raw = service.users.return_value.drafts.return_value.create.call_args.kwargs["body"]["message"]["raw"]
+        parsed, _ = _extract_parts(raw)
+        assert parsed.is_multipart()
+        assert parsed["In-Reply-To"] == "<orig@x.com>"
+        attachment_parts = [p for p in parsed.walk() if p.get_filename() == "f.txt"]
+        assert attachment_parts[0].get_payload(decode=True) == b"attached"
+
+    def test_reply_all_includes_to_and_cc_excluding_self_and_sender(self, tmp_path):
+        attachment = tmp_path / "f.txt"
+        attachment.write_bytes(b"x")
+        service = make_reply_service({
+            "Subject": "Original", "From": "sender@x.com",
+            "To": "me@x.com, other1@x.com", "Cc": "other2@x.com",
+        })
+        client = make_client(service)
+
+        result = client.create_reply_draft_with_attachments(
+            "m1", body="b", attachments=[str(attachment)], reply_all=True, my_email="me@x.com",
+        )
+
+        assert result["to"] == "sender@x.com"
+        assert set(a.strip() for a in result["cc"].split(",")) == {"other1@x.com", "other2@x.com"}
+
+    def test_missing_attachment_file_raises(self):
+        service = make_reply_service({"Subject": "Original", "From": "sender@x.com"})
+        client = make_client(service)
+        with pytest.raises(GmailClientError, match="no such file"):
+            client.create_reply_draft_with_attachments(
+                "m1", body="b", attachments=["/no/such/file.pdf"], my_email="me@x.com",
+            )
+
+    def test_bcc_included_when_provided(self, tmp_path):
+        attachment = tmp_path / "f.txt"
+        attachment.write_bytes(b"x")
+        service = make_reply_service({"Subject": "Original", "From": "sender@x.com"})
+        client = make_client(service)
+        client.create_reply_draft_with_attachments(
+            "m1", body="b", attachments=[str(attachment)], my_email="me@x.com", bcc="hidden@x.com",
+        )
+
+        raw = service.users.return_value.drafts.return_value.create.call_args.kwargs["body"]["message"]["raw"]
+        parsed, _ = _extract_parts(raw)
+        assert parsed["bcc"] == "hidden@x.com"
+
+    def test_http_error_becomes_gmail_client_error(self, tmp_path):
+        attachment = tmp_path / "f.txt"
+        attachment.write_bytes(b"x")
+        service = make_reply_service({"Subject": "Original", "From": "sender@x.com"})
+        service.users.return_value.drafts.return_value.create.return_value.execute.side_effect = http_error(400)
+        client = make_client(service)
+        with pytest.raises(GmailClientError, match="create_reply_draft_with_attachments failed"):
+            client.create_reply_draft_with_attachments(
+                "m1", body="b", attachments=[str(attachment)], my_email="me@x.com",
+            )
+
+
+# ---------------------------------------------------------------------------- #
 # Label operations
 # ---------------------------------------------------------------------------- #
 
