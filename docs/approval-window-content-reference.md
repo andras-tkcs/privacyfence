@@ -58,10 +58,10 @@ Row 7's right pane defaults to plain escaped text. Two tools override that:
   fetch, and `category_policy(..., "file_content") == "allow"` — the reviewer must never see a
   richer rendering than what the "AI will receive" checklist already discloses for the same call.
 - **`preview_bytes`/`preview_mime_type`** (image), on `gmail_download_attachment`/
-  `drive_download_file`/`drive_upload_file`, render an inline `<img>` data URI instead. Carries no
-  AI-visibility parity constraint (unlike `pdf_bytes`) — these three tools' content never reaches
-  Claude at all, so there's nothing an "AI will receive" checklist could disclose to stay in parity
-  with.
+  `confluence_download_attachment`/`drive_download_file`/`drive_upload_file`, render an inline
+  `<img>` data URI instead. Carries no AI-visibility parity constraint (unlike `pdf_bytes`) — these
+  four tools' content never reaches Claude at all, so there's nothing an "AI will receive" checklist
+  could disclose to stay in parity with.
 
 ## View groups — review-gate (read) tools
 
@@ -74,8 +74,9 @@ Every review-gate tool except `drive_get_file_content` (see RG-2 below). "AI-vis
 rows" lists the `{label: allow/redact/block}` sentences from `privacy_filter.category_policy()` that
 append to §3 when the connector passes a `visibility` dict — blank for tools that never resolve a
 category policy for their own content (Telegram and Salesforce entirely, Calendar, Jira, and
-Confluence's `get_page`/`get_page_by_title`). §3 still renders for those tools when `new_info` alone
-is non-empty; a blank checklist column just means fewer §3 rows, not that the whole card disappears.
+Confluence's `get_page`/`get_page_by_title`/`download_attachment`). §3 still renders for those tools
+when `new_info` alone is non-empty; a blank checklist column just means fewer §3 rows, not that the
+whole card disappears.
 
 "Preview summary fields" below is strictly §1's `preview` dict — the identifying context shown
 before any approval. It's deliberately the *slimmer* of the two field lists a connector builds:
@@ -95,6 +96,7 @@ in the dialog" — see [`claude-knowledge-boundary.md`](claude-knowledge-boundar
 | `calendar_get_event_details` | Title, Time | — |
 | `jira_get_issue` | Project, Key, Summary (truncated 80 chars), Status, Assignee | — |
 | `confluence_get_page` / `confluence_get_page_by_title` | Title, Space | — |
+| `confluence_download_attachment` | Title, Space, Attachment, Type, Size | — |
 | `telegram_get_messages` | Chat | — |
 | `telegram_search_messages` | Query | — |
 | `salesforce_get_record` | Object type, Record ID | — |

@@ -68,7 +68,7 @@ Examples:
 - Searching Slack or Telegram
 - Reading a Jira issue
 - Fetching a Salesforce record or report
-- Reading a Confluence page
+- Reading a Confluence page or downloading its attachments
 
 Sensitive reads can be shown in full before release to the assistant. The optional PII detection gate scans read content locally and adds an explicit warning when likely personal data is found.
 
@@ -162,7 +162,7 @@ mode denies unmatched requests immediately instead of leaving a popup open for n
 | Slack | List channels, DMs, and group chats (filterable by participant), read channels and threads, search messages, send messages |
 | Salesforce | Read records, search by name or id, and run reports |
 | Jira | Read, create, update, comment on, and transition issues |
-| Confluence | Read, create, and update pages |
+| Confluence | Read, create, and update pages; list and download page attachments |
 | Google Tasks | Read, create, update, complete, uncomplete, and move tasks |
 | Telegram | Read chats, search messages, and send messages |
 

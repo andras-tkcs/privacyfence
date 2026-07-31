@@ -183,6 +183,8 @@ lightweight Id/Name matches require approval, unlike Gmail/Drive/Jira's metadata
 | `confluence_cql_search` | auto | same shape as `confluence_search`, CQL-driven |
 | `confluence_list_pages` | auto | `title`, `id`, `version`, `space_key`, `author`, `created`, `updated`, `url` per page in a space — the v2-API page parser (`_parse_page_v2`) fills these in regardless of whether the body is fetched, and `confluence_list_pages` applies no redaction to any of them |
 | `confluence_get_page` / `confluence_get_page_by_title` | review | **new:** full page `body` (HTML storage format), `author`, `updated` — title/space were already knowable via either auto tool, but author/updated only via `confluence_list_pages`, not `confluence_search`/`confluence_cql_search` (a real, more likely discovery path for a page someone wants to read) — so they're treated as new here rather than assumed known |
+| `confluence_list_attachments` | auto | per attachment: `name`, `media_type`, `size` — no content |
+| `confluence_download_attachment` | review | **nothing** — file bytes are never sent to Claude, only a local save path. Title/space (known via `confluence_list_pages`/search) and attachment name/type/size (known via `confluence_list_attachments`) were already knowable before this call, same as `gmail_download_attachment` |
 
 `confluence_search`/`confluence_cql_search` are the only auto tools across every connector that
 return actual content excerpts, not just structural metadata — `excerpt` is the one field filtered
@@ -272,6 +274,7 @@ site in the connector code, naming the literal key(s) in what Claude actually re
 | `contacts_privacy.notes` | `contacts_list`, `contacts_search`, `contacts_get` (all auto) | `notes` |
 | `tasks_privacy.notes` | `tasks_list_tasks`, `tasks_get_task` (all auto) | `notes` — `tasks_list_task_lists` has no `notes` field, nothing to redact |
 | `confluence_privacy.search_excerpt` | `confluence_search`, `confluence_cql_search` (both auto) | `excerpt` |
+| `confluence_privacy.attachments` | `confluence_list_attachments` (auto) | the entire returned `attachments` list |
 
 Two footnotes the table above can't show inline:
 

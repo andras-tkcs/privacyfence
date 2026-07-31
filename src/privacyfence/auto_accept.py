@@ -94,6 +94,7 @@ TOOL_TO_OPERATION: dict[str, str] = {
     "jira_transition_issue":          "jira.transition_issue",
     "confluence_get_page":            "confluence.read_page",
     "confluence_get_page_by_title":   "confluence.read_page",
+    "confluence_download_attachment": "confluence.download_attachment",
     "confluence_create_page":         "confluence.create_page",
     "confluence_update_page":         "confluence.update_page",
     "telegram_get_messages":          "telegram.read_chat_messages",
@@ -225,6 +226,8 @@ TOOL_TO_GATE: dict[str, str] = {
     "confluence_list_pages":           "auto",
     "confluence_get_page":             "review",
     "confluence_get_page_by_title":    "review",
+    "confluence_list_attachments":     "auto",
+    "confluence_download_attachment":  "review",
     "confluence_create_page":          "popup",
     "confluence_update_page":          "popup",
     # Google Tasks
@@ -1037,6 +1040,11 @@ _MULTI_CANDIDATE_FAMILIES: dict[str, tuple[str, Callable[[ReviewContext], dict[s
     "calendar.read_event_details": ("calendar_read_event", _calendar_read_event_candidates),
     "jira.read_issue": ("jira_read_issue", _jira_read_issue_candidates),
     "confluence.read_page": ("confluence_read_page", _confluence_read_page_candidates),
+    # Shares the confluence_read_page family: confluence_download_attachment
+    # fetches the page (for preview Title/Space) before gating, same as
+    # confluence_get_page, and passes that same asdict()'d page as raw_data
+    # -- so i_am_author/approved_space_keys apply identically.
+    "confluence.download_attachment": ("confluence_read_page", _confluence_read_page_candidates),
 }
 
 
@@ -1095,7 +1103,7 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
     if operation_key == "jira.read_issue":
         return _first_matching_suggestion("jira_read_issue", _jira_read_issue_candidates(ctx))
 
-    if operation_key == "confluence.read_page":
+    if operation_key in ("confluence.read_page", "confluence.download_attachment"):
         return _first_matching_suggestion("confluence_read_page", _confluence_read_page_candidates(ctx))
 
     if operation_key == "telegram.read_chat_messages":

@@ -391,6 +391,8 @@ passed through as-is and surface Jira's own validation error if the shape is wro
 | `confluence_list_pages` | read | auto | — | — |
 | `confluence_get_page` | read | review | title, space, author, last modified | Full page body |
 | `confluence_get_page_by_title` | read | review | title, space, author, last modified | Full page body |
+| `confluence_list_attachments` | read | auto | — | — |
+| `confluence_download_attachment` | read | review | title, space, attachment name, type, size, save path | — |
 | `confluence_create_page` | write | popup | — | Space, title, parent page, full body |
 | `confluence_update_page` | write | popup | — | Title, space, full new body |
 
@@ -457,7 +459,7 @@ the evaluator never reads it, only `id`/`key` and the capability booleans decide
 | `slack` | `channels` | `read` → reading channel/thread history and search results in that channel; `send` → sending messages there |
 | `telegram` | `chats` | `read` → reading/searching that chat; `send` → sending messages there |
 | `jira` | `projects` (by `key`) | `read`, `create`, `comment`, `update`, `transition` — one per Jira tool |
-| `confluence` | `spaces` (by `key`) | `read`, `create`, `update` — one per Confluence tool |
+| `confluence` | `spaces` (by `key`) | `read` → reading a page or downloading its attachments in that space, `create`, `update` |
 | `calendar` | `calendars` | `read` → reading event details on that calendar; `write` → creating/updating events there |
 | `salesforce` | `reports` | `run` → running that specific report |
 
@@ -749,7 +751,8 @@ the project from `issue_key` the same way `jira_get_issue`/`jira_update_issue` d
 
 > **`approved_space_keys` is grant-managed** — see [Auto-accept grants](#auto-accept-grants) →
 > `confluence.spaces`. One space grant's `read`/`create`/`update` capabilities cover
-> `confluence.read_page`, `confluence.create_page`, and `confluence.update_page` at once.
+> `confluence.read_page`/`confluence.download_attachment`, `confluence.create_page`, and
+> `confluence.update_page` at once.
 
 **Telegram**
 
@@ -786,7 +789,7 @@ edits within a personal list while still requiring review for creates.
 > `tasks.task_lists`. One task-list grant's `create`/`edit`/`complete`/`move` capabilities cover
 > all five task-write operations at once (`complete` covers both complete and uncomplete).
 
-> **Google Contacts**: `contacts_list`, `contacts_search`, and `contacts_get` are unconditionally auto-accepted. `contacts_update`, `contacts_create`, `contacts_add_label`, and `contacts_remove_label` are all `popup`-gated; `no_contact_info_change` above is the only configurable auto-accept rule, and it applies only to `contacts_update`. Contact deletion is not supported. **Google Tasks**: all three read tools plus `tasks_list_task_lists` are unconditionally auto-accepted; the five write tools (`tasks_create_task`, `tasks_update_task`, `tasks_complete_task`, `tasks_uncomplete_task`, `tasks_move_task`) are `popup`-gated, each independently configurable via `approved_task_list` above. **Telegram**: `telegram_list_chats` is unconditionally auto-accepted; `telegram_get_messages` and `telegram_search_messages` are `review`-gated by default but configurable via the rules above (sharing one operation key, `telegram.read_chat_messages`); `telegram_send_message` is `popup`-gated with no configurable rule. **Jira and Confluence** read tools (`jira_get_issue`, `confluence_get_page`, `confluence_get_page_by_title`) are `review`-gated by default but configurable via the rules above; their write tools remain `popup`-gated with no configurable rule, except `jira_transition_issue`, which accepts `approved_project_keys` as noted above.
+> **Google Contacts**: `contacts_list`, `contacts_search`, and `contacts_get` are unconditionally auto-accepted. `contacts_update`, `contacts_create`, `contacts_add_label`, and `contacts_remove_label` are all `popup`-gated; `no_contact_info_change` above is the only configurable auto-accept rule, and it applies only to `contacts_update`. Contact deletion is not supported. **Google Tasks**: all three read tools plus `tasks_list_task_lists` are unconditionally auto-accepted; the five write tools (`tasks_create_task`, `tasks_update_task`, `tasks_complete_task`, `tasks_uncomplete_task`, `tasks_move_task`) are `popup`-gated, each independently configurable via `approved_task_list` above. **Telegram**: `telegram_list_chats` is unconditionally auto-accepted; `telegram_get_messages` and `telegram_search_messages` are `review`-gated by default but configurable via the rules above (sharing one operation key, `telegram.read_chat_messages`); `telegram_send_message` is `popup`-gated with no configurable rule. **Jira and Confluence** read tools (`jira_get_issue`, `confluence_get_page`, `confluence_get_page_by_title`, `confluence_download_attachment`) are `review`-gated by default but configurable via the rules above; their write tools remain `popup`-gated with no configurable rule, except `jira_transition_issue`, which accepts `approved_project_keys` as noted above.
 
 ---
 
@@ -801,7 +804,7 @@ proposes is configurable, not hardcoded:
 | `drive_read` | `drive.read_file_contents`, `drive.download_file` | `i_am_owner`, `approved_folder` |
 | `calendar_read_event` | `calendar.read_event_details` | `i_am_organizer`, `no_external_attendees`, `non_private_event` |
 | `jira_read_issue` | `jira.read_issue` | `i_am_reporter`, `i_am_assignee`, `approved_project_keys` |
-| `confluence_read_page` | `confluence.read_page` | `i_am_author`, `approved_space_keys` |
+| `confluence_read_page` | `confluence.read_page`, `confluence.download_attachment` | `i_am_author`, `approved_space_keys` |
 
 Configure a family's order under `rule_suggestion_priority` in `settings.yaml` (see
 `settings.yaml.example`), or from each connector's **Always-allow Suggestion Order** section in

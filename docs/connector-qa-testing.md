@@ -969,6 +969,11 @@ other connector's writes, each independently configurable via the
    an `i_am_author` rule is configured for `confluence.read_page` this should NOT
    prompt, independent of the space rule. Tell me which rule (if any) matched.
 6. `confluence_update_page` on it, minor edit. Popup, Allow once.
+7. Pick any existing page in `confluence_qa_space_key` that has at least one attachment (skip this
+   step and tell me if none exists). `confluence_list_attachments` on it (expect: silent). Then
+   `confluence_download_attachment` on one of the listed attachments — this is `review` gated, I'll
+   Allow once. Confirm the saved file exists at the path the tool returned and its size matches
+   what `confluence_list_attachments` reported.
 
 ## Phase 11 — Temp-accept window expiry check
 

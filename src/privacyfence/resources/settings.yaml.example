@@ -87,6 +87,7 @@ confluence_privacy:
                             # match - the one place Confluence's otherwise
                             # metadata-only auto search tools return actual
                             # page content pre-approval
+    attachments: block      # attachment metadata; downloading content is a separate, approval-gated tool
 
 calendar:
   # Whether calendar_get_free_busy returns full event titles/times/status for
