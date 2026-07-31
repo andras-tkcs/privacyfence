@@ -41,6 +41,17 @@ DEFAULT_SCOPES: list[str] = [
     "read:space:confluence", "read:page:confluence", "write:page:confluence",
     "read:content:confluence", "read:content-details:confluence",
     "write:content:confluence",
+    # Attachments are their own granular scope pair, distinct from the page/
+    # content scopes above: read:attachment:confluence covers the v2
+    # attachments-list endpoint (confluence_list_attachments), and
+    # readonly:content.attachment:confluence covers the dedicated v1
+    # download-redirect endpoint confluence_download_attachment actually
+    # has to use (see confluence_client.py's fetch_attachment_bytes --
+    # Confluence's legacy `/wiki/download/attachments/...` link 401s for
+    # OAuth 3LO tokens regardless of scope; Atlassian's own supported
+    # replacement is `rest/api/content/{id}/child/attachment/{id}/download`,
+    # which needs this scope specifically).
+    "read:attachment:confluence", "readonly:content.attachment:confluence",
     "offline_access",
 ]
 

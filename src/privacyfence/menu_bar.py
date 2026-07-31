@@ -371,6 +371,7 @@ PRIVACY_CATEGORY_LABELS: dict[str, dict[str, str]] = {
     },
     "confluence_privacy": {
         "search_excerpt": "Search result excerpt",
+        "attachments": "Attachment metadata",
     },
 }
 

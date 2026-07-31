@@ -404,7 +404,7 @@ class ConfluenceConnector(Connector):
         ):
             try:
                 fetched_bytes = await self._fetch(
-                    self._confluence.fetch_attachment_bytes, attachment.download_url,
+                    self._confluence.fetch_attachment_bytes, page_id, attachment.attachment_id,
                 )
             except RuntimeError:
                 # _fetch() already turned the underlying ConfluenceClientError
@@ -457,7 +457,8 @@ class ConfluenceConnector(Connector):
                 self._confluence.save_attachment_bytes, fetched_bytes, attachment.name, destination_dir,
             )
         return await self._fetch(
-            self._confluence.download_attachment, attachment.download_url, attachment.name, destination_dir,
+            self._confluence.download_attachment,
+            page_id, attachment.attachment_id, attachment.name, destination_dir,
         )
 
     async def _create_page(
