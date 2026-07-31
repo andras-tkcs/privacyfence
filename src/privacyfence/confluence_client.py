@@ -484,7 +484,7 @@ class ConfluenceClient:
         (``rest/api/content/{id}/child/attachment/{id}/download``) is
         Atlassian's own supported replacement for 3LO apps: it 302-redirects
         to the actual binary, which ``requests`` follows automatically.
-        Needs the ``readonly:content.attachment:confluence`` scope (see
+        Needs the ``read:attachment:confluence`` scope (see
         ``atlassian_oauth.DEFAULT_SCOPES``) -- existing users must
         Reconnect to pick up a token with it.
 
