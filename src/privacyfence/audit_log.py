@@ -221,6 +221,34 @@ class AuditLogger:
             if not xlsx.exists():
                 self.export_week_to_excel(week)
 
+    def recent_entries(self, limit: int = 20) -> list[AuditEntry]:
+        """Most-recent-first entries for the settings window's "Recent
+        decisions" list. Reads the current ISO week's .jsonl and, if that
+        alone doesn't have `limit` entries, tops up from the previous week's
+        file -- no need to scan every historical file for what's meant to be
+        a short "what just happened" glance, not a full audit trail browser
+        (that's what the Excel export is for)."""
+        weeks = [current_week(), _previous_week(current_week())]
+        entries: list[AuditEntry] = []
+        for week in weeks:
+            week_file = self._log_dir / f"{week}.jsonl"
+            if not week_file.exists():
+                continue
+            week_entries: list[AuditEntry] = []
+            with open(week_file, encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        week_entries.append(AuditEntry(**json.loads(line)))
+                    except Exception:
+                        continue
+            entries.extend(reversed(week_entries))
+            if len(entries) >= limit:
+                break
+        return entries[:limit]
+
     def recent_matches(self, connector: str, tool: str, summary: str, *, week: str | None = None) -> int:
         """Count prior approved-like decisions (see _APPROVED_LIKE_DECISIONS)
         for the same (connector, tool, summary) in one week's log --
@@ -261,6 +289,19 @@ class AuditLogger:
 
 def current_week() -> str:
     iso = datetime.now(timezone.utc).isocalendar()
+    return f"{iso[0]}-W{iso[1]:02d}"
+
+
+def _previous_week(week: str) -> str:
+    """One ISO week before `week` (e.g. "2026-W31" -> "2026-W30"), correctly
+    rolling over a year boundary via datetime's own ISO calendar math rather
+    than hand-rolled week-count arithmetic."""
+    from datetime import timedelta
+
+    year, week_num = week.split("-W")
+    monday = datetime.fromisocalendar(int(year), int(week_num), 1)
+    prev_monday = monday - timedelta(days=7)
+    iso = prev_monday.isocalendar()
     return f"{iso[0]}-W{iso[1]:02d}"
 
 
