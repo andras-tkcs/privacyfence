@@ -54,8 +54,8 @@ implements. This document is about how to write and test the code correctly, not
 
 - Every external-API client (`*_client.py`) defines its own `<Name>ClientError(Exception)` and
   raises only that (or lets it propagate) across its public methods. Internal-only clients that
-  never leave the local trust boundary (talking over the local Unix socket to the daemon the app
-  itself controls, e.g. the bridge's `IPCClient` — now `bridge/src/ipcClient.ts`, out of scope for
+  never leave the local trust boundary (talking over the local TCP loopback connection to the
+  daemon the app itself controls, e.g. the bridge's `IPCClient` — now `bridge/src/ipcClient.ts`, out of scope for
   this Python-focused document) are the one accepted exception to this — external cloud APIs
   always get a dedicated error type.
 - Connectors catch the client's specific error type at the boundary, log it, and re-raise as

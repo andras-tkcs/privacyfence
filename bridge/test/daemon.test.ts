@@ -6,7 +6,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import { BridgeExitError } from "../src/errors.js";
 import { ensureDaemonRunning, findDaemonCmd, socketConnectable, waitForDaemonPatiently } from "../src/daemon.js";
-import { makeShortSocketPath } from "./testDaemon.js";
+import { getFreePort, makeTempIpcFiles } from "./testDaemon.js";
 
 describe("findDaemonCmd", () => {
   it("prefers a sibling binary next to the bridge script", () => {
@@ -44,34 +44,36 @@ describe("findDaemonCmd", () => {
 });
 
 describe("socketConnectable", () => {
-  it("is false when no socket file exists", async () => {
-    const { socketPath, cleanup } = makeShortSocketPath();
+  it("is false when the port file doesn't exist yet", async () => {
+    const { portFile, cleanup } = makeTempIpcFiles();
     try {
-      assert.equal(await socketConnectable(socketPath), false);
+      // portFile was created by makeTempIpcFiles only as a path, not written to.
+      assert.equal(await socketConnectable("127.0.0.1", portFile), false);
     } finally {
       cleanup();
     }
   });
 
-  it("is false when a file exists at the path but nothing is listening", async () => {
-    const { socketPath, cleanup } = makeShortSocketPath();
-    // A stale/non-socket file at the path, not an accepting listener —
-    // same intent as the Python test's raw socket.bind() without listen():
-    // connect() must fail, not hang or throw out of socketConnectable.
-    fs.writeFileSync(socketPath, "");
+  it("is false when the port file names a port nothing is listening on", async () => {
+    const { portFile, writePort, cleanup } = makeTempIpcFiles();
+    const port = await getFreePort(); // freed immediately -- nothing listens on it
+    writePort(port);
     try {
-      assert.equal(await socketConnectable(socketPath), false);
+      assert.equal(await socketConnectable("127.0.0.1", portFile), false);
     } finally {
       cleanup();
     }
   });
 
   it("is true when a real listener is present", async () => {
-    const { socketPath, cleanup } = makeShortSocketPath();
+    const { portFile, writePort, cleanup } = makeTempIpcFiles();
     const server = net.createServer();
-    await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    writePort(port);
     try {
-      assert.equal(await socketConnectable(socketPath), true);
+      assert.equal(await socketConnectable("127.0.0.1", portFile), true);
     } finally {
       server.close();
       cleanup();
@@ -81,13 +83,17 @@ describe("socketConnectable", () => {
 
 describe("ensureDaemonRunning", () => {
   it("returns immediately when already connectable, without spawning anything", async () => {
-    const { socketPath, cleanup } = makeShortSocketPath();
+    const { portFile, writePort, cleanup } = makeTempIpcFiles();
     const server = net.createServer();
-    await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    writePort(port);
     let findCmdCalled = false;
     try {
       await ensureDaemonRunning({
-        socketPath,
+        host: "127.0.0.1",
+        portFile,
         findCmd: () => {
           findCmdCalled = true;
           return ["should-not-run"];
@@ -101,19 +107,22 @@ describe("ensureDaemonRunning", () => {
   });
 
   it("launches the daemon and waits until connectable", async () => {
-    const { socketPath, cleanup } = makeShortSocketPath();
+    const { portFile, writePort, cleanup } = makeTempIpcFiles();
+    const port = await getFreePort();
     // Simulate the daemon coming up shortly after being "launched": start
-    // listening for real, but only after ensureDaemonRunning's first
-    // connectability check has already failed.
+    // listening for real (and only then write the port file), but only
+    // after ensureDaemonRunning's first connectability check has already
+    // failed.
     let lateServer: net.Server | undefined;
     const timer = setTimeout(() => {
       lateServer = net.createServer();
-      lateServer.listen(socketPath);
+      lateServer.listen(port, "127.0.0.1", () => writePort(port));
     }, 50);
 
     try {
       await ensureDaemonRunning({
-        socketPath,
+        host: "127.0.0.1",
+        portFile,
         findCmd: () => ["true"], // a real no-op command; spawn() must succeed
         connectIntervalMs: 20,
         connectTimeoutMs: 2000,
@@ -126,11 +135,12 @@ describe("ensureDaemonRunning", () => {
   });
 
   it("throws BridgeExitError after the timeout elapses", async () => {
-    const { socketPath, cleanup } = makeShortSocketPath();
+    const { portFile, cleanup } = makeTempIpcFiles();
     try {
       await assert.rejects(
         ensureDaemonRunning({
-          socketPath,
+          host: "127.0.0.1",
+          portFile,
           findCmd: () => ["true"],
           connectTimeoutMs: 100,
           connectIntervalMs: 20,
@@ -150,13 +160,17 @@ describe("ensureDaemonRunning", () => {
 
 describe("waitForDaemonPatiently", () => {
   it("returns immediately when already connectable, without spawning anything", async () => {
-    const { socketPath, cleanup } = makeShortSocketPath();
+    const { portFile, writePort, cleanup } = makeTempIpcFiles();
     const server = net.createServer();
-    await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    writePort(port);
     let findCmdCalled = false;
     try {
       await waitForDaemonPatiently({
-        socketPath,
+        host: "127.0.0.1",
+        portFile,
         findCmd: () => {
           findCmdCalled = true;
           return ["should-not-run"];
@@ -170,21 +184,23 @@ describe("waitForDaemonPatiently", () => {
   });
 
   it("keeps retrying past the initial timeout instead of throwing, and succeeds once the socket comes up", async () => {
-    const { socketPath, cleanup } = makeShortSocketPath();
+    const { portFile, writePort, cleanup } = makeTempIpcFiles();
+    const port = await getFreePort();
     // The initial launch-and-wait window (connectTimeoutMs) elapses with
     // nothing listening -- ensureDaemonRunning would normally throw here.
-    // Only after that do we start listening, simulating an app cold start
-    // slower than the initial window.
+    // Only after that do we start listening (and write the port file),
+    // simulating an app cold start slower than the initial window.
     let lateServer: net.Server | undefined;
     const timer = setTimeout(() => {
       lateServer = net.createServer();
-      lateServer.listen(socketPath);
+      lateServer.listen(port, "127.0.0.1", () => writePort(port));
     }, 150);
 
     let findCmdCalls = 0;
     try {
       await waitForDaemonPatiently({
-        socketPath,
+        host: "127.0.0.1",
+        portFile,
         findCmd: () => {
           findCmdCalls++;
           return ["true"]; // a real no-op command; spawn() must succeed

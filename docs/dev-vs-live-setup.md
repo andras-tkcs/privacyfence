@@ -7,17 +7,22 @@ the other.
 ## Why two accounts is enough
 
 Everything PrivacyFence stores is scoped to `~/.privacyfence` on whichever
-macOS account runs it: credentials, the IPC socket
-(`~/.privacyfence/privacyfence.sock`, always this path regardless of
-dev/bundled — see `src/privacyfence/ipc.py`), and the LaunchAgent. Two
-separate accounts never see each other's daemon, socket, credentials, or
-Claude MCP config — no extra isolation config needed.
+macOS account runs it: credentials, the IPC connection info
+(`~/.privacyfence/ipc_port` and `~/.privacyfence/ipc_token`, always these paths
+regardless of dev/bundled — see `src/privacyfence/ipc.py`), and the
+LaunchAgent. The daemon listens on a TCP loopback port, but an OS-assigned
+ephemeral one discovered via `ipc_port` rather than a fixed number — a fixed
+port would be a single namespace shared by every local user's loopback
+interface, unlike a filesystem path, and would break exactly this two-account
+setup the moment both accounts' daemons tried to listen at once. Two separate
+accounts never see each other's daemon, port, token, credentials, or Claude MCP
+config — no extra isolation config needed.
 
 One wrinkle: when running **from source** (unbundled), config/credentials/logs
 live **inside the repo folder itself**, not `~/.privacyfence` (see
 `src/privacyfence/paths.py`). Only a PyInstaller-bundled `.app` uses
-`~/.privacyfence` for that. The IPC socket is the one exception that's
-always under `~/.privacyfence`, bundled or not.
+`~/.privacyfence` for that. The IPC port/token files are the one exception
+that's always under `~/.privacyfence`, bundled or not.
 
 ---
 

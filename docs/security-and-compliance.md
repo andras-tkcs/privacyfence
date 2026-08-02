@@ -32,7 +32,7 @@ it reaches the AI or the external service.
 | Where data is processed | Locally, in-process, on that machine |
 | Where data is stored | Locally: OS credential storage / local token files, and a local audit log (`logs/audit/*.jsonl`, `*.xlsx`) |
 | Vendor-operated infrastructure | None. There is no multi-tenant service, no hosted database, and no PrivacyFence API that traffic passes through |
-| Network path for a tool call | `Claude → local MCP bridge → local Unix domain socket → local daemon → the connector's own cloud API (Google, Slack, Salesforce, Atlassian, Telegram) directly` |
+| Network path for a tool call | `Claude → local MCP bridge → local 127.0.0.1 loopback connection (token-authenticated) → local daemon → the connector's own cloud API (Google, Slack, Salesforce, Atlassian, Telegram) directly` |
 | Telemetry / analytics / phone-home | No usage analytics or crash reporting. One narrow exception: a once-a-day unauthenticated `GET` to `api.github.com` checking for a newer release (`update_checker.py`) — no user, organization, or connector data is included or ever sent, only PrivacyFence's own version string is compared against the response locally. On by default; disable from the menu bar's "Check for Updates" > "Enabled" or `update_check.enabled: false` in `settings.yaml` |
 
 This is the architectural reason PrivacyFence can make a stronger data-residency claim than a
@@ -259,7 +259,7 @@ oversight measure**, sitting in front of the AI system rather than being one:
 | Authentication to connected services | OAuth2 (or Telethon/MTProto for Telegram), per user, per connector — no shared service accounts |
 | Least privilege | Per-connector, per-operation gating (`auto`/`review`/`popup`); auto-accept rules can be scoped down to a single folder, spreadsheet tab, channel, or task list |
 | PII detection gate | Local regex heuristic (Hungarian/English/German) over `review` (read) dialog content only; a match requires an extra explicit confirmation before Allow once takes effect. Toggleable per user (menu bar / `pii_detection.enabled`) |
-| Transport between processes | Local Unix domain socket only (`~/.privacyfence/privacyfence.sock`); the bridge carries no credentials and only relays |
+| Transport between processes | Local 127.0.0.1 TCP loopback only, on an OS-assigned ephemeral port discovered via `~/.privacyfence/ipc_port`, authenticated by a per-launch random token (`~/.privacyfence/ipc_token`) required on every connection; the bridge carries no credentials and only relays |
 | Process isolation | Bridge (untrusted-facing, talks to Claude) and daemon (holds credentials) are separate processes; only the daemon can reach external APIs |
 | Secrets at rest | Local OS-level storage / local files under `credentials/`; never committed to source control (`.gitignore`'d), never transmitted off-device |
 | Auditability | Every decision logged with outcome (accepted/denied/auto_accepted), locally, in a human-readable format (JSONL + Excel) |

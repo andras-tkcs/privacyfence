@@ -17,7 +17,7 @@
  */
 
 import net from "node:net";
-import { LINE_LIMIT } from "./protocol.js";
+import { HOST, LINE_LIMIT, PORT_FILE, TOKEN_FILE, readIpcPort, readIpcToken } from "./protocol.js";
 
 export class IPCError extends Error {}
 
@@ -51,8 +51,8 @@ export interface ProposeRuleChangeParams {
 /**
  * The subset of IPCClient that tool handlers (tools.ts) depend on. Declared
  * separately so tests can substitute a fake IPC client (a plain object) for
- * registerTools/registerMetaTools without needing a real Unix socket
- * connection — the equivalent of the Python tests' MagicMock(), which works
+ * registerTools/registerMetaTools without needing a real TCP connection to a
+ * daemon — the equivalent of the Python tests' MagicMock(), which works
  * there for free since Python doesn't enforce nominal typing at runtime.
  */
 export interface IPCClientLike {
@@ -70,15 +70,19 @@ export interface IPCClientLike {
 }
 
 export class IPCClient implements IPCClientLike {
-  private readonly path: string;
+  private readonly host: string;
+  private readonly portFile: string;
+  private readonly tokenFile: string;
   private socket: net.Socket | null = null;
   private connecting: Promise<void> | null = null;
   private readonly pending = new Map<string, Pending>();
   private nextId = 0;
   private buffer = "";
 
-  constructor(socketPath: string) {
-    this.path = socketPath;
+  constructor(host: string = HOST, portFile: string = PORT_FILE, tokenFile: string = TOKEN_FILE) {
+    this.host = host;
+    this.portFile = portFile;
+    this.tokenFile = tokenFile;
   }
 
   /** Open the connection. Must be called once before any request. */
@@ -173,10 +177,20 @@ export class IPCClient implements IPCClientLike {
   }
 
   private async doConnect(): Promise<void> {
+    let port: number;
+    let token: string;
+    try {
+      port = readIpcPort(this.portFile);
+      token = readIpcToken(this.tokenFile);
+    } catch (exc) {
+      throw new IPCError(
+        `Could not read PrivacyFence IPC connection info: ${exc instanceof Error ? exc.message : String(exc)}`
+      );
+    }
     let sock: net.Socket;
     try {
       sock = await new Promise<net.Socket>((resolve, reject) => {
-        const s = net.createConnection(this.path);
+        const s = net.createConnection({ host: this.host, port });
         s.once("connect", () => resolve(s));
         s.once("error", reject);
       });
@@ -193,6 +207,13 @@ export class IPCClient implements IPCClientLike {
       // Surfaced to in-flight requests via the "close" handler below; a bare
       // "error" listener just prevents Node from throwing unhandled.
     });
+    // Auth handshake: the daemon requires this to be the very first line on
+    // the connection, before any JSON-RPC request -- see ipc.py's module
+    // docstring. this.socket is only assigned once this write is already
+    // queued, and no caller can reach request()'s own socket.write() before
+    // doConnect()'s promise resolves (ensureConnected() awaits it), so this
+    // line can never lose the race against a real request.
+    sock.write(token + "\n");
     this.socket = sock;
   }
 

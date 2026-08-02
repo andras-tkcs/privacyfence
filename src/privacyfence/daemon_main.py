@@ -2,7 +2,8 @@
 
 Started at login via LaunchAgent (com.privacyfence.app.plist), or automatically
 by the bridge on first use. Only one instance is allowed (enforced via a lock
-file). The bridge connects to this process over a Unix socket.
+file). The bridge connects to this process over a 127.0.0.1 TCP loopback
+socket (see ipc.py's module docstring).
 
 Threading model:
   - Main thread:   rumps menu bar app (macOS requirement for AppKit).

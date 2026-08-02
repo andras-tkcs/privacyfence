@@ -1,11 +1,12 @@
-"""Tests for IPCServer: the daemon-side half of the bridge<->daemon Unix
-socket protocol described in privacyfence.ipc.
+"""Tests for IPCServer: the daemon-side half of the bridge<->daemon TCP
+loopback protocol described in privacyfence.ipc.
 
-These use a real asyncio Unix domain socket (via a tmp_path SOCKET_PATH,
-monkeypatched into the ipc_server module) with a small raw client helper that
+These use a real asyncio TCP server (bound to 127.0.0.1:0 -- an OS-assigned
+ephemeral port, the real production behavior -- with TOKEN_FILE/PORT_FILE
+monkeypatched to tmp_path locations) with a small raw client helper that
 speaks the wire protocol directly, rather than mocking asyncio streams — the
-framing (newline-delimited JSON, the 8 MiB line limit) and the connection
-lifecycle are exactly what's under test.
+framing (newline-delimited JSON, the 8 MiB line limit, the auth handshake)
+and the connection lifecycle are exactly what's under test.
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ import asyncio
 import json
 import logging
 import os
+import stat
 import uuid
 
 import pytest
@@ -28,12 +30,13 @@ from privacyfence.ipc_server import IPCServer
 
 @pytest.fixture
 def short_socket_path():
-    """A Unix domain socket path short enough to fit sun_path (~104 bytes on
-    macOS) — pytest's tmp_path is nested too deep for that, so we use /tmp
-    directly with a short unique subdir and clean up manually. The subdir
-    doesn't exist yet, matching production (start() must create it)."""
+    """Per-test-unique TOKEN_FILE path -- named short_socket_path for
+    history (this used to be a Unix socket path short enough to fit
+    sun_path). Callers derive a sibling PORT_FILE path from this one (see
+    running_server/_server below), so tests never collide with each other or
+    with a real daemon's ~/.privacyfence files."""
     directory = f"/tmp/pf-{uuid.uuid4().hex[:8]}"
-    path = f"{directory}/s.sock"
+    path = f"{directory}/ipc_token"
     yield path
     try:
         os.unlink(path)
@@ -75,9 +78,14 @@ class FakeConnector(Connector):
 
 @pytest.fixture
 async def running_server(short_socket_path, monkeypatch):
-    """Starts a real IPCServer on a tmp socket path and yields (server, socket_path)."""
+    """Starts a real IPCServer on an OS-assigned ephemeral port and yields
+    (server, socket_path) -- socket_path (really now just this test's
+    TOKEN_FILE path) is unused by callers now that _RawClient.connect()
+    takes the server object directly, kept only so every existing
+    `server, socket_path = running_server` call site needs no change."""
     socket_path = short_socket_path
-    monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", socket_path)
+    monkeypatch.setattr(ipc_server_module, "TOKEN_FILE", socket_path)
+    monkeypatch.setattr(ipc_server_module, "PORT_FILE", socket_path.replace("ipc_token", "ipc_port"))
     server = IPCServer([])
     await server.start()
     try:
@@ -95,11 +103,27 @@ class _RawClient:
         self.writer = writer
 
     @classmethod
-    async def connect(cls, socket_path: str) -> "_RawClient":
+    async def connect(cls, server: IPCServer) -> "_RawClient":
         # Match the daemon/bridge's own raised limit — a bare
-        # open_unix_connection() defaults to 64 KiB, which is exactly the
+        # open_connection() defaults to 64 KiB, which is exactly the
         # limit the v0.4.10 fix raised on both real ends.
-        reader, writer = await asyncio.open_unix_connection(socket_path, limit=LINE_LIMIT)
+        port = server._server.sockets[0].getsockname()[1]
+        reader, writer = await asyncio.open_connection("127.0.0.1", port, limit=LINE_LIMIT)
+        # Auth handshake: the daemon requires this to be the very first line
+        # on the connection -- see ipc.py's module docstring. server._token
+        # is the real per-launch token IPCServer.start() generated.
+        writer.write((server._token + "\n").encode())
+        await writer.drain()
+        return cls(reader, writer)
+
+    @classmethod
+    async def connect_with_token(cls, server: IPCServer, token: str) -> "_RawClient":
+        """Like connect(), but sends an explicit (possibly wrong) token --
+        for tests exercising the auth handshake itself."""
+        port = server._server.sockets[0].getsockname()[1]
+        reader, writer = await asyncio.open_connection("127.0.0.1", port, limit=LINE_LIMIT)
+        writer.write((token + "\n").encode())
+        await writer.drain()
         return cls(reader, writer)
 
     async def send(self, msg: dict) -> None:
@@ -119,37 +143,96 @@ class _RawClient:
 
 
 class TestLifecycle:
-    async def test_start_creates_socket_file(self, short_socket_path, monkeypatch):
-        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+    async def test_start_writes_token_file_with_restrictive_permissions(self, short_socket_path, monkeypatch):
+        monkeypatch.setattr(ipc_server_module, "TOKEN_FILE", short_socket_path)
+        monkeypatch.setattr(ipc_server_module, "PORT_FILE", short_socket_path.replace("ipc_token", "ipc_port"))
         server = IPCServer([])
         await server.start()
         try:
             assert os.path.exists(short_socket_path)
+            assert stat.S_IMODE(os.stat(short_socket_path).st_mode) == 0o600
+            with open(short_socket_path, encoding="utf-8") as f:
+                assert f.read() == server._token
         finally:
             await server.stop()
 
-    async def test_stop_removes_socket_file(self, short_socket_path, monkeypatch):
-        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+    async def test_stop_removes_token_file(self, short_socket_path, monkeypatch):
+        monkeypatch.setattr(ipc_server_module, "TOKEN_FILE", short_socket_path)
+        monkeypatch.setattr(ipc_server_module, "PORT_FILE", short_socket_path.replace("ipc_token", "ipc_port"))
         server = IPCServer([])
         await server.start()
         await server.stop()
         assert not os.path.exists(short_socket_path)
 
-    async def test_start_removes_stale_socket_file_from_prior_run(self, short_socket_path, monkeypatch):
+    async def test_start_overwrites_stale_token_file_from_prior_run(self, short_socket_path, monkeypatch):
         os.makedirs(os.path.dirname(short_socket_path), exist_ok=True)
         with open(short_socket_path, "w") as f:
-            f.write("stale")
-        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+            f.write("stale-token-from-a-previous-launch")
+        monkeypatch.setattr(ipc_server_module, "TOKEN_FILE", short_socket_path)
+        monkeypatch.setattr(ipc_server_module, "PORT_FILE", short_socket_path.replace("ipc_token", "ipc_port"))
         server = IPCServer([])
         await server.start()
-        await server.stop()
+        try:
+            with open(short_socket_path, encoding="utf-8") as f:
+                assert f.read() == server._token
+        finally:
+            await server.stop()
+
+
+class TestAuthHandshake:
+    """The first line on every new connection must be the current launch's
+    token (see ipc.py's module docstring) -- everything else in this file
+    exercises the success path implicitly via _RawClient.connect(); these
+    tests cover the rejection paths directly."""
+
+    async def test_wrong_token_closes_the_connection_without_a_response(self, running_server):
+        server, _ = running_server
+        client = await _RawClient.connect_with_token(server, "not-the-real-token")
+        try:
+            # Deliberately don't write anything else here -- the server may
+            # have already closed its end after the bad auth line, and a
+            # write into that is a race (could raise, could silently
+            # succeed). Only ever reading back is what actually asserts
+            # "closed without a response".
+            line = await client.reader.readline()
+            assert line == b""  # connection closed, no response ever sent
+        finally:
+            await client.close()
+
+    async def test_connection_dropped_before_a_full_auth_line_does_not_crash_the_server(self, running_server):
+        server, _ = running_server
+        port = server._server.sockets[0].getsockname()[1]
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(b"incomplete-no-newline")
+        await writer.drain()
+        writer.close()
+
+        # The server must still be healthy for a subsequent, properly
+        # authenticated connection.
+        client = await _RawClient.connect(server)
+        try:
+            await client.send({"id": "1", "method": "health", "params": {}})
+            resp = await client.recv()
+            assert resp["id"] == "1"
+        finally:
+            await client.close()
+
+    async def test_correct_token_proceeds_to_normal_dispatch(self, running_server):
+        server, _ = running_server
+        client = await _RawClient.connect(server)
+        try:
+            await client.send({"id": "1", "method": "health", "params": {}})
+            resp = await client.recv()
+            assert "version" in resp["result"]
+        finally:
+            await client.close()
 
 
 class TestHealthAndManifest:
     async def test_health_reports_version_and_connector_names(self, running_server):
         server, socket_path = running_server
         server.set_connectors([FakeConnector("gmail"), FakeConnector("drive")])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({"id": "1", "method": "health", "params": {}})
             resp = await client.recv()
@@ -162,7 +245,7 @@ class TestHealthAndManifest:
     async def test_manifest_reports_tool_specs_per_connector(self, running_server):
         server, socket_path = running_server
         server.set_connectors([FakeConnector("slack")])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({"id": "1", "method": "manifest", "params": {}})
             resp = await client.recv()
@@ -177,7 +260,7 @@ class TestHealthAndManifest:
         server, socket_path = running_server
         server.set_connectors([FakeConnector("gmail")])
         server.set_connectors([FakeConnector("jira")])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({"id": "1", "method": "health", "params": {}})
             resp = await client.recv()
@@ -191,7 +274,7 @@ class TestCallDispatch:
         server, socket_path = running_server
         connector = FakeConnector("gmail", result={"ok": True})
         server.set_connectors([connector])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({
                 "id": "1", "method": "call",
@@ -210,7 +293,7 @@ class TestCallDispatch:
         server, socket_path = running_server
         connector = FakeConnector("gmail", result={"ok": True})
         server.set_connectors([connector])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({
                 "id": "1", "method": "call",
@@ -235,7 +318,7 @@ class TestCallDispatch:
 
         connector = ReasonCapturingConnector("gmail", result={"ok": True})
         server.set_connectors([connector])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({
                 "id": "1", "method": "call",
@@ -258,7 +341,7 @@ class TestCallDispatch:
         server, socket_path = running_server
         connector = FakeConnector("drive", result={"ok": True}, delay=0.05)
         server.set_connectors([connector])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             params_1 = {
                 "connector": "drive", "tool": "write_file_content",
@@ -279,7 +362,7 @@ class TestCallDispatch:
     async def test_call_unknown_connector_returns_error_with_matching_id(self, running_server):
         server, socket_path = running_server
         server.set_connectors([FakeConnector("gmail")])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({
                 "id": "42", "method": "call",
@@ -294,7 +377,7 @@ class TestCallDispatch:
     async def test_call_connector_raises_becomes_error_response(self, running_server):
         server, socket_path = running_server
         server.set_connectors([FakeConnector("gmail", error=ValueError("boom"))])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({
                 "id": "1", "method": "call",
@@ -307,7 +390,7 @@ class TestCallDispatch:
 
     async def test_unknown_method_returns_error(self, running_server):
         server, socket_path = running_server
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({"id": "1", "method": "bogus", "params": {}})
             resp = await client.recv()
@@ -318,7 +401,7 @@ class TestCallDispatch:
     async def test_malformed_json_line_returns_error_without_crashing_connection(self, running_server):
         server, socket_path = running_server
         server.set_connectors([FakeConnector("gmail", result="fine")])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send_raw(b"{not valid json\n")
             resp = await client.recv()
@@ -342,7 +425,7 @@ class TestConcurrency:
         slow = FakeConnector("slow", result="slow-done", delay=0.2)
         fast = FakeConnector("fast", result="fast-done")
         server.set_connectors([slow, fast])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({
                 "id": "1", "method": "call",
@@ -375,7 +458,7 @@ class TestDedupeRetries:
         server, socket_path = running_server
         connector = FakeConnector("drive", result="written", delay=0.1)
         server.set_connectors([connector])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             params = {"connector": "drive", "tool": "write_file_content", "args": {"file_id": "f1", "content": "hi"}}
             await client.send({"id": "1", "method": "call", "params": params})
@@ -393,7 +476,7 @@ class TestDedupeRetries:
         server, socket_path = running_server
         connector = FakeConnector("drive", result="written")
         server.set_connectors([connector])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             params = {"connector": "drive", "tool": "write_file_content", "args": {"file_id": "f1"}}
             await client.send({"id": "1", "method": "call", "params": params})
@@ -412,7 +495,7 @@ class TestDedupeRetries:
         server, socket_path = running_server
         connector = FakeConnector("drive", result="ok")
         server.set_connectors([connector])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({
                 "id": "1", "method": "call",
@@ -433,7 +516,7 @@ class TestDedupeRetries:
         server, socket_path = running_server
         connector = FakeConnector("drive", error=ValueError("boom"), delay=0.1)
         server.set_connectors([connector])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             params = {"connector": "drive", "tool": "write_file_content", "args": {"file_id": "f1"}}
             await client.send({"id": "1", "method": "call", "params": params})
@@ -452,7 +535,7 @@ class TestDedupeRetries:
         server._DEDUPE_TTL_SECONDS = 0.05
         connector = FakeConnector("drive", result="ok")
         server.set_connectors([connector])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             params = {"connector": "drive", "tool": "write_file_content", "args": {"file_id": "f1"}}
             await client.send({"id": "1", "method": "call", "params": params})
@@ -475,7 +558,7 @@ class TestDedupeRetries:
         server, socket_path = running_server
         connector = FakeConnector("gmail", result="label-created")
         server.set_connectors([connector])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             params = {"connector": "gmail", "tool": "gmail_create_label", "args": {"label_name": "QA"}}
             await client.send({"id": "1", "method": "call", "params": params})
@@ -495,7 +578,7 @@ class TestDedupeRetries:
         server, socket_path = running_server
         connector = FakeConnector("gmail", result="label-created", delay=0.1)
         server.set_connectors([connector])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             params = {"connector": "gmail", "tool": "gmail_create_label", "args": {"label_name": "QA"}}
             await client.send({"id": "1", "method": "call", "params": params})
@@ -518,7 +601,7 @@ class TestDedupeRetries:
         server, socket_path = running_server
         connector = FakeConnector("drive", result="ok")
         server.set_connectors([connector])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             # FakeConnector.tool_specs() declares "drive_tool" as read_only=True.
             params = {"connector": "drive", "tool": "drive_tool", "args": {"file_id": "f1"}}
@@ -539,7 +622,7 @@ class TestDedupeRetries:
         server, socket_path = running_server
         connector = FakeConnector("drive", result="ok", delay=0.1)
         server.set_connectors([connector])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             params = {"connector": "drive", "tool": "drive_tool", "args": {"file_id": "f1"}}
             await client.send({"id": "1", "method": "call", "params": params})
@@ -564,7 +647,7 @@ class TestLineLimit:
         server, socket_path = running_server
         big_payload = "x" * (200 * 1024)  # 200 KiB, well over the old 64 KiB default limit
         server.set_connectors([FakeConnector("drive", result={"content": big_payload})])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({
                 "id": "1", "method": "call",
@@ -580,7 +663,7 @@ class TestLineLimit:
         big_arg = "y" * (200 * 1024)
         connector = FakeConnector("drive", result="ok")
         server.set_connectors([connector])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({
                 "id": "1", "method": "call",
@@ -612,7 +695,7 @@ class TestCheckPolicyDispatch:
     async def test_auto_gated_tool_is_always_auto_accept(self, running_server):
         server, socket_path = running_server
         server.set_connectors([FakeConnector("gmail")])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({
                 "id": "1", "method": "check_policy",
@@ -631,7 +714,7 @@ class TestCheckPolicyDispatch:
         server, socket_path = running_server
         connector = FakeConnector("gmail")
         server.set_connectors([connector])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({
                 "id": "1", "method": "check_policy",
@@ -648,7 +731,7 @@ class TestCheckPolicyDispatch:
         })
         server, socket_path = running_server
         server.set_connectors([FakeConnector("gmail", my_email="me@example.com")])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({
                 "id": "1", "method": "check_policy",
@@ -671,7 +754,7 @@ class TestCheckPolicyDispatch:
         })
         server, socket_path = running_server
         server.set_connectors([FakeConnector("gmail", my_email="me@example.com")])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({
                 "id": "1", "method": "check_policy",
@@ -688,7 +771,7 @@ class TestCheckPolicyDispatch:
         init_auto_accept_evaluator({})
         server, socket_path = running_server
         server.set_connectors([FakeConnector("gmail")])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({
                 "id": "1", "method": "check_policy",
@@ -702,7 +785,7 @@ class TestCheckPolicyDispatch:
     async def test_unknown_tool_returns_error(self, running_server):
         server, socket_path = running_server
         server.set_connectors([FakeConnector("gmail")])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({
                 "id": "1", "method": "check_policy",
@@ -715,7 +798,7 @@ class TestCheckPolicyDispatch:
 
     async def test_unknown_connector_returns_error(self, running_server):
         server, socket_path = running_server
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({
                 "id": "1", "method": "check_policy",
@@ -729,7 +812,7 @@ class TestCheckPolicyDispatch:
     async def test_records_a_policy_check_audit_entry_not_a_real_decision(self, running_server):
         server, socket_path = running_server
         server.set_connectors([FakeConnector("gmail")])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({
                 "id": "1", "method": "check_policy",
@@ -751,7 +834,7 @@ class TestCheckPolicyDispatch:
         # check, so it has to reach claude_reason on this entry.
         server, socket_path = running_server
         server.set_connectors([FakeConnector("gmail")])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({
                 "id": "1", "method": "check_policy",
@@ -771,7 +854,7 @@ class TestCheckPolicyDispatch:
         # -- see ipc.py's module docstring.
         server, socket_path = running_server
         server.set_connectors([FakeConnector("gmail")])
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({
                 "id": "1", "method": "check_policy",
@@ -819,7 +902,7 @@ class TestListRulesDispatch:
             encoding="utf-8",
         )
         server, socket_path = running_server
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({"id": "1", "method": "list_rules", "params": {"reason": "auditing"}})
             resp = await client.recv()
@@ -832,7 +915,7 @@ class TestListRulesDispatch:
 
     async def test_records_a_rules_listed_audit_entry_with_reason(self, running_server):
         server, socket_path = running_server
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send(
                 {"id": "1", "method": "list_rules", "params": {"reason": "Auditing before cleanup."}}
@@ -847,7 +930,7 @@ class TestListRulesDispatch:
 
     async def test_missing_reason_defaults_to_empty_string(self, running_server):
         server, socket_path = running_server
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({"id": "1", "method": "list_rules", "params": {}})
             await client.recv()
@@ -883,7 +966,7 @@ class TestProposeRuleChangeDispatch:
 
     async def test_confirmed_rule_add_is_persisted_to_disk(self, running_server):
         server, socket_path = running_server
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({
                 "id": "1", "method": "propose_rule_change",
@@ -904,7 +987,7 @@ class TestProposeRuleChangeDispatch:
         from privacyfence import gate
         monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: False)
         server, socket_path = running_server
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({
                 "id": "1", "method": "propose_rule_change",
@@ -924,11 +1007,11 @@ class TestProposeRuleChangeDispatch:
         monkeypatch.setattr(
             gate, "show_rule_confirmation_popup", lambda description: popup_calls.append(1) or True
         )
-        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+        monkeypatch.setattr(ipc_server_module, "TOKEN_FILE", short_socket_path)
+        monkeypatch.setattr(ipc_server_module, "PORT_FILE", short_socket_path.replace("ipc_token", "ipc_port"))
         server = IPCServer([], unattended_sessions_enabled=True)
         await server.start()
-        socket_path = short_socket_path
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({
                 "id": "1", "method": "begin_unattended_session", "params": {"reason": "Scheduled run."},
@@ -950,7 +1033,7 @@ class TestProposeRuleChangeDispatch:
 
     async def test_grant_target_add_is_persisted_to_disk(self, running_server):
         server, socket_path = running_server
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({
                 "id": "1", "method": "propose_rule_change",
@@ -969,7 +1052,7 @@ class TestProposeRuleChangeDispatch:
 
     async def test_missing_target_returns_an_error_response(self, running_server):
         server, socket_path = running_server
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({
                 "id": "1", "method": "propose_rule_change",
@@ -1023,14 +1106,15 @@ class TestUnattendedSessionDispatch:
         return [json.loads(line) for line in week_file.read_text(encoding="utf-8").splitlines()]
 
     async def _server(self, socket_path, monkeypatch, *, enabled: bool):
-        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", socket_path)
+        monkeypatch.setattr(ipc_server_module, "TOKEN_FILE", socket_path)
+        monkeypatch.setattr(ipc_server_module, "PORT_FILE", socket_path.replace("ipc_token", "ipc_port"))
         server = IPCServer([], unattended_sessions_enabled=enabled)
         await server.start()
         return server
 
     async def test_begin_fails_when_not_enabled_by_config(self, short_socket_path, monkeypatch):
         server = await self._server(short_socket_path, monkeypatch, enabled=False)
-        client = await _RawClient.connect(short_socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
             resp = await client.recv()
@@ -1043,7 +1127,7 @@ class TestUnattendedSessionDispatch:
 
     async def test_begin_succeeds_when_enabled(self, short_socket_path, monkeypatch):
         server = await self._server(short_socket_path, monkeypatch, enabled=True)
-        client = await _RawClient.connect(short_socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
             resp = await client.recv()
@@ -1055,7 +1139,7 @@ class TestUnattendedSessionDispatch:
 
     async def test_begin_and_end_leave_an_audit_trail(self, short_socket_path, monkeypatch):
         server = await self._server(short_socket_path, monkeypatch, enabled=True)
-        client = await _RawClient.connect(short_socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
             await client.recv()
@@ -1072,7 +1156,7 @@ class TestUnattendedSessionDispatch:
 
     async def test_disconnect_while_unattended_is_audited_as_ended(self, short_socket_path, monkeypatch):
         server = await self._server(short_socket_path, monkeypatch, enabled=True)
-        client = await _RawClient.connect(short_socket_path)
+        client = await _RawClient.connect(server)
         await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
         await client.recv()
 
@@ -1092,7 +1176,7 @@ class TestUnattendedSessionDispatch:
         # session denies without ever showing a popup, it's the only
         # human-legible record of why.
         server = await self._server(short_socket_path, monkeypatch, enabled=True)
-        client = await _RawClient.connect(short_socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({
                 "id": "1", "method": "begin_unattended_session",
@@ -1115,7 +1199,7 @@ class TestUnattendedSessionDispatch:
 
     async def test_missing_reason_param_defaults_to_empty_string(self, short_socket_path, monkeypatch):
         server = await self._server(short_socket_path, monkeypatch, enabled=True)
-        client = await _RawClient.connect(short_socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
             await client.recv()
@@ -1128,7 +1212,7 @@ class TestUnattendedSessionDispatch:
 
     async def test_end_without_begin_does_not_audit_a_phantom_end(self, short_socket_path, monkeypatch):
         server = await self._server(short_socket_path, monkeypatch, enabled=True)
-        client = await _RawClient.connect(short_socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({"id": "1", "method": "end_unattended_session", "params": {}})
             await client.recv()
@@ -1142,7 +1226,7 @@ class TestUnattendedSessionDispatch:
         server = await self._server(short_socket_path, monkeypatch, enabled=True)
         connector = UnattendedAwareConnector("gmail")
         server.set_connectors([connector])
-        client = await _RawClient.connect(short_socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
             await client.recv()
@@ -1162,7 +1246,7 @@ class TestUnattendedSessionDispatch:
         server = await self._server(short_socket_path, monkeypatch, enabled=True)
         connector = UnattendedAwareConnector("gmail")
         server.set_connectors([connector])
-        client = await _RawClient.connect(short_socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({
                 "id": "1", "method": "call",
@@ -1179,7 +1263,7 @@ class TestUnattendedSessionDispatch:
         server = await self._server(short_socket_path, monkeypatch, enabled=True)
         connector = UnattendedAwareConnector("gmail")
         server.set_connectors([connector])
-        client = await _RawClient.connect(short_socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
             await client.recv()
@@ -1202,8 +1286,8 @@ class TestUnattendedSessionDispatch:
         server = await self._server(short_socket_path, monkeypatch, enabled=True)
         connector = UnattendedAwareConnector("gmail")
         server.set_connectors([connector])
-        marked_client = await _RawClient.connect(short_socket_path)
-        plain_client = await _RawClient.connect(short_socket_path)
+        marked_client = await _RawClient.connect(server)
+        plain_client = await _RawClient.connect(server)
         try:
             await marked_client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
             await marked_client.recv()
@@ -1223,7 +1307,7 @@ class TestUnattendedSessionDispatch:
 
     async def test_disconnect_clears_unattended_state(self, short_socket_path, monkeypatch):
         server = await self._server(short_socket_path, monkeypatch, enabled=True)
-        client = await _RawClient.connect(short_socket_path)
+        client = await _RawClient.connect(server)
         await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
         await client.recv()
         assert server.unattended_session_count() == 1
@@ -1238,7 +1322,7 @@ class TestUnattendedSessionDispatch:
 
     async def test_end_unattended_session_is_a_no_op_when_never_begun(self, short_socket_path, monkeypatch):
         server = await self._server(short_socket_path, monkeypatch, enabled=True)
-        client = await _RawClient.connect(short_socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({"id": "1", "method": "end_unattended_session", "params": {}})
             resp = await client.recv()
@@ -1253,7 +1337,7 @@ class TestConnectionHandling:
         server, socket_path = running_server
         server.set_connectors([FakeConnector("gmail", result="ok")])
 
-        dying_client = await _RawClient.connect(socket_path)
+        dying_client = await _RawClient.connect(server)
         await dying_client.send({"id": "1", "method": "health", "params": {}})
         await dying_client.recv()
         dying_client.writer.close()
@@ -1261,7 +1345,7 @@ class TestConnectionHandling:
         # beat to observe it before asserting it's still healthy.
         await asyncio.sleep(0.05)
 
-        healthy_client = await _RawClient.connect(socket_path)
+        healthy_client = await _RawClient.connect(server)
         try:
             await healthy_client.send({
                 "id": "1", "method": "call",
@@ -1390,7 +1474,7 @@ class TestSendFailureOnDroppedSocket:
         dying_writer.drain_exc = ConnectionResetError("peer already gone")
         await server._send(dying_writer, {"id": "1", "result": "should not raise"})
 
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({
                 "id": "1", "method": "call",
@@ -1425,7 +1509,7 @@ class TestAuditLogWriteFailureDoesNotBlockTheResponse:
         server, socket_path = running_server
         server.set_connectors([FakeConnector("gmail")])
         monkeypatch.setattr(ipc_server_module, "get_audit_logger", lambda: _RaisingAuditLogger())
-        client = await _RawClient.connect(socket_path)
+        client = await _RawClient.connect(server)
         try:
             with caplog.at_level(logging.WARNING):
                 await client.send({
@@ -1441,11 +1525,12 @@ class TestAuditLogWriteFailureDoesNotBlockTheResponse:
     async def test_begin_unattended_session_response_still_sent_when_audit_write_raises(
         self, short_socket_path, monkeypatch, caplog
     ):
-        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+        monkeypatch.setattr(ipc_server_module, "TOKEN_FILE", short_socket_path)
+        monkeypatch.setattr(ipc_server_module, "PORT_FILE", short_socket_path.replace("ipc_token", "ipc_port"))
         server = IPCServer([], unattended_sessions_enabled=True)
         await server.start()
         monkeypatch.setattr(ipc_server_module, "get_audit_logger", lambda: _RaisingAuditLogger())
-        client = await _RawClient.connect(short_socket_path)
+        client = await _RawClient.connect(server)
         try:
             with caplog.at_level(logging.WARNING):
                 await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
@@ -1460,10 +1545,11 @@ class TestAuditLogWriteFailureDoesNotBlockTheResponse:
     async def test_end_unattended_session_response_still_sent_when_audit_write_raises(
         self, short_socket_path, monkeypatch, caplog
     ):
-        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+        monkeypatch.setattr(ipc_server_module, "TOKEN_FILE", short_socket_path)
+        monkeypatch.setattr(ipc_server_module, "PORT_FILE", short_socket_path.replace("ipc_token", "ipc_port"))
         server = IPCServer([], unattended_sessions_enabled=True)
         await server.start()
-        client = await _RawClient.connect(short_socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
             await client.recv()
@@ -1488,12 +1574,13 @@ class TestFireUnattendedChangedListener:
     unattended must not fire it)."""
 
     async def test_listener_fires_on_begin(self, short_socket_path, monkeypatch):
-        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+        monkeypatch.setattr(ipc_server_module, "TOKEN_FILE", short_socket_path)
+        monkeypatch.setattr(ipc_server_module, "PORT_FILE", short_socket_path.replace("ipc_token", "ipc_port"))
         server = IPCServer([], unattended_sessions_enabled=True)
         await server.start()
         fired = []
         server.set_unattended_changed_listener(lambda: fired.append(server.unattended_session_count()))
-        client = await _RawClient.connect(short_socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
             await client.recv()
@@ -1503,10 +1590,11 @@ class TestFireUnattendedChangedListener:
             await server.stop()
 
     async def test_listener_fires_on_end(self, short_socket_path, monkeypatch):
-        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+        monkeypatch.setattr(ipc_server_module, "TOKEN_FILE", short_socket_path)
+        monkeypatch.setattr(ipc_server_module, "PORT_FILE", short_socket_path.replace("ipc_token", "ipc_port"))
         server = IPCServer([], unattended_sessions_enabled=True)
         await server.start()
-        client = await _RawClient.connect(short_socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
             await client.recv()
@@ -1521,10 +1609,11 @@ class TestFireUnattendedChangedListener:
             await server.stop()
 
     async def test_listener_fires_on_disconnect_while_unattended(self, short_socket_path, monkeypatch):
-        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+        monkeypatch.setattr(ipc_server_module, "TOKEN_FILE", short_socket_path)
+        monkeypatch.setattr(ipc_server_module, "PORT_FILE", short_socket_path.replace("ipc_token", "ipc_port"))
         server = IPCServer([], unattended_sessions_enabled=True)
         await server.start()
-        client = await _RawClient.connect(short_socket_path)
+        client = await _RawClient.connect(server)
         await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
         await client.recv()
 
@@ -1542,12 +1631,13 @@ class TestFireUnattendedChangedListener:
         # end_unattended_session on a connection that was never marked
         # unattended is a no-op -- membership didn't change, so there is
         # nothing for the menu bar to rebuild for.
-        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+        monkeypatch.setattr(ipc_server_module, "TOKEN_FILE", short_socket_path)
+        monkeypatch.setattr(ipc_server_module, "PORT_FILE", short_socket_path.replace("ipc_token", "ipc_port"))
         server = IPCServer([], unattended_sessions_enabled=True)
         await server.start()
         fired = []
         server.set_unattended_changed_listener(lambda: fired.append(True))
-        client = await _RawClient.connect(short_socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({"id": "1", "method": "end_unattended_session", "params": {}})
             await client.recv()
@@ -1560,10 +1650,11 @@ class TestFireUnattendedChangedListener:
         # Default state (menu bar not wired up yet, e.g. in tests): firing
         # with no listener registered must be a silent no-op, not an
         # AttributeError that would take the whole call down.
-        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+        monkeypatch.setattr(ipc_server_module, "TOKEN_FILE", short_socket_path)
+        monkeypatch.setattr(ipc_server_module, "PORT_FILE", short_socket_path.replace("ipc_token", "ipc_port"))
         server = IPCServer([], unattended_sessions_enabled=True)
         await server.start()
-        client = await _RawClient.connect(short_socket_path)
+        client = await _RawClient.connect(server)
         try:
             await client.send({"id": "1", "method": "begin_unattended_session", "params": {}})
             resp = await client.recv()
