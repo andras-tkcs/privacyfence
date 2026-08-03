@@ -31,7 +31,7 @@ Paste the printed report into the PR description under a "## Popup smoke
 check" heading -- see docs/testing-policy.md §2.2.
 
 _scenarios() has at least one entry per tool in docs/approval-window-content-reference.md's
-RG-1/RG-2/WG-1/WG-2/WG-3 tables (62 tools total, including every RG-1 tool sharing a dialog
+RG-1/RG-2/WG-1/WG-2/WG-3 tables (67 tools total, including every RG-1 tool sharing a dialog
 shape, e.g. confluence_get_page/confluence_get_page_by_title) -- every dialog shape that doc
 documents gets a real on-screen click, not just a representative handful. (RG-2 is the one shape
 that's genuinely distinct from RG-1's, the native-PDF body -- see that doc's "View groups"
@@ -51,7 +51,7 @@ scenario in _scenarios().
 
 One more, non-tool scenario runs last: the actual menu bar status item and, from it, the "Manage
 Auto-accept Rules…" window (see _run_menu_bar_scenario's docstring) -- exercising that real click
-end to end the same way the rest of this script does for approval popups. 90 scenarios total: 89
+end to end the same way the rest of this script does for approval popups. 94 scenarios total: 93
 tool-approval scenarios plus this one.
 
 Every tool-approval scenario renders through the one real card-stack rendering
@@ -993,7 +993,7 @@ def _scenarios(
     group: str = "all",
 ) -> list[ScenarioResult]:
     """At least one scenario per tool in docs/approval-window-content-reference.md's RG-1/RG-2/
-    WG-1/WG-2/WG-3 tables (62 tools total) -- every dialog *shape* that reference doc
+    WG-1/WG-2/WG-3 tables (67 tools total) -- every dialog *shape* that reference doc
     documents, not just a representative handful. A handful of RG-1 tools additionally get two
     "RG-1 stress" readability variants beyond their baseline entry -- see that section below.
     Cross-cutting mechanics that doc calls "automatic on every
@@ -1793,7 +1793,7 @@ def _scenarios(
 
     # ================================================================== #
     # WG-1 and WG-2 -- popup-gate, Deny / Allow once (WG-1: never Always
-    # allow) or Deny / Allow once / conditionally Always allow (WG-2: 26
+    # allow) or Deny / Allow once / conditionally Always allow (WG-2: 29
     # tools across auto_accept.WRITE_RULE_SUGGESTIONS) -- grouped by
     # connector below rather than split into two contiguous blocks, so
     # each tool's scenario sits next to its sibling tools from the same
@@ -1819,6 +1819,21 @@ def _scenarios(
     ))
 
     results.append(run(
+        # Same shape as gmail_create_draft, plus the Attachments preview row
+        # _format_attachment_preview() builds ("name (N,NNN bytes)").
+        "WG-2 · gmail_create_draft_with_attachments",
+        click_title="Allow once", expected="accept",
+        title="Create Gmail Draft with Attachments",
+        preview={
+            "To": QA_EMAIL, "Subject": f"Re: {QA_GMAIL_SUBJECT}",
+            "Attachments": "qa-smoke-test.png (1,024 bytes)",
+        },
+        details_text="Synthetic PrivacyFence QA draft with attachment. No real information.",
+        allow_accept_all=True,
+        connector="gmail",
+    ))
+
+    results.append(run(
         "WG-2 · gmail_reply_draft",
         click_title="Allow once", expected="accept",
         title="Create Gmail Reply Draft",
@@ -1829,11 +1844,37 @@ def _scenarios(
     ))
 
     results.append(run(
+        "WG-2 · gmail_reply_draft_with_attachments",
+        click_title="Allow once", expected="accept",
+        title="Create Gmail Reply Draft with Attachments",
+        preview={
+            "In reply to": QA_GMAIL_SUBJECT, "To": QA_EMAIL,
+            "Attachments": "qa-smoke-test.png (1,024 bytes)",
+        },
+        details_text="Synthetic PrivacyFence QA reply draft with attachment. No real information.",
+        allow_accept_all=True,
+        connector="gmail",
+    ))
+
+    results.append(run(
         "WG-2 · gmail_reply_all_draft",
         click_title="Allow once", expected="accept",
         title="Create Gmail Reply-All Draft",
         preview={"In reply to": QA_GMAIL_SUBJECT, "To": QA_EMAIL, "Also to": QA_CC_EMAIL},
         details_text="Synthetic PrivacyFence QA reply-all draft. No real information.",
+        allow_accept_all=True,
+        connector="gmail",
+    ))
+
+    results.append(run(
+        "WG-2 · gmail_reply_all_draft_with_attachments",
+        click_title="Allow once", expected="accept",
+        title="Create Gmail Reply-All Draft with Attachments",
+        preview={
+            "In reply to": QA_GMAIL_SUBJECT, "To": QA_EMAIL, "Also to": QA_CC_EMAIL,
+            "Attachments": "qa-smoke-test.png (1,024 bytes)",
+        },
+        details_text="Synthetic PrivacyFence QA reply-all draft with attachment. No real information.",
         allow_accept_all=True,
         connector="gmail",
     ))
@@ -2033,6 +2074,16 @@ def _scenarios(
         # timestamp id.
         preview={"Channel": QA_SLACK_CHANNEL, "In thread": QA_SLACK_SEED},
         details_text="Synthetic PrivacyFence QA reply. No real information. [QATEST]",
+        allow_accept_all=False,
+        connector="slack",
+    ))
+
+    results.append(run(
+        "WG-1 · slack_create_group_chat",
+        click_title="Allow once", expected="accept",
+        title="Create Slack Group Chat",
+        preview={"Participants": "PrivacyFence QA Bot 1, PrivacyFence QA Bot 2"},
+        details_text="Participants: PrivacyFence QA Bot 1, PrivacyFence QA Bot 2",
         allow_accept_all=False,
         connector="slack",
     ))
@@ -2547,8 +2598,8 @@ def main() -> None:
         "--scenario",
         help="Run only the scenario(s) whose name contains this text (case-insensitive substring "
              "match against the scenario name shown in the report table, e.g. 'gmail_get_thread' or "
-             "'Menu bar' for the menu-bar/rules-window scenario), instead of the full 90-scenario "
-             "suite (89 tool-approval scenarios plus the one menu-bar scenario). For grabbing a "
+             "'Menu bar' for the menu-bar/rules-window scenario), instead of the full 94-scenario "
+             "suite (93 tool-approval scenarios plus the one menu-bar scenario). For grabbing a "
              "single updated screenshot -- e.g. for README.md -- without sitting through the whole "
              "run: --scenario 'gmail_get_thread' --screenshot-dir docs/images/screenshots. "
              "Combines with --group (both must match). Matches nothing -> an empty report and a "

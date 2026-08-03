@@ -24,6 +24,7 @@ without a restart does in fact happen.
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -31,6 +32,10 @@ from types import SimpleNamespace
 import pytest
 
 from privacyfence import auto_accept, menu_bar, resource_names, update_checker
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != "darwin", reason="requires real AppKit/PyObjC/rumps (macOS only, matches project's macOS-only runtime)"
+)
 
 
 def wait_until(predicate, timeout=2.0, interval=0.005) -> bool:
