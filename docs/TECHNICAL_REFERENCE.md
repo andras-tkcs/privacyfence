@@ -492,6 +492,15 @@ in that same connector's **Filters** submenu, with the same one-value-at-a-time 
 **✕ Remove** treatment — there's no shared multi-line text box to paste several IDs into anywhere
 in this menu.
 
+**Sheets** and **Docs** get their own top-level sidebar pages in this window (neither is a real
+connector — both ride on Drive's OAuth grant, see [Auto-accept rules](#auto-accept-rules)'s Drive
+section), but the `folders`/`sandbox_folders` grants above are Drive-page-only sections — a folder
+trusted there silently also covers `sheets.read_values` and every `sheets.*`/`docs.*` write. So
+each of those two pages opens with a read-only **Governed by Drive** section summarizing the
+currently-granted folder(s) for read/write and a **Manage in Drive →** link that jumps the sidebar
+selection there — no checkboxes of its own; the one editable copy of these grants stays on the
+Drive page.
+
 ### Name resolution
 
 Grant rows show the resource's real name, resolved via the same connector API calls used
