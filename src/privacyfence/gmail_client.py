@@ -26,6 +26,8 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+from .email_markdown import markdown_to_html, markdown_to_plain
+
 logger = logging.getLogger(__name__)
 
 # gmail.modify: reading and modifying messages/labels, creating drafts.
@@ -130,6 +132,41 @@ def _attach_files(msg, attachments: list[str]) -> None:
         email.encoders.encode_base64(part)
         part.add_header("Content-Disposition", "attachment", filename=name)
         msg.attach(part)
+
+
+def _build_body_part(body: str, body_markdown: str = "", *, policy=None):
+    """Build the body part(s) of a draft: a plain ``MIMEText`` when no
+    ``body_markdown`` is given (today's behavior, unchanged), or a
+    ``multipart/alternative`` (text/plain + text/html) when it is.
+
+    When ``body_markdown`` is supplied without an explicit ``body``, the
+    plain-text alternative is auto-derived from it via ``markdown_to_plain``
+    rather than left for the caller to author separately -- this keeps the
+    two alternatives from silently diverging (a reviewer approving the plain
+    preview should always see the same content the recipient's HTML-capable
+    client renders).
+
+    Callers that build a bare top-level message (no attachments) pass
+    ``policy`` here so it lands on the object that will carry the address
+    headers; callers nesting this inside a ``multipart/mixed`` for
+    attachments leave it as the default.
+    """
+    import email.mime.multipart
+    import email.mime.text
+
+    if not body and not body_markdown:
+        raise GmailClientError(
+            "email body: provide body and/or body_markdown -- at least one must be non-empty"
+        )
+
+    if not body_markdown:
+        return email.mime.text.MIMEText(body, policy=policy)
+
+    plain_text = body if body else markdown_to_plain(body_markdown)
+    alt = email.mime.multipart.MIMEMultipart("alternative", policy=policy)
+    alt.attach(email.mime.text.MIMEText(plain_text, "plain"))
+    alt.attach(email.mime.text.MIMEText(markdown_to_html(body_markdown), "html"))
+    return alt
 
 
 @dataclass
@@ -451,14 +488,12 @@ class GmailClient:
     # Write operations
     # ------------------------------------------------------------------ #
     def create_draft(
-        self, to: str, subject: str, body: str, cc: str = "", bcc: str = ""
+        self, to: str, subject: str, body: str, cc: str = "", bcc: str = "", body_markdown: str = ""
     ) -> dict:
         """Create a Gmail draft and return its id."""
-        import email.mime.text
-        import email.mime.multipart
         import base64
 
-        msg = email.mime.text.MIMEText(body, policy=_UNFOLDED_POLICY)
+        msg = _build_body_part(body, body_markdown, policy=_UNFOLDED_POLICY)
         msg["to"] = self._encode_addresses(to)
         msg["subject"] = subject
         if cc:
@@ -482,7 +517,14 @@ class GmailClient:
         return {"draft_id": draft_id, "to": to, "subject": subject}
 
     def create_draft_with_attachments(
-        self, to: str, subject: str, body: str, attachments: list[str], cc: str = "", bcc: str = ""
+        self,
+        to: str,
+        subject: str,
+        body: str,
+        attachments: list[str],
+        cc: str = "",
+        bcc: str = "",
+        body_markdown: str = "",
     ) -> dict:
         """Create a Gmail draft with one or more local-file attachments.
 
@@ -492,7 +534,6 @@ class GmailClient:
         ``connectors/gmail.py``'s Gmail tool docstrings for why.
         """
         import email.mime.multipart
-        import email.mime.text
 
         if not attachments:
             raise GmailClientError("create_draft_with_attachments requires at least one attachment")
@@ -504,7 +545,7 @@ class GmailClient:
             msg["cc"] = self._encode_addresses(cc)
         if bcc:
             msg["bcc"] = self._encode_addresses(bcc)
-        msg.attach(email.mime.text.MIMEText(body))
+        msg.attach(_build_body_part(body, body_markdown))
         _attach_files(msg, attachments)
 
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
@@ -533,6 +574,7 @@ class GmailClient:
         my_email: str = "",
         cc: str = "",
         bcc: str = "",
+        body_markdown: str = "",
     ) -> dict:
         """Create a draft that replies to an existing message in-thread.
 
@@ -543,11 +585,9 @@ class GmailClient:
         call rather than reusing the normalized GmailMessage, which doesn't
         carry them.
         """
-        import email.mime.text
-
         target = self._resolve_reply_target(message_id, reply_all, my_email, cc)
 
-        msg = email.mime.text.MIMEText(body, policy=_UNFOLDED_POLICY)
+        msg = _build_body_part(body, body_markdown, policy=_UNFOLDED_POLICY)
         msg["to"] = self._encode_address(target["to_addr"])
         msg["subject"] = target["subject"]
         if target["final_cc"]:
@@ -595,6 +635,7 @@ class GmailClient:
         my_email: str = "",
         cc: str = "",
         bcc: str = "",
+        body_markdown: str = "",
     ) -> dict:
         """Create a reply draft with one or more local-file attachments.
 
@@ -605,7 +646,6 @@ class GmailClient:
         stays a separate method rather than a branch on the existing one.
         """
         import email.mime.multipart
-        import email.mime.text
 
         if not attachments:
             raise GmailClientError("create_reply_draft_with_attachments requires at least one attachment")
@@ -622,7 +662,7 @@ class GmailClient:
         if target["original_message_id"]:
             msg["In-Reply-To"] = target["original_message_id"]
             msg["References"] = target["references"]
-        msg.attach(email.mime.text.MIMEText(body))
+        msg.attach(_build_body_part(body, body_markdown))
         _attach_files(msg, attachments)
 
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")

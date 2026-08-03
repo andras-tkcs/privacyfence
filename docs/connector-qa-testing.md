@@ -319,6 +319,14 @@ so I can catch a wrong lookup immediately instead of at the end of the run.
    recipient sent yet. Don't click it here (it'd silently skip the popup for every draft
    in later phases); it's exercised the same way step 9 exercises `gmail_add_label`'s
    button, just not repeated per-step.
+   Then a second `gmail_create_draft` call, same subject/recipient but with `body_markdown` set
+   to something exercising every supported construct — `**bold**`, `*italic*`, `==highlight==`,
+   a `[link](https://example.com)`, and a bullet list — and `body` omitted. Check the popup's
+   right pane shows the raw Markdown source (not rendered), Allow once, then open the actual
+   draft in Gmail and confirm it renders as real HTML (bold/italic/highlight/link/list all
+   showing, not literal `**`/`==` characters) — this is the one thing a unit test can't verify,
+   since it depends on Gmail's own rendering of the message this tool actually sent. Add it to
+   the manifest too.
 8. `gmail_reply_draft` on the thread from step 4, again clearly marked as a test
    with `{RUN_ID}`. Popup, I'll Allow once. Add it to the manifest.
 9. `gmail_add_label` on the **label-test message from step 2** — use a fresh
