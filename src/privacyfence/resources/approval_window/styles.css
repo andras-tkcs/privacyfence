@@ -266,9 +266,10 @@ img { display: block; max-width: 100%; }
 /* Rich Markdown preview blocks (markdown_to_html.py's output, wrapped in
    .pf-md by approval_window_html.py's "markdown" block type) --
    DOCX/PPTX/XLSX/Confluence extraction converted to real headings, lists,
-   and tables instead of a flat text dump. <table> reuses .pf-table above
-   directly (markdown_to_html.py emits that class itself) so a
-   Markdown-sourced table looks identical to a natively-built one. */
+   and tables instead of a flat text dump. A Markdown-sourced table reuses
+   .pf-table above directly (markdown_to_html.py emits that class itself),
+   so it looks identical to a natively-built one -- no separate table rule
+   needed here. */
 .pf-md { font-size: 13px; line-height: 1.6; }
 .pf-md > *:last-child { margin-bottom: 0; }
 .pf-md h1, .pf-md h2, .pf-md h3, .pf-md h4, .pf-md h5, .pf-md h6 {
