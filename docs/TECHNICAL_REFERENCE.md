@@ -263,7 +263,14 @@ PrivacyFence for a delete.
 | `slack_get_channel_history` | read | review | channel name, message count, first message (80 chars) | All messages |
 | `slack_get_thread_replies` | read | review | channel name, thread starter (80 chars), reply count | All replies |
 | `slack_search_messages` | read | review | query, result count | All results |
+| `slack_create_group_chat` | write | popup | — | Resolved participant names (or raw user ids when unresolvable); returns the new/reopened conversation's `id`, ready for `slack_send_message` |
 | `slack_send_message` | write | popup | — | Channel name, full message text (optional `mark_unread=true` leaves the message unread after sending; requires `mark` scope) |
+
+`slack_list_group_chats` only lists group DMs that already exist — there's nothing to list until one
+has been opened at least once. To start a brand-new group chat, call `slack_create_group_chat` with
+2+ participant user ids (from `slack_list_dms`/`slack_list_group_chats`, or a message's `user_id`
+field — it does not resolve email addresses or handles), then pass the returned `id` to
+`slack_send_message` as `channel_id`.
 
 ### Google Calendar
 

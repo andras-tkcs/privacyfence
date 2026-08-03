@@ -717,7 +717,7 @@ class TestSearchMessages:
 
 
 # ---------------------------------------------------------------------------- #
-# send_message / mark_channel_unread_before / get_user_info
+# send_message / open_conversation / resolve_user_name / mark_channel_unread_before / get_user_info
 # ---------------------------------------------------------------------------- #
 
 class TestSendMessage:
@@ -751,6 +751,68 @@ class TestSendMessage:
         client = make_client(web_client)
         with pytest.raises(SlackClientError, match="send_message"):
             client.send_message("C1", "hi")
+
+
+class TestOpenConversation:
+    def test_requires_at_least_one_user_id(self):
+        client = make_client(MagicMock())
+        with pytest.raises(SlackClientError, match="requires at least one user_id"):
+            client.open_conversation([])
+
+    def test_opens_group_dm_and_resolves_members(self):
+        web_client = MagicMock()
+        web_client.conversations_open.return_value = {
+            "channel": {"id": "G1", "name": "mpdm-jdoe--bsmith-1"}
+        }
+        web_client.users_info.side_effect = [
+            {"user": {"id": "U1", "name": "jdoe", "real_name": "Jane Doe"}},
+            {"user": {"id": "U2", "name": "bsmith", "real_name": "Bob Smith"}},
+        ]
+        client = make_client(web_client)
+
+        chat = client.open_conversation(["U1", "U2"])
+
+        assert chat == SlackGroupChat(
+            id="G1", name="mpdm-jdoe--bsmith-1",
+            member_ids=["U1", "U2"], member_names=["Jane Doe", "Bob Smith"],
+        )
+        assert web_client.conversations_open.call_args.kwargs["users"] == "U1,U2"
+
+    def test_falls_back_to_resolving_name_when_response_has_none(self):
+        web_client = MagicMock()
+        web_client.conversations_open.return_value = {"channel": {"id": "G1"}}
+        web_client.conversations_info.return_value = {"channel": {"name": "resolved-name"}}
+        web_client.users_info.return_value = {"user": {"id": "U1", "name": "jdoe"}}
+        client = make_client(web_client)
+
+        chat = client.open_conversation(["U1"])
+
+        assert chat.name == "resolved-name"
+
+    def test_api_error_becomes_slack_client_error(self):
+        web_client = MagicMock()
+        web_client.conversations_open.side_effect = slack_error("channel_not_found")
+        client = make_client(web_client)
+        with pytest.raises(SlackClientError, match="open_conversation"):
+            client.open_conversation(["U1", "U2"])
+
+
+class TestResolveUserNamePublicWrapper:
+    """`resolve_user_name` is the public wrapper `open_conversation`'s
+    callers (outside this module) use -- `TestResolveUserName` above already
+    covers the private `_resolve_user_name` it delegates to."""
+
+    def test_resolves_via_get_user_info(self):
+        web_client = MagicMock()
+        web_client.users_info.return_value = {"user": {"id": "U1", "name": "jdoe", "real_name": "Jane Doe"}}
+        client = make_client(web_client)
+        assert client.resolve_user_name("U1") == "Jane Doe"
+
+    def test_error_is_swallowed_returns_empty(self):
+        web_client = MagicMock()
+        web_client.users_info.side_effect = slack_error()
+        client = make_client(web_client)
+        assert client.resolve_user_name("U1") == ""
 
 
 class TestMarkChannelUnreadBefore:

@@ -141,6 +141,7 @@ _TOOL_LAYOUT: dict[str, str] = {
     "jira_create_issue": WIDE, "confluence_create_page": WIDE,
     "calendar_get_event_details": NARROW, "calendar_create_event": NARROW,
     "slack_send_message": WIDE, "telegram_send_message": WIDE, "jira_add_comment": WIDE,
+    "slack_create_group_chat": NARROW,
     "gmail_reply_all_draft": WIDE,
     # Parallel to gmail_create_draft/gmail_reply_draft/gmail_reply_all_draft above --
     # same WIDE right-pane body-text preview, just with an extra Attachments row in §1.

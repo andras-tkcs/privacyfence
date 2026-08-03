@@ -35,6 +35,7 @@ The Slack app itself is organization-level config: **one IT admin creates it onc
 | `users:read.email` | Resolve user email addresses |
 | `search:read` | Search messages across the workspace |
 | `chat:write` | Send messages as you |
+| `im:write` / `mpim:write` | Create a new 1:1 or group DM (`slack_create_group_chat`) |
 | `im:write` / `channels:write` / `groups:write` / `mpim:write` | Mark a conversation unread (`mark_unread` option on `slack_send_message`) |
 
 > **Do not add Bot Token Scopes.** Only the User Token Scopes section is needed.

@@ -37,6 +37,10 @@ def make_connector(my_email="me@example.com"):
     # Default to "not a group DM" so tests that don't care about channel-type
     # resolution see a plain bool, not a MagicMock, in args.
     client.resolve_is_group_dm.return_value = False
+    # Default to "not resolvable" so tests that don't care about participant-name
+    # resolution get a plain str (falling back to the raw user id), not a MagicMock,
+    # when building slack_create_group_chat's preview.
+    client.resolve_user_name.return_value = ""
     connector = SlackConnector(client)
     connector.my_email = my_email
     return connector, client
@@ -449,6 +453,94 @@ class TestSearchMessages:
         assert "alice@example.com" not in kwargs["pii_scan_text"]
 
 
+class TestCreateGroupChat:
+    async def test_rejects_fewer_than_two_participants(self, gated_call_spy):
+        connector, client = make_connector()
+
+        with pytest.raises(ValueError, match="at least 2 distinct participant"):
+            await connector.call("slack_create_group_chat", {"participants": "U1"})
+
+        assert gated_call_spy == []
+        client.resolve_user_name.assert_not_called()
+
+    async def test_rejects_duplicate_participants(self, gated_call_spy):
+        connector, client = make_connector()
+
+        with pytest.raises(ValueError, match="at least 2 distinct participant"):
+            await connector.call("slack_create_group_chat", {"participants": "U1, U1"})
+
+        assert gated_call_spy == []
+
+    async def test_preview_shows_resolved_participant_names(self, gated_call_spy):
+        connector, client = make_connector()
+        client.resolve_user_name.side_effect = ["Jane Doe", "Bob Smith"]
+        client.open_conversation.return_value = SlackGroupChat(id="G1", name="g1")
+
+        await connector.call("slack_create_group_chat", {"participants": "U1,U2"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview"] == {"Participants": "Jane Doe, Bob Smith"}
+        assert kwargs["summary"] == "New group chat with Jane Doe, Bob Smith"
+        assert kwargs["gate"] == "popup"
+        assert kwargs["sender"] == "U1,U2"
+        assert kwargs["args"] == {"participants": "U1,U2"}
+        client.resolve_user_name.assert_any_call("U1")
+        client.resolve_user_name.assert_any_call("U2")
+
+    async def test_unresolvable_participant_falls_back_to_raw_id_in_preview(self, gated_call_spy):
+        connector, client = make_connector()
+        client.resolve_user_name.side_effect = ["", "Bob Smith"]
+        client.open_conversation.return_value = SlackGroupChat(id="G1", name="g1")
+
+        await connector.call("slack_create_group_chat", {"participants": "U1,U2"})
+
+        assert gated_call_spy[0]["preview"] == {"Participants": "U1, Bob Smith"}
+
+    async def test_participants_are_trimmed(self, gated_call_spy):
+        connector, client = make_connector()
+        client.resolve_user_name.side_effect = ["Jane Doe", "Bob Smith"]
+        client.open_conversation.return_value = SlackGroupChat(id="G1", name="g1")
+
+        await connector.call("slack_create_group_chat", {"participants": " U1 , U2 "})
+
+        client.open_conversation.assert_called_once_with(["U1", "U2"])
+
+    async def test_user_identity_redact_affects_returned_members_not_the_human_facing_preview(
+        self, gated_call_spy,
+    ):
+        # Regression: the popup preview is for the human approving their own
+        # action (always show who's really being added, like
+        # _send_message's _channel_display), unlike the return value below,
+        # which is data flowing back to Claude and must respect slack_privacy.
+        init_privacy_filter({"slack_privacy": {"categories": {"user_identity": "redact"}}})
+        connector, client = make_connector()
+        client.resolve_user_name.side_effect = ["Jane Doe", "Bob Smith"]
+        client.open_conversation.return_value = SlackGroupChat(
+            id="G1", name="g1", member_ids=["U1", "U2"], member_names=["Jane Doe", "Bob Smith"],
+        )
+
+        result = await connector.call("slack_create_group_chat", {"participants": "U1,U2"})
+
+        assert gated_call_spy[0]["preview"] == {"Participants": "Jane Doe, Bob Smith"}
+        assert result["member_ids"][0].startswith("[REDACTED")
+        assert result["member_names"][0].startswith("[REDACTED")
+
+    async def test_calls_open_conversation_and_maps_result(self, gated_call_spy):
+        connector, client = make_connector()
+        client.resolve_user_name.return_value = ""
+        client.open_conversation.return_value = SlackGroupChat(
+            id="G1", name="mpdm-a--b-1", member_ids=["U1", "U2"], member_names=["Jane", "Bob"],
+        )
+
+        result = await connector.call("slack_create_group_chat", {"participants": "U1,U2"})
+
+        client.open_conversation.assert_called_once_with(["U1", "U2"])
+        assert result == {
+            "id": "G1", "name": "mpdm-a--b-1",
+            "member_ids": ["U1", "U2"], "member_names": ["Jane", "Bob"],
+        }
+
+
 class TestSendMessage:
     async def test_basic_send_preview_minimal(self, gated_call_spy):
         connector, client = make_connector()
@@ -598,4 +690,8 @@ class TestFetchErrorMapping:
 class TestEveryToolIsAudited:
     async def test_every_declared_tool_leaves_an_audit_trail(self, monkeypatch, tmp_path):
         connector, client = make_connector()
-        await assert_all_tools_leave_an_audit_trail(connector, slack_module, monkeypatch, tmp_path)
+        client.open_conversation.return_value = SlackGroupChat(id="G1", name="g1")
+        await assert_all_tools_leave_an_audit_trail(
+            connector, slack_module, monkeypatch, tmp_path,
+            arg_overrides={"slack_create_group_chat": {"participants": "U1,U2"}},
+        )
