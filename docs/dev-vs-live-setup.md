@@ -70,10 +70,15 @@ git clone, no venv here — treat it as an end user would.
 ```bash
 # after downloading PrivacyFence-<version>.dmg and dragging
 # PrivacyFenceApp.app to /Applications:
-xattr -cr /Applications/PrivacyFenceApp.app
 cp com.privacyfence.app.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.privacyfence.app.plist
 ```
+
+Releases are code-signed and notarized by Apple, so Gatekeeper opens it
+normally — no manual `xattr` step (see
+[Technical Reference](TECHNICAL_REFERENCE.md#installation)). That step is
+only needed for a locally-built, not-yet-signed-the-same-way DMG (see
+[manual-pre-release-test-plan.md](manual-pre-release-test-plan.md)).
 
 Then from the menu bar: install the real org config bundle,
 **Authenticate…** each real connector, and double-click `PrivacyFence.mcpb`

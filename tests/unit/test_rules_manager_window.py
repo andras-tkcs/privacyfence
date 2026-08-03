@@ -10,9 +10,15 @@ covered by TestGatherConnectorSections there.
 """
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from privacyfence.rules_manager_window import RulesManagerWindowController, Row, Section
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != "darwin", reason="requires real AppKit/PyObjC (macOS only, matches project's macOS-only runtime)"
+)
 
 
 class _FakeSender:

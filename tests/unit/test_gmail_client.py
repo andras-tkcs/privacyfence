@@ -691,6 +691,101 @@ class TestCreateDraft:
         }
 
 
+class TestCreateDraftRichText:
+    """body_markdown support: multipart/alternative (text/plain + text/html),
+    auto-derived plain text when body is omitted, and the "at least one of
+    body/body_markdown" validation shared by all 4 MIME-building methods.
+    """
+
+    def test_no_body_markdown_stays_plain_mimetext(self):
+        # Regression: today's plain-only behavior must stay byte-for-byte
+        # unaffected when body_markdown is never passed.
+        service = MagicMock()
+        service.users.return_value.drafts.return_value.create.return_value.execute.return_value = {"id": "d1"}
+        client = make_client(service)
+
+        client.create_draft(to="a@x.com", subject="Hi", body="plain body")
+
+        raw = service.users.return_value.drafts.return_value.create.call_args.kwargs["body"]["message"]["raw"]
+        parsed, _ = _extract_parts(raw)
+        assert not parsed.is_multipart()
+        assert parsed.get_content_type() == "text/plain"
+
+    def test_body_markdown_produces_multipart_alternative(self):
+        service = MagicMock()
+        service.users.return_value.drafts.return_value.create.return_value.execute.return_value = {"id": "d1"}
+        client = make_client(service)
+
+        client.create_draft(
+            to="a@x.com", subject="Hi", body="", body_markdown="Hi **team**,\n\n- one\n- two",
+        )
+
+        raw = service.users.return_value.drafts.return_value.create.call_args.kwargs["body"]["message"]["raw"]
+        parsed, _ = _extract_parts(raw)
+        assert parsed.get_content_type() == "multipart/alternative"
+        plain = next(p for p in parsed.walk() if p.get_content_type() == "text/plain")
+        html = next(p for p in parsed.walk() if p.get_content_type() == "text/html")
+        assert "Hi team," in plain.get_payload(decode=True).decode()
+        assert "<b>team</b>" in html.get_payload(decode=True).decode()
+        assert "<li>one</li>" in html.get_payload(decode=True).decode()
+
+    def test_explicit_body_overrides_auto_derived_plain_text(self):
+        service = MagicMock()
+        service.users.return_value.drafts.return_value.create.return_value.execute.return_value = {"id": "d1"}
+        client = make_client(service)
+
+        client.create_draft(
+            to="a@x.com", subject="Hi", body="EXPLICIT PLAIN TEXT", body_markdown="**rich**",
+        )
+
+        raw = service.users.return_value.drafts.return_value.create.call_args.kwargs["body"]["message"]["raw"]
+        parsed, _ = _extract_parts(raw)
+        plain = next(p for p in parsed.walk() if p.get_content_type() == "text/plain")
+        html = next(p for p in parsed.walk() if p.get_content_type() == "text/html")
+        assert plain.get_payload(decode=True).decode() == "EXPLICIT PLAIN TEXT"
+        assert "<b>rich</b>" in html.get_payload(decode=True).decode()
+
+    def test_literal_html_in_markdown_is_escaped_not_executed(self):
+        # A script/tag literally typed into the markdown source must render
+        # as inert text in the html part, not live markup -- this becomes
+        # HTML a recipient's mail client actually renders.
+        service = MagicMock()
+        service.users.return_value.drafts.return_value.create.return_value.execute.return_value = {"id": "d1"}
+        client = make_client(service)
+
+        client.create_draft(to="a@x.com", subject="Hi", body="", body_markdown="<script>alert(1)</script>")
+
+        raw = service.users.return_value.drafts.return_value.create.call_args.kwargs["body"]["message"]["raw"]
+        parsed, _ = _extract_parts(raw)
+        html = next(p for p in parsed.walk() if p.get_content_type() == "text/html")
+        payload = html.get_payload(decode=True).decode()
+        assert "<script>" not in payload
+        assert "&lt;script&gt;" in payload
+
+    def test_neither_body_nor_body_markdown_raises(self):
+        client = make_client(MagicMock())
+        with pytest.raises(GmailClientError, match="body and/or body_markdown"):
+            client.create_draft(to="a@x.com", subject="Hi", body="")
+
+    def test_to_header_stays_unfolded_with_multipart_alternative(self):
+        # The unfolded-headers policy (_UNFOLDED_POLICY) must still apply to
+        # the top-level message once it's a MIMEMultipart instead of a bare
+        # MIMEText -- see the plain-path regression test above it.
+        service = MagicMock()
+        service.users.return_value.drafts.return_value.create.return_value.execute.return_value = {"id": "d1"}
+        client = make_client(service)
+
+        client.create_draft(
+            to="Kázmér Kovács <k@x.com>, Máté Tóth <m@x.com>", subject="Hi", body="", body_markdown="**rich**",
+        )
+
+        raw = service.users.return_value.drafts.return_value.create.call_args.kwargs["body"]["message"]["raw"]
+        raw_bytes = base64.urlsafe_b64decode(raw.encode())
+        header_lines = raw_bytes.decode().split("\r\n" if b"\r\n" in raw_bytes else "\n")
+        to_lines = [line for line in header_lines if line.lower().startswith("to:")]
+        assert len(to_lines) == 1
+
+
 # ---------------------------------------------------------------------------- #
 # create_reply_draft: threading headers + reply-all address dedup
 # ---------------------------------------------------------------------------- #
@@ -855,6 +950,28 @@ class TestCreateReplyDraft:
             client.create_reply_draft("m1", body="b", my_email="me@x.com")
 
 
+class TestCreateReplyDraftRichText:
+    def test_body_markdown_produces_multipart_alternative(self):
+        service = make_reply_service({"Subject": "Original", "From": "sender@x.com"})
+        client = make_client(service)
+
+        client.create_reply_draft(
+            "m1", body="", body_markdown="==urgent==: please review", my_email="me@x.com",
+        )
+
+        raw = service.users.return_value.drafts.return_value.create.call_args.kwargs["body"]["message"]["raw"]
+        parsed, _ = _extract_parts(raw)
+        assert parsed.get_content_type() == "multipart/alternative"
+        html = next(p for p in parsed.walk() if p.get_content_type() == "text/html")
+        assert "background-color" in html.get_payload(decode=True).decode()
+
+    def test_neither_body_nor_body_markdown_raises(self):
+        service = make_reply_service({"Subject": "Original", "From": "sender@x.com"})
+        client = make_client(service)
+        with pytest.raises(GmailClientError, match="body and/or body_markdown"):
+            client.create_reply_draft("m1", body="", my_email="me@x.com")
+
+
 # ---------------------------------------------------------------------------- #
 # create_draft_with_attachments / create_reply_draft_with_attachments
 # ---------------------------------------------------------------------------- #
@@ -961,6 +1078,41 @@ class TestCreateDraftWithAttachments:
             )
 
 
+class TestCreateDraftWithAttachmentsRichText:
+    def test_body_markdown_nests_alternative_inside_mixed(self, tmp_path):
+        # Triple nesting: multipart/mixed (attachments) > multipart/alternative
+        # (plain + html) > the attachment part(s) as mixed's other children.
+        attachment = tmp_path / "report.txt"
+        attachment.write_bytes(b"attachment file contents")
+        service = MagicMock()
+        service.users.return_value.drafts.return_value.create.return_value.execute.return_value = {"id": "d1"}
+        client = make_client(service)
+
+        client.create_draft_with_attachments(
+            to="a@x.com", subject="Hi", body="", attachments=[str(attachment)],
+            body_markdown="**rich** body",
+        )
+
+        raw = service.users.return_value.drafts.return_value.create.call_args.kwargs["body"]["message"]["raw"]
+        parsed, _ = _extract_parts(raw)
+        assert parsed.get_content_type() == "multipart/mixed"
+        alt_parts = [p for p in parsed.walk() if p.get_content_type() == "multipart/alternative"]
+        assert len(alt_parts) == 1
+        html = next(p for p in parsed.walk() if p.get_content_type() == "text/html")
+        assert "<b>rich</b>" in html.get_payload(decode=True).decode()
+        attachment_parts = [p for p in parsed.walk() if p.get_filename() == "report.txt"]
+        assert attachment_parts[0].get_payload(decode=True) == b"attachment file contents"
+
+    def test_neither_body_nor_body_markdown_raises(self, tmp_path):
+        attachment = tmp_path / "f.txt"
+        attachment.write_bytes(b"x")
+        client = make_client(MagicMock())
+        with pytest.raises(GmailClientError, match="body and/or body_markdown"):
+            client.create_draft_with_attachments(
+                to="a@x.com", subject="s", body="", attachments=[str(attachment)],
+            )
+
+
 class TestCreateReplyDraftWithAttachments:
     def test_requires_at_least_one_attachment(self):
         client = make_client(MagicMock())
@@ -1043,6 +1195,37 @@ class TestCreateReplyDraftWithAttachments:
         with pytest.raises(GmailClientError, match="create_reply_draft_with_attachments failed"):
             client.create_reply_draft_with_attachments(
                 "m1", body="b", attachments=[str(attachment)], my_email="me@x.com",
+            )
+
+
+class TestCreateReplyDraftWithAttachmentsRichText:
+    def test_body_markdown_nests_alternative_inside_mixed(self, tmp_path):
+        attachment = tmp_path / "f.txt"
+        attachment.write_bytes(b"attached")
+        service = make_reply_service({"Subject": "Original", "From": "sender@x.com"})
+        client = make_client(service)
+
+        client.create_reply_draft_with_attachments(
+            "m1", body="", attachments=[str(attachment)], my_email="me@x.com",
+            body_markdown="[see report](https://example.com/report)",
+        )
+
+        raw = service.users.return_value.drafts.return_value.create.call_args.kwargs["body"]["message"]["raw"]
+        parsed, _ = _extract_parts(raw)
+        assert parsed.get_content_type() == "multipart/mixed"
+        html = next(p for p in parsed.walk() if p.get_content_type() == "text/html")
+        assert 'href="https://example.com/report"' in html.get_payload(decode=True).decode()
+        attachment_parts = [p for p in parsed.walk() if p.get_filename() == "f.txt"]
+        assert attachment_parts[0].get_payload(decode=True) == b"attached"
+
+    def test_neither_body_nor_body_markdown_raises(self, tmp_path):
+        attachment = tmp_path / "f.txt"
+        attachment.write_bytes(b"x")
+        service = make_reply_service({"Subject": "Original", "From": "sender@x.com"})
+        client = make_client(service)
+        with pytest.raises(GmailClientError, match="body and/or body_markdown"):
+            client.create_reply_draft_with_attachments(
+                "m1", body="", attachments=[str(attachment)], my_email="me@x.com",
             )
 
 

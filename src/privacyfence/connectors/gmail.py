@@ -15,8 +15,7 @@ from ..gate import current_reason, gated_call
 from ..gmail_client import GmailClient, GmailClientError, resolve_attachment_destination
 from ..html_to_text import html_to_text
 from ..privacy_filter import apply_list, apply_text, category_policy
-from ..quicklook_preview import generate_thumbnail, is_quicklook_enabled
-from ..text_extraction import extract_text, is_prefetch_worthy
+from ..text_extraction import extract_text, is_prefetch_worthy, preview_blocks_for
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +49,48 @@ def _parse_attachment_paths(value: str) -> list[str]:
     if not parsed:
         raise ValueError("attachments: at least one file path is required")
     return parsed
+
+
+def _body_params() -> list[ToolParam]:
+    """The body/body_markdown ToolParam pair shared by all 6 draft tools."""
+    return [
+        ToolParam(
+            "body", "str", required=False, default="",
+            description=(
+                "Plain-text body. May be omitted if body_markdown is given -- "
+                "the plain-text alternative is then auto-derived from it. At "
+                "least one of body/body_markdown is required."
+            ),
+        ),
+        ToolParam(
+            "body_markdown", "str", required=False, default="",
+            description=(
+                "Optional Markdown body for a rich-text draft. Supports "
+                "**bold**, *italic*, ==highlight==, [links](url), and "
+                "bullet/numbered lists (no headings or tables). When given, "
+                "the draft is sent as plain text + HTML together, so it "
+                "renders formatted in HTML-capable clients and as readable "
+                "plain text everywhere else."
+            ),
+        ),
+    ]
+
+
+def _require_body(body: str, body_markdown: str, tool: str) -> None:
+    """Reject the call before gating if neither body nor body_markdown was given."""
+    if not body.strip() and not body_markdown.strip():
+        raise ValueError(f"{tool}: provide body and/or body_markdown -- at least one is required")
+
+
+def _preview_body_text(body: str, body_markdown: str) -> str:
+    """Text shown to the human reviewer for the draft's content.
+
+    Prefers the raw body_markdown source over body when both are given --
+    that guarantees what the reviewer approves always matches what actually
+    gets rendered as HTML, rather than trusting the two to describe the same
+    content independently.
+    """
+    return body_markdown if body_markdown.strip() else body
 
 
 class GmailConnector(Connector):
@@ -159,7 +200,7 @@ class GmailConnector(Connector):
                 params=[
                     ToolParam("to", "str"),
                     ToolParam("subject", "str"),
-                    ToolParam("body", "str"),
+                    *_body_params(),
                     ToolParam("cc", "str", required=False, default=""),
                     ToolParam("bcc", "str", required=False, default=""),
                     ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
@@ -175,7 +216,7 @@ class GmailConnector(Connector):
                 ),
                 params=[
                     ToolParam("message_id", "str"),
-                    ToolParam("body", "str"),
+                    *_body_params(),
                     ToolParam("cc", "str", required=False, default=""),
                     ToolParam("bcc", "str", required=False, default=""),
                     ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
@@ -190,7 +231,7 @@ class GmailConnector(Connector):
                 ),
                 params=[
                     ToolParam("message_id", "str"),
-                    ToolParam("body", "str"),
+                    *_body_params(),
                     ToolParam("cc", "str", required=False, default=""),
                     ToolParam("bcc", "str", required=False, default=""),
                     ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
@@ -208,7 +249,7 @@ class GmailConnector(Connector):
                 params=[
                     ToolParam("to", "str"),
                     ToolParam("subject", "str"),
-                    ToolParam("body", "str"),
+                    *_body_params(),
                     ToolParam(
                         "attachments", "str",
                         description=(
@@ -232,7 +273,7 @@ class GmailConnector(Connector):
                 ),
                 params=[
                     ToolParam("message_id", "str"),
-                    ToolParam("body", "str"),
+                    *_body_params(),
                     ToolParam(
                         "attachments", "str",
                         description=(
@@ -257,7 +298,7 @@ class GmailConnector(Connector):
                 ),
                 params=[
                     ToolParam("message_id", "str"),
-                    ToolParam("body", "str"),
+                    *_body_params(),
                     ToolParam(
                         "attachments", "str",
                         description=(
@@ -724,20 +765,9 @@ class GmailConnector(Connector):
                 if attachment.mime_type.startswith("image/"):
                     preview_bytes = fetched_bytes
                     preview_mime_type = attachment.mime_type
-                elif is_quicklook_enabled():
-                    # Not an image -- QuickLook (off by default, menu-bar
-                    # toggle) is the fallback preview source for anything its
-                    # own renderer recognizes (PDFs, Office docs, and more),
-                    # bounded by its own max-wait timeout; a miss/timeout
-                    # just leaves preview_bytes empty, same as today.
-                    # asyncio.to_thread, not a direct call: generate_thumbnail
-                    # can block its calling thread for the full timeout, and
-                    # this is an async def -- calling it directly would stall
-                    # the whole daemon's event loop, not just this request.
-                    thumbnail = await asyncio.to_thread(generate_thumbnail, fetched_bytes, attachment.name)
-                    if thumbnail is not None:
-                        preview_bytes = thumbnail
-                        preview_mime_type = "image/png"
+                # Not an image -- extract_text() below feeds a rich
+                # "markdown" preview_blocks entry (see this call's
+                # gated_call below) instead of a visual thumbnail.
                 pii_scan_text = extract_text(fetched_bytes, attachment.mime_type)
 
         # Gate before touching disk: gated_call raises on denial, and only a
@@ -757,6 +787,7 @@ class GmailConnector(Connector):
             pii_scan_text=pii_scan_text,
             preview_bytes=preview_bytes,
             preview_mime_type=preview_mime_type,
+            preview_blocks=preview_blocks_for(details, pii_scan_text),
             my_email=self.my_email,
             args={"message_id": message_id, "attachment_name": attachment_name},
         )
@@ -776,8 +807,9 @@ class GmailConnector(Connector):
     # ------------------------------------------------------------------ #
 
     async def _create_draft(
-        self, to: str, subject: str, body: str, cc: str = "", bcc: str = ""
+        self, to: str, subject: str, body: str = "", body_markdown: str = "", cc: str = "", bcc: str = ""
     ) -> Any:
+        _require_body(body, body_markdown, "gmail_create_draft")
         preview = {"To": to}
         if cc:
             preview["Cc"] = cc
@@ -790,19 +822,23 @@ class GmailConnector(Connector):
             tool_name="Create Gmail Draft",
             summary=f"Create draft: {subject}",
             sender=to,
-            raw_data={"to": to, "subject": subject, "body": body, "cc": cc, "bcc": bcc},
+            raw_data={
+                "to": to, "subject": subject, "body": body, "body_markdown": body_markdown,
+                "cc": cc, "bcc": bcc,
+            },
             filtered_data=None,
             gate="popup",
             preview=preview,
-            details_text=body,
+            details_text=_preview_body_text(body, body_markdown),
             my_email=self.my_email,
             args={"to": to, "subject": subject},
         )
-        return await self._fetch(self._gmail.create_draft, to, subject, body, cc, bcc)
+        return await self._fetch(self._gmail.create_draft, to, subject, body, cc, bcc, body_markdown)
 
     async def _reply_draft(
-        self, message_id: str, body: str, cc: str = "", bcc: str = ""
+        self, message_id: str, body: str = "", body_markdown: str = "", cc: str = "", bcc: str = ""
     ) -> Any:
+        _require_body(body, body_markdown, "gmail_reply_draft")
         message, preview, to_arg = await self._reply_preview_and_to(message_id, cc, bcc, reply_all=False)
         await gated_call(
             connector=self.name,
@@ -810,21 +846,25 @@ class GmailConnector(Connector):
             tool_name="Create Gmail Reply Draft",
             summary=f"Reply draft: {message.subject or '(no subject)'}",
             sender=message.sender or "",
-            raw_data={"message_id": message_id, "body": body, "cc": cc, "bcc": bcc},
+            raw_data={
+                "message_id": message_id, "body": body, "body_markdown": body_markdown,
+                "cc": cc, "bcc": bcc,
+            },
             filtered_data=None,
             gate="popup",
             preview=preview,
-            details_text=body,
+            details_text=_preview_body_text(body, body_markdown),
             my_email=self.my_email,
             args={"message_id": message_id, "to": to_arg},
         )
         return await self._fetch(
-            self._gmail.create_reply_draft, message_id, body, False, self.my_email, cc, bcc
+            self._gmail.create_reply_draft, message_id, body, False, self.my_email, cc, bcc, body_markdown
         )
 
     async def _reply_all_draft(
-        self, message_id: str, body: str, cc: str = "", bcc: str = ""
+        self, message_id: str, body: str = "", body_markdown: str = "", cc: str = "", bcc: str = ""
     ) -> Any:
+        _require_body(body, body_markdown, "gmail_reply_all_draft")
         message, preview, to_arg = await self._reply_preview_and_to(message_id, cc, bcc, reply_all=True)
         await gated_call(
             connector=self.name,
@@ -832,21 +872,32 @@ class GmailConnector(Connector):
             tool_name="Create Gmail Reply-All Draft",
             summary=f"Reply-all draft: {message.subject or '(no subject)'}",
             sender=message.sender or "",
-            raw_data={"message_id": message_id, "body": body, "cc": cc, "bcc": bcc},
+            raw_data={
+                "message_id": message_id, "body": body, "body_markdown": body_markdown,
+                "cc": cc, "bcc": bcc,
+            },
             filtered_data=None,
             gate="popup",
             preview=preview,
-            details_text=body,
+            details_text=_preview_body_text(body, body_markdown),
             my_email=self.my_email,
             args={"message_id": message_id, "to": to_arg},
         )
         return await self._fetch(
-            self._gmail.create_reply_draft, message_id, body, True, self.my_email, cc, bcc
+            self._gmail.create_reply_draft, message_id, body, True, self.my_email, cc, bcc, body_markdown
         )
 
     async def _create_draft_with_attachments(
-        self, to: str, subject: str, body: str, attachments: str = "", cc: str = "", bcc: str = ""
+        self,
+        to: str,
+        subject: str,
+        body: str = "",
+        body_markdown: str = "",
+        attachments: str = "",
+        cc: str = "",
+        bcc: str = "",
     ) -> Any:
+        _require_body(body, body_markdown, "gmail_create_draft_with_attachments")
         paths = _parse_attachment_paths(attachments)
         attachment_info = self._stat_attachments(paths)
         preview = {"To": to}
@@ -863,22 +914,30 @@ class GmailConnector(Connector):
             summary=f"Create draft with {len(paths)} attachment(s): {subject}",
             sender=to,
             raw_data={
-                "to": to, "subject": subject, "body": body, "cc": cc, "bcc": bcc, "attachments": paths,
+                "to": to, "subject": subject, "body": body, "body_markdown": body_markdown,
+                "cc": cc, "bcc": bcc, "attachments": paths,
             },
             filtered_data=None,
             gate="popup",
             preview=preview,
-            details_text=body,
+            details_text=_preview_body_text(body, body_markdown),
             my_email=self.my_email,
             args={"to": to, "subject": subject},
         )
         return await self._fetch(
-            self._gmail.create_draft_with_attachments, to, subject, body, paths, cc, bcc
+            self._gmail.create_draft_with_attachments, to, subject, body, paths, cc, bcc, body_markdown
         )
 
     async def _reply_draft_with_attachments(
-        self, message_id: str, body: str, attachments: str = "", cc: str = "", bcc: str = ""
+        self,
+        message_id: str,
+        body: str = "",
+        body_markdown: str = "",
+        attachments: str = "",
+        cc: str = "",
+        bcc: str = "",
     ) -> Any:
+        _require_body(body, body_markdown, "gmail_reply_draft_with_attachments")
         paths = _parse_attachment_paths(attachments)
         attachment_info = self._stat_attachments(paths)
         message, preview, to_arg = await self._reply_preview_and_to(message_id, cc, bcc, reply_all=False)
@@ -890,23 +949,31 @@ class GmailConnector(Connector):
             summary=f"Reply draft with {len(paths)} attachment(s): {message.subject or '(no subject)'}",
             sender=message.sender or "",
             raw_data={
-                "message_id": message_id, "body": body, "cc": cc, "bcc": bcc, "attachments": paths,
+                "message_id": message_id, "body": body, "body_markdown": body_markdown,
+                "cc": cc, "bcc": bcc, "attachments": paths,
             },
             filtered_data=None,
             gate="popup",
             preview=preview,
-            details_text=body,
+            details_text=_preview_body_text(body, body_markdown),
             my_email=self.my_email,
             args={"message_id": message_id, "to": to_arg},
         )
         return await self._fetch(
             self._gmail.create_reply_draft_with_attachments,
-            message_id, body, paths, False, self.my_email, cc, bcc,
+            message_id, body, paths, False, self.my_email, cc, bcc, body_markdown,
         )
 
     async def _reply_all_draft_with_attachments(
-        self, message_id: str, body: str, attachments: str = "", cc: str = "", bcc: str = ""
+        self,
+        message_id: str,
+        body: str = "",
+        body_markdown: str = "",
+        attachments: str = "",
+        cc: str = "",
+        bcc: str = "",
     ) -> Any:
+        _require_body(body, body_markdown, "gmail_reply_all_draft_with_attachments")
         paths = _parse_attachment_paths(attachments)
         attachment_info = self._stat_attachments(paths)
         message, preview, to_arg = await self._reply_preview_and_to(message_id, cc, bcc, reply_all=True)
@@ -918,18 +985,19 @@ class GmailConnector(Connector):
             summary=f"Reply-all draft with {len(paths)} attachment(s): {message.subject or '(no subject)'}",
             sender=message.sender or "",
             raw_data={
-                "message_id": message_id, "body": body, "cc": cc, "bcc": bcc, "attachments": paths,
+                "message_id": message_id, "body": body, "body_markdown": body_markdown,
+                "cc": cc, "bcc": bcc, "attachments": paths,
             },
             filtered_data=None,
             gate="popup",
             preview=preview,
-            details_text=body,
+            details_text=_preview_body_text(body, body_markdown),
             my_email=self.my_email,
             args={"message_id": message_id, "to": to_arg},
         )
         return await self._fetch(
             self._gmail.create_reply_draft_with_attachments,
-            message_id, body, paths, True, self.my_email, cc, bcc,
+            message_id, body, paths, True, self.my_email, cc, bcc, body_markdown,
         )
 
     async def _reply_preview_and_to(

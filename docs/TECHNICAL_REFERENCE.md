@@ -114,9 +114,9 @@ personal data being newly exposed to it.
 **One narrow exception:** `drive_upload_file`. Its payload — an arbitrary local file via
 `local_path`, or inline bytes via `content_base64` — can be content Claude never actually read,
 unlike every other write tool's drafted text. When that file's extracted content (see
-[`text_extraction.py`](../src/privacyfence/text_extraction.py) — plain text, PDF, DOCX, and PPTX;
-images are out of scope, no OCR) flags likely personal data, the upload gets the same real
-treatment a flagged read does: the second "Are you sure?" confirmation below, and `pii_detected`
+[`text_extraction.py`](../src/privacyfence/text_extraction.py) — plain text, HTML, PDF, DOCX,
+PPTX, and XLSX; images are out of scope, no OCR) flags likely personal data, the upload gets the
+same real treatment a flagged read does: the second "Are you sure?" confirmation below, and `pii_detected`
 recorded in the audit log. Every other popup-gate write is unaffected and keeps the weaker,
 informational-only content-flag banner described in
 [`approval-window-content-reference.md`](approval-window-content-reference.md).
@@ -190,12 +190,12 @@ layout and optional sections (AI-visibility checklist, PII banner, etc.), see
 | `gmail_get_thread` | read | review | subject, all participants, message count, date range | All messages in thread |
 | `gmail_list_message_attachments` | read | auto | — | — |
 | `gmail_download_attachment` | read | review | from, subject, attachment name, size, save path | — |
-| `gmail_create_draft` | write | popup | — | To, cc, subject, full body |
-| `gmail_reply_draft` | write | popup | — | In reply to, to, cc/bcc, full reply body |
-| `gmail_reply_all_draft` | write | popup | — | In reply to, to, also-to (expanded participants), cc/bcc, full reply body |
-| `gmail_create_draft_with_attachments` | write | popup | — | To, cc, subject, attachment names/sizes, full body |
-| `gmail_reply_draft_with_attachments` | write | popup | — | In reply to, to, cc/bcc, attachment names/sizes, full reply body |
-| `gmail_reply_all_draft_with_attachments` | write | popup | — | In reply to, to, also-to (expanded participants), cc/bcc, attachment names/sizes, full reply body |
+| `gmail_create_draft` | write | popup | — | To, cc, subject, full body (or Markdown source, if `body_markdown` given) |
+| `gmail_reply_draft` | write | popup | — | In reply to, to, cc/bcc, full reply body (or Markdown source, if `body_markdown` given) |
+| `gmail_reply_all_draft` | write | popup | — | In reply to, to, also-to (expanded participants), cc/bcc, full reply body (or Markdown source, if `body_markdown` given) |
+| `gmail_create_draft_with_attachments` | write | popup | — | To, cc, subject, attachment names/sizes, full body (or Markdown source, if `body_markdown` given) |
+| `gmail_reply_draft_with_attachments` | write | popup | — | In reply to, to, cc/bcc, attachment names/sizes, full reply body (or Markdown source, if `body_markdown` given) |
+| `gmail_reply_all_draft_with_attachments` | write | popup | — | In reply to, to, also-to (expanded participants), cc/bcc, attachment names/sizes, full reply body (or Markdown source, if `body_markdown` given) |
 | `gmail_add_label` | write | popup | — | From, subject, label name |
 | `gmail_remove_label` | write | popup | — | From, subject, label name |
 | `gmail_archive_message` | write | popup | — | From, subject, confirmation that message stays in All Mail |
@@ -263,7 +263,14 @@ PrivacyFence for a delete.
 | `slack_get_channel_history` | read | review | channel name, message count, first message (80 chars) | All messages |
 | `slack_get_thread_replies` | read | review | channel name, thread starter (80 chars), reply count | All replies |
 | `slack_search_messages` | read | review | query, result count | All results |
+| `slack_create_group_chat` | write | popup | — | Resolved participant names (or raw user ids when unresolvable); returns the new/reopened conversation's `id`, ready for `slack_send_message` |
 | `slack_send_message` | write | popup | — | Channel name, full message text (optional `mark_unread=true` leaves the message unread after sending; requires `mark` scope) |
+
+`slack_list_group_chats` only lists group DMs that already exist — there's nothing to list until one
+has been opened at least once. To start a brand-new group chat, call `slack_create_group_chat` with
+2+ participant user ids (from `slack_list_dms`/`slack_list_group_chats`, or a message's `user_id`
+field — it does not resolve email addresses or handles), then pass the returned `id` to
+`slack_send_message` as `channel_id`.
 
 ### Google Calendar
 
@@ -491,6 +498,15 @@ matching, file-type allowlists, and similar — see [Auto-accept rules](#auto-ac
 in that same connector's **Filters** submenu, with the same one-value-at-a-time **+ Add value…** /
 **✕ Remove** treatment — there's no shared multi-line text box to paste several IDs into anywhere
 in this menu.
+
+**Sheets** and **Docs** get their own top-level sidebar pages in this window (neither is a real
+connector — both ride on Drive's OAuth grant, see [Auto-accept rules](#auto-accept-rules)'s Drive
+section), but the `folders`/`sandbox_folders` grants above are Drive-page-only sections — a folder
+trusted there silently also covers `sheets.read_values` and every `sheets.*`/`docs.*` write. So
+each of those two pages opens with a read-only **Governed by Drive** section summarizing the
+currently-granted folder(s) for read/write and a **Manage in Drive →** link that jumps the sidebar
+selection there — no checkboxes of its own; the one editable copy of these grants stays on the
+Drive page.
 
 ### Name resolution
 
@@ -874,7 +890,7 @@ a read operation key too). A value-less rule like `always_allow` shows just "Add
 flag `show_read_popup()` already uses to decide whether to render the button —
 and handles a resulting `"accept_all"` decision inside the same lock acquisition as the initial
 `should_auto_accept()` recheck, mirroring the review branch exactly. Every other write operation
-(roughly a dozen tools, e.g. `gmail_send_message`, `slack_send_message`) gets `None` from
+(roughly a dozen tools, e.g. `gmail_archive_message`, `slack_send_message`) gets `None` from
 `suggest_write_rule()` by construction — there's no fallback path, so they're structurally
 unaffected and their popups are visually unchanged (Deny / Allow once only).
 

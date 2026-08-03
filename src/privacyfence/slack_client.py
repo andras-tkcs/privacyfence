@@ -16,7 +16,9 @@ Required user token scopes (see ``DEFAULT_USER_SCOPES``):
   - ``users:read`` / ``users:read.email``
   - ``search:read``
   - ``chat:write``
-  - ``im:write`` / ``channels:write`` / ``groups:write`` / ``mpim:write`` (for mark_unread / conversations.mark; the needed scope depends on channel type)
+  - ``im:write`` / ``channels:write`` / ``groups:write`` / ``mpim:write`` (mark_unread /
+    conversations.mark, and opening new conversations via ``open_conversation`` -- the needed
+    scope depends on channel type: ``im:write`` for a 1:1 DM, ``mpim:write`` for a group DM)
 """
 
 from __future__ import annotations
@@ -518,6 +520,45 @@ class SlackClient:
         resolved_channel = response.get("channel", channel_id)
         logger.info("send_message: channel=%s ts=%s", resolved_channel, ts)
         return {"channel_id": resolved_channel, "ts": ts, "text": text}
+
+    def open_conversation(self, user_ids: list[str]) -> SlackGroupChat:
+        """Create (or reopen the existing) conversation with `user_ids` via
+        ``conversations.open``. A single user id opens a 1:1 DM; two or more
+        open a group DM ("mpim") -- Slack itself decides which based on how
+        many ids are given, same as ``conversations.open``'s own behavior.
+
+        Unlike ``list_group_chats``, this is the only way to reach a group DM
+        that doesn't already exist yet (there's nothing to list until it's
+        been opened at least once). Requires the ``im:write`` (1:1) or
+        ``mpim:write`` (group) scope on the user token.
+        """
+        if not user_ids:
+            raise SlackClientError("open_conversation requires at least one user_id")
+        try:
+            response = self._client.conversations_open(users=",".join(user_ids))
+        except SlackApiError as exc:
+            raise SlackClientError(
+                f"open_conversation({user_ids}) failed: {self._describe_error(exc)}"
+            ) from exc
+        channel = response.get("channel") or {}
+        channel_id = channel.get("id", "")
+        name = channel.get("name", "")
+        if name:
+            self._channel_name_cache[channel_id] = name
+        logger.info("open_conversation users=%s -> channel=%s", user_ids, channel_id)
+        return SlackGroupChat(
+            id=channel_id,
+            name=name or self.resolve_channel_name(channel_id),
+            member_ids=list(user_ids),
+            member_names=[self._resolve_user_name(uid) for uid in user_ids],
+        )
+
+    def resolve_user_name(self, user_id: str) -> str:
+        """Best-effort display-name lookup for `user_id` (cached, never
+        raises) -- public wrapper around `_resolve_user_name` for callers
+        outside this module, same as `resolve_channel_name`'s own role for
+        channel names."""
+        return self._resolve_user_name(user_id)
 
     def mark_channel_unread_before(self, channel_id: str, ts: str) -> None:
         """Set the channel's read cursor to just before ``ts``.
