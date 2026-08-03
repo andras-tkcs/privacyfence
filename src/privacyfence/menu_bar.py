@@ -254,6 +254,18 @@ RULES_MENU_GROUPS: list[str] = [
     "slack", "jira", "confluence", "salesforce", "telegram",
 ]
 
+# Sheets and Docs pages have no grant section of their own -- neither is a
+# real connector (see RULES_MENU_GROUPS' own comment above), so
+# resource_types_for_connector("sheets"/"docs") is always empty -- even
+# though a folder granted Drive's Trusted Folders "read" or Sandbox Folders
+# "write" capability silently covers rows on both of these pages too
+# (sheets.read_values; every sheets.*/docs.* write -- see
+# resource_grants.DRIVE_FOLDER_READ_TARGETS/DRIVE_SANDBOX_WRITE_TARGETS).
+# _gather_connector_sections prepends _drive_grant_summary_sections()'s
+# read-only pointer back to Drive for exactly these two pages, so that's
+# discoverable without already knowing to go check Drive's own page.
+DRIVE_GRANT_SUMMARY_GROUPS: tuple[str, ...] = ("sheets", "docs")
+
 # Which connector's rules-manager section gets an "Always-allow Suggestion
 # Order" block -- one per auto_accept.SUGGESTION_FAMILIES entry. Drive's
 # family covers drive.read_file_contents/drive.download_file, both under
@@ -695,20 +707,15 @@ class PrivacyFenceMenuBar(rumps.App):
         client = self._client_for(cname)
         sections: list[Section] = []
 
+        if cname in DRIVE_GRANT_SUMMARY_GROUPS:
+            sections.extend(self._drive_grant_summary_sections())
+
         for rt in resource_types:
             entries = get_grant_entries(grants_cfg, rt)
             rows: list[Row] = []
             for idx, entry in enumerate(entries):
                 resource_id = rt.id_of(entry)
-                name = entry.get("name") or self._resolver.cached_name(rt, resource_id)
-                label = name or _short_id(resource_id)
-                if entry.get("tab"):
-                    label += f" — {entry['tab']}"
-                if name is None:
-                    label += (
-                        "  (resolving…)" if client is not None
-                        else f"  (connect {cname.capitalize()} to see its name)"
-                    )
+                label = self._grant_entry_label(rt, entry, client)
                 actions: list[tuple[str, Any]] = [
                     (
                         f"{'☑' if entry.get(cap_key) else '☐'} {capability.label}",
@@ -739,6 +746,62 @@ class PrivacyFenceMenuBar(rumps.App):
             sections.append(Section("", [Row("All operations always auto-approved — no rules needed", False, [])]))
 
         return sections
+
+    def _grant_entry_label(
+        self, rt: GrantResourceType, entry: dict[str, Any], client: Any | None
+    ) -> str:
+        """Display label for one grant entry: a hand-set/cached name, else a
+        shortened id, plus a tab suffix and a "still resolving"/"connect X"
+        hint while no name is available yet. Shared by the main per-connector
+        grant rows above and the read-only Drive grant summary shown on the
+        Sheets/Docs pages (_drive_grant_summary_sections) -- one place
+        computing what a grant entry's row says, not two copies that could
+        drift apart on formatting."""
+        resource_id = rt.id_of(entry)
+        name = entry.get("name") or self._resolver.cached_name(rt, resource_id)
+        label = name or _short_id(resource_id)
+        if entry.get("tab"):
+            label += f" — {entry['tab']}"
+        if name is None:
+            label += (
+                "  (resolving…)" if client is not None
+                else f"  (connect {rt.connector.capitalize()} to see its name)"
+            )
+        return label
+
+    def _drive_grant_summary_sections(self) -> list[Section]:
+        """Read-only pointer to Drive's Trusted/Sandbox Folder grants, shown
+        at the top of the Sheets and Docs pages (see DRIVE_GRANT_SUMMARY_GROUPS'
+        own comment for why those two pages need it). No checkboxes and no
+        Remove action here -- the one editable copy of these grants stays on
+        the Drive page; this is purely so a reviewer auditing Sheets or Docs
+        alone isn't left assuming nothing governs the writes/reads they're
+        looking at.
+        """
+        cfg = self._load_config()
+        grants_cfg: dict[str, Any] = cfg.get("auto_accept_grants", {}) or {}
+        client = self._client_for("drive")
+        rows: list[Row] = []
+        for config_key, cap_key, cap_label in (
+            ("folders", "read", "Trusted Folders — read auto-accept"),
+            ("sandbox_folders", "write", "Sandbox Folders — write auto-accept"),
+        ):
+            rt = grant_resource_type("drive", config_key)
+            entries = [e for e in get_grant_entries(grants_cfg, rt) if e.get(cap_key)]
+            names = (
+                ", ".join(self._grant_entry_label(rt, e, client) for e in entries)
+                if entries else "(none configured)"
+            )
+            rows.append(Row(f"{cap_label}: {names}"))
+        return [Section("Governed by Drive", rows, "Manage in Drive →", self._jump_to_drive_page)]
+
+    def _jump_to_drive_page(self) -> None:
+        """Row action for _drive_grant_summary_sections' link -- switches the
+        open rules-manager window's sidebar selection to Drive, where these
+        grants are actually editable."""
+        if self._rules_manager is not None:
+            self._rules_manager.selected = "drive"
+            self._rules_manager._refresh_window()
 
     def _suggestion_priority_section(self, cname: str) -> Section | None:
         """'Always-allow Suggestion Order' block: which rule Always allow

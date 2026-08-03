@@ -758,6 +758,10 @@ _TOOL_LAYOUT: dict[str, str] = {
     #
     # Not directly confirmed -- best-effort by analogy (see docstring above):
     "gmail_reply_all_draft": "wide",  # same shape as gmail_reply_draft
+    "confluence_download_attachment": "wide",  # same shape as gmail_download_attachment
+    "gmail_create_draft_with_attachments": "wide",  # same shape as gmail_create_draft
+    "gmail_reply_draft_with_attachments": "wide",  # same shape as gmail_reply_draft
+    "gmail_reply_all_draft_with_attachments": "wide",  # same shape as gmail_reply_all_draft
     "gmail_add_label": "narrow", "gmail_remove_label": "narrow", "gmail_archive_message": "narrow",
     "gmail_create_filter": "narrow", "gmail_update_filter": "narrow", "gmail_create_label": "narrow",
     "drive_write_doc_content": "wide", "drive_write_file_content": "wide",  # writing a prose body

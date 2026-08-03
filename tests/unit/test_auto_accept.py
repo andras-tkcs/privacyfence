@@ -15,6 +15,7 @@ import yaml
 from freezegun import freeze_time
 
 from privacyfence import auto_accept
+from privacyfence.resource_grants import DRIVE_FOLDER_READ_TARGETS, DRIVE_SANDBOX_WRITE_TARGETS
 from privacyfence.auto_accept import (
     ARGS_ONLY_RULES,
     DATA_DEPENDENT_RULES,
@@ -1833,6 +1834,45 @@ class TestConcurrentRulePersistence:
         on_disk = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         live_rules = get_auto_accept_evaluator()._rules
         assert live_rules == on_disk["auto_accept_rules"]
+
+
+# --------------------------------------------------------------------------- #
+# Drive/Sheets/Docs operation-key lists: resource_grants.DRIVE_SANDBOX_WRITE_
+# TARGETS / DRIVE_FOLDER_READ_TARGETS are the single source of truth three
+# separate consumers used to hand-type independently (the sandbox_folders/
+# folders grant capabilities, WRITE_RULE_SUGGESTIONS, TEMP_ACCEPT_ELIGIBLE_
+# OPERATIONS, and the drive_read suggestion family) with no test tying them
+# together -- these tests are exactly that missing tie.
+# --------------------------------------------------------------------------- #
+
+class TestDriveSheetsDocsSingleSourceOfTruth:
+    def test_every_sandbox_write_target_has_a_write_rule_suggestion(self):
+        for op_key, rule_name in DRIVE_SANDBOX_WRITE_TARGETS:
+            suggestion = WRITE_RULE_SUGGESTIONS.get(op_key)
+            assert suggestion is not None, f"{op_key} missing from WRITE_RULE_SUGGESTIONS"
+            assert suggestion.rule_name == rule_name
+
+    def test_temp_accept_eligible_operations_is_a_subset_of_sandbox_write_targets(self):
+        sandbox_op_keys = {op_key for op_key, _rule_name in DRIVE_SANDBOX_WRITE_TARGETS}
+        assert set(TEMP_ACCEPT_ELIGIBLE_OPERATIONS) <= sandbox_op_keys
+
+    def test_temp_accept_arg_name_matches_each_operation_s_own_id_arg(self):
+        # sheets.* addresses its spreadsheet by spreadsheet_id; every
+        # drive.*/docs.* write addresses its file by file_id.
+        for op_key, arg_name in TEMP_ACCEPT_ELIGIBLE_OPERATIONS.items():
+            expected = "spreadsheet_id" if op_key.startswith("sheets.") else "file_id"
+            assert arg_name == expected, (op_key, arg_name)
+
+    def test_every_read_target_shares_the_drive_read_suggestion_family(self):
+        for op_key, _rule_name in DRIVE_FOLDER_READ_TARGETS:
+            family, candidates_fn = auto_accept._MULTI_CANDIDATE_FAMILIES[op_key]
+            assert family == "drive_read"
+            assert candidates_fn is auto_accept._drive_read_candidates
+
+    def test_drive_read_operation_keys_matches_the_canonical_read_targets(self):
+        assert set(auto_accept._DRIVE_READ_OPERATION_KEYS) == {
+            op_key for op_key, _rule_name in DRIVE_FOLDER_READ_TARGETS
+        }
 
 
 # --------------------------------------------------------------------------- #

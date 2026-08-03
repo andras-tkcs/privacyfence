@@ -191,16 +191,72 @@ def _list_salesforce_reports(client: Any) -> list[tuple[str, str]]:
     return [(r.id, r.name) for r in client.list_reports()]
 
 
+# Canonical enumeration of every (operation_key, rule_name) pair a trusted
+# Drive folder's *read* auto-accept covers -- drive.read_file_contents/
+# drive.download_file (the Drive connector's own read tools) plus
+# sheets.read_values (drive_sheets_get_values -- Sheets isn't a separate
+# connector, see RULES_MENU_GROUPS' own comment in menu_bar.py, so its read
+# tool rides the same grant). This is the single source of truth: besides
+# feeding the "folders" GrantResourceType below, auto_accept.py's
+# suggest_rule()/_MULTI_CANDIDATE_FAMILIES derive their own "which operation
+# keys share the drive_read suggestion family" list from the same tuple,
+# instead of a second hand-typed copy that could silently drift from this one.
+DRIVE_FOLDER_READ_TARGETS: tuple[tuple[str, str], ...] = (
+    ("drive.read_file_contents", "approved_folder"),
+    ("drive.download_file", "approved_folder"),
+    ("sheets.read_values", "approved_folder"),
+)
+
+# Canonical enumeration of every (operation_key, rule_name) pair a trusted
+# Drive "sandbox" folder's *write* auto-accept covers, spanning all three
+# tool families that write into a Drive file: Drive's own writes, every
+# Sheets write tool, and every Docs write tool (see DRIVE_FOLDER_READ_TARGETS'
+# docstring above for why Sheets/Docs appear here at all). Single source of
+# truth for three consumers that used to each hand-type their own copy of
+# this same operation-key list: the "sandbox_folders" GrantResourceType below,
+# auto_accept.WRITE_RULE_SUGGESTIONS (built from this tuple), and
+# auto_accept.TEMP_ACCEPT_ELIGIBLE_OPERATIONS (this tuple's keys minus an
+# explicit exclusion set -- see that module for which ones and why). Adding a
+# new Drive/Sheets/Docs write tool now means adding one entry here and it's
+# automatically wired into all three, rather than three separate edits with
+# no test catching a missed one.
+DRIVE_SANDBOX_WRITE_TARGETS: tuple[tuple[str, str], ...] = (
+    ("drive.write_file", "approved_sandbox_folder"),
+    ("drive.write_doc", "approved_sandbox_folder"),
+    ("sheets.write_range", "approved_sandbox_folder"),
+    ("sheets.add_sheet", "approved_sandbox_folder"),
+    ("sheets.rename_sheet", "approved_sandbox_folder"),
+    ("sheets.format_range", "approved_sandbox_folder"),
+    ("sheets.insert_dimensions", "approved_sandbox_folder"),
+    ("sheets.delete_dimensions", "approved_sandbox_folder"),
+    ("docs.edit_content", "approved_sandbox_folder"),
+    ("docs.format_content", "approved_sandbox_folder"),
+    # drive.comment_file already reads approved_sandbox_folder the same way
+    # every entry above does (its raw_data is {"file": ..., "comment": ...},
+    # the same dict shape AutoAcceptEvaluator._file_from() already unwraps)
+    # -- this was purely a config-wiring gap, not a missing rule.
+    ("drive.comment_file", "approved_sandbox_folder"),
+    # drive.upload_file/drive.move_file use their own existing rule names
+    # rather than approved_sandbox_folder -- parent_folder_allowlist checks
+    # the upload's destination folder (an arg, since the file doesn't exist
+    # yet); move_within_approved_folders checks the file's *current* parent
+    # folder the same way approved_folder/approved_sandbox_folder do (not the
+    # move's destination -- see auto_accept.py's
+    # _rule_move_within_approved_folders, a plain alias of
+    # _rule_approved_folder). Both take the same plain folder-id-list value
+    # already, so one sandbox-folder grant now covers uploading into it and
+    # moving a file out of it too, not just writing/formatting/commenting on
+    # a file already there.
+    ("drive.upload_file", "parent_folder_allowlist"),
+    ("drive.move_file", "move_within_approved_folders"),
+)
+
 GRANT_RESOURCE_TYPES: tuple[GrantResourceType, ...] = (
     GrantResourceType(
         connector="drive", config_key="folders", id_field="id",
         label="Trusted Folders", singular="folder",
         capabilities={
-            "read": GrantCapability("Read auto-accept", (
-                ("drive.read_file_contents", "approved_folder"),
-                ("drive.download_file", "approved_folder"),
-                ("sheets.read_values", "approved_folder"),
-            )),
+            "read": GrantCapability("Read auto-accept", DRIVE_FOLDER_READ_TARGETS),
         },
         resolver=_resolve_drive_file,
         value_of=_plain_value_of("id"),
@@ -209,39 +265,7 @@ GRANT_RESOURCE_TYPES: tuple[GrantResourceType, ...] = (
         connector="drive", config_key="sandbox_folders", id_field="id",
         label="Sandbox Folders", singular="folder",
         capabilities={
-            "write": GrantCapability("Write auto-accept", (
-                ("drive.write_file", "approved_sandbox_folder"),
-                ("drive.write_doc", "approved_sandbox_folder"),
-                ("sheets.write_range", "approved_sandbox_folder"),
-                ("sheets.add_sheet", "approved_sandbox_folder"),
-                ("sheets.rename_sheet", "approved_sandbox_folder"),
-                ("sheets.format_range", "approved_sandbox_folder"),
-                ("sheets.insert_dimensions", "approved_sandbox_folder"),
-                ("sheets.delete_dimensions", "approved_sandbox_folder"),
-                ("docs.edit_content", "approved_sandbox_folder"),
-                ("docs.format_content", "approved_sandbox_folder"),
-                # drive.comment_file already reads approved_sandbox_folder the
-                # same way every entry above does (its raw_data is
-                # {"file": ..., "comment": ...}, the same dict shape
-                # AutoAcceptEvaluator._file_from() already unwraps) -- this
-                # was purely a config-wiring gap, not a missing rule.
-                ("drive.comment_file", "approved_sandbox_folder"),
-                # drive.upload_file/drive.move_file use their own existing
-                # rule names rather than approved_sandbox_folder --
-                # parent_folder_allowlist checks the upload's destination
-                # folder (an arg, since the file doesn't exist yet);
-                # move_within_approved_folders checks the file's *current*
-                # parent folder the same way approved_folder/
-                # approved_sandbox_folder do (not the move's destination --
-                # see auto_accept.py's _rule_move_within_approved_folders,
-                # a plain alias of _rule_approved_folder). Both take the same
-                # plain folder-id-list value already, so one sandbox-folder
-                # grant now covers uploading into it and moving a file out of
-                # it too, not just writing/formatting/commenting on a file
-                # already there.
-                ("drive.upload_file", "parent_folder_allowlist"),
-                ("drive.move_file", "move_within_approved_folders"),
-            )),
+            "write": GrantCapability("Write auto-accept", DRIVE_SANDBOX_WRITE_TARGETS),
         },
         resolver=_resolve_drive_file,
         value_of=_plain_value_of("id"),

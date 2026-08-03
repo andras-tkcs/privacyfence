@@ -190,12 +190,12 @@ layout and optional sections (AI-visibility checklist, PII banner, etc.), see
 | `gmail_get_thread` | read | review | subject, all participants, message count, date range | All messages in thread |
 | `gmail_list_message_attachments` | read | auto | — | — |
 | `gmail_download_attachment` | read | review | from, subject, attachment name, size, save path | — |
-| `gmail_create_draft` | write | popup | — | To, cc, subject, full body |
-| `gmail_reply_draft` | write | popup | — | In reply to, to, cc/bcc, full reply body |
-| `gmail_reply_all_draft` | write | popup | — | In reply to, to, also-to (expanded participants), cc/bcc, full reply body |
-| `gmail_create_draft_with_attachments` | write | popup | — | To, cc, subject, attachment names/sizes, full body |
-| `gmail_reply_draft_with_attachments` | write | popup | — | In reply to, to, cc/bcc, attachment names/sizes, full reply body |
-| `gmail_reply_all_draft_with_attachments` | write | popup | — | In reply to, to, also-to (expanded participants), cc/bcc, attachment names/sizes, full reply body |
+| `gmail_create_draft` | write | popup | — | To, cc, subject, full body (or Markdown source, if `body_markdown` given) |
+| `gmail_reply_draft` | write | popup | — | In reply to, to, cc/bcc, full reply body (or Markdown source, if `body_markdown` given) |
+| `gmail_reply_all_draft` | write | popup | — | In reply to, to, also-to (expanded participants), cc/bcc, full reply body (or Markdown source, if `body_markdown` given) |
+| `gmail_create_draft_with_attachments` | write | popup | — | To, cc, subject, attachment names/sizes, full body (or Markdown source, if `body_markdown` given) |
+| `gmail_reply_draft_with_attachments` | write | popup | — | In reply to, to, cc/bcc, attachment names/sizes, full reply body (or Markdown source, if `body_markdown` given) |
+| `gmail_reply_all_draft_with_attachments` | write | popup | — | In reply to, to, also-to (expanded participants), cc/bcc, attachment names/sizes, full reply body (or Markdown source, if `body_markdown` given) |
 | `gmail_add_label` | write | popup | — | From, subject, label name |
 | `gmail_remove_label` | write | popup | — | From, subject, label name |
 | `gmail_archive_message` | write | popup | — | From, subject, confirmation that message stays in All Mail |
@@ -263,7 +263,14 @@ PrivacyFence for a delete.
 | `slack_get_channel_history` | read | review | channel name, message count, first message (80 chars) | All messages |
 | `slack_get_thread_replies` | read | review | channel name, thread starter (80 chars), reply count | All replies |
 | `slack_search_messages` | read | review | query, result count | All results |
+| `slack_create_group_chat` | write | popup | — | Resolved participant names (or raw user ids when unresolvable); returns the new/reopened conversation's `id`, ready for `slack_send_message` |
 | `slack_send_message` | write | popup | — | Channel name, full message text (optional `mark_unread=true` leaves the message unread after sending; requires `mark` scope) |
+
+`slack_list_group_chats` only lists group DMs that already exist — there's nothing to list until one
+has been opened at least once. To start a brand-new group chat, call `slack_create_group_chat` with
+2+ participant user ids (from `slack_list_dms`/`slack_list_group_chats`, or a message's `user_id`
+field — it does not resolve email addresses or handles), then pass the returned `id` to
+`slack_send_message` as `channel_id`.
 
 ### Google Calendar
 
@@ -491,6 +498,15 @@ matching, file-type allowlists, and similar — see [Auto-accept rules](#auto-ac
 in that same connector's **Filters** submenu, with the same one-value-at-a-time **+ Add value…** /
 **✕ Remove** treatment — there's no shared multi-line text box to paste several IDs into anywhere
 in this menu.
+
+**Sheets** and **Docs** get their own top-level sidebar pages in this window (neither is a real
+connector — both ride on Drive's OAuth grant, see [Auto-accept rules](#auto-accept-rules)'s Drive
+section), but the `folders`/`sandbox_folders` grants above are Drive-page-only sections — a folder
+trusted there silently also covers `sheets.read_values` and every `sheets.*`/`docs.*` write. So
+each of those two pages opens with a read-only **Governed by Drive** section summarizing the
+currently-granted folder(s) for read/write and a **Manage in Drive →** link that jumps the sidebar
+selection there — no checkboxes of its own; the one editable copy of these grants stays on the
+Drive page.
 
 ### Name resolution
 

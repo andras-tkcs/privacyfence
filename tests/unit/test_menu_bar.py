@@ -561,6 +561,10 @@ class TestGatherConnectorSections:
         # silently dropped and no Sheets rules ever appeared anywhere.
         sheets_titles = {s.title for s in app._gather_connector_sections("sheets")}
         assert sheets_titles == {
+            # "Governed by Drive" is the read-only cross-reference to Drive's
+            # Trusted/Sandbox Folder grants (see TestDriveGrantSummary) --
+            # present here because Sheets has no grant section of its own.
+            "Governed by Drive",
             "Read values", "Write range", "Add tab", "Rename tab", "Format range",
             "Insert rows/columns", "Delete rows/columns",
         }
@@ -573,7 +577,7 @@ class TestGatherConnectorSections:
         # ALL_CONNECTORS, so it needs its own entry in RULES_MENU_GROUPS or
         # its bucket is silently dropped and never rendered anywhere.
         docs_titles = {s.title for s in app._gather_connector_sections("docs")}
-        assert docs_titles == {"Edit content", "Format content"}
+        assert docs_titles == {"Governed by Drive", "Edit content", "Format content"}
         drive_titles = {s.title for s in app._gather_connector_sections("drive")}
         assert not (drive_titles & docs_titles)  # Docs ops aren't duplicated under Drive
 
@@ -756,6 +760,77 @@ class TestGatherConnectorSections:
         assert len(read_file.rows) == 1
         assert "via grant above" in read_file.rows[0].text
         assert read_file.rows[0].actions == []
+
+
+class TestDriveGrantSummary:
+    """The read-only "Governed by Drive" cross-reference shown at the top of
+    the Sheets and Docs pages -- see menu_bar.DRIVE_GRANT_SUMMARY_GROUPS and
+    _drive_grant_summary_sections' own docstring: neither page has a grant
+    section of its own, even though a folder trusted under Drive's Trusted/
+    Sandbox Folder grants silently covers rows on both pages too.
+    """
+
+    def _summary(self, app, cname="sheets"):
+        sections = app._gather_connector_sections(cname)
+        return next(s for s in sections if s.title == "Governed by Drive")
+
+    def test_shown_on_both_sheets_and_docs_not_on_drive(self, app):
+        for cname in ("sheets", "docs"):
+            titles = {s.title for s in app._gather_connector_sections(cname)}
+            assert "Governed by Drive" in titles
+        drive_titles = {s.title for s in app._gather_connector_sections("drive")}
+        assert "Governed by Drive" not in drive_titles
+
+    def test_lists_only_folders_with_the_capability_actually_enabled(self, app):
+        cfg = {"auto_accept_grants": {"drive": {
+            "folders": [
+                {"id": "F1", "name": "Reports", "read": True},
+                {"id": "F2", "name": "Untrusted", "read": False},
+            ],
+            "sandbox_folders": [{"id": "S1", "name": "Scratch", "write": True}],
+        }}}
+        config_path = app._config_path
+        with open(config_path, "w", encoding="utf-8") as f:
+            menu_bar.yaml.dump(cfg, f)
+
+        summary = self._summary(app)
+        read_row = next(r for r in summary.rows if r.text.startswith("Trusted Folders"))
+        write_row = next(r for r in summary.rows if r.text.startswith("Sandbox Folders"))
+        assert read_row.text == "Trusted Folders — read auto-accept: Reports"
+        assert write_row.text == "Sandbox Folders — write auto-accept: Scratch"
+
+    def test_shown_identically_from_the_docs_page_too(self, app):
+        cfg = {"auto_accept_grants": {"drive": {"sandbox_folders": [{"id": "S1", "name": "Scratch", "write": True}]}}}
+        config_path = app._config_path
+        with open(config_path, "w", encoding="utf-8") as f:
+            menu_bar.yaml.dump(cfg, f)
+
+        assert self._summary(app, "sheets").rows == self._summary(app, "docs").rows
+
+    def test_shows_none_configured_when_nothing_granted(self, app):
+        summary = self._summary(app)
+        assert all(row.text.endswith("(none configured)") for row in summary.rows)
+
+    def test_rows_have_no_actions_read_only(self, app):
+        summary = self._summary(app)
+        assert all(row.actions == [] for row in summary.rows)
+
+    def test_manage_in_drive_action_switches_rules_manager_to_drive_page(self, app):
+        refreshed = []
+        app._rules_manager = SimpleNamespace(
+            selected="sheets",
+            _refresh_window=lambda: refreshed.append(1),
+        )
+        summary = self._summary(app)
+        assert summary.add_label == "Manage in Drive →"
+        summary.add_action()
+        assert app._rules_manager.selected == "drive"
+        assert refreshed == [1]
+
+    def test_manage_in_drive_action_is_a_no_op_when_manager_not_open(self, app):
+        assert app._rules_manager is None
+        summary = self._summary(app)
+        summary.add_action()  # must not raise
 
 
 class TestOpenRulesManager:
