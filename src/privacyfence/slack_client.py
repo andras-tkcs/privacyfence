@@ -472,11 +472,28 @@ class SlackClient:
         )
         return messages
 
-    def search_messages(self, query: str, count: int = 20) -> list[SlackMessage]:
-        """Search messages via ``search.messages`` (requires ``search:read``)."""
-        if not query:
-            raise SlackClientError("search_messages requires a non-empty query")
+    def search_messages(
+        self, query: str = "", count: int = 20, participant: str = ""
+    ) -> list[SlackMessage]:
+        """Search messages via ``search.messages`` (requires ``search:read``), or,
+        when ``participant`` is given, read the matching DM/group-DM
+        conversation(s) directly instead -- Slack's own `from:`/`in:` search
+        modifiers need the right handle syntax to work at all and its search
+        index doesn't reliably surface every message, whereas participant
+        resolution here reuses the same list_dms/list_group_chats matching
+        (id, handle, or display name) already exposed on those tools, so
+        "messages from Bob" or "messages with Bob and Jane" resolves
+        deterministically to the right conversation(s). ``query``, if also
+        given alongside ``participant``, is applied as a client-side
+        case-insensitive substring filter over those conversations' text
+        instead of Slack's full-text index.
+        """
+        if not query and not participant:
+            raise SlackClientError("search_messages requires a query, a participant, or both")
         count = self._clamp(count, default=20, hi=100)
+        if participant:
+            return self._search_by_participant(participant, query, count)
+
         try:
             response = self._client.search_messages(query=query, count=count)
         except SlackApiError as exc:
@@ -495,6 +512,45 @@ class SlackClient:
             messages.append(self._parse_message(raw, channel_id, channel_name))
         logger.info("search_messages query=%r returned %d match(es)", query, len(messages))
         return messages
+
+    def _search_by_participant(
+        self, participant: str, query: str, count: int
+    ) -> list[SlackMessage]:
+        """Most-recent-first messages from the DM/group-DM conversation(s)
+        matching ``participant``, optionally narrowed to those whose text
+        contains ``query`` (case-insensitive substring). ``participant`` may
+        be comma-separated to require all of them as members of the same
+        group chat -- a 1:1 DM only ever matches a single, unsegmented
+        participant since it has exactly one other party.
+        """
+        needles = [p.strip() for p in participant.split(",") if p.strip()]
+        if not needles:
+            return []
+
+        channel_ids: list[str] = []
+        if len(needles) == 1:
+            channel_ids += [d.id for d in self.list_dms(max_results=1000, participant=needles[0])]
+        for chat in self.list_group_chats(max_results=1000):
+            if all(self._matches_participant(n, chat.member_ids, chat.member_names) for n in needles):
+                channel_ids.append(chat.id)
+
+        messages: list[SlackMessage] = []
+        for channel_id in channel_ids:
+            messages.extend(self.get_channel_history(channel_id, limit=count))
+
+        if query:
+            needle = query.lower()
+            messages = [m for m in messages if needle in (m.text or "").lower()]
+
+        messages.sort(
+            key=lambda m: m.timestamp or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+        logger.info(
+            "search_messages participant=%r query=%r matched %d conversation(s), %d message(s)",
+            participant, query, len(channel_ids), len(messages),
+        )
+        return messages[:count]
 
     def send_message(self, channel_id: str, text: str, thread_ts: str = "") -> dict:
         """Send a message to a channel or DM via ``chat.postMessage``.

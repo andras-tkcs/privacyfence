@@ -130,10 +130,28 @@ class SlackConnector(Connector):
             ),
             ToolSpec(
                 name="slack_search_messages",
-                description="Search Slack messages matching a query. Requires user approval.",
+                description=(
+                    "Search Slack messages matching a query, a participant, or both. "
+                    "Prefer participant (a user id, handle, or display name) over a "
+                    "text-only query when looking for messages from or with someone "
+                    "-- e.g. 'Bob wrote me' is participant='Bob'; 'Bob in a chat with "
+                    "Jane' is participant='Bob,Jane' -- it reads the matching DM/group-"
+                    "chat conversation(s) directly instead of relying on Slack's search "
+                    "index, which is more reliable for participant-based lookups. "
+                    "Combine with query to also filter those conversations' text. "
+                    "Requires user approval."
+                ),
                 params=[
-                    ToolParam("query", "str"),
+                    ToolParam("query", "str", required=False, default=""),
                     ToolParam("count", "int", required=False, default=20),
+                    ToolParam(
+                        "participant", "str", required=False, default="",
+                        description=(
+                            "Filter to the DM/group-chat conversation(s) with this "
+                            "participant (user id, handle, or name); comma-separated "
+                            "to match a group chat containing all of them"
+                        ),
+                    ),
                     ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
@@ -345,14 +363,24 @@ class SlackConnector(Connector):
             args={"channel_id": channel_id, "thread_ts": thread_ts, "is_group_dm": is_group_dm},
         )
 
-    async def _search_messages(self, query: str, count: int = 20) -> Any:
-        messages = await self._fetch(self._slack.search_messages, query, count)
+    async def _search_messages(self, query: str = "", count: int = 20, participant: str = "") -> Any:
+        # Validate before gating, not after -- same reasoning as
+        # calendar_set_event_visibility's/slack_create_group_chat's own
+        # early checks: a doomed call shouldn't cost the user an
+        # unnecessary approval decision.
+        if not query and not participant:
+            raise ValueError("slack_search_messages requires a query, a participant, or both")
+        messages = await self._fetch(self._slack.search_messages, query, count, participant)
         n = len(messages)
         filtered = _apply_message_privacy([_message_to_dict(m) for m in messages], "message_content")
-        # Query is Claude's own input (kept in §1 as identifying context,
-        # same reasoning as drive_sheets_get_values's Range); Results
-        # (count) is only learned once this call is approved.
-        preview = {"Query": query}
+        # Query/participant are Claude's own input (kept in §1 as
+        # identifying context, same reasoning as drive_sheets_get_values's
+        # Range); Results (count) is only learned once this call is approved.
+        preview: dict[str, str] = {}
+        if query:
+            preview["Query"] = query
+        if participant:
+            preview["Participant"] = participant
         new_info = {"Results": str(n)}
         lines = [
             f"[{d['channel_name']}] {d['user_name'] or d['user_id'] or 'unknown'}: {d['text']}"
@@ -369,12 +397,18 @@ class SlackConnector(Connector):
                 for d in filtered
             ],
         }
+        if participant and query:
+            target_desc = f"\"{query}\" with {participant}"
+        elif participant:
+            target_desc = f"messages with {participant}"
+        else:
+            target_desc = f"\"{query}\""
         return await gated_call(
             connector=self.name,
             tool="slack_search_messages",
             tool_name="Search Slack",
-            summary=f"{n} result{'s' if n != 1 else ''} for \"{query}\"",
-            sender=query,
+            summary=f"{n} result{'s' if n != 1 else ''} for {target_desc}",
+            sender=query or participant,
             raw_data=messages,
             filtered_data=filtered,
             gate="review",
@@ -389,7 +423,7 @@ class SlackConnector(Connector):
             preview_tables=[table] if filtered else [],
             table_only=True,
             my_email=self.my_email,
-            args={"query": query},
+            args={"query": query, "participant": participant},
         )
 
     # ------------------------------------------------------------------ #
