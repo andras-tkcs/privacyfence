@@ -58,6 +58,25 @@ def make_file(**overrides):
     return DriveFile(**defaults)
 
 
+def _make_docx_bytes(paragraph_text: str) -> bytes:
+    """A minimal, real .docx (single paragraph) -- same shape
+    test_text_extraction.py's own make_docx() uses -- so tests below exercise
+    the real extract_text() DOCX path deterministically, without depending
+    on real PDFKit parsing a synthetic/invalid PDF fixture."""
+    import io
+    import zipfile
+
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body><w:p><w:r><w:t>{paragraph_text}</w:t></w:r></w:p></w:body></w:document>"
+    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("word/document.xml", xml)
+    return buf.getvalue()
+
+
 @pytest.fixture
 def gated_call_spy(monkeypatch):
     calls = []
@@ -553,50 +572,53 @@ class TestDownloadFile:
         assert kwargs["pii_scan_text"] == ""
         assert result == {"name": "report.pdf", "path": "/tmp/report.pdf", "size_bytes": 2048}
 
-    async def test_quicklook_disabled_by_default_never_called(self, gated_call_spy):
+    async def test_no_thumbnail_link_and_unextractable_content_keeps_preview_bytes_empty(self, gated_call_spy):
         connector, client = make_connector()
         client.get_file_metadata.return_value = make_file(
-            name="report.pdf", mime_type="application/pdf", size=2048,
+            name="video.mp4", mime_type="video/mp4", size=2048, thumbnail_link="",
         )
         client.get_file_content.return_value = DriveFileContent(
-            file=make_file(), content_bytes=b"%PDF-1.4 fake",
+            file=make_file(), content_bytes=b"\x00\x01binary junk",
         )
-        client.download_file.return_value = {"name": "report.pdf", "path": "/tmp/report.pdf", "size_bytes": 2048}
+        client.download_file.return_value = {"name": "video.mp4", "path": "/tmp/video.mp4", "size_bytes": 2048}
 
         await connector.call("drive_download_file", {"file_id": "f1", "destination_dir": "/tmp"})
 
         kwargs = gated_call_spy[0]
         assert kwargs["preview_bytes"] == b""
         assert kwargs["preview_mime_type"] == ""
+        # Nothing extracted -- preview_blocks_for() falls back to just the
+        # boilerplate details sentence, no "markdown" entry.
+        assert kwargs["preview_blocks"] == [{"type": "text", "text": kwargs["details_text"]}]
 
-    async def test_quicklook_fallback_used_when_no_thumbnail_link(self, monkeypatch, gated_call_spy):
+    async def test_extracted_content_feeds_a_rich_markdown_preview_block(self, gated_call_spy):
+        # Replaces the old QuickLook-thumbnail fallback: with no
+        # Drive-generated thumbnailLink, the non-image fallback is now the
+        # file's own extracted content (text_extraction.extract_text()),
+        # rendered as a "markdown" preview_blocks entry instead of a visual
+        # thumbnail -- see drive.py's _download_file.
         connector, client = make_connector()
         client.get_file_metadata.return_value = make_file(
-            name="report.pdf", mime_type="application/pdf", size=2048, thumbnail_link="",
+            name="report.docx",
+            mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            size=2048, thumbnail_link="",
         )
         client.get_file_content.return_value = DriveFileContent(
-            file=make_file(), content_bytes=b"%PDF-1.4 fake",
+            file=make_file(), content_bytes=_make_docx_bytes("Please wire the deposit."),
         )
-        client.download_file.return_value = {"name": "report.pdf", "path": "/tmp/report.pdf", "size_bytes": 2048}
-        monkeypatch.setattr(drive_module, "is_quicklook_enabled", lambda: True)
-        captured = {}
-
-        def fake_generate(data, filename_hint):
-            captured["data"] = data
-            captured["filename_hint"] = filename_hint
-            return b"\x89PNGthumbnail"
-
-        monkeypatch.setattr(drive_module, "generate_thumbnail", fake_generate)
+        client.download_file.return_value = {"name": "report.docx", "path": "/tmp/report.docx", "size_bytes": 2048}
 
         await connector.call("drive_download_file", {"file_id": "f1", "destination_dir": "/tmp"})
 
         kwargs = gated_call_spy[0]
-        assert kwargs["preview_bytes"] == b"\x89PNGthumbnail"
-        assert kwargs["preview_mime_type"] == "image/png"
-        assert captured["data"] == b"%PDF-1.4 fake"
-        assert captured["filename_hint"] == "report.pdf"
+        assert kwargs["preview_bytes"] == b""
+        assert kwargs["pii_scan_text"] == "Please wire the deposit."
+        assert kwargs["preview_blocks"] == [
+            {"type": "text", "text": kwargs["details_text"]},
+            {"type": "markdown", "text": "Please wire the deposit."},
+        ]
 
-    async def test_quicklook_not_tried_when_thumbnail_link_already_succeeded(self, monkeypatch, gated_call_spy):
+    async def test_thumbnail_link_success_takes_priority_over_extracted_content(self, gated_call_spy):
         connector, client = make_connector()
         client.get_file_metadata.return_value = make_file(
             name="photo.jpg", mime_type="image/jpeg", size=2048,
@@ -607,33 +629,11 @@ class TestDownloadFile:
             file=make_file(), content_bytes=b"\xff\xd8realfilebytes",
         )
         client.download_file.return_value = {"name": "photo.jpg", "path": "/tmp/photo.jpg", "size_bytes": 2048}
-        monkeypatch.setattr(drive_module, "is_quicklook_enabled", lambda: True)
-        calls = []
-        monkeypatch.setattr(drive_module, "generate_thumbnail", lambda *a, **k: calls.append(1))
 
         await connector.call("drive_download_file", {"file_id": "f1", "destination_dir": "/tmp"})
 
-        assert calls == []
         kwargs = gated_call_spy[0]
         assert kwargs["preview_bytes"] == b"\xff\xd8thumb"
-
-    async def test_quicklook_miss_keeps_preview_empty(self, monkeypatch, gated_call_spy):
-        connector, client = make_connector()
-        client.get_file_metadata.return_value = make_file(
-            name="report.pdf", mime_type="application/pdf", size=2048, thumbnail_link="",
-        )
-        client.get_file_content.return_value = DriveFileContent(
-            file=make_file(), content_bytes=b"%PDF-1.4 fake",
-        )
-        client.download_file.return_value = {"name": "report.pdf", "path": "/tmp/report.pdf", "size_bytes": 2048}
-        monkeypatch.setattr(drive_module, "is_quicklook_enabled", lambda: True)
-        monkeypatch.setattr(drive_module, "generate_thumbnail", lambda *a, **k: None)
-
-        await connector.call("drive_download_file", {"file_id": "f1", "destination_dir": "/tmp"})
-
-        kwargs = gated_call_spy[0]
-        assert kwargs["preview_bytes"] == b""
-        assert kwargs["preview_mime_type"] == ""
 
 
 class TestWriteToolsGateAndPreview:
@@ -944,68 +944,67 @@ class TestUploadFile:
         kwargs = gated_call_spy[0]
         assert kwargs["upload_pii_scan_text"] == ""
 
-    async def test_local_path_quicklook_disabled_by_default(self, tmp_path, gated_call_spy):
+    async def test_local_path_no_extractable_content_keeps_preview_blocks_text_only(self, tmp_path, gated_call_spy):
         connector, client = make_connector()
         f = tmp_path / "report.pdf"
-        f.write_bytes(b"%PDF-1.4 fake")
+        f.write_bytes(b"%PDF-1.4 fake")  # not a real, parseable PDF -- extracts ""
         client.upload_file.return_value = {"id": "uploaded16"}
 
         await connector.call("drive_upload_file", {"local_path": str(f)})
 
         kwargs = gated_call_spy[0]
         assert kwargs["preview_bytes"] == b""
+        assert kwargs["preview_blocks"] == [{"type": "text", "text": kwargs["details_text"]}]
 
-    async def test_local_path_quicklook_fallback_populates_preview(self, tmp_path, monkeypatch, gated_call_spy):
+    async def test_local_path_extracted_content_feeds_a_rich_markdown_preview_block(self, tmp_path, gated_call_spy):
+        # Replaces the old QuickLook-thumbnail fallback: a non-image local
+        # file's own extracted content (text_extraction.extract_text())
+        # becomes a "markdown" preview_blocks entry instead of a visual
+        # thumbnail -- see drive.py's _upload_file.
         connector, client = make_connector()
-        f = tmp_path / "report.pdf"
-        f.write_bytes(b"%PDF-1.4 fake")
+        f = tmp_path / "report.docx"
+        f.write_bytes(_make_docx_bytes("Please wire the deposit."))
         client.upload_file.return_value = {"id": "uploaded17"}
-        monkeypatch.setattr(drive_module, "is_quicklook_enabled", lambda: True)
-        captured = {}
-
-        def fake_generate(data, filename_hint):
-            captured["data"] = data
-            captured["filename_hint"] = filename_hint
-            return b"\x89PNGthumbnail"
-
-        monkeypatch.setattr(drive_module, "generate_thumbnail", fake_generate)
 
         await connector.call("drive_upload_file", {"local_path": str(f)})
 
         kwargs = gated_call_spy[0]
-        assert kwargs["preview_bytes"] == b"\x89PNGthumbnail"
-        assert kwargs["preview_mime_type"] == "image/png"
-        assert captured["data"] == b"%PDF-1.4 fake"
-        assert captured["filename_hint"] == "report.pdf"
+        assert kwargs["preview_bytes"] == b""
+        assert kwargs["upload_pii_scan_text"] == "Please wire the deposit."
+        assert kwargs["preview_blocks"] == [
+            {"type": "text", "text": kwargs["details_text"]},
+            {"type": "markdown", "text": "Please wire the deposit."},
+        ]
 
-    async def test_local_path_image_never_tries_quicklook(self, tmp_path, monkeypatch, gated_call_spy):
+    async def test_local_path_image_only_gets_the_image_preview_no_markdown_block(self, tmp_path, gated_call_spy):
         connector, client = make_connector()
         f = tmp_path / "photo.png"
         f.write_bytes(b"\x89PNGfakebytes")
         client.upload_file.return_value = {"id": "uploaded18"}
-        monkeypatch.setattr(drive_module, "is_quicklook_enabled", lambda: True)
-        calls = []
-        monkeypatch.setattr(drive_module, "generate_thumbnail", lambda *a, **k: calls.append(1))
 
         await connector.call("drive_upload_file", {"local_path": str(f)})
 
-        assert calls == []
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview_bytes"] == b"\x89PNGfakebytes"
+        assert kwargs["preview_mime_type"] == "image/png"
+        # No OCR -- extract_text() contributes nothing for image/* content.
+        assert kwargs["preview_blocks"] == [{"type": "text", "text": kwargs["details_text"]}]
 
-    async def test_content_base64_quicklook_fallback_populates_preview(self, monkeypatch, gated_call_spy):
+    async def test_content_base64_extracted_content_feeds_a_rich_markdown_preview_block(self, gated_call_spy):
         import base64
         connector, client = make_connector()
         client.upload_file.return_value = {"id": "uploaded19"}
-        payload = base64.b64encode(b"%PDF-1.4 fake").decode()
-        monkeypatch.setattr(drive_module, "is_quicklook_enabled", lambda: True)
-        monkeypatch.setattr(drive_module, "generate_thumbnail", lambda data, filename_hint: b"\x89PNGthumbnail")
+        payload = base64.b64encode(_make_docx_bytes("Synthetic report content.")).decode()
 
         await connector.call(
-            "drive_upload_file", {"content_base64": payload, "name": "report.pdf"}
+            "drive_upload_file", {"content_base64": payload, "name": "report.docx"}
         )
 
         kwargs = gated_call_spy[0]
-        assert kwargs["preview_bytes"] == b"\x89PNGthumbnail"
-        assert kwargs["preview_mime_type"] == "image/png"
+        assert kwargs["preview_blocks"] == [
+            {"type": "text", "text": kwargs["details_text"]},
+            {"type": "markdown", "text": "Synthetic report content."},
+        ]
 
 
 class TestFetchErrorMapping:

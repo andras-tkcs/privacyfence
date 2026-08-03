@@ -797,11 +797,13 @@ class TestPiiScanWiring:
         assert kwargs["pii_scan_text"] == ""
 
 
-class TestQuickLookFallback:
-    """QuickLook (off by default, menu-bar toggle) is the fallback preview
-    source for prefetched, non-image attachment content -- generate_thumbnail
-    itself is exercised in test_quicklook_preview.py; these tests only pin
-    the wiring (when it's tried, when it isn't, and how a miss degrades)."""
+class TestMarkdownPreviewFallback:
+    """The non-image fallback for a prefetched attachment is the file's own
+    extracted content (text_extraction.extract_text()), rendered as a
+    "markdown" preview_blocks entry -- replacing the old QuickLook-thumbnail
+    fallback (see docs/file-type-support.md). These tests pin the wiring:
+    when a markdown block is added, when it isn't, and that images still
+    only ever get the direct image preview, never a markdown block too."""
 
     def _message_with_attachment(self, **overrides):
         defaults = dict(name="report.pdf", mime_type="application/pdf", size=1024, attachment_id="att-1")
@@ -811,63 +813,13 @@ class TestQuickLookFallback:
             attachments=[Attachment(**defaults)],
         )
 
-    async def test_disabled_by_default_never_calls_generate_thumbnail(self, monkeypatch, gated_call_spy):
+    async def test_no_extractable_content_keeps_preview_blocks_text_only(self, gated_call_spy):
         connector, client = make_connector()
         client.get_message.return_value = self._message_with_attachment()
-        client.fetch_attachment_bytes.return_value = b"%PDF-1.4 fake"
+        client.fetch_attachment_bytes.return_value = b"%PDF-1.4 fake"  # not a real, parseable PDF
         client.save_attachment_bytes.return_value = {
             "path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024,
         }
-        calls = []
-        monkeypatch.setattr(gmail_module, "generate_thumbnail", lambda *a, **k: calls.append(1))
-
-        await connector.call(
-            "gmail_download_attachment",
-            {"message_id": "m1", "attachment_name": "report.pdf", "destination_dir": "/tmp"},
-        )
-
-        assert calls == []
-        kwargs = gated_call_spy[0]
-        assert kwargs["preview_bytes"] == b""
-        assert kwargs["preview_mime_type"] == ""
-
-    async def test_enabled_and_successful_populates_preview_bytes(self, monkeypatch, gated_call_spy):
-        connector, client = make_connector()
-        client.get_message.return_value = self._message_with_attachment()
-        client.fetch_attachment_bytes.return_value = b"%PDF-1.4 fake"
-        client.save_attachment_bytes.return_value = {
-            "path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024,
-        }
-        monkeypatch.setattr(gmail_module, "is_quicklook_enabled", lambda: True)
-        captured = {}
-
-        def fake_generate(data, filename_hint):
-            captured["data"] = data
-            captured["filename_hint"] = filename_hint
-            return b"\x89PNGthumbnail"
-
-        monkeypatch.setattr(gmail_module, "generate_thumbnail", fake_generate)
-
-        await connector.call(
-            "gmail_download_attachment",
-            {"message_id": "m1", "attachment_name": "report.pdf", "destination_dir": "/tmp"},
-        )
-
-        kwargs = gated_call_spy[0]
-        assert kwargs["preview_bytes"] == b"\x89PNGthumbnail"
-        assert kwargs["preview_mime_type"] == "image/png"
-        assert captured["data"] == b"%PDF-1.4 fake"
-        assert captured["filename_hint"] == "report.pdf"
-
-    async def test_enabled_but_no_thumbnail_keeps_preview_empty(self, monkeypatch, gated_call_spy):
-        connector, client = make_connector()
-        client.get_message.return_value = self._message_with_attachment()
-        client.fetch_attachment_bytes.return_value = b"%PDF-1.4 fake"
-        client.save_attachment_bytes.return_value = {
-            "path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024,
-        }
-        monkeypatch.setattr(gmail_module, "is_quicklook_enabled", lambda: True)
-        monkeypatch.setattr(gmail_module, "generate_thumbnail", lambda *a, **k: None)
 
         await connector.call(
             "gmail_download_attachment",
@@ -877,10 +829,35 @@ class TestQuickLookFallback:
         kwargs = gated_call_spy[0]
         assert kwargs["preview_bytes"] == b""
         assert kwargs["preview_mime_type"] == ""
+        assert kwargs["preview_blocks"] == [{"type": "text", "text": kwargs["details_text"]}]
 
-    async def test_image_attachment_never_tries_quicklook(self, monkeypatch, gated_call_spy):
-        # Images already have their own direct preview path -- QuickLook is
-        # strictly a fallback for the non-image case.
+    async def test_extracted_content_feeds_a_rich_markdown_preview_block(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_message.return_value = self._message_with_attachment(
+            name="notes.txt", mime_type="text/plain",
+        )
+        client.fetch_attachment_bytes.return_value = b"Please wire the deposit."
+        client.save_attachment_bytes.return_value = {
+            "path": "/tmp/notes.txt", "name": "notes.txt", "size_bytes": 1024,
+        }
+
+        await connector.call(
+            "gmail_download_attachment",
+            {"message_id": "m1", "attachment_name": "notes.txt", "destination_dir": "/tmp"},
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview_bytes"] == b""
+        assert kwargs["pii_scan_text"] == "Please wire the deposit."
+        assert kwargs["preview_blocks"] == [
+            {"type": "text", "text": kwargs["details_text"]},
+            {"type": "markdown", "text": "Please wire the deposit."},
+        ]
+
+    async def test_image_attachment_only_gets_the_image_preview_no_markdown_block(self, gated_call_spy):
+        # Images already have their own direct preview path -- extract_text()
+        # contributes nothing for image/* content (no OCR), so no markdown
+        # block is ever added alongside it.
         connector, client = make_connector()
         client.get_message.return_value = self._message_with_attachment(
             name="photo.png", mime_type="image/png",
@@ -889,16 +866,16 @@ class TestQuickLookFallback:
         client.save_attachment_bytes.return_value = {
             "path": "/tmp/photo.png", "name": "photo.png", "size_bytes": 1024,
         }
-        monkeypatch.setattr(gmail_module, "is_quicklook_enabled", lambda: True)
-        calls = []
-        monkeypatch.setattr(gmail_module, "generate_thumbnail", lambda *a, **k: calls.append(1))
 
         await connector.call(
             "gmail_download_attachment",
             {"message_id": "m1", "attachment_name": "photo.png", "destination_dir": "/tmp"},
         )
 
-        assert calls == []
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview_bytes"] == b"\x89PNGfakebytes"
+        assert kwargs["preview_mime_type"] == "image/png"
+        assert kwargs["preview_blocks"] == [{"type": "text", "text": kwargs["details_text"]}]
 
 
 class TestWriteToolsGateAndPreview:
@@ -916,7 +893,7 @@ class TestWriteToolsGateAndPreview:
         assert "Secret plan details" not in str(kwargs["preview"])
         assert kwargs["details_text"] == "Secret plan details"
         assert kwargs["preview"] == {"To": "alice@example.com", "Cc": "bob@example.com", "Subject": "Hi"}
-        client.create_draft.assert_called_once_with("alice@example.com", "Hi", "Secret plan details", "bob@example.com", "")
+        client.create_draft.assert_called_once_with("alice@example.com", "Hi", "Secret plan details", "bob@example.com", "", "")
 
     async def test_reply_draft_args_to_is_original_sender_only(self, gated_call_spy):
         connector, client = make_connector()
@@ -1084,6 +1061,110 @@ class TestWriteToolsGateAndPreview:
         assert gated_call_spy == []
 
 
+class TestBodyMarkdownRichText:
+    """body_markdown support across the 6 draft tools: the "at least one of
+    body/body_markdown" validation, and that the approval preview shows the
+    raw markdown source (not body) when it's supplied -- guaranteeing what
+    the reviewer approves matches what actually renders as HTML, rather than
+    trusting the two params to independently describe the same content.
+    """
+
+    async def test_create_draft_neither_body_nor_body_markdown_denied_before_gate(self, gated_call_spy):
+        connector, client = make_connector()
+        with pytest.raises(ValueError, match="body and/or body_markdown"):
+            await connector.call("gmail_create_draft", {"to": "a@x.com", "subject": "Hi"})
+        assert gated_call_spy == []  # popup never shown
+        client.create_draft.assert_not_called()
+
+    async def test_create_draft_body_markdown_only_reaches_gate_and_client(self, gated_call_spy):
+        connector, client = make_connector()
+        client.create_draft.return_value = {"draft_id": "d1"}
+
+        await connector.call(
+            "gmail_create_draft",
+            {"to": "a@x.com", "subject": "Hi", "body_markdown": "**bold** plan"},
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["details_text"] == "**bold** plan"
+        client.create_draft.assert_called_once_with("a@x.com", "Hi", "", "", "", "**bold** plan")
+
+    async def test_create_draft_preview_prefers_markdown_source_over_body(self, gated_call_spy):
+        # When both are given, the reviewer should see the markdown source
+        # (what actually becomes the HTML part), not the plain-text body.
+        connector, client = make_connector()
+        client.create_draft.return_value = {"draft_id": "d1"}
+
+        await connector.call(
+            "gmail_create_draft",
+            {"to": "a@x.com", "subject": "Hi", "body": "plain fallback", "body_markdown": "**rich** version"},
+        )
+
+        assert gated_call_spy[0]["details_text"] == "**rich** version"
+
+    async def test_reply_draft_neither_body_nor_body_markdown_denied_before_gate(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_message.return_value = GmailMessage(
+            id="m1", thread_id="t1", subject="Re: hi", sender="alice@example.com",
+        )
+        with pytest.raises(ValueError, match="body and/or body_markdown"):
+            await connector.call("gmail_reply_draft", {"message_id": "m1"})
+        assert gated_call_spy == []
+        client.create_reply_draft.assert_not_called()
+
+    async def test_reply_all_draft_body_markdown_only(self, gated_call_spy):
+        connector, client = make_connector(my_email="me@example.com")
+        client.get_message.return_value = GmailMessage(
+            id="m1", thread_id="t1", subject="Re: hi", sender="alice@example.com",
+        )
+        client.create_reply_draft.return_value = {"draft_id": "d1"}
+
+        await connector.call(
+            "gmail_reply_all_draft", {"message_id": "m1", "body_markdown": "==urgent=="},
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["details_text"] == "==urgent=="
+        client.create_reply_draft.assert_called_once_with(
+            "m1", "", True, "me@example.com", "", "", "==urgent=="
+        )
+
+    async def test_create_draft_with_attachments_neither_body_nor_body_markdown_denied_before_gate(
+        self, gated_call_spy, tmp_path,
+    ):
+        connector, client = make_connector()
+        attachment = tmp_path / "f.txt"
+        attachment.write_bytes(b"x")
+
+        with pytest.raises(ValueError, match="body and/or body_markdown"):
+            await connector.call(
+                "gmail_create_draft_with_attachments",
+                {"to": "a@x.com", "subject": "Hi", "attachments": json.dumps([str(attachment)])},
+            )
+        assert gated_call_spy == []
+        client.create_draft_with_attachments.assert_not_called()
+
+    async def test_reply_draft_with_attachments_body_markdown_only(self, gated_call_spy, tmp_path):
+        connector, client = make_connector()
+        attachment = tmp_path / "f.txt"
+        attachment.write_bytes(b"x")
+        client.get_message.return_value = GmailMessage(
+            id="m1", thread_id="t1", subject="Re: hi", sender="alice@example.com",
+        )
+        client.create_reply_draft_with_attachments.return_value = {"draft_id": "d1"}
+
+        await connector.call(
+            "gmail_reply_draft_with_attachments",
+            {"message_id": "m1", "body_markdown": "see [report](https://x.com/r)", "attachments": json.dumps([str(attachment)])},
+        )
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["details_text"] == "see [report](https://x.com/r)"
+        client.create_reply_draft_with_attachments.assert_called_once_with(
+            "m1", "", [str(attachment)], False, "me@example.com", "", "", "see [report](https://x.com/r)",
+        )
+
+
 class TestWriteToolsWithAttachmentsGateAndPreview:
     """gmail_create_draft_with_attachments/gmail_reply_draft_with_attachments/
     gmail_reply_all_draft_with_attachments -- the additive tools from issue
@@ -1117,7 +1198,7 @@ class TestWriteToolsWithAttachmentsGateAndPreview:
         assert kwargs["preview"]["Attachments"] == "report.pdf (10 bytes)"
         assert kwargs["args"] == {"to": "alice@example.com", "subject": "Hi"}
         client.create_draft_with_attachments.assert_called_once_with(
-            "alice@example.com", "Hi", "Secret plan details", [str(attachment)], "bob@example.com", "",
+            "alice@example.com", "Hi", "Secret plan details", [str(attachment)], "bob@example.com", "", "",
         )
 
     async def test_create_draft_with_attachments_bcc_included_when_provided(self, gated_call_spy, tmp_path):
@@ -1200,7 +1281,7 @@ class TestWriteToolsWithAttachmentsGateAndPreview:
         assert kwargs["args"] == {"message_id": "m1", "to": "alice@example.com"}
         assert kwargs["preview"]["Attachments"] == "f.txt (2 bytes)"
         client.create_reply_draft_with_attachments.assert_called_once_with(
-            "m1", "ok", [str(attachment)], False, "me@example.com", "", "",
+            "m1", "ok", [str(attachment)], False, "me@example.com", "", "", "",
         )
 
     async def test_reply_all_draft_with_attachments_expands_recipients_excluding_self(self, gated_call_spy, tmp_path):
@@ -1227,7 +1308,7 @@ class TestWriteToolsWithAttachmentsGateAndPreview:
         assert "me@example.com" not in kwargs["args"]["to"]
         assert "Also to" in kwargs["preview"]
         client.create_reply_draft_with_attachments.assert_called_once_with(
-            "m1", "ok", [str(attachment)], True, "me@example.com", "eve@example.com", "",
+            "m1", "ok", [str(attachment)], True, "me@example.com", "eve@example.com", "", "",
         )
 
 
@@ -1309,11 +1390,18 @@ class TestEveryToolIsAudited:
         stub_attachment.write_text("stub")
         attachments_arg = json.dumps([str(stub_attachment)])
 
+        # body is now optional (so body_markdown alone can satisfy a rich
+        # draft) -- the generic stub omits both, which the 6 draft tools
+        # correctly reject as "nothing to send", so each needs a body
+        # override here to reach its gate like every other tool.
         await assert_all_tools_leave_an_audit_trail(
             connector, gmail_module, monkeypatch, tmp_path,
             arg_overrides={
-                "gmail_create_draft_with_attachments": {"attachments": attachments_arg},
-                "gmail_reply_draft_with_attachments": {"attachments": attachments_arg},
-                "gmail_reply_all_draft_with_attachments": {"attachments": attachments_arg},
+                "gmail_create_draft": {"body": "stub"},
+                "gmail_reply_draft": {"body": "stub"},
+                "gmail_reply_all_draft": {"body": "stub"},
+                "gmail_create_draft_with_attachments": {"attachments": attachments_arg, "body": "stub"},
+                "gmail_reply_draft_with_attachments": {"attachments": attachments_arg, "body": "stub"},
+                "gmail_reply_all_draft_with_attachments": {"attachments": attachments_arg, "body": "stub"},
             },
         )

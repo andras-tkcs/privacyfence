@@ -139,6 +139,23 @@ class SlackConnector(Connector):
                 read_only=True,
             ),
             ToolSpec(
+                name="slack_create_group_chat",
+                description=(
+                    "Create (or reopen the existing) group-DM conversation with the given "
+                    "participants and return its channel id, ready for slack_send_message. "
+                    "Participants must already have a Slack user id (from slack_list_dms, "
+                    "slack_list_group_chats, or a message's user_id) -- this does not resolve "
+                    "email addresses or handles. Requires user approval."
+                ),
+                params=[
+                    ToolParam(
+                        "participants", "str",
+                        description="Comma-separated Slack user IDs to include (at least 2, e.g. 'U123,U456')",
+                    ),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
+                ],
+            ),
+            ToolSpec(
                 name="slack_send_message",
                 description=(
                     "Send a message to a Slack channel or DM. Requires user approval. "
@@ -169,6 +186,8 @@ class SlackConnector(Connector):
             return await self._get_thread_replies(**args)
         if tool == "slack_search_messages":
             return await self._search_messages(**args)
+        if tool == "slack_create_group_chat":
+            return await self._create_group_chat(**args)
         if tool == "slack_send_message":
             return await self._send_message(**args)
         raise ValueError(f"Unknown Slack tool: {tool!r}")
@@ -376,6 +395,48 @@ class SlackConnector(Connector):
     # ------------------------------------------------------------------ #
     # Popup gate (writes)
     # ------------------------------------------------------------------ #
+
+    async def _create_group_chat(self, participants: str) -> Any:
+        # Validate before gating, not after -- same reasoning as
+        # calendar_set_event_visibility's early visibility check: a doomed
+        # call shouldn't cost the user an unnecessary approval decision.
+        user_ids = [p.strip() for p in participants.split(",") if p.strip()]
+        if len(set(user_ids)) < 2:
+            raise ValueError(
+                "slack_create_group_chat requires at least 2 distinct participant user IDs, "
+                f"got {participants!r}"
+            )
+        # Unfiltered here, unlike the member_ids/member_names on the return
+        # value below -- this is the popup shown to the human approving
+        # their own action, not data flowing to Claude, so it always shows
+        # who's really being added (same as _send_message's _channel_display).
+        display_names = []
+        for uid in user_ids:
+            name = await self._fetch(self._slack.resolve_user_name, uid)
+            display_names.append(name or uid)
+        participants_text = ", ".join(display_names)
+        preview = {"Participants": participants_text}
+        await gated_call(
+            connector=self.name,
+            tool="slack_create_group_chat",
+            tool_name="Create Slack Group Chat",
+            summary=f"New group chat with {participants_text}",
+            sender=",".join(user_ids),
+            raw_data={"participants": user_ids},
+            filtered_data=None,
+            gate="popup",
+            preview=preview,
+            details_text=f"Participants: {participants_text}",
+            my_email=self.my_email,
+            args={"participants": participants},
+        )
+        chat = await self._fetch(self._slack.open_conversation, user_ids)
+        return {
+            "id": chat.id,
+            "name": chat.name,
+            "member_ids": [apply_text("slack_privacy", "user_identity", i or "") for i in chat.member_ids],
+            "member_names": [apply_text("slack_privacy", "user_identity", n or "") for n in chat.member_names],
+        }
 
     async def _send_message(
         self,

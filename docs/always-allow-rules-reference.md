@@ -229,12 +229,14 @@ an Always-allow rule and doesn't belong in this column.
 counterparts (all six share the `gmail.create_draft` operation key) propose a
 plain, unconditional `always_allow` rule — no recipient check at all, broader than
 `to_is_myself`/`approved_recipient_domain`, which are both conditional on who the draft goes to.
-It's the one entry in `WRITE_RULE_SUGGESTIONS` that isn't resource-identity-scoped: drafting has no
-recipient sent yet, unlike `gmail_send_message` (still reviewed via `to_is_myself`/
-`approved_recipient_domain` before it goes out, and not in this table at all), so an unconditional
-rule for drafting alone doesn't carry the blast radius a bare toggle would for an operation that
-actually delivers something. Also configurable directly from **Manage Auto-accept Rules… → Gmail →
-Filters** without ever clicking Always allow.
+It's the one entry in `WRITE_RULE_SUGGESTIONS` that isn't resource-identity-scoped: Gmail has no
+tool that actually sends a message (only drafts — `gmail_create_draft` and its reply/attachment
+variants), so an unconditional rule for drafting alone doesn't carry the blast radius a bare
+toggle would for an operation that actually delivers something. `to_is_myself`/
+`approved_recipient_domain` (not offered by the popup-time button, which always proposes the
+broader unconditional `always_allow`) are narrower alternatives configurable directly from
+**Manage Auto-accept Rules… → Gmail → Filters**, for anyone who wants drafting auto-accepted only
+when it's addressed to themselves or an approved domain rather than unconditionally.
 
 ### Google Drive (incl. Sheets and Docs)
 
@@ -267,6 +269,7 @@ shortcut above. See [Auto-accept grants](TECHNICAL_REFERENCE.md#auto-accept-gran
 | Tool | Always allow rule created |
 |---|---|
 | `slack_send_message` | |
+| `slack_create_group_chat` | |
 
 ### Google Calendar
 

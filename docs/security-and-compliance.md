@@ -122,7 +122,8 @@ decision. It does not otherwise run on the `popup` (write) direction: that conte
 Claude's own generated output for an action already described in chat, not external personal data
 newly reaching Claude. `drive_upload_file` is the one deliberate exception — its payload can be an
 arbitrary local file Claude never actually read, so it gets the same real scan and forced
-confirmation, extracting text from plain text, PDF, DOCX, and PPTX content (no OCR on images).
+confirmation, extracting text from plain text, HTML, PDF, DOCX, PPTX, and XLSX content (no OCR on
+images).
 
 **Note for reviewers evaluating the MCP-level permission model:** the bridge advertises every tool
 to Claude as `readOnlyHint = true`, including writes. This is documented and

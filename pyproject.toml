@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "privacyfence"
-version = "3.1.1"
+version = "3.2.0-beta"
 description = "macOS menu bar privacy proxy between Claude (MCP) and your personal data"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -26,7 +26,6 @@ dependencies = [
     "pyobjc-framework-Cocoa>=10.0",
     "pyobjc-framework-WebKit>=10.0",
     "pyobjc-framework-Quartz>=10.0",
-    "pyobjc-framework-QuickLookThumbnailing>=10.0",
     "openpyxl>=3.1",
 ]
 

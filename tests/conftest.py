@@ -1,12 +1,12 @@
-"""Shared fixtures. Resets module-level singletons that auto_accept.py and
-audit_log.py use, so tests don't leak state into each other via import-time
-globals.
+"""Shared fixtures. Resets module-level singletons that auto_accept.py,
+audit_log.py, and resource_names.py use, so tests don't leak state into
+each other via import-time globals.
 """
 from __future__ import annotations
 
 import pytest
 
-from privacyfence import auto_accept, audit_log, pii_detector, privacy_filter, quicklook_preview
+from privacyfence import auto_accept, audit_log, pii_detector, privacy_filter, resource_names
 
 
 @pytest.fixture(autouse=True)
@@ -20,9 +20,7 @@ def _reset_singletons():
     pii_detector._changed_listener = None
     pii_detector._disabled_categories.clear()
     privacy_filter._GROUPS = {}
-    quicklook_preview._enabled = False
-    quicklook_preview._max_wait_seconds = quicklook_preview.DEFAULT_MAX_WAIT_SECONDS
-    quicklook_preview._changed_listener = None
+    resource_names._INSTANCE = None
     yield
     auto_accept._INSTANCE = None
     auto_accept._config_path = None
@@ -33,6 +31,4 @@ def _reset_singletons():
     pii_detector._changed_listener = None
     pii_detector._disabled_categories.clear()
     privacy_filter._GROUPS = {}
-    quicklook_preview._enabled = False
-    quicklook_preview._max_wait_seconds = quicklook_preview.DEFAULT_MAX_WAIT_SECONDS
-    quicklook_preview._changed_listener = None
+    resource_names._INSTANCE = None

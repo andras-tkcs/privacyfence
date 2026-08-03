@@ -13,10 +13,9 @@ from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..confluence_client import ConfluenceClient, ConfluenceClientError, resolve_attachment_destination
 from ..connector import Connector, ToolParam, ToolSpec
 from ..gate import current_reason, gated_call
-from ..html_to_text import html_to_text
+from ..html_to_text import html_to_markdown
 from ..privacy_filter import apply_list, apply_text
-from ..quicklook_preview import generate_thumbnail, is_quicklook_enabled
-from ..text_extraction import extract_text, is_prefetch_worthy
+from ..text_extraction import extract_text, is_prefetch_worthy, preview_blocks_for
 
 logger = logging.getLogger(__name__)
 
@@ -309,7 +308,7 @@ class ConfluenceConnector(Connector):
             "Page body": "Full page content",
         }
         body_raw = getattr(page, "body", "") or getattr(page, "body_text", "") or ""
-        body_text = html_to_text(body_raw)
+        body_text = html_to_markdown(body_raw)
         return await gated_call(
             connector=self.name,
             tool="confluence_get_page",
@@ -323,6 +322,7 @@ class ConfluenceConnector(Connector):
             new_info=new_info,
             details_text=body_text,
             pii_scan_text=body_text,
+            preview_blocks=[{"type": "markdown", "text": body_text}] if body_text else None,
             my_email=self.my_email,
             args={"page_id": page_id},
         )
@@ -341,7 +341,7 @@ class ConfluenceConnector(Connector):
             "Page body": "Full page content",
         }
         body_raw = getattr(page, "body", "") or getattr(page, "body_text", "") or ""
-        body_text = html_to_text(body_raw)
+        body_text = html_to_markdown(body_raw)
         return await gated_call(
             connector=self.name,
             tool="confluence_get_page_by_title",
@@ -355,6 +355,7 @@ class ConfluenceConnector(Connector):
             new_info=new_info,
             details_text=body_text,
             pii_scan_text=body_text,
+            preview_blocks=[{"type": "markdown", "text": body_text}] if body_text else None,
             my_email=self.my_email,
             args={"space_key": space_key, "title": title},
         )
@@ -416,18 +417,9 @@ class ConfluenceConnector(Connector):
                 if attachment.media_type.startswith("image/"):
                     preview_bytes = fetched_bytes
                     preview_mime_type = attachment.media_type
-                elif is_quicklook_enabled():
-                    # Not an image -- QuickLook (off by default, menu-bar
-                    # toggle) is the fallback preview source for anything its
-                    # own renderer recognizes (PDFs, Office docs, and more).
-                    # asyncio.to_thread, not a direct call: generate_thumbnail
-                    # can block its calling thread for the full timeout, and
-                    # this is an async def -- calling it directly would stall
-                    # the whole daemon's event loop, not just this request.
-                    thumbnail = await asyncio.to_thread(generate_thumbnail, fetched_bytes, attachment.name)
-                    if thumbnail is not None:
-                        preview_bytes = thumbnail
-                        preview_mime_type = "image/png"
+                # Not an image -- extract_text() below feeds a rich
+                # "markdown" preview_blocks entry (see this call's
+                # gated_call below) instead of a visual thumbnail.
                 pii_scan_text = extract_text(fetched_bytes, attachment.media_type)
 
         # Gate before touching disk: gated_call raises on denial, and only a
@@ -447,6 +439,7 @@ class ConfluenceConnector(Connector):
             pii_scan_text=pii_scan_text,
             preview_bytes=preview_bytes,
             preview_mime_type=preview_mime_type,
+            preview_blocks=preview_blocks_for(details, pii_scan_text),
             my_email=self.my_email,
             args={"page_id": page_id, "attachment_name": attachment_name},
         )

@@ -51,7 +51,7 @@ optional sections a given call populates. In display order:
 | 8 | Temp-accept disclosure caption (plain text, not a control) | `temp_accept_eligible` | – | **yes** | **Automatic** — `gate.py` sets it from `auto_accept.temp_accept_key()` resolving for the six WG-3 tools below. Not offered as a button: clicking Allow once on one of these silently also arms the 5-minute same-file grace window this caption describes — see WG-3 below |
 | 9 | Buttons | always | – | – | Always-allow offered when `auto_accept.suggest_rule()` (review-gate) or `auto_accept.suggest_write_rule()` (popup-gate, WG-2/WG-3 — see [Always allow for writes](TECHNICAL_REFERENCE.md#always-allow-for-writes)) can derive a rule from this item. The temp-accept caption (row 8) and an Always-allow button are independent and can both appear at once (WG-3). The button's own label names the specific rule it would create (e.g. "Always allow — this folder"), not a plain unspecific "Always allow" — see `gate.py`'s `accept_all_hint`/`auto_accept.describe_rule_short()`; empty for the one unconditional rule (`always_allow`, e.g. `gmail_create_draft`) with no category to name |
 
-Row 7's right pane defaults to plain escaped text. Two tools override that:
+Row 7's right pane defaults to plain escaped text. Three things override that:
 
 - **`pdf_bytes`** (non-empty), on `drive_get_file_content` only, renders an inline `<embed>` PDF
   data URI instead of plain text. Only ever set when the file is a PDF, wasn't truncated by the
@@ -62,6 +62,14 @@ Row 7's right pane defaults to plain escaped text. Two tools override that:
   `<img>` data URI instead. Carries no AI-visibility parity constraint (unlike `pdf_bytes`) — these
   four tools' content never reaches Claude at all, so there's nothing an "AI will receive" checklist
   could disclose to stay in parity with.
+- **`preview_blocks`** entries of `{"type": "markdown", ...}` render Markdown (headings,
+  bold/italic, bullet/numbered lists, links, pipe tables) as real HTML via `markdown_to_html.py`,
+  instead of a flat escaped-text dump. The same four content-never-reaches-Claude tools listed
+  above use this as their non-image fallback — `text_extraction.py`'s DOCX/PPTX/XLSX/archive
+  extraction (or plain text, which still degrades gracefully through the same renderer) feeds it —
+  and `confluence_get_page`/`confluence_get_page_by_title` use it for the page body itself, via
+  `html_to_text.py`'s `html_to_markdown()`. See [`file-type-support.md`](file-type-support.md) for
+  the full format matrix.
 
 ## View groups — review-gate (read) tools
 
@@ -130,7 +138,7 @@ into exactly one of the three groups below — WG-3 is the one group where both 
 
 ### WG-1 — Deny / Allow once only (never Always allow, not temp-accept eligible)
 
-12 tools. Preview fields are tool-specific; `[brackets]` mark a field that's only added to the dict
+13 tools. Preview fields are tool-specific; `[brackets]` mark a field that's only added to the dict
 when the corresponding argument was actually provided (empty/default arguments don't produce an
 empty row).
 
@@ -141,6 +149,7 @@ empty row).
 | `gmail_update_filter` | Filter ID, Criteria, Actions |
 | `gmail_create_label` | Label |
 | `slack_send_message` | Channel, [In thread], [Mark unread] |
+| `slack_create_group_chat` | Participants |
 | `calendar_create_out_of_office` | Title, Time, Auto-decline |
 | `calendar_set_working_location` | Date, Location, [Building], [Label] |
 | `contacts_update` | Name, Emails, Phones (each: current value, or old → new if changing), [Organization], [Job title] |
@@ -156,8 +165,9 @@ rather than WG-2.
 
 ### WG-2 — Deny / Allow once, conditionally Always allow
 
-29 tools across `auto_accept.WRITE_RULE_SUGGESTIONS` — the narrow, deliberate exception to "writes
-never get Always allow" (see [Always allow for writes](TECHNICAL_REFERENCE.md#always-allow-for-writes)).
+29 of the 35 tools in `auto_accept.WRITE_RULE_SUGGESTIONS` (the other 6 are WG-3 below) — the
+narrow, deliberate exception to "writes never get Always allow" (see
+[Always allow for writes](TECHNICAL_REFERENCE.md#always-allow-for-writes)).
 The button only renders when `suggest_write_rule()` can actually derive a value from this call's own
 args or current state (e.g. `jira_create_issue` always can; `jira_add_comment` can't if `issue_key`
 has no `-` to parse a project out of; a Drive write can't if the file has no parent folder) — same
@@ -206,6 +216,14 @@ Clicking Always allow here goes through the same second-confirmation dialog
 Always allow uses — described via `describe_rule_change()`, not `describe_rule()`, since these rule
 names are shared with a read operation key too (e.g. `jira.read_issue`) and `describe_rule()`'s
 canned templates are read-direction-only English.
+
+All 6 draft tools above also accept an optional `body_markdown` param for a rich-text (HTML) draft
+alongside/instead of the plain-text `body`. When `body_markdown` is given, the right pane's WIDE
+body content (`details_text`) shows that raw Markdown source verbatim, not the rendered HTML —
+this guarantees what the reviewer approves always matches what `gmail_client._build_body_part`
+actually turns into the message's `text/html` part, rather than trusting a separately rendered
+preview to describe the same content independently. See `email_markdown.py` for the supported
+subset (bold, italic, `==highlight==`, links, lists, paragraphs).
 
 ### WG-3 — Deny / Allow once, conditionally Always allow, *and* the temp-accept disclosure caption
 

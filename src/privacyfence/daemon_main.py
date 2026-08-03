@@ -58,7 +58,6 @@ from .auto_accept import (
     reload_rules,
 )
 from .pii_detector import init_pii_detection
-from .quicklook_preview import init_quicklook_preview
 from .privacy_filter import check_consistency_warnings, init_privacy_filter
 from .resource_grants import build_effective_rules, migrate_rules_to_grants
 from .connectors.calendar import CalendarConnector
@@ -640,11 +639,6 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
         pii_config.get("enabled", True),
         detect_ip_addresses=pii_config.get("detect_ip_addresses", True),
         detect_financial_figures=pii_config.get("detect_financial_figures", True),
-    )
-    quicklook_config = config.get("quicklook_preview", {}) or {}
-    init_quicklook_preview(
-        quicklook_config.get("enabled", False),
-        max_wait_seconds=quicklook_config.get("max_wait_seconds", 5.0),
     )
     init_privacy_filter(config)
     for warning in check_consistency_warnings():

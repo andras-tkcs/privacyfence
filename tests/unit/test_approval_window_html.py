@@ -495,6 +495,41 @@ class TestPreviewBlocks:
         assert body == ""
 
 
+class TestMarkdownBlock:
+    """The "markdown" block type -- text_extraction.py's DOCX/PPTX/XLSX
+    output and html_to_text.py's html_to_markdown() output both render
+    through here, via markdown_to_html.py, instead of a flat escaped-text
+    dump."""
+
+    def test_markdown_renders_as_rich_html_not_escaped_syntax(self):
+        body = build_preview_body_html(blocks=[{"type": "markdown", "text": "# Heading\n\n**bold**"}])
+        assert "<h1>Heading</h1>" in body
+        assert "<strong>bold</strong>" in body
+        assert "#" not in body  # no literal leftover Markdown syntax
+        assert "**" not in body
+
+    def test_markdown_block_wrapped_in_its_own_class(self):
+        body = build_preview_body_html(blocks=[{"type": "markdown", "text": "plain text"}])
+        assert '<div class="pf-md">' in body
+
+    def test_markdown_table_reuses_the_shared_table_class(self):
+        md = "| Name | Size |\n| --- | --- |\n| a.txt | 100 |"
+        body = build_preview_body_html(blocks=[{"type": "markdown", "text": md}])
+        assert '<table class="pf-table">' in body
+
+    def test_markdown_content_is_escaped_before_rendering(self):
+        body = build_preview_body_html(blocks=[{"type": "markdown", "text": "<script>alert(1)</script>"}])
+        assert "<script>alert(1)</script>" not in body
+        assert "&lt;script&gt;" in body
+
+    def test_markdown_interleaves_with_other_block_types(self):
+        body = build_preview_body_html(blocks=[
+            {"type": "field", "label": "Reporter", "value": "Alice"},
+            {"type": "markdown", "text": "# Description\n\nBody text."},
+        ])
+        assert body.index("Reporter") < body.index("<h1>Description</h1>")
+
+
 class TestEscapingAndNoNetwork:
     """Defense in depth: every dynamic string reaching the document must be
     escaped, and the document must never be able to reach out to the
