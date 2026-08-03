@@ -207,6 +207,14 @@ Always allow uses — described via `describe_rule_change()`, not `describe_rule
 names are shared with a read operation key too (e.g. `jira.read_issue`) and `describe_rule()`'s
 canned templates are read-direction-only English.
 
+All 6 draft tools above also accept an optional `body_markdown` param for a rich-text (HTML) draft
+alongside/instead of the plain-text `body`. When `body_markdown` is given, the right pane's WIDE
+body content (`details_text`) shows that raw Markdown source verbatim, not the rendered HTML —
+this guarantees what the reviewer approves always matches what `gmail_client._build_body_part`
+actually turns into the message's `text/html` part, rather than trusting a separately rendered
+preview to describe the same content independently. See `email_markdown.py` for the supported
+subset (bold, italic, `==highlight==`, links, lists, paragraphs).
+
 ### WG-3 — Deny / Allow once, conditionally Always allow, *and* the temp-accept disclosure caption
 
 The six operations in `auto_accept.TEMP_ACCEPT_ELIGIBLE_OPERATIONS` — repeat calls against the

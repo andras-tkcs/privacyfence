@@ -190,12 +190,12 @@ layout and optional sections (AI-visibility checklist, PII banner, etc.), see
 | `gmail_get_thread` | read | review | subject, all participants, message count, date range | All messages in thread |
 | `gmail_list_message_attachments` | read | auto | — | — |
 | `gmail_download_attachment` | read | review | from, subject, attachment name, size, save path | — |
-| `gmail_create_draft` | write | popup | — | To, cc, subject, full body |
-| `gmail_reply_draft` | write | popup | — | In reply to, to, cc/bcc, full reply body |
-| `gmail_reply_all_draft` | write | popup | — | In reply to, to, also-to (expanded participants), cc/bcc, full reply body |
-| `gmail_create_draft_with_attachments` | write | popup | — | To, cc, subject, attachment names/sizes, full body |
-| `gmail_reply_draft_with_attachments` | write | popup | — | In reply to, to, cc/bcc, attachment names/sizes, full reply body |
-| `gmail_reply_all_draft_with_attachments` | write | popup | — | In reply to, to, also-to (expanded participants), cc/bcc, attachment names/sizes, full reply body |
+| `gmail_create_draft` | write | popup | — | To, cc, subject, full body (or Markdown source, if `body_markdown` given) |
+| `gmail_reply_draft` | write | popup | — | In reply to, to, cc/bcc, full reply body (or Markdown source, if `body_markdown` given) |
+| `gmail_reply_all_draft` | write | popup | — | In reply to, to, also-to (expanded participants), cc/bcc, full reply body (or Markdown source, if `body_markdown` given) |
+| `gmail_create_draft_with_attachments` | write | popup | — | To, cc, subject, attachment names/sizes, full body (or Markdown source, if `body_markdown` given) |
+| `gmail_reply_draft_with_attachments` | write | popup | — | In reply to, to, cc/bcc, attachment names/sizes, full reply body (or Markdown source, if `body_markdown` given) |
+| `gmail_reply_all_draft_with_attachments` | write | popup | — | In reply to, to, also-to (expanded participants), cc/bcc, attachment names/sizes, full reply body (or Markdown source, if `body_markdown` given) |
 | `gmail_add_label` | write | popup | — | From, subject, label name |
 | `gmail_remove_label` | write | popup | — | From, subject, label name |
 | `gmail_archive_message` | write | popup | — | From, subject, confirmation that message stays in All Mail |
@@ -498,6 +498,15 @@ matching, file-type allowlists, and similar — see [Auto-accept rules](#auto-ac
 in that same connector's **Filters** submenu, with the same one-value-at-a-time **+ Add value…** /
 **✕ Remove** treatment — there's no shared multi-line text box to paste several IDs into anywhere
 in this menu.
+
+**Sheets** and **Docs** get their own top-level sidebar pages in this window (neither is a real
+connector — both ride on Drive's OAuth grant, see [Auto-accept rules](#auto-accept-rules)'s Drive
+section), but the `folders`/`sandbox_folders` grants above are Drive-page-only sections — a folder
+trusted there silently also covers `sheets.read_values` and every `sheets.*`/`docs.*` write. So
+each of those two pages opens with a read-only **Governed by Drive** section summarizing the
+currently-granted folder(s) for read/write and a **Manage in Drive →** link that jumps the sidebar
+selection there — no checkboxes of its own; the one editable copy of these grants stays on the
+Drive page.
 
 ### Name resolution
 

@@ -155,7 +155,7 @@ mode denies unmatched requests immediately instead of leaving a popup open for n
 
 | Connector | Examples of governed capabilities |
 |---|---|
-| Gmail | Read messages and threads, download attachments, create drafts and replies, manage labels, archive messages, create and update filters |
+| Gmail | Read messages and threads, download attachments, create drafts and replies (plain text or rich text/HTML), manage labels, archive messages, create and update filters |
 | Google Drive, Docs & Sheets | Read, download, upload, move, and write files; write, partially edit, and format (including highlight) Google Docs; add comments; read, write, and format Sheets ranges; add and rename tabs; insert and delete rows/columns |
 | Google Calendar | Read event details, get/set event visibility, create and update events, create out-of-office entries, set working location |
 | Google Contacts | Read, create, update, and label contacts |
