@@ -124,7 +124,7 @@ from privacyfence.auto_accept import (  # noqa: E402
     WRITE_RULE_SUGGESTIONS,
     describe_rule_short,
 )
-from privacyfence.quicklook_preview import generate_thumbnail, init_quicklook_preview  # noqa: E402
+from privacyfence.text_extraction import extract_text, preview_blocks_for  # noqa: E402
 
 WINDOW_WAIT_TIMEOUT_SECONDS = 8.0
 
@@ -701,32 +701,23 @@ _TINY_PNG_BYTES = base64.b64decode(
 )
 
 # A real fixture file (checked in, not a base64 blob like _TINY_PDF_BYTES/
-# _TINY_PNG_BYTES above) for the QuickLook-fallback scenario below: an A4
-# (210x297mm), multi-paragraph .docx -- QuickLook renders the file's actual
-# page dimensions, so a real document here (as opposed to reusing
-# _TINY_PNG_BYTES, which is square) gives that scenario a genuinely
-# page-shaped thumbnail. Generated once via python-docx (not a runtime
-# dependency of this script -- see the file's own contents for exactly
-# what it holds).
+# _TINY_PNG_BYTES above) for the rich-markdown-preview scenario below: a
+# multi-paragraph .docx, run through the real text_extraction.extract_text()
+# path drive.py/gmail.py/confluence.py all use -- same DOCX/PPTX/XLSX
+# extraction real downloads/uploads get, not a stand-in.
 _LOREM_IPSUM_DOCX_PATH = (
     Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "qa_assets" / "lorem_ipsum.docx"
 )
+_LOREM_IPSUM_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
-def _quicklook_thumbnail_for_lorem_ipsum_docx() -> bytes:
-    """Real generate_thumbnail() call, not a stand-in -- QuickLook Previews
-    is off by default in production (menu-bar toggle), so this flips
-    quicklook_preview.py's in-process flag on for this one call, the same
-    way the menu bar's own toggle does, rather than touching settings.yaml
-    or any daemon state. Best-effort like the real connector call sites
-    (drive.py/gmail.py): returns b"" if quicklookd can't render it for any
-    reason (timeout, disabled, missing renderer) -- the scenario then falls
-    back to the plain metadata-only preview, exactly like a real miss
-    would in production, rather than silently substituting fake bytes.
-    """
-    init_quicklook_preview(True)
+def _markdown_preview_blocks_for_lorem_ipsum_docx(details: str) -> list[dict]:
+    """Real extract_text() call against the checked-in fixture, fed through
+    the same preview_blocks_for() helper drive.py's real download/upload
+    call sites use -- proves the "markdown" block type renders the fixture's
+    actual headings/paragraphs, not a placeholder."""
     data = _LOREM_IPSUM_DOCX_PATH.read_bytes()
-    return generate_thumbnail(data, _LOREM_IPSUM_DOCX_PATH.name) or b""
+    return preview_blocks_for(details, extract_text(data, _LOREM_IPSUM_DOCX_MIME))
 
 
 # Per-tool narrow/wide assignment, not from memory or a length heuristic. Keyed by the bare tool
@@ -783,6 +774,7 @@ _TOOL_LAYOUT: dict[str, str] = {
     "contacts_add_label": "narrow", "contacts_remove_label": "narrow",
     "jira_update_issue": "narrow", "jira_transition_issue": "narrow",  # field-change rows, not prose
     "confluence_update_page": "wide",  # editing page body, same as confluence_create_page
+    "confluence_download_attachment": "wide",  # real extracted-content preview, like the other download tools above
     "tasks_complete_task": "narrow",
     "tasks_uncomplete_task": "narrow", "tasks_move_task": "narrow",
 }
@@ -1085,19 +1077,15 @@ def _scenarios(
     ))
 
     results.append(run(
-        # The QuickLook-fallback mechanic (quicklook_preview.py):
-        # a non-image file with no Drive-generated thumbnailLink falls back
-        # to a quicklookd-rendered thumbnail when QuickLook Previews is
-        # enabled from the menu bar -- generate_thumbnail() always returns
-        # PNG bytes, fed through the exact same preview_bytes/
-        # preview_mime_type channel a direct image preview uses (see
-        # drive.py's _download_file). Unlike the image-preview scenario
-        # above, this one calls the real generate_thumbnail() against a
-        # real, checked-in A4 .docx fixture (tests/fixtures/qa_assets/
-        # lorem_ipsum.docx) instead of reusing _TINY_PNG_BYTES -- a real
-        # quicklookd render is a genuinely page-shaped (portrait) thumbnail,
-        # not the square placeholder a reused image fixture would give.
-        "RG-1 · drive_download_file (+ QuickLook preview)",
+        # The Markdown-extraction preview mechanic (text_extraction.py +
+        # markdown_to_html.py, replacing the old QuickLook-thumbnail
+        # fallback): a non-image file with no Drive-generated thumbnailLink
+        # falls back to the file's own extracted content -- headings/
+        # paragraphs rendered rich via the "markdown" preview_blocks entry
+        # (see drive.py's _download_file and preview_blocks_for()) -- calling
+        # the real extract_text() against a real, checked-in .docx fixture
+        # (tests/fixtures/qa_assets/lorem_ipsum.docx), not a placeholder.
+        "RG-1 · drive_download_file (+ markdown preview)",
         click_title="Allow once", expected="accept",
         title="Download Drive File",
         preview={
@@ -1112,7 +1100,10 @@ def _scenarios(
                       "download, or preview by any automated test.",
         allow_accept_all=True,
         connector="drive",
-        preview_bytes=_quicklook_thumbnail_for_lorem_ipsum_docx(), preview_mime_type="image/png",
+        preview_blocks=_markdown_preview_blocks_for_lorem_ipsum_docx(
+            "Synthetic lorem ipsum content. No real information. Safe to read, "
+            "download, or preview by any automated test."
+        ),
     ))
 
     results.append(run(
@@ -1948,13 +1939,14 @@ def _scenarios(
     ))
 
     results.append(run(
-        # QuickLook-fallback mechanic for the *upload* side (see
-        # drive_download_file's own QuickLook scenario above for the
-        # download-side one) -- a non-image local file with no
-        # Drive-generated thumbnail (there can't be one yet; it hasn't
-        # been uploaded) falls back to a real quicklookd render of the
-        # same checked-in A4 lorem ipsum .docx fixture.
-        "WG-2 · drive_upload_file (+ QuickLook preview)",
+        # Markdown-extraction preview mechanic for the *upload* side (see
+        # drive_download_file's own scenario above for the download-side
+        # one) -- a non-image local file with no Drive-generated thumbnail
+        # (there can't be one yet; it hasn't been uploaded) falls back to
+        # the file's own extracted content instead, via the same real
+        # extract_text() call against the checked-in lorem ipsum .docx
+        # fixture.
+        "WG-2 · drive_upload_file (+ markdown preview)",
         click_title="Allow once", expected="accept",
         title="Upload Drive File",
         preview={
@@ -1965,7 +1957,10 @@ def _scenarios(
                       "upload, or preview by any automated test.",
         allow_accept_all=True,
         connector="drive",
-        preview_bytes=_quicklook_thumbnail_for_lorem_ipsum_docx(), preview_mime_type="image/png",
+        preview_blocks=_markdown_preview_blocks_for_lorem_ipsum_docx(
+            "Synthetic lorem ipsum content. No real information. Safe to read, "
+            "upload, or preview by any automated test."
+        ),
     ))
 
     results.append(run(

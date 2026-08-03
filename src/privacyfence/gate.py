@@ -129,6 +129,7 @@ logger = logging.getLogger(__name__)
 _TOOL_LAYOUT: dict[str, str] = {
     "gmail_get_message": WIDE, "gmail_get_thread": WIDE,
     "gmail_download_attachment": WIDE, "drive_download_file": WIDE,
+    "confluence_download_attachment": WIDE,
     "salesforce_get_record": WIDE, "salesforce_search": WIDE, "salesforce_run_report": WIDE,
     "jira_get_issue": WIDE, "confluence_get_page": WIDE, "confluence_get_page_by_title": WIDE,
     "telegram_get_messages": WIDE, "telegram_search_messages": WIDE,

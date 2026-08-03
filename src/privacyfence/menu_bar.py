@@ -11,9 +11,6 @@ Main thread only, except where noted. Provides:
     for Telegram, the phone+code(+2FA) flow) directly, no Terminal window
   - PII Detection Gate: on/off toggle for the extra confirmation gate in
     pii_detector.py, persisted to settings.yaml and hot-reloaded live
-  - QuickLook Previews: on/off toggle for quicklook_preview.py's fallback
-    approval-window thumbnail (PDFs, Office docs, etc. -- anything that
-    isn't an image), persisted to settings.yaml and hot-reloaded live
   - Export Audit Log / About panel
 
 Long-running auth flows (anything that waits on a browser) run on a
@@ -58,7 +55,6 @@ from .auto_accept import (
 )
 from .paths import data_dir, org_dir
 from .pii_detector import set_pii_category_enabled, set_pii_detection_enabled
-from .quicklook_preview import set_quicklook_enabled
 from .privacy_filter import _parse_group as _parse_privacy_group
 from .privacy_filter import _VALID_POLICIES as PRIVACY_POLICIES
 from .privacy_filter import init_privacy_filter
@@ -579,8 +575,6 @@ class PrivacyFenceMenuBar(rumps.App):
         connectors_cfg: dict[str, dict] = cfg.get("connectors", {}) or {}
         pii_cfg: dict[str, Any] = cfg.get("pii_detection", {}) or {}
         pii_enabled: bool = pii_cfg.get("enabled", True)
-        quicklook_cfg: dict[str, Any] = cfg.get("quicklook_preview", {}) or {}
-        quicklook_enabled: bool = quicklook_cfg.get("enabled", False)
         update_check_cfg: dict[str, Any] = cfg.get("update_check", {}) or {}
 
         org_item = self._build_org_menu(org_config)
@@ -589,14 +583,12 @@ class PrivacyFenceMenuBar(rumps.App):
         privacy_item = rumps.MenuItem("Privacy Filter…", callback=self._open_privacy_filter_manager)
 
         pii_item = self._build_pii_menu(pii_cfg, pii_enabled)
-        quicklook_item = self._build_quicklook_menu(quicklook_enabled)
         update_check_item = self._build_update_check_menu(update_check_cfg)
 
         items: list[Any] = [
             rumps.MenuItem(self._status_label()),
             rumps.separator,
             pii_item,
-            quicklook_item,
             update_check_item,
             rumps.separator,
             connectors_parent,
@@ -1379,26 +1371,6 @@ class PrivacyFenceMenuBar(rumps.App):
         pii_cfg[category_key] = enabled
         self._save_config(cfg)
         set_pii_category_enabled(category_key, enabled)
-        self._rebuild()
-
-    # ------------------------------------------------------------------ #
-    # QuickLook preview fallback
-    # ------------------------------------------------------------------ #
-
-    def _build_quicklook_menu(self, quicklook_enabled: bool) -> rumps.MenuItem:
-        quicklook_item = rumps.MenuItem("QuickLook Previews")
-        enabled_item = rumps.MenuItem("Enabled", callback=self._toggle_quicklook_preview)
-        enabled_item.state = quicklook_enabled
-        quicklook_item.add(enabled_item)
-        return quicklook_item
-
-    def _toggle_quicklook_preview(self, _sender: Any = None) -> None:
-        cfg = self._load_config()
-        quicklook_cfg = cfg.setdefault("quicklook_preview", {})
-        enabled = not quicklook_cfg.get("enabled", False)
-        quicklook_cfg["enabled"] = enabled
-        self._save_config(cfg)
-        set_quicklook_enabled(enabled)
         self._rebuild()
 
     # ------------------------------------------------------------------ #
