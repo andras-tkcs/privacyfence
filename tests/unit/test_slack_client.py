@@ -683,9 +683,9 @@ class TestGetThreadReplies:
 
 
 class TestSearchMessages:
-    def test_requires_non_empty_query(self):
+    def test_requires_query_or_participant(self):
         client = make_client(MagicMock())
-        with pytest.raises(SlackClientError, match="non-empty query"):
+        with pytest.raises(SlackClientError, match="requires a query, a participant, or both"):
             client.search_messages("")
 
     def test_uses_channel_name_from_match_when_present(self):
@@ -714,6 +714,109 @@ class TestSearchMessages:
         client = make_client(web_client)
         with pytest.raises(SlackClientError, match="search_messages failed"):
             client.search_messages("q")
+
+    def test_participant_given_skips_slack_search_api_entirely(self):
+        web_client = MagicMock()
+        web_client.conversations_list.return_value = {"channels": [], "response_metadata": {}}
+        client = make_client(web_client)
+
+        client.search_messages(participant="bob")
+
+        web_client.search_messages.assert_not_called()
+
+    def test_participant_matches_dm_and_reads_its_history(self):
+        web_client = MagicMock()
+        web_client.conversations_list.side_effect = [
+            {"channels": [{"id": "D1", "user": "U1"}], "response_metadata": {}},  # list_dms
+            {"channels": [], "response_metadata": {}},  # list_group_chats
+        ]
+        web_client.users_info.return_value = {"user": {"id": "U1", "name": "bob", "real_name": "Bob Smith"}}
+        web_client.conversations_info.return_value = {"channel": {"name": "bob-dm"}}
+        web_client.conversations_history.return_value = {
+            "messages": [{"user": "U1", "text": "hi there", "ts": "1"}]
+        }
+        client = make_client(web_client)
+
+        results = client.search_messages(participant="bob")
+
+        assert [m.text for m in results] == ["hi there"]
+        web_client.conversations_history.assert_called_once()
+        assert web_client.conversations_history.call_args.kwargs["channel"] == "D1"
+
+    def test_participant_comma_separated_requires_all_in_same_group_chat(self):
+        web_client = MagicMock()
+        # 2 needles -> list_dms is skipped entirely, so only one
+        # conversations_list call happens, for list_group_chats.
+        web_client.conversations_list.return_value = {
+            "channels": [{"id": "G1", "name": "g1"}, {"id": "G2", "name": "g2"}],
+            "response_metadata": {},
+        }
+        web_client.conversations_members.side_effect = [
+            {"members": ["U1", "U2"]},  # G1: bob + jane
+            {"members": ["U1"]},        # G2: bob only
+        ]
+        web_client.users_info.side_effect = [
+            {"user": {"id": "U1", "name": "bob", "real_name": "Bob Smith"}},
+            {"user": {"id": "U2", "name": "jane", "real_name": "Jane Doe"}},
+        ]
+        web_client.conversations_info.return_value = {"channel": {"name": "g1"}}
+        web_client.conversations_history.return_value = {"messages": []}
+        client = make_client(web_client)
+
+        client.search_messages(participant="bob,jane")
+
+        web_client.conversations_history.assert_called_once()
+        assert web_client.conversations_history.call_args.kwargs["channel"] == "G1"
+
+    def test_participant_with_query_filters_text_client_side(self):
+        web_client = MagicMock()
+        web_client.conversations_list.side_effect = [
+            {"channels": [{"id": "D1", "user": "U1"}], "response_metadata": {}},
+            {"channels": [], "response_metadata": {}},
+        ]
+        web_client.users_info.return_value = {"user": {"id": "U1", "name": "bob"}}
+        web_client.conversations_info.return_value = {"channel": {"name": "bob-dm"}}
+        web_client.conversations_history.return_value = {
+            "messages": [
+                {"user": "U1", "text": "let's discuss the budget", "ts": "1"},
+                {"user": "U1", "text": "lunch?", "ts": "2"},
+            ]
+        }
+        client = make_client(web_client)
+
+        results = client.search_messages(query="budget", participant="bob")
+
+        assert [m.text for m in results] == ["let's discuss the budget"]
+
+    def test_participant_no_match_returns_empty_without_history_call(self):
+        web_client = MagicMock()
+        web_client.conversations_list.return_value = {"channels": [], "response_metadata": {}}
+        client = make_client(web_client)
+
+        results = client.search_messages(participant="nobody")
+
+        assert results == []
+        web_client.conversations_history.assert_not_called()
+
+    def test_participant_results_sorted_most_recent_first_and_capped_to_count(self):
+        web_client = MagicMock()
+        web_client.conversations_list.side_effect = [
+            {"channels": [{"id": "D1", "user": "U1"}], "response_metadata": {}},
+            {"channels": [], "response_metadata": {}},
+        ]
+        web_client.users_info.return_value = {"user": {"id": "U1", "name": "bob"}}
+        web_client.conversations_info.return_value = {"channel": {"name": "bob-dm"}}
+        web_client.conversations_history.return_value = {
+            "messages": [
+                {"user": "U1", "text": "older", "ts": "100"},
+                {"user": "U1", "text": "newer", "ts": "200"},
+            ]
+        }
+        client = make_client(web_client)
+
+        results = client.search_messages(participant="bob", count=1)
+
+        assert [m.text for m in results] == ["newer"]
 
 
 # ---------------------------------------------------------------------------- #

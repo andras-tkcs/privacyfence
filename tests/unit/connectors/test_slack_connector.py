@@ -421,7 +421,7 @@ class TestSearchMessages:
         assert kwargs["preview"] == {"Query": "budget"}
         assert kwargs["new_info"] == {"Results": "2"}
         assert kwargs["gate"] == "review"
-        assert kwargs["args"] == {"query": "budget"}
+        assert kwargs["args"] == {"query": "budget", "participant": ""}
         assert kwargs["preview_tables"] == [{
             "headers": ["Channel", "Sender", "Date", "Message"],
             "rows": [
@@ -430,7 +430,7 @@ class TestSearchMessages:
             ],
         }]
         assert kwargs["table_only"] is True
-        client.search_messages.assert_called_once_with("budget", 5)
+        client.search_messages.assert_called_once_with("budget", 5, "")
 
     async def test_empty_search_results_produce_no_table(self, gated_call_spy):
         connector, client = make_connector()
@@ -451,6 +451,37 @@ class TestSearchMessages:
         kwargs = gated_call_spy[0]
         assert kwargs["pii_scan_text"] == "nothing sensitive"
         assert "alice@example.com" not in kwargs["pii_scan_text"]
+
+    async def test_requires_query_or_participant(self, gated_call_spy):
+        connector, _client = make_connector()
+
+        with pytest.raises(ValueError, match="requires a query, a participant, or both"):
+            await connector.call("slack_search_messages", {})
+
+        assert gated_call_spy == []
+
+    async def test_participant_only_preview_omits_query(self, gated_call_spy):
+        connector, client = make_connector()
+        client.search_messages.return_value = [make_message()]
+
+        await connector.call("slack_search_messages", {"participant": "Bob"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview"] == {"Participant": "Bob"}
+        assert kwargs["summary"] == "1 result for messages with Bob"
+        assert kwargs["args"] == {"query": "", "participant": "Bob"}
+        client.search_messages.assert_called_once_with("", 20, "Bob")
+
+    async def test_participant_and_query_combined_preview_and_summary(self, gated_call_spy):
+        connector, client = make_connector()
+        client.search_messages.return_value = [make_message(), make_message(id="2")]
+
+        await connector.call("slack_search_messages", {"query": "budget", "participant": "Bob,Jane"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview"] == {"Query": "budget", "Participant": "Bob,Jane"}
+        assert kwargs["summary"] == '2 results for "budget" with Bob,Jane'
+        assert kwargs["args"] == {"query": "budget", "participant": "Bob,Jane"}
 
 
 class TestCreateGroupChat:
@@ -693,5 +724,8 @@ class TestEveryToolIsAudited:
         client.open_conversation.return_value = SlackGroupChat(id="G1", name="g1")
         await assert_all_tools_leave_an_audit_trail(
             connector, slack_module, monkeypatch, tmp_path,
-            arg_overrides={"slack_create_group_chat": {"participants": "U1,U2"}},
+            arg_overrides={
+                "slack_create_group_chat": {"participants": "U1,U2"},
+                "slack_search_messages": {"query": "budget"},
+            },
         )

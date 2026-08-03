@@ -264,7 +264,7 @@ PrivacyFence for a delete.
 | `slack_list_group_chats` | read | auto | — | — (each entry is `id`, `name`, and resolved `member_ids`/`member_names`; optional `participant` filter matches any member by user id, handle, or display name; one extra `conversations.members` call per group chat) |
 | `slack_get_channel_history` | read | review | channel name, message count, first message (80 chars) | All messages |
 | `slack_get_thread_replies` | read | review | channel name, thread starter (80 chars), reply count | All replies |
-| `slack_search_messages` | read | review | query, result count | All results |
+| `slack_search_messages` | read | review | query and/or participant, result count | All results |
 | `slack_create_group_chat` | write | popup | — | Resolved participant names (or raw user ids when unresolvable); returns the new/reopened conversation's `id`, ready for `slack_send_message` |
 | `slack_send_message` | write | popup | — | Channel name, full message text (optional `mark_unread=true` leaves the message unread after sending; requires `mark` scope) |
 
@@ -273,6 +273,14 @@ has been opened at least once. To start a brand-new group chat, call `slack_crea
 2+ participant user ids (from `slack_list_dms`/`slack_list_group_chats`, or a message's `user_id`
 field — it does not resolve email addresses or handles), then pass the returned `id` to
 `slack_send_message` as `channel_id`.
+
+`slack_search_messages` accepts an optional `participant` (user id, handle, or display name;
+comma-separated to require a group chat containing all of them) alongside or instead of `query`.
+When given, it skips Slack's own search index — whose `from:`/`in:` modifiers need exact handle
+syntax and don't reliably index every message — and instead reads the matching DM/group-chat
+conversation(s) directly via the same matching `slack_list_dms`/`slack_list_group_chats` use,
+optionally narrowed by `query` as a client-side text filter. Prefer `participant` over a
+text-only `query` for "messages from Bob" or "messages with Bob and Jane" style lookups.
 
 ### Google Calendar
 
