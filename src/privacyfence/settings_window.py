@@ -181,6 +181,7 @@ class SettingsWindowController(NSObject):
             return
         self._dispatch(str(action), payload)
 
+    @objc.python_method
     def _dispatch(self, action: str, payload: dict[str, Any]) -> None:
         if action == "quit_app":
             self.controller.quit_app()
@@ -207,6 +208,7 @@ class SettingsWindowController(NSObject):
     # Python -> JS
     # ------------------------------------------------------------------ #
 
+    @objc.python_method
     def _push_state(self, state: dict[str, Any]) -> None:
         if self._webview is None:
             return
