@@ -297,22 +297,6 @@ class TestPiiDetection:
         assert cfg["pii_detection"].get("detect_financial_figures", True) is True
 
 
-class TestQuicklookPreview:
-    def test_toggle_flips_and_saves(self, controller, monkeypatch):
-        from privacyfence import quicklook_preview
-
-        monkeypatch.setattr(quicklook_preview, "_changed_listener", None)
-        controller.toggle_quicklook_preview()
-        assert controller._load_config()["quicklook_preview"]["enabled"] is True
-
-    def test_hot_reloads_live_state(self, controller):
-        from privacyfence import quicklook_preview
-
-        assert quicklook_preview.is_quicklook_enabled() is False
-        controller.toggle_quicklook_preview()
-        assert quicklook_preview.is_quicklook_enabled() is True
-
-
 class TestUpdateCheck:
     def test_toggle_enabled_flips_and_saves(self, controller):
         controller.toggle_update_check()
@@ -1144,6 +1128,50 @@ class TestGrantRows:
         _drain_run_async(recorded)
 
         assert controller._resolver.cached_name(sc.grant_resource_type("drive", "sandbox_folders"), "F1") == "Scratch"
+
+
+class TestDriveGrantSummary:
+    """Sheets and Docs aren't real connectors (see RULES_MENU_GROUPS' own
+    comment in settings_controller.py) but silently ride Drive's Trusted/
+    Sandbox Folder grants -- this read-only summary is how the Rules page
+    surfaces that instead of leaving Sheets/Docs looking ungoverned."""
+
+    def test_absent_for_non_sheets_docs_connectors(self, controller):
+        state = controller._rules_state(controller._load_config())
+        summary = state["drive_grant_summary_by_connector"]
+        assert summary["drive"] is None
+        assert summary["gmail"] is None
+
+    def test_present_for_sheets_and_docs(self, controller):
+        state = controller._rules_state(controller._load_config())
+        summary = state["drive_grant_summary_by_connector"]
+        for cname in ("sheets", "docs"):
+            assert summary[cname]["title"] == "Governed by Drive"
+            labels = [row["label"] for row in summary[cname]["rows"]]
+            assert labels == ["Trusted Folders — read auto-accept", "Sandbox Folders — write auto-accept"]
+
+    def test_shows_none_configured_when_no_grants(self, controller):
+        state = controller._rules_state(controller._load_config())
+        rows = state["drive_grant_summary_by_connector"]["sheets"]["rows"]
+        assert [row["value"] for row in rows] == ["(none configured)", "(none configured)"]
+
+    def test_shows_granted_folder_name_falling_back_to_a_short_id(self, controller):
+        controller._save_config({"auto_accept_grants": {"drive": {
+            "folders": [{"id": "FOLDER_READ_1", "read": True}],
+            "sandbox_folders": [{"id": "FOLDER_WRITE_1", "name": "Scratch", "write": True}],
+        }}})
+
+        state = controller._rules_state(controller._load_config())
+        rows = state["drive_grant_summary_by_connector"]["docs"]["rows"]
+        assert sc._short_id("FOLDER_READ_1") in rows[0]["value"]
+        assert "Scratch" in rows[1]["value"]
+
+    def test_sheets_and_docs_share_the_same_summary_data(self, controller):
+        controller._save_config({"auto_accept_grants": {"drive": {"folders": [{"id": "F1", "read": True}]}}})
+
+        state = controller._rules_state(controller._load_config())
+        summary = state["drive_grant_summary_by_connector"]
+        assert summary["sheets"]["rows"] == summary["docs"]["rows"]
 
 
 class TestSuggestionPriorityState:

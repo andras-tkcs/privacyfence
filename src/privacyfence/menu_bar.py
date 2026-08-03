@@ -1,12 +1,15 @@
 """macOS menu bar tray icon (rumps).
 
 Issue #120 replaced the ~2000-line NSMenu tree this module used to build
-(connector auth, PII/QuickLook/update-check toggles, the "Manage
-Auto-accept Rules…"/"Privacy Filter…" native windows, org config, About) with
-a single webview-based settings window (settings_window.py /
-settings_window_html.py) covering the same ground. This module is now just
-the tray icon: two items, "Open PrivacyFence…" (lazily creates and shows the
-settings window) and "Quit PrivacyFence".
+(connector auth, PII/update-check toggles, the "Manage Auto-accept
+Rules…"/"Privacy Filter…" native windows, org config, About) with a single
+webview-based settings window (settings_window.py / settings_window_html.py)
+covering the same ground. (QuickLook preview toggling, which briefly lived
+here too, was dropped project-wide in favor of rendering a file's own
+extracted content -- see settings_controller.py's git history -- rather than
+carried over into the new window.) This module is now just the tray icon:
+two items, "Open PrivacyFence…" (lazily creates and shows the settings
+window) and "Quit PrivacyFence".
 
 Because that menu is static and never mutated after construction, the
 NSMenu-open/rebuild-crash-avoidance machinery this module used to carry

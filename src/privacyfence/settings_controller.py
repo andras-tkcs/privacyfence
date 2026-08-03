@@ -3,14 +3,13 @@
 No AppKit/WebKit imports at module level -- this stays importable and
 unit-testable without PyObjC (see docs/coding-and-testing-guidelines.md's
 "stay dependency-light" pattern already used by resource_grants.py/
-privacy_filter.py). A few things this module genuinely needs *are*
-AppKit-tainted transitively (daemon_main.py pulls in quicklook_preview.py's
-`from AppKit import ...`, and rumps.Window is how the Telegram sign-in
-flow's native text prompts still work -- see its own docstring below for why
-that one flow keeps a native prompt) -- those are imported lazily, inside
-the function that needs them, not at module scope, so a plain
+privacy_filter.py). One thing this module genuinely needs *is*
+AppKit-tainted (rumps.Window is how the Telegram sign-in flow's native text
+prompts still work -- see its own docstring below for why that one flow
+keeps a native prompt) -- that's imported lazily, inside the function that
+needs it, not at module scope, so a plain
 ``import privacyfence.settings_controller`` never touches AppKit even though
-individual methods do once actually called on a real macOS run.
+that one method does once actually called on a real macOS run.
 
 ``SettingsController`` holds the same instance state ``PrivacyFenceMenuBar``
 used to hold directly, with one method per mutation the old NSMenu tree
@@ -256,6 +255,18 @@ RULES_MENU_GROUPS: list[str] = [
     "gmail", "drive", "sheets", "docs", "contacts", "calendar", "tasks",
     "slack", "jira", "confluence", "salesforce", "telegram",
 ]
+
+# Sheets and Docs pages have no grant section of their own -- neither is a
+# real connector (see RULES_MENU_GROUPS' own comment above), so
+# resource_types_for_connector("sheets"/"docs") is always empty -- even
+# though a folder granted Drive's Trusted Folders "read" or Sandbox Folders
+# "write" capability silently covers rows on both of these pages too
+# (sheets.read_values; every sheets.*/docs.* write -- see
+# resource_grants.DRIVE_FOLDER_READ_TARGETS/DRIVE_SANDBOX_WRITE_TARGETS).
+# _rules_state's drive_grant_summary_by_connector carries a read-only
+# pointer back to Drive for exactly these two pages, so that's discoverable
+# without already knowing to go check Drive's own page.
+DRIVE_GRANT_SUMMARY_GROUPS: tuple[str, ...] = ("sheets", "docs")
 
 # Which connector's Auto-accept Rules page gets an "Always-allow Suggestion
 # Order" block -- one per auto_accept.SUGGESTION_FAMILIES entry. Drive's
@@ -662,20 +673,6 @@ class SettingsController:
         pii_cfg[category_key] = enabled
         self._save_config(cfg)
         set_pii_category_enabled(category_key, enabled)
-        return self.snapshot()
-
-    # ------------------------------------------------------------------ #
-    # QuickLook preview fallback
-    # ------------------------------------------------------------------ #
-
-    def toggle_quicklook_preview(self) -> dict[str, Any]:
-        cfg = self._load_config()
-        quicklook_cfg = cfg.setdefault("quicklook_preview", {})
-        enabled = not quicklook_cfg.get("enabled", False)
-        quicklook_cfg["enabled"] = enabled
-        self._save_config(cfg)
-        from .quicklook_preview import set_quicklook_enabled
-        set_quicklook_enabled(enabled)
         return self.snapshot()
 
     # ------------------------------------------------------------------ #
@@ -1435,7 +1432,6 @@ class SettingsController:
 
     def _general_state(self, cfg: dict[str, Any]) -> dict[str, Any]:
         pii_cfg = cfg.get("pii_detection", {}) or {}
-        quicklook_cfg = cfg.get("quicklook_preview", {}) or {}
         update_cfg = cfg.get("update_check", {}) or {}
 
         org_path = org_dir() / "org_config.json"
@@ -1451,7 +1447,6 @@ class SettingsController:
             "pii_enabled": pii_cfg.get("enabled", True),
             "pii_ip": pii_cfg.get("detect_ip_addresses", True),
             "pii_financial": pii_cfg.get("detect_financial_figures", True),
-            "quicklook_enabled": quicklook_cfg.get("enabled", False),
             "update_check_enabled": update_cfg.get("enabled", True),
             "update_check_beta": update_cfg.get("include_beta", False),
             "org_installed": org_installed,
@@ -1498,11 +1493,16 @@ class SettingsController:
         sections_by_connector: dict[str, list[dict[str, Any]]] = {}
         grants_by_connector: dict[str, list[dict[str, Any]]] = {}
         suggestion_priority_by_connector: dict[str, dict[str, Any] | None] = {}
+        drive_grant_summary_by_connector: dict[str, dict[str, Any] | None] = {}
 
         for cname in RULES_MENU_GROUPS:
             resource_types = resource_types_for_connector(cname)
             op_keys = ops_by_connector.get(cname, [])
             client = self._client_for(cname)
+
+            drive_grant_summary_by_connector[cname] = (
+                self._drive_grant_summary(grants_cfg) if cname in DRIVE_GRANT_SUMMARY_GROUPS else None
+            )
 
             grant_sections = []
             for rt in resource_types:
@@ -1559,7 +1559,53 @@ class SettingsController:
             "sections_by_connector": sections_by_connector,
             "grants_by_connector": grants_by_connector,
             "suggestion_priority_by_connector": suggestion_priority_by_connector,
+            "drive_grant_summary_by_connector": drive_grant_summary_by_connector,
         }
+
+    def _drive_grant_summary(self, grants_cfg: dict[str, Any]) -> dict[str, Any]:
+        """Read-only pointer to Drive's Trusted/Sandbox Folder grants, shown
+        at the top of the Sheets and Docs pages (see DRIVE_GRANT_SUMMARY_GROUPS'
+        own comment for why those two pages need it). No checkboxes and no
+        Remove action here -- the one editable copy of these grants stays on
+        the Drive page; this is purely so a reviewer auditing Sheets or Docs
+        alone isn't left assuming nothing governs the writes/reads they're
+        looking at.
+        """
+        client = self._client_for("drive")
+        rows = []
+        for config_key, cap_key, cap_label in (
+            ("folders", "read", "Trusted Folders — read auto-accept"),
+            ("sandbox_folders", "write", "Sandbox Folders — write auto-accept"),
+        ):
+            rt = grant_resource_type("drive", config_key)
+            entries = [e for e in get_grant_entries(grants_cfg, rt) if e.get(cap_key)]
+            names = (
+                ", ".join(self._grant_entry_label(rt, e, client) for e in entries)
+                if entries else "(none configured)"
+            )
+            rows.append({"label": cap_label, "value": names})
+        return {"title": "Governed by Drive", "rows": rows, "link_label": "Manage in Drive →"}
+
+    def _grant_entry_label(
+        self, rt: GrantResourceType, entry: dict[str, Any], client: Any | None
+    ) -> str:
+        """Display label for one grant entry: a hand-set/cached name, else a
+        shortened id, plus a "still resolving"/"connect X" hint while no name
+        is available yet. Used by the read-only Drive grant summary shown on
+        the Sheets/Docs pages (_drive_grant_summary above) -- the main grant
+        rows rendered by the webview keep name/id as separate editable fields
+        (see the rows.append() above), so they don't go through this."""
+        resource_id = rt.id_of(entry)
+        name = entry.get("name") or self._resolver.cached_name(rt, resource_id)
+        label = name or _short_id(resource_id)
+        if entry.get("tab"):
+            label += f" — {entry['tab']}"
+        if name is None:
+            label += (
+                "  (resolving…)" if client is not None
+                else f"  (connect {rt.connector.capitalize()} to see its name)"
+            )
+        return label
 
     def _privacy_state(self, cfg: dict[str, Any]) -> dict[str, Any]:
         groups = [{"key": g, "label": label} for g, label in PRIVACY_GROUP_LABELS.items()]

@@ -378,11 +378,6 @@ _JS = r"""
     html += toggleHtml(g.pii_financial, 'toggle_pii_category', { category_key: 'detect_financial_figures' }, !g.pii_enabled, 'Detect financial figures');
     html += '</div></div>';
 
-    html += '<div class="pf-card"><div class="pf-card-row"><div><div class="pf-card-title">QuickLook Previews</div>';
-    html += '<div class="pf-card-desc">Show a QuickLook thumbnail for non-image downloads and uploads in the approval popup.</div></div>';
-    html += toggleHtml(g.quicklook_enabled, 'toggle_quicklook_preview', {}, false, 'QuickLook Previews');
-    html += '</div></div>';
-
     html += '<div class="pf-card"><div class="pf-card-row"><div><div class="pf-card-title">Check for Updates</div>';
     html += '<div class="pf-card-desc">Once-a-day check against GitHub Releases. Never installs anything automatically.</div></div>';
     html += toggleHtml(g.update_check_enabled, 'toggle_update_check', {}, false, 'Check for Updates');
@@ -525,6 +520,18 @@ _JS = r"""
     html += '<div class="pf-detail-title">' + esc(curLabel) + '</div>';
     html += '<div class="pf-detail-subtitle">Auto-accept rules and trusted resources for ' + esc(curLabel) + '.</div>';
 
+    var driveSummary = (rules.drive_grant_summary_by_connector || {})[curKey];
+    if (driveSummary && !search) {
+      html += '<div class="pf-grant-section"><div class="pf-group-title">' + esc(driveSummary.title) + '</div>';
+      driveSummary.rows.forEach(function (row) {
+        html += '<div class="pf-rule-row"><div class="pf-input-value" style="border:none;background:transparent;padding:5px 0;">' +
+          '<strong>' + esc(row.label) + ':</strong> ' + esc(row.value) + '</div></div>';
+      });
+      html += '<div class="pf-link" role="button" tabindex="0" aria-label="' + esc(driveSummary.link_label) + '" ' +
+        'data-rules-nav="drive">' + esc(driveSummary.link_label) + '</div>';
+      html += '</div>';
+    }
+
     grantSections.forEach(function (gs) {
       var matchingRows = gs.rows.map(function (row, idx) { return { row: row, idx: idx }; }).filter(function (r) {
         if (!search) return true;
@@ -587,7 +594,7 @@ _JS = r"""
     var anyGrantRows = grantSections.some(function (gs) { return gs.rows.length > 0; });
     if (search && totalRows === 0 && !anyGrantRows) {
       html += '<div class="pf-rules-empty">' + (search ? 'No matches.' : 'Nothing here.') + '</div>';
-    } else if (!search && ruleSections.length === 0 && grantSections.length === 0 && !suggestionPriority) {
+    } else if (!search && ruleSections.length === 0 && grantSections.length === 0 && !suggestionPriority && !driveSummary) {
       html += '<div class="pf-rules-empty">All operations always auto-approved — no rules needed.</div>';
     }
 

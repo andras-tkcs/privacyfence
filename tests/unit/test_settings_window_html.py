@@ -36,7 +36,7 @@ def _make_state(**overrides):
         "error": "",
         "general": {
             "pii_enabled": True, "pii_ip": True, "pii_financial": False,
-            "quicklook_enabled": False, "update_check_enabled": True, "update_check_beta": False,
+            "update_check_enabled": True, "update_check_beta": False,
             "org_installed": True, "org_installed_date": "Jun 14, 2026",
             "org_button_label": "Install/Update Organization Config…", "version": "3.1.1",
         },
@@ -61,6 +61,10 @@ def _make_state(**overrides):
             "suggestion_priority_by_connector": {
                 "gmail": None,
                 "drive": {"family": "drive_read", "included": ["i_am_owner", "approved_folder"], "excluded": []},
+            },
+            "drive_grant_summary_by_connector": {
+                "gmail": None,
+                "drive": None,
             },
         },
         "privacy": {
@@ -163,7 +167,7 @@ class TestToggleTemplate:
     def test_toggle_bridge_actions_referenced(self):
         html = build_html(_make_state())
         for action in (
-            "toggle_pii_detection", "toggle_pii_category", "toggle_quicklook_preview",
+            "toggle_pii_detection", "toggle_pii_category",
             "toggle_update_check", "toggle_update_check_beta", "toggle_connector",
             "toggle_calendar_free_busy", "toggle_grant_capability",
         ):
@@ -199,6 +203,17 @@ class TestRulesAndGrantsTemplate:
     def test_rules_search_input_present(self):
         html = build_html(_make_state())
         assert "data-rules-search" in html
+
+    def test_drive_grant_summary_wired(self):
+        # Sheets/Docs pages aren't real connectors and have no grant section
+        # of their own (see settings_controller.py's DRIVE_GRANT_SUMMARY_GROUPS)
+        # -- renderRules reads the read-only "Governed by Drive" summary off
+        # state.rules.drive_grant_summary_by_connector and its "Manage in
+        # Drive ->" link reuses the same data-rules-nav="drive" mechanism the
+        # connector subnav tabs already dispatch through, not a new action.
+        html = build_html(_make_state())
+        assert "drive_grant_summary_by_connector" in html
+        assert 'data-rules-nav="drive"' in html
 
 
 class TestPrivacySegmentedControl:
