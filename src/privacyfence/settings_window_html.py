@@ -248,6 +248,25 @@ input[type=text]:focus { outline: 2px solid #0071e3; outline-offset: 0; }
 .pf-about-repo { margin-top: 20px; font-size: 13px; color: #0071e3; cursor: pointer; }
 .pf-about-license { font-size: 12px; color: #8a8a8e; margin-top: 6px; }
 .pf-about-buttons { display: flex; gap: 12px; margin-top: 28px; }
+
+/* ---- Telegram sign-in modal ---- */
+/* Not part of the design mockup (which has no multi-step-form concept
+   anywhere) -- kept visually consistent with the rest of the app (same
+   fonts/colors/button styles already defined above) rather than a new
+   look of its own. */
+.pf-modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.35); display: flex;
+  align-items: center; justify-content: center; z-index: 100;
+}
+.pf-modal {
+  background: #fff; border-radius: 12px; padding: 24px 28px; width: 360px;
+  box-shadow: 0 20px 60px rgba(0,0,0,.35);
+}
+.pf-modal-title { font-size: 15px; font-weight: 600; color: #1d1d1f; margin-bottom: 4px; }
+.pf-modal-desc { font-size: 12px; color: #6e6e73; margin-bottom: 14px; line-height: 1.4; }
+.pf-modal-error { font-size: 12px; color: #d92d20; margin-bottom: 10px; }
+.pf-modal-input { width: 100%; margin-bottom: 16px; }
+.pf-modal-buttons { display: flex; justify-content: flex-end; gap: 10px; }
 """
 
 # ---------------------------------------------------------------------------- #
@@ -257,7 +276,15 @@ input[type=text]:focus { outline: 2px solid #0071e3; outline-offset: 0; }
 
 _JS = r"""
 (function () {
-  var ui = { section: 'general', rulesConnector: null, privacyGroup: null, rulesSearch: '' };
+  var ui = {
+    section: 'general', rulesConnector: null, privacyGroup: null, rulesSearch: '',
+    telegramModalOpen: false,
+    // Tracks whether we've actually observed a non-null telegram_auth.step
+    // from Python yet -- a fresh, never-submitted modal also has step ===
+    // null, and without this the auto-close-on-success check in render()
+    // couldn't tell "flow just succeeded" apart from "flow never started".
+    telegramAuthWasActive: false,
+  };
   var pyState = null;
 
   function esc(v) {
@@ -277,18 +304,30 @@ _JS = r"""
     return 'data-action="' + esc(action) + '" data-payload=\'' + JSON.stringify(payload || {}).replace(/'/g, '&#39;') + '\'';
   }
 
-  function toggleHtml(on, action, payload, disabled) {
+  function toggleHtml(on, action, payload, disabled, ariaLabel) {
+    // role="switch"/aria-checked (not role="button") -- this is a genuine
+    // binary on/off control, and a QA/AT script needs a real checked state
+    // to read back, not just a clickable target. See the PR report for
+    // exactly which System-Events AX path reads this in practice.
     var cls = 'pf-toggle' + (on ? ' on' : '') + (disabled ? ' disabled' : '');
     var attrs = disabled ? '' : dataAttr(action, payload);
-    return '<div class="' + cls + '" ' + attrs + '><div class="pf-knob"></div></div>';
+    return '<div class="' + cls + '" role="switch" aria-checked="' + (on ? 'true' : 'false') + '" ' +
+      (disabled ? 'aria-disabled="true"' : 'tabindex="0"') +
+      (ariaLabel ? ' aria-label="' + esc(ariaLabel) + '"' : '') + ' ' + attrs +
+      '><div class="pf-knob"></div></div>';
   }
 
-  function segGroupHtml(items) {
+  function segGroupHtml(items, groupLabel) {
     // items: [{label, active, action, payload, colorClass}]
-    var html = '<div class="pf-seg-group">';
+    // role="radiogroup"/"radio" -- a segmented control is a mutually
+    // exclusive choice among named options, the same semantics as a radio
+    // group, not a set of independent buttons.
+    var html = '<div class="pf-seg-group" role="radiogroup"' + (groupLabel ? ' aria-label="' + esc(groupLabel) + '"' : '') + '>';
     items.forEach(function (it) {
       var cls = 'pf-seg-btn' + (it.active ? ' ' + (it.colorClass || 'plain-active') : '');
-      html += '<div class="' + cls + '" ' + dataAttr(it.action, it.payload) + '>' + esc(it.label) + '</div>';
+      var optionLabel = groupLabel ? groupLabel + ': ' + it.label : it.label;
+      html += '<div class="' + cls + '" role="radio" aria-checked="' + (it.active ? 'true' : 'false') +
+        '" tabindex="0" aria-label="' + esc(optionLabel) + '" ' + dataAttr(it.action, it.payload) + '>' + esc(it.label) + '</div>';
     });
     html += '</div>';
     return html;
@@ -304,11 +343,12 @@ _JS = r"""
   ];
 
   function renderNav(state) {
-    var html = '<div class="pf-nav">';
+    var html = '<div class="pf-nav" role="tablist" aria-label="Settings sections">';
     NAV_ITEMS.forEach(function (item) {
       var key = item[0], label = item[1];
       var active = ui.section === key;
-      html += '<div class="pf-navitem' + (active ? ' active' : '') + '" data-nav="' + key + '">' + esc(label) + '</div>';
+      html += '<div class="pf-navitem' + (active ? ' active' : '') + '" role="tab" aria-selected="' +
+        (active ? 'true' : 'false') + '" tabindex="0" aria-label="' + esc(label) + '" data-nav="' + key + '">' + esc(label) + '</div>';
     });
     html += '<div class="pf-nav-spacer"></div>';
     html += '<div class="pf-nav-version">PrivacyFence ' + esc(state.about.version) + '</div>';
@@ -328,33 +368,34 @@ _JS = r"""
     html += '<div class="pf-card">';
     html += '<div class="pf-card-row"><div><div class="pf-card-title">PII Detection Gate</div>';
     html += '<div class="pf-card-desc">Scans review-popup content for likely personal data (IBANs, national IDs, financial figures) before you approve it. A match requires a second confirmation.</div></div>';
-    html += toggleHtml(g.pii_enabled, 'toggle_pii_detection', {});
+    html += toggleHtml(g.pii_enabled, 'toggle_pii_detection', {}, false, 'PII Detection Gate');
     html += '</div>';
     html += '<div class="pf-divider"></div>';
     html += '<div class="pf-subrow" style="opacity:' + (g.pii_enabled ? 1 : .4) + '"><div class="pf-subrow-label">Detect IP addresses</div>';
-    html += toggleHtml(g.pii_ip, 'toggle_pii_category', { category_key: 'detect_ip_addresses' }, !g.pii_enabled);
+    html += toggleHtml(g.pii_ip, 'toggle_pii_category', { category_key: 'detect_ip_addresses' }, !g.pii_enabled, 'Detect IP addresses');
     html += '</div>';
     html += '<div class="pf-subrow" style="opacity:' + (g.pii_enabled ? 1 : .4) + '"><div class="pf-subrow-label">Detect financial figures</div>';
-    html += toggleHtml(g.pii_financial, 'toggle_pii_category', { category_key: 'detect_financial_figures' }, !g.pii_enabled);
+    html += toggleHtml(g.pii_financial, 'toggle_pii_category', { category_key: 'detect_financial_figures' }, !g.pii_enabled, 'Detect financial figures');
     html += '</div></div>';
 
     html += '<div class="pf-card"><div class="pf-card-row"><div><div class="pf-card-title">QuickLook Previews</div>';
     html += '<div class="pf-card-desc">Show a QuickLook thumbnail for non-image downloads and uploads in the approval popup.</div></div>';
-    html += toggleHtml(g.quicklook_enabled, 'toggle_quicklook_preview', {});
+    html += toggleHtml(g.quicklook_enabled, 'toggle_quicklook_preview', {}, false, 'QuickLook Previews');
     html += '</div></div>';
 
     html += '<div class="pf-card"><div class="pf-card-row"><div><div class="pf-card-title">Check for Updates</div>';
     html += '<div class="pf-card-desc">Once-a-day check against GitHub Releases. Never installs anything automatically.</div></div>';
-    html += toggleHtml(g.update_check_enabled, 'toggle_update_check', {});
+    html += toggleHtml(g.update_check_enabled, 'toggle_update_check', {}, false, 'Check for Updates');
     html += '</div><div class="pf-divider"></div>';
     html += '<div class="pf-subrow" style="opacity:' + (g.update_check_enabled ? 1 : .4) + '"><div class="pf-subrow-label">Receive beta releases</div>';
-    html += toggleHtml(g.update_check_beta, 'toggle_update_check_beta', {}, !g.update_check_enabled);
+    html += toggleHtml(g.update_check_beta, 'toggle_update_check_beta', {}, !g.update_check_enabled, 'Receive beta releases');
     html += '</div></div>';
 
     html += '<div class="pf-card"><div class="pf-card-title">Organization Configuration</div>';
     html += '<div class="pf-card-desc" style="margin-bottom:12px;">OAuth app credentials and unattended-session policy, provided by your IT administrator.</div>';
     html += '<div style="display:flex;align-items:center;gap:14px;">';
-    html += '<div class="pf-btn-primary" ' + dataAttr('install_org_config', {}) + '>' + esc(g.org_button_label) + '</div>';
+    html += '<div class="pf-btn-primary" role="button" tabindex="0" aria-label="' + esc(g.org_button_label) + '" ' +
+      dataAttr('install_org_config', {}) + '>' + esc(g.org_button_label) + '</div>';
     if (g.org_installed && g.org_installed_date) {
       html += '<div class="pf-export-hint">Installed ' + esc(g.org_installed_date) + '</div>';
     } else if (!g.org_installed) {
@@ -387,14 +428,28 @@ _JS = r"""
     state.connectors.forEach(function (c) {
       var status = connectorStatus(c);
       html += '<div class="pf-connector-row">';
-      html += '<div class="pf-connector-icon">' + (c.icon_data_uri ? '<img src="' + esc(c.icon_data_uri) + '"/>' : '') + '</div>';
+      html += '<div class="pf-connector-icon">' + (c.icon_data_uri ? '<img src="' + esc(c.icon_data_uri) + '" alt="' + esc(c.label) + '"/>' : '') + '</div>';
       html += '<div class="pf-connector-label">' + esc(c.label) + '</div>';
       html += '<div class="pf-pill ' + status.cls + '">' + esc(status.text) + '</div>';
       html += '<div class="pf-spacer"></div>';
       var authDisabled = c.busy;
-      html += '<div class="pf-auth-link' + (authDisabled ? ' disabled' : '') + '" ' +
-        (authDisabled ? '' : dataAttr('authenticate_connector', { connector: c.key })) + '>' + esc(c.auth_label) + '</div>';
-      html += toggleHtml(c.enabled, 'toggle_connector', { connector: c.key });
+      if (c.key === 'telegram') {
+        // Telegram's phone/code/2FA flow needs its own multi-step modal
+        // (see renderTelegramModal below) instead of the generic single-
+        // click OAuth flow every other connector uses -- intercepted here
+        // client-side (data-telegram-auth, not data-action) so opening the
+        // modal at the phone-entry step needs no round trip to Python;
+        // the first real bridge call is telegram_start_auth() once a
+        // phone number is actually submitted.
+        html += '<div class="pf-auth-link' + (authDisabled ? ' disabled' : '') +
+          '" role="button" tabindex="0" aria-label="' + esc(c.auth_label) + ' Telegram"' +
+          (authDisabled ? '' : ' data-telegram-auth="1"') + '>' + esc(c.auth_label) + '</div>';
+      } else {
+        html += '<div class="pf-auth-link' + (authDisabled ? ' disabled' : '') +
+          '" role="button" tabindex="0" aria-label="' + esc(c.auth_label) + ' ' + esc(c.label) + '" ' +
+          (authDisabled ? '' : dataAttr('authenticate_connector', { connector: c.key })) + '>' + esc(c.auth_label) + '</div>';
+      }
+      html += toggleHtml(c.enabled, 'toggle_connector', { connector: c.key }, false, c.label + ' enabled');
       html += '</div>';
     });
     html += '</div>';
@@ -405,20 +460,60 @@ _JS = r"""
   // Rules
   // -------------------------------------------------------------------- //
 
+  function renderSuggestionPriority(sp, connectorKey) {
+    // "Always-allow Suggestion Order" -- which rule Always allow proposes
+    // first when a read could match more than one (e.g. Drive's i_am_owner
+    // vs. approved_folder), user-reorderable, and excludable by moving it
+    // out of the included list entirely. Only rendered for the connectors
+    // SUGGESTION_FAMILY_BY_CONNECTOR covers (see settings_controller.py) --
+    // sp is null for every other connector. Reuses the same pf-link/
+    // pf-link-danger row language as the rule/grant sections above rather
+    // than introducing new styles.
+    if (!sp) return '';
+    var html = '<div class="pf-rule-section"><div class="pf-group-title">Always-allow Suggestion Order</div>';
+    sp.included.forEach(function (ruleName, i) {
+      html += '<div class="pf-rule-row"><div class="pf-input-value pf-input-mono" style="border:none;background:transparent;padding:5px 0;">' + esc(ruleName) + '</div>';
+      if (i > 0) {
+        html += '<div class="pf-link" role="button" tabindex="0" aria-label="Move ' + esc(ruleName) + ' up" ' +
+          dataAttr('move_suggestion_priority', { connector: connectorKey, direction: -1, rule_name: ruleName }) + '>↑ Move up</div>';
+      }
+      if (i < sp.included.length - 1) {
+        html += '<div class="pf-link" role="button" tabindex="0" aria-label="Move ' + esc(ruleName) + ' down" ' +
+          dataAttr('move_suggestion_priority', { connector: connectorKey, direction: 1, rule_name: ruleName }) + '>↓ Move down</div>';
+      }
+      html += '<div class="pf-link-danger" role="button" tabindex="0" aria-label="Never suggest ' + esc(ruleName) + '" ' +
+        dataAttr('exclude_suggestion_rule', { connector: connectorKey, rule_name: ruleName }) + '>✕ Never suggest</div>';
+      html += '</div>';
+    });
+    sp.excluded.forEach(function (ruleName) {
+      html += '<div class="pf-rule-row"><div class="pf-input-value pf-input-mono" style="border:none;background:transparent;padding:5px 0;color:#b3b3b8;">' +
+        esc(ruleName) + ' (excluded)</div>';
+      html += '<div class="pf-link" role="button" tabindex="0" aria-label="Re-include ' + esc(ruleName) + '" ' +
+        dataAttr('include_suggestion_rule', { connector: connectorKey, rule_name: ruleName }) + '>+ Re-include</div>';
+      html += '</div>';
+    });
+    html += '</div>';
+    return html;
+  }
+
   function renderRules(state) {
     var rules = state.rules;
     if (!ui.rulesConnector && rules.connectors.length) ui.rulesConnector = rules.connectors[0].key;
     var search = (ui.rulesSearch || '').trim().toLowerCase();
 
     var html = '<div class="pf-subnav">';
-    html += '<input type="text" class="pf-input pf-subnav-search" placeholder="Search rules…" value="' + esc(ui.rulesSearch) + '" data-rules-search="1"/>';
+    html += '<input type="text" class="pf-input pf-subnav-search" placeholder="Search rules…" aria-label="Search rules" value="' +
+      esc(ui.rulesSearch) + '" data-rules-search="1"/>';
+    html += '<div role="tablist" aria-label="Connector">';
     rules.connectors.forEach(function (rc) {
       var active = ui.rulesConnector === rc.key;
-      html += '<div class="pf-subnav-item' + (active ? ' active' : '') + '" data-rules-nav="' + esc(rc.key) + '"><span>' + esc(rc.label) + '</span>';
+      html += '<div class="pf-subnav-item' + (active ? ' active' : '') + '" role="tab" aria-selected="' +
+        (active ? 'true' : 'false') + '" tabindex="0" aria-label="' + esc(rc.label) +
+        '" data-rules-nav="' + esc(rc.key) + '"><span>' + esc(rc.label) + '</span>';
       if (rc.count) html += '<span class="pf-subnav-count">' + rc.count + '</span>';
       html += '</div>';
     });
-    html += '</div>';
+    html += '</div></div>';
 
     var curKey = ui.rulesConnector;
     var curLabel = '';
@@ -440,21 +535,25 @@ _JS = r"""
       matchingRows.forEach(function (r) {
         var row = r.row, idx = r.idx;
         html += '<div class="pf-grant-row"><div class="pf-grant-row-fields">';
-        html += '<input type="text" class="pf-input" placeholder="Name" value="' + esc(row.name) + '" ' +
+        html += '<input type="text" class="pf-input" placeholder="Name" aria-label="' + esc(gs.title) + ' name" value="' + esc(row.name) + '" ' +
           'data-grant-field="name" data-connector="' + esc(curKey) + '" data-config-key="' + esc(gs.config_key) + '" data-idx="' + idx + '"/>';
-        html += '<input type="text" class="pf-input pf-input-mono" placeholder="Resource ID" value="' + esc(row.id) + '" ' +
+        html += '<input type="text" class="pf-input pf-input-mono" placeholder="Resource ID" aria-label="' + esc(gs.title) + ' resource ID" value="' + esc(row.id) + '" ' +
           'data-grant-field="id" data-connector="' + esc(curKey) + '" data-config-key="' + esc(gs.config_key) + '" data-idx="' + idx + '"/>';
-        html += '<div class="pf-link-danger" ' + dataAttr('remove_grant_row', { connector: curKey, config_key: gs.config_key, idx: idx }) + '>✕ Remove</div>';
+        html += '<div class="pf-link-danger" role="button" tabindex="0" aria-label="Remove ' + esc(row.name || row.id || gs.title) + '" ' +
+          dataAttr('remove_grant_row', { connector: curKey, config_key: gs.config_key, idx: idx }) + '>✕ Remove</div>';
         html += '</div><div class="pf-caps-row">';
         gs.cap_keys.forEach(function (capKey) {
           var on = !!row.caps[capKey];
-          html += '<div class="pf-cap-chip' + (on ? ' on' : '') + '" ' +
+          var capLabel = gs.cap_labels[capKey] || capKey;
+          html += '<div class="pf-cap-chip' + (on ? ' on' : '') + '" role="checkbox" aria-checked="' + (on ? 'true' : 'false') +
+            '" tabindex="0" aria-label="' + esc(capLabel) + '" ' +
             dataAttr('toggle_grant_capability', { connector: curKey, config_key: gs.config_key, idx: idx, cap: capKey }) + '>' +
-            esc(gs.cap_labels[capKey] || capKey) + '</div>';
+            esc(capLabel) + '</div>';
         });
         html += '</div></div>';
       });
-      html += '<div class="pf-link" ' + dataAttr('add_grant_row', { connector: curKey, config_key: gs.config_key }) + '>+ ' + esc(gs.add_label) + '</div>';
+      html += '<div class="pf-link" role="button" tabindex="0" aria-label="' + esc(gs.add_label) + '" ' +
+        dataAttr('add_grant_row', { connector: curKey, config_key: gs.config_key }) + '>+ ' + esc(gs.add_label) + '</div>';
       html += '</div>';
     });
 
@@ -467,21 +566,28 @@ _JS = r"""
       html += '<div class="pf-rule-section"><div class="pf-group-title">' + esc(sec.title) + '</div>';
       sec.rows.forEach(function (row, idx) {
         html += '<div class="pf-rule-row">';
-        html += '<input type="text" class="pf-input pf-input-type pf-input-mono" placeholder="rule_type" value="' + esc(row.rule_type) + '" ' +
+        html += '<input type="text" class="pf-input pf-input-type pf-input-mono" placeholder="rule_type" aria-label="' +
+          esc(sec.title) + ' rule type, row ' + (idx + 1) + '" value="' + esc(row.rule_type) + '" ' +
           'data-rule-field="rule_type" data-op-key="' + esc(sec.op_key) + '" data-idx="' + idx + '"/>';
-        html += '<input type="text" class="pf-input pf-input-value" placeholder="value" value="' + esc(row.value) + '" ' +
+        html += '<input type="text" class="pf-input pf-input-value" placeholder="value" aria-label="' +
+          esc(sec.title) + ' value, row ' + (idx + 1) + '" value="' + esc(row.value) + '" ' +
           'data-rule-field="value" data-op-key="' + esc(sec.op_key) + '" data-idx="' + idx + '"/>';
-        html += '<div class="pf-link-danger" ' + dataAttr('remove_rule_row', { op_key: sec.op_key, idx: idx }) + '>✕ Remove</div>';
+        html += '<div class="pf-link-danger" role="button" tabindex="0" aria-label="Remove ' + esc(sec.title) + ' row ' + (idx + 1) + '" ' +
+          dataAttr('remove_rule_row', { op_key: sec.op_key, idx: idx }) + '>✕ Remove</div>';
         html += '</div>';
       });
-      html += '<div class="pf-link" ' + dataAttr('add_rule_row', { op_key: sec.op_key }) + '>+ Add rule…</div>';
+      html += '<div class="pf-link" role="button" tabindex="0" aria-label="Add rule to ' + esc(sec.title) + '" ' +
+        dataAttr('add_rule_row', { op_key: sec.op_key }) + '>+ Add rule…</div>';
       html += '</div>';
     });
+
+    var suggestionPriority = (rules.suggestion_priority_by_connector || {})[curKey] || null;
+    if (!search) html += renderSuggestionPriority(suggestionPriority, curKey);
 
     var anyGrantRows = grantSections.some(function (gs) { return gs.rows.length > 0; });
     if (search && totalRows === 0 && !anyGrantRows) {
       html += '<div class="pf-rules-empty">' + (search ? 'No matches.' : 'Nothing here.') + '</div>';
-    } else if (!search && ruleSections.length === 0 && grantSections.length === 0) {
+    } else if (!search && ruleSections.length === 0 && grantSections.length === 0 && !suggestionPriority) {
       html += '<div class="pf-rules-empty">All operations always auto-approved — no rules needed.</div>';
     }
 
@@ -495,21 +601,23 @@ _JS = r"""
 
   var POLICY_COLOR_CLASS = { allow: 'policy-allow', redact: 'policy-redact', block: 'policy-block' };
 
-  function policySegHtml(current, onAction, basePayload) {
+  function policySegHtml(current, onAction, basePayload, groupLabel) {
     return segGroupHtml(['allow', 'redact', 'block'].map(function (p) {
       var payload = Object.assign({}, basePayload, { policy: p });
       return { label: p.charAt(0).toUpperCase() + p.slice(1), active: current === p, action: onAction, payload: payload, colorClass: POLICY_COLOR_CLASS[p] };
-    }));
+    }), groupLabel);
   }
 
   function renderPrivacy(state) {
     var privacy = state.privacy;
     if (!ui.privacyGroup && privacy.groups.length) ui.privacyGroup = privacy.groups[0].key;
 
-    var html = '<div class="pf-subnav">';
+    var html = '<div class="pf-subnav" role="tablist" aria-label="Privacy Filter group">';
     privacy.groups.forEach(function (pg) {
       var active = ui.privacyGroup === pg.key;
-      html += '<div class="pf-subnav-item' + (active ? ' active' : '') + '" data-privacy-nav="' + esc(pg.key) + '"><span>' + esc(pg.label) + '</span></div>';
+      html += '<div class="pf-subnav-item' + (active ? ' active' : '') + '" role="tab" aria-selected="' +
+        (active ? 'true' : 'false') + '" tabindex="0" aria-label="' + esc(pg.label) +
+        '" data-privacy-nav="' + esc(pg.key) + '"><span>' + esc(pg.label) + '</span></div>';
     });
     html += '</div>';
 
@@ -520,7 +628,7 @@ _JS = r"""
       html += '<div class="pf-card" style="max-width:560px;"><div class="pf-card-row"><div>';
       html += '<div class="pf-card-title" style="font-size:13.5px;">Show full event details in free/busy</div>';
       html += '<div class="pf-card-desc">When off, calendar_get_free_busy always returns busy/free blocks only, never titles or status, regardless of access.</div>';
-      html += '</div>' + toggleHtml(privacy.calendar_free_busy, 'toggle_calendar_free_busy', {}) + '</div></div>';
+      html += '</div>' + toggleHtml(privacy.calendar_free_busy, 'toggle_calendar_free_busy', {}, false, 'Show full event details in free/busy') + '</div></div>';
     } else {
       var group = ui.privacyGroup;
       var label = '';
@@ -532,13 +640,13 @@ _JS = r"""
       html += '<div class="pf-detail-subtitle">Applied before this data reaches the review popup, Claude, or the audit log — a floor under human review, not a substitute for it.</div>';
 
       html += '<div class="pf-policy-row"><div class="pf-policy-row-label">Default policy <span class="pf-muted">(unlisted categories)</span></div>';
-      html += policySegHtml(defaultPolicy, 'set_default_policy', { group: group });
+      html += policySegHtml(defaultPolicy, 'set_default_policy', { group: group }, 'Default policy');
       html += '</div>';
 
       categories.forEach(function (cat) {
         html += '<div class="pf-category-row"><div><div class="pf-category-label">' + esc(cat.label) + '</div>';
         html += '<div class="pf-category-key">' + esc(cat.key) + '</div></div>';
-        html += policySegHtml(cat.policy, 'set_category_policy', { group: group, category: cat.key });
+        html += policySegHtml(cat.policy, 'set_category_policy', { group: group, category: cat.key }, cat.label + ' policy');
         html += '</div>';
       });
     }
@@ -558,14 +666,15 @@ _JS = r"""
     html += '<div class="pf-page-title">Audit Log</div>';
     html += '<div class="pf-page-subtitle">Every decision — accepted, denied, or auto-accepted — is recorded locally as JSON lines, then exported weekly to a formatted Excel workbook.</div>';
 
-    html += '<div class="pf-export-row"><div class="pf-btn-primary" ' + dataAttr('export_audit_log', {}) + '>Export Audit Log…</div>';
+    html += '<div class="pf-export-row"><div class="pf-btn-primary" role="button" tabindex="0" aria-label="Export Audit Log" ' +
+      dataAttr('export_audit_log', {}) + '>Export Audit Log…</div>';
     html += '<div class="pf-export-hint">' + esc(audit.export_hint) + '</div></div>';
 
     html += '<div class="pf-card pf-audit-card">';
     html += '<div class="pf-audit-card-row"><div class="pf-audit-card-title">Log level</div>';
     html += segGroupHtml(LOG_LEVELS.map(function (lvl) {
       return { label: lvl, active: audit.log_level === lvl, action: 'set_log_level', payload: { level: lvl } };
-    }));
+    }), 'Log level');
     html += '</div>';
     html += '<div class="pf-audit-card-row"><div class="pf-audit-card-title">Log file</div>';
     html += '<div class="pf-audit-logfile">' + esc(audit.log_file) + '</div></div>';
@@ -600,11 +709,14 @@ _JS = r"""
     html += '<div class="pf-about-name">PrivacyFence</div>';
     html += '<div class="pf-about-version">Version ' + esc(about.version) + '</div>';
     html += '<div class="pf-about-desc">Human control and policy enforcement for AI access to enterprise data.</div>';
-    html += '<div class="pf-about-repo" ' + dataAttr('open_repo', {}) + '>' + esc(about.repo_url.replace('https://', '')) + ' ↗</div>';
+    html += '<div class="pf-about-repo" role="button" tabindex="0" aria-label="Open GitHub repository" ' +
+      dataAttr('open_repo', {}) + '>' + esc(about.repo_url.replace('https://', '')) + ' ↗</div>';
     html += '<div class="pf-about-license">' + esc(about.license) + '</div>';
     html += '<div class="pf-about-buttons">';
-    html += '<div class="pf-btn-secondary" ' + dataAttr('check_for_updates', {}) + '>Check for Updates</div>';
-    html += '<div class="pf-btn-danger" ' + dataAttr('quit_app', {}) + '>Quit PrivacyFence</div>';
+    html += '<div class="pf-btn-secondary" role="button" tabindex="0" aria-label="Check for Updates" ' +
+      dataAttr('check_for_updates', {}) + '>Check for Updates</div>';
+    html += '<div class="pf-btn-danger" role="button" tabindex="0" aria-label="Quit PrivacyFence" ' +
+      dataAttr('quit_app', {}) + '>Quit PrivacyFence</div>';
     html += '</div></div>';
     return html;
   }
@@ -624,21 +736,83 @@ _JS = r"""
     }
   }
 
+  // -------------------------------------------------------------------- //
+  // Telegram sign-in modal (see settings_controller.py's telegram_start_
+  // auth/telegram_submit_code/telegram_submit_2fa/telegram_cancel_auth)
+  // -------------------------------------------------------------------- //
+
+  var TELEGRAM_STEP_COPY = {
+    phone: {
+      title: 'Sign in to Telegram', desc: 'Phone number, with country code (e.g. +1234567890):',
+      placeholder: '+1234567890', type: 'text', submitLabel: 'Send Code', submitAction: 'telegram_start_auth', field: 'phone',
+    },
+    code: {
+      title: 'Enter verification code', desc: 'Telegram sent a code to the number above.',
+      placeholder: 'Code', type: 'text', submitLabel: 'Authorize', submitAction: 'telegram_submit_code', field: 'code',
+    },
+    password: {
+      title: 'Two-step verification', desc: 'Enter your Telegram two-step verification password.',
+      placeholder: 'Password', type: 'password', submitLabel: 'Submit', submitAction: 'telegram_submit_2fa', field: 'password',
+    },
+  };
+
+  function renderTelegramModal(state) {
+    if (!ui.telegramModalOpen) return '';
+    var auth = state.telegram_auth || { step: null, error: '' };
+    var step = auth.step || 'phone';
+    var copy = TELEGRAM_STEP_COPY[step];
+    var busy = (state.connectors.find(function (c) { return c.key === 'telegram'; }) || {}).busy;
+
+    var html = '<div class="pf-modal-overlay" role="presentation">';
+    html += '<div class="pf-modal" role="dialog" aria-modal="true" aria-label="' + esc(copy.title) + '">';
+    html += '<div class="pf-modal-title">' + esc(copy.title) + '</div>';
+    html += '<div class="pf-modal-desc">' + esc(copy.desc) + '</div>';
+    if (auth.error) html += '<div class="pf-modal-error">' + esc(auth.error) + '</div>';
+    html += '<input type="' + copy.type + '" class="pf-input pf-modal-input" placeholder="' + esc(copy.placeholder) +
+      '" data-telegram-field="' + copy.field + '" aria-label="' + esc(copy.placeholder) + '"' + (busy ? ' disabled' : '') + '/>';
+    html += '<div class="pf-modal-buttons">';
+    html += '<div class="pf-btn-secondary" role="button" tabindex="0" aria-label="Cancel Telegram sign-in" data-telegram-cancel="1">Cancel</div>';
+    html += '<div class="pf-btn-primary" role="button" tabindex="0" aria-label="' + esc(copy.submitLabel) +
+      '" data-telegram-submit="' + copy.submitAction + '"' + (busy ? ' style="opacity:.5;pointer-events:none;"' : '') + '>' +
+      (busy ? 'Working…' : esc(copy.submitLabel)) + '</div>';
+    html += '</div></div></div>';
+    return html;
+  }
+
   function render(state) {
     pyState = state;
+    // Auto-close the modal once Python reports the sign-in is no longer in
+    // progress (success or explicit cancel) -- see telegram_cancel_auth/
+    // the success branches of telegram_submit_code/telegram_submit_2fa.
+    // Gated on telegramAuthWasActive (see its own comment above): a modal
+    // that's open but has never actually submitted anything also has
+    // telegram_auth.step === null, and must not be closed out from under
+    // the user before they've even typed a phone number.
+    var authStep = state.telegram_auth && state.telegram_auth.step;
+    if (authStep) ui.telegramAuthWasActive = true;
+    if (ui.telegramModalOpen && ui.telegramAuthWasActive && !authStep && !(state.telegram_auth && state.telegram_auth.error)) {
+      ui.telegramModalOpen = false;
+      ui.telegramAuthWasActive = false;
+    }
     var html = renderNav(state);
     if (state.error) {
       html += '<div class="pf-content" style="flex-direction:column;">' +
-        '<div class="pf-error-banner"><div>' + esc(state.error) + '</div>' +
-        '<div class="pf-error-dismiss" data-dismiss-error="1">✕</div></div>' +
+        '<div class="pf-error-banner" role="alert"><div>' + esc(state.error) + '</div>' +
+        '<div class="pf-error-dismiss" role="button" tabindex="0" aria-label="Dismiss error" data-dismiss-error="1">✕</div></div>' +
         '<div style="flex:1;display:flex;overflow:hidden;">' + renderSection(state) + '</div></div>';
     } else {
       html += '<div class="pf-content">' + renderSection(state) + '</div>';
     }
+    html += renderTelegramModal(state);
     document.getElementById('app').innerHTML = html;
+    if (ui.telegramModalOpen) {
+      var input = document.querySelector('[data-telegram-field]');
+      if (input) input.focus();
+    }
   }
 
   window.__pfRender = render;
+  window.__pfDebugHook = { ui: ui, render: render, TELEGRAM_STEP_COPY: TELEGRAM_STEP_COPY, onClick: null, onKeydown: null };
 
   // -------------------------------------------------------------------- //
   // Event delegation
@@ -657,6 +831,21 @@ _JS = r"""
     var dismissEl = e.target.closest('[data-dismiss-error]');
     if (dismissEl) { pyState.error = ''; render(pyState); return; }
 
+    var telegramAuthEl = e.target.closest('[data-telegram-auth]');
+    if (telegramAuthEl) { ui.telegramModalOpen = true; ui.telegramAuthWasActive = false; render(pyState); return; }
+
+    var telegramCancelEl = e.target.closest('[data-telegram-cancel]');
+    if (telegramCancelEl) {
+      ui.telegramModalOpen = false;
+      ui.telegramAuthWasActive = false;
+      post('telegram_cancel_auth', {});
+      render(pyState);
+      return;
+    }
+
+    var telegramSubmitEl = e.target.closest('[data-telegram-submit]');
+    if (telegramSubmitEl) { submitTelegramModal(telegramSubmitEl.getAttribute('data-telegram-submit')); return; }
+
     var repoEl = e.target.closest('[data-action="open_repo"]');
     if (repoEl) { post('open_repo', {}); return; }
 
@@ -668,6 +857,16 @@ _JS = r"""
       post(action, payload);
     }
   }
+
+  function submitTelegramModal(action) {
+    var input = document.querySelector('[data-telegram-field]');
+    var value = input ? input.value : '';
+    var field = input ? input.getAttribute('data-telegram-field') : 'phone';
+    var payload = {};
+    payload[field] = value;
+    post(action, payload);
+  }
+
 
   function commitRuleField(el) {
     post('update_rule_row', {
@@ -707,11 +906,36 @@ _JS = r"""
   }
 
   function onKeydown(e) {
+    if (e.key === 'Escape' && ui.telegramModalOpen) {
+      ui.telegramModalOpen = false;
+      ui.telegramAuthWasActive = false;
+      post('telegram_cancel_auth', {});
+      render(pyState);
+      return;
+    }
+    // Enter/Space activates any of our ARIA-role'd interactive elements
+    // (role="button"/"tab"/"radio"/"switch"/"checkbox") the same way a
+    // click does -- they're plain <div>s with tabindex="0", not native
+    // <button>s, so the browser doesn't do this for free.
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.tagName !== 'INPUT' && e.target.closest) {
+      var interactive = e.target.closest('[role="button"], [role="tab"], [role="radio"], [role="switch"], [role="checkbox"]');
+      if (interactive) {
+        e.preventDefault();
+        interactive.click();
+        return;
+      }
+    }
     if (e.key !== 'Enter') return;
     var el = e.target;
     if (!el.tagName || el.tagName !== 'INPUT') return;
     if (el.hasAttribute('data-rule-field') || el.hasAttribute('data-grant-field')) {
       el.blur();
+      return;
+    }
+    if (el.hasAttribute('data-telegram-field')) {
+      var state = pyState || {};
+      var step = ((state.telegram_auth || {}).step) || 'phone';
+      submitTelegramModal(TELEGRAM_STEP_COPY[step].submitAction);
     }
   }
 

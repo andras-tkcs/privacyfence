@@ -46,14 +46,21 @@ def _make_state(**overrides):
             {"key": "telegram", "label": "Telegram", "icon": "telegram", "icon_data_uri": "",
              "authed": False, "enabled": True, "busy": False, "has_org": False, "auth_label": "Authenticate…"},
         ],
+        "telegram_auth": {"step": None, "error": ""},
         "rules": {
-            "connectors": [{"key": "gmail", "label": "Gmail", "count": 1}],
+            "connectors": [{"key": "gmail", "label": "Gmail", "count": 1}, {"key": "drive", "label": "Drive", "count": 0}],
             "sections_by_connector": {
                 "gmail": [{"op_key": "gmail.read_message", "title": "Read message",
                            "rows": [{"rule_type": "i_am_sender", "value": ""}]}],
+                "drive": [],
             },
             "grants_by_connector": {
                 "gmail": [],
+                "drive": [],
+            },
+            "suggestion_priority_by_connector": {
+                "gmail": None,
+                "drive": {"family": "drive_read", "included": ["i_am_owner", "approved_folder"], "excluded": []},
             },
         },
         "privacy": {
@@ -230,3 +237,81 @@ class TestAboutTemplate:
         html = build_html(_make_state())
         assert "'quit_app'" in html
         assert "'check_for_updates'" in html
+
+
+class TestSuggestionPriorityTemplate:
+    """Restored per user direction -- see settings_controller.py's
+    SUGGESTION_FAMILY_BY_CONNECTOR/_rules_state for the Python side this
+    consumes. String-level checks only (see module docstring for why); the
+    actual per-row ↑/↓/✕/+Re-include rendering logic was verified by
+    executing the extracted JS under Node during development -- see the PR
+    report for exactly what that covered."""
+
+    def test_section_header_and_actions_wired(self):
+        html = build_html(_make_state())
+        assert "Always-allow Suggestion Order" in html
+        assert "'move_suggestion_priority'" in html
+        assert "'exclude_suggestion_rule'" in html
+        assert "'include_suggestion_rule'" in html
+
+    def test_included_and_excluded_rule_names_present(self):
+        state = _make_state()
+        state["rules"]["suggestion_priority_by_connector"]["drive"] = {
+            "family": "drive_read", "included": ["i_am_owner"], "excluded": ["approved_folder"],
+        }
+        html = build_html(state)
+        embedded = _extract_initial_state(html)
+        drive_sp = embedded["rules"]["suggestion_priority_by_connector"]["drive"]
+        assert drive_sp["included"] == ["i_am_owner"]
+        assert drive_sp["excluded"] == ["approved_folder"]
+
+    def test_connector_with_no_family_embeds_null(self):
+        html = build_html(_make_state())
+        embedded = _extract_initial_state(html)
+        assert embedded["rules"]["suggestion_priority_by_connector"]["gmail"] is None
+
+    def test_move_up_down_guards_reference_row_index(self):
+        # The i > 0 / i < length - 1 guards from the pre-#120 menu_bar.py
+        # version (see git history at 1f367ca) -- confirms the loop-index
+        # logic text is present in the shipped JS, not just the action name.
+        html = build_html(_make_state())
+        assert "if (i > 0)" in html
+        assert "if (i < sp.included.length - 1)" in html
+
+
+class TestTelegramModalTemplate:
+    """Telegram's in-webview multi-step sign-in modal (phone -> code ->
+    optional 2FA password), replacing the pre-#120 native rumps.Window
+    flow. See TestTelegramStartAuth/TestTelegramSubmitCode/
+    TestTelegramSubmit2FA in test_settings_controller.py for the Python
+    side; string-level checks only here, same reasoning as this module's
+    own docstring -- actual step-transition/auto-close behavior was
+    verified by executing the extracted JS under Node during development."""
+
+    def test_modal_css_defined(self):
+        html = build_html(_make_state())
+        assert ".pf-modal-overlay" in html
+        assert ".pf-modal {" in html
+
+    def test_telegram_row_intercepted_client_side_not_posted_as_authenticate_connector(self):
+        html = build_html(_make_state())
+        assert "data-telegram-auth" in html
+
+    def test_all_three_steps_have_copy_and_submit_actions_wired(self):
+        html = build_html(_make_state())
+        assert "'telegram_start_auth'" in html
+        assert "'telegram_submit_code'" in html
+        assert "'telegram_submit_2fa'" in html
+        assert "'telegram_cancel_auth'" in html
+        assert "Send Code" in html
+        assert "Enter verification code" in html or "Two-step verification" in html
+
+    def test_password_step_uses_password_input_type(self):
+        html = build_html(_make_state())
+        assert "password:" in html  # TELEGRAM_STEP_COPY.password.type
+
+    def test_state_embeds_telegram_auth_key(self):
+        state = _make_state(telegram_auth={"step": "code", "error": "bad code"})
+        html = build_html(state)
+        embedded = _extract_initial_state(html)
+        assert embedded["telegram_auth"] == {"step": "code", "error": "bad code"}

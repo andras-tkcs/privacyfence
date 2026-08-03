@@ -14,6 +14,17 @@ Also covers the cross-thread AppHelper.callAfter marshaling contract
 (_run_async/on_change) that used to live in test_menu_bar.py's "P6" module
 docstring -- see TestRunAsyncMarshaling and TestOnChangeMarshaling below for
 why that still matters here.
+
+Two follow-up features restored/rebuilt after the initial #120 pass per
+user direction (see PR history): suggestion-priority reordering
+(TestSuggestionPriorityState/TestSuggestionPriorityMutators, ported from
+menu_bar.py's pre-#120 _move_suggestion_priority/_exclude_suggestion_rule/
+_include_suggestion_rule with no behavior change) and Telegram's in-webview
+multi-step sign-in (TestTelegramStartAuth/TestTelegramSubmitCode/
+TestTelegramSubmit2FA/TestTelegramCancelAuth, replacing the native
+rumps.Window-based flow -- telethon is mocked via MagicMock/AsyncMock, the
+same house style test_telegram_client.py's own tests already use, rather
+than the hand-rolled fake class the deleted native-prompt tests used).
 """
 from __future__ import annotations
 
@@ -21,6 +32,7 @@ import json
 import threading
 import time
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -517,18 +529,27 @@ class TestAuthenticateDispatch:
         ("contacts", "_authenticate_google"), ("calendar", "_authenticate_google"),
         ("tasks", "_authenticate_google"), ("slack", "_authenticate_slack"),
         ("salesforce", "_authenticate_salesforce"), ("jira", "_authenticate_atlassian"),
-        ("confluence", "_authenticate_atlassian"), ("telegram", "_authenticate_telegram"),
+        ("confluence", "_authenticate_atlassian"),
     ])
     def test_dispatches_to_the_right_per_service_method(self, controller, monkeypatch, cname, method):
         calls = []
-        if method == "_authenticate_telegram":
-            monkeypatch.setattr(controller, method, lambda: calls.append(cname))
-        else:
-            monkeypatch.setattr(controller, method, lambda *a: calls.append((cname, a)))
+        monkeypatch.setattr(controller, method, lambda *a: calls.append((cname, a)))
 
         controller.authenticate_connector(cname)
 
         assert len(calls) == 1
+
+    def test_telegram_is_not_routed_through_the_generic_dispatch(self, controller, monkeypatch):
+        # Telegram's phone/code/2FA flow is routed client-side into its own
+        # modal instead (see settings_window_html.py) -- production JS never
+        # posts authenticate_connector for it, but a stray call must still be
+        # a harmless no-op rather than an error.
+        run_async_calls = []
+        monkeypatch.setattr(sc, "_run_async", lambda *a: run_async_calls.append(a))
+
+        controller.authenticate_connector("telegram")  # must not raise
+
+        assert run_async_calls == []
 
 
 class TestAuthenticateGoogle:
@@ -704,155 +725,260 @@ class TestAuthenticateAtlassian:
         assert captured["site_url"] == "https://b.atlassian.net"
 
 
-class TestPrompt:
-    def test_shows_window_on_main_thread_and_returns_response(self, monkeypatch):
-        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: f(*a, **k)))
+class TestTelegramStartAuth:
+    """telethon is mocked the same way test_telegram_client.py's own tests
+    do -- MagicMock() with AsyncMock() for the awaited methods, rather than
+    a hand-rolled fake class (the pattern the pre-#120 native-prompt flow's
+    tests used) -- see that file's TestCheckConnection etc. for the house
+    style this follows."""
 
-        class _FakeWindow:
-            def __init__(self, **kwargs):
-                pass
-
-            def run(self):
-                return SimpleNamespace(clicked=True, text="hello")
-
-        monkeypatch.setattr(sc, "rumps", SimpleNamespace(Window=_FakeWindow))
-
-        clicked, text = sc._prompt(title="T", message="M")
-
-        assert clicked is True
-        assert text == "hello"
-
-    def test_cancelled_window_returns_false_and_empty_text(self, monkeypatch):
-        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: f(*a, **k)))
-
-        class _FakeWindow:
-            def __init__(self, **kwargs):
-                pass
-
-            def run(self):
-                return SimpleNamespace(clicked=False, text="")
-
-        monkeypatch.setattr(sc, "rumps", SimpleNamespace(Window=_FakeWindow))
-
-        clicked, text = sc._prompt(title="T", message="M")
-
-        assert clicked is False
-        assert text == ""
-
-
-class _FakeTelegramClient:
-    needs_2fa = False
-    sign_in_error: Exception | None = None
-    me_first_name = "Jane"
-    me_last_name = "Doe"
-
-    def __init__(self, session_file, api_id, api_hash):
-        pass
-
-    async def connect(self):
-        pass
-
-    async def disconnect(self):
-        pass
-
-    async def send_code_request(self, phone):
-        return SimpleNamespace(phone_code_hash="hash-123")
-
-    async def sign_in(self, phone=None, code=None, phone_code_hash=None, password=None):
-        if password is None and type(self).needs_2fa:
-            from telethon.errors import SessionPasswordNeededError
-            raise SessionPasswordNeededError(request=None)
-        if type(self).sign_in_error is not None:
-            raise type(self).sign_in_error
-
-    async def get_me(self):
-        return SimpleNamespace(first_name=type(self).me_first_name, last_name=type(self).me_last_name)
-
-
-@pytest.fixture
-def telegram_ready(monkeypatch):
-    monkeypatch.setattr(sc, "telegram_app_credentials", lambda: (123, "hash"))
-    monkeypatch.setattr("telethon.TelegramClient", _FakeTelegramClient)
-    _FakeTelegramClient.needs_2fa = False
-    _FakeTelegramClient.sign_in_error = None
-    yield
-    _FakeTelegramClient.needs_2fa = False
-    _FakeTelegramClient.sign_in_error = None
-
-
-class TestAuthenticateTelegram:
     def test_missing_credentials_sets_error_without_running_flow(self, controller, monkeypatch):
         monkeypatch.setattr(sc, "telegram_app_credentials", lambda: None)
         run_async_calls = []
         monkeypatch.setattr(sc, "_run_async", lambda *a: run_async_calls.append(a))
 
-        controller._authenticate_telegram()
+        controller.telegram_start_auth("+123456789")
 
         assert controller.error
         assert run_async_calls == []
 
-    def test_happy_path_without_2fa_connects_and_refreshes(self, controller, monkeypatch, telegram_ready):
+    def test_empty_phone_sets_a_field_error_without_running_flow(self, controller, monkeypatch):
+        monkeypatch.setattr(sc, "telegram_app_credentials", lambda: (123, "hash"))
+        run_async_calls = []
+        monkeypatch.setattr(sc, "_run_async", lambda *a: run_async_calls.append(a))
+
+        controller.telegram_start_auth("   ")
+
+        assert controller._telegram_auth == {"step": "phone", "error": "Enter a phone number."}
+        assert run_async_calls == []
+
+    def test_happy_path_stores_phone_code_hash_and_advances_to_code_step(self, controller, monkeypatch):
+        monkeypatch.setattr(sc, "telegram_app_credentials", lambda: (123, "hash"))
+        recorded = []
+        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
+
+        fake_client = MagicMock()
+        fake_client.connect = AsyncMock()
+        fake_client.disconnect = AsyncMock()
+        fake_client.send_code_request = AsyncMock(return_value=SimpleNamespace(phone_code_hash="hash-123"))
+        monkeypatch.setattr("telethon.TelegramClient", lambda *a, **kw: fake_client)
+
+        state = controller.telegram_start_auth("+123456789")
+
+        assert "telegram" in controller._busy_connectors
+        assert state["telegram_auth"] == {"step": "phone", "error": ""}
+
+        assert wait_until(lambda: recorded)
+        _drain_run_async(recorded)
+
+        assert controller._telegram_auth == {
+            "step": "code", "phone": "+123456789", "phone_code_hash": "hash-123", "error": "",
+        }
+        assert "telegram" not in controller._busy_connectors
+        fake_client.send_code_request.assert_awaited_once_with("+123456789")
+        fake_client.disconnect.assert_awaited_once()
+
+    def test_connect_failure_keeps_phone_step_with_error(self, controller, monkeypatch):
+        monkeypatch.setattr(sc, "telegram_app_credentials", lambda: (123, "hash"))
+        recorded = []
+        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
+
+        fake_client = MagicMock()
+        fake_client.connect = AsyncMock(side_effect=RuntimeError("network down"))
+        fake_client.disconnect = AsyncMock()
+        monkeypatch.setattr("telethon.TelegramClient", lambda *a, **kw: fake_client)
+
+        controller.telegram_start_auth("+123456789")
+
+        assert wait_until(lambda: recorded)
+        _drain_run_async(recorded)
+
+        assert controller._telegram_auth["step"] == "phone"
+        assert "network down" in controller._telegram_auth["error"]
+
+
+class TestTelegramSubmitCode:
+    def test_no_flow_in_progress_is_a_no_op(self, controller, monkeypatch):
+        run_async_calls = []
+        monkeypatch.setattr(sc, "_run_async", lambda *a: run_async_calls.append(a))
+
+        controller.telegram_submit_code("12345")
+
+        assert run_async_calls == []
+
+    def test_wrong_step_is_a_no_op(self, controller, monkeypatch):
+        controller._telegram_auth = {"step": "password", "error": ""}
+        run_async_calls = []
+        monkeypatch.setattr(sc, "_run_async", lambda *a: run_async_calls.append(a))
+
+        controller.telegram_submit_code("12345")
+
+        assert run_async_calls == []
+
+    def test_empty_code_sets_a_field_error(self, controller):
+        controller._telegram_auth = {"step": "code", "phone": "+1", "phone_code_hash": "h", "error": ""}
+
+        controller.telegram_submit_code("   ")
+
+        assert controller._telegram_auth["error"] == "Enter the verification code."
+
+    def test_happy_path_signs_in_and_refreshes(self, controller, monkeypatch):
+        monkeypatch.setattr(sc, "telegram_app_credentials", lambda: (123, "hash"))
+        controller._telegram_auth = {
+            "step": "code", "phone": "+123456789", "phone_code_hash": "hash-123", "error": "",
+        }
         recorded = []
         monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
         refresh_calls = []
         monkeypatch.setattr(controller, "refresh_connectors", lambda: refresh_calls.append(1))
-        prompts = iter([(True, "+123456789"), (True, "12345")])
-        monkeypatch.setattr(sc, "_prompt", lambda **kw: next(prompts))
 
-        controller._authenticate_telegram()
+        fake_client = MagicMock()
+        fake_client.connect = AsyncMock()
+        fake_client.disconnect = AsyncMock()
+        fake_client.sign_in = AsyncMock()
+        fake_client.get_me = AsyncMock(return_value=SimpleNamespace(first_name="Jane", last_name="Doe"))
+        monkeypatch.setattr("telethon.TelegramClient", lambda *a, **kw: fake_client)
 
-        assert wait_until(lambda: recorded, timeout=5)
+        controller.telegram_submit_code("12345")
+
+        assert wait_until(lambda: recorded)
         _drain_run_async(recorded)
 
-        assert refresh_calls == [1]
+        fake_client.sign_in.assert_awaited_once_with("+123456789", "12345", phone_code_hash="hash-123")
+        assert controller._telegram_auth is None
         assert controller.error == ""
-
-    def test_cancelling_at_phone_prompt_is_silently_ignored(self, controller, monkeypatch, telegram_ready):
-        recorded = []
-        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
-        monkeypatch.setattr(sc, "_prompt", lambda **kw: (False, ""))
-        pushed = []
-        controller.on_change = lambda state: pushed.append(state)
-
-        controller._authenticate_telegram()
-
-        assert wait_until(lambda: recorded, timeout=5)
-        _drain_run_async(recorded)
-
-        assert controller.error == ""
-
-    def test_2fa_required_prompts_for_password_and_succeeds(self, controller, monkeypatch, telegram_ready):
-        _FakeTelegramClient.needs_2fa = True
-        recorded = []
-        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
-        refresh_calls = []
-        monkeypatch.setattr(controller, "refresh_connectors", lambda: refresh_calls.append(1))
-        prompts = iter([(True, "+123456789"), (True, "12345"), (True, "my-2fa-password")])
-        monkeypatch.setattr(sc, "_prompt", lambda **kw: next(prompts))
-
-        controller._authenticate_telegram()
-
-        assert wait_until(lambda: recorded, timeout=5)
-        _drain_run_async(recorded)
-
         assert refresh_calls == [1]
 
-    def test_sign_in_failure_sets_error(self, controller, monkeypatch, telegram_ready):
-        _FakeTelegramClient.sign_in_error = RuntimeError("invalid code")
+    def test_2fa_required_advances_to_password_step_without_error(self, controller, monkeypatch):
+        monkeypatch.setattr(sc, "telegram_app_credentials", lambda: (123, "hash"))
+        controller._telegram_auth = {"step": "code", "phone": "+1", "phone_code_hash": "h", "error": ""}
+        recorded = []
+        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
+
+        from telethon.errors import SessionPasswordNeededError
+
+        fake_client = MagicMock()
+        fake_client.connect = AsyncMock()
+        fake_client.disconnect = AsyncMock()
+        fake_client.sign_in = AsyncMock(side_effect=SessionPasswordNeededError(request=None))
+        monkeypatch.setattr("telethon.TelegramClient", lambda *a, **kw: fake_client)
+
+        controller.telegram_submit_code("12345")
+
+        assert wait_until(lambda: recorded)
+        _drain_run_async(recorded)
+
+        assert controller._telegram_auth["step"] == "password"
+        assert controller._telegram_auth["error"] == ""
+
+    def test_wrong_code_sets_error_and_stays_on_code_step(self, controller, monkeypatch):
+        monkeypatch.setattr(sc, "telegram_app_credentials", lambda: (123, "hash"))
+        controller._telegram_auth = {"step": "code", "phone": "+1", "phone_code_hash": "h", "error": ""}
+        recorded = []
+        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
+
+        fake_client = MagicMock()
+        fake_client.connect = AsyncMock()
+        fake_client.disconnect = AsyncMock()
+        fake_client.sign_in = AsyncMock(side_effect=RuntimeError("invalid code"))
+        monkeypatch.setattr("telethon.TelegramClient", lambda *a, **kw: fake_client)
+
+        controller.telegram_submit_code("00000")
+
+        assert wait_until(lambda: recorded)
+        _drain_run_async(recorded)
+
+        assert controller._telegram_auth["step"] == "code"
+        assert "invalid code" in controller._telegram_auth["error"]
+
+
+class TestTelegramSubmit2FA:
+    def test_wrong_step_is_a_no_op(self, controller, monkeypatch):
+        controller._telegram_auth = {"step": "code", "error": ""}
+        run_async_calls = []
+        monkeypatch.setattr(sc, "_run_async", lambda *a: run_async_calls.append(a))
+
+        controller.telegram_submit_2fa("pw")
+
+        assert run_async_calls == []
+
+    def test_empty_password_sets_a_field_error(self, controller):
+        controller._telegram_auth = {"step": "password", "error": ""}
+
+        controller.telegram_submit_2fa("   ")
+
+        assert controller._telegram_auth["error"]
+
+    def test_happy_path_signs_in_and_refreshes(self, controller, monkeypatch):
+        monkeypatch.setattr(sc, "telegram_app_credentials", lambda: (123, "hash"))
+        controller._telegram_auth = {"step": "password", "error": ""}
         recorded = []
         monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
         refresh_calls = []
         monkeypatch.setattr(controller, "refresh_connectors", lambda: refresh_calls.append(1))
-        prompts = iter([(True, "+123456789"), (True, "12345")])
-        monkeypatch.setattr(sc, "_prompt", lambda **kw: next(prompts))
 
-        controller._authenticate_telegram()
+        fake_client = MagicMock()
+        fake_client.connect = AsyncMock()
+        fake_client.disconnect = AsyncMock()
+        fake_client.sign_in = AsyncMock()
+        fake_client.get_me = AsyncMock(return_value=SimpleNamespace(first_name="Jane", last_name="Doe"))
+        monkeypatch.setattr("telethon.TelegramClient", lambda *a, **kw: fake_client)
 
-        assert wait_until(lambda: recorded, timeout=5)
+        controller.telegram_submit_2fa("my-2fa-password")
+
+        assert wait_until(lambda: recorded)
         _drain_run_async(recorded)
 
-        assert "invalid code" in controller.error
-        assert refresh_calls == []
+        fake_client.sign_in.assert_awaited_once_with(password="my-2fa-password")
+        assert controller._telegram_auth is None
+        assert refresh_calls == [1]
+
+    def test_wrong_password_sets_error_and_stays_on_password_step(self, controller, monkeypatch):
+        monkeypatch.setattr(sc, "telegram_app_credentials", lambda: (123, "hash"))
+        controller._telegram_auth = {"step": "password", "error": ""}
+        recorded = []
+        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
+
+        fake_client = MagicMock()
+        fake_client.connect = AsyncMock()
+        fake_client.disconnect = AsyncMock()
+        fake_client.sign_in = AsyncMock(side_effect=RuntimeError("wrong password"))
+        monkeypatch.setattr("telethon.TelegramClient", lambda *a, **kw: fake_client)
+
+        controller.telegram_submit_2fa("nope")
+
+        assert wait_until(lambda: recorded)
+        _drain_run_async(recorded)
+
+        assert controller._telegram_auth["step"] == "password"
+        assert "wrong password" in controller._telegram_auth["error"]
+
+
+class TestTelegramCancelAuth:
+    def test_resets_to_no_active_flow(self, controller):
+        controller._telegram_auth = {"step": "code", "error": ""}
+
+        controller.telegram_cancel_auth()
+
+        assert controller._telegram_auth is None
+
+    def test_no_op_when_nothing_in_progress(self, controller):
+        controller.telegram_cancel_auth()  # must not raise
+        assert controller._telegram_auth is None
+
+
+class TestTelegramAuthSnapshotState:
+    def test_default_state_is_no_step_no_error(self, controller):
+        state = controller.snapshot()
+        assert state["telegram_auth"] == {"step": None, "error": ""}
+
+    def test_reflects_in_progress_flow(self, controller):
+        controller._telegram_auth = {"step": "code", "phone": "+1", "phone_code_hash": "h", "error": "oops"}
+
+        state = controller.snapshot()
+
+        assert state["telegram_auth"] == {"step": "code", "error": "oops"}
+
 
 
 class TestRuleRows:
@@ -1018,6 +1144,84 @@ class TestGrantRows:
         _drain_run_async(recorded)
 
         assert controller._resolver.cached_name(sc.grant_resource_type("drive", "sandbox_folders"), "F1") == "Scratch"
+
+
+class TestSuggestionPriorityState:
+    """Restored per user direction after being dropped in the first pass of
+    issue #120 -- the design mockup's Rules page has no UI for this, so this
+    is a deliberate addition on top of the mockup, not something the design
+    itself calls for. See auto_accept.SUGGESTION_FAMILIES/suggestion_order
+    for the engine this wraps."""
+
+    def test_applicable_connectors_get_included_and_excluded_lists(self, controller):
+        state = controller._rules_state(controller._load_config())
+        drive = state["suggestion_priority_by_connector"]["drive"]
+        assert drive == {"family": "drive_read", "included": ["i_am_owner", "approved_folder"], "excluded": []}
+
+    def test_connector_without_a_family_gets_none(self, controller):
+        state = controller._rules_state(controller._load_config())
+        assert state["suggestion_priority_by_connector"]["gmail"] is None
+
+    def test_every_family_connector_is_covered(self, controller):
+        state = controller._rules_state(controller._load_config())
+        covered = {k for k, v in state["suggestion_priority_by_connector"].items() if v is not None}
+        assert covered == set(sc.SUGGESTION_FAMILY_BY_CONNECTOR)
+
+    def test_excluded_rule_appears_in_the_excluded_list(self, controller):
+        controller.exclude_suggestion_rule("drive", "i_am_owner")
+
+        state = controller._rules_state(controller._load_config())
+        drive = state["suggestion_priority_by_connector"]["drive"]
+        assert drive["included"] == ["approved_folder"]
+        assert drive["excluded"] == ["i_am_owner"]
+
+
+class TestSuggestionPriorityMutators:
+    def test_move_up_swaps_with_the_previous_entry(self, controller):
+        controller.move_suggestion_priority("drive", -1, "approved_folder")
+
+        assert sc.suggestion_order("drive_read") == ["approved_folder", "i_am_owner"]
+        assert controller._load_config()["rule_suggestion_priority"]["drive_read"] == ["approved_folder", "i_am_owner"]
+
+    def test_move_down_swaps_with_the_next_entry(self, controller):
+        controller.move_suggestion_priority("drive", 1, "i_am_owner")
+
+        assert sc.suggestion_order("drive_read") == ["approved_folder", "i_am_owner"]
+
+    def test_move_past_either_end_is_a_no_op(self, controller):
+        controller.move_suggestion_priority("drive", -1, "i_am_owner")  # already first
+        assert sc.suggestion_order("drive_read") == ["i_am_owner", "approved_folder"]
+        controller.move_suggestion_priority("drive", 1, "approved_folder")  # already last
+        assert sc.suggestion_order("drive_read") == ["i_am_owner", "approved_folder"]
+
+    def test_move_unknown_rule_name_is_a_no_op(self, controller):
+        controller.move_suggestion_priority("drive", -1, "not_a_real_rule")
+        assert sc.suggestion_order("drive_read") == ["i_am_owner", "approved_folder"]
+
+    def test_move_on_a_connector_with_no_family_is_a_no_op(self, controller):
+        before = controller._load_config()
+        controller.move_suggestion_priority("gmail", -1, "i_am_sender")
+        assert controller._load_config() == before
+
+    def test_exclude_removes_the_rule_from_the_order(self, controller):
+        controller.exclude_suggestion_rule("drive", "i_am_owner")
+        assert sc.suggestion_order("drive_read") == ["approved_folder"]
+
+    def test_include_appends_a_previously_excluded_rule(self, controller):
+        controller.exclude_suggestion_rule("drive", "i_am_owner")
+        controller.include_suggestion_rule("drive", "i_am_owner")
+        assert sc.suggestion_order("drive_read") == ["approved_folder", "i_am_owner"]
+
+    def test_include_an_already_included_rule_is_a_no_op(self, controller):
+        controller.include_suggestion_rule("drive", "i_am_owner")
+        assert sc.suggestion_order("drive_read") == ["i_am_owner", "approved_folder"]
+
+    def test_mutator_persists_to_disk_and_hot_applies(self, controller):
+        controller.exclude_suggestion_rule("drive", "i_am_owner")
+
+        on_disk = controller._load_config()
+        assert on_disk["rule_suggestion_priority"]["drive_read"] == ["approved_folder"]
+        assert sc.suggestion_order("drive_read") == ["approved_folder"]
 
 
 class TestPrivacyFilter:

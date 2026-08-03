@@ -43,8 +43,11 @@ from . import __version__
 from .app_credentials import telegram_app_credentials
 from .audit_log import AuditLogger, current_week
 from .auto_accept import (
+    SUGGESTION_FAMILIES,
     reload_rules,
     set_rules_changed_listener,
+    set_suggestion_priority,
+    suggestion_order,
 )
 from .calendar_client import CalendarClient
 from .contacts_client import ContactsClient
@@ -254,6 +257,21 @@ RULES_MENU_GROUPS: list[str] = [
     "slack", "jira", "confluence", "salesforce", "telegram",
 ]
 
+# Which connector's Auto-accept Rules page gets an "Always-allow Suggestion
+# Order" block -- one per auto_accept.SUGGESTION_FAMILIES entry. Drive's
+# family covers drive.read_file_contents/drive.download_file, both under
+# the "drive" connector, so this is a 1:1 connector->family map even though
+# a family could in principle span connectors. Restored per user direction
+# after being dropped in the first pass of issue #120 (the design mockup's
+# Rules page has no UI for this) -- see _rules_state's suggestion_priority_
+# by_connector and settings_window_html.py's rendering of it.
+SUGGESTION_FAMILY_BY_CONNECTOR: dict[str, str] = {
+    "drive": "drive_read",
+    "calendar": "calendar_read_event",
+    "jira": "jira_read_issue",
+    "confluence": "confluence_read_page",
+}
+
 # Connectors authenticated via a shared Google OAuth client (org bundle's
 # "google" section).
 GOOGLE_CONNECTORS: set[str] = {"gmail", "drive", "contacts", "calendar", "tasks"}
@@ -415,10 +433,6 @@ def _short_id(resource_id: str, head: int = 8, tail: int = 6) -> str:
     return f"{resource_id[:head]}…{resource_id[-tail:]}"
 
 
-class _AuthFlowCancelled(Exception):
-    """Raised internally when the user cancels a native prompt mid-flow."""
-
-
 def _google_client_config(org_config: dict[str, Any]) -> dict[str, Any]:
     google = org_config.get("google") or {}
     if not google.get("client_id") or not google.get("client_secret"):
@@ -443,30 +457,6 @@ def _run_async(work: Callable[[], Any], on_done: Callable[[bool, Any], None]) ->
             AppHelper.callAfter(on_done, False, exc)
 
     threading.Thread(target=_runner, daemon=True).start()
-
-
-def _prompt(**window_kwargs: Any) -> tuple[bool, str]:
-    """Show a rumps.Window from any thread; blocks the caller until answered.
-
-    Kept as the one surviving native dialog in this module -- issue #120
-    replaces the NSMenu tree and rules_manager_window.py's native window
-    with the webview settings window, but building an in-webview multi-step
-    Telegram sign-in form (phone -> code -> optional 2FA password) is out of
-    scope for this pass; _authenticate_telegram below still drives the user
-    through it via this same blocking native prompt the old menu bar used.
-    """
-    result: dict[str, Any] = {}
-    done = threading.Event()
-
-    def _show() -> None:
-        resp = rumps.Window(**window_kwargs).run()
-        result["clicked"] = resp.clicked
-        result["text"] = resp.text
-        done.set()
-
-    AppHelper.callAfter(_show)
-    done.wait()
-    return bool(result.get("clicked")), (result.get("text") or "")
 
 
 def _parse_rule_value(rule_name: str, raw_text: str) -> Any:
@@ -573,6 +563,11 @@ class SettingsController:
         # this module's methods used to show would silently regress error
         # visibility (see the PR report's "error surfacing" scope note).
         self.error: str = ""
+        # Telegram's in-progress phone/code/2FA sign-in, or None when no
+        # sign-in is running -- see telegram_start_auth/telegram_submit_code/
+        # telegram_submit_2fa/telegram_cancel_auth below and _telegram_auth_
+        # state's own docstring for the shape.
+        self._telegram_auth: dict[str, Any] | None = None
         self.on_change: Callable[[dict[str, Any]], None] | None = None
 
         set_rules_changed_listener(self._on_rules_changed)
@@ -840,6 +835,13 @@ class SettingsController:
         return self.snapshot()
 
     def authenticate_connector(self, connector: str) -> dict[str, Any]:
+        """OAuth-style single-click connectors only -- Telegram's
+        multi-step phone/code/2FA flow is routed client-side into its own
+        modal instead (see settings_window_html.py's connector row
+        handling and telegram_start_auth/telegram_submit_code/
+        telegram_submit_2fa/telegram_cancel_auth below), so this is never
+        called with connector == "telegram" from production JS. A stray
+        call is a harmless no-op rather than an error."""
         from .daemon_main import load_org_config
         org_config = load_org_config()
         if connector in GOOGLE_CONNECTORS:
@@ -850,8 +852,6 @@ class SettingsController:
             self._authenticate_salesforce(org_config)
         elif connector in ("jira", "confluence"):
             self._authenticate_atlassian(org_config)
-        elif connector == "telegram":
-            self._authenticate_telegram()
         return self.snapshot()
 
     def _authenticate_google(self, cname: str, org_config: dict[str, Any]) -> None:
@@ -975,30 +975,45 @@ class SettingsController:
 
         _run_async(work, done)
 
-    def _authenticate_telegram(self) -> None:
+    # -- Telegram: bridge-driven multi-step sign-in (phone -> code -> optional
+    # 2FA password), replacing the native rumps.Window-based flow the first
+    # pass of issue #120 kept as a deliberate scope boundary. Each step opens
+    # its own short-lived TelegramClient/connect/disconnect, exactly like the
+    # pre-#120 flow did (see git history at 1f367ca, menu_bar.py's
+    # _authenticate_telegram) -- no long-lived connection is held across
+    # bridge calls, since a webview round trip can be arbitrarily far apart
+    # from the next one. self._telegram_auth carries the phone number and
+    # phone_code_hash send_code_request returned, needed by the code step;
+    # it's None whenever no Telegram sign-in is in progress. The JS side
+    # opens its modal locally (see settings_window_html.py) the moment the
+    # Telegram connector row's "Authenticate…" is clicked, before any bridge
+    # call -- telegram_start_auth() below is only reached once the user
+    # actually submits a phone number.
+
+    def _telegram_auth_state(self) -> dict[str, Any]:
+        if self._telegram_auth is None:
+            return {"step": None, "error": ""}
+        return {"step": self._telegram_auth.get("step"), "error": self._telegram_auth.get("error", "")}
+
+    def telegram_start_auth(self, phone: str) -> dict[str, Any]:
         creds = telegram_app_credentials()
         if not creds:
             self.error = "Telegram app credentials are missing from this build."
-            return
+            return self.snapshot()
         api_id, api_hash = creds
+        phone = (phone or "").strip()
+        if not phone:
+            self._telegram_auth = {"step": "phone", "error": "Enter a phone number."}
+            return self.snapshot()
         from .daemon_main import TOKEN_FILES
         session_file = str(data_dir() / TOKEN_FILES["telegram"])
         self._busy_connectors.add("telegram")
+        self._telegram_auth = {"step": "phone", "error": ""}
 
-        def flow() -> str:
+        def work() -> str:
             import asyncio
 
             from telethon import TelegramClient
-            from telethon.errors import SessionPasswordNeededError
-
-            clicked, phone = _prompt(
-                title="Telegram Sign-in",
-                message="Phone number (with country code, e.g. +1234567890):",
-                ok="Send Code", cancel="Cancel",
-            )
-            if not clicked or not phone.strip():
-                raise _AuthFlowCancelled()
-            phone = phone.strip()
 
             async def _send_code() -> str:
                 client = TelegramClient(session_file, api_id, api_hash)
@@ -1009,16 +1024,42 @@ class SettingsController:
                 finally:
                     await client.disconnect()
 
-            phone_code_hash = asyncio.run(_send_code())
+            return asyncio.run(_send_code())
 
-            clicked, code = _prompt(
-                title="Telegram Sign-in",
-                message="Enter the verification code Telegram sent you:",
-                ok="Authorize", cancel="Cancel",
-            )
-            if not clicked or not code.strip():
-                raise _AuthFlowCancelled()
-            code = code.strip()
+        def done(ok: bool, result: Any) -> None:
+            self._busy_connectors.discard("telegram")
+            if ok:
+                self._telegram_auth = {"step": "code", "phone": phone, "phone_code_hash": result, "error": ""}
+            else:
+                self._telegram_auth = {"step": "phone", "error": str(result)}
+            self._push_snapshot()
+
+        _run_async(work, done)
+        return self.snapshot()
+
+    def telegram_submit_code(self, code: str) -> dict[str, Any]:
+        if self._telegram_auth is None or self._telegram_auth.get("step") != "code":
+            return self.snapshot()
+        creds = telegram_app_credentials()
+        if not creds:
+            self.error = "Telegram app credentials are missing from this build."
+            return self.snapshot()
+        api_id, api_hash = creds
+        code = (code or "").strip()
+        if not code:
+            self._telegram_auth["error"] = "Enter the verification code."
+            return self.snapshot()
+        from .daemon_main import TOKEN_FILES
+        session_file = str(data_dir() / TOKEN_FILES["telegram"])
+        phone = self._telegram_auth["phone"]
+        phone_code_hash = self._telegram_auth["phone_code_hash"]
+        self._busy_connectors.add("telegram")
+
+        def work() -> str:
+            import asyncio
+
+            from telethon import TelegramClient
+            from telethon.errors import SessionPasswordNeededError
 
             async def _sign_in() -> str:
                 client = TelegramClient(session_file, api_id, api_hash)
@@ -1033,18 +1074,48 @@ class SettingsController:
                 finally:
                     await client.disconnect()
 
-            name = asyncio.run(_sign_in())
-            if name != "__needs_2fa__":
-                return name
+            return asyncio.run(_sign_in())
 
-            clicked, password = _prompt(
-                title="Telegram Sign-in",
-                message="Two-step verification password:",
-                ok="Submit", cancel="Cancel", secure=True,
-            )
-            if not clicked or not password.strip():
-                raise _AuthFlowCancelled()
-            password = password.strip()
+        def done(ok: bool, result: Any) -> None:
+            self._busy_connectors.discard("telegram")
+            if not ok:
+                if self._telegram_auth is not None:
+                    self._telegram_auth["error"] = str(result)
+                self._push_snapshot()
+                return
+            if result == "__needs_2fa__":
+                if self._telegram_auth is not None:
+                    self._telegram_auth["step"] = "password"
+                    self._telegram_auth["error"] = ""
+                self._push_snapshot()
+                return
+            self._telegram_auth = None
+            self.error = ""
+            self.refresh_connectors()
+
+        _run_async(work, done)
+        return self.snapshot()
+
+    def telegram_submit_2fa(self, password: str) -> dict[str, Any]:
+        if self._telegram_auth is None or self._telegram_auth.get("step") != "password":
+            return self.snapshot()
+        creds = telegram_app_credentials()
+        if not creds:
+            self.error = "Telegram app credentials are missing from this build."
+            return self.snapshot()
+        api_id, api_hash = creds
+        password = (password or "").strip()
+        if not password:
+            self._telegram_auth["error"] = "Enter your two-step verification password."
+            return self.snapshot()
+        from .daemon_main import TOKEN_FILES
+        session_file = str(data_dir() / TOKEN_FILES["telegram"])
+        self._busy_connectors.add("telegram")
+
+        def work() -> str:
+            import asyncio
+
+            from telethon import TelegramClient
 
             async def _sign_in_2fa() -> str:
                 client = TelegramClient(session_file, api_id, api_hash)
@@ -1060,17 +1131,21 @@ class SettingsController:
 
         def done(ok: bool, result: Any) -> None:
             self._busy_connectors.discard("telegram")
-            if not ok and isinstance(result, _AuthFlowCancelled):
+            if not ok:
+                if self._telegram_auth is not None:
+                    self._telegram_auth["error"] = str(result)
                 self._push_snapshot()
                 return
-            if ok:
-                self.error = ""
-                self.refresh_connectors()
-            else:
-                self.error = f"Telegram sign-in failed: {result}"
-                self._push_snapshot()
+            self._telegram_auth = None
+            self.error = ""
+            self.refresh_connectors()
 
-        _run_async(flow, done)
+        _run_async(work, done)
+        return self.snapshot()
+
+    def telegram_cancel_auth(self) -> dict[str, Any]:
+        self._telegram_auth = None
+        return self.snapshot()
 
     # ------------------------------------------------------------------ #
     # Rule actions (Auto-accept Rules page -- plain rule_type/value text
@@ -1221,6 +1296,56 @@ class SettingsController:
         _run_async(work, done)
 
     # ------------------------------------------------------------------ #
+    # Suggestion-priority actions (Always-allow Suggestion Order -- see
+    # auto_accept.SUGGESTION_FAMILIES). Restored per user direction; ported
+    # from menu_bar.py's pre-#120 _move_suggestion_priority/
+    # _exclude_suggestion_rule/_include_suggestion_rule (see git history at
+    # 1f367ca) with no behavior change, just addressed by connector name
+    # instead of by family directly (SUGGESTION_FAMILY_BY_CONNECTOR maps
+    # one to the other) since that's what the Rules page's UI is keyed on.
+    # ------------------------------------------------------------------ #
+
+    def _set_suggestion_priority_and_refresh(self, family: str, order: list[str]) -> None:
+        cfg = self._load_config()
+        cfg.setdefault("rule_suggestion_priority", {})[family] = order
+        self._save_config(cfg)
+        set_suggestion_priority(family, order)
+
+    def move_suggestion_priority(self, connector: str, direction: int, rule_name: str) -> dict[str, Any]:
+        family = SUGGESTION_FAMILY_BY_CONNECTOR.get(connector)
+        if family is None:
+            return self.snapshot()
+        order = list(suggestion_order(family))
+        if rule_name not in order:
+            return self.snapshot()
+        idx = order.index(rule_name)
+        new_idx = idx + direction
+        if not (0 <= new_idx < len(order)):
+            return self.snapshot()
+        order[idx], order[new_idx] = order[new_idx], order[idx]
+        self._set_suggestion_priority_and_refresh(family, order)
+        return self.snapshot()
+
+    def exclude_suggestion_rule(self, connector: str, rule_name: str) -> dict[str, Any]:
+        family = SUGGESTION_FAMILY_BY_CONNECTOR.get(connector)
+        if family is None:
+            return self.snapshot()
+        order = [r for r in suggestion_order(family) if r != rule_name]
+        self._set_suggestion_priority_and_refresh(family, order)
+        return self.snapshot()
+
+    def include_suggestion_rule(self, connector: str, rule_name: str) -> dict[str, Any]:
+        family = SUGGESTION_FAMILY_BY_CONNECTOR.get(connector)
+        if family is None:
+            return self.snapshot()
+        order = list(suggestion_order(family))
+        if rule_name in order:
+            return self.snapshot()
+        order.append(rule_name)
+        self._set_suggestion_priority_and_refresh(family, order)
+        return self.snapshot()
+
+    # ------------------------------------------------------------------ #
     # Privacy filter (privacy / drive_privacy / slack_privacy / ... groups,
     # plus Calendar's one standalone toggle)
     # ------------------------------------------------------------------ #
@@ -1301,6 +1426,7 @@ class SettingsController:
             "error": self.error,
             "general": self._general_state(cfg),
             "connectors": self._connectors_state(cfg, org_config),
+            "telegram_auth": self._telegram_auth_state(),
             "rules": self._rules_state(cfg),
             "privacy": self._privacy_state(cfg),
             "audit": self._audit_state(cfg),
@@ -1371,6 +1497,7 @@ class SettingsController:
         connectors = []
         sections_by_connector: dict[str, list[dict[str, Any]]] = {}
         grants_by_connector: dict[str, list[dict[str, Any]]] = {}
+        suggestion_priority_by_connector: dict[str, dict[str, Any] | None] = {}
 
         for cname in RULES_MENU_GROUPS:
             resource_types = resource_types_for_connector(cname)
@@ -1413,6 +1540,16 @@ class SettingsController:
                 rule_sections.append({"op_key": op_key, "title": short_label, "rows": rows})
             sections_by_connector[cname] = rule_sections
 
+            family = SUGGESTION_FAMILY_BY_CONNECTOR.get(cname)
+            if family is None:
+                suggestion_priority_by_connector[cname] = None
+            else:
+                included = list(suggestion_order(family))
+                excluded = [r for r in SUGGESTION_FAMILIES[family] if r not in included]
+                suggestion_priority_by_connector[cname] = {
+                    "family": family, "included": included, "excluded": excluded,
+                }
+
             count = sum(len(get_grant_entries(grants_cfg, rt)) for rt in resource_types)
             count += sum(len(rules_cfg.get(op_key) or []) for op_key in op_keys)
             connectors.append({"key": cname, "label": cname.capitalize(), "count": count})
@@ -1421,6 +1558,7 @@ class SettingsController:
             "connectors": connectors,
             "sections_by_connector": sections_by_connector,
             "grants_by_connector": grants_by_connector,
+            "suggestion_priority_by_connector": suggestion_priority_by_connector,
         }
 
     def _privacy_state(self, cfg: dict[str, Any]) -> dict[str, Any]:
