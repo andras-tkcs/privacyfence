@@ -59,29 +59,23 @@ from AppKit import (
     NSApplicationActivationPolicyProhibited,
     NSBackingStoreBuffered,
     NSBezelStyleRounded,
-    NSBox,
-    NSBoxCustom,
     NSButton,
     NSColor,
     NSFloatingWindowLevel,
     NSFont,
     NSFontAttributeName,
     NSForegroundColorAttributeName,
-    NSLineBreakByWordWrapping,
     NSMakeRect,
     NSModalResponseStop,
-    NSNoTitle,
     NSPanel,
     NSScreen,
-    NSStringDrawingUsesLineFragmentOrigin,
-    NSTextField,
     NSUnderlineStyleAttributeName,
     NSUnderlineStyleSingle,
     NSView,
     NSWindowStyleMaskClosable,
     NSWindowStyleMaskTitled,
 )
-from Foundation import NSAttributedString, NSObject, NSString
+from Foundation import NSAttributedString, NSObject
 from WebKit import WKWebView, WKWebViewConfiguration
 
 from . import approval_window_html
@@ -226,50 +220,6 @@ def _icon_data_uri(path: str | None) -> str:
         data = base64.b64encode(Path(path).read_bytes()).decode("ascii")
         _icon_data_uri_cache[path] = f"data:image/png;base64,{data}"
     return _icon_data_uri_cache[path]
-
-
-def _text_width(text: str, font) -> float:
-    """Single-line width, unbounded. Not used by this module's own
-    rendering (the card-stack webview does its own CSS layout) -- kept here
-    for rules_manager_window.py's own AppKit view construction (the
-    "Manage Auto-accept Rules…" window's sidebar action-button sizing),
-    which imports this and the two helpers below rather than duplicating
-    them."""
-    ns = NSString.stringWithString_(text)
-    rect = ns.boundingRectWithSize_options_attributes_(
-        (1_000_000.0, 1_000_000.0),
-        NSStringDrawingUsesLineFragmentOrigin,
-        {NSFontAttributeName: font},
-    )
-    return float(rect.size.width)
-
-
-def _make_label(text: str, *, size: float, bold: bool = False, color=None) -> NSTextField:
-    """See _text_width's docstring -- shared with rules_manager_window.py."""
-    field = NSTextField.alloc().init()
-    field.setStringValue_(text)
-    field.setBezeled_(False)
-    field.setDrawsBackground_(False)
-    field.setEditable_(False)
-    field.setSelectable_(False)
-    field.setFont_(NSFont.boldSystemFontOfSize_(size) if bold else NSFont.systemFontOfSize_(size))
-    field.setTextColor_(color or NSColor.labelColor())
-    cell = field.cell()
-    cell.setWraps_(True)
-    cell.setLineBreakMode_(NSLineBreakByWordWrapping)
-    return field
-
-
-def _background_box(frame, *, fill=None, corner_radius: float = 8.0) -> NSBox:
-    """Plain decorative NSBox (fill + rounded corners, no children). See
-    _text_width's docstring -- shared with rules_manager_window.py."""
-    box = NSBox.alloc().initWithFrame_(frame)
-    box.setBoxType_(NSBoxCustom)
-    box.setTitlePosition_(NSNoTitle)
-    box.setFillColor_(fill or NSColor.controlBackgroundColor())
-    box.setBorderWidth_(0)
-    box.setCornerRadius_(corner_radius)
-    return box
 
 
 class _FlippedView(NSView):

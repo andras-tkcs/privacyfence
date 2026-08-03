@@ -49,10 +49,11 @@ progressive disclosure, the Gmail-style header, native PDFView) are folded into 
 scenarios rather than kept as separate generic ones -- see the inline comment at each such
 scenario in _scenarios().
 
-One more, non-tool scenario runs last: the actual menu bar status item and, from it, the "Manage
-Auto-accept Rules…" window (see _run_menu_bar_scenario's docstring) -- exercising that real click
-end to end the same way the rest of this script does for approval popups. 94 scenarios total: 93
-tool-approval scenarios plus this one.
+Seven more, non-tool scenarios run last: the actual tray status item and, from it, the settings
+window issue #120 replaced the old NSMenu tree / "Manage Auto-accept Rules…" native window with
+(see the "Settings window" scenarios near the bottom of _scenarios()) -- exercising real clicks
+into that window's own web content the same way the rest of this script does for approval popups'
+native buttons. 100 scenarios total: 93 tool-approval scenarios plus these seven.
 
 Every tool-approval scenario renders through the one real card-stack rendering
 (approval_window_html.py). Each scenario's narrow/wide shape (_TOOL_LAYOUT below) is a fixed,
@@ -67,13 +68,16 @@ has installed):
     .venv/bin/python scripts/qa_popup_smoke.py --pause-seconds 3   # slow down to actually look
     .venv/bin/python scripts/qa_popup_smoke.py --screenshot-dir /tmp/popup_smoke_shots
     # One scenario only, e.g. to refresh a single README.md screenshot -- the three screenshots
-    # README.md actually uses (as of this writing) come from these three scenario names, one
-    # popup-gate, one review-gate, one menu-bar:
+    # README.md actually uses (as of this writing) predate issue #120's settings window and still
+    # show the old menu bar/native "Manage Auto-accept Rules…" window; refreshing those captions/
+    # images is a separate, not-yet-done pass, out of scope for this file. The two tool-approval
+    # examples below are still accurate as-is; a third example, for the new settings window's own
+    # "does the tray open it" screenshot, is the one genuinely new one:
     .venv/bin/python scripts/qa_popup_smoke.py --scenario "gmail_get_thread" \\
         --screenshot-dir docs/images/screenshots --pause-seconds 3
     .venv/bin/python scripts/qa_popup_smoke.py --scenario "drive_sheets_write_range" \\
         --screenshot-dir docs/images/screenshots --pause-seconds 3
-    .venv/bin/python scripts/qa_popup_smoke.py --scenario "Menu bar" \\
+    .venv/bin/python scripts/qa_popup_smoke.py --scenario "status item → window opens" \\
         --screenshot-dir docs/images/screenshots --pause-seconds 3
     # Review-gate (read) dialogs only, or popup-gate (write) dialogs only:
     .venv/bin/python scripts/qa_popup_smoke.py --group rg --screenshot-dir /tmp/rg_shots
@@ -106,6 +110,7 @@ if sys.platform != "darwin":
 
 import Quartz  # noqa: E402
 import rumps  # noqa: E402
+import yaml  # noqa: E402
 from AppKit import (  # noqa: E402
     NSApplication,
     NSApplicationActivationPolicyAccessory,
@@ -117,7 +122,7 @@ from AppKit import (  # noqa: E402
 from PyObjCTools import AppHelper  # noqa: E402
 from rumps import rumps as _rumps_internal  # noqa: E402
 
-from privacyfence import menu_bar  # noqa: E402
+from privacyfence import daemon_main, menu_bar  # noqa: E402
 from privacyfence.approval_window import show_native_approval  # noqa: E402
 from privacyfence.auto_accept import (  # noqa: E402
     TOOL_TO_OPERATION,
@@ -310,6 +315,220 @@ def _click_menu_item(pid: int, title: str) -> str:
     return "clicked"
     '''
     return _run_applescript(script)
+
+
+# ---------------------------------------------------------------------------- #
+# Settings-window (webview) content -- issue #120's settings_window_html.py
+# renders every clickable element as a plain <div> with role="button"/"tab"/
+# "radio"/"switch"/"checkbox" and a stable aria-label (added specifically so
+# this script can address WKWebView content the same way _click_button
+# above addresses a native NSButton -- see that module's own accessibility-
+# pass comments). System Events can, in general, walk into a WKWebView's
+# accessibility tree the same way it walks a window's native subviews, but
+# unlike a native NSButton (a direct child of the window, addressable as
+# `button "title" of window 1`), a web-content element sits several levels
+# deep under an AXWebArea -- `entire contents of window 1` is the standard
+# AppleScript idiom for a recursive search that reaches it regardless of
+# nesting depth.
+#
+# UNVERIFIED ON REAL HARDWARE, same limitation as every other honesty note
+# in this file's module docstring applies here too, doubly so: this is the
+# first WKWebView-content UI-scripting attempt in this repo (approval_
+# window.py's own webview is display-only, JavaScript disabled, and never
+# addressed via System Events at all), so there is no working precedent to
+# copy exactly. The two known open questions this can't resolve without an
+# actual run: (1) whether WebKit populates an ARIA `aria-label` into the AX
+# element's `title` or its `description` for a given role (this repo's own
+# testing suggests it varies by mapped role -- e.g. a button's accessible
+# name is typically exposed as title, a checkbox/radio's more often as
+# description -- hence the two-strategy fallback below, not a single
+# lookup), and (2) whether `entire contents` actually descends into
+# WKWebView's tree at all on the OS/WebKit version this runs against, or
+# whether reaching web content needs an explicit `UI elements of group 1 of
+# window 1`-style path instead. If scenarios below fail with
+# WEB_ELEMENT_NOT_FOUND on a real run, start by using Accessibility
+# Inspector.app (Xcode's) on the settings window to see exactly what AX
+# tree WebKit is actually exposing, then adjust these two helpers -- not
+# the individual scenario functions, which should never need to know this
+# level of detail.
+# ---------------------------------------------------------------------------- #
+
+def _wait_for_web_element(pid: int, aria_label: str) -> str:
+    """Block until a web-content element with this aria-label exists inside
+    our own process's first window -- returns "ready" or
+    "TIMEOUT_NO_WEB_ELEMENT". See this section's own header comment for the
+    title-vs-description fallback and its unverified status."""
+    script = f'''
+    tell application "System Events"
+        set targetProcess to first process whose unix id is {pid}
+        tell targetProcess
+            set deadlineTime to (current date) + {WINDOW_WAIT_TIMEOUT_SECONDS}
+            repeat
+                set matches to (every UI element of (entire contents of window 1) whose title is "{aria_label}")
+                if (count of matches) = 0 then
+                    set matches to (every UI element of (entire contents of window 1) whose description is "{aria_label}")
+                end if
+                if (count of matches) > 0 then return "ready"
+                if (current date) > deadlineTime then return "TIMEOUT_NO_WEB_ELEMENT"
+                delay 0.1
+            end repeat
+        end tell
+    end tell
+    '''
+    return _run_applescript(script)
+
+
+def _click_web_element(pid: int, aria_label: str) -> str:
+    """Click a settings-window web-content element by its aria-label --
+    returns "clicked", "TIMEOUT_NO_WEB_ELEMENT", or an osascript-level
+    error string. See this section's own header comment."""
+    wait_status = _wait_for_web_element(pid, aria_label)
+    if wait_status != "ready":
+        return wait_status
+    script = f'''
+    tell application "System Events"
+        set targetProcess to first process whose unix id is {pid}
+        tell targetProcess
+            set matches to (every UI element of (entire contents of window 1) whose title is "{aria_label}")
+            if (count of matches) = 0 then
+                set matches to (every UI element of (entire contents of window 1) whose description is "{aria_label}")
+            end if
+            if (count of matches) = 0 then return "WEB_ELEMENT_NOT_FOUND"
+            click item 1 of matches
+        end tell
+    end tell
+    return "clicked"
+    '''
+    return _run_applescript(script)
+
+
+def _web_element_value(pid: int, aria_label: str) -> str:
+    """AX `value` of a web-content element by its aria-label -- for a
+    role="switch"/"radio"/"checkbox" element this is WebKit's mapping of
+    its aria-checked state (typically "1"/"0" or "true"/"false" depending
+    on OS version -- UNVERIFIED which, see this section's header comment),
+    used by the PII-sub-toggle scenario below to confirm a visual on/off
+    state, not just that a click landed. Returns the AX value as a string,
+    or "WEB_ELEMENT_NOT_FOUND"/an osascript-level error string."""
+    script = f'''
+    tell application "System Events"
+        set targetProcess to first process whose unix id is {pid}
+        tell targetProcess
+            set matches to (every UI element of (entire contents of window 1) whose title is "{aria_label}")
+            if (count of matches) = 0 then
+                set matches to (every UI element of (entire contents of window 1) whose description is "{aria_label}")
+            end if
+            if (count of matches) = 0 then return "WEB_ELEMENT_NOT_FOUND"
+            return (value of item 1 of matches) as string
+        end tell
+    end tell
+    '''
+    return _run_applescript(script)
+
+
+def _set_web_element_text(pid: int, aria_label: str, text: str) -> str:
+    """Focus a settings-window text input by aria-label, select-all, type
+    replacement text, then Tab away to blur it (settings_window_html.py's
+    inputs commit on blur/Enter, not per keystroke -- see that module's own
+    docstring) -- returns "typed" or a failure status. Uses `keystroke`,
+    not AX's `value of` setter, so this exercises the same real keyboard
+    event path a human typing would, matching every other interaction in
+    this script (System-Events-driven, no mocking)."""
+    wait_status = _wait_for_web_element(pid, aria_label)
+    if wait_status != "ready":
+        return wait_status
+    script = f'''
+    tell application "System Events"
+        set targetProcess to first process whose unix id is {pid}
+        tell targetProcess
+            set matches to (every UI element of (entire contents of window 1) whose title is "{aria_label}")
+            if (count of matches) = 0 then
+                set matches to (every UI element of (entire contents of window 1) whose description is "{aria_label}")
+            end if
+            if (count of matches) = 0 then return "WEB_ELEMENT_NOT_FOUND"
+            set focused of item 1 of matches to true
+            keystroke "a" using command down
+            keystroke "{text}"
+            keystroke tab
+        end tell
+    end tell
+    return "typed"
+    '''
+    return _run_applescript(script)
+
+
+def _web_element_enabled(pid: int, aria_label: str) -> str:
+    """AX `enabled` of a web-content element by its aria-label -- "true"/
+    "false" (AppleScript's boolean-to-string coercion), or
+    "WEB_ELEMENT_NOT_FOUND"/an osascript-level error string. Distinct from
+    _web_element_value() above: that reads aria-checked (on/off), this reads
+    whether the element is interactive at all -- used by the PII sub-toggle
+    scenario below to confirm the *disabled* visual state a dimmed
+    (opacity-only CSS, not a native `disabled` attribute -- there is none
+    for a plain <div>) sub-toggle is supposed to carry. See
+    settings_window_html.py's toggleHtml(): a disabled toggle renders
+    `aria-disabled="true"` and omits `tabindex`/`data-action` entirely,
+    rather than anything a browser's own disabled-input semantics would
+    normally give WebKit's accessibility mapping to key off of for free.
+
+    UNVERIFIED, same as every other AX-mapping claim in this section's own
+    header comment: whether System Events' generic `enabled` property
+    actually reflects WebKit's mapping of `aria-disabled` for a
+    role="switch" element it exposes (as opposed to, say, always reporting
+    true for any element WebKit exposes at all, since `aria-disabled`
+    doesn't remove an element from the accessibility tree the way a truly
+    native disabled control would) is exactly the kind of thing this
+    section's header comment says needs Accessibility Inspector.app to
+    confirm on a real run, not asserted here.
+    """
+    script = f'''
+    tell application "System Events"
+        set targetProcess to first process whose unix id is {pid}
+        tell targetProcess
+            set matches to (every UI element of (entire contents of window 1) whose title is "{aria_label}")
+            if (count of matches) = 0 then
+                set matches to (every UI element of (entire contents of window 1) whose description is "{aria_label}")
+            end if
+            if (count of matches) = 0 then return "WEB_ELEMENT_NOT_FOUND"
+            return (enabled of item 1 of matches) as string
+        end tell
+    end tell
+    '''
+    return _run_applescript(script)
+
+
+def _wait_for_disk_config(
+    config_path: str, predicate: Callable[[dict], bool], timeout: float = WINDOW_WAIT_TIMEOUT_SECONDS,
+) -> dict | None:
+    """Poll `config_path` (a settings.yaml this scenario group owns -- see
+    QA_SETTINGS_WINDOW_SETTINGS_YAML below) until its parsed contents
+    satisfy `predicate`, or `timeout` elapses. Returns the satisfying config
+    dict, or None on timeout.
+
+    A Python-side poll, not an AppleScript one like every _wait_for_* above
+    -- what's being waited on here is this same process writing a file
+    (SettingsController._save_config(), invoked synchronously from
+    userContentController_didReceiveScriptMessage_ on the main thread once
+    WebKit's own JS -> native message delivery reaches it -- see
+    settings_window.py's own module docstring for that bridge), not
+    real user-facing UI state, so there is nothing for System Events to
+    watch here. Still a poll rather than a single read-after-sleep: that
+    JS -> native message delivery has no synchronous completion signal this
+    script can observe from the calling thread, so a fixed sleep would be
+    exactly the kind of race _wait_for_button_enabled's own docstring warns
+    about for approval popups.
+    """
+    deadline = time.time() + timeout
+    while True:
+        try:
+            cfg = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            cfg = {}
+        if predicate(cfg):
+            return cfg
+        if time.time() > deadline:
+            return None
+        time.sleep(0.1)
 
 
 _SLUG_RE = re.compile(r"[^A-Za-z0-9_-]+")
@@ -596,15 +815,18 @@ QA_LONG_CLAUDE_REASON = (
     "agenda items that need to be reviewed before the call starts [QATEST]."
 )
 
-# A synthetic settings.yaml for the menu-bar scenario -- enough auto_accept_grants/auto_accept_
-# rules spread across a few connectors (gmail, drive, sheets, slack) that the Auto-accept Rules
-# window's sidebar and rows have real, multi-section content to screenshot, same PFQA/[QATEST]
-# naming as everything else in this file. QA_DRIVE_SANDBOX_FOLDER_ID/QA_SLACK_CONTROL_CHANNEL_ID
-# are made up, not real resource ids -- see docs/qa-environment-setup.md's Drive/Slack sections for
-# what the real equivalents look like.
-QA_DRIVE_SANDBOX_FOLDER_ID = "1QATestSandboxFolderId00000000001"
-QA_SLACK_CONTROL_CHANNEL_ID = "C0QATESTCONTROL0001"
-QA_MENU_BAR_SETTINGS_YAML = f"""\
+# A synthetic settings.yaml for the Settings-window scenario group below (see
+# _run_settings_window_scenarios) -- distinct from every tool-approval scenario's fixtures above,
+# and deliberately minimal rather than "rich": several of these scenarios need *specific* starting
+# conditions to stay unambiguous, most importantly zero pre-existing Drive folder grants -- the
+# add/remove-grant scenario's own aria-label ("Trusted Folders resource ID") is shared by *every*
+# row of that grant type (settings_window_html.py doesn't index it per row), so it resolves to
+# exactly one element the instant "+ Add folder…" creates it only if none existed beforehand;
+# otherwise _click_web_element/_set_web_element_text's "item 1 of matches" pick would be ambiguous.
+# QA_NEW_DRIVE_FOLDER_ID is a made-up resource id, not a real one -- see
+# docs/qa-environment-setup.md's Drive section for what a real one looks like.
+QA_NEW_DRIVE_FOLDER_ID = "1QASettingsWindowGrantId00000002"
+QA_SETTINGS_WINDOW_SETTINGS_YAML = """\
 pii_detection:
   enabled: true
 connectors:
@@ -612,28 +834,13 @@ connectors:
     enabled: true
   drive:
     enabled: true
-  slack:
-    enabled: true
-auto_accept_grants:
-  drive:
-    folders:
-      - id: "{QA_DRIVE_SANDBOX_FOLDER_ID}"
-        name: "{QA_DRIVE_FOLDER}"
-        read: true
-  slack:
-    channels:
-      - id: "{QA_SLACK_CONTROL_CHANNEL_ID}"
-        name: "{QA_SLACK_CHANNEL}"
-        read: true
 auto_accept_rules:
   gmail.read_message:
     - rule: trusted_sender_domain
       value:
         - example.com
-  sheets.write_range:
-    - rule: approved_sandbox_folder
-      value:
-        - "{QA_DRIVE_SANDBOX_FOLDER_ID}"
+logging:
+  level: INFO
 """
 
 _TINY_PDF_BYTES = (
@@ -813,9 +1020,9 @@ _SCENARIO_TOOL_RE = re.compile(r"^\S+-\d+\s*·\s*([a-z_]+)")
 
 def _tool_name_from_scenario(name: str) -> str | None:
     """Extracts e.g. "gmail_download_attachment" from "RG-1 · gmail_download_attachment (+ Show
-    more → Allow once)". Returns None for the menu-bar scenario (no "RG-N ·"/"WG-N ·" prefix at
-    all) -- _run_scenario only consults this when actually building a tool-approval popup, so a
-    None here is never reached for that scenario in the first place."""
+    more → Allow once)". Returns None for the settings-window scenarios (no "RG-N ·"/"WG-N ·"
+    prefix at all) -- _run_scenario only consults this when actually building a tool-approval
+    popup, so a None here is never reached for those scenarios in the first place."""
     m = _SCENARIO_TOOL_RE.match(name)
     return m.group(1) if m else None
 
@@ -855,74 +1062,378 @@ def _run_on_main_thread_sync(func: Callable[[], Any]) -> Any:
     return result_box[0] if result_box else None
 
 
-def _run_menu_bar_scenario(
-    name: str, *, pause_seconds: float = 0.3, screenshot_dir: Path | None = None
-) -> ScenarioResult:
-    """Not a tool-approval dialog -- exercises the actual menu bar status
-    item and, from it, the "Manage Auto-accept Rules..." window
-    (rules_manager_window.py): a real click on the real on-screen status
-    item, then a real click on a real menu item within the menu that click
-    opens, exactly the "did a real click actually reach it" concern this
-    script's module docstring raises about approval windows -- there's no
-    construction-only test covering that the menu wiring resolves to a
-    click landing on the right window, the same gap this whole script
-    exists to cover for approval popups. Screenshots twice: the open
-    status-item menu (the
-    "menu layout"), then the rules window it opens into -- see main()'s
-    --screenshot-dir.
+# ---------------------------------------------------------------------------- #
+# Settings-window scenarios -- not tool-approval dialogs; exercise the real tray status item and,
+# from it, the webview settings window issue #120 replaced the NSMenu tree / rules_manager_
+# window.py's native "Manage Auto-accept Rules…" window with. Ported from this file's own deleted
+# _run_menu_bar_scenario (see git history at 1f367ca for its exact shape) up through building the
+# app and clicking the tray open -- everything past that point is new, since the old function's
+# own destination (a native rules window addressed by NSButton/NSMenuItem the same way an approval
+# popup is) no longer exists; this instead drives WKWebView content by aria-label via
+# _click_web_element/_wait_for_web_element/_web_element_value/_web_element_enabled/
+# _set_web_element_text (see that section's own header comment above _wait_for_web_element for the
+# open questions those helpers carry into a real run).
+#
+# Seven scenarios, one per _SETTINGS_WINDOW_SCENARIO_NAMES entry, but built on ONE shared
+# app/window -- unlike every tool-approval scenario above (each of which is a fully independent
+# show_native_approval() call), opening a second real settings window per check would mean either
+# six extra tray-icon-click round trips (slow, and each one a chance to leave a stray window behind
+# if a later step fails) or awkwardly tearing down and rebuilding the whole app between checks. A
+# real user also only opens Settings once and clicks around inside it, which this mirrors more
+# directly than seven independent opens would. The trade-off: `--scenario` filtering here selects
+# which of the seven *results* gets reported/screenshotted (see `wanted` below), not whether the
+# shared window gets opened and navigated at all -- if any of the seven names matches, the whole
+# group still runs end to end. Documented here once rather than repeated at every step function's
+# own docstring below.
+# ---------------------------------------------------------------------------- #
 
-    Fits the same ScenarioResult shape as a popup scenario even though
-    there's no approve/deny decision here: click_status carries the real
-    failure mode (no status item found, menu item not found, the window
-    never appeared, ...) and, on full success, is set to "clicked" with
-    actual==expected=="shown" so .passed means exactly what it means for
-    every other scenario in this file -- a real click actually reached the
-    thing it was supposed to reach.
+_SETTINGS_WINDOW_SCENARIO_NAMES: list[str] = [
+    "Settings window · status item → window opens",
+    "Settings window · navigate all 6 nav sections",
+    "Settings window · PII Detection Gate sub-toggle dimming",
+    "Settings window · edit an Auto-accept Rules text field (on-disk round trip)",
+    "Settings window · add/remove a Trusted-resource grant row (on-disk round trip)",
+    "Settings window · Privacy Filter category segmented control (on-disk round trip)",
+    "Settings window · Audit Log level selector (on-disk round trip)",
+]
 
-    Builds its own throwaway PrivacyFenceMenuBar off a temp settings.yaml
-    (see QA_MENU_BAR_SETTINGS_YAML) rather than the user's real config --
-    same reasoning as every other scenario's synthetic preview/details data:
-    this only ever needs to look realistic, never touch what's actually
-    installed. Reaches into rumps' private rumps.rumps.NSApp/initializeStatusBar
-    to attach a real NSStatusItem without also starting a second, nested
-    AppHelper.runEventLoop() -- App.run() normally does both in one call,
-    but this process is already inside its own runEventLoop() (started by
-    main() below), and starting another would never return.
+# (nav label, an aria-label unique to that page's own content -- not the nav item itself, which
+# settings_window_html.py's renderNav() renders unchanged on every page, and not a page's subnav
+# tab labels, which can collide across pages, e.g. both Rules' per-connector tabs and Privacy's
+# per-group tabs have a "Gmail" entry -- since render() replaces #app's entire innerHTML on every
+# call, whichever page is actually up is the only one whose markers exist at any given moment, so
+# this is unambiguous in practice despite the string overlap across pages that are never
+# simultaneously on screen).
+_SETTINGS_NAV_STEPS: list[tuple[str, str]] = [
+    ("General", "PII Detection Gate"),
+    ("Connectors", "Gmail enabled"),
+    ("Auto-accept Rules", "Search rules"),
+    ("Privacy Filter", "Message body policy"),
+    ("Audit Log", "Export Audit Log"),
+    ("About", "Open GitHub repository"),
+]
+
+_RULE_EDIT_NEW_VALUE = "example.com, qa-popup-smoke.example.com"
+_RULE_EDIT_NEW_VALUE_LIST = ["example.com", "qa-popup-smoke.example.com"]
+
+
+def _rule_edit_landed(cfg: dict) -> bool:
+    rows = (cfg.get("auto_accept_rules") or {}).get("gmail.read_message") or []
+    return bool(rows) and rows[0].get("value") == _RULE_EDIT_NEW_VALUE_LIST
+
+
+def _drive_folder_entries(cfg: dict) -> list[dict]:
+    return ((cfg.get("auto_accept_grants") or {}).get("drive") or {}).get("folders") or []
+
+
+def _settings_open_window_step(
+    pid: int, pause_seconds: float, screenshot_dir: Path | None, slug: str
+) -> str:
+    """Real click on the real tray status item, then on "Open PrivacyFence…" -- the same two-click
+    path _run_menu_bar_scenario used (see git history at 1f367ca), just landing on the new settings
+    window instead of the deleted rules_manager_window.py. Returns "clicked" on full success (the
+    window actually appeared), or the first failing helper's own status string otherwise.
+
+    No _wait_for_button_enabled-style "is the content actually ready" wait here, unlike
+    _run_scenario's clicker() for approval popups -- there is no native button to poll enabled/
+    disabled on this window (it's one WKWebView, no native controls at all), and every web-content
+    interaction below already waits for its own target element to exist via
+    _wait_for_web_element/_click_web_element/_set_web_element_text, which is this window's actual
+    equivalent "is it ready" signal.
     """
+    status = _click_menu_bar_icon(pid)
+    if status != "clicked":
+        return status
+    time.sleep(pause_seconds)
+    if screenshot_dir is not None:
+        _screenshot_own_window(pid, screenshot_dir / f"{slug}-menu.png")
+    time.sleep(pause_seconds)
+    status = _click_menu_item(pid, "Open PrivacyFence…")
+    if status != "clicked":
+        return status
+    status = _wait_for_window(pid)
+    if status != "ready":
+        return status
+    time.sleep(pause_seconds)
+    if screenshot_dir is not None:
+        _screenshot_own_window(pid, screenshot_dir / f"{slug}-window.png")
+    return "clicked"
+
+
+def _settings_nav_sections_step(
+    pid: int, pause_seconds: float, screenshot_dir: Path | None, slug: str
+) -> str:
+    """Click through all six of settings_window_html.py's NAV_ITEMS in order, confirming each
+    landed via that page's own marker aria-label (see _SETTINGS_NAV_STEPS' own comment above).
+    Screenshots each page if screenshot_dir is given. Returns "clicked" on full success, or a
+    message naming which nav item failed and how."""
+    for label, marker in _SETTINGS_NAV_STEPS:
+        status = _click_web_element(pid, label)
+        if status != "clicked":
+            return f"click nav item {label!r}: {status}"
+        status = _wait_for_web_element(pid, marker)
+        if status != "ready":
+            return f"landed on {label!r} but its own marker {marker!r} never appeared: {status}"
+        time.sleep(pause_seconds)
+        if screenshot_dir is not None:
+            _screenshot_own_window(pid, screenshot_dir / f"{slug}-{_slugify(label)}.png")
+    return "clicked"
+
+
+def _settings_pii_toggle_step(pid: int, pause_seconds: float) -> str:
+    """Toggle the PII Detection Gate master switch off, then confirm its two sub-toggles ("Detect
+    IP addresses"/"Detect financial figures") actually followed -- not just visually dimmed (a
+    screenshot can't tell "opacity: .4" from "opacity: 1" reliably enough to assert on), but
+    reporting aria-disabled via AX (_web_element_enabled), which is the thing a screenshot-only
+    check couldn't verify. QA_SETTINGS_WINDOW_SETTINGS_YAML starts pii_detection.enabled: true, so
+    the sub-toggles are expected enabled *before* the click -- checked first, so a false pass here
+    can't be explained by the sub-toggles having already been disabled for an unrelated reason.
+    Restores the master switch back on afterward (best-effort, not re-verified -- see the inline
+    comment at that point) since every other settings-window scenario in this file re-navigates to
+    whatever page/state it needs rather than depending on this one's state, but leaving the tray's
+    PII gate off for the rest of a real interactive run would be a surprising side effect of a QA
+    script. Returns "clicked" on full success, or a message naming which check failed."""
+    status = _click_web_element(pid, "General")
+    if status != "clicked":
+        return status
+    status = _wait_for_web_element(pid, "PII Detection Gate")
+    if status != "ready":
+        return status
+    for label in ("Detect IP addresses", "Detect financial figures"):
+        enabled = _web_element_enabled(pid, label)
+        if enabled != "true":
+            return f"{label!r} not enabled at baseline (config starts pii_detection.enabled: true): {enabled!r}"
+    status = _click_web_element(pid, "PII Detection Gate")
+    if status != "clicked":
+        return status
+    time.sleep(pause_seconds)
+    master_value = _web_element_value(pid, "PII Detection Gate")
+    if master_value not in ("0", "false"):
+        return f"master switch didn't report off after the click (value={master_value!r})"
+    for label in ("Detect IP addresses", "Detect financial figures"):
+        enabled = _web_element_enabled(pid, label)
+        if enabled != "false":
+            return f"{label!r} stayed enabled after the master switch went off (enabled={enabled!r})"
+    # Restore to on -- best-effort, not re-verified: the dimming behavior this scenario exists to
+    # check is already fully confirmed above (both the off-state and the disabled sub-toggles), and
+    # a failed restore click here wouldn't invalidate that.
+    _click_web_element(pid, "PII Detection Gate")
+    return "clicked"
+
+
+def _settings_rule_edit_step(pid: int, config_path: str) -> str:
+    """Edit the Gmail "Read message" rule row's value field (a real text input, committed on blur
+    -- see settings_window_html.py's own docstring on text-input commit semantics), then confirm
+    the new value actually round-tripped to disk via update_rule_row() -> _save_and_reload() ->
+    _save_config(), rather than just reading it back out of the DOM (which would only prove the
+    input kept what was typed into it, not that Python ever received/saved it). Returns "clicked"
+    on full success, or a message naming which step failed."""
+    status = _click_web_element(pid, "Auto-accept Rules")
+    if status != "clicked":
+        return status
+    status = _wait_for_web_element(pid, "Search rules")
+    if status != "ready":
+        return status
+    # Gmail is rules.connectors[0] (RULES_MENU_GROUPS' own order -- see settings_controller.py) and
+    # is selected by default on the Rules page's first render, but clicked explicitly anyway: both
+    # to match a real user's flow, and because the nav-sections scenario above may have already
+    # visited this page and left its client-only ui.rulesConnector on some other connector.
+    status = _click_web_element(pid, "Gmail")
+    if status != "clicked":
+        return f"select Gmail connector tab: {status}"
+    field_label = "Read message value, row 1"
+    status = _wait_for_web_element(pid, field_label)
+    if status != "ready":
+        return status
+    status = _set_web_element_text(pid, field_label, _RULE_EDIT_NEW_VALUE)
+    if status != "typed":
+        return status
+    cfg = _wait_for_disk_config(config_path, _rule_edit_landed)
+    if cfg is None:
+        return (
+            "on-disk auto_accept_rules.gmail.read_message[0].value never became "
+            f"{_RULE_EDIT_NEW_VALUE_LIST!r} after typing"
+        )
+    return "clicked"
+
+
+def _settings_grant_add_remove_step(pid: int, config_path: str) -> str:
+    """Add a new Drive "Trusted Folders" grant row, set its resource ID, confirm it round-tripped
+    to disk (add_grant_row()/update_grant_row()), then remove it and confirm the removal
+    round-tripped too (remove_grant_row()) -- see QA_SETTINGS_WINDOW_SETTINGS_YAML's own comment
+    for why this needs zero pre-existing Drive folder grants to stay unambiguous. Returns "clicked"
+    on full success, or a message naming which step failed."""
+    status = _click_web_element(pid, "Auto-accept Rules")
+    if status != "clicked":
+        return status
+    status = _wait_for_web_element(pid, "Search rules")
+    if status != "ready":
+        return status
+    status = _click_web_element(pid, "Drive")
+    if status != "clicked":
+        return f"select Drive connector tab: {status}"
+    add_label = "Add folder…"
+    status = _wait_for_web_element(pid, add_label)
+    if status != "ready":
+        return status
+    status = _click_web_element(pid, add_label)
+    if status != "clicked":
+        return status
+    cfg = _wait_for_disk_config(config_path, lambda cfg: len(_drive_folder_entries(cfg)) == 1)
+    if cfg is None:
+        return "add_grant_row never produced exactly one on-disk auto_accept_grants.drive.folders entry"
+    id_field = "Trusted Folders resource ID"
+    status = _wait_for_web_element(pid, id_field)
+    if status != "ready":
+        return status
+    status = _set_web_element_text(pid, id_field, QA_NEW_DRIVE_FOLDER_ID)
+    if status != "typed":
+        return status
+    cfg = _wait_for_disk_config(
+        config_path,
+        lambda cfg: bool(_drive_folder_entries(cfg))
+        and _drive_folder_entries(cfg)[0].get("id") == QA_NEW_DRIVE_FOLDER_ID,
+    )
+    if cfg is None:
+        return f"on-disk auto_accept_grants.drive.folders[0].id never became {QA_NEW_DRIVE_FOLDER_ID!r} after typing"
+    # row.name is still "" (never set above) and row.id is now the id just typed -- see
+    # settings_window_html.py's renderRules(): "Remove " + (row.name || row.id || gs.title).
+    remove_label = f"Remove {QA_NEW_DRIVE_FOLDER_ID}"
+    status = _wait_for_web_element(pid, remove_label)
+    if status != "ready":
+        return status
+    status = _click_web_element(pid, remove_label)
+    if status != "clicked":
+        return status
+    cfg = _wait_for_disk_config(config_path, lambda cfg: len(_drive_folder_entries(cfg)) == 0)
+    if cfg is None:
+        return "remove_grant_row never emptied auto_accept_grants.drive.folders on disk"
+    return "clicked"
+
+
+def _settings_privacy_category_step(pid: int, config_path: str) -> str:
+    """Flip the Gmail privacy group's "Message body" category from its default policy (unset ->
+    "allow", see privacy_filter._parse_group) to "Redact" via the segmented control, then confirm
+    it round-tripped to disk via set_category_policy(). Returns "clicked" on full success, or a
+    message naming which step failed."""
+    status = _click_web_element(pid, "Privacy Filter")
+    if status != "clicked":
+        return status
+    status = _wait_for_web_element(pid, "Message body policy")
+    if status != "ready":
+        return status
+    # "privacy" (config key for the Gmail group -- PRIVACY_GROUP_LABELS' first entry, see
+    # settings_controller.py) is selected by default on the Privacy Filter page's first render, but
+    # clicked explicitly anyway for the same reason the rule-edit scenario above clicks its own
+    # connector tab explicitly.
+    status = _click_web_element(pid, "Gmail")
+    if status != "clicked":
+        return f"select Gmail privacy group tab: {status}"
+    option_label = "Message body policy: Redact"
+    status = _wait_for_web_element(pid, option_label)
+    if status != "ready":
+        return status
+    status = _click_web_element(pid, option_label)
+    if status != "clicked":
+        return status
+    cfg = _wait_for_disk_config(
+        config_path, lambda cfg: ((cfg.get("privacy") or {}).get("categories") or {}).get("body") == "redact",
+    )
+    if cfg is None:
+        return "on-disk privacy.categories.body never became 'redact' after clicking the segmented control"
+    return "clicked"
+
+
+def _settings_audit_log_level_step(pid: int, config_path: str) -> str:
+    """Change the Audit Log page's log-level segmented control to DEBUG, then confirm it
+    round-tripped to disk via set_log_level(). Returns "clicked" on full success, or a message
+    naming which step failed."""
+    status = _click_web_element(pid, "Audit Log")
+    if status != "clicked":
+        return status
+    status = _wait_for_web_element(pid, "Export Audit Log")
+    if status != "ready":
+        return status
+    option_label = "Log level: DEBUG"
+    status = _wait_for_web_element(pid, option_label)
+    if status != "ready":
+        return status
+    status = _click_web_element(pid, option_label)
+    if status != "clicked":
+        return status
+    cfg = _wait_for_disk_config(config_path, lambda cfg: (cfg.get("logging") or {}).get("level") == "DEBUG")
+    if cfg is None:
+        return "on-disk logging.level never became 'DEBUG' after clicking the segmented control"
+    return "clicked"
+
+
+def _run_settings_window_scenarios(
+    pause_seconds: float = 0.3, screenshot_dir: Path | None = None, only_lower: str | None = None,
+) -> list[ScenarioResult]:
+    """Builds one throwaway PrivacyFenceMenuBar off a temp settings.yaml (see
+    QA_SETTINGS_WINDOW_SETTINGS_YAML), same reasoning and same rumps-private-API construction
+    _run_menu_bar_scenario used to (see git history at 1f367ca) -- never touches the user's real
+    config, and reaches into rumps' private rumps.rumps.NSApp/initializeStatusBar to attach a real
+    NSStatusItem without starting a second, nested AppHelper.runEventLoop() (this process is
+    already inside its own, started by main() below; starting another would never return).
+
+    Runs all seven of _SETTINGS_WINDOW_SCENARIO_NAMES' steps against that one shared app/window
+    (see this section's own header comment for why), then closes the window and removes the status
+    item on the way out, the same "leave no window/status-item mess for whatever runs after it"
+    contract _run_menu_bar_scenario used to carry -- this is always the last thing _scenarios()
+    runs, but that contract is kept anyway rather than assumed away by ordering.
+
+    Returns [] (no app ever built) if `only_lower` matches none of the seven names -- mirrors
+    every other scenario's filter-before-clicking-anything contract in spirit, even though (per
+    this section's header comment) a partial match still runs the whole shared group internally.
+    """
+    names = _SETTINGS_WINDOW_SCENARIO_NAMES
+    wanted = {n for n in names if only_lower is None or only_lower in n.lower()}
+    if not wanted:
+        return []
+
     pid = os.getpid()
     fake_ipc_server = SimpleNamespace(
         unattended_session_count=lambda: 0,
         set_unattended_changed_listener=lambda callback: None,
     )
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False, encoding="utf-8") as f:
-        f.write(QA_MENU_BAR_SETTINGS_YAML)
+        f.write(QA_SETTINGS_WINDOW_SETTINGS_YAML)
         config_path = f.name
 
     app_holder: list[Any] = []
 
     def build_app() -> None:
-        # Never touches the real org config file -- see this function's
-        # docstring; menu_bar.load_org_config is a plain module-level
-        # function reference, reassigning it here is enough (nothing else
-        # in this short-lived process depends on the original).
-        menu_bar.load_org_config = lambda: {}
-        # PrivacyFenceMenuBar.__init__ fires an immediate, real,
-        # background-threaded GitHub update check whose completion
-        # callback calls self._rebuild() -- unrelated to anything this
-        # scenario tests, but if it lands while the status-bar dropdown is
-        # open (its own completion timing depends on network latency, not
-        # anything under our control) it mutates the menu items AppKit is
-        # actively tracking, which visually collapses the open menu before
-        # a screenshot can be taken. Stubbed to a no-op for the same
-        # reason load_org_config is above.
+        # Never touches the real org config file. Unlike the pre-#120 menu_bar.py this was ported
+        # from (see git history at 1f367ca), settings_controller.py's methods each do their own
+        # `from .daemon_main import load_org_config` *inside* the function body rather than once at
+        # menu_bar.py module scope, so patching menu_bar.load_org_config (the old target) would no
+        # longer intercept anything -- daemon_main.load_org_config is the actual name each of those
+        # lazy imports re-resolves at call time, so that's what gets patched here instead.
+        daemon_main.load_org_config = lambda: {}
+        # set_log_level() (exercised by the Audit Log scenario below) calls daemon_main.
+        # setup_logging(cfg) after saving, which resolves its log *file* path against the real
+        # PROJECT_ROOT/data_dir() (not this scenario group's own temp config_path -- settings.yaml
+        # location and log-file location are resolved independently) and replaces this whole
+        # process's root logger handlers wholesale. Left un-stubbed, that scenario would create a
+        # real file under the real data dir and hijack this script's own logging for the rest of
+        # its run -- stubbed to a no-op for the same "stay inside this scenario group's own
+        # sandbox" reason load_org_config is stubbed above. The thing that scenario actually checks
+        # (logging.level landing correctly in the temp settings.yaml) doesn't depend on this call
+        # succeeding.
+        daemon_main.setup_logging = lambda cfg: None
+        # Stubs out the same immediate background-threaded GitHub update-check completion callback
+        # _run_menu_bar_scenario used to stub -- see its own docstring at 1f367ca for exactly why (a
+        # completion landing while the settings window is open would push a state re-render at an
+        # uncontrolled time, racing this function's own scripted clicks).
         menu_bar.PrivacyFenceMenuBar._on_update_check_timer = lambda self, _timer=None: None
         app = menu_bar.PrivacyFenceMenuBar(
-            config_path, connectors=["gmail", "drive", "slack"],
+            config_path, connectors=["gmail", "drive"],
             ipc_server=fake_ipc_server, connector_objs=[],
         )
-        # Mirrors rumps.App.run() (rumps/rumps.py) up to, but not
-        # including, its final AppHelper.runEventLoop() call -- see this
-        # function's docstring for why that call is skipped here.
+        # Mirrors rumps.App.run() (rumps/rumps.py) up to, but not including, its final
+        # AppHelper.runEventLoop() call -- see this function's docstring for why that call is
+        # skipped here.
         nsapp = NSApplication.sharedApplication()
         if nsapp.activationPolicy() == NSApplicationActivationPolicyProhibited:
             nsapp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
@@ -933,59 +1444,79 @@ def _run_menu_bar_scenario(
         app._nsapp.initializeStatusBar()
         app_holder.append(app)
 
-    def cleanup(app: Any) -> None:
-        if app._rules_manager is not None and app._rules_manager.window is not None:
-            app._rules_manager.window.close()
+    def cleanup() -> None:
+        if not app_holder:
+            return
+        app = app_holder[0]
+        settings_window = app._settings_window
+        if settings_window is not None and settings_window.window is not None:
+            settings_window.window.close()
         status_item = getattr(app._nsapp, "nsstatusitem", None)
         if status_item is not None:
             NSStatusBar.systemStatusBar().removeStatusItem_(status_item)
 
-    def fail(click_status: str) -> ScenarioResult:
-        if app_holder:
-            _run_on_main_thread_sync(lambda: cleanup(app_holder[0]))
-        os.unlink(config_path)
-        return ScenarioResult(
-            name=name, button_clicked="Manage Auto-accept Rules…", expected="shown",
-            actual=None, click_status=click_status,
-        )
+    results: list[ScenarioResult] = []
+
+    def add_result(name: str, button_clicked: str, expected: str, status: str) -> None:
+        if name not in wanted:
+            return
+        actual = expected if status == "clicked" else None
+        results.append(ScenarioResult(
+            name=name, button_clicked=button_clicked, expected=expected, actual=actual, click_status=status,
+        ))
 
     try:
         _run_on_main_thread_sync(build_app)
-    except Exception as exc:  # noqa: BLE001 - surfaced as this scenario's failure, not a crash
+    except Exception as exc:  # noqa: BLE001 - surfaced as every wanted scenario's own failure below, not a crash
         os.unlink(config_path)
-        return ScenarioResult(
-            name=name, button_clicked="Manage Auto-accept Rules…", expected="shown",
-            actual=None, click_status=f"setup error: {exc!r}",
+        setup_status = f"setup error: {exc!r}"
+        for name in names:
+            add_result(name, "(setup)", "shown", setup_status)
+        return results
+
+    slug0 = _slugify(names[0])
+    status = _settings_open_window_step(pid, pause_seconds, screenshot_dir, slug0)
+    add_result(names[0], "Open PrivacyFence…", "shown", status)
+
+    if status != "clicked":
+        # Nothing past this point can run without a window -- every other wanted scenario still
+        # gets a row in the report (this file's convention elsewhere is that a skipped scenario is
+        # never silently dropped, only filtered out entirely by --scenario/--group before it would
+        # have run at all), rather than just omitting six rows and leaving a reader to wonder why.
+        blocked = f"blocked: {names[0]!r} failed ({status})"
+        for name in names[1:]:
+            add_result(name, "(blocked)", "n/a", blocked)
+    else:
+        slug1 = _slugify(names[1])
+        status = _settings_nav_sections_step(pid, pause_seconds, screenshot_dir, slug1)
+        add_result(
+            names[1], "General → Connectors → Auto-accept Rules → Privacy Filter → Audit Log → About",
+            "navigated all 6 sections", status,
         )
 
-    time.sleep(pause_seconds)
-    status = _click_menu_bar_icon(pid)
-    if status != "clicked":
-        return fail(status)
+        status = _settings_pii_toggle_step(pid, pause_seconds)
+        add_result(names[2], "PII Detection Gate", "sub-toggles dim off / undim on", status)
 
-    time.sleep(pause_seconds)
-    if screenshot_dir is not None:
-        _screenshot_own_window(pid, screenshot_dir / f"{_slugify(name)}-menu.png")
-    time.sleep(pause_seconds)
+        status = _settings_rule_edit_step(pid, config_path)
+        add_result(
+            names[3], "Read message value, row 1", f"on-disk value == {_RULE_EDIT_NEW_VALUE_LIST!r}", status,
+        )
 
-    status = _click_menu_item(pid, "Manage Auto-accept Rules…")
-    if status != "clicked":
-        return fail(status)
+        status = _settings_grant_add_remove_step(pid, config_path)
+        add_result(
+            names[4], f"Add folder… / Remove {QA_NEW_DRIVE_FOLDER_ID}",
+            "on-disk grant row added then removed", status,
+        )
 
-    wait_status = _wait_for_window(pid)
-    if wait_status != "ready":
-        return fail(wait_status)
+        status = _settings_privacy_category_step(pid, config_path)
+        add_result(names[5], "Message body policy: Redact", "on-disk privacy.categories.body == 'redact'", status)
 
-    time.sleep(pause_seconds)
-    if screenshot_dir is not None:
-        _screenshot_own_window(pid, screenshot_dir / f"{_slugify(name)}-rules-window.png")
+        status = _settings_audit_log_level_step(pid, config_path)
+        add_result(names[6], "Log level: DEBUG", "on-disk logging.level == 'DEBUG'", status)
 
-    _run_on_main_thread_sync(lambda: cleanup(app_holder[0]))
+    _run_on_main_thread_sync(cleanup)
     os.unlink(config_path)
-    return ScenarioResult(
-        name=name, button_clicked="Manage Auto-accept Rules…", expected="shown",
-        actual="shown", click_status="clicked",
-    )
+    return results
 
 
 def _scenarios(
@@ -2536,22 +3067,21 @@ def _scenarios(
     ))
 
     # ================================================================== #
-    # Menu bar -- not a tool-approval dialog; exercises the actual menu bar
-    # status item and the "Manage Auto-accept Rules..." window it opens
-    # (see _run_menu_bar_scenario's docstring). Kept last, after every
-    # popup scenario above: its status item and non-modal window mustn't
-    # sit on screen alongside an approval popup -- _screenshot_own_window
-    # assumes only one of our own windows is ever on screen at a time, and
-    # this scenario cleans its own window/status item up on the way out
-    # rather than leaving them for whatever runs after it. Neither an "RG-"
-    # nor a "WG-" scenario, so a --group rg/wg run skips it entirely, same
-    # as every other group filter above.
+    # Settings window -- not tool-approval dialogs; exercises the actual tray status item and the
+    # webview settings window issue #120 replaced the old NSMenu tree / native "Manage Auto-accept
+    # Rules…" window with (see _run_settings_window_scenarios' own docstring for what these seven
+    # scenarios cover and why they share one app/window instead of running fully independently like
+    # every scenario above). Kept last, after every popup scenario above: its status item and
+    # non-modal window mustn't sit on screen alongside an approval popup -- _screenshot_own_window
+    # assumes only one of our own windows is ever on screen at a time, and this group cleans its own
+    # window/status item up on the way out rather than leaving them for whatever runs after it.
+    # Neither an "RG-" nor a "WG-" scenario, so a --group rg/wg run skips it entirely, same as every
+    # other group filter above.
     # ================================================================== #
-    menu_bar_name = "Menu bar · status item → Manage Auto-accept Rules… window"
-    if group_prefix is None and (only_lower is None or only_lower in menu_bar_name.lower()):
-        results.append(
-            _run_menu_bar_scenario(menu_bar_name, pause_seconds=pause_seconds, screenshot_dir=screenshot_dir)
-        )
+    if group_prefix is None:
+        results.extend(_run_settings_window_scenarios(
+            pause_seconds=pause_seconds, screenshot_dir=screenshot_dir, only_lower=only_lower,
+        ))
 
     return [r for r in results if r is not None]
 
@@ -2598,10 +3128,10 @@ def main() -> None:
         "--scenario",
         help="Run only the scenario(s) whose name contains this text (case-insensitive substring "
              "match against the scenario name shown in the report table, e.g. 'gmail_get_thread' or "
-             "'Menu bar' for the menu-bar/rules-window scenario), instead of the full 94-scenario "
-             "suite (93 tool-approval scenarios plus the one menu-bar scenario). For grabbing a "
-             "single updated screenshot -- e.g. for README.md -- without sitting through the whole "
-             "run: --scenario 'gmail_get_thread' --screenshot-dir docs/images/screenshots. "
+             "'Settings window' for the settings-window scenarios), instead of the full 100-scenario "
+             "suite (93 tool-approval scenarios plus the seven settings-window scenarios). For "
+             "grabbing a single updated screenshot -- e.g. for README.md -- without sitting through "
+             "the whole run: --scenario 'gmail_get_thread' --screenshot-dir docs/images/screenshots. "
              "Combines with --group (both must match). Matches nothing -> an empty report and a "
              "nonzero exit code, same as any other all-failed run.",
     )
@@ -2610,7 +3140,8 @@ def main() -> None:
         help="'all' (default): every scenario. 'rg': review-gate (read) scenarios only -- those "
              "whose name starts with 'RG-', per docs/approval-window-content-reference.md's view "
              "groups. 'wg': popup-gate (write) scenarios only ('WG-' prefix). Either excludes the "
-             "menu-bar scenario, which is neither. Combines with --scenario (both must match) -- "
+             "seven settings-window scenarios, which are neither. Combines with --scenario (both "
+             "must match) -- "
              "e.g. --group rg --scenario gmail to see only Gmail's read-side dialogs.",
     )
     args = parser.parse_args()

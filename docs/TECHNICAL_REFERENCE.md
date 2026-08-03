@@ -157,13 +157,15 @@ routes it to the normal popup — tinted, with the second confirmation — whene
 contains likely PII. A request that matches a rule *and* has no PII in its content still takes the
 silent auto-accept path exactly as before this gate existed.
 
-**Toggle:** enable or disable the whole gate from the menu bar (**PII Detection Gate**), or set
-`pii_detection.enabled: true|false` directly in `config/settings.yaml`. Enabled by default.
+**Toggle:** enable or disable the whole gate from the settings window's **General** page (**PII
+Detection Gate**), or set `pii_detection.enabled: true|false` directly in `config/settings.yaml`.
+Enabled by default.
 
 **IP address** and **Financial figures (currency amounts)** can also be toggled off individually,
-independent of the gate as a whole — from the same **PII Detection Gate** submenu in the menu bar,
-or via `pii_detection.detect_ip_addresses` / `detect_financial_figures` in `config/settings.yaml`
-(both `true` by default); every other category is on whenever the gate itself is enabled. See
+independent of the gate as a whole — from the same **PII Detection Gate** card on the **General**
+page, or via `pii_detection.detect_ip_addresses` / `detect_financial_figures` in
+`config/settings.yaml` (both `true` by default); every other category is on whenever the gate
+itself is enabled. See
 [`pii-detection-keywords.md`](pii-detection-keywords.md#individually-optional-categories) for why
 these two specifically get their own toggle.
 
@@ -426,8 +428,9 @@ Trusting a specific resource — a Drive folder, a Google Tasks list, a Slack ch
 project, ... — is configured **once per resource**, under `auto_accept_grants` in
 `config/settings.yaml`, rather than by adding the same ID to every operation key that resource
 happens to touch (see [Auto-accept rules](#auto-accept-rules) below for the older, still-supported
-per-operation form). This is also what the menu bar's **Manage Auto-accept Rules… → \<Connector\> → Trusted \<Resource\>**
-sections read and write — editing the YAML directly and editing from that window are equivalent.
+per-operation form). This is also what the settings window's **Auto-accept Rules → \<Connector\> →
+Trusted \<Resource\>** sections read and write — editing the YAML directly and editing from that
+window are equivalent.
 
 ```yaml
 auto_accept_grants:
@@ -453,8 +456,9 @@ auto_accept_grants:
 Each grant entry is keyed by `id` (or `key` for Jira/Confluence, which already address resources
 that way) plus a small set of capability booleans. A freshly added grant starts with every
 capability `false` — adding a resource does nothing until a capability is explicitly turned on,
-from the menu or by hand. `name` is a cosmetic cache of the resource's last-resolved display name;
-the evaluator never reads it, only `id`/`key` and the capability booleans decide what auto-accepts.
+from the settings window or by hand. `name` is a cosmetic cache of the resource's last-resolved
+display name; the evaluator never reads it, only `id`/`key` and the capability booleans decide what
+auto-accepts.
 
 ### What each resource type covers
 
@@ -479,25 +483,26 @@ underlying checks differ (a destination-folder arg for uploads; the file's curre
 not the move's destination, for moves — see [Auto-accept rules](#auto-accept-rules) below), but take
 the same plain folder-id-list value the grant already compiles.
 
-### Menu bar UX
+### Settings window UX
 
-Under **Manage Auto-accept Rules… → \<Connector\>**, each resource type above gets its own **Trusted
-\<Resource\>** section: every currently-granted resource is its own row, labeled with its
-**resolved name** (not the raw ID — see below), with one checkbox per capability, a **Copy ID**
-action, and its own **✕ Remove**. Adding one is a single **+ Add …** action:
-
-- For connectors with a cheap listing call (Tasks, Slack, Telegram, Jira, Confluence, Calendar,
-  Salesforce reports), **+ Add …** opens a native picker of everything visible to that connector,
-  by name — no ID entry needed at all.
-- For Drive folders (no "list every folder I can see" API short of the heavier Google Picker
-  integration), **+ Add …** accepts a pasted ID **or** a full Drive/Sheets URL (the ID is extracted
-  automatically), resolves and shows the name back for confirmation before saving.
+On the settings window's **Auto-accept Rules** page, selecting a connector shows each resource type
+above as its own **Trusted \<Resource\>** section: every currently-granted resource is its own row,
+with a **Name** field and a **Resource ID** field (plain text inputs, committed on blur/Enter —
+pasting a Drive/Sheets URL into a Drive folder's ID field extracts the ID automatically; every other
+connector's ID field takes the raw ID/key as typed), one toggle (rendered as a chip) per capability,
+and its own **✕ Remove**. Once an ID is entered and the connector is authenticated, its display name
+is resolved in the background and shown in the Name field (see [Name resolution](#name-resolution)
+below). Adding one is a single **+ Add \<resource\>…** action that appends a blank row to fill in by
+hand — an earlier menu-bar version of this page had a native "pick from a list of everything visible
+to this connector" picker for connectors with a cheap listing call; this pass's settings window
+dropped that in favor of the same manual Name/Resource-ID entry for every connector.
 
 Every existing rule under `auto_accept_rules` that isn't a resource grant (domain trust, label
-matching, file-type allowlists, and similar — see [Auto-accept rules](#auto-accept-rules)) lives
-in that same connector's **Filters** submenu, with the same one-value-at-a-time **+ Add value…** /
-**✕ Remove** treatment — there's no shared multi-line text box to paste several IDs into anywhere
-in this menu.
+matching, file-type allowlists, and similar — see [Auto-accept rules](#auto-accept-rules)) lives on
+that same connector's page as a `rule_type` / `value` row, also plain text committed on blur/Enter.
+A list-valued rule's `value` field takes a comma-separated list directly (e.g. `domain1.com,
+domain2.com`) in one field, rather than an earlier menu-bar version's one-value-at-a-time **+ Add
+value…** / **✕ Remove** treatment.
 
 **Sheets** and **Docs** get their own top-level sidebar pages in this window (neither is a real
 connector — both ride on Drive's OAuth grant, see [Auto-accept rules](#auto-accept-rules)'s Drive
@@ -533,9 +538,9 @@ i.e. the same rule value repeated identically across *every* operation key that 
 logged at `INFO` level. A **partial** match (the value present on some but not all of a
 capability's operation keys) is deliberately left alone rather than migrated, since folding it in
 would silently widen auto-accept to operation keys never explicitly configured — those stay under
-`auto_accept_rules`, visible and removable from the connector's Filters submenu, but no longer
-offered as something "+ Add rule…" creates fresh (steering new configuration toward the grants
-model without breaking what's already there).
+`auto_accept_rules`, visible and removable from the connector's page in the settings window, but no
+longer offered as something "+ Add rule…" creates fresh (steering new configuration toward the
+grants model without breaking what's already there).
 
 ---
 
@@ -600,9 +605,10 @@ destination folder ID is in the allowlist).
 > **`approved_folder`, `approved_sandbox_folder`, `parent_folder_allowlist`, and
 > `move_within_approved_folders` are all grant-managed** — see
 > [Auto-accept grants](#auto-accept-grants) → `drive.folders` / `drive.sandbox_folders`. Add the
-> folder there once (from the menu bar's **Trusted Folders** / **Sandbox Folders** submenus, or by
-> hand under `auto_accept_grants`) and it applies across every operation key below automatically,
-> instead of needing the same folder ID added to each one separately — including
+> folder there once (from the settings window's **Trusted Folders** / **Sandbox Folders** sections
+> under **Auto-accept Rules → Drive**, or by hand under `auto_accept_grants`) and it applies across
+> every operation key below automatically, instead of needing the same folder ID added to each one
+> separately — including
 > `drive_upload_file`'s destination-folder check and `drive_move_file`'s move-approval, which use
 > their own rule names (different underlying check — see below) but the same sandbox-folder grant.
 
@@ -823,11 +829,13 @@ proposes is configurable, not hardcoded:
 | `confluence_read_page` | `confluence.read_page`, `confluence.download_attachment` | `i_am_author`, `approved_space_keys` |
 
 Configure a family's order under `rule_suggestion_priority` in `settings.yaml` (see
-`settings.yaml.example`), or from each connector's **Always-allow Suggestion Order** section in
-**Manage Auto-accept Rules…** — **↑ Move up** / **↓ Move down** / **✕ Never suggest** per included
-rule, **+ Re-include** per excluded one. Listing only some of a family's rules **excludes** the rest
-from ever being suggested, not just deprioritizes them — there's one mechanism for both reordering
-and exclusion. Omitting a family entirely keeps the built-in default order shown above.
+`settings.yaml.example`), or from each connector's **Always-allow Suggestion Order** section on the
+settings window's **Auto-accept Rules** page (`drive`/`calendar`/`jira`/`confluence` only — the
+other connectors have no suggestion family, so they get no such section) — **↑ Move up** /
+**↓ Move down** / **✕ Never suggest** per included rule, **+ Re-include** per excluded one. Listing
+only some of a family's rules **excludes** the rest from ever being suggested, not just
+deprioritizes them — there's one mechanism for both reordering and exclusion. Omitting a family
+entirely keeps the built-in default order shown above.
 
 This affects only what the popup's Always allow button *proposes* — it has no effect on which
 already-configured `auto_accept_rules`/`auto_accept_grants` entries actually auto-accept a call.
@@ -898,10 +906,10 @@ unaffected and their popups are visually unchanged (Deny / Allow once only).
 
 ## Reading and proposing auto-accept changes from the bridge
 
-`auto_accept_rules`/`auto_accept_grants` are readable/writable from the daemon side — the menu
-bar's Rules Manager window (`rules_manager_window.py`) or the "Always allow" confirmation described
-above — and, additionally, from two bridge meta-tools, so Claude can inspect and propose changes to
-this config directly:
+`auto_accept_rules`/`auto_accept_grants` are readable/writable from the daemon side — the settings
+window's **Auto-accept Rules** page (`settings_controller.py` / `settings_window_html.py`) or the
+"Always allow" confirmation described above — and, additionally, from two bridge meta-tools, so
+Claude can inspect and propose changes to this config directly:
 
 ### `privacyfence_list_auto_accept_rules` — read
 
@@ -945,8 +953,8 @@ gated tool call already follows.
   `"write"`, to `true`/`false`; see the capability tables under
   [Auto-accept grants](#auto-accept-grants) for which keys apply to which resource type).
 
-Applying the change reuses the exact same persistence functions the menu bar's editor and the
-"Always allow" flow already use (`auto_accept.add_auto_accept_rule`/`remove_auto_accept_rule`,
+Applying the change reuses the exact same persistence functions the settings window's editor and
+the "Always allow" flow already use (`auto_accept.add_auto_accept_rule`/`remove_auto_accept_rule`,
 `resource_grants.apply_grant_upsert`/`apply_grant_removal`), so a bridge-proposed change hot-reloads
 the live evaluator the same way. When it actually changes something, it's recorded as one of four
 audit decisions — `rule_changed_via_bridge_proposal`, `rule_removed_via_bridge_proposal`,
@@ -960,7 +968,7 @@ hand-pinned to `approved_sandbox_folder` (see the callout under
 [Auto-accept rules](#auto-accept-rules)) when what's actually wanted is one
 `auto_accept_grants.drive.sandbox_folders` grant. With these two tools, Claude can list the current
 rules, identify the duplicates, and propose removing them and adding the equivalent grant instead —
-each step still confirmed by a human, same as if they'd done it by hand in the Rules Manager.
+each step still confirmed by a human, same as if they'd done it by hand in the settings window.
 
 ---
 
@@ -1028,7 +1036,7 @@ changes the failure mode for calls that would otherwise open an unanswered dialo
 every other approval behind it.
 
 **Off by default.** Set in the organization config bundle (`org_config.json`, installed via
-"Install/Update Organization Config…" in the menu bar — see
+"Install/Update Organization Config…" on the settings window's **General** page — see
 [scripts/build_org_bundle.py](../scripts/build_org_bundle.py)'s `--enable-unattended-sessions`
 flag), not in `settings.yaml`:
 
@@ -1040,11 +1048,19 @@ flag), not in `settings.yaml`:
 
 `privacyfence_begin_unattended_session` errors until an administrator opts in — a Claude session
 gaining the ability to switch its own connection into fail-fast mode is a deliberate
-per-organization choice, not a per-user setting, so it isn't exposed as a menu bar toggle. The
-unattended flag is connection-scoped (the bridge is one process per Cowork task) and clears
-automatically if the connection drops, so there's no persistent state to clean up. While one or
-more connections are in this state, the menu bar's top item shows a live count (e.g. "PrivacyFence
-is running — 1 unattended session active").
+per-organization choice, not a per-user setting, so it isn't exposed as a settings-window toggle.
+The unattended flag is connection-scoped (the bridge is one process per Cowork task) and clears
+automatically if the connection drops, so there's no persistent state to clean up.
+
+The tray's own UI does not currently surface how many connections are in this state — the pre-#120
+menu bar's top item showed a live count (e.g. "PrivacyFence is running — 1 unattended session
+active"), but the two-item tray issue #120 replaced it with (`menu_bar.py`) has no equivalent, and
+`SettingsController` doesn't surface the count anywhere in the settings window either as of this
+writing — `ipc_server.set_unattended_changed_listener` is still wired up
+(`SettingsController._on_unattended_changed`) but its only current effect is triggering a state
+re-render of whatever page happens to be open, not displaying the count itself. The underlying
+`IPCServer.unattended_session_count()` this would read from still exists and is accurate — only the
+display is currently missing.
 
 ---
 
@@ -1095,10 +1111,11 @@ PrivacyFence splits configuration into two steps done by two different people:
    into the bundle from a *second*, admin-scoped Google Cloud project via
    `scripts/sync_room_directory.py` — see "Room directory sync" in
    [google-cloud-setup.md](google-cloud-setup.md).
-2. **Every user, from the PrivacyFence menu bar:** install the bundle IT sent you, then click
-   **Authenticate…** on each connector you want. Almost everywhere this opens your browser to sign
-   in — Telegram is the only connector that instead asks for your phone number and a verification
-   code, since MTProto has no browser-OAuth equivalent.
+2. **Every user, from the settings window (tray icon → "Open PrivacyFence…"):** install the bundle
+   IT sent you from the **General** page, then click **Authenticate…** on each connector you want
+   from the **Connectors** page. Almost everywhere this opens your browser to sign in — Telegram is
+   the only connector that instead asks for your phone number and a verification code via its own
+   in-window sign-in flow, since MTProto has no browser-OAuth equivalent.
 
 > See [google-cloud-setup.md](google-cloud-setup.md), [slack-setup.md](slack-setup.md), [salesforce-setup.md](salesforce-setup.md), [atlassian-setup.md](atlassian-setup.md), and [telegram-setup.md](telegram-setup.md) for the full walkthroughs.
 
@@ -1117,9 +1134,10 @@ the only download you need:
    cp com.privacyfence.app.plist ~/Library/LaunchAgents/
    launchctl load ~/Library/LaunchAgents/com.privacyfence.app.plist
    ```
-5. From the menu bar: **Organization Config…**, and select the bundle your IT team sent you.
-6. **Connectors → \<service\> → Authenticate…** for each connector you want, then quit and reopen
-   PrivacyFence to activate them.
+5. From the tray icon, click **Open PrivacyFence…**, then on the **General** page click
+   **Install/Update Organization Config…** and select the bundle your IT team sent you.
+6. On the **Connectors** page, click **Authenticate…** for each connector you want — this takes
+   effect immediately (the daemon's live connector list is hot-reloaded), no quit/reopen needed.
 7. Still in the mounted DMG, double-click **PrivacyFence.mcpb** — Claude Desktop installs the
    MCP server for you (Settings → Extensions → Install Extension… happens automatically).
 
@@ -1141,7 +1159,8 @@ cp src/privacyfence/resources/settings.yaml.example config/settings.yaml
 ```
 
 Build (or obtain from IT) an organization config bundle, then authorize each connector you want —
-either from the menu bar once `privacyfence-app` is running, or headlessly from the CLI. Running
+either from the settings window (tray icon → "Open PrivacyFence…" → **Connectors**) once
+`privacyfence-app` is running, or headlessly from the CLI. Running
 from source (unbundled) keeps all of this — config, `org/`, `credentials/`, logs — inside the repo
 folder itself; only a PyInstaller-bundled `.app` uses `~/.privacyfence` instead (see
 [dev-vs-live-setup.md](dev-vs-live-setup.md)):
@@ -1256,7 +1275,7 @@ See [`config/settings.yaml.example`](../src/privacyfence/resources/settings.yaml
 - The daemon uses two threads: the main thread runs the rumps menu bar app (a hard macOS requirement for AppKit) and an IPC thread runs the asyncio event loop serving the bridge connection. The main approval window is native AppKit/WKWebView (see `approval_window.py`), shown from any thread via `performSelectorOnMainThread_withObject_waitUntilDone_`; a few secondary confirmation dialogs (PII confirmation, rule confirmation) still use `osascript display dialog` subprocesses (`approval_popup.py`). `gate.py` reaches all of these through the pluggable `ApprovalUI` interface (`approval_ui.py`) rather than importing `approval_popup` directly — today's only implementation is `NativeApprovalUI`, but the seam exists so a future UI (e.g. mobile remote approval) can plug in without changing the policy loop.
 - All tools are advertised to Claude with `readOnlyHint = true` — see below.
 - The approval window follows the system's light/dark appearance automatically — no config or menu bar toggle, it reads `NSApp`'s current appearance.
-- The daemon checks GitHub Releases once a day for a newer version (`update_checker.py`) and shows a menu item / one-time dialog if one is found — never downloads or installs anything automatically. On by default; toggle from the menu bar's "Check for Updates" or `update_check.enabled` in `settings.yaml`. See [security-and-compliance.md](security-and-compliance.md) for what this network call does and doesn't send.
+- The daemon checks GitHub Releases once a day for a newer version (`update_checker.py`) and shows a one-time native alert dialog if one is found (`Download` / `Skip This Version` / `Remind Me Later`) — never downloads or installs anything automatically; there's no persistent menu item for it. On by default; toggle from the settings window's **General** page ("Check for Updates") or `update_check.enabled` in `settings.yaml`. See [security-and-compliance.md](security-and-compliance.md) for what this network call does and doesn't send.
 
 ### Why every tool is advertised as read-only
 
