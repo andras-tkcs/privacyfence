@@ -86,9 +86,14 @@ jobs:
           path: dist/PrivacyFence-*.dmg
           retention-days: 30
 
-      # Attach to the GitHub Release when triggered by a version tag
+      # Attach to the GitHub Release when triggered by a version tag. A tag
+      # ending in -beta/-rc (e.g. v3.2.0-beta) publishes as a GitHub
+      # prerelease -- update_checker.py's beta update channel reads exactly
+      # this flag off the releases list, so an unmarked tag would be
+      # invisible to it.
       - name: Attach DMG to release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/PrivacyFence-*.dmg
+          prerelease: ${{ contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
