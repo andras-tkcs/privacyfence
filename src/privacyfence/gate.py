@@ -129,6 +129,7 @@ logger = logging.getLogger(__name__)
 _TOOL_LAYOUT: dict[str, str] = {
     "gmail_get_message": WIDE, "gmail_get_thread": WIDE,
     "gmail_download_attachment": WIDE, "drive_download_file": WIDE,
+    "confluence_download_attachment": WIDE,
     "salesforce_get_record": WIDE, "salesforce_search": WIDE, "salesforce_run_report": WIDE,
     "jira_get_issue": WIDE, "confluence_get_page": WIDE, "confluence_get_page_by_title": WIDE,
     "telegram_get_messages": WIDE, "telegram_search_messages": WIDE,
@@ -141,6 +142,10 @@ _TOOL_LAYOUT: dict[str, str] = {
     "calendar_get_event_details": NARROW, "calendar_create_event": NARROW,
     "slack_send_message": WIDE, "telegram_send_message": WIDE, "jira_add_comment": WIDE,
     "gmail_reply_all_draft": WIDE,
+    # Parallel to gmail_create_draft/gmail_reply_draft/gmail_reply_all_draft above --
+    # same WIDE right-pane body-text preview, just with an extra Attachments row in §1.
+    "gmail_create_draft_with_attachments": WIDE, "gmail_reply_draft_with_attachments": WIDE,
+    "gmail_reply_all_draft_with_attachments": WIDE,
     "gmail_add_label": NARROW, "gmail_remove_label": NARROW, "gmail_archive_message": NARROW,
     "gmail_create_filter": NARROW, "gmail_update_filter": NARROW, "gmail_create_label": NARROW,
     "drive_write_doc_content": WIDE, "drive_write_file_content": WIDE,
