@@ -863,11 +863,11 @@ class TestTelegramSetupRunner:
 
 @pytest.fixture
 def short_socket_path():
-    """AF_UNIX's sun_path is too short (~104 bytes) for pytest's nested
-    tmp_path dirs -- use /tmp directly with a short unique name."""
+    """Per-test-unique TOKEN_FILE path -- named short_socket_path for
+    history (this used to be a Unix socket path)."""
     directory = f"/tmp/pf-{uuid.uuid4().hex[:8]}"
     os.makedirs(directory, exist_ok=True)
-    path = f"{directory}/s.sock"
+    path = f"{directory}/ipc_token"
     yield path
     try:
         os.unlink(path)
@@ -884,7 +884,8 @@ class TestIPCServerThread:
         from privacyfence import ipc_server as ipc_server_module
         from privacyfence.ipc_server import IPCServer
 
-        monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", short_socket_path)
+        monkeypatch.setattr(ipc_server_module, "TOKEN_FILE", short_socket_path)
+        monkeypatch.setattr(ipc_server_module, "PORT_FILE", short_socket_path.replace("ipc_token", "ipc_port"))
         server = IPCServer([])
         thread = daemon_main.IPCServerThread(server)
 

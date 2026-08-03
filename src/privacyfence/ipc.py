@@ -1,6 +1,38 @@
 """IPC protocol constants shared by bridge and daemon.
 
-Transport: Unix domain socket at SOCKET_PATH.
+Transport: 127.0.0.1 TCP loopback socket on an OS-assigned ephemeral port,
+           authenticated by a per-launch random token. The daemon binds
+           port 0 (asking the OS to pick a free port), then -- once it's
+           actually listening -- writes that port number to PORT_FILE and a
+           random token to TOKEN_FILE, both with 0o600 permissions so only
+           this user's processes can read them, and both under
+           ~/.privacyfence regardless of whether the daemon is otherwise
+           running from source or bundled (see paths.py). A client discovers
+           where to connect the same way it discovers the token: read
+           PORT_FILE. Immediately after connecting -- before any JSON-RPC
+           request -- it must send the token as a single bare-text line (not
+           JSON). The server reads that one line, and if it doesn't match,
+           closes the connection without responding and without processing
+           anything further on it; only once it matches does the connection
+           move on to normal newline-delimited JSON request/response
+           traffic.
+
+           This replaces what used to be a Unix domain socket at a fixed
+           path. asyncio has no Unix-domain-socket support under Windows'
+           event loop at all -- not a missing feature, an API that doesn't
+           exist there -- so a portable transport needs to not be a Unix
+           socket in the first place, on every OS, rather than adding a
+           Windows-specific named-pipe branch alongside it. TOKEN_FILE
+           replaces the Unix socket's own filesystem-permissions boundary
+           (only this user's processes could open that path); an ephemeral,
+           discovered port (rather than one fixed, hardcoded number both
+           sides agree on) replaces the Unix socket path's own implicit
+           per-user namespacing -- a fixed TCP port is a single namespace
+           shared by every local user's loopback interface, not one scoped
+           per home directory the way a filesystem path already was, so a
+           hardcoded port would break the documented two-account dev/live
+           setup (docs/dev-vs-live-setup.md) the moment both accounts'
+           daemons tried to listen at the same time.
 Format:    newline-delimited JSON.
 
 Request:   {"id": "<str>", "method": "<str>", "params": {…}}
@@ -94,7 +126,19 @@ import os
 
 from . import __version__ as VERSION
 
-SOCKET_PATH = os.path.expanduser("~/.privacyfence/privacyfence.sock")
+HOST = "127.0.0.1"
+# Never bound to 0.0.0.0 or any other interface -- HOST above is what
+# actually keeps this off the network, not the port number, which is why
+# an OS-assigned ephemeral port (rather than a fixed one) costs nothing on
+# the security side while fixing the multi-account collision problem
+# described above.
+#
+# Per-launch, per-user files under ~/.privacyfence, written by ipc_server.py's
+# start() with 0o600 permissions so only this user's processes can read
+# them -- together these replace the access boundary + addressability a
+# fixed Unix socket path used to provide in one name.
+PORT_FILE = os.path.expanduser("~/.privacyfence/ipc_port")
+TOKEN_FILE = os.path.expanduser("~/.privacyfence/ipc_token")
 
 # Messages are newline-delimited JSON; asyncio's default StreamReader line
 # limit is 64 KiB, well under drive's 100 KiB file-content cap (before JSON

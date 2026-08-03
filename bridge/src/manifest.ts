@@ -5,7 +5,7 @@
 
 import net from "node:net";
 import { BridgeExitError } from "./errors.js";
-import { SOCKET_PATH, VERSION } from "./protocol.js";
+import { HOST, PORT_FILE, TOKEN_FILE, VERSION, readIpcPort, readIpcToken } from "./protocol.js";
 
 export interface ToolParamDict {
   name: string;
@@ -38,14 +38,36 @@ export interface Manifest {
  * outside of the persistent IPCClient connection opened later for tool
  * calls (see index.ts).
  */
-export function fetchManifest(socketPath = SOCKET_PATH): Promise<Manifest> {
+export function fetchManifest(
+  host = HOST,
+  portFile = PORT_FILE,
+  tokenFile = TOKEN_FILE
+): Promise<Manifest> {
   return new Promise((resolve, reject) => {
-    const sock = net.createConnection(socketPath);
+    let port: number;
+    let token: string;
+    try {
+      port = readIpcPort(portFile);
+      token = readIpcToken(tokenFile);
+    } catch (exc) {
+      reject(
+        new Error(
+          `Could not read PrivacyFence IPC connection info: ${exc instanceof Error ? exc.message : String(exc)}`
+        )
+      );
+      return;
+    }
+    const sock = net.createConnection({ host, port });
     sock.setEncoding("utf8");
     sock.setTimeout(5000);
     let buffer = "";
 
     sock.once("connect", () => {
+      // Auth handshake first line, same as IPCClient's own -- see ipc.py's
+      // module docstring. The manifest request can be written right behind
+      // it without waiting for a round trip; the daemon reads the token
+      // line, then serves this connection's subsequent lines normally.
+      sock.write(token + "\n");
       sock.write(JSON.stringify({ id: "m0", method: "manifest", params: {} }) + "\n");
     });
 
@@ -69,7 +91,7 @@ export function fetchManifest(socketPath = SOCKET_PATH): Promise<Manifest> {
 
     sock.once("timeout", () => {
       sock.destroy();
-      reject(new Error(`Timed out fetching manifest from ${socketPath}`));
+      reject(new Error(`Timed out fetching manifest from ${host}:${port}`));
     });
     sock.once("error", reject);
   });

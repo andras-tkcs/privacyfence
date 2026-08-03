@@ -30,7 +30,7 @@ import { waitForDaemonPatiently } from "./daemon.js";
 import { BridgeExitError } from "./errors.js";
 import { IPCClient } from "./ipcClient.js";
 import { checkVersionMatch, fetchManifest } from "./manifest.js";
-import { SOCKET_PATH, VERSION } from "./protocol.js";
+import { HOST, PORT_FILE, TOKEN_FILE, VERSION } from "./protocol.js";
 import { registerMetaTools, registerTools } from "./tools.js";
 
 /**
@@ -63,8 +63,12 @@ export function parseArgs(argv: string[]): void {
 }
 
 export interface MainOptions {
-  /** Overridable for tests; defaults to the real ~/.privacyfence socket. */
-  socketPath?: string;
+  /** Overridable for tests; defaults to the real 127.0.0.1 daemon target. */
+  host?: string;
+  /** Overridable for tests; defaults to the real ~/.privacyfence/ipc_port. */
+  portFile?: string;
+  /** Overridable for tests; defaults to the real ~/.privacyfence/ipc_token. */
+  tokenFile?: string;
   /** Overridable for tests (e.g. InMemoryTransport); defaults to real stdio. */
   transport?: Transport;
   /** Overridable for tests; defaults to waiting on stdin closing (real Claude disconnect). */
@@ -82,17 +86,19 @@ export async function main(argv = process.argv.slice(2), opts: MainOptions = {})
   setupLogging();
   parseArgs(argv);
 
-  const socketPath = opts.socketPath ?? SOCKET_PATH;
-  await waitForDaemonPatiently({ socketPath });
+  const host = opts.host ?? HOST;
+  const portFile = opts.portFile ?? PORT_FILE;
+  const tokenFile = opts.tokenFile ?? TOKEN_FILE;
+  await waitForDaemonPatiently({ host, portFile });
 
-  const manifest = await fetchManifest(socketPath);
+  const manifest = await fetchManifest(host, portFile, tokenFile);
   checkVersionMatch(manifest, VERSION);
   console.error(
     `Got manifest: connectors=${JSON.stringify((manifest.connectors ?? []).map((c) => c.name))}`
   );
 
   const server = new McpServer({ name: "privacyfence", version: VERSION });
-  const ipc = new IPCClient(socketPath);
+  const ipc = new IPCClient(host, portFile, tokenFile);
   registerTools(server, ipc, manifest);
   registerMetaTools(server, ipc);
 

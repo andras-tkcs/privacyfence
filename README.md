@@ -176,7 +176,7 @@ The detailed tool-by-tool privacy matrix is maintained in [Technical Reference](
 
 PrivacyFence is split into two processes:
 
-- **`privacyfence-bridge`** is a small, ephemeral MCP server started by the AI client. It has no service credentials and forwards requests over a local Unix socket.
+- **`privacyfence-bridge`** is a small, ephemeral MCP server started by the AI client. It has no service credentials and forwards requests over a local, token-authenticated TCP loopback connection.
 - **`privacyfence-app`** is the persistent macOS daemon. It owns credentials, connector clients, policy evaluation, approval dialogs, PII detection, temporary approvals, and the audit log.
 
 The bridge is disposable. The daemon is the authoritative security and governance boundary.
@@ -188,7 +188,7 @@ AI assistant
      ▼
 privacyfence-bridge
      │
-     │ local Unix socket
+     │ local TCP loopback (token-authenticated)
      ▼
 privacyfence-app
      │

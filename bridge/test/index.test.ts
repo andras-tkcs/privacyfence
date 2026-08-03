@@ -4,7 +4,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { main, parseArgs } from "../src/index.js";
 import { VERSION } from "../src/protocol.js";
-import { FakeDaemon, makeShortSocketPath } from "./testDaemon.js";
+import { FakeDaemon, makeTempIpcFiles } from "./testDaemon.js";
 
 describe("parseArgs", () => {
   it("accepts no arguments", () => {
@@ -26,15 +26,22 @@ describe("parseArgs", () => {
 
 describe("main() end-to-end orchestration", () => {
   it("connects to the daemon, registers tools, and serves real MCP tool calls", async () => {
-    const { socketPath, cleanup } = makeShortSocketPath();
+    const { tokenFile, portFile, writePort, cleanup } = makeTempIpcFiles();
     const daemon = new FakeDaemon();
-    await daemon.start(socketPath);
+    const port = await daemon.start();
+    writePort(port);
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     let resolveDisconnect: () => void = () => {};
     const waitForDisconnect = () => new Promise<void>((resolve) => (resolveDisconnect = resolve));
 
-    const mainPromise = main([], { socketPath, transport: serverTransport, waitForDisconnect });
+    const mainPromise = main([], {
+      host: "127.0.0.1",
+      portFile,
+      tokenFile,
+      transport: serverTransport,
+      waitForDisconnect,
+    });
 
     // 1. bridge_main's manifest fetch (a short-lived connection, request #1).
     await daemon.waitForNRequests(1);
@@ -101,12 +108,13 @@ describe("main() end-to-end orchestration", () => {
   });
 
   it("refuses to start on a daemon version mismatch", async () => {
-    const { socketPath, cleanup } = makeShortSocketPath();
+    const { tokenFile, portFile, writePort, cleanup } = makeTempIpcFiles();
     const daemon = new FakeDaemon();
-    await daemon.start(socketPath);
+    const port = await daemon.start();
+    writePort(port);
 
     const [, serverTransport] = InMemoryTransport.createLinkedPair();
-    const mainPromise = main([], { socketPath, transport: serverTransport });
+    const mainPromise = main([], { host: "127.0.0.1", portFile, tokenFile, transport: serverTransport });
 
     await daemon.waitForNRequests(1);
     daemon.sendResponse(daemon.received[0]!.id, {

@@ -4,6 +4,19 @@
  * can test ordering, malformed lines, and disconnects precisely — the same
  * approach tests/unit/test_ipc_client.py's FakeDaemon takes on the Python
  * side, exercising real framing/routing instead of mocking the socket.
+ *
+ * Listens on a real TCP loopback port (127.0.0.1:0, OS-assigned) rather than
+ * a Unix socket, mirroring the real daemon's own transport (see
+ * src/privacyfence/ipc_server.py) -- including that the port is discovered
+ * via a file (PORT_FILE) rather than fixed, since a hardcoded shared port
+ * would collide across local accounts (see ipc.py's module docstring). The
+ * real daemon also requires the first line on every connection to be an
+ * auth token (see ipc.py's module docstring) before it processes anything
+ * else; this fake doesn't validate that token's value (there's no real
+ * secret to check here), it just consumes it as the first line of every
+ * connection so real IPCClient/fetchManifest traffic against it looks
+ * exactly like it would against the real daemon -- receivedTokens records
+ * what each connection sent, for tests that want to assert on it.
  */
 
 import fs from "node:fs";
@@ -17,16 +30,33 @@ export interface ReceivedRequest {
   params: unknown;
 }
 
-export function makeShortSocketPath(): { socketPath: string; cleanup: () => void } {
+/** A short-lived temp directory holding a fake ipc_token/ipc_port pair, plus
+ * cleanup. writePort() lets a test fill in the port file once it knows the
+ * real bound port (e.g. after FakeDaemon.start() resolves) -- mirroring how
+ * the real daemon only writes PORT_FILE once it's actually listening. */
+export function makeTempIpcFiles(token = "test-token"): {
+  tokenFile: string;
+  portFile: string;
+  token: string;
+  writePort: (port: number) => void;
+  cleanup: () => void;
+} {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pf-"));
-  const socketPath = path.join(dir, "s.sock");
+  const tokenFile = path.join(dir, "ipc_token");
+  const portFile = path.join(dir, "ipc_port");
+  fs.writeFileSync(tokenFile, token);
   return {
-    socketPath,
+    tokenFile,
+    portFile,
+    token,
+    writePort: (port: number) => fs.writeFileSync(portFile, String(port)),
     cleanup: () => {
-      try {
-        fs.unlinkSync(socketPath);
-      } catch {
-        // already gone
+      for (const f of [tokenFile, portFile]) {
+        try {
+          fs.unlinkSync(f);
+        } catch {
+          // already gone
+        }
       }
       try {
         fs.rmdirSync(dir);
@@ -37,17 +67,42 @@ export function makeShortSocketPath(): { socketPath: string; cleanup: () => void
   };
 }
 
+/** Bind an ephemeral TCP port on 127.0.0.1, immediately free it, and return
+ * the number -- a well-established "probably still free" trick for tests
+ * that need a real port number before anything is listening on it (e.g. to
+ * assert connectability is false, or to have a "late" listener bind to the
+ * exact same port a bit later). */
+export async function getFreePort(): Promise<number> {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.listen(0, "127.0.0.1", () => {
+      const address = srv.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      srv.close(() => resolve(port));
+    });
+  });
+}
+
 export class FakeDaemon {
   received: ReceivedRequest[] = [];
+  receivedTokens: string[] = [];
+  port = 0;
   private server: net.Server | null = null;
   private conn: net.Socket | null = null;
   private buffer = "";
+  private authSeen = false;
   private connectedResolvers: Array<() => void> = [];
 
-  async start(socketPath: string): Promise<void> {
+  /** Start listening. Pass a specific port to bind that exact one (e.g. to
+   * simulate a slow-starting daemon reusing a port a test already probed);
+   * omit it (or pass 0) for an OS-assigned ephemeral port, read back via
+   * the returned/``.port`` value. */
+  async start(port = 0): Promise<number> {
     await new Promise<void>((resolve) => {
       this.server = net.createServer((sock) => {
         this.conn = sock;
+        this.buffer = "";
+        this.authSeen = false;
         sock.setEncoding("utf8");
         sock.on("data", (chunk: string) => {
           this.buffer += chunk;
@@ -56,13 +111,21 @@ export class FakeDaemon {
             const line = this.buffer.slice(0, idx);
             this.buffer = this.buffer.slice(idx + 1);
             if (line.length === 0) continue;
+            if (!this.authSeen) {
+              this.authSeen = true;
+              this.receivedTokens.push(line);
+              continue;
+            }
             this.received.push(JSON.parse(line));
           }
         });
         for (const resolve of this.connectedResolvers.splice(0)) resolve();
       });
-      this.server.listen(socketPath, () => resolve());
+      this.server.listen(port, "127.0.0.1", () => resolve());
     });
+    const address = this.server!.address();
+    this.port = typeof address === "object" && address ? address.port : 0;
+    return this.port;
   }
 
   async waitForConnection(timeoutMs = 2000): Promise<void> {

@@ -1,4 +1,4 @@
-"""IPC server: asyncio Unix socket server that runs inside the daemon.
+"""IPC server: asyncio TCP loopback server that runs inside the daemon.
 
 Handles the JSON-RPC-style methods described in ipc.py. Connector.call() may
 block for an arbitrary duration (a gated call waiting on a native approval
@@ -42,6 +42,7 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import time
 import uuid
 from datetime import datetime, timezone
@@ -51,13 +52,16 @@ from .audit_log import AuditEntry, current_week, get_audit_logger
 from .auto_accept import TOOL_TO_GATE, TOOL_TO_OPERATION, get_auto_accept_evaluator, get_current_config
 from .connector import Connector, ToolSpec
 from .gate import propose_rule_change, reason_scope, unattended_scope
-from .ipc import LINE_LIMIT, SOCKET_PATH, VERSION
+from .ipc import HOST, LINE_LIMIT, PORT_FILE, TOKEN_FILE, VERSION
 
 logger = logging.getLogger(__name__)
 
 
 class IPCServer:
-    """Listens on SOCKET_PATH and dispatches connector calls."""
+    """Listens on HOST at an OS-assigned ephemeral port and dispatches
+    connector calls, gated by a per-launch random auth token (see start())
+    -- see ipc.py's module docstring for the connection handshake and for
+    why the port is discovered (PORT_FILE) rather than fixed."""
 
     # How long a completed call's result is kept around to serve an
     # identical retry without re-running it. Long enough to cover a client
@@ -72,6 +76,9 @@ class IPCServer:
     def __init__(self, connectors: list[Connector], *, unattended_sessions_enabled: bool = False) -> None:
         self._connectors: dict[str, Connector] = {c.name: c for c in connectors}
         self._server: asyncio.AbstractServer | None = None
+        # Generated fresh in start() -- see that method's comment on the
+        # listen-then-write-files ordering.
+        self._token: str = ""
         self._inflight: dict[str, tuple[asyncio.Future, float]] = {}
         # Opt-in gate for privacyfence_begin_unattended_session -- see
         # org_config.json's unattended_sessions.enabled. Off by
@@ -113,25 +120,39 @@ class IPCServer:
     # ------------------------------------------------------------------ #
 
     async def start(self) -> None:
-        os.makedirs(os.path.dirname(SOCKET_PATH), exist_ok=True)
-        # Remove stale socket file from a previous run.
-        try:
-            os.unlink(SOCKET_PATH)
-        except FileNotFoundError:
-            pass
-        self._server = await asyncio.start_unix_server(
-            self._handle_connection, path=SOCKET_PATH, limit=LINE_LIMIT
+        # port=0 asks the OS for a free ephemeral port -- see ipc.py's module
+        # docstring on why this is discovered (PORT_FILE) rather than a
+        # fixed, hardcoded number both sides agree on. The actual port is
+        # only known once the server is already bound and listening, so
+        # PORT_FILE/TOKEN_FILE are written after start_server() returns, not
+        # before -- unlike the old fixed-port design, a bridge that only
+        # proceeds once it can read PORT_FILE can never observe one without
+        # a real listener already behind it.
+        self._token = secrets.token_hex(32)
+        self._server = await asyncio.start_server(
+            self._handle_connection, host=HOST, port=0, limit=LINE_LIMIT
         )
-        logger.info("IPC server listening on %s", SOCKET_PATH)
+        port = self._server.sockets[0].getsockname()[1]
+        self._write_permissioned_file(TOKEN_FILE, self._token)
+        self._write_permissioned_file(PORT_FILE, str(port))
+        logger.info("IPC server listening on %s:%s", HOST, port)
 
     async def stop(self) -> None:
         if self._server:
             self._server.close()
             await self._server.wait_closed()
-        try:
-            os.unlink(SOCKET_PATH)
-        except FileNotFoundError:
-            pass
+        for path in (TOKEN_FILE, PORT_FILE):
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+
+    @staticmethod
+    def _write_permissioned_file(path: str, content: str) -> None:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
 
     # ------------------------------------------------------------------ #
     # Connection handler
@@ -141,8 +162,17 @@ class IPCServer:
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         peer = writer.get_extra_info("peername") or "<unknown>"
-        logger.debug("Bridge connected: %s", peer)
         try:
+            # Auth handshake: the first line on every new connection must be
+            # the current launch's token as bare text (not JSON) -- see
+            # ipc.py's module docstring. Anything else, including the
+            # connection dropping before a full line arrives, is treated the
+            # same as a failed auth: close without responding.
+            auth_line = await reader.readline()
+            if auth_line.decode("utf-8", errors="replace").strip() != self._token:
+                logger.warning("Connection %s failed IPC auth; closing", peer)
+                return
+            logger.debug("Bridge connected: %s", peer)
             while True:
                 line = await reader.readline()
                 if not line:

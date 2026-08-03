@@ -90,11 +90,10 @@ class EchoConnector(Connector):
 
 @pytest.fixture
 def bridge_home():
-    """A tmp HOME whose ~/.privacyfence/privacyfence.sock both the real
-    IPCServer (monkeypatched to this exact path below) and the real bridge
-    subprocess (which derives its socket path from $HOME exactly like
-    production) will agree on. Short path, same AF_UNIX sun_path constraint
-    as tests/unit/test_ipc_server.py's short_socket_path."""
+    """A tmp HOME whose ~/.privacyfence/ipc_token and ~/.privacyfence/ipc_port
+    both the real IPCServer (monkeypatched to these exact paths below) and
+    the real bridge subprocess (which derives them from $HOME exactly like
+    production) will agree on."""
     directory = Path(f"/tmp/pf-ct-{uuid.uuid4().hex[:8]}")
     (directory / ".privacyfence").mkdir(parents=True)
     yield directory
@@ -103,8 +102,8 @@ def bridge_home():
 
 @pytest.fixture
 async def running_daemon(bridge_home, monkeypatch):
-    socket_path = str(bridge_home / ".privacyfence" / "privacyfence.sock")
-    monkeypatch.setattr(ipc_server_module, "SOCKET_PATH", socket_path)
+    monkeypatch.setattr(ipc_server_module, "TOKEN_FILE", str(bridge_home / ".privacyfence" / "ipc_token"))
+    monkeypatch.setattr(ipc_server_module, "PORT_FILE", str(bridge_home / ".privacyfence" / "ipc_port"))
     connector = EchoConnector()
     server = IPCServer([connector])
     await server.start()
