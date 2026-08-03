@@ -10,9 +10,37 @@ from typing import Any, Callable
 
 import yaml
 
-from .resource_grants import build_effective_rules
+from .resource_grants import (
+    DRIVE_FOLDER_READ_TARGETS,
+    DRIVE_SANDBOX_WRITE_TARGETS,
+    build_effective_rules,
+)
 
 logger = logging.getLogger(__name__)
+
+# Drive/Sheets/Docs write operations deliberately excluded from
+# TEMP_ACCEPT_ELIGIBLE_OPERATIONS below, each for its own reason -- every
+# other entry in DRIVE_SANDBOX_WRITE_TARGETS (resource_grants.py) is eligible
+# by default, so a newly added write tool only stays out of the grace window
+# if someone adds it here on purpose, not by being silently forgotten.
+_TEMP_ACCEPT_EXCLUDED_OPERATIONS: frozenset[str] = frozenset({
+    # Destructive with no undo path through PrivacyFence, unlike
+    # insert/format -- gets the standing-rule treatment only (like
+    # sheets.add_sheet/sheets.rename_sheet below), never the lighter-weight
+    # temp accept.
+    "sheets.delete_dimensions",
+    # One-shot per file, not called in a burst the way write_range/
+    # format_range/insert_dimensions are.
+    "sheets.add_sheet",
+    "sheets.rename_sheet",
+    # Each clears/replaces a file's whole content in one call rather than
+    # being repeated cell-by-cell or range-by-range against the same file.
+    "drive.write_file",
+    "drive.write_doc",
+    # One-shot actions on a file, not a burst of repeated calls against it.
+    "drive.upload_file",
+    "drive.move_file",
+})
 
 # Write operations expected to be called repeatedly against the same file in
 # quick succession (e.g. an agent filling in a sheet cell-by-cell, or building
@@ -21,19 +49,14 @@ logger = logging.getLogger(__name__)
 # no separate button for it -- and never persisted to settings.yaml, unlike
 # Always allow, so it disappears with the daemon and with wall-clock time,
 # a much smaller commitment than a standing rule. Maps operation key -> the
-# args field that identifies "the same file" for that operation.
+# args field that identifies "the same file" for that operation -- every
+# sheets.* operation addresses its spreadsheet by spreadsheet_id, every
+# drive.*/docs.* operation by file_id (see DRIVE_SANDBOX_WRITE_TARGETS).
 TEMP_ACCEPT_ELIGIBLE_OPERATIONS: dict[str, str] = {
-    "sheets.write_range": "spreadsheet_id",
-    "sheets.format_range": "spreadsheet_id",
-    "sheets.insert_dimensions": "spreadsheet_id",
-    "drive.comment_file": "file_id",
-    "docs.edit_content": "file_id",
-    "docs.format_content": "file_id",
+    op_key: ("spreadsheet_id" if op_key.startswith("sheets.") else "file_id")
+    for op_key, _rule_name in DRIVE_SANDBOX_WRITE_TARGETS
+    if op_key not in _TEMP_ACCEPT_EXCLUDED_OPERATIONS
 }
-# sheets.delete_dimensions is deliberately absent: unlike insert/format, it
-# removes cell content with no undo path through PrivacyFence, so it only
-# gets the standing-rule treatment below (like sheets.add_sheet /
-# sheets.rename_sheet), never the lighter-weight temp accept.
 
 TEMP_ACCEPT_TTL_SECONDS = 300
 
@@ -1031,12 +1054,18 @@ def _confluence_read_page_candidates(ctx: ReviewContext) -> dict[str, Callable[[
     }
 
 
+# Operation keys sharing the "drive_read" suggestion family -- Drive's own
+# reads plus sheets.read_values (Sheets rides on Drive's grant, see
+# resource_grants.DRIVE_FOLDER_READ_TARGETS, the single source of truth this
+# is derived from) -- shared by _MULTI_CANDIDATE_FAMILIES below and
+# suggest_rule()'s own branch condition, instead of each hand-listing its own
+# copy of the same three operation keys.
+_DRIVE_READ_OPERATION_KEYS: tuple[str, ...] = tuple(op_key for op_key, _rule_name in DRIVE_FOLDER_READ_TARGETS)
+
 # operation_key -> (family, candidate builder), for the four multi-candidate
 # operations above -- shared lookup table for suggest_rule_choices() below.
 _MULTI_CANDIDATE_FAMILIES: dict[str, tuple[str, Callable[[ReviewContext], dict[str, Callable[[], Any]]]]] = {
-    "drive.read_file_contents": ("drive_read", _drive_read_candidates),
-    "drive.download_file": ("drive_read", _drive_read_candidates),
-    "sheets.read_values": ("drive_read", _drive_read_candidates),
+    **{op_key: ("drive_read", _drive_read_candidates) for op_key in _DRIVE_READ_OPERATION_KEYS},
     "calendar.read_event_details": ("calendar_read_event", _calendar_read_event_candidates),
     "jira.read_issue": ("jira_read_issue", _jira_read_issue_candidates),
     "confluence.read_page": ("confluence_read_page", _confluence_read_page_candidates),
@@ -1063,7 +1092,7 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
         domain = _domain_of(sender)
         return ("trusted_sender_domain", [domain]) if domain else None
 
-    if operation_key in ("drive.read_file_contents", "drive.download_file", "sheets.read_values"):
+    if operation_key in _DRIVE_READ_OPERATION_KEYS:
         return _first_matching_suggestion("drive_read", _drive_read_candidates(ctx))
 
     if operation_key == "slack.read_messages":
@@ -1196,6 +1225,33 @@ class WriteRuleSuggestion:
     value_of: Callable[[ReviewContext], Any]  # _NO_SUGGESTION -> nothing to suggest for this call
 
 
+# Value builder for each rule_name DRIVE_SANDBOX_WRITE_TARGETS (resource_grants.py)
+# actually uses -- approved_sandbox_folder/move_within_approved_folders both read
+# the file's *current* parent folder(s) off raw_data (_sandbox_folder_value),
+# while parent_folder_allowlist reads the upload's destination folder from args
+# instead (the file doesn't exist yet at upload time).
+_SANDBOX_WRITE_VALUE_BUILDERS: dict[str, Callable[[ReviewContext], Any]] = {
+    "approved_sandbox_folder": _sandbox_folder_value,
+    "move_within_approved_folders": _sandbox_folder_value,
+    "parent_folder_allowlist": (
+        lambda ctx: [ctx.args["parent_folder_id"]] if ctx.args.get("parent_folder_id") else _NO_SUGGESTION
+    ),
+}
+
+# All of Drive's write tools -- writing into a trusted sandbox folder,
+# uploading into it, commenting on a file already there, moving a file out of
+# it, and every Sheets/Docs write tool -- are all covered by the same
+# drive.sandbox_folders grant (see resource_grants.py's
+# DRIVE_SANDBOX_WRITE_TARGETS, the single source of truth for this operation
+# list; upload/move use their own existing rule names since they check a
+# different arg than approved_sandbox_folder's raw_data-derived one, resolved
+# above by rule_name via _SANDBOX_WRITE_VALUE_BUILDERS).
+_DRIVE_SANDBOX_WRITE_SUGGESTIONS: dict[str, WriteRuleSuggestion] = {
+    op_key: WriteRuleSuggestion(rule_name, _SANDBOX_WRITE_VALUE_BUILDERS[rule_name])
+    for op_key, rule_name in DRIVE_SANDBOX_WRITE_TARGETS
+}
+
+
 # Every entry here except gmail.create_draft is resource-identity-scoped
 # (one folder, one label, one calendar, one project, one space, one task
 # list) rather than a bare "accept every future write of this type" toggle --
@@ -1221,29 +1277,8 @@ WRITE_RULE_SUGGESTIONS: dict[str, WriteRuleSuggestion] = {
     "calendar.set_visibility": WriteRuleSuggestion(
         "personal_calendar", lambda ctx: [ctx.args["calendar_id"]] if ctx.args.get("calendar_id") else _NO_SUGGESTION
     ),
-    # All of Drive's write tools -- writing into a trusted sandbox folder,
-    # uploading into it, commenting on a file already there, and moving a
-    # file out of it are all covered by the same drive.sandbox_folders
-    # grant (see resource_grants.py); upload/move use their own existing
-    # rule names since they check a different arg (the upload's destination
-    # folder, the file's current parent folder) rather than
-    # approved_sandbox_folder's raw_data-derived one.
-    "drive.write_file": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
-    "drive.write_doc": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
-    "drive.comment_file": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
-    "drive.upload_file": WriteRuleSuggestion(
-        "parent_folder_allowlist",
-        lambda ctx: [ctx.args["parent_folder_id"]] if ctx.args.get("parent_folder_id") else _NO_SUGGESTION,
-    ),
-    "drive.move_file": WriteRuleSuggestion("move_within_approved_folders", _sandbox_folder_value),
-    "sheets.write_range": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
-    "sheets.add_sheet": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
-    "sheets.rename_sheet": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
-    "sheets.format_range": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
-    "sheets.insert_dimensions": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
-    "sheets.delete_dimensions": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
-    "docs.edit_content": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
-    "docs.format_content": WriteRuleSuggestion("approved_sandbox_folder", _sandbox_folder_value),
+    # Drive/Sheets/Docs writes -- see _DRIVE_SANDBOX_WRITE_SUGGESTIONS above.
+    **_DRIVE_SANDBOX_WRITE_SUGGESTIONS,
     "jira.create_issue": WriteRuleSuggestion("approved_project_keys", _project_key_value),
     "jira.add_comment": WriteRuleSuggestion("approved_project_keys", _project_key_value),
     "jira.update_issue": WriteRuleSuggestion("approved_project_keys", _project_key_value),
