@@ -1,11 +1,12 @@
 """Shared gating helper: auto-accept check -> native popup -> audit log.
 
 Every gated call resolves synchronously inside gated_call(): the data is
-fetched, an auto-accept rule may skip the popup entirely, otherwise a native
-macOS dialog (approval_popup.py) blocks until the user decides. There is no
-pending-approval handshake — gated_call() either returns the data or raises
-in the same call that fetched it, so Claude never holds a tool that can
-release gated data on its own.
+fetched, an auto-accept rule may skip the popup entirely, otherwise a popup
+shown through the pluggable ApprovalUI seam (approval_ui.py -- today always
+NativeApprovalUI, a native macOS dialog via approval_popup.py) blocks until
+the user decides. There is no pending-approval handshake — gated_call()
+either returns the data or raises in the same call that fetched it, so
+Claude never holds a tool that can release gated data on its own.
 
   gate="review"  (read tools)
     Popup offers Deny / Allow once / and — when a plausible auto-accept rule
@@ -88,13 +89,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from .approval_popup import (
-    show_pii_confirmation_popup,
-    show_popup,
-    show_read_popup,
-    show_rule_choice_popup,
-    show_rule_confirmation_popup,
-)
+from .approval_ui import get_approval_ui
 from .approval_window_html import NARROW, WIDE
 from .audit_log import AuditEntry, current_week, get_audit_logger
 from .auto_accept import (
@@ -117,6 +112,39 @@ from .pii_detector import detect_pii_categories
 from .resource_grants import apply_grant_removal, apply_grant_upsert, describe_grant_change, resource_type
 
 logger = logging.getLogger(__name__)
+
+# Thin delegations to the pluggable ApprovalUI seam (approval_ui.py), kept as
+# plain module-level functions -- rather than called as get_approval_ui().
+# show_read_popup(...) inline at each call site below -- so this module
+# still calls a bare name for each dialog, same as when it imported these
+# straight from approval_popup.py. That's what lets every gate.py test
+# monkeypatch e.g. gate.show_read_popup directly without knowing anything
+# about ApprovalUI. get_approval_ui() is re-resolved on every call rather
+# than bound once at import time, so a later init_approval_ui() swap (a
+# different ApprovalUI implementation, e.g. for #55's mobile remote
+# approval) takes effect immediately, not just for gate.py calls that happen
+# after this module was first imported.
+
+
+def show_popup(*args, **kwargs):
+    return get_approval_ui().show_popup(*args, **kwargs)
+
+
+def show_read_popup(*args, **kwargs):
+    return get_approval_ui().show_read_popup(*args, **kwargs)
+
+
+def show_pii_confirmation_popup(*args, **kwargs):
+    return get_approval_ui().show_pii_confirmation_popup(*args, **kwargs)
+
+
+def show_rule_choice_popup(*args, **kwargs):
+    return get_approval_ui().show_rule_choice_popup(*args, **kwargs)
+
+
+def show_rule_confirmation_popup(*args, **kwargs):
+    return get_approval_ui().show_rule_confirmation_popup(*args, **kwargs)
+
 
 # Per-tool NARROW/WIDE card-stack shape, ported verbatim from
 # scripts/qa_popup_smoke.py's own _TOOL_LAYOUT (that script's own comment

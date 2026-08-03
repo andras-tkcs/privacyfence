@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 import { IPCClient, IPCError } from "../src/ipcClient.js";
-import { FakeDaemon, makeShortSocketPath } from "./testDaemon.js";
+import { FakeDaemon, getFreePort, makeTempIpcFiles } from "./testDaemon.js";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -18,10 +18,11 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 2000): Promise<vo
 }
 
 async function setup() {
-  const { socketPath, cleanup } = makeShortSocketPath();
+  const { tokenFile, portFile, writePort, cleanup } = makeTempIpcFiles();
   const daemon = new FakeDaemon();
-  await daemon.start(socketPath);
-  const client = new IPCClient(socketPath);
+  const port = await daemon.start();
+  writePort(port);
+  const client = new IPCClient("127.0.0.1", portFile, tokenFile);
   await client.connect();
   await daemon.waitForConnection();
   return {
@@ -273,8 +274,15 @@ describe("IPCClient disconnect handling", () => {
   });
 
   it("a request made before connect() rejects instead of hanging", async () => {
-    const client = new IPCClient("/nonexistent/does-not-matter.sock");
-    await assert.rejects(client.call("a", "x", {}), IPCError);
+    const { tokenFile, portFile, writePort, cleanup } = makeTempIpcFiles();
+    const port = await getFreePort(); // freed immediately -- nothing listens on it
+    writePort(port);
+    try {
+      const client = new IPCClient("127.0.0.1", portFile, tokenFile);
+      await assert.rejects(client.call("a", "x", {}), IPCError);
+    } finally {
+      cleanup();
+    }
   });
 });
 
@@ -300,14 +308,16 @@ describe("IPCClient reconnection", () => {
   });
 
   it("connects lazily on the first request and recovers once the daemon comes up", async () => {
-    const { socketPath, cleanup } = makeShortSocketPath();
+    const { tokenFile, portFile, writePort, cleanup } = makeTempIpcFiles();
+    const port = await getFreePort(); // freed immediately -- nothing listens on it yet
+    writePort(port);
     const daemon = new FakeDaemon();
-    const client = new IPCClient(socketPath);
+    const client = new IPCClient("127.0.0.1", portFile, tokenFile);
     try {
       // Nothing is listening yet -- fails fast with a clear error instead of hanging.
       await assert.rejects(client.call("a", "x", {}), IPCError);
 
-      await daemon.start(socketPath);
+      await daemon.start(port);
       const task = client.call("a", "x", {});
       await daemon.waitForNRequests(1);
       daemon.sendResponse(daemon.received[0]!.id, { result: "ok" });

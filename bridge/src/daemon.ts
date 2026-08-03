@@ -8,7 +8,7 @@ import fs, { constants as fsConstants } from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { BridgeExitError } from "./errors.js";
-import { SOCKET_PATH } from "./protocol.js";
+import { HOST, PORT_FILE, readIpcPort } from "./protocol.js";
 
 const CONNECT_TIMEOUT_MS = 10_000; // time to wait for daemon startup
 const CONNECT_INTERVAL_MS = 400;
@@ -72,10 +72,26 @@ export function findDaemonCmd(opts: FindDaemonCmdOptions = {}): string[] {
   return ["python3", "-m", "privacyfence.daemon_main"];
 }
 
-/** Return true if the daemon socket is accepting connections right now. */
-export function socketConnectable(socketPath = SOCKET_PATH): Promise<boolean> {
+/**
+ * Return true if the daemon is accepting connections right now. The daemon
+ * listens on an OS-assigned ephemeral port (see ipc.py's module docstring
+ * for why, rather than a fixed one) discovered via PORT_FILE, so
+ * "connectable" folds in "the port file exists and names a port something
+ * is actually listening on" -- a PORT_FILE that hasn't been written yet
+ * (daemon not started) or still holds an earlier launch's now-dead port
+ * (daemon mid-restart) both read as false here, same as the old "no socket
+ * file yet" case did.
+ */
+export function socketConnectable(host = HOST, portFile = PORT_FILE): Promise<boolean> {
   return new Promise((resolve) => {
-    const sock = net.createConnection(socketPath);
+    let port: number;
+    try {
+      port = readIpcPort(portFile);
+    } catch {
+      resolve(false);
+      return;
+    }
+    const sock = net.createConnection({ host, port });
     const done = (ok: boolean) => {
       sock.removeAllListeners();
       sock.destroy();
@@ -93,7 +109,8 @@ function sleep(ms: number): Promise<void> {
 }
 
 export interface EnsureDaemonRunningOptions {
-  socketPath?: string;
+  host?: string;
+  portFile?: string;
   /** Overridable for tests; defaults to the real findDaemonCmd(). */
   findCmd?: () => string[];
   connectTimeoutMs?: number;
@@ -102,12 +119,13 @@ export interface EnsureDaemonRunningOptions {
 
 /** Connect to the daemon, launching it first if needed. Resolves once ready. */
 export async function ensureDaemonRunning(opts: EnsureDaemonRunningOptions = {}): Promise<void> {
-  const socketPath = opts.socketPath ?? SOCKET_PATH;
+  const host = opts.host ?? HOST;
+  const portFile = opts.portFile ?? PORT_FILE;
   const findCmd = opts.findCmd ?? findDaemonCmd;
   const connectTimeoutMs = opts.connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
   const connectIntervalMs = opts.connectIntervalMs ?? CONNECT_INTERVAL_MS;
 
-  if (await socketConnectable(socketPath)) {
+  if (await socketConnectable(host, portFile)) {
     console.error("Daemon already running");
     return;
   }
@@ -125,7 +143,7 @@ export async function ensureDaemonRunning(opts: EnsureDaemonRunningOptions = {})
 
   const deadline = Date.now() + connectTimeoutMs;
   while (Date.now() < deadline) {
-    if (await socketConnectable(socketPath)) {
+    if (await socketConnectable(host, portFile)) {
       console.error("Daemon is ready");
       return;
     }
@@ -162,7 +180,8 @@ export interface WaitForDaemonPatientlyOptions extends EnsureDaemonRunningOption
  * socket, so a slow app start never launches a second instance.
  */
 export async function waitForDaemonPatiently(opts: WaitForDaemonPatientlyOptions = {}): Promise<void> {
-  const socketPath = opts.socketPath ?? SOCKET_PATH;
+  const host = opts.host ?? HOST;
+  const portFile = opts.portFile ?? PORT_FILE;
   const retryIntervalMs = opts.retryIntervalMs ?? PATIENT_RETRY_INTERVAL_MS;
 
   try {
@@ -175,7 +194,7 @@ export async function waitForDaemonPatiently(opts: WaitForDaemonPatientlyOptions
 
   for (;;) {
     await sleep(retryIntervalMs);
-    if (await socketConnectable(socketPath)) {
+    if (await socketConnectable(host, portFile)) {
       console.error("Daemon is ready");
       return;
     }

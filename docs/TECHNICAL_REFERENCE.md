@@ -1176,8 +1176,8 @@ The daemon and the bridge are built and shipped separately:
 - **PrivacyFenceApp.app** (built by `scripts/build_dmg.sh`) — the daemon: owns credentials,
   connectors, the review gate, the audit log, and the LaunchAgent. Install this first via the DMG.
 - **PrivacyFence.mcpb** (built by `scripts/build_mcpb.sh`, from `bridge/`) — just the bridge: a
-  small Node/TypeScript MCP server that talks to the daemon over a Unix socket. Install this into
-  Claude.
+  small Node/TypeScript MCP server that talks to the daemon over a TCP loopback connection. Install
+  this into Claude.
 
 ### Option A: one-click extension (Claude Desktop)
 
@@ -1252,8 +1252,8 @@ See [`config/settings.yaml.example`](../src/privacyfence/resources/settings.yaml
 ## Architecture notes
 
 - The bridge is stateless and disposable — Claude can kill and restart it at any time without losing any state. All state (credentials, tokens, filters, queue) lives in the daemon.
-- IPC between the bridge and the daemon uses a newline-delimited JSON protocol over a Unix domain socket (`~/.privacyfence/privacyfence.sock`).
-- The daemon uses two threads: the main thread runs the rumps menu bar app (a hard macOS requirement for AppKit) and an IPC thread runs the asyncio event loop serving the bridge socket. The main approval window is native AppKit/WKWebView (see `approval_window.py`), shown from any thread via `performSelectorOnMainThread_withObject_waitUntilDone_`; a few secondary confirmation dialogs (PII confirmation, rule confirmation) still use `osascript display dialog` subprocesses (`approval_popup.py`).
+- IPC between the bridge and the daemon uses a newline-delimited JSON protocol over a 127.0.0.1 TCP loopback socket, on an OS-assigned ephemeral port discovered via `~/.privacyfence/ipc_port` and authenticated by a per-launch random token (`~/.privacyfence/ipc_token`) required as the first line of every connection (see `src/privacyfence/ipc.py`'s module docstring).
+- The daemon uses two threads: the main thread runs the rumps menu bar app (a hard macOS requirement for AppKit) and an IPC thread runs the asyncio event loop serving the bridge connection. The main approval window is native AppKit/WKWebView (see `approval_window.py`), shown from any thread via `performSelectorOnMainThread_withObject_waitUntilDone_`; a few secondary confirmation dialogs (PII confirmation, rule confirmation) still use `osascript display dialog` subprocesses (`approval_popup.py`). `gate.py` reaches all of these through the pluggable `ApprovalUI` interface (`approval_ui.py`) rather than importing `approval_popup` directly — today's only implementation is `NativeApprovalUI`, but the seam exists so a future UI (e.g. mobile remote approval) can plug in without changing the policy loop.
 - All tools are advertised to Claude with `readOnlyHint = true` — see below.
 - The approval window follows the system's light/dark appearance automatically — no config or menu bar toggle, it reads `NSApp`'s current appearance.
 - The daemon checks GitHub Releases once a day for a newer version (`update_checker.py`) and shows a menu item / one-time dialog if one is found — never downloads or installs anything automatically. On by default; toggle from the menu bar's "Check for Updates" or `update_check.enabled` in `settings.yaml`. See [security-and-compliance.md](security-and-compliance.md) for what this network call does and doesn't send.
