@@ -1040,15 +1040,15 @@ class SettingsController:
     def telegram_submit_code(self, code: str) -> dict[str, Any]:
         if self._telegram_auth is None or self._telegram_auth.get("step") != "code":
             return self.snapshot()
+        code = (code or "").strip()
+        if not code:
+            self._telegram_auth["error"] = "Enter the verification code."
+            return self.snapshot()
         creds = telegram_app_credentials()
         if not creds:
             self.error = "Telegram app credentials are missing from this build."
             return self.snapshot()
         api_id, api_hash = creds
-        code = (code or "").strip()
-        if not code:
-            self._telegram_auth["error"] = "Enter the verification code."
-            return self.snapshot()
         from .daemon_main import TOKEN_FILES
         session_file = str(data_dir() / TOKEN_FILES["telegram"])
         phone = self._telegram_auth["phone"]
@@ -1099,15 +1099,15 @@ class SettingsController:
     def telegram_submit_2fa(self, password: str) -> dict[str, Any]:
         if self._telegram_auth is None or self._telegram_auth.get("step") != "password":
             return self.snapshot()
+        password = (password or "").strip()
+        if not password:
+            self._telegram_auth["error"] = "Enter your two-step verification password."
+            return self.snapshot()
         creds = telegram_app_credentials()
         if not creds:
             self.error = "Telegram app credentials are missing from this build."
             return self.snapshot()
         api_id, api_hash = creds
-        password = (password or "").strip()
-        if not password:
-            self._telegram_auth["error"] = "Enter your two-step verification password."
-            return self.snapshot()
         from .daemon_main import TOKEN_FILES
         session_file = str(data_dir() / TOKEN_FILES["telegram"])
         self._busy_connectors.add("telegram")

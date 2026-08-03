@@ -1347,7 +1347,9 @@ class TestAbout:
 class TestSnapshotStructure:
     def test_snapshot_has_one_key_per_page(self, controller):
         state = controller.snapshot()
-        assert set(state) == {"error", "general", "connectors", "rules", "privacy", "audit", "about"}
+        assert set(state) == {
+            "error", "general", "connectors", "telegram_auth", "rules", "privacy", "audit", "about",
+        }
 
     def test_connectors_cover_all_connectors(self, controller):
         state = controller.snapshot()

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sys
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -102,12 +103,15 @@ class TestWindowWillClose:
         wc.configure(controller)
         wc.build_window()
 
-        removed = []
-        wc._user_content_controller.removeScriptMessageHandlerForName_ = lambda name: removed.append(name)
+        # A real WKUserContentController is a bridged Objective-C instance --
+        # its methods aren't per-instance overridable Python attributes, so
+        # swap in a plain mock rather than trying to patch the native object.
+        mock_ucc = Mock()
+        wc._user_content_controller = mock_ucc
 
         wc.windowWillClose_(None)
 
-        assert removed == [_MESSAGE_HANDLER_NAME]
+        mock_ucc.removeScriptMessageHandlerForName_.assert_called_once_with(_MESSAGE_HANDLER_NAME)
         assert wc.window is None
         assert wc._webview is None
         assert wc._user_content_controller is None
@@ -205,8 +209,14 @@ class TestPushState:
         wc.configure(controller)
         wc.build_window()
 
+        # A real WKWebView is a bridged Objective-C instance -- its methods
+        # aren't per-instance overridable Python attributes, so swap in a
+        # plain mock rather than trying to patch the native object.
         captured = {}
-        wc._webview.evaluateJavaScript_completionHandler_ = lambda js, cb: captured.setdefault("js", js)
+        wc._webview = Mock()
+        wc._webview.evaluateJavaScript_completionHandler_.side_effect = (
+            lambda js, cb: captured.setdefault("js", js)
+        )
 
         state = controller.snapshot()
         wc._push_state(state)

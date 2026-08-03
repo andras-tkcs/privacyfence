@@ -109,8 +109,15 @@ class SettingsWindowController(NSObject):
         build_panel(). show_window() is the only caller in production code.
         """
         style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable
+        # _WINDOW_WIDTH/_WINDOW_HEIGHT are the on-screen window size the design
+        # mockup specifies -- contentRectForFrameRect_styleMask_ converts that
+        # target *frame* size down to the *content* rect initWithContentRect_
+        # wants, so the title bar's chrome doesn't get added on top of it.
+        content_rect = NSWindow.contentRectForFrameRect_styleMask_(
+            NSMakeRect(0, 0, _WINDOW_WIDTH, _WINDOW_HEIGHT), style
+        )
         window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(0, 0, _WINDOW_WIDTH, _WINDOW_HEIGHT), style, NSBackingStoreBuffered, False
+            content_rect, style, NSBackingStoreBuffered, False
         )
         window.setTitle_("PrivacyFence Settings")
         # Default isReleasedWhenClosed is True -- AppKit would issue its own
