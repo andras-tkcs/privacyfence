@@ -15,8 +15,7 @@ from ..gate import current_reason, gated_call
 from ..gmail_client import GmailClient, GmailClientError, resolve_attachment_destination
 from ..html_to_text import html_to_text
 from ..privacy_filter import apply_list, apply_text, category_policy
-from ..quicklook_preview import generate_thumbnail, is_quicklook_enabled
-from ..text_extraction import extract_text, is_prefetch_worthy
+from ..text_extraction import extract_text, is_prefetch_worthy, preview_blocks_for
 
 logger = logging.getLogger(__name__)
 
@@ -766,20 +765,9 @@ class GmailConnector(Connector):
                 if attachment.mime_type.startswith("image/"):
                     preview_bytes = fetched_bytes
                     preview_mime_type = attachment.mime_type
-                elif is_quicklook_enabled():
-                    # Not an image -- QuickLook (off by default, menu-bar
-                    # toggle) is the fallback preview source for anything its
-                    # own renderer recognizes (PDFs, Office docs, and more),
-                    # bounded by its own max-wait timeout; a miss/timeout
-                    # just leaves preview_bytes empty, same as today.
-                    # asyncio.to_thread, not a direct call: generate_thumbnail
-                    # can block its calling thread for the full timeout, and
-                    # this is an async def -- calling it directly would stall
-                    # the whole daemon's event loop, not just this request.
-                    thumbnail = await asyncio.to_thread(generate_thumbnail, fetched_bytes, attachment.name)
-                    if thumbnail is not None:
-                        preview_bytes = thumbnail
-                        preview_mime_type = "image/png"
+                # Not an image -- extract_text() below feeds a rich
+                # "markdown" preview_blocks entry (see this call's
+                # gated_call below) instead of a visual thumbnail.
                 pii_scan_text = extract_text(fetched_bytes, attachment.mime_type)
 
         # Gate before touching disk: gated_call raises on denial, and only a
@@ -799,6 +787,7 @@ class GmailConnector(Connector):
             pii_scan_text=pii_scan_text,
             preview_bytes=preview_bytes,
             preview_mime_type=preview_mime_type,
+            preview_blocks=preview_blocks_for(details, pii_scan_text),
             my_email=self.my_email,
             args={"message_id": message_id, "attachment_name": attachment_name},
         )

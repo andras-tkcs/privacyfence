@@ -55,6 +55,8 @@ from __future__ import annotations
 from html import escape as _html_escape
 from pathlib import Path
 
+from .markdown_to_html import markdown_to_html
+
 _STYLES_PATH = Path(__file__).parent / "resources" / "approval_window" / "styles.css"
 _STYLES_CSS = _STYLES_PATH.read_text(encoding="utf-8")
 
@@ -186,6 +188,18 @@ def _text_block_html(text: str) -> str:
     return f'<div class="pf-preview-paragraph">{_html_escape(text)}</div>'
 
 
+def _markdown_block_html(markdown: str) -> str:
+    """A block of extracted content that carries real structure -- DOCX/
+    PPTX/XLSX/Confluence content run through text_extraction.py or
+    html_to_text.py's html_to_markdown(), both of which emit the same
+    Markdown syntax markdown_to_html.py renders here. Unlike
+    ``_text_block_html``, this is not further HTML-escaped: markdown_to_html.py
+    already escapes every literal text span itself and only ever emits
+    markup for syntax it actually recognized, so its output is safe to
+    embed directly."""
+    return f'<div class="pf-md">{markdown_to_html(markdown)}</div>'
+
+
 def _heading_block_html(label: str) -> str:
     """A standalone section heading with no value on the same line, e.g.
     Jira's "Description" heading above its (often multi-line) paragraph --
@@ -205,6 +219,8 @@ def _render_block(block: dict) -> str:
         return _heading_block_html(block.get("label", ""))
     if kind == "table":
         return _table_html(block)
+    if kind == "markdown":
+        return _markdown_block_html(block.get("text", ""))
     return ""
 
 
@@ -240,15 +256,20 @@ def build_preview_body_html(
     "text", "text": ...}`` (a plain paragraph), ``{"type": "field",
     "label": ..., "value": ...}`` (a standalone "Label: value" line, font-
     matched to a table header/caption via ``.pf-preview-label`` -- see
-    ``_field_block_html``), or a table dict (same shape as one entry of
-    ``tables``, see ``_table_html``). This is what makes *interleaving*
-    possible -- text, then a table, then more text -- which a flat
-    details_text-then-tables split can't express: e.g. jira_get_issue's
-    Reporter field, then its Description paragraph, then its Comments
-    table; or a Gmail thread's per-message From/Date fields each followed
-    by that message's body. Tools whose right pane is simple prose or a
-    simple table-only list don't need this -- ``details_text``/``tables``
-    alone still cover those without the extra structure.
+    ``_field_block_html``), ``{"type": "markdown", "text": ...}`` (Markdown
+    syntax -- headings, bold/italic, bullet/numbered lists, links, pipe
+    tables -- rendered to real HTML via markdown_to_html.py, see
+    ``_markdown_block_html``; this is how text_extraction.py's DOCX/PPTX/
+    XLSX output and html_to_text.py's html_to_markdown() output get a rich
+    preview instead of a flat text dump), or a table dict (same shape as
+    one entry of ``tables``, see ``_table_html``). This is what makes
+    *interleaving* possible -- text, then a table, then more text -- which
+    a flat details_text-then-tables split can't express: e.g.
+    jira_get_issue's Reporter field, then its Description paragraph, then
+    its Comments table; or a Gmail thread's per-message From/Date fields
+    each followed by that message's body. Tools whose right pane is simple
+    prose or a simple table-only list don't need this -- ``details_text``/
+    ``tables`` alone still cover those without the extra structure.
 
     No content_kind="email" structured header here: under the §1/§3
     knowledge-boundary split, From/Subject/Date already render as §1 rows

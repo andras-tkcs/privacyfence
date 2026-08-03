@@ -2074,55 +2074,6 @@ class TestBuildPiiMenu:
         assert pii_item[ip_title].callback is not None
 
 
-class TestToggleQuicklookPreview:
-    def test_flips_enabled_flag_and_saves(self, app):
-        app._toggle_quicklook_preview()
-
-        cfg = app._load_config()
-        assert cfg["quicklook_preview"]["enabled"] is True
-
-    def test_toggling_twice_re_disables(self, app):
-        app._toggle_quicklook_preview()
-        app._toggle_quicklook_preview()
-
-        assert app._load_config()["quicklook_preview"]["enabled"] is False
-
-    def test_defaults_to_disabled_when_unset(self, app):
-        # No quicklook_preview section in config yet -> treated as disabled
-        # (unlike pii_detection, which defaults to enabled), so the first
-        # toggle should turn it on.
-        assert "quicklook_preview" not in app._load_config()
-
-        app._toggle_quicklook_preview()
-
-        assert app._load_config()["quicklook_preview"]["enabled"] is True
-
-    def test_hot_reloads_live_state(self, app):
-        from privacyfence import quicklook_preview
-
-        assert quicklook_preview.is_quicklook_enabled() is False
-
-        app._toggle_quicklook_preview()
-
-        assert quicklook_preview.is_quicklook_enabled() is True
-        quicklook_preview.set_quicklook_enabled(False)  # restore module state for other tests
-
-    def test_menu_item_state_reflects_config(self, app):
-        app._toggle_quicklook_preview()  # now enabled
-
-        item = app.menu["QuickLook Previews"]["Enabled"]
-        assert bool(item.state) is True
-
-
-class TestBuildQuicklookMenu:
-    def test_enabled_item_state_reflects_config(self, app):
-        quicklook_item = app._build_quicklook_menu(True)
-        assert bool(quicklook_item["Enabled"].state) is True
-
-        quicklook_item = app._build_quicklook_menu(False)
-        assert bool(quicklook_item["Enabled"].state) is False
-
-
 class TestToggleUpdateCheck:
     def test_flips_enabled_flag_and_saves(self, app):
         app._toggle_update_check()

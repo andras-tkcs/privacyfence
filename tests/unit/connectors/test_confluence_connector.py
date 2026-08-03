@@ -286,13 +286,15 @@ class TestGetPage:
         assert kwargs["args"] == {"page_id": "p1"}
         assert kwargs["raw_data"] is kwargs["filtered_data"]
 
-    async def test_storage_format_markup_is_converted_to_plain_text(self, gated_call_spy):
+    async def test_storage_format_markup_is_converted_to_markdown(self, gated_call_spy):
         # Regression test for issue #112: confluence_get_page's details_text/
         # pii_scan_text were fed raw Confluence storage-format XHTML (with
         # unstripped <ac:*> macro tags) straight into the approval popup and
-        # the PII scanner. body must be run through html_to_text() first so
-        # the reviewer sees readable prose, not tag soup, and the scanner
-        # sees the actual text rather than XML markup.
+        # the PII scanner. body must be run through html_to_markdown() first
+        # so the reviewer sees readable, rendered content (not raw tag soup)
+        # and the scanner sees the actual text rather than XML markup. Also
+        # covers the "markdown" preview_blocks entry that renders that
+        # content richly (see approval_window_html.py).
         connector, client = make_connector()
         client.get_page.return_value = make_page(
             body='<p>Confidential steps here</p>'
@@ -309,6 +311,7 @@ class TestGetPage:
         assert "Confidential steps here" in kwargs["details_text"]
         assert "Rotate the secret" in kwargs["details_text"]
         assert kwargs["pii_scan_text"] == kwargs["details_text"]
+        assert kwargs["preview_blocks"] == [{"type": "markdown", "text": kwargs["details_text"]}]
 
     async def test_pii_scan_text_is_body_only_not_author(self, gated_call_spy):
         # author defaults to an email address, present on every page
@@ -351,7 +354,7 @@ class TestGetPageByTitle:
 
         assert gated_call_spy[0]["sender"] == "ENG"
 
-    async def test_storage_format_markup_is_converted_to_plain_text(self, gated_call_spy):
+    async def test_storage_format_markup_is_converted_to_markdown(self, gated_call_spy):
         # Same regression as TestGetPage's test of the same name (issue #112).
         connector, client = make_connector()
         client.get_page_by_title.return_value = make_page(
@@ -362,7 +365,8 @@ class TestGetPageByTitle:
 
         kwargs = gated_call_spy[0]
         assert "<ul>" not in kwargs["details_text"]
-        assert "Confidential item" in kwargs["details_text"]
+        assert "- Confidential item" in kwargs["details_text"]
+        assert kwargs["preview_blocks"] == [{"type": "markdown", "text": kwargs["details_text"]}]
 
 
 class TestDownloadAttachment:
@@ -411,6 +415,7 @@ class TestDownloadAttachment:
         assert kwargs["sender"] == "alice@example.com"
         assert result == {"path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024}
         assert kwargs["pii_scan_text"] == ""  # unrecognized type, nothing prefetched to scan
+        assert kwargs["preview_blocks"] == [{"type": "text", "text": kwargs["details_text"]}]
         client.download_attachment.assert_called_once_with("p1", "att-1", "report.pdf", "/tmp")
 
     async def test_unknown_attachment_name_raises_without_gating(self, gated_call_spy):
@@ -554,6 +559,13 @@ class TestAttachmentPiiScanWiring:
 
         kwargs = gated_call_spy[0]
         assert kwargs["pii_scan_text"] == "Please wire the deposit to DE89370400440532013000."
+        # Replaces the old QuickLook-thumbnail fallback: the attachment's
+        # own extracted content becomes a rich "markdown" preview_blocks
+        # entry instead -- see connectors/confluence.py's _download_attachment.
+        assert kwargs["preview_blocks"] == [
+            {"type": "text", "text": kwargs["details_text"]},
+            {"type": "markdown", "text": "Please wire the deposit to DE89370400440532013000."},
+        ]
 
     async def test_reuses_fetched_bytes_for_the_save_even_without_a_preview(self, gated_call_spy):
         # A PDF isn't an image -- no preview -- but the bytes fetched for the

@@ -114,9 +114,9 @@ personal data being newly exposed to it.
 **One narrow exception:** `drive_upload_file`. Its payload — an arbitrary local file via
 `local_path`, or inline bytes via `content_base64` — can be content Claude never actually read,
 unlike every other write tool's drafted text. When that file's extracted content (see
-[`text_extraction.py`](../src/privacyfence/text_extraction.py) — plain text, PDF, DOCX, and PPTX;
-images are out of scope, no OCR) flags likely personal data, the upload gets the same real
-treatment a flagged read does: the second "Are you sure?" confirmation below, and `pii_detected`
+[`text_extraction.py`](../src/privacyfence/text_extraction.py) — plain text, HTML, PDF, DOCX,
+PPTX, and XLSX; images are out of scope, no OCR) flags likely personal data, the upload gets the
+same real treatment a flagged read does: the second "Are you sure?" confirmation below, and `pii_detected`
 recorded in the audit log. Every other popup-gate write is unaffected and keeps the weaker,
 informational-only content-flag banner described in
 [`approval-window-content-reference.md`](approval-window-content-reference.md).

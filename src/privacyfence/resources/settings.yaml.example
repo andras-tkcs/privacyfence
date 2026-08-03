@@ -127,22 +127,6 @@ pii_detection:
   detect_ip_addresses: true
   detect_financial_figures: true
 
-quicklook_preview:
-  # Off by default. When on, a downloaded/attached/uploaded file that isn't
-  # an image (drive_download_file, gmail_download_attachment,
-  # drive_upload_file) gets a fallback thumbnail from macOS's own QuickLook
-  # renderer (PDFs, Office documents, and anything else it recognizes)
-  # instead of no preview at all. Runs out-of-process via quicklookd; a
-  # slow or failed render just falls back to the metadata-only preview,
-  # never blocks the approval popup past max_wait_seconds. Toggled
-  # automatically when you use "QuickLook Previews" in the menu bar.
-  enabled: false
-
-  # How long to wait for a single thumbnail render before giving up and
-  # falling back. Not menu-bar configurable -- edit this file directly if
-  # you need a different budget.
-  max_wait_seconds: 5.0
-
 update_check:
   # Once-a-day background check against GitHub Releases
   # (https://github.com/andras-tkcs/privacyfence/releases) for a newer version. Never downloads

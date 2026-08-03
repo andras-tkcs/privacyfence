@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from privacyfence import auto_accept, audit_log, pii_detector, privacy_filter, quicklook_preview
+from privacyfence import auto_accept, audit_log, pii_detector, privacy_filter
 
 
 @pytest.fixture(autouse=True)
@@ -20,9 +20,6 @@ def _reset_singletons():
     pii_detector._changed_listener = None
     pii_detector._disabled_categories.clear()
     privacy_filter._GROUPS = {}
-    quicklook_preview._enabled = False
-    quicklook_preview._max_wait_seconds = quicklook_preview.DEFAULT_MAX_WAIT_SECONDS
-    quicklook_preview._changed_listener = None
     yield
     auto_accept._INSTANCE = None
     auto_accept._config_path = None
@@ -33,6 +30,3 @@ def _reset_singletons():
     pii_detector._changed_listener = None
     pii_detector._disabled_categories.clear()
     privacy_filter._GROUPS = {}
-    quicklook_preview._enabled = False
-    quicklook_preview._max_wait_seconds = quicklook_preview.DEFAULT_MAX_WAIT_SECONDS
-    quicklook_preview._changed_listener = None

@@ -19,8 +19,7 @@ from ..drive_client import (
 )
 from ..gate import current_reason, gated_call
 from ..privacy_filter import apply_list, apply_text, category_policy
-from ..quicklook_preview import generate_thumbnail, is_quicklook_enabled
-from ..text_extraction import extract_text, is_prefetch_worthy
+from ..text_extraction import extract_text, is_prefetch_worthy, preview_blocks_for
 
 logger = logging.getLogger(__name__)
 
@@ -774,11 +773,16 @@ class DriveConnector(Connector):
                 # preview, not the actual download.
                 pass
 
-        # Best-effort PII scan: reuses the same capped fetch
+        # Best-effort extraction: reuses the same capped fetch
         # drive_get_file_content already does (100KB default) purely to get
-        # something to scan -- gmail_download_attachment's equivalent is
-        # below in gmail.py. A fetch/parse failure just means nothing gets
-        # scanned, same as today, rather than blocking the download.
+        # something to scan/preview -- gmail_download_attachment's
+        # equivalent is below in gmail.py. A fetch/parse failure just means
+        # nothing gets scanned or previewed, same as today, rather than
+        # blocking the download. Feeds both the PII scan and (via
+        # preview_blocks_for below) a rich preview of the file's own
+        # content -- since no file content ever reaches Claude for this
+        # tool, showing the human the real content here is strictly more
+        # useful than a visual-only thumbnail ever was.
         pii_scan_text = ""
         try:
             content = await self._fetch(self._drive.get_file_content, file_id)
@@ -786,20 +790,6 @@ class DriveConnector(Connector):
                 pii_scan_text = content.content_text
             elif content.content_bytes:
                 pii_scan_text = extract_text(content.content_bytes, drive_file.mime_type)
-                if not preview_bytes and is_quicklook_enabled():
-                    # No thumbnailLink (or its fetch failed) -- QuickLook (off
-                    # by default, menu-bar toggle) is the fallback preview
-                    # source for anything its own renderer recognizes,
-                    # bounded by its own max-wait timeout. asyncio.to_thread,
-                    # not a direct call: generate_thumbnail can block its
-                    # calling thread for the full timeout, and this is an
-                    # async def.
-                    thumbnail_png = await asyncio.to_thread(
-                        generate_thumbnail, content.content_bytes, name,
-                    )
-                    if thumbnail_png is not None:
-                        preview_bytes = thumbnail_png
-                        preview_mime_type = "image/png"
         except RuntimeError:
             pass
 
@@ -822,6 +812,7 @@ class DriveConnector(Connector):
             pii_scan_text=pii_scan_text,
             preview_bytes=preview_bytes,
             preview_mime_type=preview_mime_type,
+            preview_blocks=preview_blocks_for(details, pii_scan_text),
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={"file_id": file_id, "destination_dir": destination_dir},
@@ -982,19 +973,11 @@ class DriveConnector(Connector):
                     if guessed_mime.startswith("image/"):
                         preview_bytes = read_bytes
                         preview_mime_type = guessed_mime
-                    elif is_quicklook_enabled():
-                        # QuickLook (off by default, menu-bar toggle) is the
-                        # fallback preview source for anything its own
-                        # renderer recognizes, bounded by its own max-wait
-                        # timeout. asyncio.to_thread, not a direct call:
-                        # generate_thumbnail can block its calling thread for
-                        # the full timeout, and this is an async def.
-                        thumbnail_png = await asyncio.to_thread(
-                            generate_thumbnail, read_bytes, display_name,
-                        )
-                        if thumbnail_png is not None:
-                            preview_bytes = thumbnail_png
-                            preview_mime_type = "image/png"
+                    # Not an image (or extract_text() finding nothing for one,
+                    # same no-op as before) -- feeds upload_pii_scan_text below,
+                    # which also becomes a rich "markdown" preview_blocks entry
+                    # (see this function's own preview construction further
+                    # down) instead of a visual thumbnail.
                     upload_pii_scan_text = extract_text(read_bytes, guessed_mime)
         else:
             display_name = name.strip() or "(unnamed file)"
@@ -1016,11 +999,6 @@ class DriveConnector(Connector):
                 if guessed_mime.startswith("image/"):
                     preview_bytes = decoded
                     preview_mime_type = guessed_mime
-                elif is_quicklook_enabled():
-                    thumbnail_png = await asyncio.to_thread(generate_thumbnail, decoded, display_name)
-                    if thumbnail_png is not None:
-                        preview_bytes = thumbnail_png
-                        preview_mime_type = "image/png"
                 upload_pii_scan_text = extract_text(decoded, guessed_mime)
 
         preview = {
@@ -1043,6 +1021,7 @@ class DriveConnector(Connector):
             details_text=details,
             preview_bytes=preview_bytes,
             preview_mime_type=preview_mime_type,
+            preview_blocks=preview_blocks_for(details, upload_pii_scan_text),
             upload_pii_scan_text=upload_pii_scan_text,
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
