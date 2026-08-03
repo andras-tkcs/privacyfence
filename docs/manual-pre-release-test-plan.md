@@ -58,7 +58,7 @@ Goal: visually confirm the real approval-window modal loop still works end to en
 on a real on-screen button actually resolves the popup — which construction-only unit tests
 (`tests/unit/test_approval_window.py`) don't cover.
 
-You don't need to run all 90 scenarios before every release (that's specifically for
+You don't need to run all 94 scenarios before every release (that's specifically for
 `approval_window.py` modal-loop changes, per `docs/testing-policy.md` §2.2) — running one narrow
 and one wide representative scenario is enough to confirm the mechanism itself still works:
 
@@ -87,7 +87,7 @@ and one wide representative scenario is enough to confirm the mechanism itself s
       ```bash
       .venv/bin/python scripts/qa_popup_smoke.py --report-file /tmp/popup_smoke_full.md
       ```
-      and confirm the final line reads `90/90 scenarios passed` (89 tool-approval scenarios plus
+      and confirm the final line reads `94/94 scenarios passed` (93 tool-approval scenarios plus
       the one menu-bar scenario).
 - [ ] Requires macOS and Accessibility permission granted to your terminal/IDE — grant it once from
       System Settings → Privacy & Security → Accessibility if you haven't already.

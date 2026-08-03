@@ -18,8 +18,8 @@ each connector's client. The fastest way to catch drift between what the code
 does and what a user actually experiences is to drive every tool through a
 live Claude Cowork/Desktop session connected to the real `privacyfence`
 daemon, against real accounts, and watch what actually prompts — see
-[Example findings](#example-findings-from-the-2026-07-run) for what this
-method has already caught that no unit test did.
+[What this method catches that the unit suite can't](#what-this-method-catches-that-the-unit-suite-cant)
+for what this method has already caught that no unit test did.
 
 ## When to use this
 

@@ -27,8 +27,14 @@ drifts, don't trust it blindly.
   channel, and a field can appear in one without appearing in the other (e.g. `drive_get_file_content`'s
   reviewer preview truncates body text to 2,000 characters; the value returned to Claude is not
   truncated to that limit).
-- All figures below assume default `settings.yaml` — every category left at `allow`, and
-  `calendar.free_busy_full_event_details` left at its default `true`. If the user has redacted or
+- All figures below assume every category left at `allow` — this is `privacy_filter.py`'s own
+  bare fallback (`default_policy` defaults to `allow`) when a section is absent from
+  `settings.yaml` entirely, and `calendar.free_busy_full_event_details` left at its default
+  `true`. It is **not** what the shipped `settings.yaml.example` a from-source install copies in
+  actually ships with — that file sets `default_policy: block` per section and already blocks a
+  few specific categories out of the box (e.g. `privacy.categories.attachments`,
+  `contacts_privacy.categories.notes`, `tasks_privacy.categories.notes`,
+  `confluence_privacy.categories.search_excerpt`/`attachments`). If the user has redacted or
   blocked a category (`privacy_filter.py`), the corresponding field is replaced by a block marker
   or a length-revealing redaction placeholder — but **only at the specific call sites that
   actually apply the filter**, which is a narrower set than "every field in the tables below." See

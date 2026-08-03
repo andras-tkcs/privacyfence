@@ -890,7 +890,7 @@ a read operation key too). A value-less rule like `always_allow` shows just "Add
 flag `show_read_popup()` already uses to decide whether to render the button —
 and handles a resulting `"accept_all"` decision inside the same lock acquisition as the initial
 `should_auto_accept()` recheck, mirroring the review branch exactly. Every other write operation
-(roughly a dozen tools, e.g. `gmail_send_message`, `slack_send_message`) gets `None` from
+(roughly a dozen tools, e.g. `gmail_archive_message`, `slack_send_message`) gets `None` from
 `suggest_write_rule()` by construction — there's no fallback path, so they're structurally
 unaffected and their popups are visually unchanged (Deny / Allow once only).
 

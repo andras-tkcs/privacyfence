@@ -1259,12 +1259,10 @@ _DRIVE_SANDBOX_WRITE_SUGGESTIONS: dict[str, WriteRuleSuggestion] = {
 # list) rather than a bare "accept every future write of this type" toggle --
 # that property is what keeps this table's blast radius contained despite
 # reopening the write gate's "Always allow" button for these operations.
-# gmail.create_draft is a deliberate, narrow exception: drafting has no
-# recipient sent yet (unlike gmail.send_message, which the user still
-# reviews before it goes out via to_is_myself/approved_recipient_domain),
-# so an unconditional always_allow rule for drafting alone doesn't carry
-# the same blast radius a bare toggle would for an operation that actually
-# delivers something.
+# gmail.create_draft is a deliberate, narrow exception: Gmail has no tool
+# that actually sends a message (only drafts), so an unconditional
+# always_allow rule for drafting alone doesn't carry the same blast radius
+# a bare toggle would for an operation that actually delivers something.
 WRITE_RULE_SUGGESTIONS: dict[str, WriteRuleSuggestion] = {
     "gmail.create_draft": WriteRuleSuggestion("always_allow", lambda ctx: None),
     "gmail.add_label": WriteRuleSuggestion(

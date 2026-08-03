@@ -138,7 +138,7 @@ into exactly one of the three groups below — WG-3 is the one group where both 
 
 ### WG-1 — Deny / Allow once only (never Always allow, not temp-accept eligible)
 
-12 tools. Preview fields are tool-specific; `[brackets]` mark a field that's only added to the dict
+13 tools. Preview fields are tool-specific; `[brackets]` mark a field that's only added to the dict
 when the corresponding argument was actually provided (empty/default arguments don't produce an
 empty row).
 
@@ -149,6 +149,7 @@ empty row).
 | `gmail_update_filter` | Filter ID, Criteria, Actions |
 | `gmail_create_label` | Label |
 | `slack_send_message` | Channel, [In thread], [Mark unread] |
+| `slack_create_group_chat` | Participants |
 | `calendar_create_out_of_office` | Title, Time, Auto-decline |
 | `calendar_set_working_location` | Date, Location, [Building], [Label] |
 | `contacts_update` | Name, Emails, Phones (each: current value, or old → new if changing), [Organization], [Job title] |
@@ -164,8 +165,9 @@ rather than WG-2.
 
 ### WG-2 — Deny / Allow once, conditionally Always allow
 
-29 tools across `auto_accept.WRITE_RULE_SUGGESTIONS` — the narrow, deliberate exception to "writes
-never get Always allow" (see [Always allow for writes](TECHNICAL_REFERENCE.md#always-allow-for-writes)).
+29 of the 35 tools in `auto_accept.WRITE_RULE_SUGGESTIONS` (the other 6 are WG-3 below) — the
+narrow, deliberate exception to "writes never get Always allow" (see
+[Always allow for writes](TECHNICAL_REFERENCE.md#always-allow-for-writes)).
 The button only renders when `suggest_write_rule()` can actually derive a value from this call's own
 args or current state (e.g. `jira_create_issue` always can; `jira_add_comment` can't if `issue_key`
 has no `-` to parse a project out of; a Drive write can't if the file has no parent folder) — same
