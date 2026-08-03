@@ -38,6 +38,7 @@ import logging
 import subprocess
 from typing import Any
 
+import objc
 from AppKit import (
     NSApplication,
     NSApplicationActivationPolicyAccessory,
@@ -85,6 +86,7 @@ class SettingsWindowController(NSObject):
     menu_bar.py's first "Open PrivacyFence" click) and reused for the app's
     whole lifetime."""
 
+    @objc.python_method
     def configure(self, controller: SettingsController) -> None:
         self.controller = controller
         self.window = None
