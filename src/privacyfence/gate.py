@@ -140,6 +140,7 @@ _TOOL_LAYOUT: dict[str, str] = {
     "jira_create_issue": WIDE, "confluence_create_page": WIDE,
     "calendar_get_event_details": NARROW, "calendar_create_event": NARROW,
     "slack_send_message": WIDE, "telegram_send_message": WIDE, "jira_add_comment": WIDE,
+    "slack_create_group_chat": NARROW,
     "gmail_reply_all_draft": WIDE,
     "gmail_add_label": NARROW, "gmail_remove_label": NARROW, "gmail_archive_message": NARROW,
     "gmail_create_filter": NARROW, "gmail_update_filter": NARROW, "gmail_create_label": NARROW,

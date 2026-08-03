@@ -73,6 +73,7 @@ TOOL_TO_OPERATION: dict[str, str] = {
     "slack_get_channel_history":      "slack.read_messages",
     "slack_get_thread_replies":       "slack.read_messages",
     "slack_search_messages":          "slack.read_messages",
+    "slack_create_group_chat":        "slack.create_group_chat",
     "slack_send_message":             "slack.send_message",
     "calendar_get_event_details":     "calendar.read_event_details",
     "calendar_create_event":          "calendar.create_modify_event",
@@ -179,6 +180,7 @@ TOOL_TO_GATE: dict[str, str] = {
     "slack_get_channel_history":       "review",
     "slack_get_thread_replies":        "review",
     "slack_search_messages":           "review",
+    "slack_create_group_chat":         "popup",
     "slack_send_message":              "popup",
     # Google Calendar
     "calendar_list_calendars":         "auto",
