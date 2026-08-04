@@ -174,7 +174,9 @@ class SlackConnector(Connector):
                     "chat conversation(s) directly instead of relying on Slack's search "
                     "index, which is more reliable for participant-based lookups. "
                     "Combine with query to also filter those conversations' text. "
-                    "Requires user approval."
+                    "Defaults to the last 90 days (about 3 months) so results on a "
+                    "workspace with long history aren't dominated by old, no-longer-"
+                    "relevant matches; widen or disable via days. Requires user approval."
                 ),
                 params=[
                     ToolParam("query", "str", required=False, default=""),
@@ -185,6 +187,13 @@ class SlackConnector(Connector):
                             "Filter to the DM/group-chat conversation(s) with this "
                             "participant (user id, handle, or name); comma-separated "
                             "to match a group chat containing all of them"
+                        ),
+                    ),
+                    ToolParam(
+                        "days", "int", required=False, default=90,
+                        description=(
+                            "Only include messages from the last N days (default 90, "
+                            "~3 months); set to 0 to search all history with no cutoff"
                         ),
                     ),
                     ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
@@ -417,14 +426,16 @@ class SlackConnector(Connector):
             args={"channel_id": channel_id, "thread_ts": thread_ts, "is_group_dm": is_group_dm},
         )
 
-    async def _search_messages(self, query: str = "", count: int = 20, participant: str = "") -> Any:
+    async def _search_messages(
+        self, query: str = "", count: int = 20, participant: str = "", days: int = 90
+    ) -> Any:
         # Validate before gating, not after -- same reasoning as
         # calendar_set_event_visibility's/slack_create_group_chat's own
         # early checks: a doomed call shouldn't cost the user an
         # unnecessary approval decision.
         if not query and not participant:
             raise ValueError("slack_search_messages requires a query, a participant, or both")
-        messages = await self._fetch(self._slack.search_messages, query, count, participant)
+        messages = await self._fetch(self._slack.search_messages, query, count, participant, days)
         n = len(messages)
         filtered = _apply_message_privacy([_message_to_dict(m) for m in messages], "message_content")
         # Query/participant are Claude's own input (kept in §1 as
@@ -435,6 +446,7 @@ class SlackConnector(Connector):
             preview["Query"] = query
         if participant:
             preview["Participant"] = participant
+        preview["Since"] = f"last {days} day{'s' if days != 1 else ''}" if days else "all time"
         new_info = {"Results": str(n)}
         lines = [
             f"[{d['channel_name']}] {d['user_name'] or d['user_id'] or 'unknown'}: {d['text']}"
@@ -477,7 +489,7 @@ class SlackConnector(Connector):
             preview_tables=[table] if filtered else [],
             table_only=True,
             my_email=self.my_email,
-            args={"query": query, "participant": participant},
+            args={"query": query, "participant": participant, "days": days},
         )
 
     # ------------------------------------------------------------------ #
