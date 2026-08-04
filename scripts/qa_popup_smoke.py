@@ -1129,7 +1129,7 @@ def _drive_folder_entries(cfg: dict) -> list[dict]:
 def _settings_open_window_step(
     pid: int, pause_seconds: float, screenshot_dir: Path | None, slug: str
 ) -> str:
-    """Real click on the real tray status item, then on "Open PrivacyFence…" -- the same two-click
+    """Real click on the real tray status item, then on "Settings…" -- the same two-click
     path _run_menu_bar_scenario used (see git history at 1f367ca), just landing on the new settings
     window instead of the deleted rules_manager_window.py. Returns "clicked" on full success (the
     window actually appeared), or the first failing helper's own status string otherwise.
@@ -1148,7 +1148,7 @@ def _settings_open_window_step(
     if screenshot_dir is not None:
         _screenshot_own_window(pid, screenshot_dir / f"{slug}-menu.png")
     time.sleep(pause_seconds)
-    status = _click_menu_item(pid, "Open PrivacyFence…")
+    status = _click_menu_item(pid, "Settings…")
     if status != "clicked":
         return status
     status = _wait_for_window(pid)
@@ -1476,7 +1476,7 @@ def _run_settings_window_scenarios(
 
     slug0 = _slugify(names[0])
     status = _settings_open_window_step(pid, pause_seconds, screenshot_dir, slug0)
-    add_result(names[0], "Open PrivacyFence…", "shown", status)
+    add_result(names[0], "Settings…", "shown", status)
 
     if status != "clicked":
         # Nothing past this point can run without a window -- every other wanted scenario still
