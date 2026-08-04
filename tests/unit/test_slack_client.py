@@ -434,6 +434,63 @@ class TestResolveUserName:
         assert client._resolve_user_name("U1") == ""
 
 
+class TestResolvePermalink:
+    def test_top_level_message_no_thread_ts(self):
+        web_client = MagicMock()
+        web_client.conversations_info.return_value = {"channel": {"name": "eng-team"}}
+        client = make_client(web_client)
+
+        result = client.resolve_permalink(
+            "https://acme.slack.com/archives/C0123ABCD/p1700000000123456"
+        )
+
+        assert result == {
+            "channel_id": "C0123ABCD",
+            "channel_name": "eng-team",
+            "ts": "1700000000.123456",
+            "thread_ts": "",
+        }
+
+    def test_threaded_reply_carries_thread_root_ts(self):
+        web_client = MagicMock()
+        web_client.conversations_info.return_value = {"channel": {"name": "eng-team"}}
+        client = make_client(web_client)
+
+        result = client.resolve_permalink(
+            "https://acme.slack.com/archives/C0123ABCD/p1700000001000200"
+            "?thread_ts=1700000000.123456&cid=C0123ABCD"
+        )
+
+        assert result["ts"] == "1700000001.000200"
+        assert result["thread_ts"] == "1700000000.123456"
+
+    def test_unresolvable_channel_name_reads_as_empty_not_raising(self):
+        web_client = MagicMock()
+        web_client.conversations_info.side_effect = slack_error("channel_not_found")
+        client = make_client(web_client)
+
+        result = client.resolve_permalink(
+            "https://acme.slack.com/archives/C0123ABCD/p1700000000123456"
+        )
+
+        assert result["channel_name"] == ""
+
+    def test_empty_url_raises(self):
+        client = make_client(MagicMock())
+        with pytest.raises(SlackClientError, match="requires a url"):
+            client.resolve_permalink("")
+
+    def test_non_permalink_url_raises(self):
+        client = make_client(MagicMock())
+        with pytest.raises(SlackClientError, match="Not a recognizable Slack message permalink"):
+            client.resolve_permalink("https://example.com/not-a-permalink")
+
+    def test_channel_link_without_message_ts_raises(self):
+        client = make_client(MagicMock())
+        with pytest.raises(SlackClientError, match="Not a recognizable Slack message permalink"):
+            client.resolve_permalink("https://acme.slack.com/archives/C0123ABCD")
+
+
 # ---------------------------------------------------------------------------- #
 # check_connection
 # ---------------------------------------------------------------------------- #
@@ -504,6 +561,60 @@ class TestListChannels:
         client = make_client(web_client)
         with pytest.raises(SlackClientError, match="list_channels failed"):
             client.list_channels()
+
+    def test_participant_id_match_skips_name_resolution(self):
+        web_client = MagicMock()
+        web_client.conversations_list.return_value = {
+            "channels": [{"id": "C1", "name": "eng"}], "response_metadata": {},
+        }
+        web_client.conversations_members.return_value = {"members": ["U1", "U2"]}
+        client = make_client(web_client)
+
+        channels = client.list_channels(participant="U1")
+
+        assert [c.id for c in channels] == ["C1"]
+        # id-only match already decided it -- no per-member name resolution needed.
+        web_client.users_info.assert_not_called()
+
+    def test_participant_name_match_falls_back_to_resolved_names(self):
+        web_client = MagicMock()
+        web_client.conversations_list.return_value = {
+            "channels": [{"id": "C1", "name": "eng"}], "response_metadata": {},
+        }
+        web_client.conversations_members.return_value = {"members": ["U1"]}
+        web_client.users_info.return_value = {"user": {"id": "U1", "name": "jdoe", "real_name": "Jane Doe"}}
+        client = make_client(web_client)
+
+        channels = client.list_channels(participant="jane")
+
+        assert [c.id for c in channels] == ["C1"]
+
+    def test_participant_no_match_excludes_channel(self):
+        web_client = MagicMock()
+        web_client.conversations_list.return_value = {
+            "channels": [{"id": "C1", "name": "eng"}], "response_metadata": {},
+        }
+        web_client.conversations_members.return_value = {"members": ["U1"]}
+        web_client.users_info.return_value = {"user": {"id": "U1", "name": "jdoe"}}
+        client = make_client(web_client)
+
+        assert client.list_channels(participant="nobody") == []
+
+    def test_participant_comma_separated_requires_all_members(self):
+        web_client = MagicMock()
+        web_client.conversations_list.return_value = {
+            "channels": [{"id": "C1", "name": "eng"}, {"id": "C2", "name": "sales"}],
+            "response_metadata": {},
+        }
+        web_client.conversations_members.side_effect = [
+            {"members": ["U1", "U2"]},  # C1: both
+            {"members": ["U1"]},        # C2: only U1
+        ]
+        client = make_client(web_client)
+
+        channels = client.list_channels(participant="U1,U2")
+
+        assert [c.id for c in channels] == ["C1"]
 
 
 # ---------------------------------------------------------------------------- #
@@ -609,6 +720,26 @@ class TestListGroupChats:
         client = make_client(web_client)
 
         chats = client.list_group_chats(participant="bob")
+
+        assert [c.id for c in chats] == ["G1"]
+
+    def test_participant_comma_separated_requires_all_in_same_chat(self):
+        web_client = MagicMock()
+        web_client.conversations_list.return_value = {
+            "channels": [{"id": "G1", "name": "g1"}, {"id": "G2", "name": "g2"}],
+            "response_metadata": {},
+        }
+        web_client.conversations_members.side_effect = [
+            {"members": ["U1", "U2"]},  # G1: bob + jane
+            {"members": ["U1"]},        # G2: bob only
+        ]
+        web_client.users_info.side_effect = [
+            {"user": {"id": "U1", "name": "bob", "real_name": "Bob Smith"}},
+            {"user": {"id": "U2", "name": "jane", "real_name": "Jane Doe"}},
+        ]
+        client = make_client(web_client)
+
+        chats = client.list_group_chats(participant="bob,jane")
 
         assert [c.id for c in chats] == ["G1"]
 

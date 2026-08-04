@@ -102,6 +102,17 @@ class TestListChannels:
         entries = (tmp_path / f"{current_week()}.jsonl").read_text(encoding="utf-8").splitlines()
         assert '"decision": "auto_accepted"' in entries[0]
 
+    async def test_participant_passed_through_and_included_in_audit_summary(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        client.list_channels.return_value = []
+
+        await connector.call("slack_list_channels", {"participant": "bob"})
+
+        client.list_channels.assert_called_once_with(True, 100, "bob")
+        entries = (tmp_path / f"{current_week()}.jsonl").read_text(encoding="utf-8").splitlines()
+        assert "with bob" in entries[0]
+
 
 class TestListDMs:
     async def test_auto_accepts_and_maps_fields(self, tmp_path):
@@ -135,6 +146,42 @@ class TestListGroupChats:
         }]
         entries = (tmp_path / f"{current_week()}.jsonl").read_text(encoding="utf-8").splitlines()
         assert '"decision": "auto_accepted"' in entries[0]
+
+    async def test_comma_separated_participant_passed_through_and_in_audit_summary(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        client.list_group_chats.return_value = []
+
+        await connector.call("slack_list_group_chats", {"participant": "bob,jane"})
+
+        client.list_group_chats.assert_called_once_with(100, "bob,jane")
+        entries = (tmp_path / f"{current_week()}.jsonl").read_text(encoding="utf-8").splitlines()
+        assert "with bob,jane" in entries[0]
+
+
+class TestResolvePermalink:
+    async def test_auto_accepts_and_maps_fields(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        client.resolve_permalink.return_value = {
+            "channel_id": "C1", "channel_name": "eng-team", "ts": "1700000000.123456", "thread_ts": "",
+        }
+
+        result = await connector.call("slack_resolve_permalink", {"url": "https://acme.slack.com/archives/C1/p1700000000123456"})
+
+        assert result == {
+            "channel_id": "C1", "channel_name": "eng-team", "ts": "1700000000.123456", "thread_ts": "",
+        }
+        entries = (tmp_path / f"{current_week()}.jsonl").read_text(encoding="utf-8").splitlines()
+        assert '"decision": "auto_accepted"' in entries[0]
+        assert '"tool": "slack_resolve_permalink"' in entries[0]
+
+    async def test_client_error_becomes_runtime_error(self):
+        connector, client = make_connector()
+        client.resolve_permalink.side_effect = SlackClientError("Not a recognizable Slack message permalink: 'nope'")
+
+        with pytest.raises(RuntimeError, match="Not a recognizable Slack message permalink"):
+            await connector.call("slack_resolve_permalink", {"url": "nope"})
 
 
 class TestGetChannelHistory:
@@ -722,6 +769,12 @@ class TestEveryToolIsAudited:
     async def test_every_declared_tool_leaves_an_audit_trail(self, monkeypatch, tmp_path):
         connector, client = make_connector()
         client.open_conversation.return_value = SlackGroupChat(id="G1", name="g1")
+        # _auto_audit's summary reads result["channel_id"]/["channel_name"] --
+        # a bare MagicMock there isn't JSON-serializable, so the audit write
+        # would silently fail (caught and logged, not raised) without this.
+        client.resolve_permalink.return_value = {
+            "channel_id": "C1", "channel_name": "eng", "ts": "1.0", "thread_ts": "",
+        }
         await assert_all_tools_leave_an_audit_trail(
             connector, slack_module, monkeypatch, tmp_path,
             arg_overrides={

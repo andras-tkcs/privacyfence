@@ -259,9 +259,10 @@ PrivacyFence for a delete.
 
 | Tool | Dir | Gate | Preview | Details popup |
 |------|-----|------|----------------|---------------|
-| `slack_list_channels` | read | auto | — | — |
+| `slack_list_channels` | read | auto | — | — (optional `participant` filter matches channel membership by user id, handle, or display name, comma-separated for multiple; one extra `conversations.members` call per channel, plus one `users.info` call per unresolved member if no needle matches by id alone) |
 | `slack_list_dms` | read | auto | — | — (each entry is `id` + the other participant; optional `participant` filter matches by user id, handle, or display name) |
-| `slack_list_group_chats` | read | auto | — | — (each entry is `id`, `name`, and resolved `member_ids`/`member_names`; optional `participant` filter matches any member by user id, handle, or display name; one extra `conversations.members` call per group chat) |
+| `slack_list_group_chats` | read | auto | — | — (each entry is `id`, `name`, and resolved `member_ids`/`member_names`; optional `participant` filter matches by user id, handle, or display name, comma-separated to require all of them as members of the same group chat; one extra `conversations.members` call per group chat) |
+| `slack_resolve_permalink` | read | auto | — | — (parses a pasted Slack message permalink into `channel_id`/`channel_name`/`ts`/`thread_ts`, ready for `slack_get_channel_history`/`slack_get_thread_replies`; no Slack API call beyond a best-effort channel-name lookup) |
 | `slack_get_channel_history` | read | review | channel name, message count, first message (80 chars) | All messages |
 | `slack_get_thread_replies` | read | review | channel name, thread starter (80 chars), reply count | All replies |
 | `slack_search_messages` | read | review | query and/or participant, result count | All results |
@@ -274,6 +275,12 @@ has been opened at least once. To start a brand-new group chat, call `slack_crea
 field — it does not resolve email addresses or handles), then pass the returned `id` to
 `slack_send_message` as `channel_id`.
 
+`slack_list_channels`/`slack_list_group_chats` both accept the same comma-separated `participant`
+matching (user id, handle, or display name; comma-separated to require all of them as members of the
+same channel/chat) — the tool to reach for when a lookup is "the group chat/channel with Alice and
+Bob", as opposed to `slack_search_messages`'s participant matching below, which is for message
+content once the right conversation is already known.
+
 `slack_search_messages` accepts an optional `participant` (user id, handle, or display name;
 comma-separated to require a group chat containing all of them) alongside or instead of `query`.
 When given, it skips Slack's own search index — whose `from:`/`in:` modifiers need exact handle
@@ -281,6 +288,12 @@ syntax and don't reliably index every message — and instead reads the matching
 conversation(s) directly via the same matching `slack_list_dms`/`slack_list_group_chats` use,
 optionally narrowed by `query` as a client-side text filter. Prefer `participant` over a
 text-only `query` for "messages from Bob" or "messages with Bob and Jane" style lookups.
+
+`slack_resolve_permalink` decodes a message permalink (Slack's "Copy link" on any message) into the
+`channel_id`/`ts` (and, for a link to a threaded reply, the thread root's `thread_ts`) that
+`slack_get_channel_history`/`slack_get_thread_replies` need — the permalink already carries both, so
+this needs no `slack_list_channels`/`slack_search_messages` call at all to resolve a link a human
+pasted directly.
 
 ### Google Calendar
 
