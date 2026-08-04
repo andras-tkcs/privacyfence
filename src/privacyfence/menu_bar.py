@@ -8,7 +8,7 @@ covering the same ground. (QuickLook preview toggling, which briefly lived
 here too, was dropped project-wide in favor of rendering a file's own
 extracted content -- see settings_controller.py's git history -- rather than
 carried over into the new window.) This module is now just the tray icon:
-two items, "Open PrivacyFence…" (lazily creates and shows the settings
+two items, "Settings…" (lazily creates and shows the settings
 window) and "Quit PrivacyFence".
 
 Because that menu is static and never mutated after construction, the
@@ -71,7 +71,7 @@ class PrivacyFenceMenuBar(rumps.App):
             ipc_server=ipc_server,
             connector_objs=connector_objs,
         )
-        # Lazily created on first "Open PrivacyFence…" click (see
+        # Lazily created on first "Settings…" click (see
         # _open_settings_window) -- one long-lived window reused for the
         # app's whole lifetime, same lazy-singleton pattern the pre-#120
         # _rules_manager/_privacy_manager used.
@@ -81,7 +81,7 @@ class PrivacyFenceMenuBar(rumps.App):
         super().__init__(name="PrivacyFence", icon=icon_path, quit_button=None, template=True)
 
         self.menu = [
-            rumps.MenuItem("Open PrivacyFence…", callback=self._open_settings_window),
+            rumps.MenuItem("Settings…", callback=self._open_settings_window),
             rumps.separator,
             rumps.MenuItem("Quit PrivacyFence", callback=self._quit),
         ]

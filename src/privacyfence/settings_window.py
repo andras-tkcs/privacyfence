@@ -83,7 +83,7 @@ def _augment_connectors_with_icons(state: dict[str, Any]) -> dict[str, Any]:
 class SettingsWindowController(NSObject):
     """One long-lived, non-modal window -- unlike approval_window.py's
     one-shot-per-request controllers, this is created once (lazily, on
-    menu_bar.py's first "Open PrivacyFence" click) and reused for the app's
+    menu_bar.py's first "Settings…" click) and reused for the app's
     whole lifetime."""
 
     @objc.python_method
