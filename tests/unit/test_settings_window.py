@@ -154,6 +154,46 @@ class TestDispatch:
         assert captured["idx"] == 2
         assert captured["idx_type"] is int
 
+    def test_string_payload_values_are_coerced_to_plain_str(self, tmp_path, monkeypatch):
+        """message.body() bridges JS strings as objc.pyobjc_unicode (a str
+        subclass), not plain str. A str subclass sitting inside a
+        toggle_grant_capability-style call ends up as a dict key that later
+        gets persisted to settings.yaml via yaml.dump/safe_dump -- neither
+        has a representer for the subclass, so it either errors out (safe_dump)
+        or writes a !!python/object/apply:builtins.str tag that yaml.safe_load
+        can't read back on the next launch (dump). _dispatch must hand
+        plain str to the controller so that never happens."""
+        from privacyfence.settings_window import SettingsWindowController
+
+        class _PseudoStr(str):
+            pass
+
+        controller = _make_controller(tmp_path, monkeypatch)
+        captured = {}
+
+        def fake_toggle(connector, config_key, idx, cap):
+            captured["cap"] = cap
+            captured["cap_type"] = type(cap)
+            return controller.snapshot()
+
+        controller.toggle_grant_capability = fake_toggle
+        wc = SettingsWindowController.alloc().init()
+        wc.configure(controller)
+        wc.build_window()
+
+        wc._dispatch(
+            "toggle_grant_capability",
+            {
+                "connector": _PseudoStr("drive"),
+                "config_key": _PseudoStr("folders"),
+                "idx": 0,
+                "cap": _PseudoStr("read"),
+            },
+        )
+
+        assert captured["cap"] == "read"
+        assert captured["cap_type"] is str
+
     def test_quit_app_dispatches_to_the_controller_without_a_state_push(self, tmp_path, monkeypatch):
         from privacyfence.settings_window import SettingsWindowController
 
