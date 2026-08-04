@@ -465,10 +465,10 @@ class TestSearchMessages:
         await connector.call("slack_search_messages", {"query": "budget", "count": 5})
 
         kwargs = gated_call_spy[0]
-        assert kwargs["preview"] == {"Query": "budget"}
+        assert kwargs["preview"] == {"Query": "budget", "Since": "last 90 days"}
         assert kwargs["new_info"] == {"Results": "2"}
         assert kwargs["gate"] == "review"
-        assert kwargs["args"] == {"query": "budget", "participant": ""}
+        assert kwargs["args"] == {"query": "budget", "participant": "", "days": 90}
         assert kwargs["preview_tables"] == [{
             "headers": ["Channel", "Sender", "Date", "Message"],
             "rows": [
@@ -477,7 +477,27 @@ class TestSearchMessages:
             ],
         }]
         assert kwargs["table_only"] is True
-        client.search_messages.assert_called_once_with("budget", 5, "")
+        client.search_messages.assert_called_once_with("budget", 5, "", 90)
+
+    async def test_days_override_threaded_through_and_previewed(self, gated_call_spy):
+        connector, client = make_connector()
+        client.search_messages.return_value = [make_message()]
+
+        await connector.call("slack_search_messages", {"query": "budget", "days": 7})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["preview"]["Since"] == "last 7 days"
+        assert kwargs["args"] == {"query": "budget", "participant": "", "days": 7}
+        client.search_messages.assert_called_once_with("budget", 20, "", 7)
+
+    async def test_days_zero_previewed_as_all_time(self, gated_call_spy):
+        connector, client = make_connector()
+        client.search_messages.return_value = [make_message()]
+
+        await connector.call("slack_search_messages", {"query": "budget", "days": 0})
+
+        assert gated_call_spy[0]["preview"]["Since"] == "all time"
+        client.search_messages.assert_called_once_with("budget", 20, "", 0)
 
     async def test_empty_search_results_produce_no_table(self, gated_call_spy):
         connector, client = make_connector()
@@ -514,10 +534,10 @@ class TestSearchMessages:
         await connector.call("slack_search_messages", {"participant": "Bob"})
 
         kwargs = gated_call_spy[0]
-        assert kwargs["preview"] == {"Participant": "Bob"}
+        assert kwargs["preview"] == {"Participant": "Bob", "Since": "last 90 days"}
         assert kwargs["summary"] == "1 result for messages with Bob"
-        assert kwargs["args"] == {"query": "", "participant": "Bob"}
-        client.search_messages.assert_called_once_with("", 20, "Bob")
+        assert kwargs["args"] == {"query": "", "participant": "Bob", "days": 90}
+        client.search_messages.assert_called_once_with("", 20, "Bob", 90)
 
     async def test_participant_and_query_combined_preview_and_summary(self, gated_call_spy):
         connector, client = make_connector()
@@ -526,9 +546,9 @@ class TestSearchMessages:
         await connector.call("slack_search_messages", {"query": "budget", "participant": "Bob,Jane"})
 
         kwargs = gated_call_spy[0]
-        assert kwargs["preview"] == {"Query": "budget", "Participant": "Bob,Jane"}
+        assert kwargs["preview"] == {"Query": "budget", "Participant": "Bob,Jane", "Since": "last 90 days"}
         assert kwargs["summary"] == '2 results for "budget" with Bob,Jane'
-        assert kwargs["args"] == {"query": "budget", "participant": "Bob,Jane"}
+        assert kwargs["args"] == {"query": "budget", "participant": "Bob,Jane", "days": 90}
 
 
 class TestCreateGroupChat:

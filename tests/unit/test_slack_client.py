@@ -846,6 +846,25 @@ class TestSearchMessages:
         with pytest.raises(SlackClientError, match="search_messages failed"):
             client.search_messages("q")
 
+    def test_default_days_appends_after_modifier_to_query(self):
+        web_client = MagicMock()
+        web_client.search_messages.return_value = {"messages": {"matches": []}}
+        client = make_client(web_client)
+
+        client.search_messages("budget")
+
+        query = web_client.search_messages.call_args.kwargs["query"]
+        assert query.startswith("budget after:")
+
+    def test_days_zero_leaves_query_unmodified(self):
+        web_client = MagicMock()
+        web_client.search_messages.return_value = {"messages": {"matches": []}}
+        client = make_client(web_client)
+
+        client.search_messages("budget", days=0)
+
+        assert web_client.search_messages.call_args.kwargs["query"] == "budget"
+
     def test_participant_given_skips_slack_search_api_entirely(self):
         web_client = MagicMock()
         web_client.conversations_list.return_value = {"channels": [], "response_metadata": {}}
@@ -873,6 +892,23 @@ class TestSearchMessages:
         assert [m.text for m in results] == ["hi there"]
         web_client.conversations_history.assert_called_once()
         assert web_client.conversations_history.call_args.kwargs["channel"] == "D1"
+        # Default days=90 -> oldest is passed through to bound the history fetch.
+        assert "oldest" in web_client.conversations_history.call_args.kwargs
+
+    def test_participant_days_zero_omits_oldest_cutoff(self):
+        web_client = MagicMock()
+        web_client.conversations_list.side_effect = [
+            {"channels": [{"id": "D1", "user": "U1"}], "response_metadata": {}},
+            {"channels": [], "response_metadata": {}},
+        ]
+        web_client.users_info.return_value = {"user": {"id": "U1", "name": "bob"}}
+        web_client.conversations_info.return_value = {"channel": {"name": "bob-dm"}}
+        web_client.conversations_history.return_value = {"messages": []}
+        client = make_client(web_client)
+
+        client.search_messages(participant="bob", days=0)
+
+        assert "oldest" not in web_client.conversations_history.call_args.kwargs
 
     def test_participant_comma_separated_requires_all_in_same_group_chat(self):
         web_client = MagicMock()

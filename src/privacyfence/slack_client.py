@@ -28,7 +28,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
@@ -496,7 +496,7 @@ class SlackClient:
         return messages
 
     def search_messages(
-        self, query: str = "", count: int = 20, participant: str = ""
+        self, query: str = "", count: int = 20, participant: str = "", days: int = 90
     ) -> list[SlackMessage]:
         """Search messages via ``search.messages`` (requires ``search:read``), or,
         when ``participant`` is given, read the matching DM/group-DM
@@ -510,15 +510,27 @@ class SlackClient:
         given alongside ``participant``, is applied as a client-side
         case-insensitive substring filter over those conversations' text
         instead of Slack's full-text index.
+
+        ``days`` bounds both paths to the last N days (default 90, ~3
+        months) -- on a workspace with years of history, neither Slack's
+        search index nor a channel's most-recent-``count`` messages are
+        otherwise biased toward *relevant* results, just whatever last
+        matched, however old. Pass ``days=0`` for no cutoff.
         """
         if not query and not participant:
             raise SlackClientError("search_messages requires a query, a participant, or both")
         count = self._clamp(count, default=20, hi=100)
+        days = self._clamp(days, default=90, hi=3650, lo=0)
         if participant:
-            return self._search_by_participant(participant, query, count)
+            return self._search_by_participant(participant, query, count, days)
+
+        search_query = query
+        if days > 0:
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+            search_query = f"{query} after:{cutoff}".strip()
 
         try:
-            response = self._client.search_messages(query=query, count=count)
+            response = self._client.search_messages(query=search_query, count=count)
         except SlackApiError as exc:
             raise SlackClientError(
                 f"search_messages failed: {self._describe_error(exc)}"
@@ -537,14 +549,16 @@ class SlackClient:
         return messages
 
     def _search_by_participant(
-        self, participant: str, query: str, count: int
+        self, participant: str, query: str, count: int, days: int = 90
     ) -> list[SlackMessage]:
         """Most-recent-first messages from the DM/group-DM conversation(s)
         matching ``participant``, optionally narrowed to those whose text
         contains ``query`` (case-insensitive substring). ``participant`` may
         be comma-separated to require all of them as members of the same
         group chat -- a 1:1 DM only ever matches a single, unsegmented
-        participant since it has exactly one other party.
+        participant since it has exactly one other party. ``days`` (0 = no
+        cutoff) bounds each conversation's history fetch via ``oldest``, same
+        reasoning as ``search_messages``'s own ``days`` param.
         """
         needles = [p.strip() for p in participant.split(",") if p.strip()]
         if not needles:
@@ -557,9 +571,13 @@ class SlackClient:
             c.id for c in self.list_group_chats(max_results=1000, participant=participant)
         ]
 
+        oldest = None
+        if days > 0:
+            oldest = str((datetime.now(timezone.utc) - timedelta(days=days)).timestamp())
+
         messages: list[SlackMessage] = []
         for channel_id in channel_ids:
-            messages.extend(self.get_channel_history(channel_id, limit=count))
+            messages.extend(self.get_channel_history(channel_id, limit=count, oldest=oldest))
 
         if query:
             needle = query.lower()
