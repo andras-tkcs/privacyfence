@@ -26,10 +26,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
@@ -40,6 +41,10 @@ logger = logging.getLogger(__name__)
 
 SLACK_OAUTH_PORT = 53682
 SLACK_REDIRECT_PATH = "/callback"
+
+# A message permalink's path is /archives/<channel id>/p<17-digit ts>, e.g.
+# /archives/C0123ABCD/p1700000000123456 for ts "1700000000.123456".
+_PERMALINK_PATH_RE = re.compile(r"^/archives/([A-Z0-9]+)/p(\d{7,})$")
 
 DEFAULT_USER_SCOPES: list[str] = [
     "channels:read", "groups:read", "im:read", "mpim:read",
@@ -285,11 +290,19 @@ class SlackClient:
     # Read operations
     # ------------------------------------------------------------------ #
     def list_channels(
-        self, exclude_archived: bool = True, max_results: int = 100
+        self, exclude_archived: bool = True, max_results: int = 100, participant: str = ""
     ) -> list[SlackChannel]:
         """List channels visible to the bot.
 
-        Uses ``conversations.list`` with public and private channel types.
+        Uses ``conversations.list`` with public and private channel types. When
+        ``participant`` is given (a user id, handle, or display name, comma-
+        separated to require all of them), each returned channel's membership is
+        checked via ``conversations.members`` -- one extra Slack API call per
+        channel, same per-item cost ``list_group_chats`` accepts for its own
+        participant filter (see that method's docstring), except a channel's
+        member list is typically far larger, so ``_channel_matches_participant``
+        checks ids first (cheap) and only resolves display names -- one call per
+        unresolved member -- when an id-only match doesn't already decide it.
         """
         max_results = self._clamp(max_results, default=100, hi=1000)
         channels: list[SlackChannel] = []
@@ -315,6 +328,12 @@ class SlackClient:
             ) from exc
 
         channels = channels[:max_results]
+
+        if participant:
+            channels = [
+                c for c in channels if self._channel_matches_participant(c.id, participant)
+            ]
+
         logger.info("list_channels returned %d channel(s)", len(channels))
         return channels
 
@@ -371,7 +390,10 @@ class SlackClient:
         group DMs, so resolving (and hence filtering by) ``participant``
         costs one extra ``conversations.members`` call per group chat --
         O(n) Slack API calls where n is the number of group chats returned,
-        not O(1) like ``list_channels``/``list_dms``.
+        not O(1) like ``list_channels``/``list_dms``. ``participant`` may be
+        comma-separated to require all of them as members of the same group
+        chat (AND) -- the same multi-name matching ``search_messages`` uses
+        to resolve e.g. "Bob and Jane's group chat" to one conversation.
         """
         max_results = self._clamp(max_results, default=100, hi=1000)
         raw_chats: list[dict[str, Any]] = []
@@ -397,9 +419,10 @@ class SlackClient:
         chats = [self._parse_group_chat(raw) for raw in raw_chats]
 
         if participant:
+            needles = [p.strip() for p in participant.split(",") if p.strip()]
             chats = [
                 c for c in chats
-                if self._matches_participant(participant, c.member_ids, c.member_names)
+                if all(self._matches_participant(n, c.member_ids, c.member_names) for n in needles)
             ]
 
         logger.info("list_group_chats returned %d group chat(s)", len(chats))
@@ -530,9 +553,9 @@ class SlackClient:
         channel_ids: list[str] = []
         if len(needles) == 1:
             channel_ids += [d.id for d in self.list_dms(max_results=1000, participant=needles[0])]
-        for chat in self.list_group_chats(max_results=1000):
-            if all(self._matches_participant(n, chat.member_ids, chat.member_names) for n in needles):
-                channel_ids.append(chat.id)
+        channel_ids += [
+            c.id for c in self.list_group_chats(max_results=1000, participant=participant)
+        ]
 
         messages: list[SlackMessage] = []
         for channel_id in channel_ids:
@@ -608,6 +631,33 @@ class SlackClient:
             member_ids=list(user_ids),
             member_names=[self._resolve_user_name(uid) for uid in user_ids],
         )
+
+    def resolve_permalink(self, url: str) -> dict[str, str]:
+        """Parse a Slack message permalink (from a message's "Copy link") into
+        the channel id and timestamp ``get_channel_history``/``get_thread_replies``
+        need. A permalink already encodes both in its path
+        (``/archives/<channel id>/p<ts digits>``), so this needs no Slack API
+        call for them -- only the returned ``channel_name`` is looked up
+        (best-effort, cached, same as ``resolve_channel_name``). A permalink to
+        a threaded reply also carries the thread root's timestamp as a
+        ``thread_ts`` query parameter; a permalink to a top-level message (or
+        a thread's own root) has none, so ``thread_ts`` comes back empty.
+        """
+        if not url:
+            raise SlackClientError("resolve_permalink requires a url")
+        parsed = urlparse(url.strip())
+        match = _PERMALINK_PATH_RE.match(parsed.path)
+        if not match:
+            raise SlackClientError(f"Not a recognizable Slack message permalink: {url!r}")
+        channel_id, ts_digits = match.groups()
+        ts = f"{ts_digits[:-6]}.{ts_digits[-6:]}"
+        thread_ts = (parse_qs(parsed.query).get("thread_ts") or [""])[0]
+        return {
+            "channel_id": channel_id,
+            "channel_name": self.resolve_channel_name(channel_id),
+            "ts": ts,
+            "thread_ts": thread_ts,
+        }
 
     def resolve_user_name(self, user_id: str) -> str:
         """Best-effort display-name lookup for `user_id` (cached, never
@@ -735,6 +785,22 @@ class SlackClient:
         if any(needle == i.lower() for i in ids if i):
             return True
         return any(needle in n.lower() for n in names if n)
+
+    def _channel_matches_participant(self, channel_id: str, participant: str) -> bool:
+        """Whether ``channel_id``'s membership satisfies every comma-separated
+        name in ``participant`` (AND), same semantics as ``list_group_chats``.
+        Member ids are resolved and checked first; display names -- one
+        ``users.info`` call per unresolved member -- are only resolved if an
+        id-only match doesn't already decide every needle, since a channel's
+        membership can be far larger than a group chat's."""
+        needles = [p.strip() for p in participant.split(",") if p.strip()]
+        if not needles:
+            return True
+        member_ids = self._resolve_members(channel_id)
+        if all(self._matches_participant(n, member_ids, []) for n in needles):
+            return True
+        member_names = [self._resolve_user_name(uid) for uid in member_ids]
+        return all(self._matches_participant(n, member_ids, member_names) for n in needles)
 
     def _parse_dm(self, raw: dict[str, Any]) -> SlackDirectMessage:
         user_id = raw.get("user", "")

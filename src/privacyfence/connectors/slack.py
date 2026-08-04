@@ -63,11 +63,21 @@ class SlackConnector(Connector):
                 name="slack_list_channels",
                 description=(
                     "List Slack channels visible to the user "
-                    "(id, name, privacy, topic, purpose, member count). Auto-approved."
+                    "(id, name, privacy, topic, purpose, member count). Optionally "
+                    "filter to channels a specific participant belongs to. "
+                    "Auto-approved."
                 ),
                 params=[
                     ToolParam("exclude_archived", "bool", required=False, default=True),
                     ToolParam("max_results", "int", required=False, default=100),
+                    ToolParam(
+                        "participant", "str", required=False, default="",
+                        description=(
+                            "Filter to channels this participant (user id, handle, or name) "
+                            "belongs to; comma-separated to require all of them as members of "
+                            "the same channel; empty returns all"
+                        ),
+                    ),
                     ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
                 read_only=True,
@@ -102,7 +112,32 @@ class SlackConnector(Connector):
                     ToolParam("max_results", "int", required=False, default=100),
                     ToolParam(
                         "participant", "str", required=False, default="",
-                        description="Filter to group chats containing this participant (user id, handle, or name); empty returns all",
+                        description=(
+                            "Filter to group chats containing this participant (user id, "
+                            "handle, or name); comma-separated to require all of them as "
+                            "members of the same group chat; empty returns all"
+                        ),
+                    ),
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
+                ],
+                read_only=True,
+            ),
+            ToolSpec(
+                name="slack_resolve_permalink",
+                description=(
+                    "Parse a Slack message permalink (from a message's \"Copy link\") "
+                    "into the channel id, timestamp, and (if the link points at a "
+                    "threaded reply) thread root timestamp needed by "
+                    "slack_get_channel_history/slack_get_thread_replies. Reads no "
+                    "message content -- just decodes the link. Auto-approved."
+                ),
+                params=[
+                    ToolParam(
+                        "url", "str",
+                        description=(
+                            "A Slack message permalink, e.g. "
+                            "https://workspace.slack.com/archives/C0123/p1700000000123456"
+                        ),
                     ),
                     ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
@@ -198,6 +233,8 @@ class SlackConnector(Connector):
             return await self._list_dms(**args)
         if tool == "slack_list_group_chats":
             return await self._list_group_chats(**args)
+        if tool == "slack_resolve_permalink":
+            return await self._resolve_permalink(**args)
         if tool == "slack_get_channel_history":
             return await self._get_channel_history(**args)
         if tool == "slack_get_thread_replies":
@@ -214,11 +251,18 @@ class SlackConnector(Connector):
     # Auto
     # ------------------------------------------------------------------ #
 
-    async def _list_channels(self, exclude_archived: bool = True, max_results: int = 100) -> Any:
+    async def _list_channels(
+        self, exclude_archived: bool = True, max_results: int = 100, participant: str = ""
+    ) -> Any:
         t0 = time.time()
-        channels = await self._fetch(self._slack.list_channels, exclude_archived, max_results)
+        channels = await self._fetch(
+            self._slack.list_channels, exclude_archived, max_results, participant
+        )
+        label = f"List channels (max {max_results})"
+        if participant:
+            label += f" with {participant}"
         self._auto_audit("slack_list_channels", "List Slack Channels",
-                         f"List channels (max {max_results})", f"{len(channels)} channel(s)", t0)
+                         label, f"{len(channels)} channel(s)", t0)
         result = [
             {
                 "id": c.id,
@@ -266,6 +310,16 @@ class SlackConnector(Connector):
             for c in chats
         ]
         return apply_list("slack_privacy", "group_chat_list", result)
+
+    async def _resolve_permalink(self, url: str) -> Any:
+        t0 = time.time()
+        result = await self._fetch(self._slack.resolve_permalink, url)
+        self._auto_audit(
+            "slack_resolve_permalink", "Resolve Slack Permalink",
+            f"Resolve permalink -> {result['channel_name'] or result['channel_id']}",
+            result["channel_id"], t0,
+        )
+        return result
 
     # ------------------------------------------------------------------ #
     # Review gate (reads)
