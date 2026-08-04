@@ -619,7 +619,7 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
     if migration_summary or telegram_search_migrated:
         try:
             with open(_resolve_path(config_path), "w", encoding="utf-8") as fh:
-                yaml.dump(config, fh, default_flow_style=False, allow_unicode=True)
+                yaml.safe_dump(config, fh, default_flow_style=False, allow_unicode=True)
             if migration_summary:
                 logger.info(
                     "Auto-accept config migrated to connector-scoped grants:\n  %s",

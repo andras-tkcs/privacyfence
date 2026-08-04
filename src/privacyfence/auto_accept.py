@@ -1525,7 +1525,7 @@ def add_auto_accept_rule(operation_key: str, rule_name: str, value: Any) -> None
             return
         rules.append(new_rule)
         with open(_config_path, "w", encoding="utf-8") as f:
-            yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
+            yaml.safe_dump(cfg, f, default_flow_style=False, allow_unicode=True)
         reload_rules(build_effective_rules(cfg))
 
 
@@ -1556,7 +1556,7 @@ def remove_auto_accept_rule(operation_key: str, rule_name: str, value: Any = Non
         else:
             cfg.get("auto_accept_rules", {}).pop(operation_key, None)
         with open(_config_path, "w", encoding="utf-8") as f:
-            yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
+            yaml.safe_dump(cfg, f, default_flow_style=False, allow_unicode=True)
         reload_rules(build_effective_rules(cfg))
         return True
 
@@ -1603,7 +1603,7 @@ def mutate_grants(mutator: Callable[[dict[str, Any]], bool]) -> bool:
         changed = mutator(cfg)
         if changed:
             with open(_config_path, "w", encoding="utf-8") as f:
-                yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
+                yaml.safe_dump(cfg, f, default_flow_style=False, allow_unicode=True)
             reload_rules(build_effective_rules(cfg))
         return changed
 

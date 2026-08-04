@@ -621,7 +621,7 @@ class SettingsController:
     def _save_config(self, cfg: dict) -> None:
         try:
             with open(self._config_path, "w", encoding="utf-8") as f:
-                yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
+                yaml.safe_dump(cfg, f, default_flow_style=False, allow_unicode=True)
         except Exception as exc:
             logger.warning("Could not save config: %s", exc)
 

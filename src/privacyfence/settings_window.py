@@ -83,7 +83,7 @@ def _augment_connectors_with_icons(state: dict[str, Any]) -> dict[str, Any]:
 class SettingsWindowController(NSObject):
     """One long-lived, non-modal window -- unlike approval_window.py's
     one-shot-per-request controllers, this is created once (lazily, on
-    menu_bar.py's first "Open PrivacyFence" click) and reused for the app's
+    menu_bar.py's first "Settings…" click) and reused for the app's
     whole lifetime."""
 
     @objc.python_method
@@ -202,7 +202,16 @@ class SettingsWindowController(NSObject):
             logger.warning("Unknown settings bridge action: %s", action)
             return
 
-        kwargs = {k: (int(v) if k == "idx" and v is not None else v) for k, v in payload.items()}
+        # message.body() bridges JS strings as objc.pyobjc_unicode (a str
+        # subclass), not plain str -- left as-is, one of those ends up
+        # stored in cfg (e.g. a grant capability key) and yaml.dump has no
+        # representer for the subclass, so it falls back to a
+        # !!python/object/apply:builtins.str reconstruction tag that
+        # yaml.safe_load can't read back on the next launch.
+        kwargs = {
+            k: (int(v) if k == "idx" and v is not None else (str(v) if isinstance(v, str) else v))
+            for k, v in payload.items()
+        }
         try:
             result = method(**kwargs)
         except TypeError as exc:

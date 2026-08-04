@@ -1119,7 +1119,7 @@ PrivacyFence splits configuration into two steps done by two different people:
    into the bundle from a *second*, admin-scoped Google Cloud project via
    `scripts/sync_room_directory.py` — see "Room directory sync" in
    [google-cloud-setup.md](google-cloud-setup.md).
-2. **Every user, from the settings window (tray icon → "Open PrivacyFence…"):** install the bundle
+2. **Every user, from the settings window (tray icon → "Settings…"):** install the bundle
    IT sent you from the **General** page, then click **Authenticate…** on each connector you want
    from the **Connectors** page. Almost everywhere this opens your browser to sign in — Telegram is
    the only connector that instead asks for your phone number and a verification code via its own
@@ -1142,7 +1142,7 @@ the only download you need:
    cp com.privacyfence.app.plist ~/Library/LaunchAgents/
    launchctl load ~/Library/LaunchAgents/com.privacyfence.app.plist
    ```
-5. From the tray icon, click **Open PrivacyFence…**, then on the **General** page click
+5. From the tray icon, click **Settings…**, then on the **General** page click
    **Install/Update Organization Config…** and select the bundle your IT team sent you.
 6. On the **Connectors** page, click **Authenticate…** for each connector you want — this takes
    effect immediately (the daemon's live connector list is hot-reloaded), no quit/reopen needed.
@@ -1167,7 +1167,7 @@ cp src/privacyfence/resources/settings.yaml.example config/settings.yaml
 ```
 
 Build (or obtain from IT) an organization config bundle, then authorize each connector you want —
-either from the settings window (tray icon → "Open PrivacyFence…" → **Connectors**) once
+either from the settings window (tray icon → "Settings…" → **Connectors**) once
 `privacyfence-app` is running, or headlessly from the CLI. Running
 from source (unbundled) keeps all of this — config, `org/`, `credentials/`, logs — inside the repo
 folder itself; only a PyInstaller-bundled `.app` uses `~/.privacyfence` instead (see
