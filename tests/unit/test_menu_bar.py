@@ -6,7 +6,7 @@ around mutating a live NSMenu while it's open) moved to
 settings_controller.py/settings_window.py -- see test_settings_controller.py
 and test_settings_window.py for that coverage. What's left here is just:
 construction wires a SettingsController + lazy SettingsWindowController, and
-the two menu items ("Open PrivacyFence…"/"Quit PrivacyFence") dispatch to
+the two menu items ("Settings…"/"Quit PrivacyFence") dispatch to
 the right place.
 """
 from __future__ import annotations
@@ -62,7 +62,7 @@ class TestFindIcon:
 class TestConstruction:
     def test_builds_a_two_item_menu(self, app):
         titles = [item.title for item in app.menu.values() if hasattr(item, "title")]
-        assert titles == ["Open PrivacyFence…", "Quit PrivacyFence"]
+        assert titles == ["Settings…", "Quit PrivacyFence"]
 
     def test_holds_a_settings_controller(self, app):
         from privacyfence.settings_controller import SettingsController
