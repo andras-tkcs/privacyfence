@@ -126,9 +126,11 @@ changes (not every popup content change — those are covered by `test_approval_
 `test_dialog_window.py` on every PR). `dialog_window.py`'s own modal loop (`runDialog_`/
 `NSApplication.runModalForWindow_`, the confirmation/list-picker host — see `test_dialog_window.py`'s
 own module docstring) has the identical construction-only gap `approval_window.py` does, covered by
-this same script's "Dialog window" scenario group (six scenarios: both terminal outcomes of both
-document shapes, driven through the real `approval_popup.py` functions rather than a direct
-`dialog_window` call — see `qa_popup_smoke.py`'s own module docstring). Same venv requirement as
+this same script's "Dialog window" scenario group (four scenarios: both terminal outcomes of the
+PII-confirmation and rule-confirmation shapes, driven through the real `approval_popup.py`
+functions rather than a direct `dialog_window` call — the third shape, the rule-choice list picker,
+lost its only auto-accept caller to issue #151's multi-button "Always allow" redesign and has no
+scenario here; see `qa_popup_smoke.py`'s own module docstring). Same venv requirement as
 §2.1 — this needs the same pyobjc/AppKit packages the app depends on:
 
 ```bash

@@ -8,7 +8,7 @@ socket (see ipc.py's module docstring).
 Threading model:
   - Main thread:   rumps menu bar app (macOS requirement for AppKit).
   - IPC thread:    asyncio event loop serving the bridge socket connection.
-  - Popups:        approval_popup.py uses osascript subprocesses (any thread).
+  - Popups:        approval_popup.py shows native AppKit/WKWebView windows (any thread).
 
 Configuration is split into two files (see paths.py):
   - ``org/org_config.json``    — organization-level app registrations (Google

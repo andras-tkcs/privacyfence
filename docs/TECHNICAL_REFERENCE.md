@@ -931,10 +931,12 @@ a read operation key too). A value-less rule like `always_allow` shows just "Add
 `_NO_SUGGESTION` sentinel to tell "nothing to suggest" apart from "the value is legitimately None".
 
 `gate.py`'s popup branch computes `suggest_write_rule(operation_key, ctx)` before acquiring
-`_popup_lock`, threads `suggestion is not None` into `show_popup()`'s `allow_accept_all` — the same
-flag `show_read_popup()` already uses to decide whether to render the button —
-and handles a resulting `"accept_all"` decision inside the same lock acquisition as the initial
-`should_auto_accept()` recheck, mirroring the review branch exactly. Every other write operation
+`_popup_lock`, wraps a non-`None` result into a single-entry `accept_all_choices` list (via
+`describe_rule_short()`, the same shape the review branch's multi-entry list uses) — the same
+`accept_all_choices` parameter `show_read_popup()` already uses to decide how many buttons to
+render — and handles a resulting `"accept_all"` decision (and its `chosen_index`) inside the same
+lock acquisition as the initial `should_auto_accept()` recheck, mirroring the review branch
+exactly. Every other write operation
 (roughly a dozen tools, e.g. `gmail_archive_message`, `slack_send_message`) gets `None` from
 `suggest_write_rule()` by construction — there's no fallback path, so they're structurally
 unaffected and their popups are visually unchanged (Deny / Allow once only).
@@ -1161,7 +1163,7 @@ PrivacyFence splits configuration into two steps done by two different people:
 The DMG carries both halves of PrivacyFence — the daemon and the Claude extension — so this is
 the only download you need:
 
-1. Download the latest `PrivacyFence-<version>.dmg` from the [Releases](../../releases) page.
+1. Download the latest `PrivacyFence-<version>.dmg` from the [Releases](../../../releases) page.
 2. Open the DMG, drag **PrivacyFenceApp.app** to `/Applications`.
 3. Launch it. Releases are code-signed and notarized by Apple, so Gatekeeper lets it open
    normally — no quarantine warning, no manual `xattr` step. The menu bar icon appears

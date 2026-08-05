@@ -64,7 +64,7 @@ you want to smoke-test a change end to end.
 
 ## Account 2: real work (live)
 
-Only ever install from a [GitHub Release](../../releases). No Python, no
+Only ever install from a [GitHub Release](../../../releases). No Python, no
 git clone, no venv here — treat it as an end user would.
 
 ```bash

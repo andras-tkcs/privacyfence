@@ -58,7 +58,7 @@ Goal: visually confirm the real approval-window modal loop still works end to en
 on a real on-screen button actually resolves the popup — which construction-only unit tests
 (`tests/unit/test_approval_window.py`) don't cover.
 
-You don't need to run all 94 scenarios before every release (that's specifically for
+You don't need to run all 108 scenarios before every release (that's specifically for
 `approval_window.py` modal-loop changes, per `docs/testing-policy.md` §2.2) — running one narrow
 and one wide representative scenario is enough to confirm the mechanism itself still works:
 
@@ -75,20 +75,21 @@ and one wide representative scenario is enough to confirm the mechanism itself s
       ```
       Confirm: the popup appears, shows the temp-accept disclosure caption above the buttons, and
       the script reports `passed`.
-- [ ] Run the menu-bar scenario (a separate mechanism — a real click on the real status-bar icon,
-      then a real click into the "Manage Auto-accept Rules…" window):
+- [ ] Run one settings-window scenario (a separate mechanism — a real click on the real status-bar
+      icon, then a real click into the webview settings window):
       ```bash
-      .venv/bin/python scripts/qa_popup_smoke.py --scenario "Menu bar" --pause-seconds 3
+      .venv/bin/python scripts/qa_popup_smoke.py --scenario "Settings window · status item" --pause-seconds 3
       ```
-      Confirm: the status-bar menu opens and the rules window appears.
+      Confirm: the status-bar item opens and the settings window appears.
 - [ ] If `approval_window.py`'s modal-loop plumbing changed since the last release (not just popup
       *content*, which PR review already covers), run the full suite instead of the three
       spot-checks above:
       ```bash
       .venv/bin/python scripts/qa_popup_smoke.py --report-file /tmp/popup_smoke_full.md
       ```
-      and confirm the final line reads `94/94 scenarios passed` (93 tool-approval scenarios plus
-      the one menu-bar scenario).
+      and confirm the final line reads `108/108 scenarios passed` (97 tool-approval RG-/WG-
+      scenarios, 4 `dialog_window.py` confirmation/rule-choice scenarios, and 7 settings-window
+      scenarios).
 - [ ] Requires macOS and Accessibility permission granted to your terminal/IDE — grant it once from
       System Settings → Privacy & Security → Accessibility if you haven't already.
 - [ ] Repeat one of the two scenarios above with your Mac in dark mode (System Settings →
