@@ -62,7 +62,7 @@ def _make_docx_bytes(paragraph_text: str) -> bytes:
     """A minimal, real .docx (single paragraph) -- same shape
     test_text_extraction.py's own make_docx() uses -- so tests below exercise
     the real extract_text() DOCX path deterministically, without depending
-    on real PDFKit parsing a synthetic/invalid PDF fixture."""
+    on real pypdf parsing a synthetic/invalid PDF fixture."""
     import io
     import zipfile
 

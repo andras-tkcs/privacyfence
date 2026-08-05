@@ -58,7 +58,7 @@ Two cooperating modules make this work:
 |---|---|---|
 | Plain text / CSV | `text/*` (except `text/html`) | Verbatim, UTF-8 decoded |
 | HTML | `text/html` | Headings, bold/italic, lists, links, tables — via `html_to_text.py`'s `html_to_markdown()` |
-| PDF | `application/pdf` | Flat text only (`PDFDocument.string()` via PDFKit has no structure to extract beyond reading order) |
+| PDF | `application/pdf` | Flat text only (`pypdf`'s per-page `extract_text()` has no structure to extract beyond reading order) |
 | Word | `.docx` (`application/vnd.openxmlformats-officedocument.wordprocessingml.document`) | Headings (`Heading1`-`Heading6`/`Title` styles), bullet/numbered paragraphs, bold/italic runs |
 | PowerPoint | `.pptx` (`application/vnd.openxmlformats-officedocument.presentationml.presentation`) | One `## Slide N` heading per slide, plus that slide's own bullet/paragraph text with bold/italic |
 | Excel | `.xlsx` (`application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`) | One Markdown table per sheet (via `openpyxl`, already a hard dependency), capped at 200 rows × 20 columns |
