@@ -244,8 +244,8 @@ class DriveConnector(Connector):
                     "context to make it unique, the same way a unique-match "
                     "text editor requires; set replace_all=true to replace "
                     "every occurrence instead. replace_markdown supports the "
-                    "same Markdown syntax as drive_write_doc_content except "
-                    "tables, which aren't supported for a partial edit. "
+                    "same Markdown syntax as drive_write_doc_content, "
+                    "including GFM pipe tables. "
                     "Requires user approval."
                 ),
                 params=[
