@@ -375,9 +375,18 @@ search under this connector's OAuth scope.
 | Tool | Dir | Gate | Preview | Details popup |
 |------|-----|------|----------------|---------------|
 | `telegram_list_chats` | read | auto | — | — |
+| `telegram_refresh_chat_cache` | read | auto | — | — (forces an immediate `get_dialogs` re-sync of the on-disk, weekly-refreshed chat/group/channel name cache that `telegram_get_messages`/`telegram_search_messages` use to resolve which chat a message belongs to; call after a new chat starts so it resolves by name right away) |
 | `telegram_get_messages` | read | review | chat name, message count | All messages |
 | `telegram_search_messages` | read | review | query, result count | All results |
 | `telegram_send_message` | write | popup | — | Chat name, full message text |
+
+`telegram_refresh_chat_cache` refreshes the on-disk snapshot that `get_chat_name`/`get_messages`/
+`search_messages` check before falling back to a bare numeric chat id — without it, any chat not
+already primed by a recent `telegram_list_chats` call (in particular, any chat surfaced only via
+`telegram_search_messages`, or after a daemon restart) shows up unresolved. The snapshot refreshes
+automatically about once a week, lazily on first use once seven days have passed; unlike Slack's
+directory caches, it is *not* also warmed eagerly at connector startup, since Telegram connects on
+first use by design rather than at startup. Reads no message content; auto-approved.
 
 ### Salesforce
 
@@ -1300,7 +1309,7 @@ See [`config/settings.yaml.example`](../src/privacyfence/resources/settings.yaml
 
 - The bridge is stateless and disposable — Claude can kill and restart it at any time without losing any state. All state (credentials, tokens, filters, queue) lives in the daemon.
 - IPC between the bridge and the daemon uses a newline-delimited JSON protocol over a 127.0.0.1 TCP loopback socket, on an OS-assigned ephemeral port discovered via `~/.privacyfence/ipc_port` and authenticated by a per-launch random token (`~/.privacyfence/ipc_token`) required as the first line of every connection (see `src/privacyfence/ipc.py`'s module docstring).
-- The daemon uses two threads: the main thread runs the rumps menu bar app (a hard macOS requirement for AppKit) and an IPC thread runs the asyncio event loop serving the bridge connection. The main approval window is native AppKit/WKWebView (see `approval_window.py`), shown from any thread via `performSelectorOnMainThread_withObject_waitUntilDone_`; a few secondary confirmation dialogs (PII confirmation, rule confirmation) still use `osascript display dialog` subprocesses (`approval_popup.py`). `gate.py` reaches all of these through the pluggable `ApprovalUI` interface (`approval_ui.py`) rather than importing `approval_popup` directly — today's only implementation is `NativeApprovalUI`, but the seam exists so a future UI (e.g. mobile remote approval) can plug in without changing the policy loop.
+- The daemon uses two threads: the main thread runs the rumps menu bar app (a hard macOS requirement for AppKit) and an IPC thread runs the asyncio event loop serving the bridge connection. The main approval window is native AppKit/WKWebView (see `approval_window.py`), shown from any thread via `performSelectorOnMainThread_withObject_waitUntilDone_`; the smaller secondary confirmation/list-picker dialogs (PII confirmation, rule confirmation, rule choice, the Atlassian multi-resource picker) are a second, much smaller AppKit+WKWebView host with the same bridge/blocking-wait pattern (see `dialog_window.py`/`dialog_window_html.py`) — `approval_popup.py` no longer shells out to `osascript` at all. `gate.py` reaches all of these through the pluggable `ApprovalUI` interface (`approval_ui.py`) rather than importing `approval_popup` directly — today's only implementation is `NativeApprovalUI`, but the seam exists so a future UI (e.g. mobile remote approval) can plug in without changing the policy loop.
 - All tools are advertised to Claude with `readOnlyHint = true` — see below.
 - The approval window follows the system's light/dark appearance automatically — no config or menu bar toggle, it reads `NSApp`'s current appearance.
 - The daemon checks GitHub Releases once a day for a newer version (`update_checker.py`) and shows a one-time native alert dialog if one is found (`Download` / `Skip This Version` / `Remind Me Later`) — never downloads or installs anything automatically; there's no persistent menu item for it. On by default; toggle from the settings window's **General** page ("Check for Updates") or `update_check.enabled` in `settings.yaml`. See [security-and-compliance.md](security-and-compliance.md) for what this network call does and doesn't send.

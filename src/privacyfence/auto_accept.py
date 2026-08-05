@@ -230,6 +230,7 @@ TOOL_TO_GATE: dict[str, str] = {
     "contacts_remove_label":           "popup",
     # Telegram
     "telegram_list_chats":             "auto",
+    "telegram_refresh_chat_cache":     "auto",
     "telegram_get_messages":           "review",
     "telegram_search_messages":        "review",
     "telegram_send_message":           "popup",

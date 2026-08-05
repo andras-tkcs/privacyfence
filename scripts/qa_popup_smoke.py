@@ -55,12 +55,22 @@ progressive disclosure, the Gmail-style header, native PDFView) are folded into 
 scenarios rather than kept as separate generic ones -- see the inline comment at each such
 scenario in _scenarios().
 
-Seven more, non-tool scenarios run last: the actual tray status item and, from it, the settings
-window issue #120 replaced the old NSMenu tree / "Manage Auto-accept Rules…" native window with
-(see the "Settings window" scenarios near the bottom of _scenarios()) -- exercising real clicks
-into that window's own web content, the same web-content-click technique issue #141 brought to
-every tool-approval scenario's own Deny/Allow once/Always allow above (see _click_button's own
-docstring). 104 scenarios total: 97 tool-approval scenarios plus these seven.
+Eleven more, non-tool scenarios run last, in two groups. Seven exercise the actual tray status
+item and, from it, the settings window issue #120 replaced the old NSMenu tree / "Manage
+Auto-accept Rules…" native window with (see the "Settings window" scenarios near the bottom of
+_scenarios()) -- real clicks into that window's own web content, the same web-content-click
+technique issue #141 brought to every tool-approval scenario's own Deny/Allow once/Always allow
+above (see _click_button's own docstring). Four more exercise dialog_window.py's small
+confirmation host (see the "Dialog window" scenarios just above the settings-window ones) --
+issue #145 ported these off `osascript display dialog`, and they reuse _click_button/
+_wait_for_button_enabled directly rather than a new helper, since dialog_window_html.py's
+buttons carry the identical role="button"/aria-disabled/aria-label markup issue #141 gave the
+main approval window's own button row. (dialog_window.py's other shape, the list-picker
+build_choice_html/show_choice_dialog, has no scenario here -- issue #151's multi-button "Always
+allow" redesign deleted its one auto-accept caller; its only remaining caller,
+settings_controller.py's Atlassian resource picker, needs a live OAuth session to exercise for
+real.) 108 scenarios total: 97 tool-approval scenarios, 4 dialog-window scenarios, and the seven
+settings-window scenarios.
 
 Every tool-approval scenario renders through the one real card-stack rendering
 (approval_window_html.py). Each scenario's narrow/wide shape (_TOOL_LAYOUT below) is a fixed,
@@ -86,6 +96,8 @@ has installed):
         --screenshot-dir docs/images/screenshots --pause-seconds 3
     .venv/bin/python scripts/qa_popup_smoke.py --scenario "status item → window opens" \\
         --screenshot-dir docs/images/screenshots --pause-seconds 3
+    # dialog_window.py's own small confirmation host (issue #145):
+    .venv/bin/python scripts/qa_popup_smoke.py --scenario "Dialog window"
     # Review-gate (read) dialogs only, or popup-gate (write) dialogs only:
     .venv/bin/python scripts/qa_popup_smoke.py --group rg --screenshot-dir /tmp/rg_shots
     .venv/bin/python scripts/qa_popup_smoke.py --group wg
@@ -129,7 +141,7 @@ from AppKit import (  # noqa: E402
 from PyObjCTools import AppHelper  # noqa: E402
 from rumps import rumps as _rumps_internal  # noqa: E402
 
-from privacyfence import daemon_main, menu_bar  # noqa: E402
+from privacyfence import approval_popup, daemon_main, menu_bar  # noqa: E402
 from privacyfence.approval_window import show_native_approval  # noqa: E402
 from privacyfence.auto_accept import (  # noqa: E402
     TOOL_TO_OPERATION,
@@ -782,6 +794,71 @@ def _run_scenario(
     click_status = click_status_box[0] if click_status_box else "clicker thread never finished"
     return ScenarioResult(
         name=name, button_clicked=click_title, expected=expected, actual=actual, click_status=click_status,
+    )
+
+
+def _run_dialog_scenario(
+    name: str, *, call: Callable[[], Any], click_title: str, expected: Any,
+    pause_seconds: float = 0.3, screenshot_dir: Path | None = None,
+) -> ScenarioResult:
+    """The dialog_window.py counterpart to _run_scenario above -- fires one
+    of approval_popup.show_pii_confirmation_popup/show_rule_confirmation_popup
+    (``call``, a zero-arg callable wrapping the real call, same two functions
+    gate.py's real asyncio.to_thread(...) call sites use) on the main thread
+    while a background thread clicks ``click_title`` by aria-label.
+
+    Reuses _click_button/_wait_for_button_enabled unchanged rather than a
+    new click helper: dialog_window_html.py's Cancel/Confirm-or-Proceed
+    buttons carry the identical role="button"/aria-disabled/aria-label
+    markup issue #141 gave the main approval window's own button row (see
+    approval_window_html.py's _button_row_html), and
+    _wait_for_button_enabled already does the same title-then-description
+    aria-label lookup plus "wait until enabled" gate dialog_window.py's own
+    DOMContentLoaded-driven buttons need -- see that function's own
+    docstring.
+
+    Waits on "Cancel" specifically (not "Deny", _run_scenario's own
+    always-present anchor) -- dialog_window_html.py's confirmation shape
+    (build_confirmation_html) always renders a Cancel button with that
+    exact label (see approval_popup.py's two call sites, both of which pass
+    cancel_label="Cancel"), so it's the one element guaranteed present
+    regardless of which of the two outcomes ``call`` pops. (The other
+    shape, build_choice_html, has no scenario here at all -- see the
+    "Dialog window" section's own comment below for why.)
+
+    Unlike show_native_approval() (always a string result), these two
+    functions return bool (confirm/cancel) -- ``expected``/``actual`` are
+    compared via str() so a click failure (which leaves ``actual`` at its
+    own str()'d value, same as any other mismatch) is visible in the report
+    as a normal expected-vs-actual mismatch, not a special case.
+    """
+    pid = os.getpid()
+    click_status_box: list[str] = []
+
+    def clicker() -> None:
+        time.sleep(pause_seconds)
+        wait_status = _wait_for_window(pid)
+        if wait_status != "ready":
+            click_status_box.append(wait_status)
+            return
+        ready_status = _wait_for_button_enabled(pid, "Cancel")
+        if ready_status != "ready":
+            click_status_box.append(ready_status)
+            return
+        if screenshot_dir is not None:
+            _screenshot_own_window(pid, screenshot_dir / f"{_slugify(name)}.png")
+        click_status_box.append(_click_button(pid, click_title))
+
+    clicker_thread = threading.Thread(target=clicker, daemon=True)
+    clicker_thread.start()
+
+    result = call()
+
+    clicker_thread.join(timeout=pause_seconds + WINDOW_WAIT_TIMEOUT_SECONDS + 5)
+    click_status = click_status_box[0] if click_status_box else "clicker thread never finished"
+    return ScenarioResult(
+        name=name, button_clicked=click_title, expected=str(expected), actual=str(result),
+        click_status=click_status,
     )
 
 
@@ -1620,6 +1697,13 @@ def _scenarios(
     field set all get a real on-screen click at least once, with no redundant duplicate coverage
     of the same mechanic twice.
 
+    Four more scenarios ("Dialog window" section, near the bottom, just above "Settings window")
+    exercise dialog_window.py's small confirmation host instead -- both terminal outcomes
+    (accept, and Cancel -- the security-relevant default) of each of its two callers
+    (show_pii_confirmation_popup/show_rule_confirmation_popup), via the real approval_popup.py
+    functions rather than a direct dialog_window call. Neither RG-N/WG-N tool-approval scenarios
+    nor part of the shared Settings-window app/group -- see that section's own comment.
+
     `only`, when given, restricts this to the scenarios whose name contains it (case-insensitive)
     -- see main()'s --scenario flag. Filtering happens here, before each matching call site's
     run(...) actually pops and clicks a real window, rather than after: skipped scenarios must
@@ -1644,6 +1728,17 @@ def _scenarios(
         if group_prefix is not None and not name.startswith(group_prefix):
             return None
         return _run_scenario(
+            name, pause_seconds=pause_seconds, screenshot_dir=screenshot_dir, **kwargs,
+        )
+
+    def run_dialog(name: str, **kwargs) -> ScenarioResult | None:
+        # dialog_window.py's own dialogs are neither RG- nor WG- (same as
+        # the settings-window group below) -- no group_prefix check here,
+        # a --group rg/wg run already skips this whole section via the
+        # `if group_prefix is None:` guard around where these get called.
+        if only_lower is not None and only_lower not in name.lower():
+            return None
+        return _run_dialog_scenario(
             name, pause_seconds=pause_seconds, screenshot_dir=screenshot_dir, **kwargs,
         )
 
@@ -3252,16 +3347,64 @@ def _scenarios(
     ))
 
     # ================================================================== #
+    # Dialog window -- not tool-approval dialogs; exercises dialog_window.py's small
+    # confirmation host (issue #145 ported these off `osascript display dialog`) through
+    # the real approval_popup.py functions gate.py's own asyncio.to_thread(...) call
+    # sites use, not a direct dialog_window call -- this exercises the actual production
+    # call path end to end, the same way every tool-approval scenario above calls
+    # show_native_approval() rather than reaching into approval_window.py's controller
+    # directly. Fully independent per scenario (unlike the settings-window group below,
+    # which shares one app/window) -- each is its own blocking call, same as every
+    # tool-approval scenario above. Both terminal outcomes get their own scenario --
+    # Cancel is the security-relevant default (see approval_popup.py's own docstrings),
+    # so it gets a real on-screen click here too, not just the accept path. Neither an
+    # "RG-" nor a "WG-" scenario, so a --group rg/wg run skips this section entirely,
+    # same as the settings-window group below.
+    #
+    # dialog_window.py's *other* shape (build_choice_html/show_choice_dialog) has no
+    # scenario here -- issue #151's multi-button "Always allow" redesign deleted its one
+    # auto-accept caller (approval_popup.show_rule_choice_popup); its only remaining
+    # caller is settings_controller.py's Atlassian multi-resource picker, which needs a
+    # live Jira/Confluence OAuth session to exercise for real and isn't a fit for this
+    # script's synthetic-fixture scenarios.
+    # ================================================================== #
+    if group_prefix is None:
+        results.append(run_dialog(
+            "Dialog window · PII confirmation → Proceed",
+            call=lambda: approval_popup.show_pii_confirmation_popup(["Email address", "Phone number"]),
+            click_title="Proceed", expected=True,
+        ))
+        results.append(run_dialog(
+            "Dialog window · PII confirmation → Cancel (default)",
+            call=lambda: approval_popup.show_pii_confirmation_popup(["Email address"]),
+            click_title="Cancel", expected=False,
+        ))
+        results.append(run_dialog(
+            "Dialog window · rule confirmation → Confirm",
+            call=lambda: approval_popup.show_rule_confirmation_popup(
+                "trusted_sender_domain: qa-popup-smoke.example.com"
+            ),
+            click_title="Confirm", expected=True,
+        ))
+        results.append(run_dialog(
+            "Dialog window · rule confirmation → Cancel (default)",
+            call=lambda: approval_popup.show_rule_confirmation_popup(
+                "trusted_sender_domain: qa-popup-smoke.example.com"
+            ),
+            click_title="Cancel", expected=False,
+        ))
+
+    # ================================================================== #
     # Settings window -- not tool-approval dialogs; exercises the actual tray status item and the
     # webview settings window issue #120 replaced the old NSMenu tree / native "Manage Auto-accept
     # Rules…" window with (see _run_settings_window_scenarios' own docstring for what these seven
     # scenarios cover and why they share one app/window instead of running fully independently like
-    # every scenario above). Kept last, after every popup scenario above: its status item and
-    # non-modal window mustn't sit on screen alongside an approval popup -- _screenshot_own_window
-    # assumes only one of our own windows is ever on screen at a time, and this group cleans its own
-    # window/status item up on the way out rather than leaving them for whatever runs after it.
-    # Neither an "RG-" nor a "WG-" scenario, so a --group rg/wg run skips it entirely, same as every
-    # other group filter above.
+    # every scenario above). Kept last, after every popup scenario above (Dialog window included):
+    # its status item and non-modal window mustn't sit on screen alongside an approval/dialog popup
+    # -- _screenshot_own_window assumes only one of our own windows is ever on screen at a time, and
+    # this group cleans its own window/status item up on the way out rather than leaving them for
+    # whatever runs after it. Neither an "RG-" nor a "WG-" scenario, so a --group rg/wg run skips it
+    # entirely, same as every other group filter above.
     # ================================================================== #
     if group_prefix is None:
         results.extend(_run_settings_window_scenarios(
@@ -3312,21 +3455,23 @@ def main() -> None:
     parser.add_argument(
         "--scenario",
         help="Run only the scenario(s) whose name contains this text (case-insensitive substring "
-             "match against the scenario name shown in the report table, e.g. 'gmail_get_thread' or "
-             "'Settings window' for the settings-window scenarios), instead of the full 104-scenario "
-             "suite (97 tool-approval scenarios plus the seven settings-window scenarios). For "
-             "grabbing a single updated screenshot -- e.g. for README.md -- without sitting through "
-             "the whole run: --scenario 'gmail_get_thread' --screenshot-dir docs/images/screenshots. "
-             "Combines with --group (both must match). Matches nothing -> an empty report and a "
-             "nonzero exit code, same as any other all-failed run.",
+             "match against the scenario name shown in the report table, e.g. 'gmail_get_thread', "
+             "'Dialog window' for dialog_window.py's confirmation scenarios, or 'Settings window' "
+             "for the settings-window scenarios), instead of the full 108-scenario suite (97 "
+             "tool-approval scenarios, 4 dialog-window scenarios, and the seven settings-window "
+             "scenarios). For grabbing a single updated screenshot -- e.g. for README.md -- "
+             "without sitting through the whole run: --scenario 'gmail_get_thread' "
+             "--screenshot-dir docs/images/screenshots. Combines with --group (both must match). "
+             "Matches nothing -> an empty report and a nonzero exit code, same as any other "
+             "all-failed run.",
     )
     parser.add_argument(
         "--group", choices=["all", "rg", "wg"], default="all",
         help="'all' (default): every scenario. 'rg': review-gate (read) scenarios only -- those "
              "whose name starts with 'RG-', per docs/approval-window-content-reference.md's view "
              "groups. 'wg': popup-gate (write) scenarios only ('WG-' prefix). Either excludes the "
-             "seven settings-window scenarios, which are neither. Combines with --scenario (both "
-             "must match) -- "
+             "four dialog-window and seven settings-window scenarios, which are neither. Combines "
+             "with --scenario (both must match) -- "
              "e.g. --group rg --scenario gmail to see only Gmail's read-side dialogs.",
     )
     args = parser.parse_args()

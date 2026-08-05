@@ -64,6 +64,21 @@ class TelegramConnector(Connector):
                 read_only=True,
             ),
             ToolSpec(
+                name="telegram_refresh_chat_cache",
+                description=(
+                    "Force an immediate refresh of PrivacyFence's local cache of Telegram "
+                    "chat/group/channel names, used to resolve which chat a message belongs "
+                    "to in search results and chat history without a per-message lookup. "
+                    "Refreshes automatically about once a week; call this after a new chat "
+                    "starts so it resolves by name right away. Auto-approved -- refreshes "
+                    "name lookups only, reads no message content."
+                ),
+                params=[
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
+                ],
+                read_only=True,
+            ),
+            ToolSpec(
                 name="telegram_send_message",
                 description="Send a message to a Telegram chat or user by chat id. Requires user approval.",
                 params=[
@@ -81,6 +96,8 @@ class TelegramConnector(Connector):
             return await self._get_messages(**args)
         if tool == "telegram_search_messages":
             return await self._search_messages(**args)
+        if tool == "telegram_refresh_chat_cache":
+            return await self._refresh_chat_cache(**args)
         if tool == "telegram_send_message":
             return await self._send_message(**args)
         raise ValueError(f"Unknown Telegram tool: {tool!r}")
@@ -108,6 +125,18 @@ class TelegramConnector(Connector):
         self._auto_audit("telegram_list_chats", "List Telegram Chats",
                          f"List chats (max {limit})", f"{len(result)} chat(s)", t0)
         return result
+
+    async def _refresh_chat_cache(self) -> Any:
+        t0 = time.time()
+        try:
+            count = await self._telegram.refresh_chat_directory()
+        except TelegramClientError as exc:
+            raise RuntimeError(str(exc)) from exc
+        self._auto_audit(
+            "telegram_refresh_chat_cache", "Refresh Telegram Chat Cache",
+            "Refresh Telegram chat directory cache", f"{count} chat(s)", t0,
+        )
+        return {"cached_chats": count}
 
     # ------------------------------------------------------------------ #
     # Review gate (reads)
