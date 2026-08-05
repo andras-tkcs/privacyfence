@@ -2,17 +2,36 @@
 
 Renders the single blocking approval dialog every gated call resolves
 through: one WKWebView (approval_window_html.build_card_stack_html) filling
-the whole content area — kicker/icon/title, then §1 (WHAT), §2 (Claude's
+the *entire* content area — kicker/icon/title, then §1 (WHAT), §2 (Claude's
 stated reason), an optional §3 disclosure card (review-gate calls only:
-"what will be provided to Claude") or §4 PII/content-flag risk card, and a
-scrollable right-hand preview pane for WIDE-shaped tools — with native
-Deny/Allow once/Always allow buttons in a fixed band below it. AppleScript
-`display dialog` popups (still used elsewhere in approval_popup.py for
-secondary confirmations) have no room for a real layout, an icon, or a
-genuinely scrollable body — this module renders the whole content area as
-one WKWebView instead. See docs/approval-window-content-reference.md for
-exactly what each tool renders, and approval_window_html.py's own module
-docstring for the card-stack template itself.
+"what will be provided to Claude") or §4 PII/content-flag risk card, a
+scrollable right-hand preview pane for WIDE-shaped tools, and its own
+Deny/Allow once/Always allow button row at the bottom -- these three used to
+be native NSButtons in a fixed band below the webview; they now render as
+part of the same HTML document everything else does (see
+approval_window_html.py's ``_button_row_html``/``_JS``), so this window no
+longer has any native-vs-webview split in its content area at all.
+AppleScript `display dialog` popups (still used elsewhere in
+approval_popup.py for secondary confirmations) have no room for a real
+layout, an icon, or a genuinely scrollable body — this module renders the
+whole content area as one WKWebView instead. See
+docs/approval-window-content-reference.md for exactly what each tool
+renders, and approval_window_html.py's own module docstring for the
+card-stack template itself.
+
+Bridge protocol (JS -> Python only -- unlike settings_window.py's two-way
+bridge, this window never needs to push fresh state back into the page after
+the initial render): the page posts
+``window.webkit.messageHandlers.pf.postMessage({action: 'resolve', result})``
+once a button actually resolves the dialog (``result`` is ``'accept'``,
+``'deny'``, or ``'accept_all'``), delivered here via
+``WKScriptMessageHandler``'s ``userContentController_didReceiveScriptMessage_``
+-- the same ``WKUserContentController``/``"pf"``-named-handler pattern
+settings_window.py's own bridge already established, reused rather than
+inventing a second bridge shape in this codebase (see that module's own
+docstring). ``buttonClicked_``'s old ``sender.tag()`` dispatch is gone
+entirely -- the bridge message's own ``result`` field is now what sets
+``self.result`` before ending the modal session.
 
 The §3 disclosure card renders real per-tool "what's new" values
 (``new_info``) or, as a fallback, privacy_filter.category_policy()'s
@@ -31,13 +50,18 @@ renders in that style for them — see approval_window_html.py's
 _risk_section_html for the distinct "write"/"write-forced" variants a write
 call's own content-flag match gets instead.
 
-Allow once has no "\\r" keyEquivalent and the card-stack webview is the
-panel's initial first responder — hitting Enter the moment the window
-appears cannot approve a request nobody has actually read yet; the action
-buttons also start disabled until the webview finishes painting (see
-webView_didFinishNavigation_). Deny keeps Escape: declining via a reflexive
-keypress is the safe direction, not a risk the way an accidental approve
-would be.
+Allow once has no Enter/Return keyboard binding (see approval_window_html.py's
+``_JS`` keydown handler -- ``data-pf-primary`` is deliberately excluded from
+the Enter/Space-activates-a-focused-control path every other button gets) and
+the card-stack webview is the panel's initial first responder — hitting Enter
+the moment the window appears cannot approve a request nobody has actually
+read yet; the buttons also render disabled (``aria-disabled="true"``) until
+the page's own DOMContentLoaded handling enables them, an in-page equivalent
+of the old "disabled until webView_didFinishNavigation_ fires" native gate
+(see approval_window_html.py's ``_button_row_html``/``_JS`` for both). Deny
+still resolves on Escape, from anywhere in the document, not just when
+focused: declining via a reflexive keypress is the safe direction, not a risk
+the way an accidental approve would be.
 
 The panel itself starts fully transparent (alpha 0) for the same reason:
 loadHTMLString_baseURL_ is asynchronous even for this fully local document
@@ -46,8 +70,11 @@ front immediately would show it empty -- just a bare titlebar with no
 content underneath -- for however long that load takes, before snapping to
 the real card stack. webView_didFinishNavigation_ (and its two
 webView_didFail...  fail-safes, so a load failure can't leave the panel
-invisible forever) is what fades it in, at the same moment it re-enables
-the buttons -- one "content is actually ready" signal driving both.
+invisible forever) is what fades it in; those same three methods also force
+the page's own button-enabling JS via ``window.__pfEnableButtons`` as a
+fail-safe in case DOMContentLoaded itself never fires (an outright load
+failure) -- see that JS function's own comment for why calling it more than
+once is harmless.
 
 AppKit windows must be created and driven on the main thread, but gate.py
 calls in here from the IPC server thread (via asyncio.to_thread). show_native_
@@ -59,6 +86,7 @@ calling convention stays synchronous.
 from __future__ import annotations
 
 import base64
+import logging
 import threading
 from pathlib import Path
 
@@ -68,39 +96,29 @@ from AppKit import (
     NSApplicationActivationPolicyAccessory,
     NSApplicationActivationPolicyProhibited,
     NSBackingStoreBuffered,
-    NSBezelStyleRounded,
-    NSButton,
-    NSColor,
     NSFloatingWindowLevel,
-    NSFont,
-    NSFontAttributeName,
-    NSForegroundColorAttributeName,
     NSMakeRect,
     NSModalResponseStop,
     NSPanel,
     NSScreen,
-    NSUnderlineStyleAttributeName,
-    NSUnderlineStyleSingle,
     NSView,
     NSWindowStyleMaskClosable,
     NSWindowStyleMaskTitled,
 )
-from Foundation import NSAttributedString, NSObject
-from WebKit import WKWebView, WKWebViewConfiguration
+from Foundation import NSObject
+from WebKit import WKUserContentController, WKWebView, WKWebViewConfiguration
 
 from . import approval_window_html
 
-_MARGIN = 28.0
-_BUTTON_ROW_HEIGHT = 66.0
+logger = logging.getLogger(__name__)
 
-# NSButton tags for buttonClicked_'s dispatch -- not title-string matching,
-# since Always allow's own title varies per call (accept_all_hint), so
-# dispatch can't key on an exact string. NSButton's own default tag is 0,
-# so Deny (the safe fallback direction) doesn't need its own constant set
-# explicitly anywhere it's built.
-_TAG_DENY = 0
-_TAG_ACCEPT = 1
-_TAG_ACCEPT_ALL = 2
+# Name of the WKScriptMessageHandler the card-stack HTML's button row posts
+# to (window.webkit.messageHandlers.pf.postMessage(...)) -- same handler name
+# settings_window.py's own bridge uses, not a coincidence: see this module's
+# docstring for why this reuses that existing pattern instead of inventing a
+# second bridge shape.
+_MESSAGE_HANDLER_NAME = "pf"
+_BRIDGE_RESULTS = ("accept", "deny", "accept_all")
 
 # Shown above the button row for operations
 # auto_accept.TEMP_ACCEPT_ELIGIBLE_OPERATIONS lists -- Allow once itself
@@ -112,10 +130,6 @@ _TEMP_ACCEPT_DISCLOSURE_TEXT = (
     "Approving this also allows further calls like this to the same file "
     "for a few minutes without asking again."
 )
-
-# Brand colors sampled from resources/icon_512.png — a fixed identity, not a
-# themed value, so these stay literal rather than following light/dark mode.
-_BLUE = NSColor.colorWithSRGBRed_green_blue_alpha_(0x5B / 255, 0xA4 / 255, 0xFF / 255, 1.0)
 
 # ---------------------------------------------------------------------------- #
 # layout="narrow"/"wide" -- the card-stack rendering
@@ -156,6 +170,12 @@ _ROW_BASE_HEIGHT = 12.0  # a .pf-kv row's share of the card's own gap, on top of
 _ROW_LINE_HEIGHT = 18.0  # one line of a .pf-kv value at 14px/~1.3 line-height
 _QUOTE_CARD_HEIGHT = 96.0  # §2's whole card: chrome + 3-line-clamped quote + the "unverified" meta line
 _RISK_CARD_BASE_HEIGHT = 96.0  # §4 card: chrome + the "⚠ ..." line + one row of category tags
+# The button row's (.pf-btn-row, approval_window_html.py's _button_row_html)
+# own rendered height: no longer a fixed native-chrome band the webview sat
+# above (see module docstring) -- this is now the same kind of round-number
+# CSS estimate as every other constant in this block, just for the one card
+# that's guaranteed present on every single dialog regardless of shape.
+_BUTTON_ROW_HEIGHT = 66.0
 _MIN_CONTENT_HEIGHT = 260.0
 # Every constant above is a round-number guess, not a real text
 # measurement (see their own comments) -- since <body> is height:100vh
@@ -274,14 +294,15 @@ class ApprovalWindowController(NSObject):
         self.panel = None
         self._details_view = None
         self._details_html_string = ""
-        # Deny/Allow once/Always allow start disabled and only become
-        # clickable once the card-stack webview has actually finished
-        # loading, so a fast or reflexive click can't resolve the decision
-        # before its content is even visible -- the same "don't approve
-        # what wasn't reviewed" principle _build_button() already applies
-        # to Allow once's missing Enter keyEquivalent, just covering the
-        # window's initial paint too (see webView_didFinishNavigation_).
-        self._action_buttons: list = []
+        # Set once build_panel()'s WKUserContentController is created --
+        # kept around (rather than just a local in _build_content_view) so
+        # runApproval_() can explicitly removeScriptMessageHandlerForName_
+        # after the modal session ends, the same teardown discipline
+        # settings_window.py's own windowWillClose_ already established for
+        # the identical leak: the message handler holds a strong reference
+        # back to self via addScriptMessageHandler_name_, so nothing here
+        # would otherwise be released once the panel closes.
+        self._user_content_controller = None
         return self
 
     # ------------------------------------------------------------------ #
@@ -293,66 +314,6 @@ class ApprovalWindowController(NSObject):
         return f"Seen {n} time{'s' if n != 1 else ''} this week"
 
     # ------------------------------------------------------------------ #
-    # Buttons
-    # ------------------------------------------------------------------ #
-
-    def _build_button(
-        self, title: str, *, tag: int, primary: bool = False, danger: bool = False,
-    ) -> NSButton:
-        btn = NSButton.alloc().init()
-        btn.setTitle_(title)
-        btn.setTag_(tag)
-        btn.setBezelStyle_(NSBezelStyleRounded)
-        btn.setTarget_(self)
-        btn.setAction_("buttonClicked:")
-        btn.sizeToFit()
-        frame = btn.frame()
-        min_width = 90.0
-        if frame.size.width < min_width:
-            btn.setFrameSize_((min_width, frame.size.height))
-        if primary:
-            # Deliberately no "\r" keyEquivalent: hitting Enter
-            # shouldn't be able to approve a request the reviewer hasn't
-            # actually looked at yet. Allow once still keeps its blue "this
-            # is the affirmative action" styling; only the Enter-key muscle
-            # memory is removed. Deny keeps Escape (danger branch below) --
-            # declining via a reflexive keypress is the safe direction, not
-            # a risk the way an accidental approve would be.
-            if hasattr(btn, "setBezelColor_"):
-                btn.setBezelColor_(_BLUE)
-                btn.setContentTintColor_(NSColor.whiteColor())
-        elif danger:
-            btn.setKeyEquivalent_("\x1b")
-            if hasattr(btn, "setContentTintColor_"):
-                btn.setContentTintColor_(NSColor.systemRedColor())
-        return btn
-
-    def _build_link_button(self, title: str, *, tag: int) -> NSButton:
-        """Small, borderless "link"-style control for the low-frequency,
-        high-consequence standing-rule action (Always allow) -- deliberately
-        not the same pill styling as Deny/Allow once, so a fast, confident
-        click aimed at the primary action can't land on it by accident. No
-        existing precedent for a link-style NSButton in this codebase: built
-        via an attributed title rather than a bezel style, since
-        NSBezelStyleRounded has no "no border, small, underlined" variant.
-        Dispatch is via ``tag``, not ``title()`` -- this button's title
-        varies per call (see _build_content_view's accept_all_hint
-        comment), so buttonClicked_ can't key on an exact string."""
-        btn = NSButton.alloc().init()
-        btn.setBordered_(False)
-        btn.setTag_(tag)
-        btn.setTarget_(self)
-        btn.setAction_("buttonClicked:")
-        attrs = {
-            NSFontAttributeName: NSFont.systemFontOfSize_(11),
-            NSForegroundColorAttributeName: NSColor.secondaryLabelColor(),
-            NSUnderlineStyleAttributeName: NSUnderlineStyleSingle,
-        }
-        btn.setAttributedTitle_(NSAttributedString.alloc().initWithString_attributes_(title, attrs))
-        btn.sizeToFit()
-        return btn
-
-    # ------------------------------------------------------------------ #
     # Window construction (safe to call off the main thread, and without
     # ever showing or activating anything -- see build_panel()'s docstring)
     # ------------------------------------------------------------------ #
@@ -361,9 +322,11 @@ class ApprovalWindowController(NSObject):
         """Build the panel and every subview it contains, with nothing shown,
         activated, or key yet -- pure construction, no side effect on window
         server state. Split out of runApproval_() specifically so tests can
-        assert on the resulting view hierarchy (button set, PII/content-flag
-        card, §1/§2/§3 content) without ever calling runModalForWindow_ or
-        needing a real interactive session -- see test_approval_window.py.
+        assert on the resulting webview/content (button row, PII/content-flag
+        card, §1/§2/§3 content -- all of it lives in ``_details_html_string``
+        now, see that field's own comment) without ever calling
+        runModalForWindow_ or needing a real interactive session -- see
+        test_approval_window.py.
 
         runApproval_() is the only caller in production code; it does
         nothing but this, then the actual show/activate/modal-block/hide
@@ -493,7 +456,6 @@ class ApprovalWindowController(NSObject):
 
     def _build_content_view(self, window_width: float, window_height: float):
         content = _FlippedView.alloc().initWithFrame_(NSMakeRect(0, 0, window_width, window_height))
-        webview_height = window_height - _BUTTON_ROW_HEIGHT
 
         # pdf_bytes/preview_bytes render inline via a standard <embed>/<img>
         # data URI -- no native PDFView/NSImageView overlay needed, the
@@ -523,6 +485,20 @@ class ApprovalWindowController(NSObject):
         )
         disclosure_rows = self._disclosure_rows()
 
+        # Names the specific rule Always allow would create (e.g. "Always
+        # allow — this folder") instead of a plain, unspecific "Always
+        # allow" -- so the reviewer knows roughly what standing rule they're
+        # about to create before clicking, not only in the confirmation
+        # dialog that follows. Falls back to the plain label when gate.py
+        # has no hint for this rule (the one unconditional rule,
+        # always_allow, or any future rule name describe_rule_short doesn't
+        # recognize yet -- see its own docstring). Computed unconditionally
+        # (not just when self.allow_accept_all) -- build_card_stack_html
+        # simply ignores it when allow_accept_all is False, same as always.
+        accept_all_label = (
+            f"Always allow — {self.accept_all_hint}" if self.accept_all_hint else "Always allow"
+        )
+
         html = approval_window_html.build_card_stack_html(
             layout=self.layout,
             title=self.title,
@@ -539,6 +515,8 @@ class ApprovalWindowController(NSObject):
             temp_accept_text=_TEMP_ACCEPT_DISCLOSURE_TEXT if self.temp_accept_eligible else "",
             preview_kicker=f"Preview ({_reading_time_label(self.details_text)})",
             preview_body_html=preview_body_html,
+            allow_accept_all=self.allow_accept_all,
+            accept_all_label=accept_all_label,
         )
         # Kept purely for testability -- see test_approval_window_html.py
         # for build_card_stack_html()'s own direct pure-function coverage;
@@ -546,14 +524,34 @@ class ApprovalWindowController(NSObject):
         # to loadHTMLString_baseURL_.
         self._details_html_string = html
 
+        # The button row's JS posts back through this -- see module
+        # docstring's "Bridge protocol" paragraph and
+        # userContentController_didReceiveScriptMessage_ below. Same
+        # WKUserContentController/"pf"-handler-name construction
+        # settings_window.py's own build_window() uses for its bridge.
+        user_content_controller = WKUserContentController.alloc().init()
+        user_content_controller.addScriptMessageHandler_name_(self, _MESSAGE_HANDLER_NAME)
+        self._user_content_controller = user_content_controller
+
         config = WKWebViewConfiguration.alloc().init()
-        # No script needed -- this document is 100% static, self-contained
-        # markup (fonts/icons/images already inlined as data URIs); nothing
-        # here has ever needed a JS bridge back to Python. Same "no code
-        # execution, no network" guarantee _build_details_web_view() holds.
-        config.preferences().setJavaScriptEnabled_(False)
+        config.setUserContentController_(user_content_controller)
+        # JavaScript is on now -- the button row (Deny/Allow once/Always
+        # allow) lives in this document's own markup and needs it to
+        # dispatch clicks/keyboard events back to Python over the "pf"
+        # bridge above (see module docstring). Still the same "no code
+        # execution beyond our own inline script, no navigation, no
+        # network" guarantee as before: this remains a fully
+        # self-contained, app-authored document loaded via
+        # loadHTMLString_baseURL_(html, None) with no base URL to navigate
+        # anywhere from -- just no longer one with script execution turned
+        # off entirely. approval_window_html.py's own docstring covers what
+        # actually runs.
+        config.preferences().setJavaScriptEnabled_(True)
+        # No more separate native button band below it -- the webview now
+        # owns the *entire* content area (see module docstring), full
+        # window_height rather than window_height - _BUTTON_ROW_HEIGHT.
         webview = WKWebView.alloc().initWithFrame_configuration_(
-            NSMakeRect(0, 0, window_width, webview_height), config
+            NSMakeRect(0, 0, window_width, window_height), config
         )
         # Explicit, not inferred from view-hierarchy timing: loadHTMLString_
         # baseURL_ below evaluates the page's `prefers-color-scheme` media
@@ -568,83 +566,75 @@ class ApprovalWindowController(NSObject):
         self._details_view = webview
         content.addSubview_(webview)
 
-        y = webview_height
-
-        # Button row, anchored under the webview. Disabled until
-        # webView_didFinishNavigation_ fires below -- see _action_buttons'
-        # own comment in init().
-        self._action_buttons = []
-        accept_btn = self._build_button("Allow once", tag=_TAG_ACCEPT, primary=True)
-        button_h = accept_btn.frame().size.height
-        button_y = y + (_BUTTON_ROW_HEIGHT - button_h) / 2.0
-
-        deny_btn = self._build_button("Deny", tag=_TAG_DENY, danger=True)
-        deny_btn.setFrameOrigin_((_MARGIN, button_y))
-        content.addSubview_(deny_btn)
-        self._action_buttons.append(deny_btn)
-
-        right_x = window_width - _MARGIN - accept_btn.frame().size.width
-        accept_btn.setFrameOrigin_((right_x, button_y))
-        content.addSubview_(accept_btn)
-        self._action_buttons.append(accept_btn)
-
-        if self.allow_accept_all:
-            # Names the specific rule this would create (e.g. "Always
-            # allow — this folder") instead of a plain, unspecific "Always
-            # allow" -- so the reviewer knows roughly what standing rule
-            # they're about to create before clicking, not only in the
-            # confirmation dialog that follows. Falls back to the plain
-            # label when gate.py has no hint for this rule (the one
-            # unconditional rule, always_allow, or any future rule name
-            # describe_rule_short doesn't recognize yet -- see its own
-            # docstring).
-            accept_all_label = (
-                f"Always allow — {self.accept_all_hint}" if self.accept_all_hint else "Always allow"
-            )
-            link_x = _MARGIN + deny_btn.frame().size.width + 16.0
-            accept_all_btn = self._build_link_button(accept_all_label, tag=_TAG_ACCEPT_ALL)
-            link_y = y + (_BUTTON_ROW_HEIGHT - accept_all_btn.frame().size.height) / 2.0
-            accept_all_btn.setFrameOrigin_((link_x, link_y))
-            content.addSubview_(accept_all_btn)
-            self._action_buttons.append(accept_all_btn)
-
-        for btn in self._action_buttons:
-            btn.setEnabled_(False)
-
         return content
 
     def webView_didFinishNavigation_(self, webView, navigation) -> None:
         """WKNavigationDelegate callback: the card-stack webview has
-        actually finished loading and painting, so it's now safe to let
-        Deny/Allow once/Always allow be clicked -- see _build_content_view
-        (where they start disabled) and _action_buttons' comment in
-        init() for why -- and to actually reveal the panel (see
-        _build_panel's alphaValue comment): the reviewer never sees an
-        empty window snap to its real content, because there was nothing
-        on screen to see until this fired."""
-        self._reveal_and_enable_actions()
+        actually finished loading and painting, so it's safe to actually
+        reveal the panel (see _build_panel's alphaValue comment) -- the
+        reviewer never sees an empty window snap to its real content,
+        because there was nothing on screen to see until this fired. Button
+        click-ability itself is no longer this method's concern: the page's
+        own DOMContentLoaded handling drives that now (see
+        approval_window_html.py's ``_JS``) -- this only forces it too, as a
+        fail-safe, in case that in-page signal somehow didn't already fire
+        first."""
+        self._reveal_and_ensure_buttons_enabled()
 
     def webView_didFailNavigation_withError_(self, webView, navigation, error) -> None:
         """Fail-safe counterpart to webView_didFinishNavigation_ above: a
-        load that fails outright must still reveal the panel and enable the
-        buttons, not leave a reviewer staring at an invisible, unresponsive
-        modal dialog forever. This document is fully local/self-contained
-        (no network, nil base URL), so an actual failure here would be
+        load that fails outright must still reveal the panel and force the
+        buttons clickable (DOMContentLoaded may never have fired at all),
+        not leave a reviewer staring at an invisible, unresponsive modal
+        dialog forever. This document is fully local/self-contained (no
+        network, nil base URL), so an actual failure here would be
         unexpected -- but that outcome would be far worse than the cosmetic
         issue this whole mechanism exists to fix."""
-        self._reveal_and_enable_actions()
+        self._reveal_and_ensure_buttons_enabled()
 
     def webView_didFailProvisionalNavigation_withError_(self, webView, navigation, error) -> None:
         """Same fail-safe as webView_didFailNavigation_withError_ above, for
         the earlier (provisional) failure point in WKNavigationDelegate's
         callback sequence."""
-        self._reveal_and_enable_actions()
+        self._reveal_and_ensure_buttons_enabled()
 
-    def _reveal_and_enable_actions(self) -> None:
+    def _reveal_and_ensure_buttons_enabled(self) -> None:
         if self.panel is not None:
             self.panel.setAlphaValue_(1.0)
-        for btn in self._action_buttons:
-            btn.setEnabled_(True)
+        if self._details_view is not None:
+            # Idempotent (removeAttribute/setAttribute) -- safe to call even
+            # when the page's own DOMContentLoaded handler already ran, see
+            # window.__pfEnableButtons's own comment in
+            # approval_window_html.py's ``_JS``.
+            self._details_view.evaluateJavaScript_completionHandler_(
+                "if (window.__pfEnableButtons) { window.__pfEnableButtons(); }", None,
+            )
+
+    # ------------------------------------------------------------------ #
+    # JS -> Python (button row clicks/keyboard resolution)
+    # ------------------------------------------------------------------ #
+
+    def userContentController_didReceiveScriptMessage_(self, _user_content_controller, message) -> None:
+        """WKScriptMessageHandler callback for the "pf" bridge -- see module
+        docstring's "Bridge protocol" paragraph. Replaces the old
+        buttonClicked_'s sender.tag() dispatch: the message's own ``result``
+        field is what self.result resolves to now, before ending the modal
+        session the same way buttonClicked_ always did."""
+        try:
+            payload = dict(message.body())
+        except (TypeError, ValueError):
+            logger.warning("Malformed approval bridge message: %r", message.body())
+            return
+        if payload.get("action") != "resolve":
+            logger.warning("Unknown approval bridge action: %r", payload)
+            return
+        # Any result this doesn't recognize still defaults to the safe
+        # direction -- same defensive fallback buttonClicked_'s own
+        # unrecognized-tag branch always had, even though _JS's own
+        # data-pf-action markup never actually produces one.
+        result = payload.get("result")
+        self.result = result if result in _BRIDGE_RESULTS else "deny"
+        NSApplication.sharedApplication().stopModalWithCode_(NSModalResponseStop)
 
     # ------------------------------------------------------------------ #
     # Entry point (must run on the main thread)
@@ -679,23 +669,14 @@ class ApprovalWindowController(NSObject):
         # have been shown and hidden this way. close() actually releases
         # the window (NSWindow's default isReleasedWhenClosed) instead.
         panel.close()
-
-    def buttonClicked_(self, sender) -> None:
-        # Internal result values ("accept"/"accept_all"/"deny") stay as-is --
-        # gate.py/audit_log.py/tests key on them throughout. Dispatch is via
-        # sender.tag() (_TAG_DENY/_TAG_ACCEPT/_TAG_ACCEPT_ALL), not the
-        # button's displayed title -- Always allow's own title varies per
-        # call (accept_all_hint), so an exact-string match on the title
-        # would be fragile. Any tag this doesn't recognize still defaults
-        # to the safe direction.
-        tag = sender.tag()
-        if tag == _TAG_ACCEPT_ALL:
-            self.result = "accept_all"
-        elif tag == _TAG_ACCEPT:
-            self.result = "accept"
-        else:
-            self.result = "deny"
-        NSApplication.sharedApplication().stopModalWithCode_(NSModalResponseStop)
+        # See init()'s own comment on self._user_content_controller: drop
+        # the strong reference the message handler holds back to self now
+        # that the modal session is over, the same explicit teardown
+        # settings_window.py's windowWillClose_ already does for its own
+        # (longer-lived) bridge.
+        if self._user_content_controller is not None:
+            self._user_content_controller.removeScriptMessageHandlerForName_(_MESSAGE_HANDLER_NAME)
+            self._user_content_controller = None
 
 
 def show_native_approval(

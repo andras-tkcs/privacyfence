@@ -52,8 +52,9 @@ scenario in _scenarios().
 Seven more, non-tool scenarios run last: the actual tray status item and, from it, the settings
 window issue #120 replaced the old NSMenu tree / "Manage Auto-accept Rules…" native window with
 (see the "Settings window" scenarios near the bottom of _scenarios()) -- exercising real clicks
-into that window's own web content the same way the rest of this script does for approval popups'
-native buttons. 100 scenarios total: 93 tool-approval scenarios plus these seven.
+into that window's own web content, the same web-content-click technique issue #141 brought to
+every tool-approval scenario's own Deny/Allow once/Always allow above (see _click_button's own
+docstring). 100 scenarios total: 93 tool-approval scenarios plus these seven.
 
 Every tool-approval scenario renders through the one real card-stack rendering
 (approval_window_html.py). Each scenario's narrow/wide shape (_TOOL_LAYOUT below) is a fixed,
@@ -198,10 +199,25 @@ def _wait_for_window(pid: int) -> str:
 
 
 def _wait_for_button_enabled(pid: int, title: str) -> str:
-    """Block until a button with this exact title exists AND is enabled on
-    our own process's first window -- returns "ready", "BUTTON_NOT_FOUND"
-    (no such button ever appeared), or "TIMEOUT_BUTTON_DISABLED" (it
-    exists but never became enabled within WINDOW_WAIT_TIMEOUT_SECONDS).
+    """Block until a Deny/Allow once/Always allow element with this exact
+    displayed text exists AND is enabled on our own process's first window
+    -- returns "ready", "BUTTON_NOT_FOUND" (no such element ever appeared),
+    or "TIMEOUT_BUTTON_DISABLED" (it exists but never became enabled within
+    WINDOW_WAIT_TIMEOUT_SECONDS).
+
+    Issue #141 moved Deny/Allow once/Always allow off native NSButtons and
+    into the same card-stack WKWebView content everything else in the
+    approval window renders (role="button", aria-disabled toggled by the
+    page's own DOMContentLoaded handling -- see approval_window_html.py's
+    ``_button_row_html``/``_JS``) -- so this now walks `entire contents of
+    window 1` the same way _wait_for_web_element (below, originally written
+    for the *settings*-window's own web content) already does, rather than
+    addressing a native `button "{title}" of window 1`. Title is tried
+    first, description second, same unverified-on-real-hardware fallback
+    reasoning as that section's own header comment -- these buttons carry
+    ``aria-label`` (see _button_row_html), which WebKit may map to either
+    depending on OS/WebKit version, same open question as every other
+    aria-label lookup in this file.
 
     v2's Deny/Allow once/Always allow start disabled -- and the panel
     itself starts fully transparent (alphaValue 0) -- and only become
@@ -224,12 +240,17 @@ def _wait_for_button_enabled(pid: int, title: str) -> str:
     tell application "System Events"
         set targetProcess to first process whose unix id is {pid}
         tell targetProcess
-            if not (exists button "{title}" of window 1) then
-                return "BUTTON_NOT_FOUND"
-            end if
             set deadlineTime to (current date) + {WINDOW_WAIT_TIMEOUT_SECONDS}
             repeat
-                if (enabled of button "{title}" of window 1) then return "ready"
+                set matches to (every UI element of (entire contents of window 1) whose title is "{title}")
+                if (count of matches) = 0 then
+                    set matches to (every UI element of (entire contents of window 1) whose description is "{title}")
+                end if
+                if (count of matches) > 0 then
+                    if (enabled of item 1 of matches) then return "ready"
+                else if (current date) > deadlineTime then
+                    return "BUTTON_NOT_FOUND"
+                end if
                 if (current date) > deadlineTime then return "TIMEOUT_BUTTON_DISABLED"
                 delay 0.1
             end repeat
@@ -240,10 +261,16 @@ def _wait_for_button_enabled(pid: int, title: str) -> str:
 
 
 def _click_button(pid: int, title: str) -> str:
-    """Click a button on our own process's first window by its exact title
-    -- returns "clicked", "BUTTON_NOT_FOUND"/"TIMEOUT_BUTTON_DISABLED" (see
+    """Click a Deny/Allow once/Always allow element on our own process's
+    first window by its exact displayed text -- returns "clicked",
+    "BUTTON_NOT_FOUND"/"TIMEOUT_BUTTON_DISABLED" (see
     _wait_for_button_enabled), or an osascript-level error string. Assumes
     the window already exists (call _wait_for_window() first).
+
+    See _wait_for_button_enabled's own docstring for why this walks
+    `entire contents of window 1` (web content) rather than addressing a
+    native `button "{title}" of window 1` -- same title-then-description
+    fallback, same unverified-on-real-hardware status.
 
     Waits for the button to actually be enabled before clicking -- without
     this, a click landing before v2's webview finishes loading would
@@ -258,7 +285,12 @@ def _click_button(pid: int, title: str) -> str:
     tell application "System Events"
         set targetProcess to first process whose unix id is {pid}
         tell targetProcess
-            click button "{title}" of window 1
+            set matches to (every UI element of (entire contents of window 1) whose title is "{title}")
+            if (count of matches) = 0 then
+                set matches to (every UI element of (entire contents of window 1) whose description is "{title}")
+            end if
+            if (count of matches) = 0 then return "BUTTON_NOT_FOUND"
+            click item 1 of matches
         end tell
     end tell
     return "clicked"
@@ -324,21 +356,30 @@ def _click_menu_item(pid: int, title: str) -> str:
 # renders every clickable element as a plain <div> with role="button"/"tab"/
 # "radio"/"switch"/"checkbox" and a stable aria-label (added specifically so
 # this script can address WKWebView content the same way _click_button
-# above addresses a native NSButton -- see that module's own accessibility-
-# pass comments). System Events can, in general, walk into a WKWebView's
-# accessibility tree the same way it walks a window's native subviews, but
-# unlike a native NSButton (a direct child of the window, addressable as
-# `button "title" of window 1`), a web-content element sits several levels
-# deep under an AXWebArea -- `entire contents of window 1` is the standard
-# AppleScript idiom for a recursive search that reaches it regardless of
-# nesting depth.
+# above addresses one -- see that module's own accessibility-pass comments).
+# _click_button/_wait_for_button_enabled above use this exact same
+# `entire contents of window 1` technique now too (issue #141 moved
+# approval_window.py's own Deny/Allow once/Always allow off native
+# NSButtons and into its card-stack webview's content, the same way
+# settings_window_html.py's controls already were) -- this section's own
+# helpers (_click_web_element/_wait_for_web_element/etc.) stayed separate
+# rather than merging the two into one shared helper, since their aria-label
+# vocabularies serve genuinely different content (this section's own
+# toggle/radio/tab roles have no approval-window equivalent). System Events
+# can, in general, walk into a WKWebView's accessibility tree the same way
+# it walks a window's native subviews, but unlike a native NSButton (a
+# direct child of the window, addressable as `button "title" of window 1`),
+# a web-content element sits several levels deep under an AXWebArea --
+# `entire contents of window 1` is the standard AppleScript idiom for a
+# recursive search that reaches it regardless of nesting depth.
 #
 # UNVERIFIED ON REAL HARDWARE, same limitation as every other honesty note
-# in this file's module docstring applies here too, doubly so: this is the
+# in this file's module docstring applies here too, doubly so: this was the
 # first WKWebView-content UI-scripting attempt in this repo (approval_
-# window.py's own webview is display-only, JavaScript disabled, and never
-# addressed via System Events at all), so there is no working precedent to
-# copy exactly. The two known open questions this can't resolve without an
+# window.py's own webview was still display-only and native-button-driven,
+# never addressed via System Events, until issue #141), so there was no
+# working precedent to copy exactly when this section was first written.
+# The two known open questions this can't resolve without an
 # actual run: (1) whether WebKit populates an ARIA `aria-label` into the AX
 # element's `title` or its `description` for a given role (this repo's own
 # testing suggests it varies by mapped role -- e.g. a button's accessible
@@ -1137,8 +1178,9 @@ def _settings_open_window_step(
     window actually appeared), or the first failing helper's own status string otherwise.
 
     No _wait_for_button_enabled-style "is the content actually ready" wait here, unlike
-    _run_scenario's clicker() for approval popups -- there is no native button to poll enabled/
-    disabled on this window (it's one WKWebView, no native controls at all), and every web-content
+    _run_scenario's clicker() for approval popups -- there is no single always-present Deny-style
+    element on this window to poll enabled/disabled the way _wait_for_button_enabled does there (it's
+    one WKWebView, and which controls even exist varies by nav section), and every web-content
     interaction below already waits for its own target element to exist via
     _wait_for_web_element/_click_web_element/_set_web_element_text, which is this window's actual
     equivalent "is it ready" signal.

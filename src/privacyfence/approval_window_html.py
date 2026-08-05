@@ -1,9 +1,12 @@
 """Card-stack HTML template for the approval window.
 
 Renders the *entire* content area of a review-gate or popup-gate dialog as one
-self-contained HTML document for a single full-window WKWebView. Buttons stay
-native (see approval_window.py's module docstring for why) -- nothing here
-renders Deny/Allow once/Always allow.
+self-contained HTML document for a single full-window WKWebView, including its
+own Deny/Allow once/Always allow button row (``_button_row_html``) -- see
+approval_window.py's module docstring for why these moved off native NSButtons
+and into this document, and ``_JS`` below for the click/keyboard-dispatch
+bridge (``window.webkit.messageHandlers.pf``) that replaces native
+``buttonClicked_`` tag dispatch.
 
 Visual design assets (styles.css, with Source Serif 4 embedded as base64 data
 URIs; see that directory's fonts/OFL.txt for licensing) are vendored into
@@ -305,12 +308,13 @@ def _kv_rows_html(pairs: list[tuple[str, str]]) -> str:
         # Inline override only when it actually differs from the CSS
         # default -- keeps the common case's markup uncluttered.
         style_attr = f' style="-webkit-line-clamp:{clamp}"' if clamp != DEFAULT_LINE_CLAMP else ""
-        # A native title="..." tooltip, not JS -- this document runs with
-        # JavaScript disabled (see build_card_stack_html's caller,
-        # approval_window.py's config.preferences().setJavaScriptEnabled_
-        # (False)), and WebKit already shows a hover tooltip for any
-        # element with a title attribute with no script needed. Set
-        # unconditionally rather than only when a value is actually
+        # A native title="..." tooltip, not JS -- WebKit already shows a
+        # hover tooltip for any element with a title attribute with no
+        # script needed, so this doesn't reach for _JS's bridge even though
+        # JavaScript is enabled for this document now (see
+        # approval_window.py's module docstring for what _JS is actually
+        # for -- the button row's click/keyboard dispatch, not tooltips).
+        # Set unconditionally rather than only when a value is actually
         # clamped: knowing in advance whether a given string will exceed N
         # lines at the rendered column width/font would need real text
         # measurement, which this whole layout deliberately avoids (see
@@ -418,6 +422,125 @@ def _risk_section_html(
     return f'<div class="card" style="{card_style}">{kicker_html}{body}</div>'
 
 
+def _button_row_html(allow_accept_all: bool, accept_all_label: str) -> str:
+    """Deny/Allow once/Always allow -- rendered as part of this document's
+    own content now (see module docstring), not native NSButtons in a fixed
+    band below the webview. ``accept_all_label`` is the already-formatted
+    "Always allow" / "Always allow — {hint}" string (approval_window.py's
+    ApprovalWindowController computes it, same as it always has -- this
+    function just renders whatever string it's given).
+
+    Every button starts fully disabled -- ``aria-disabled="true"``, no
+    ``tabindex`` -- exactly like settings_window_html.py's own disabled
+    ``toggleHtml()`` state (same "omit the interactive affordances entirely,
+    don't rely on a browser default disabled semantic no plain ``<div>``
+    gets for free" reasoning). ``_JS``'s ``enableButtons()`` is what clears
+    this once the page is actually ready to be looked at -- see that
+    function's own comment for why that's a DOMContentLoaded-driven, fully
+    in-page signal now, not something approval_window.py's
+    WKNavigationDelegate methods drive directly the way they used to.
+
+    ``data-pf-primary`` marks Allow once specifically: ``_JS``'s keydown
+    handler activates a *focused* Deny/Always-allow control on Enter/Space
+    the same way a click would, but deliberately excludes anything carrying
+    this attribute -- hitting Enter/Space must never be able to approve a
+    request nobody has actually reviewed yet, the same guarantee the native
+    button's missing ``"\\r"`` keyEquivalent used to give (see
+    approval_window.py's own module docstring). Escape still resolves Deny
+    regardless of focus (``_JS``'s own document-level handler), matching the
+    native Deny button's ``"\\x1b"`` keyEquivalent -- declining via a
+    reflexive keypress stays the safe direction.
+    """
+    deny_html = (
+        '<div class="pf-btn pf-btn-deny" role="button" aria-disabled="true" '
+        'aria-label="Deny" data-pf-action="deny">Deny</div>'
+    )
+    always_allow_html = ""
+    if allow_accept_all:
+        always_allow_html = (
+            '<div class="pf-btn-link" role="button" aria-disabled="true" '
+            f'aria-label="{_html_escape(accept_all_label)}" data-pf-action="accept_all">'
+            f'{_html_escape(accept_all_label)}</div>'
+        )
+    allow_once_html = (
+        '<div class="pf-btn pf-btn-primary" role="button" aria-disabled="true" '
+        'data-pf-primary="1" aria-label="Allow once" data-pf-action="accept">Allow once</div>'
+    )
+    return (
+        '<div class="pf-btn-row">'
+        f'<div class="pf-btn-row-left">{deny_html}{always_allow_html}</div>'
+        f'{allow_once_html}'
+        '</div>'
+    )
+
+
+# Click/keyboard dispatch for the button row above, plus the "content is
+# actually ready" gate that used to be a Python-side concern
+# (webView_didFinishNavigation_ enabling native NSButtons). DOMContentLoaded
+# is the right in-page equivalent specifically because this document has
+# nothing left to fetch by the time it fires -- fonts/icons/images are all
+# already-inlined base64 data URIs, never a network request (see module
+# docstring) -- so there's no meaningful gap between "DOM built" and
+# "everything that was ever going to render has rendered" the way there
+# would be for a document with real external resources.
+#
+# window.__pfEnableButtons is exposed specifically so approval_window.py's
+# WKNavigationDelegate fail-safes (webView_didFail(Provisional)Navigation_
+# withError_) can still force button click-ability in the one case
+# DOMContentLoaded itself might never fire: an outright load failure. Safe
+# to call more than once (removeAttribute/setAttribute are idempotent), so
+# those fail-safes can call it unconditionally without checking whether the
+# page's own handler already ran.
+_JS = """
+(function () {
+  function post(result) {
+    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.pf) {
+      window.webkit.messageHandlers.pf.postMessage({ action: 'resolve', result: result });
+    }
+  }
+
+  function resolveFrom(el) {
+    if (!el || el.getAttribute('aria-disabled') === 'true') return;
+    var action = el.getAttribute('data-pf-action');
+    if (action) post(action);
+  }
+
+  function enableButtons() {
+    var buttons = document.querySelectorAll('.pf-btn-row [data-pf-action]');
+    for (var i = 0; i < buttons.length; i++) {
+      buttons[i].removeAttribute('aria-disabled');
+      buttons[i].setAttribute('tabindex', '0');
+    }
+  }
+  window.__pfEnableButtons = enableButtons;
+
+  document.addEventListener('DOMContentLoaded', function () {
+    enableButtons();
+
+    document.body.addEventListener('click', function (e) {
+      resolveFrom(e.target.closest('[data-pf-action]'));
+    });
+
+    document.body.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') {
+        resolveFrom(document.querySelector('[data-pf-action="deny"]'));
+        return;
+      }
+      // See _button_row_html's own docstring for why [data-pf-primary]
+      // (Allow once) is deliberately excluded here.
+      if ((e.key === 'Enter' || e.key === ' ') && e.target.closest) {
+        var interactive = e.target.closest('[data-pf-action]:not([data-pf-primary])');
+        if (interactive) {
+          e.preventDefault();
+          resolveFrom(interactive);
+        }
+      }
+    });
+  });
+})();
+"""
+
+
 def build_card_stack_html(
     *,
     layout: str,
@@ -435,6 +558,8 @@ def build_card_stack_html(
     temp_accept_text: str,
     preview_kicker: str,
     preview_body_html: str,
+    allow_accept_all: bool,
+    accept_all_label: str,
 ) -> str:
     """Build the full HTML document for one approval window's content area.
 
@@ -499,6 +624,14 @@ def build_card_stack_html(
     ``upload_forced`` only ever accompanies a non-empty ``write_content_flags``
     -- see _risk_section_html()'s docstring for what each combination
     renders.
+
+    ``allow_accept_all``/``accept_all_label`` control the Always allow
+    button (see ``_button_row_html``) -- Deny and Allow once always render,
+    Always allow only when ``allow_accept_all`` is true, using whatever
+    already-formatted label ``accept_all_label`` carries (plain "Always
+    allow", or "Always allow — {hint}"; approval_window.py's controller
+    decides which, same as it always has). The whole button row is appended
+    last, after ``temp_accept_text``'s own caption when present.
     """
     width = CONTENT_WIDTH[layout]
     # A plain running counter, advanced only when a section actually
@@ -595,12 +728,17 @@ def build_card_stack_html(
     if temp_accept_text:
         # flex:none -- a sibling of the row/column above inside <body>'s own
         # flex column, not part of the scrollable region, always visible
-        # just above the (native, non-HTML) button row.
+        # just above the button row (.pf-btn-row, appended next, also
+        # flex:none).
         body_html += (
             f'<div style="flex:none;margin-top:16px;font-size:11px;'
             f'color:color-mix(in srgb, var(--color-text) 55%, transparent)">'
             f'{_html_escape(temp_accept_text)}</div>'
         )
+
+    # Always present (unlike temp_accept_text above) -- every dialog has a
+    # Deny/Allow once button row, see _button_row_html.
+    body_html += _button_row_html(allow_accept_all, accept_all_label)
 
     # Read/write side rail, paired with the header's same-colored pill
     # above -- 6px, on the window's left edge, cyan/accent for reads and
@@ -632,7 +770,7 @@ body {{
 }}
 </style>
 </head>
-<body>{body_html}</body>
+<body>{body_html}<script>{_JS}</script></body>
 </html>
 """
 

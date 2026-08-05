@@ -322,3 +322,60 @@ img { display: block; max-width: 100%; }
   background: color-mix(in srgb, var(--color-text) 45%, transparent);
   background-clip: padding-box;
 }
+
+/* — action button row — (Deny/Allow once/Always allow) — these three now
+   render as part of this document's own content instead of native
+   NSButtons in a fixed band below the webview (see approval_window.py's
+   module docstring) -- same brand-blue primary/danger-red deny/quiet-link
+   always-allow visual language the native buttons used, plus a matching
+   --color-danger token this file otherwise has no need for (every other
+   "this is risky" cue -- the §4 PII/content-flag card -- uses the
+   accent-2/pii-w-* families above instead). Buttons render disabled
+   (aria-disabled="true", no data-pf-action) until the page's own
+   DOMContentLoaded handling enables them -- see build_card_stack_html's
+   _JS, and approval_window.py's module docstring for why a fast/reflexive
+   click can't be allowed to resolve the decision before there's anything
+   on screen to review. */
+:root {
+  --color-danger: #d92d20;
+  --color-danger-tint: color-mix(in srgb, #d92d20 12%, transparent);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-danger: #ff6b57;
+    --color-danger-tint: color-mix(in srgb, #ff6b57 16%, transparent);
+  }
+}
+.pf-btn-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--space-4); flex: none; margin-top: var(--space-3);
+  padding-top: var(--space-3); border-top: 1px solid var(--color-divider);
+}
+.pf-btn-row-left { display: flex; align-items: center; gap: var(--space-4); min-width: 0; }
+.pf-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 90px; padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md); border: 1px solid transparent;
+  font: 600 13px var(--font-body); cursor: pointer; user-select: none;
+}
+/* Disabled (pre-DOMContentLoaded) state -- opacity + pointer-events:none is
+   the whole story: these are plain divs (role="button"), not native
+   <button>s with a real disabled attribute, so nothing here needs (or
+   gets) a browser-default disabled visual. */
+.pf-btn[aria-disabled="true"] { opacity: .45; pointer-events: none; cursor: default; }
+.pf-btn-primary { background: #5ba4ff; color: #fff; }
+.pf-btn-primary:hover { background: #4a8fe6; }
+.pf-btn-deny {
+  background: transparent; color: var(--color-danger);
+  border-color: color-mix(in srgb, var(--color-danger) 45%, transparent);
+}
+.pf-btn-deny:hover { background: var(--color-danger-tint); }
+/* Always allow -- deliberately not the same pill styling as Deny/Allow
+   once, so a fast, confident click aimed at the primary action can't land
+   on it by accident (same reasoning the native _build_link_button's own
+   docstring gave for its borderless, small, underlined style). */
+.pf-btn-link {
+  min-width: 0; padding: 0; border: none; background: none;
+  font: 400 11px var(--font-body); color: var(--color-neutral-700);
+  text-decoration: underline; text-underline-offset: 2px;
+}

@@ -13,9 +13,11 @@ docs/connector-qa-testing.md run.
 
 These tests call ApprovalWindowController.build_panel() directly and walk
 the resulting real AppKit view tree, or (for content that only lives inside
-the single card-stack webview) inspect controller._details_html_string --
-the exact string handed to loadHTMLString_baseURL_, since WKWebView's own
-loaded content isn't synchronously readable back out. They never call
+the single card-stack webview, which since issue #141 includes the
+Deny/Allow once/Always allow button row itself -- these are no longer
+native NSButtons) inspect controller._details_html_string -- the exact
+string handed to loadHTMLString_baseURL_, since WKWebView's own loaded
+content isn't synchronously readable back out. They never call
 runApproval_() or anything that reaches NSApplication.runModalForWindow_()
 -- build_panel() is deliberately pure construction (see its docstring), so
 nothing here shows, activates, or makes key any window, and no human or
@@ -24,10 +26,20 @@ without any new Accessibility permission or interactive session: it's the
 same "real framework, no blocking UI" precedent test_approval_popup_
 escaping.py already established for osascript.
 
+Button *click resolution* itself (result: 'accept'/'deny'/'accept_all') is
+now driven by userContentController_didReceiveScriptMessage_ -- the "pf"
+WKScriptMessageHandler bridge the button row's own JS posts to (see
+approval_window.py's module docstring) -- exercised here with a fake
+WKScriptMessage stand-in (``_FakeMessage``) rather than by actually running
+the page's JS (this test tier has no JS engine to run it in; the click/
+keyboard-dispatch logic itself is covered structurally, via string
+assertions on the rendered markup/script, not behaviorally -- see
+qa_popup_smoke.py for the one thing that actually drives a real click).
+
 approval_window.py has a single rendering (``layout="narrow"``/``"wide"``,
 both rendered as one WKWebView card stack) -- this file covers it,
-including the couple of genuinely layout-agnostic pieces (buttonClicked_'s
-title->result mapping, _connector_icon_path's pure-function contract).
+including the couple of genuinely layout-agnostic pieces (the bridge
+message -> result mapping, _connector_icon_path's pure-function contract).
 """
 from __future__ import annotations
 
@@ -35,7 +47,6 @@ import base64
 import sys
 
 import pytest
-from AppKit import NSButton
 from WebKit import WKWebView
 
 from privacyfence.approval_window import (
@@ -49,6 +60,19 @@ from privacyfence.approval_window_html import NARROW, WIDE
 pytestmark = pytest.mark.skipif(
     sys.platform != "darwin", reason="requires real AppKit/PyObjC (macOS only, matches project's macOS-only runtime)"
 )
+
+
+class _FakeMessage:
+    """Stand-in for the real WKScriptMessage
+    userContentController_didReceiveScriptMessage_ receives -- only
+    ``.body()`` is ever read (see that method's own implementation), so
+    that's all this needs to fake."""
+
+    def __init__(self, body):
+        self._body = body
+
+    def body(self):
+        return self._body
 
 
 def make_controller(
@@ -116,10 +140,6 @@ def build_views(controller):
     return list(flatten(panel.contentView())), panel
 
 
-def buttons_by_title(views):
-    return {b.title(): b for b in views if isinstance(b, NSButton)}
-
-
 _TINY_PNG_BYTES = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
@@ -137,89 +157,135 @@ class TestWindowShape:
         assert panel.frame().size.width == _WINDOW_WIDTH[WIDE] == 980.0
 
     def test_exactly_one_webview_renders_the_whole_content_area(self):
-        # Everything except the native buttons lives in one WKWebView.
+        # Since issue #141, that includes the button row too -- no more
+        # native buttons anchored below it.
         views, _ = build_views(make_controller())
         webviews = [v for v in views if isinstance(v, WKWebView)]
         assert len(webviews) == 1
 
-    def test_javascript_stays_disabled(self):
+    def test_javascript_is_enabled(self):
+        # Flipped by issue #141: the button row's own click/keyboard
+        # dispatch (approval_window_html.py's _JS) needs it now -- see that
+        # module's docstring for the "no navigation, no network" guarantee
+        # that still holds despite this.
         views, _ = build_views(make_controller())
         webview = next(v for v in views if isinstance(v, WKWebView))
-        assert webview.configuration().preferences().javaScriptEnabled() is False
+        assert webview.configuration().preferences().javaScriptEnabled() is True
 
 
 class TestButtons:
+    """Deny/Allow once/Always allow moved from native NSButtons into the
+    card-stack HTML itself (issue #141) -- these assert against
+    controller._details_html_string, the exact markup handed to
+    loadHTMLString_baseURL_, rather than walking a native view tree."""
+
     def test_deny_and_allow_once_are_present(self):
-        views, _ = build_views(make_controller())
-        titles = buttons_by_title(views)
-        assert "Deny" in titles
-        assert "Allow once" in titles
+        controller = make_controller()
+        controller.build_panel()
+        html = controller._details_html_string
+        assert 'data-pf-action="deny"' in html
+        assert 'data-pf-action="accept"' in html
+        assert "Deny" in html
+        assert "Allow once" in html
 
     def test_always_allow_present_only_when_requested(self):
-        views_without, _ = build_views(make_controller(allow_accept_all=False))
-        assert "Always allow" not in buttons_by_title(views_without)
+        without = make_controller(allow_accept_all=False)
+        without.build_panel()
+        assert 'data-pf-action="accept_all"' not in without._details_html_string
 
-        views_with, _ = build_views(make_controller(allow_accept_all=True))
-        assert "Always allow" in buttons_by_title(views_with)
+        with_ = make_controller(allow_accept_all=True)
+        with_.build_panel()
+        assert 'data-pf-action="accept_all"' in with_._details_html_string
 
     def test_no_show_more_toggle_in_either_layout(self):
         # No progressive-disclosure toggle at all: every row is
         # CSS-fixed-and-truncated instead -- see
         # approval_window_html.py's module docstring.
-        narrow_views, _ = build_views(make_controller(layout=NARROW))
-        assert "Show more" not in buttons_by_title(narrow_views)
+        narrow = make_controller(layout=NARROW)
+        narrow.build_panel()
+        assert "Show more" not in narrow._details_html_string
 
-        wide_views, _ = build_views(make_controller(layout=WIDE))
-        assert "Show more" not in buttons_by_title(wide_views)
+        wide = make_controller(layout=WIDE)
+        wide.build_panel()
+        assert "Show more" not in wide._details_html_string
 
-    def test_deny_keeps_escape_and_allow_once_has_no_return_key_equivalent(self):
-        # Hitting Enter the instant the popup appears must not be able to
-        # approve a request nobody has read yet -- see approval_window.py's
-        # module docstring. Declining via Escape stays bound since that's
-        # the safe direction.
-        views, _ = build_views(make_controller())
-        titles = buttons_by_title(views)
-        assert titles["Deny"].keyEquivalent() == "\x1b"
-        assert titles["Allow once"].keyEquivalent() != "\r"
+    def test_buttons_start_disabled_in_markup(self):
+        # Clickable only once the page's own DOMContentLoaded handling
+        # enables them (approval_window_html.py's _JS) -- a fast or
+        # reflexive click can't resolve the decision before there's
+        # anything on screen to review. See module docstring.
+        controller = make_controller(allow_accept_all=True)
+        controller.build_panel()
+        # Deny, Allow once, Always allow -- all three start disabled. Scoped
+        # to `role="button" aria-disabled="true"` (an actual button
+        # element), not a bare `aria-disabled="true"` substring search --
+        # that phrase also appears in styles.css's own vendored CSS
+        # comments/selector text, which this document inlines verbatim.
+        html = controller._details_html_string
+        assert html.count('role="button" aria-disabled="true"') == 3
+
+    def test_allow_once_alone_is_marked_primary(self):
+        # data-pf-primary is what _JS's keydown handler uses to exclude
+        # Allow once from Enter/Space activating a focused control -- see
+        # approval_window_html.py's _button_row_html docstring. Confirms
+        # it's on Allow once and nowhere else (Deny/Always allow keep the
+        # normal Enter/Space-activates-a-focused-control path). Scoped to
+        # the ``="1"``-valued attribute, not a bare ``data-pf-primary``
+        # substring search -- _JS's own script text also references the
+        # bare attribute name in its keydown-handler selector.
+        controller = make_controller(allow_accept_all=True, accept_all_hint="this folder")
+        controller.build_panel()
+        html = controller._details_html_string
+        assert html.count('data-pf-primary="1"') == 1
+        assert 'data-pf-primary="1" aria-label="Allow once" data-pf-action="accept"' in html
 
 
 class TestAlwaysAllowVerboseLabel:
     """The Always allow button names the specific rule it would create
     (gate.py's accept_all_hint) instead of a plain, unspecific label -- see
-    _build_content_view's own comment. Dispatch is tag-based (see
-    TestButtonClicked), so a non-literal title here doesn't break the
-    click -- these tests confirm the *display* side of that."""
+    _build_content_view's own comment. Dispatch is bridge-message-based (see
+    TestBridgeMessage), so a non-literal label here doesn't break the click
+    -- these tests confirm the *display* side of that."""
 
     def test_hint_appends_to_the_plain_label(self):
-        views, _ = build_views(make_controller(allow_accept_all=True, accept_all_hint="this folder"))
-        titles = buttons_by_title(views)
-        assert "Always allow — this folder" in titles
-        assert "Always allow" not in titles
+        controller = make_controller(allow_accept_all=True, accept_all_hint="this folder")
+        controller.build_panel()
+        html = controller._details_html_string
+        assert "Always allow — this folder" in html
+        assert ">Always allow<" not in html
 
     def test_no_hint_keeps_the_plain_label(self):
         # The unconditional always_allow rule (e.g. gmail_create_draft) has
         # no category to name -- gate.py sends an empty hint for it, and
         # the button must stay exactly "Always allow", not "Always allow —"
         # with a dangling separator.
-        views, _ = build_views(make_controller(allow_accept_all=True, accept_all_hint=""))
-        titles = buttons_by_title(views)
-        assert "Always allow" in titles
+        controller = make_controller(allow_accept_all=True, accept_all_hint="")
+        controller.build_panel()
+        html = controller._details_html_string
+        assert ">Always allow<" in html
+        assert "Always allow —" not in html
 
     def test_hint_is_ignored_when_always_allow_is_not_offered(self):
         # A hint with nothing to attach to (allow_accept_all False) must
         # never leak a floating "— this folder" button onto the row.
-        views, _ = build_views(make_controller(allow_accept_all=False, accept_all_hint="this folder"))
-        titles = buttons_by_title(views)
-        assert not any(t.startswith("Always allow") for t in titles)
+        # Checked via data-pf-action, not a bare "Always allow" substring
+        # search -- styles.css's own vendored CSS comments (inlined
+        # verbatim into every document) mention that phrase too.
+        controller = make_controller(allow_accept_all=False, accept_all_hint="this folder")
+        controller.build_panel()
+        assert 'data-pf-action="accept_all"' not in controller._details_html_string
 
-    def test_verbose_button_still_dispatches_to_accept_all_when_clicked(self):
-        # End-to-end: the real (non-fake-sender) button built with a
-        # verbose title still resolves correctly via its tag.
+    def test_verbose_label_still_resolves_to_accept_all_via_the_bridge(self):
+        # End-to-end: a button rendered with a verbose label still resolves
+        # correctly, because dispatch is via data-pf-action/the bridge
+        # message's own "result" field, never the button's displayed text.
         controller = make_controller(allow_accept_all=True, accept_all_hint="this project")
-        views, _ = build_views(controller)
-        titles = buttons_by_title(views)
-        btn = titles["Always allow — this project"]
-        controller.buttonClicked_(btn)
+        controller.build_panel()
+        assert 'data-pf-action="accept_all"' in controller._details_html_string
+
+        controller.userContentController_didReceiveScriptMessage_(
+            None, _FakeMessage({"action": "resolve", "result": "accept_all"}),
+        )
         assert controller.result == "accept_all"
 
 
@@ -417,18 +483,21 @@ class TestWindowHeightSafetyMargin:
     see _HEIGHT_SAFETY_MARGIN's own comment."""
 
     def test_window_height_exceeds_the_raw_estimate_by_the_safety_margin_and_body_padding(self):
-        # webview_height must cover both the WebKit-render-drift margin AND
-        # body's own fixed vertical CSS padding (box-sizing:border-box
-        # carves that out of the 100vh before .pf-scroll ever sees it) --
-        # see _window_height's own comment for the real overflow this
-        # was found from when only the drift margin was reserved.
-        from privacyfence.approval_window import _HEIGHT_SAFETY_MARGIN
+        # Since issue #141 the webview is the full window_height (it owns
+        # the button row too, no more separate native band below it) -- so
+        # what's left after subtracting _BUTTON_ROW_HEIGHT must cover both
+        # the WebKit-render-drift margin AND body's own fixed vertical CSS
+        # padding (box-sizing:border-box carves that out of the 100vh before
+        # .pf-scroll ever sees it) -- see _window_height's own comment for
+        # the real overflow this was found from when only the drift margin
+        # was reserved.
+        from privacyfence.approval_window import _BUTTON_ROW_HEIGHT, _HEIGHT_SAFETY_MARGIN
         from privacyfence.approval_window_html import BODY_VERTICAL_PADDING
 
         controller = make_controller(preview={"Contact": "x", "Label": "y"})
         raw_estimate = controller._estimate_left_column_height()
-        webview_height = controller._window_height() - 66.0
-        assert webview_height == raw_estimate + _HEIGHT_SAFETY_MARGIN + BODY_VERTICAL_PADDING
+        content_height = controller._window_height() - _BUTTON_ROW_HEIGHT
+        assert content_height == raw_estimate + _HEIGHT_SAFETY_MARGIN + BODY_VERTICAL_PADDING
 
     def test_tiny_dialog_gets_real_slack_over_its_own_pinned_estimate(self):
         # The reported case: a two-row preview, no reason/disclosure/PII --
@@ -436,13 +505,15 @@ class TestWindowHeightSafetyMargin:
         # leaving very little native margin (12px, pre-fix) before real
         # WebKit rendering drift could trip a scrollbar on a dialog with
         # nothing that actually needs to scroll.
+        from privacyfence.approval_window import _BUTTON_ROW_HEIGHT
+
         controller = make_controller(
             preview={"Contact": "PrivacyFence QA Contact [QATEST]", "Label": "QATEST"},
             claude_reason="", new_info={}, pii_categories=[],
         )
         pinned = controller._pinned_height()
-        webview_height = controller._window_height() - 66.0
-        assert webview_height - pinned >= 24.0
+        content_height = controller._window_height() - _BUTTON_ROW_HEIGHT
+        assert content_height - pinned >= 24.0
 
 
 class TestPreviewTables:
@@ -487,50 +558,46 @@ class TestPreviewTables:
         assert '<span class="pf-preview-label">Reporter:</span>' in controller._details_html_string
 
 
-class TestButtonsDisabledUntilWebviewLoads:
-    """webView_didFinishNavigation_ is what re-enables Deny/Allow once/
-    Always allow once the card-stack webview has actually painted --
-    loadHTMLString_baseURL_ is asynchronous even for this fully local
-    document (base64 fonts, full CSS bundle), so without this a fast or
-    reflexive click could resolve the decision before the reviewer has
-    seen any content at all. See _build_content_view's own comment."""
+class TestPanelRevealOnNavigation:
+    """Since issue #141, Deny/Allow once/Always allow's disabled-until-ready
+    state lives in the card-stack HTML itself (see
+    TestButtons.test_buttons_start_disabled_in_markup) -- the page's own
+    DOMContentLoaded handling is what enables them now
+    (approval_window_html.py's ``_JS``), not
+    webView_didFinishNavigation_/its two fail-safes. What's left for those
+    three methods to do is reveal the panel (and best-effort force the same
+    in-page enabling via ``window.__pfEnableButtons``, exercised here only
+    as "doesn't raise" -- this test tier has no JS engine to observe the
+    result of that call, see qa_popup_smoke.py for a real end-to-end
+    click)."""
 
-    def test_buttons_start_disabled(self):
+    def test_panel_starts_invisible(self):
         controller = make_controller(allow_accept_all=True)
         panel = controller.build_panel()
+        assert panel.alphaValue() == 0.0
 
-        buttons = buttons_by_title(flatten(panel.contentView()))
-        assert buttons["Deny"].isEnabled() is False
-        assert buttons["Allow once"].isEnabled() is False
-        assert buttons["Always allow"].isEnabled() is False
-
-    def test_buttons_enabled_after_navigation_finishes(self):
+    def test_panel_becomes_visible_after_navigation_finishes(self):
         controller = make_controller(allow_accept_all=True)
         panel = controller.build_panel()
 
         controller.webView_didFinishNavigation_(controller._details_view, None)
 
-        buttons = buttons_by_title(flatten(panel.contentView()))
-        assert buttons["Deny"].isEnabled() is True
-        assert buttons["Allow once"].isEnabled() is True
-        assert buttons["Always allow"].isEnabled() is True
+        assert panel.alphaValue() == 1.0
 
     @pytest.mark.parametrize(
         "failure_method",
         ["webView_didFailNavigation_withError_", "webView_didFailProvisionalNavigation_withError_"],
     )
-    def test_buttons_enabled_even_if_navigation_fails(self, failure_method):
-        # Fail-safe: a load failure must still enable the buttons rather
-        # than permanently trap the reviewer in an unresponsive modal.
+    def test_panel_becomes_visible_even_if_navigation_fails(self, failure_method):
+        # Fail-safe: a load failure must still reveal the panel rather than
+        # permanently trap the reviewer behind an invisible, unresponsive
+        # modal dialog.
         controller = make_controller(allow_accept_all=True)
         panel = controller.build_panel()
 
         getattr(controller, failure_method)(controller._details_view, None, None)
 
-        buttons = buttons_by_title(flatten(panel.contentView()))
-        assert buttons["Deny"].isEnabled() is True
-        assert buttons["Allow once"].isEnabled() is True
-        assert buttons["Always allow"].isEnabled() is True
+        assert panel.alphaValue() == 1.0
 
 
 class TestConnectorIconPath:
@@ -553,50 +620,52 @@ class TestReadingTimeLabel:
         assert "min read" in _reading_time_label("word " * 1000)  # ~5 min at 200wpm
 
 
-class TestButtonClicked:
-    """Doesn't need build_panel() at all -- buttonClicked_ only reads
-    sender.tag(), so a minimal fake sender is enough. Locks in the tag ->
-    result mapping approval_popup.py's return-value contract depends on
-    (show_native_approval() just returns controller.result). Dispatch is
-    tag-based, not title-based -- Always allow's own displayed title now
-    varies per call (accept_all_hint), so it can't be the dispatch key."""
-
-    class _FakeSender:
-        def __init__(self, tag, title="irrelevant"):
-            self._tag = tag
-            self._title = title
-
-        def tag(self):
-            return self._tag
-
-        def title(self):
-            return self._title
+class TestBridgeMessage:
+    """userContentController_didReceiveScriptMessage_ replaces the old
+    buttonClicked_'s sender.tag() dispatch (issue #141): the "pf" bridge
+    message's own ``result`` field is what self.result resolves to now.
+    Doesn't need build_panel() at all -- a minimal _FakeMessage is enough.
+    Locks in the result mapping approval_popup.py's return-value contract
+    depends on (show_native_approval() just returns controller.result)."""
 
     @pytest.mark.parametrize(
-        "tag,expected_result",
+        "result,expected_result",
         [
-            (1, "accept"),       # _TAG_ACCEPT
-            (0, "deny"),         # _TAG_DENY
-            (2, "accept_all"),   # _TAG_ACCEPT_ALL
+            ("accept", "accept"),
+            ("deny", "deny"),
+            ("accept_all", "accept_all"),
         ],
     )
-    def test_tag_maps_to_the_documented_result(self, tag, expected_result):
+    def test_bridge_result_maps_to_the_documented_result(self, result, expected_result):
         controller = make_controller()
-        controller.buttonClicked_(self._FakeSender(tag))
+        controller.userContentController_didReceiveScriptMessage_(
+            None, _FakeMessage({"action": "resolve", "result": result}),
+        )
         assert controller.result == expected_result
 
-    def test_always_allow_button_with_a_verbose_title_still_resolves_via_tag(self):
-        # The whole point of tag-based dispatch: a title that no longer
-        # reads as the literal word "Always allow" (accept_all_hint
-        # appended) must still resolve to accept_all, not silently fall
-        # through to deny.
+    def test_unrecognized_result_defaults_to_deny(self):
+        # Defensive default, not a reachable case with the fixed markup
+        # _button_row_html ever produces -- see that function's own
+        # docstring.
         controller = make_controller()
-        controller.buttonClicked_(self._FakeSender(2, title="Always allow — this folder"))
-        assert controller.result == "accept_all"
-
-    def test_unrecognized_tag_defaults_to_deny(self):
-        # Defensive default, not a reachable case with the fixed button set
-        # this window ever creates -- see _build_button.
-        controller = make_controller()
-        controller.buttonClicked_(self._FakeSender(99))
+        controller.userContentController_didReceiveScriptMessage_(
+            None, _FakeMessage({"action": "resolve", "result": "something_else"}),
+        )
         assert controller.result == "deny"
+
+    def test_unrecognized_action_is_ignored(self):
+        # Only "resolve" is a real action this bridge understands -- an
+        # unrecognized one must not silently overwrite self.result (or end
+        # the modal session).
+        controller = make_controller()
+        controller.result = "unset"
+        controller.userContentController_didReceiveScriptMessage_(
+            None, _FakeMessage({"action": "something_else", "result": "accept"}),
+        )
+        assert controller.result == "unset"
+
+    def test_malformed_message_body_is_ignored(self):
+        controller = make_controller()
+        controller.result = "unset"
+        controller.userContentController_didReceiveScriptMessage_(None, _FakeMessage("not a dict"))
+        assert controller.result == "unset"
