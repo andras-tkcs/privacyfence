@@ -149,8 +149,14 @@ _INLINE_RE = _re.compile(
     r"|`(.+?)`"                  # code (monospace font)
     # link [text](url) -- link text may contain literal `[`/`]` if escaped
     # as `\[`/`\]` (an unescaped `]` still closes the label, same as an
-    # unescaped `|` closes a table cell below).
-    r"|\[((?:\\[\[\]]|[^\]])+)\]\(([^)]+)\)"
+    # unescaped `|` closes a table cell below). The two alternatives below
+    # are mutually exclusive on their first character (`\\.` only starts on
+    # a backslash, `[^\]\\]` excludes one) so a backslash can never be
+    # matched two ways -- unlike the earlier `\\[\[\]]|[^\]]` version, where
+    # a backslash matched both the escape alternative and the catch-all,
+    # this can't blow up into exponential backtracking on a run of `\[`s
+    # that's never followed by a closing `](url)`.
+    r"|\[((?:\\.|[^\]\\])+)\]\(([^)]+)\)"
 )
 
 
