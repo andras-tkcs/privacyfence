@@ -2126,6 +2126,139 @@ class TestEditDocContent:
         with pytest.raises(DriveClientError, match="edit_doc_content batchUpdate"):
             client.edit_doc_content("f1", "world", "there")
 
+    def test_replace_markdown_without_a_table_makes_exactly_one_batch_update(self):
+        # Regression guard mirroring write_doc_rich_content's own: the table
+        # code path must add zero extra get()/batchUpdate() round trips when
+        # replace_markdown has nothing to insert as a table.
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.return_value = make_doc("hello world")
+        docs_service.documents.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_docs(docs_service)
+
+        client.edit_doc_content("f1", "world", "there")
+
+        assert docs_service.documents.return_value.get.return_value.execute.call_count == 1
+        assert docs_service.documents.return_value.batchUpdate.call_count == 1
+
+    def test_replace_markdown_table_round_trips_through_placeholder_then_cells(self):
+        # A GFM table in replace_markdown must land as a real Docs table, not
+        # as the raw pipe-table text -- this is the bug being fixed: previously
+        # edit_doc_content's replace_markdown skipped table extraction
+        # entirely and the Markdown source ended up literally in the document.
+        markdown = "| A | B |\n| --- | --- |\n| 1 | 2 |"
+        _, tables = _extract_tables(markdown, placeholder_prefix="PRIVACYFENCE_TABLE_PLACEHOLDER_M0_")
+        placeholder = tables[0].placeholder
+
+        doc = make_doc("before PLACEHOLDER after")  # "PLACEHOLDER" -> docs indices [8, 19)
+        doc_with_placeholder = {
+            "body": {
+                "content": [
+                    {"paragraph": {"elements": [
+                        {"startIndex": 8, "textRun": {"content": placeholder + "\n"}}
+                    ]}}
+                ]
+            }
+        }
+        doc_with_table = {
+            "body": {
+                "content": [
+                    {
+                        # Docs inserts a newline immediately before a table, so a
+                        # table requested at location.index=8 actually starts at 9.
+                        "startIndex": 9,
+                        "table": {
+                            "tableRows": [
+                                {"tableCells": [
+                                    {"content": [{"startIndex": 10}]},
+                                    {"content": [{"startIndex": 13}]},
+                                ]},
+                                {"tableCells": [
+                                    {"content": [{"startIndex": 16}]},
+                                    {"content": [{"startIndex": 19}]},
+                                ]},
+                            ]
+                        },
+                    }
+                ]
+            }
+        }
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.side_effect = [
+            doc, doc_with_placeholder, doc_with_table,
+        ]
+        docs_service.documents.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_docs(docs_service)
+
+        result = client.edit_doc_content("f1", "PLACEHOLDER", markdown)
+
+        calls = docs_service.documents.return_value.batchUpdate.call_args_list
+        assert len(calls) == 3
+
+        edit_requests = calls[0].kwargs["body"]["requests"]
+        assert edit_requests == [
+            {"deleteContentRange": {"range": {"startIndex": 8, "endIndex": 19}}},
+            {"insertText": {"location": {"index": 8}, "text": placeholder + "\n"}},
+        ]
+
+        structure_requests = calls[1].kwargs["body"]["requests"]
+        assert structure_requests[0] == {
+            "deleteContentRange": {"range": {"startIndex": 8, "endIndex": 8 + len(placeholder)}}
+        }
+        assert structure_requests[1] == {
+            "insertTable": {"rows": 2, "columns": 2, "location": {"index": 8}}
+        }
+
+        fill_requests = calls[2].kwargs["body"]["requests"]
+        insert_texts = [r["insertText"] for r in fill_requests if "insertText" in r]
+        assert [it["location"]["index"] for it in insert_texts] == [19, 16, 13, 10]
+        assert [it["text"] for it in insert_texts] == ["2\n", "1\n", "B\n", "A\n"]
+
+        assert result == {"file_id": "f1", "occurrences_replaced": 1}
+
+    def test_replace_all_table_gets_unique_placeholder_per_occurrence(self, monkeypatch):
+        # Under replace_all, every match gets the same replace_markdown --
+        # without a per-occurrence placeholder prefix, two inserted tables'
+        # placeholders would be identical text at two document locations, and
+        # _insert_table_at_placeholder's single-match lookup couldn't tell
+        # them apart.
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.return_value = make_doc("cat", "cat")
+        docs_service.documents.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_docs(docs_service)
+
+        inserted = []
+        monkeypatch.setattr(
+            client,
+            "_insert_table_at_placeholder",
+            lambda docs_svc, file_id, table, caller="write_doc_rich_content": inserted.append(
+                (table.placeholder, caller)
+            ),
+        )
+
+        client.edit_doc_content("f1", "cat", "| A |\n| --- |\n| 1 |", replace_all=True)
+
+        assert sorted(p for p, _ in inserted) == [
+            "PRIVACYFENCE_TABLE_PLACEHOLDER_M0_0",
+            "PRIVACYFENCE_TABLE_PLACEHOLDER_M1_0",
+        ]
+        assert all(caller == "edit_doc_content" for _, caller in inserted)
+
+    def test_table_error_messages_use_edit_doc_content_prefix(self):
+        # _insert_table_at_placeholder's errors are shared with
+        # write_doc_rich_content; edit_doc_content must pass its own name
+        # through so a failure is traceable to the tool call that caused it.
+        markdown = "| A |\n| --- |\n| 1 |"
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.side_effect = [
+            make_doc("before PLACEHOLDER after"),
+            {"body": {"content": []}},  # placeholder never made it into the document
+        ]
+        docs_service.documents.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_docs(docs_service)
+
+        with pytest.raises(DriveClientError, match="edit_doc_content: expected exactly one placeholder"):
+            client.edit_doc_content("f1", "PLACEHOLDER", markdown)
+
 
 # ---------------------------------------------------------------------------- #
 # format_doc_content: opt-in styling located by find_text
