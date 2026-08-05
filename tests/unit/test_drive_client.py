@@ -562,6 +562,24 @@ class TestParseInlineRuns:
     def test_link(self):
         assert _parse_inline_runs("[text](http://x.com)") == [InlineRun("text", url="http://x.com")]
 
+    def test_link_text_with_escaped_brackets(self):
+        assert _parse_inline_runs(r"[\[label \]text](http://x.com)") == [
+            InlineRun("[label ]text", url="http://x.com")
+        ]
+
+    def test_link_text_with_escaped_close_bracket_only(self):
+        assert _parse_inline_runs(r"[tag\]suffix](http://x.com)") == [
+            InlineRun("tag]suffix", url="http://x.com")
+        ]
+
+    def test_link_text_with_unescaped_close_bracket_is_not_a_link(self):
+        # An unescaped `]` inside the label closes it early, and the
+        # dangling `](http://x.com)` that follows never resolves into a
+        # complete link -- the whole string falls back to a single plain run
+        # rather than being misread as a link with a truncated label.
+        text = r"[[tag] text](http://x.com)"
+        assert _parse_inline_runs(text) == [InlineRun(text)]
+
     def test_mixed_runs_preserve_order_and_plain_gaps(self):
         runs = _parse_inline_runs("hello **bold** world")
         assert runs == [

@@ -147,7 +147,10 @@ _INLINE_RE = _re.compile(
     r"|__(.+?)__"                # underline
     r"|==(.+?)=="                # highlight
     r"|`(.+?)`"                  # code (monospace font)
-    r"|\[([^\]]+)\]\(([^)]+)\)"  # link [text](url)
+    # link [text](url) -- link text may contain literal `[`/`]` if escaped
+    # as `\[`/`\]` (an unescaped `]` still closes the label, same as an
+    # unescaped `|` closes a table cell below).
+    r"|\[((?:\\[\[\]]|[^\]])+)\]\(([^)]+)\)"
 )
 
 
@@ -184,7 +187,8 @@ def _parse_inline_runs(text: str) -> list[InlineRun]:
         elif m.group(7):  # code
             runs.append(InlineRun(m.group(7), code=True))
         elif m.group(8):  # link
-            runs.append(InlineRun(m.group(8), url=m.group(9)))
+            link_text = m.group(8).replace("\\[", "[").replace("\\]", "]")
+            runs.append(InlineRun(link_text, url=m.group(9)))
         last = m.end()
     if last < len(text):
         runs.append(InlineRun(text[last:]))
@@ -1083,7 +1087,8 @@ class DriveClient:
 
         Supports: headings (# through ######), **bold**, *italic*,
         ***bold-italic***, ~~strikethrough~~, __underline__, `code`,
-        ==highlight==, [link](url), unordered/numbered lists (nest a level by
+        ==highlight==, [link](url) (escape a literal `[` or `]` in the link
+        text as `\\[`/`\\]`), unordered/numbered lists (nest a level by
         indenting 2 spaces per level), GFM pipe tables, and plain paragraphs.
         Clears existing document content before writing.
         Requires the ``drive`` or ``documents`` OAuth scope (already granted).
