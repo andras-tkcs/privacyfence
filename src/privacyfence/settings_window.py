@@ -127,6 +127,13 @@ class SettingsWindowController(NSObject):
         window.setReleasedWhenClosed_(False)
         window.center()
         window.setDelegate_(self)
+        # Invisible until webView_didFinishNavigation_ below reveals it --
+        # loadHTMLString_baseURL_ is asynchronous, so ordering this window
+        # front right away (show_window(), immediately after build_window())
+        # would show it empty for however long that load takes. Same fix,
+        # same reasoning, as approval_window.ApprovalWindowController's own
+        # panel.setAlphaValue_(0.0) -- see that class's module docstring.
+        window.setAlphaValue_(0.0)
         self.window = window
 
         user_content_controller = WKUserContentController.alloc().init()
@@ -139,12 +146,36 @@ class SettingsWindowController(NSObject):
             NSMakeRect(0, 0, _WINDOW_WIDTH, _WINDOW_HEIGHT), config
         )
         webview.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+        webview.setNavigationDelegate_(self)
         self._webview = webview
         window.setContentView_(webview)
 
         state = _augment_connectors_with_icons(self.controller.snapshot())
         webview.loadHTMLString_baseURL_(settings_window_html.build_html(state), None)
         return window
+
+    # ------------------------------------------------------------------ #
+    # WKNavigationDelegate -- reveals the window once there's actually
+    # something in it to see (see build_window()'s setAlphaValue_(0.0)
+    # comment above).
+    # ------------------------------------------------------------------ #
+
+    def webView_didFinishNavigation_(self, webView, navigation) -> None:
+        self._reveal_window()
+
+    def webView_didFailNavigation_withError_(self, webView, navigation, error) -> None:
+        # Fail-safe: a load failure must still reveal the window rather than
+        # leave it permanently invisible -- see ApprovalWindowController's
+        # own fail-safe navigation delegates for the same reasoning.
+        self._reveal_window()
+
+    def webView_didFailProvisionalNavigation_withError_(self, webView, navigation, error) -> None:
+        self._reveal_window()
+
+    @objc.python_method
+    def _reveal_window(self) -> None:
+        if self.window is not None:
+            self.window.setAlphaValue_(1.0)
 
     def show_window(self) -> None:
         app = NSApplication.sharedApplication()
