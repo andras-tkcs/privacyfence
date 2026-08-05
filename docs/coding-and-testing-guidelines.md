@@ -179,7 +179,8 @@ This is the one area where "looks like a style rule" is actually a security inva
 
 ### 2.4 Faking the gate and native UI
 
-- Never let a test spawn a real `osascript` dialog. Stub `show_popup` / `show_read_popup` /
+- Never let a test spawn a real native dialog (an AppKit window, or the odd remaining `osascript`
+  subprocess elsewhere in the codebase). Stub `show_popup` / `show_read_popup` /
   `show_rule_confirmation_popup` via `monkeypatch.setattr` on the module under test, not by mocking
   at the `approval_popup` import site of every caller.
 - Connector tests stub `gated_call` itself (`gated_call_spy` pattern in
@@ -228,8 +229,8 @@ A new connector's test module should include, at minimum:
       run `scripts/qa_fixture_recorder.py --check <connector>` locally against a real account per
       [`qa-environment-setup.md`](qa-environment-setup.md), and paste its report into the PR
       description — see [`testing-policy.md` §2.1](testing-policy.md#21-qa_fixture_recorderpy---check----record).
-- [ ] If this PR touches `approval_window.py`'s modal-loop plumbing: run `scripts/qa_popup_smoke.py`
-      locally and paste its report into the PR description — see
+- [ ] If this PR touches `approval_window.py`'s or `dialog_window.py`'s modal-loop plumbing: run
+      `scripts/qa_popup_smoke.py` locally and paste its report into the PR description — see
       [`testing-policy.md` §2.2](testing-policy.md#22-qa_popup_smokepy).
 - [ ] If this PR changes `ipc.py`, `ipc_server.py`, `connector.py`'s `ToolSpec`/`ToolParam` shapes,
       or anything under `bridge/src/`: run `pytest tests/integration -v` locally (needs Node on

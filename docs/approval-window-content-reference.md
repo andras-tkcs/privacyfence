@@ -12,7 +12,9 @@ for that cut, see [`claude-knowledge-boundary.md`](claude-knowledge-boundary.md)
 for everything below: [`gate.py`](../src/privacyfence/gate.py),
 [`approval_popup.py`](../src/privacyfence/approval_popup.py),
 [`approval_window.py`](../src/privacyfence/approval_window.py),
-[`approval_window_html.py`](../src/privacyfence/approval_window_html.py) — re-derive from there if
+[`approval_window_html.py`](../src/privacyfence/approval_window_html.py),
+[`dialog_window.py`](../src/privacyfence/dialog_window.py),
+[`dialog_window_html.py`](../src/privacyfence/dialog_window_html.py) — re-derive from there if
 this drifts, don't trust it blindly.
 
 ## The four dialogs
@@ -30,9 +32,15 @@ The first two are the real estate this doc is about — a custom AppKit window
 (`approval_window.py`) with one WKWebView (`approval_window_html.build_card_stack_html`) filling
 the *entire* content area, Deny/Allow once/Always allow included — these three render as part of
 that same HTML document (`approval_window_html.py`'s `_button_row_html`/`_JS`), not native
-NSButtons in a fixed band below it. The last two are plain `osascript display dialog` prompts: one
-line of text, two buttons, no preview/details sections at all, so there's nothing to group — see
-their docstrings in `approval_popup.py` for exact wording.
+NSButtons in a fixed band below it. The last two are a much smaller AppKit+WKWebView window of
+their own (`dialog_window.py`/`dialog_window_html.build_confirmation_html`, ported from the old
+`osascript display dialog` prompts these used to be in issue #145): one line of text, two buttons,
+no preview/details sections at all, so there's nothing to group — see their docstrings in
+`approval_popup.py` for exact wording. `dialog_window.py` also hosts a third, still smaller shape
+(`build_choice_html`) not listed in the table above: the N-option list picker behind
+`approval_popup.show_rule_choice_popup` and `settings_controller._osascript_pick`'s old Atlassian
+multi-resource picker — no preview/details either, and no dialog of its own row in "the four
+dialogs" table since it isn't a gate outcome, just a chooser.
 
 ## Anatomy of the main window, top to bottom
 

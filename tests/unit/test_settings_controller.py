@@ -683,10 +683,16 @@ class TestAuthenticateAtlassian:
         assert "jira" not in controller._busy_connectors
         assert "confluence" not in controller._busy_connectors
 
-    def test_multiple_sites_pick_resource_uses_osascript_picker(self, controller, monkeypatch):
+    def test_multiple_sites_pick_resource_uses_dialog_window_choice_picker(self, controller, monkeypatch):
         recorded = []
         monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
-        monkeypatch.setattr(sc, "_osascript_pick", lambda **kw: "https://b.atlassian.net")
+        picker_calls = []
+
+        def fake_show_choice_dialog(**kwargs):
+            picker_calls.append(kwargs)
+            return 1  # "https://b.atlassian.net", the second option
+
+        monkeypatch.setattr(sc, "dialog_window", SimpleNamespace(show_choice_dialog=fake_show_choice_dialog))
         monkeypatch.setattr(controller, "refresh_connectors", lambda: None)
 
         captured = {}
@@ -707,6 +713,32 @@ class TestAuthenticateAtlassian:
         assert wait_until(lambda: recorded)
         _drain_run_async(recorded)
         assert captured["site_url"] == "https://b.atlassian.net"
+        assert picker_calls[0]["options"] == ["https://a.atlassian.net", "https://b.atlassian.net"]
+
+    def test_cancelled_picker_falls_back_to_the_first_resource(self, controller, monkeypatch):
+        recorded = []
+        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
+        monkeypatch.setattr(sc, "dialog_window", SimpleNamespace(show_choice_dialog=lambda **kw: None))
+        monkeypatch.setattr(controller, "refresh_connectors", lambda: None)
+
+        captured = {}
+
+        def fake_authorize(**kwargs):
+            resources = [
+                {"url": "https://a.atlassian.net", "id": "a"},
+                {"url": "https://b.atlassian.net", "id": "b"},
+            ]
+            chosen = kwargs["pick_resource"](resources)
+            captured["site_url"] = chosen["url"]
+            return {"site_url": chosen["url"]}
+
+        monkeypatch.setattr(sc, "atlassian_authorize_interactive", fake_authorize)
+
+        controller._authenticate_atlassian({"atlassian": {"client_id": "ci"}})
+
+        assert wait_until(lambda: recorded)
+        _drain_run_async(recorded)
+        assert captured["site_url"] == "https://a.atlassian.net"
 
 
 class TestTelegramStartAuth:
