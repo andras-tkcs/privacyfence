@@ -386,7 +386,9 @@ def _table_column_alignments(sep_cells: list[str]) -> list[str]:
     return alignments
 
 
-def _extract_tables(markdown: str) -> tuple[str, list[TableBlock]]:
+def _extract_tables(
+    markdown: str, placeholder_prefix: str = "PRIVACYFENCE_TABLE_PLACEHOLDER_"
+) -> tuple[str, list[TableBlock]]:
     """Pull every GFM pipe-table block out of ``markdown``, replacing each
     with a unique placeholder line, and return (text_with_placeholders,
     tables). A block is recognized as a table when a line containing ``|``
@@ -394,6 +396,14 @@ def _extract_tables(markdown: str) -> tuple[str, list[TableBlock]]:
     spaces) -- the same rule GFM itself uses. Body rows are collected while
     they keep containing ``|`` and aren't blank; short/long rows are
     padded/truncated to the header's column count.
+
+    ``placeholder_prefix`` lets a caller that extracts tables from the same
+    Markdown more than once (``edit_doc_content``, once per ``find_text``
+    occurrence under ``replace_all``) keep every occurrence's placeholders
+    unique -- otherwise two copies of the same table Markdown would produce
+    identical placeholder text at multiple document locations, and
+    ``_insert_table_at_placeholder``'s single-match lookup would find both
+    and refuse to guess which one it was asked to fill in.
     """
     lines = markdown.split("\n")
     out_lines: list[str] = []
@@ -418,7 +428,7 @@ def _extract_tables(markdown: str) -> tuple[str, list[TableBlock]]:
             # (U+E000-U+F8FF) from inserted text, so the placeholder actually
             # written to the document would never match what's searched for
             # here. Plain text it is.
-            placeholder = f"PRIVACYFENCE_TABLE_PLACEHOLDER_{len(tables)}"
+            placeholder = f"{placeholder_prefix}{len(tables)}"
             tables.append(TableBlock(rows=rows, alignments=alignments, placeholder=placeholder))
             out_lines.append(placeholder)
             i = j
@@ -1158,24 +1168,33 @@ class DriveClient:
         return {"file_id": file_id}
 
     def _insert_table_at_placeholder(
-        self, docs_service: Any, file_id: str, table: TableBlock
+        self,
+        docs_service: Any,
+        file_id: str,
+        table: TableBlock,
+        caller: str = "write_doc_rich_content",
     ) -> None:
         """Replace ``table``'s placeholder text (already written to the
-        document by write_doc_rich_content) with a real Docs table, fetching
-        the document in between steps to get ground-truth indices rather
-        than computing a table's index footprint by hand.
+        document by ``caller``) with a real Docs table, fetching the
+        document in between steps to get ground-truth indices rather than
+        computing a table's index footprint by hand.
+
+        ``caller`` names the public method this was invoked from
+        (``write_doc_rich_content`` or ``edit_doc_content``) purely for
+        error-message prefixes, so a failure here is traceable back to the
+        tool call that triggered it.
         """
         try:
             doc = docs_service.documents().get(documentId=file_id).execute()
         except HttpError as exc:
             raise DriveClientError(
-                f"write_doc_rich_content table lookup({file_id}) failed: {exc}"
+                f"{caller} table lookup({file_id}) failed: {exc}"
             ) from exc
         plain_text, runs = _docs_plain_text_with_index_map(doc)
         matches = _find_text_matches(plain_text, table.placeholder)
         if len(matches) != 1:
             raise DriveClientError(
-                "write_doc_rich_content: expected exactly one placeholder for a "
+                f"{caller}: expected exactly one placeholder for a "
                 f"table, found {len(matches)}"
             )
         docs_start = _offset_to_docs_index(matches[0][0], runs)
@@ -1193,19 +1212,19 @@ class DriveClient:
             ).execute()
         except HttpError as exc:
             raise DriveClientError(
-                f"write_doc_rich_content table insert({file_id}) failed: {exc}"
+                f"{caller} table insert({file_id}) failed: {exc}"
             ) from exc
 
         try:
             doc = docs_service.documents().get(documentId=file_id).execute()
         except HttpError as exc:
             raise DriveClientError(
-                f"write_doc_rich_content table lookup({file_id}) failed: {exc}"
+                f"{caller} table lookup({file_id}) failed: {exc}"
             ) from exc
         cell_starts = _table_cell_start_indices(doc, docs_start)
         if len(cell_starts) != n_rows or any(len(row) != n_cols for row in cell_starts):
             raise DriveClientError(
-                "write_doc_rich_content: inserted table shape did not match the "
+                f"{caller}: inserted table shape did not match the "
                 f"requested {n_rows}x{n_cols} grid"
             )
 
@@ -1243,7 +1262,7 @@ class DriveClient:
                 ).execute()
             except HttpError as exc:
                 raise DriveClientError(
-                    f"write_doc_rich_content table fill({file_id}) failed: {exc}"
+                    f"{caller} table fill({file_id}) failed: {exc}"
                 ) from exc
 
     def edit_doc_content(
@@ -1258,6 +1277,11 @@ class DriveClient:
         match exactly once unless ``replace_all`` is set — an ambiguous match
         raises rather than guessing which occurrence was meant, the same
         contract a unique-match text editor enforces.
+
+        Supports the same Markdown as ``write_doc_rich_content``, including
+        GFM pipe tables: each occurrence's tables are written the same
+        placeholder-then-insertTable way, one at a time, after the plain-text
+        replacement lands.
 
         Known limitation: unlike ``write_doc_rich_content``, this doesn't
         guard against a new list introduced by ``replace_markdown`` merging
@@ -1289,17 +1313,30 @@ class DriveClient:
                 "add more surrounding context to make it unique, or set replace_all=true"
             )
 
+        # replace_markdown is re-extracted once per match rather than once
+        # overall so that, under replace_all, every occurrence's tables get
+        # their own uniquely-prefixed placeholders -- otherwise inserting the
+        # same table Markdown at two locations would leave two identical
+        # placeholder strings in the document, and _insert_table_at_placeholder
+        # (a single-match lookup) couldn't tell which one it was asked to fill.
+        per_match = [
+            _extract_tables(replace_markdown, placeholder_prefix=f"PRIVACYFENCE_TABLE_PLACEHOLDER_M{m}_")
+            for m in range(len(matches))
+        ]
+
         # Apply from the last match to the first so an earlier edit's index
         # shift (deleting/inserting text changes every index after it) never
         # invalidates an already-computed later range.
         requests: list[dict] = []
-        for plain_start, plain_end in reversed(matches):
+        for (plain_start, plain_end), (text_markdown, _tables) in zip(
+            reversed(matches), reversed(per_match)
+        ):
             docs_start = _offset_to_docs_index(plain_start, runs)
             docs_end = _offset_to_docs_index(plain_end, runs)
             requests.append(
                 {"deleteContentRange": {"range": {"startIndex": docs_start, "endIndex": docs_end}}}
             )
-            requests.extend(_markdown_to_docs_requests(replace_markdown, start_index=docs_start))
+            requests.extend(_markdown_to_docs_requests(text_markdown, start_index=docs_start))
 
         try:
             docs_service.documents().batchUpdate(
@@ -1307,6 +1344,14 @@ class DriveClient:
             ).execute()
         except HttpError as exc:
             raise DriveClientError(f"edit_doc_content batchUpdate({file_id}) failed: {exc}") from exc
+
+        # Same reasoning as write_doc_rich_content: each table is a
+        # structural element the API can't produce from insertText, and
+        # filling its cells needs a re-fetch to learn where they landed, so
+        # every table (across every match) is processed one at a time.
+        for _text_markdown, tables in per_match:
+            for table in tables:
+                self._insert_table_at_placeholder(docs_service, file_id, table, caller="edit_doc_content")
 
         logger.info(
             "edit_doc_content: file_id=%s matches=%d replace_all=%s", file_id, len(matches), replace_all
