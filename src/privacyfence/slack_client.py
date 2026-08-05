@@ -19,6 +19,16 @@ Required user token scopes (see ``DEFAULT_USER_SCOPES``):
   - ``im:write`` / ``channels:write`` / ``groups:write`` / ``mpim:write`` (mark_unread /
     conversations.mark, and opening new conversations via ``open_conversation`` -- the needed
     scope depends on channel type: ``im:write`` for a 1:1 DM, ``mpim:write`` for a group DM)
+
+``SlackClient`` optionally persists two whole-workspace directory snapshots to disk --
+``user_cache_file`` (id -> name/email/is_bot) and ``channel_cache_file`` (id -> name/is_mpim, across
+public/private channels, DMs, and group DMs). When given, ``get_user_info``/``resolve_channel_name``/
+``resolve_is_group_dm`` check these first, refreshing them from Slack (``users.list``/
+``conversations.list``) automatically about once a week, instead of falling back to a live per-id
+call for every unique message author/channel a search or history fetch turns up. Both default to ""
+(disabled) -- resolution then behaves exactly as it did before this existed. See
+``refresh_user_directory``/``refresh_channel_directory`` for the explicit, immediate re-sync the
+``slack_refresh_user_cache``/``slack_refresh_channel_cache`` bridge tools use.
 """
 
 from __future__ import annotations
@@ -41,6 +51,25 @@ logger = logging.getLogger(__name__)
 
 SLACK_OAUTH_PORT = 53682
 SLACK_REDIRECT_PATH = "/callback"
+
+# How long the on-disk whole-workspace directory snapshots (see
+# refresh_user_directory()/refresh_channel_directory()) are trusted before
+# get_user_info()/resolve_channel_name()/resolve_is_group_dm() transparently
+# re-sync them. A week is plenty for an org's roster/channel list to stay
+# useful; the slack_refresh_user_cache/slack_refresh_channel_cache bridge
+# tools cover the mid-week exception (a new hire or new channel that isn't in
+# last week's snapshot yet). Two separate constants (currently the same
+# value) since a channel list plausibly churns faster than headcount and may
+# warrant its own tuning later.
+USER_DIRECTORY_CACHE_TTL = timedelta(days=7)
+CHANNEL_DIRECTORY_CACHE_TTL = timedelta(days=7)
+
+# Floor between automatic re-sync attempts once one has failed (e.g. a
+# transient network error) -- without this, every cache-miss lookup while a
+# directory is stale/unrefreshable would retry the full listing call from
+# scratch, recreating the very per-message-call problem these caches exist
+# to avoid.
+_DIRECTORY_RETRY_COOLDOWN = timedelta(minutes=5)
 
 # A message permalink's path is /archives/<channel id>/p<17-digit ts>, e.g.
 # /archives/C0123ABCD/p1700000000123456 for ts "1700000000.123456".
@@ -257,18 +286,41 @@ class SlackClient:
     user sees, with no bot to invite and no visibility beyond their own access.
     """
 
-    def __init__(self, user_token: str) -> None:
+    def __init__(
+        self, user_token: str, user_cache_file: str = "", channel_cache_file: str = ""
+    ) -> None:
         if not user_token:
             raise SlackClientError(
                 "No Slack user token available. Use Authenticate… in the "
                 "PrivacyFence menu bar to sign in."
             )
         self._client = WebClient(token=user_token)
-        # Small cache so repeated messages from the same author don't trigger a
-        # users.info call each time within a single fetch.
+        # Small cache so repeated messages from the same author/channel don't
+        # trigger a fresh API call each time within a single fetch. Also
+        # doubles as the in-memory home for the whole-workspace directory
+        # snapshots below -- a directory hit and a one-off live lookup are
+        # indistinguishable to callers, both just end up in these same dicts.
         self._user_cache: dict[str, SlackUser] = {}
         self._channel_name_cache: dict[str, str] = {}
         self._channel_is_mpim_cache: dict[str, bool] = {}
+
+        # Weekly on-disk snapshots (see _ensure_user_directory/
+        # _ensure_channel_directory and refresh_user_directory/
+        # refresh_channel_directory) -- turn the per-message users.info/
+        # conversations.info calls a search/history/thread fetch would
+        # otherwise make into zero, for anyone/anything already known as of
+        # the last refresh. Empty string (the default for either) opts that
+        # cache out entirely -- resolution behaves exactly as before this
+        # existed, one live call per uncached id, nothing persisted to disk.
+        self._user_cache_file = user_cache_file
+        self._user_directory_loaded_from_disk = False
+        self._user_directory_fetched_at: datetime | None = None
+        self._user_directory_last_attempt: datetime | None = None
+
+        self._channel_cache_file = channel_cache_file
+        self._channel_directory_loaded_from_disk = False
+        self._channel_directory_fetched_at: datetime | None = None
+        self._channel_directory_last_attempt: datetime | None = None
 
     # ------------------------------------------------------------------ #
     # Connection
@@ -707,9 +759,20 @@ class SlackClient:
         logger.info("mark_channel_unread_before: channel=%s before=%s", channel_id, ts)
 
     def get_user_info(self, user_id: str) -> SlackUser:
-        """Resolve a single user's identity via ``users.info`` (cached)."""
+        """Resolve a single user's identity (cached).
+
+        When a ``user_cache_file`` was given at construction, checks the
+        weekly whole-workspace directory first (see
+        ``_ensure_user_directory``/``refresh_user_directory``) before
+        falling back to a live ``users.info`` call -- the fallback still
+        runs, and its result is cached in memory, for anyone missing from
+        the directory (a bot, or someone who joined since the last refresh),
+        same as before this cache existed.
+        """
         if not user_id:
             raise SlackClientError("get_user_info requires a user_id")
+        if self._user_cache_file:
+            self._ensure_user_directory()
         if user_id in self._user_cache:
             return self._user_cache[user_id]
         try:
@@ -721,6 +784,228 @@ class SlackClient:
         user = self._parse_user(response.get("user", {}))
         self._user_cache[user_id] = user
         return user
+
+    # ------------------------------------------------------------------ #
+    # Directory caches (whole-workspace user/channel snapshots)
+    # ------------------------------------------------------------------ #
+
+    def ensure_directories_fresh(self) -> None:
+        """Eagerly run the same freshness check ``get_user_info``/
+        ``resolve_channel_name``/``resolve_is_group_dm`` would otherwise only
+        run lazily on first use. Meant to be called once right after
+        connecting (see ``daemon_main.py``) so a snapshot that's gone stale
+        while the app was closed (more than a week between restarts) gets
+        refreshed during startup instead of blocking whatever Slack tool
+        call happens to run first. A no-op (no network call at all) when
+        both snapshots are already fresh. Never raises -- same best-effort
+        semantics as the lazy path it shares its implementation with.
+        """
+        if self._user_cache_file:
+            self._ensure_user_directory()
+        if self._channel_cache_file:
+            self._ensure_channel_directory()
+
+    def refresh_user_directory(self) -> int:
+        """Force an immediate re-sync of the whole Slack user directory via
+        ``users.list`` (paginated), replacing the current snapshot and
+        resetting its weekly TTL. Raises on failure -- unlike the lazy,
+        best-effort refresh ``_ensure_user_directory`` runs automatically,
+        this is the explicit action a caller takes (the
+        ``slack_refresh_user_cache`` bridge tool) when a teammate who joined
+        mid-week needs to resolve correctly right now, rather than waiting
+        for next week's automatic refresh or the one-off ``users.info``
+        fallback ``get_user_info`` already does for any id missing from the
+        directory. Returns the number of users cached.
+        """
+        users: dict[str, SlackUser] = {}
+        cursor: str | None = None
+        try:
+            while True:
+                response = self._client.users_list(cursor=cursor, limit=200)
+                for raw in response.get("members", []):
+                    user = self._parse_user(raw)
+                    if user.id:
+                        users[user.id] = user
+                cursor = (response.get("response_metadata") or {}).get("next_cursor")
+                if not cursor:
+                    break
+        except SlackApiError as exc:
+            raise SlackClientError(
+                f"refresh_user_directory failed: {self._describe_error(exc)}"
+            ) from exc
+        self._user_cache = users
+        self._user_directory_loaded_from_disk = True
+        self._user_directory_fetched_at = datetime.now(timezone.utc)
+        self._save_user_directory_to_disk()
+        logger.info("Slack user directory refreshed: %d user(s) cached", len(users))
+        return len(users)
+
+    def refresh_channel_directory(self) -> int:
+        """Force an immediate re-sync of every conversation the token can
+        see (public/private channels, DMs, group DMs) via
+        ``conversations.list`` (paginated, across all four types),
+        replacing the current name/group-DM-flag snapshot and resetting its
+        weekly TTL. Raises on failure, same reasoning as
+        ``refresh_user_directory``. DM ("im") entries contribute no name
+        (that conversation type doesn't have one -- ``resolve_channel_name``
+        already returns "" for them) but are fetched anyway so
+        ``resolve_is_group_dm`` is covered for every conversation type, not
+        just channels. Returns the number of conversations cached.
+        """
+        names: dict[str, str] = {}
+        is_mpim: dict[str, bool] = {}
+        cursor: str | None = None
+        try:
+            while True:
+                response = self._client.conversations_list(
+                    types="public_channel,private_channel,mpim,im",
+                    exclude_archived=False,
+                    limit=200,
+                    cursor=cursor,
+                )
+                for raw in response.get("channels", []):
+                    channel_id = raw.get("id", "")
+                    if not channel_id:
+                        continue
+                    names[channel_id] = raw.get("name", "")
+                    is_mpim[channel_id] = bool(raw.get("is_mpim", False))
+                cursor = (response.get("response_metadata") or {}).get("next_cursor")
+                if not cursor:
+                    break
+        except SlackApiError as exc:
+            raise SlackClientError(
+                f"refresh_channel_directory failed: {self._describe_error(exc)}"
+            ) from exc
+        self._channel_name_cache = names
+        self._channel_is_mpim_cache = is_mpim
+        self._channel_directory_loaded_from_disk = True
+        self._channel_directory_fetched_at = datetime.now(timezone.utc)
+        self._save_channel_directory_to_disk()
+        logger.info("Slack channel directory refreshed: %d conversation(s) cached", len(names))
+        return len(names)
+
+    def _ensure_user_directory(self) -> None:
+        """Best-effort: loads the on-disk weekly snapshot (once per process)
+        and transparently re-syncs it from Slack if it's missing or older
+        than a week. Failures are logged and swallowed, subject to a retry
+        cooldown -- a directory miss just means ``get_user_info`` falls back
+        to its existing per-id ``users.info`` call, same as if this cache
+        didn't exist."""
+        if not self._user_directory_loaded_from_disk:
+            self._load_user_directory_from_disk()
+            self._user_directory_loaded_from_disk = True
+        now = datetime.now(timezone.utc)
+        if self._user_directory_fetched_at and now - self._user_directory_fetched_at < USER_DIRECTORY_CACHE_TTL:
+            return
+        if self._user_directory_last_attempt and now - self._user_directory_last_attempt < _DIRECTORY_RETRY_COOLDOWN:
+            return
+        self._user_directory_last_attempt = now
+        try:
+            self.refresh_user_directory()
+        except SlackClientError as exc:
+            logger.warning("Could not refresh Slack user directory (non-fatal): %s", exc)
+
+    def _ensure_channel_directory(self) -> None:
+        """Channel-directory counterpart to ``_ensure_user_directory`` -- see
+        that method's docstring for the load-once/refresh-if-stale/cooldown
+        reasoning, identical here."""
+        if not self._channel_directory_loaded_from_disk:
+            self._load_channel_directory_from_disk()
+            self._channel_directory_loaded_from_disk = True
+        now = datetime.now(timezone.utc)
+        if self._channel_directory_fetched_at and now - self._channel_directory_fetched_at < CHANNEL_DIRECTORY_CACHE_TTL:
+            return
+        if self._channel_directory_last_attempt and now - self._channel_directory_last_attempt < _DIRECTORY_RETRY_COOLDOWN:
+            return
+        self._channel_directory_last_attempt = now
+        try:
+            self.refresh_channel_directory()
+        except SlackClientError as exc:
+            logger.warning("Could not refresh Slack channel directory (non-fatal): %s", exc)
+
+    def _load_user_directory_from_disk(self) -> None:
+        if not self._user_cache_file or not os.path.exists(self._user_cache_file):
+            return
+        try:
+            with open(self._user_cache_file, encoding="utf-8") as fh:
+                data = json.load(fh)
+            fetched_at = datetime.fromisoformat(data.get("fetched_at", ""))
+            raw_users = data.get("users") or {}
+        except Exception as exc:
+            logger.warning("Could not load Slack user directory cache (non-fatal): %s", exc)
+            return
+        loaded = 0
+        for user_id, raw in raw_users.items():
+            try:
+                # setdefault: never clobber a fresher live users.info result
+                # already resolved this session before the disk load ran.
+                self._user_cache.setdefault(user_id, SlackUser(**raw))
+                loaded += 1
+            except TypeError:
+                continue
+        self._user_directory_fetched_at = fetched_at
+        logger.debug("Loaded %d cached Slack user(s) from disk", loaded)
+
+    def _save_user_directory_to_disk(self) -> None:
+        if not self._user_cache_file or self._user_directory_fetched_at is None:
+            return
+        payload = {
+            "fetched_at": self._user_directory_fetched_at.isoformat(),
+            "users": {
+                uid: {
+                    "id": u.id, "name": u.name, "real_name": u.real_name,
+                    "email": u.email, "is_bot": u.is_bot,
+                }
+                for uid, u in self._user_cache.items()
+            },
+        }
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(self._user_cache_file)), exist_ok=True)
+            with open(self._user_cache_file, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+            os.chmod(self._user_cache_file, 0o600)  # holds every workspace member's email
+        except OSError as exc:
+            logger.warning("Could not save Slack user directory cache (non-fatal): %s", exc)
+
+    def _load_channel_directory_from_disk(self) -> None:
+        if not self._channel_cache_file or not os.path.exists(self._channel_cache_file):
+            return
+        try:
+            with open(self._channel_cache_file, encoding="utf-8") as fh:
+                data = json.load(fh)
+            fetched_at = datetime.fromisoformat(data.get("fetched_at", ""))
+            raw_channels = data.get("channels") or {}
+        except Exception as exc:
+            logger.warning("Could not load Slack channel directory cache (non-fatal): %s", exc)
+            return
+        for channel_id, raw in raw_channels.items():
+            if not isinstance(raw, dict):
+                continue
+            self._channel_name_cache.setdefault(channel_id, raw.get("name", ""))
+            self._channel_is_mpim_cache.setdefault(channel_id, bool(raw.get("is_mpim", False)))
+        self._channel_directory_fetched_at = fetched_at
+        logger.debug("Loaded %d cached Slack channel(s) from disk", len(raw_channels))
+
+    def _save_channel_directory_to_disk(self) -> None:
+        if not self._channel_cache_file or self._channel_directory_fetched_at is None:
+            return
+        channel_ids = set(self._channel_name_cache) | set(self._channel_is_mpim_cache)
+        payload = {
+            "fetched_at": self._channel_directory_fetched_at.isoformat(),
+            "channels": {
+                cid: {
+                    "name": self._channel_name_cache.get(cid, ""),
+                    "is_mpim": self._channel_is_mpim_cache.get(cid, False),
+                }
+                for cid in channel_ids
+            },
+        }
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(self._channel_cache_file)), exist_ok=True)
+            with open(self._channel_cache_file, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+        except OSError as exc:
+            logger.warning("Could not save Slack channel directory cache (non-fatal): %s", exc)
 
     # ------------------------------------------------------------------ #
     # Parsing helpers
@@ -737,6 +1022,8 @@ class SlackClient:
         """Best-effort channel name lookup (cached, never raises)."""
         if not channel_id:
             return ""
+        if self._channel_cache_file:
+            self._ensure_channel_directory()
         if channel_id in self._channel_name_cache:
             return self._channel_name_cache[channel_id]
         try:
@@ -759,6 +1046,8 @@ class SlackClient:
         """
         if not channel_id:
             return False
+        if self._channel_cache_file:
+            self._ensure_channel_directory()
         if channel_id in self._channel_is_mpim_cache:
             return self._channel_is_mpim_cache[channel_id]
         try:

@@ -263,6 +263,8 @@ PrivacyFence for a delete.
 | `slack_list_dms` | read | auto | — | — (each entry is `id` + the other participant; optional `participant` filter matches by user id, handle, or display name) |
 | `slack_list_group_chats` | read | auto | — | — (each entry is `id`, `name`, and resolved `member_ids`/`member_names`; optional `participant` filter matches by user id, handle, or display name, comma-separated to require all of them as members of the same group chat; one extra `conversations.members` call per group chat) |
 | `slack_resolve_permalink` | read | auto | — | — (parses a pasted Slack message permalink into `channel_id`/`channel_name`/`ts`/`thread_ts`, ready for `slack_get_channel_history`/`slack_get_thread_replies`; no Slack API call beyond a best-effort channel-name lookup) |
+| `slack_refresh_user_cache` | read | auto | — | — (forces an immediate `users.list` re-sync of the on-disk, weekly-refreshed user name/email cache that `slack_get_channel_history`/`slack_get_thread_replies`/`slack_search_messages` use to resolve message authors without a per-message `users.info` call; call after a teammate joins mid-week so they resolve correctly before the next automatic refresh) |
+| `slack_refresh_channel_cache` | read | auto | — | — (forces an immediate re-sync of the on-disk, weekly-refreshed channel/DM/group-DM name cache those same read tools use to resolve which conversation a message belongs to without a per-message `conversations.info` call; call after a new channel is created so it resolves by name right away) |
 | `slack_get_channel_history` | read | review | channel name, message count, first message (80 chars) | All messages |
 | `slack_get_thread_replies` | read | review | channel name, thread starter (80 chars), reply count | All replies |
 | `slack_search_messages` | read | review | query and/or participant, result count | All results |
@@ -294,6 +296,16 @@ text-only `query` for "messages from Bob" or "messages with Bob and Jane" style 
 `slack_get_channel_history`/`slack_get_thread_replies` need — the permalink already carries both, so
 this needs no `slack_list_channels`/`slack_search_messages` call at all to resolve a link a human
 pasted directly.
+
+`slack_refresh_user_cache`/`slack_refresh_channel_cache` refresh the on-disk snapshots that
+`get_user_info`/`resolve_channel_name`/`resolve_is_group_dm` check before falling back to a live,
+per-item Slack call — without them, resolving every message author/channel in a `slack_search_messages`
+result costs one `users.info` and one `conversations.info` call per unique sender/channel, every time.
+Both snapshots refresh automatically about once a week — checked on every Slack connector startup (so
+a snapshot that went stale while the app was closed is caught then, not on whatever tool call happens
+to run first) and, in between restarts, lazily on first use once seven days have passed. These two
+tools exist purely for the exception: someone new (a hire, a channel) needs to resolve correctly
+*before* the next automatic refresh. Neither tool reads any message content; both are auto-approved.
 
 ### Google Calendar
 

@@ -184,6 +184,48 @@ class TestResolvePermalink:
             await connector.call("slack_resolve_permalink", {"url": "nope"})
 
 
+class TestRefreshUserCache:
+    async def test_auto_accepts_and_returns_count(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        client.refresh_user_directory.return_value = 42
+
+        result = await connector.call("slack_refresh_user_cache", {})
+
+        assert result == {"cached_users": 42}
+        entries = (tmp_path / f"{current_week()}.jsonl").read_text(encoding="utf-8").splitlines()
+        assert '"decision": "auto_accepted"' in entries[0]
+        assert '"tool": "slack_refresh_user_cache"' in entries[0]
+
+    async def test_client_error_becomes_runtime_error(self):
+        connector, client = make_connector()
+        client.refresh_user_directory.side_effect = SlackClientError("refresh_user_directory failed: ratelimited")
+
+        with pytest.raises(RuntimeError, match="refresh_user_directory failed"):
+            await connector.call("slack_refresh_user_cache", {})
+
+
+class TestRefreshChannelCache:
+    async def test_auto_accepts_and_returns_count(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        client.refresh_channel_directory.return_value = 17
+
+        result = await connector.call("slack_refresh_channel_cache", {})
+
+        assert result == {"cached_channels": 17}
+        entries = (tmp_path / f"{current_week()}.jsonl").read_text(encoding="utf-8").splitlines()
+        assert '"decision": "auto_accepted"' in entries[0]
+        assert '"tool": "slack_refresh_channel_cache"' in entries[0]
+
+    async def test_client_error_becomes_runtime_error(self):
+        connector, client = make_connector()
+        client.refresh_channel_directory.side_effect = SlackClientError("refresh_channel_directory failed: ratelimited")
+
+        with pytest.raises(RuntimeError, match="refresh_channel_directory failed"):
+            await connector.call("slack_refresh_channel_cache", {})
+
+
 class TestGetChannelHistory:
     async def test_preview_and_gate(self, gated_call_spy):
         connector, client = make_connector()
