@@ -124,7 +124,12 @@ class TestBuildChoiceHtml:
     def test_cancel_button_present_and_not_primary(self):
         html = build_choice_html(title="T", prompt="p", options=["a", "b"])
         assert 'data-pf-action="cancel"' in html
-        assert "data-pf-primary" not in html
+        # Scoped to the `="1"`-valued attribute, not a bare "data-pf-primary"
+        # substring search -- _JS's own embedded script text (inlined into
+        # every document regardless of shape) references the bare attribute
+        # name too, in its keydown-handler selector -- same distinction
+        # test_approval_window.py's own data-pf-primary tests draw.
+        assert 'data-pf-primary="1"' not in html
 
     def test_options_are_html_escaped(self):
         # The real bug this replaces: settings_controller._osascript_pick
