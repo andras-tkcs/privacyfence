@@ -21,8 +21,8 @@ html_to_markdown() produces) rather than flattening everything to plain
 prose -- a human reviewing a preview benefits from "this was a heading" or
 "this was a table" surviving the conversion, even though page layout,
 fonts, and other purely visual formatting is deliberately dropped. PDF has
-no comparable structure available from PDFKit's plain `.string()`, so it
-stays flat text.
+no comparable structure available from pypdf's plain per-page
+`extract_text()`, so it stays flat text.
 
 Images are deliberately out of scope -- no OCR. A caller wanting extracted
 text for image content gets an empty string here, same as any other
@@ -35,8 +35,7 @@ import logging
 import xml.etree.ElementTree as ET
 import zipfile
 
-from Foundation import NSData
-from Quartz import PDFDocument
+import pypdf
 
 from .html_to_text import html_to_markdown
 
@@ -134,12 +133,23 @@ def preview_blocks_for(details: str, extracted: str) -> list[dict] | None:
 
 
 def _extract_pdf_text(data: bytes) -> str:
-    ns_data = NSData.dataWithBytes_length_(data, len(data))
-    document = PDFDocument.alloc().initWithData_(ns_data)
-    if document is None:
-        return ""
-    text = document.string()
-    return str(text) if text else ""
+    """Page text joined in document order, stopping as soon as the running
+    total passes MAX_SCAN_CHARS rather than always walking every page --
+    extract_text()'s own truncation to that same cap happens after this
+    returns, so a large multi-hundred-page PDF would otherwise pay for
+    pages whose text never survives the truncation anyway, in the
+    synchronous approval-gate path where a human is waiting on the popup.
+    """
+    reader = pypdf.PdfReader(io.BytesIO(data))
+    parts = []
+    length = 0
+    for page in reader.pages:
+        text = page.extract_text() or ""
+        parts.append(text)
+        length += len(text)
+        if length >= MAX_SCAN_CHARS:
+            break
+    return "\n".join(parts)
 
 
 def _local(tag: str) -> str:

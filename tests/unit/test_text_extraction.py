@@ -25,10 +25,11 @@ DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.docu
 PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
-# Minimal single-page PDF -- enough for PDFDocument to parse successfully and
-# report its text, not a claim this is a spec-perfect PDF. Reuses the same
-# fixture shape test_approval_window.py's TestPdfViewEmbed already pinned as
-# parseable by the same PDFDocument API this module calls.
+# Minimal single-page PDF -- enough for pypdf.PdfReader to parse successfully
+# and report its text, not a claim this is a spec-perfect PDF. Reuses the
+# same fixture shape test_approval_window.py's TestPdfViewEmbed already
+# pinned as parseable by PDFKit's PDFDocument, the API that module still
+# uses for rendering (this one no longer does, for extraction).
 VALID_PDF = (
     b"%PDF-1.1\n"
     b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n"
@@ -169,6 +170,28 @@ class TestPdf:
 
     def test_garbage_pdf_bytes_returns_empty_string(self):
         assert extract_text(b"not a pdf at all", "application/pdf") == ""
+
+    def test_stops_reading_pages_once_max_scan_chars_is_reached(self, monkeypatch):
+        # A large multi-hundred-page PDF shouldn't pay for every page's
+        # extract_text() call when the first couple already pass
+        # MAX_SCAN_CHARS -- extract_text()'s own truncation to that cap
+        # happens after _extract_pdf_text returns, so walking the rest of
+        # the pages would only be thrown away.
+        calls = []
+
+        class FakePage:
+            def extract_text(self):
+                calls.append(1)
+                return "a" * (MAX_SCAN_CHARS // 2 + 1)
+
+        class FakeReader:
+            def __init__(self, _stream):
+                self.pages = [FakePage() for _ in range(10)]
+
+        monkeypatch.setattr("pypdf.PdfReader", FakeReader)
+        result = extract_text(b"%PDF-1.1 fake", "application/pdf")
+        assert len(calls) == 2
+        assert len(result) <= MAX_SCAN_CHARS
 
 
 class TestDocx:

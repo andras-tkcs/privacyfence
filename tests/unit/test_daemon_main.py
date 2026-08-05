@@ -23,6 +23,7 @@ import pytest
 import yaml
 
 from privacyfence import daemon_main
+from privacyfence.paths import data_dir
 
 
 def fake_client_class(*, result=None, connection_error: Exception | None = None,
@@ -35,6 +36,7 @@ def fake_client_class(*, result=None, connection_error: Exception | None = None,
         captured_kwargs: dict | None = None
         instantiated = False
         authorize_called = False
+        directories_refreshed = False
 
         def __init__(self, **kwargs):
             type(self).instantiated = True
@@ -51,6 +53,11 @@ def fake_client_class(*, result=None, connection_error: Exception | None = None,
             if connection_error is not None:
                 raise connection_error
             return result
+
+        def ensure_directories_fresh(self):
+            # Only SlackClient has this method for real -- harmless no-op
+            # for every other *Client fake built from this same factory.
+            type(self).directories_refreshed = True
 
     return _FakeClient
 
@@ -300,7 +307,12 @@ class TestBuildConnectorsSlack:
         assert len(connectors) == 1
         assert connectors[0].name == "slack"
         assert connectors[0].my_email == "me@x.com"
-        assert fake.captured_kwargs == {"user_token": "xoxp-1"}
+        assert fake.captured_kwargs == {
+            "user_token": "xoxp-1",
+            "user_cache_file": str(data_dir() / "slack_user_cache.json"),
+            "channel_cache_file": str(data_dir() / "slack_channel_cache.json"),
+        }
+        assert fake.directories_refreshed is True
 
     def test_skipped_when_org_config_absent(self, monkeypatch):
         fake = fake_client_class(result="my-workspace")
