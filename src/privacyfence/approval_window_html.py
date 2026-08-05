@@ -422,13 +422,24 @@ def _risk_section_html(
     return f'<div class="card" style="{card_style}">{kicker_html}{body}</div>'
 
 
-def _button_row_html(allow_accept_all: bool, accept_all_label: str) -> str:
+def _button_row_html(accept_all_labels: list[str]) -> str:
     """Deny/Allow once/Always allow -- rendered as part of this document's
     own content now (see module docstring), not native NSButtons in a fixed
-    band below the webview. ``accept_all_label`` is the already-formatted
-    "Always allow" / "Always allow — {hint}" string (approval_window.py's
-    ApprovalWindowController computes it, same as it always has -- this
-    function just renders whatever string it's given).
+    band below the webview. ``accept_all_labels`` is the already-formatted
+    "Always allow" / "Always allow — {hint}" string per matching candidate
+    (approval_window.py's ApprovalWindowController computes each one, same
+    as it always computed the single one -- this function just renders
+    whatever strings it's given, one button per entry).
+
+    Zero entries: no Always allow button at all, same as
+    ``allow_accept_all=False`` used to render. Exactly one entry: rendered
+    inline in ``.pf-btn-row-left`` alongside Deny -- pixel-identical to
+    today's single-candidate layout, so the ~46 single-candidate operations
+    get zero visual change. Two or more entries (only the four
+    ``auto_accept.SUGGESTION_FAMILIES`` operations can ever produce this):
+    rendered as their own left-aligned, wrapping button row *above* the
+    Deny/Allow once band instead, which keeps its fixed position and drops
+    its own inline Always-allow link -- see module docstring's decisions.
 
     Every button starts fully disabled -- ``aria-disabled="true"``, no
     ``tabindex`` -- exactly like settings_window_html.py's own disabled
@@ -439,6 +450,12 @@ def _button_row_html(allow_accept_all: bool, accept_all_label: str) -> str:
     function's own comment for why that's a DOMContentLoaded-driven, fully
     in-page signal now, not something approval_window.py's
     WKNavigationDelegate methods drive directly the way they used to.
+
+    Each Always-allow button carries ``data-pf-choice="{index}"`` (its
+    index into ``accept_all_labels``) alongside ``data-pf-action="accept_all"``
+    -- ``_JS``'s bridge includes this in the resolve message so
+    approval_window.py/gate.py know *which* candidate rule was picked, not
+    just that some "Always allow" button was clicked.
 
     ``data-pf-primary`` marks Allow once specifically: ``_JS``'s keydown
     handler activates a *focused* Deny/Always-allow control on Enter/Space
@@ -455,20 +472,32 @@ def _button_row_html(allow_accept_all: bool, accept_all_label: str) -> str:
         '<div class="pf-btn pf-btn-deny" role="button" aria-disabled="true" '
         'aria-label="Deny" data-pf-action="deny">Deny</div>'
     )
-    always_allow_html = ""
-    if allow_accept_all:
-        always_allow_html = (
-            '<div class="pf-btn-link" role="button" aria-disabled="true" '
-            f'aria-label="{_html_escape(accept_all_label)}" data-pf-action="accept_all">'
-            f'{_html_escape(accept_all_label)}</div>'
-        )
     allow_once_html = (
         '<div class="pf-btn pf-btn-primary" role="button" aria-disabled="true" '
         'data-pf-primary="1" aria-label="Allow once" data-pf-action="accept">Allow once</div>'
     )
+
+    def _candidate_html(index: int, label: str) -> str:
+        return (
+            '<div class="pf-btn-link" role="button" aria-disabled="true" '
+            f'aria-label="{_html_escape(label)}" data-pf-action="accept_all" '
+            f'data-pf-choice="{index}">{_html_escape(label)}</div>'
+        )
+
+    if len(accept_all_labels) <= 1:
+        always_allow_html = _candidate_html(0, accept_all_labels[0]) if accept_all_labels else ""
+        return (
+            '<div class="pf-btn-row">'
+            f'<div class="pf-btn-row-left">{deny_html}{always_allow_html}</div>'
+            f'{allow_once_html}'
+            '</div>'
+        )
+
+    candidates_html = "".join(_candidate_html(i, label) for i, label in enumerate(accept_all_labels))
     return (
+        f'<div class="pf-btn-row-candidates">{candidates_html}</div>'
         '<div class="pf-btn-row">'
-        f'<div class="pf-btn-row-left">{deny_html}{always_allow_html}</div>'
+        f'<div class="pf-btn-row-left">{deny_html}</div>'
         f'{allow_once_html}'
         '</div>'
     )
@@ -493,20 +522,32 @@ def _button_row_html(allow_accept_all: bool, accept_all_label: str) -> str:
 # page's own handler already ran.
 _JS = """
 (function () {
-  function post(result) {
+  function post(result, choice) {
     if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.pf) {
-      window.webkit.messageHandlers.pf.postMessage({ action: 'resolve', result: result });
+      var payload = { action: 'resolve', result: result };
+      if (choice !== null && choice !== undefined) payload.choice = choice;
+      window.webkit.messageHandlers.pf.postMessage(payload);
     }
   }
 
   function resolveFrom(el) {
     if (!el || el.getAttribute('aria-disabled') === 'true') return;
     var action = el.getAttribute('data-pf-action');
-    if (action) post(action);
+    if (!action) return;
+    // Only the accept_all buttons carry data-pf-choice -- see
+    // _button_row_html's own comment for why this identifies *which*
+    // matching candidate rule was picked, not just that some
+    // "Always allow" button was clicked.
+    var choiceAttr = el.getAttribute('data-pf-choice');
+    post(action, choiceAttr !== null ? parseInt(choiceAttr, 10) : null);
   }
 
   function enableButtons() {
-    var buttons = document.querySelectorAll('.pf-btn-row [data-pf-action]');
+    // Not scoped to .pf-btn-row alone -- 2+ candidates render their own
+    // .pf-btn-row-candidates row above it (see _button_row_html), which
+    // needs the same enable treatment. data-pf-action is never used
+    // outside these two button rows, so this selector is unambiguous.
+    var buttons = document.querySelectorAll('[data-pf-action]');
     for (var i = 0; i < buttons.length; i++) {
       buttons[i].removeAttribute('aria-disabled');
       buttons[i].setAttribute('tabindex', '0');
@@ -558,8 +599,7 @@ def build_card_stack_html(
     temp_accept_text: str,
     preview_kicker: str,
     preview_body_html: str,
-    allow_accept_all: bool,
-    accept_all_label: str,
+    accept_all_labels: list[str],
 ) -> str:
     """Build the full HTML document for one approval window's content area.
 
@@ -625,13 +665,18 @@ def build_card_stack_html(
     -- see _risk_section_html()'s docstring for what each combination
     renders.
 
-    ``allow_accept_all``/``accept_all_label`` control the Always allow
-    button (see ``_button_row_html``) -- Deny and Allow once always render,
-    Always allow only when ``allow_accept_all`` is true, using whatever
-    already-formatted label ``accept_all_label`` carries (plain "Always
+    ``accept_all_labels`` controls the Always allow button(s) (see
+    ``_button_row_html``) -- Deny and Allow once always render; an empty
+    list renders no Always allow button at all (same as the old
+    ``allow_accept_all=False``), one entry renders a single Always allow
+    button inline with Deny (pixel-identical to today's single-candidate
+    layout), and 2+ entries render their own button row above Deny/Allow
+    once instead -- one button per matching auto-accept rule candidate.
+    Each entry is already the fully-formatted label string (plain "Always
     allow", or "Always allow — {hint}"; approval_window.py's controller
-    decides which, same as it always has). The whole button row is appended
-    last, after ``temp_accept_text``'s own caption when present.
+    decides which per entry, same as it always did for the single case).
+    The whole button row is appended last, after ``temp_accept_text``'s own
+    caption when present.
     """
     width = CONTENT_WIDTH[layout]
     # A plain running counter, advanced only when a section actually
@@ -738,7 +783,7 @@ def build_card_stack_html(
 
     # Always present (unlike temp_accept_text above) -- every dialog has a
     # Deny/Allow once button row, see _button_row_html.
-    body_html += _button_row_html(allow_accept_all, accept_all_label)
+    body_html += _button_row_html(accept_all_labels)
 
     # Read/write side rail, paired with the header's same-colored pill
     # above -- 6px, on the window's left edge, cyan/accent for reads and

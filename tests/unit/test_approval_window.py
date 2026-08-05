@@ -81,7 +81,7 @@ def make_controller(
     title="Read Calendar Event",
     preview=None,
     details_text="ordinary, non-sensitive content",
-    allow_accept_all=False,
+    accept_all_choices=None,
     is_read=True,
     claude_reason="Checking the event as requested.",
     visibility=None,
@@ -99,14 +99,13 @@ def make_controller(
     preview_tables=None,
     preview_blocks=None,
     table_only=False,
-    accept_all_hint="",
 ):
     c = ApprovalWindowController.alloc().init()
     c.layout = layout
     c.title = title
     c.preview = preview if preview is not None else {"Title": "PrivacyFence QA seed event [QATEST]"}
     c.details_text = details_text
-    c.allow_accept_all = allow_accept_all
+    c.accept_all_choices = accept_all_choices or []
     c.is_read = is_read
     c.claude_reason = claude_reason
     c.visibility = visibility or {}
@@ -124,7 +123,6 @@ def make_controller(
     c.preview_tables = preview_tables or []
     c.preview_blocks = preview_blocks or []
     c.table_only = table_only
-    c.accept_all_hint = accept_all_hint
     return c
 
 
@@ -189,11 +187,11 @@ class TestButtons:
         assert "Allow once" in html
 
     def test_always_allow_present_only_when_requested(self):
-        without = make_controller(allow_accept_all=False)
+        without = make_controller(accept_all_choices=[])
         without.build_panel()
         assert 'data-pf-action="accept_all"' not in without._details_html_string
 
-        with_ = make_controller(allow_accept_all=True)
+        with_ = make_controller(accept_all_choices=[("i_am_owner", "if I own it")])
         with_.build_panel()
         assert 'data-pf-action="accept_all"' in with_._details_html_string
 
@@ -214,7 +212,7 @@ class TestButtons:
         # enables them (approval_window_html.py's _JS) -- a fast or
         # reflexive click can't resolve the decision before there's
         # anything on screen to review. See module docstring.
-        controller = make_controller(allow_accept_all=True)
+        controller = make_controller(accept_all_choices=[("i_am_owner", "if I own it")])
         controller.build_panel()
         # Deny, Allow once, Always allow -- all three start disabled. Scoped
         # to `role="button" aria-disabled="true"` (an actual button
@@ -233,22 +231,58 @@ class TestButtons:
         # the ``="1"``-valued attribute, not a bare ``data-pf-primary``
         # substring search -- _JS's own script text also references the
         # bare attribute name in its keydown-handler selector.
-        controller = make_controller(allow_accept_all=True, accept_all_hint="this folder")
+        controller = make_controller(accept_all_choices=[("approved_folder", "this folder")])
         controller.build_panel()
         html = controller._details_html_string
         assert html.count('data-pf-primary="1"') == 1
         assert 'data-pf-primary="1" aria-label="Allow once" data-pf-action="accept"' in html
 
 
+class TestMultiCandidateButtonRow:
+    """Issue #151: an item matching 2+ auto-accept rule candidates renders
+    one "Always allow" button per candidate, in their own row above
+    Deny/Allow once, instead of always silently picking a single
+    top-priority one."""
+
+    def test_two_candidates_render_two_buttons(self):
+        controller = make_controller(accept_all_choices=[
+            ("i_am_owner", "if I own it"), ("approved_folder", "this folder"),
+        ])
+        controller.build_panel()
+        html = controller._details_html_string
+        assert html.count('data-pf-action="accept_all"') == 2
+        assert 'class="pf-btn-row-candidates"' in html
+
+    def test_single_candidate_has_no_dedicated_row(self):
+        # Pixel-identical to the old single-button layout -- inline with
+        # Deny, no separate .pf-btn-row-candidates.
+        controller = make_controller(accept_all_choices=[("i_am_owner", "if I own it")])
+        controller.build_panel()
+        assert 'class="pf-btn-row-candidates"' not in controller._details_html_string
+
+    def test_window_grows_taller_for_two_candidates_than_one(self):
+        one = make_controller(accept_all_choices=[("i_am_owner", "if I own it")])
+        two = make_controller(accept_all_choices=[
+            ("i_am_owner", "if I own it"), ("approved_folder", "this folder"),
+        ])
+        assert two._window_height() > one._window_height()
+
+    def test_zero_and_one_candidate_windows_are_the_same_height(self):
+        # Single-candidate operations get zero visual/height change.
+        zero = make_controller(accept_all_choices=[])
+        one = make_controller(accept_all_choices=[("i_am_owner", "if I own it")])
+        assert zero._window_height() == one._window_height()
+
+
 class TestAlwaysAllowVerboseLabel:
-    """The Always allow button names the specific rule it would create
-    (gate.py's accept_all_hint) instead of a plain, unspecific label -- see
-    _build_content_view's own comment. Dispatch is bridge-message-based (see
-    TestBridgeMessage), so a non-literal label here doesn't break the click
-    -- these tests confirm the *display* side of that."""
+    """Each Always allow button names the specific rule it would create
+    (gate.py's accept_all_choices) instead of a plain, unspecific label --
+    see _build_content_view's own comment. Dispatch is bridge-message-based
+    (see TestBridgeMessage), so a non-literal label here doesn't break the
+    click -- these tests confirm the *display* side of that."""
 
     def test_hint_appends_to_the_plain_label(self):
-        controller = make_controller(allow_accept_all=True, accept_all_hint="this folder")
+        controller = make_controller(accept_all_choices=[("approved_folder", "this folder")])
         controller.build_panel()
         html = controller._details_html_string
         assert "Always allow — this folder" in html
@@ -259,19 +293,19 @@ class TestAlwaysAllowVerboseLabel:
         # no category to name -- gate.py sends an empty hint for it, and
         # the button must stay exactly "Always allow", not "Always allow —"
         # with a dangling separator.
-        controller = make_controller(allow_accept_all=True, accept_all_hint="")
+        controller = make_controller(accept_all_choices=[("always_allow", "")])
         controller.build_panel()
         html = controller._details_html_string
         assert ">Always allow<" in html
         assert "Always allow —" not in html
 
     def test_hint_is_ignored_when_always_allow_is_not_offered(self):
-        # A hint with nothing to attach to (allow_accept_all False) must
-        # never leak a floating "— this folder" button onto the row.
-        # Checked via data-pf-action, not a bare "Always allow" substring
-        # search -- styles.css's own vendored CSS comments (inlined
-        # verbatim into every document) mention that phrase too.
-        controller = make_controller(allow_accept_all=False, accept_all_hint="this folder")
+        # An empty choice list must never leak a floating Always-allow
+        # button onto the row. Checked via data-pf-action, not a bare
+        # "Always allow" substring search -- styles.css's own vendored CSS
+        # comments (inlined verbatim into every document) mention that
+        # phrase too.
+        controller = make_controller(accept_all_choices=[])
         controller.build_panel()
         assert 'data-pf-action="accept_all"' not in controller._details_html_string
 
@@ -279,14 +313,15 @@ class TestAlwaysAllowVerboseLabel:
         # End-to-end: a button rendered with a verbose label still resolves
         # correctly, because dispatch is via data-pf-action/the bridge
         # message's own "result" field, never the button's displayed text.
-        controller = make_controller(allow_accept_all=True, accept_all_hint="this project")
+        controller = make_controller(accept_all_choices=[("approved_project_keys", "this project")])
         controller.build_panel()
         assert 'data-pf-action="accept_all"' in controller._details_html_string
 
         controller.userContentController_didReceiveScriptMessage_(
-            None, _FakeMessage({"action": "resolve", "result": "accept_all"}),
+            None, _FakeMessage({"action": "resolve", "result": "accept_all", "choice": 0}),
         )
         assert controller.result == "accept_all"
+        assert controller.chosen_index == 0
 
 
 class TestCardStackContent:
@@ -572,12 +607,12 @@ class TestPanelRevealOnNavigation:
     click)."""
 
     def test_panel_starts_invisible(self):
-        controller = make_controller(allow_accept_all=True)
+        controller = make_controller(accept_all_choices=[("i_am_owner", "if I own it")])
         panel = controller.build_panel()
         assert panel.alphaValue() == 0.0
 
     def test_panel_becomes_visible_after_navigation_finishes(self):
-        controller = make_controller(allow_accept_all=True)
+        controller = make_controller(accept_all_choices=[("i_am_owner", "if I own it")])
         panel = controller.build_panel()
 
         controller.webView_didFinishNavigation_(controller._details_view, None)
@@ -592,7 +627,7 @@ class TestPanelRevealOnNavigation:
         # Fail-safe: a load failure must still reveal the panel rather than
         # permanently trap the reviewer behind an invisible, unresponsive
         # modal dialog.
-        controller = make_controller(allow_accept_all=True)
+        controller = make_controller(accept_all_choices=[("i_am_owner", "if I own it")])
         panel = controller.build_panel()
 
         getattr(controller, failure_method)(controller._details_view, None, None)
@@ -669,3 +704,46 @@ class TestBridgeMessage:
         controller.result = "unset"
         controller.userContentController_didReceiveScriptMessage_(None, _FakeMessage("not a dict"))
         assert controller.result == "unset"
+
+
+class TestBridgeMessageChosenIndex:
+    """``choice`` -- present only on an ``accept_all`` resolve message (see
+    approval_window_html.py's ``_JS``) -- becomes self.chosen_index, the
+    clicked button's index into self.accept_all_choices."""
+
+    def test_accept_all_with_a_choice_sets_chosen_index(self):
+        controller = make_controller()
+        controller.userContentController_didReceiveScriptMessage_(
+            None, _FakeMessage({"action": "resolve", "result": "accept_all", "choice": 1}),
+        )
+        assert controller.result == "accept_all"
+        assert controller.chosen_index == 1
+
+    def test_accept_with_a_choice_field_still_leaves_chosen_index_none(self):
+        # Only accept_all ever carries a real choice -- _JS never sends one
+        # on plain accept/deny, but even if it somehow did, that's not this
+        # bridge's job to interpret.
+        controller = make_controller()
+        controller.userContentController_didReceiveScriptMessage_(
+            None, _FakeMessage({"action": "resolve", "result": "accept", "choice": 0}),
+        )
+        assert controller.result == "accept"
+        assert controller.chosen_index is None
+
+    def test_accept_all_with_no_choice_field_leaves_chosen_index_none(self):
+        # Shouldn't happen against the real button row (every accept_all
+        # button carries data-pf-choice), but must degrade safely -- gate.py
+        # treats a None chosen_index on "accept_all" as "cancelled".
+        controller = make_controller()
+        controller.userContentController_didReceiveScriptMessage_(
+            None, _FakeMessage({"action": "resolve", "result": "accept_all"}),
+        )
+        assert controller.result == "accept_all"
+        assert controller.chosen_index is None
+
+    def test_deny_leaves_chosen_index_none(self):
+        controller = make_controller()
+        controller.userContentController_didReceiveScriptMessage_(
+            None, _FakeMessage({"action": "resolve", "result": "deny"}),
+        )
+        assert controller.chosen_index is None

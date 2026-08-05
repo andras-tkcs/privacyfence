@@ -38,8 +38,7 @@ def _minimal_kwargs(**overrides):
         temp_accept_text="",
         preview_kicker="Preview (~2 sec read)",
         preview_body_html=build_preview_body_html("Synthetic event body text."),
-        allow_accept_all=False,
-        accept_all_label="Always allow",
+        accept_all_labels=[],
     )
     kwargs.update(overrides)
     return kwargs
@@ -368,10 +367,10 @@ class TestButtonRow:
         assert 'data-pf-action="accept"' in html
 
     def test_always_allow_only_renders_when_offered(self):
-        without = build_card_stack_html(**_minimal_kwargs(allow_accept_all=False))
+        without = build_card_stack_html(**_minimal_kwargs(accept_all_labels=[]))
         assert 'data-pf-action="accept_all"' not in without
 
-        with_ = build_card_stack_html(**_minimal_kwargs(allow_accept_all=True))
+        with_ = build_card_stack_html(**_minimal_kwargs(accept_all_labels=["Always allow"]))
         assert 'data-pf-action="accept_all"' in with_
 
     def test_accept_all_label_is_rendered_verbatim(self):
@@ -379,14 +378,14 @@ class TestButtonRow:
         # approval_window.py's controller does (see build_card_stack_html's
         # own docstring) -- it just renders whatever string it's given.
         html = build_card_stack_html(**_minimal_kwargs(
-            allow_accept_all=True, accept_all_label="Always allow — this folder",
+            accept_all_labels=["Always allow — this folder"],
         ))
         assert "Always allow — this folder" in html
         assert ">Always allow<" not in html
 
     def test_accept_all_label_is_escaped(self):
         html = build_card_stack_html(**_minimal_kwargs(
-            allow_accept_all=True, accept_all_label="<script>alert(1)</script>",
+            accept_all_labels=["<script>alert(1)</script>"],
         ))
         assert "<script>alert(1)</script>" not in html
         assert "&lt;script&gt;" in html
@@ -396,7 +395,7 @@ class TestButtonRow:
         # not a bare `aria-disabled="true"` substring search -- that phrase
         # also appears in styles.css's own vendored CSS comments/selector
         # text, which this document inlines verbatim.
-        html = build_card_stack_html(**_minimal_kwargs(allow_accept_all=True))
+        html = build_card_stack_html(**_minimal_kwargs(accept_all_labels=["Always allow"]))
         assert html.count('role="button" aria-disabled="true"') == 3
 
     def test_only_allow_once_is_marked_primary(self):
@@ -407,9 +406,47 @@ class TestButtonRow:
         # ``="1"``-valued attribute, not a bare ``data-pf-primary`` substring
         # search -- _JS's own script text also references the bare
         # attribute name in its keydown-handler selector.
-        html = build_card_stack_html(**_minimal_kwargs(allow_accept_all=True))
+        html = build_card_stack_html(**_minimal_kwargs(accept_all_labels=["Always allow"]))
         assert html.count('data-pf-primary="1"') == 1
         assert 'data-pf-primary="1" aria-label="Allow once" data-pf-action="accept"' in html
+
+    def test_single_candidate_renders_inline_with_deny(self):
+        # Exactly one candidate stays pixel-identical to the old
+        # single-button layout: inline in .pf-btn-row-left, no dedicated
+        # candidates row.
+        html = build_card_stack_html(**_minimal_kwargs(accept_all_labels=["Always allow — this folder"]))
+        assert 'class="pf-btn-row-candidates"' not in html
+        assert html.count('data-pf-action="accept_all"') == 1
+        assert 'data-pf-choice="0"' in html
+
+    def test_two_or_more_candidates_render_their_own_row(self):
+        # Issue #151's multi-button window: 2+ matching auto-accept rule
+        # candidates each get their own button, in their own row above
+        # Deny/Allow once (see approval_window_html.py's _button_row_html).
+        html = build_card_stack_html(**_minimal_kwargs(
+            accept_all_labels=["Always allow — if I own it", "Always allow — this folder"],
+        ))
+        assert html.count('data-pf-action="accept_all"') == 2
+        assert 'class="pf-btn-row-candidates"' in html
+        assert "Always allow — if I own it" in html
+        assert "Always allow — this folder" in html
+        # No inline Always-allow link left inside .pf-btn-row-left once
+        # there are 2+ candidates -- Deny stays alone there.
+        left = html[html.index('class="pf-btn-row-left"'):html.index('class="pf-btn-row-left"') + 400]
+        assert 'data-pf-action="accept_all"' not in left
+
+    def test_two_or_more_candidates_carry_their_own_index(self):
+        html = build_card_stack_html(**_minimal_kwargs(
+            accept_all_labels=["Always allow — if I own it", "Always allow — this folder"],
+        ))
+        assert 'data-pf-choice="0"' in html
+        assert 'data-pf-choice="1"' in html
+
+    def test_candidates_row_renders_before_deny_allow_once_row(self):
+        html = build_card_stack_html(**_minimal_kwargs(
+            accept_all_labels=["Always allow — if I own it", "Always allow — this folder"],
+        ))
+        assert html.index('class="pf-btn-row-candidates"') < html.index('class="pf-btn-row"')
 
     def test_button_row_is_appended_after_the_scrollable_content(self):
         html = build_card_stack_html(**_minimal_kwargs())

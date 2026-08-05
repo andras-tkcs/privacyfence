@@ -23,27 +23,29 @@ class TestNativeApprovalUIDelegation:
         captured = {}
         monkeypatch.setattr(
             approval_ui.approval_popup, "show_popup",
-            lambda *a, **kw: captured.update(args=a, kwargs=kw) or "accept",
+            lambda *a, **kw: captured.update(args=a, kwargs=kw) or ("accept", None),
         )
 
         result = NativeApprovalUI().show_popup("Title", {"f": "v"}, "details", seen_count=3)
 
         assert captured["args"] == ("Title", {"f": "v"}, "details")
         assert captured["kwargs"] == {"seen_count": 3}
-        assert result == "accept"
+        assert result == ("accept", None)
 
     def test_show_read_popup_forwards_args_and_returns_result(self, monkeypatch):
         captured = {}
         monkeypatch.setattr(
             approval_ui.approval_popup, "show_read_popup",
-            lambda *a, **kw: captured.update(args=a, kwargs=kw) or "accept_all",
+            lambda *a, **kw: captured.update(args=a, kwargs=kw) or ("accept_all", 0),
         )
 
-        result = NativeApprovalUI().show_read_popup("Title", {}, "details", True, pii_categories=["Email"])
+        result = NativeApprovalUI().show_read_popup(
+            "Title", {}, "details", [("i_am_sender", "if I'm sender")], pii_categories=["Email"]
+        )
 
-        assert captured["args"] == ("Title", {}, "details", True)
+        assert captured["args"] == ("Title", {}, "details", [("i_am_sender", "if I'm sender")])
         assert captured["kwargs"] == {"pii_categories": ["Email"]}
-        assert result == "accept_all"
+        assert result == ("accept_all", 0)
 
     def test_show_pii_confirmation_popup_forwards_categories(self, monkeypatch):
         captured = {}
@@ -56,18 +58,6 @@ class TestNativeApprovalUIDelegation:
 
         assert NativeApprovalUI().show_pii_confirmation_popup(["Phone number"]) is True
         assert captured["categories"] == ["Phone number"]
-
-    def test_show_rule_choice_popup_forwards_descriptions(self, monkeypatch):
-        captured = {}
-
-        def fake(descriptions):
-            captured["descriptions"] = descriptions
-            return 1
-
-        monkeypatch.setattr(approval_ui.approval_popup, "show_rule_choice_popup", fake)
-
-        assert NativeApprovalUI().show_rule_choice_popup(["a", "b"]) == 1
-        assert captured["descriptions"] == ["a", "b"]
 
     def test_show_rule_confirmation_popup_forwards_description(self, monkeypatch):
         captured = {}
@@ -99,9 +89,6 @@ class TestSingletonAccessors:
                 raise NotImplementedError
 
             def show_pii_confirmation_popup(self, categories):
-                raise NotImplementedError
-
-            def show_rule_choice_popup(self, descriptions):
                 raise NotImplementedError
 
             def show_rule_confirmation_popup(self, description):

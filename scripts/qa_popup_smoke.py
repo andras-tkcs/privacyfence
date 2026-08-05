@@ -37,7 +37,13 @@ documents gets a real on-screen click, not just a representative handful. (RG-2 
 that's genuinely distinct from RG-1's, the native-PDF body -- see that doc's "View groups"
 section.) A handful of RG-1 tools additionally get two "RG-1 stress" readability variants (long
 text/many rows/columns, with and without a PII banner) beyond their one baseline entry -- see the
-"RG-1 stress" section below for why. Preview/details data is
+"RG-1 stress" section below for why. Each of the four multi-candidate operations in
+auto_accept.SUGGESTION_FAMILIES (drive reads, calendar_get_event_details, jira_get_issue,
+confluence reads) additionally gets one "(N Always-allow candidates)" variant beyond its
+single-candidate baseline -- issue #151's multi-button window, showing 2+ real "Always allow"
+buttons rendered in their own row instead of one hinted button (see approval_window_html.py's
+_button_row_html); every other RG-1/RG-2 tool's baseline entry itself already covers the
+single-candidate (0 or 1 button) case with no dedicated variant needed. Preview/details data is
 realistic-but-synthetic, sourced from tests/fixtures/live/*/*.json (recorded, redacted real API
 responses -- see scripts/qa_fixture_recorder.py) and docs/qa-environment-setup.md's own PFQA/
 [QATEST] naming conventions, rather than generic placeholder strings -- see that doc's "one rule
@@ -54,7 +60,7 @@ window issue #120 replaced the old NSMenu tree / "Manage Auto-accept Rules…" n
 (see the "Settings window" scenarios near the bottom of _scenarios()) -- exercising real clicks
 into that window's own web content, the same web-content-click technique issue #141 brought to
 every tool-approval scenario's own Deny/Allow once/Always allow above (see _click_button's own
-docstring). 100 scenarios total: 93 tool-approval scenarios plus these seven.
+docstring). 104 scenarios total: 97 tool-approval scenarios plus these seven.
 
 Every tool-approval scenario renders through the one real card-stack rendering
 (approval_window_html.py). Each scenario's narrow/wide shape (_TOOL_LAYOUT below) is a fixed,
@@ -684,6 +690,33 @@ def _run_scenario(
     if click_title == "Always allow" and popup_kwargs.get("accept_all_hint"):
         click_title = f"Always allow — {popup_kwargs['accept_all_hint']}"
 
+    # show_native_approval() itself no longer takes allow_accept_all/
+    # accept_all_hint (issue #151's multi-button rewrite) -- it takes
+    # accept_all_choices: list[(rule_name, short_label)], one entry per
+    # matching candidate. Translated here, once, rather than touching every
+    # individual scenario call below: allow_accept_all=True + a single
+    # accept_all_hint (the overwhelming majority of scenarios -- one
+    # candidate) becomes a one-entry list, same visual/behavioral result as
+    # the old allow_accept_all=True/accept_all_hint pair. A scenario can
+    # instead set accept_all_hints=[...] directly (2+ entries) to render the
+    # real multi-button row for one of the four auto_accept.SUGGESTION_
+    # FAMILIES operations -- see the "(N Always-allow candidates)" scenarios
+    # below. The dummy per-entry rule_name here is never shown on screen
+    # (only chosen_index and the label matter for this script); it only has
+    # to be unique enough that click_title's own derivation above (matching
+    # entry 0's hint) still lines up with the real first button's label.
+    accept_all_hints = popup_kwargs.pop("accept_all_hints", None)
+    allow_accept_all = popup_kwargs.pop("allow_accept_all", False)
+    accept_all_hint = popup_kwargs.pop("accept_all_hint", "")
+    if accept_all_hints is not None:
+        popup_kwargs["accept_all_choices"] = [
+            (f"candidate_{i}", hint) for i, hint in enumerate(accept_all_hints)
+        ]
+    elif allow_accept_all:
+        popup_kwargs["accept_all_choices"] = [("candidate", accept_all_hint)]
+    else:
+        popup_kwargs["accept_all_choices"] = []
+
     pid = os.getpid()
     click_status_box: list[str] = []
 
@@ -733,7 +766,12 @@ def _run_scenario(
     clicker_thread = threading.Thread(target=clicker, daemon=True)
     clicker_thread.start()
 
-    actual = show_native_approval(**popup_kwargs)
+    # chosen_index (meaningful only when actual == "accept_all") isn't part
+    # of this script's own pass/fail signal -- click_status/expected already
+    # confirm the right button resolved the dialog; which accept_all_choices
+    # index it carried is exercised structurally by _run_scenario's own
+    # click_title <-> accept_all_hint(s) derivation above, not re-checked here.
+    actual, _chosen_index = show_native_approval(**popup_kwargs)
 
     # Two sleeps happen before a click lands on a pre_click_title scenario
     # (pre-click, then the final click), so the join timeout has to cover
@@ -1033,16 +1071,18 @@ _TOOL_LAYOUT: dict[str, str] = {
     "tasks_uncomplete_task": "narrow", "tasks_move_task": "narrow",
 }
 
-# Read tools' own top-priority Always-allow rule name, per
-# docs/always-allow-rules-reference.md's Read tools tables -- the
-# WRITE_RULE_SUGGESTIONS-equivalent for the read side, except there's no
-# single shared Python dict to derive this from directly (suggest_rule()'s
-# actual pick depends on live per-call data via SUGGESTION_FAMILIES'
-# priority order, not a static tool->rule mapping) -- so unlike
-# _TOOL_LAYOUT above, this is one, kept in sync with that reference doc's
-# own tables by hand. Tools with no read-gate Always-allow at all (none
-# currently -- every RG-1/RG-2 tool has at least one candidate) simply
-# don't appear here.
+# Read tools' own first-declared Always-allow rule name (auto_accept.
+# SUGGESTION_FAMILIES' fixed declaration order, for the four multi-candidate
+# operations -- see the "(N Always-allow candidates)" scenarios above for
+# the rest of each family), per docs/always-allow-rules-reference.md's Read
+# tools tables -- the WRITE_RULE_SUGGESTIONS-equivalent for the read side,
+# except there's no single shared Python dict to derive this from directly
+# (suggest_rule()'s actual pick depends on live per-call data, e.g. whether
+# the fixture's sender/owner matches my_email, not a static tool->rule
+# mapping) -- so unlike _TOOL_LAYOUT above, this one is kept in sync with
+# that reference doc's own tables by hand. Tools with no read-gate
+# Always-allow at all (none currently -- every RG-1/RG-2 tool has at least
+# one candidate) simply don't appear here.
 _READ_ACCEPT_ALL_TOP_RULE: dict[str, str] = {
     "gmail_get_message": "i_am_sender", "gmail_get_thread": "i_am_sender",
     "gmail_download_attachment": "i_am_sender",
@@ -1730,6 +1770,31 @@ def _scenarios(
     ))
 
     results.append(run(
+        # Issue #151's multi-button window: this event matches 2 of
+        # calendar_read_event's 3 candidates (auto_accept.SUGGESTION_
+        # FAMILIES) -- organizer *and* no external attendees -- so the real
+        # popup renders both as their own Always-allow buttons in a
+        # dedicated row above Deny/Allow once, instead of a single hinted
+        # button (see approval_window_html.py's _button_row_html). Resolved
+        # via plain "Allow once" (not either Always-allow button) since this
+        # scenario's own job is the button-row layout, not rule creation --
+        # see test_gate.py for the "which candidate got clicked" behavior.
+        "RG-1 · calendar_get_event_details (2 Always-allow candidates)",
+        click_title="Allow once", expected="accept",
+        title="Read Calendar Event",
+        preview={"Title": QA_EVENT, "Time": QA_EVENT_TIME},
+        new_info={
+            "Attendees": f"{QA_PERSON} (organizer), QA Contact <{QA_CONTACT_EMAIL}>",
+            "Location": "Remote",
+            "Description": "Synthetic PrivacyFence QA test event description. No real information.",
+        },
+        details_text="Synthetic PrivacyFence QA test event. No real information.",
+        claude_reason="Checking the QA event details as requested.",
+        accept_all_hints=["if I organize it", "no external attendees"],
+        connector="calendar",
+    ))
+
+    results.append(run(
         "RG-1 · jira_get_issue",
         click_title="Allow once", expected="accept",
         title="Read Jira Issue",
@@ -1753,6 +1818,39 @@ def _scenarios(
             },
         ],
         allow_accept_all=True,
+        connector="jira",
+    ))
+
+    results.append(run(
+        # Issue #151's multi-button window, jira_read_issue's own family
+        # (auto_accept.SUGGESTION_FAMILIES) -- reporter, assignee, and
+        # project key all three match this synthetic issue, so the real
+        # popup renders 3 Always-allow buttons wrapping in their own row
+        # (see approval_window_html.py's _button_row_html) -- the largest
+        # candidate count of any of the four multi-candidate operations.
+        "RG-1 · jira_get_issue (3 Always-allow candidates)",
+        click_title="Allow once", expected="accept",
+        title="Read Jira Issue",
+        preview={
+            "Project": QA_PROJECT, "Key": QA_JIRA_KEY, "Summary": QA_JIRA_SUMMARY,
+            "Status": "To Do", "Assignee": "Unassigned",
+        },
+        new_info={
+            "Description": "Full description text",
+            "Comments": "Author, created date, and body per comment",
+        },
+        details_text="Synthetic PrivacyFence QA test issue. No real information. Safe to comment "
+                      "on, update, or transition by any automated test.",
+        preview_blocks=[
+            {"type": "field", "label": "Reporter", "value": QA_PERSON},
+            {"type": "heading", "label": "Description"},
+            {"type": "text", "text": "Synthetic PrivacyFence QA test issue description. No real information."},
+            {
+                "type": "table", "caption": "Comments (1)", "headers": ["Author", "Date", "Comment"],
+                "rows": [[QA_PERSON, "2026-07-16", "Synthetic PrivacyFence QA test comment. No real information."]],
+            },
+        ],
+        accept_all_hints=["if I'm reporter", "if I'm assignee", "this project"],
         connector="jira",
     ))
 
@@ -1783,6 +1881,24 @@ def _scenarios(
         },
         details_text=QA_PAGE_BODY,
         allow_accept_all=True,
+        connector="confluence",
+    ))
+
+    results.append(run(
+        # Issue #151's multi-button window, confluence_read_page's own
+        # family (auto_accept.SUGGESTION_FAMILIES) -- author and space key
+        # both match this synthetic page, so the real popup renders 2
+        # Always-allow buttons instead of one hinted button (see
+        # approval_window_html.py's _button_row_html).
+        "RG-1 · confluence_get_page (2 Always-allow candidates)",
+        click_title="Allow once", expected="accept",
+        title="Read Confluence Page",
+        preview={"Title": QA_PAGE, "Space": QA_SPACE},
+        new_info={
+            "Author": QA_PERSON, "Last modified": "2026-07-16", "Page body": "Full page content",
+        },
+        details_text=QA_PAGE_BODY,
+        accept_all_hints=["if I'm author", "this space"],
         connector="confluence",
     ))
 
@@ -2363,6 +2479,31 @@ def _scenarios(
         allow_accept_all=True,
         visibility={"File metadata": "allow", "Document content": "allow"},
         pdf_bytes=_TINY_PDF_BYTES,
+        connector="drive",
+    ))
+
+    results.append(run(
+        # Issue #151's multi-button window, drive_read's own family
+        # (auto_accept.SUGGESTION_FAMILIES, shared by every drive_read
+        # operation key -- resource_grants.DRIVE_FOLDER_READ_TARGETS) --
+        # this synthetic file is both owned by the caller and in an
+        # approved folder, so the real popup renders 2 Always-allow buttons
+        # instead of one hinted button (see approval_window_html.py's
+        # _button_row_html). drive_get_file_content stands in for all
+        # three drive_read operations (drive_get_file_content/drive_
+        # download_file/drive_sheets_get_values) -- they share this same
+        # candidate family and button-row rendering.
+        "RG-2 · drive_get_file_content (2 Always-allow candidates)",
+        click_title="Allow once", expected="accept",
+        title="Read Drive File Content",
+        preview={
+            "File": "PrivacyFence QA test file [QATEST].pdf", "Owner": QA_EMAIL,
+            "Size": "18 KB", "Modified": "2026-07-16",
+        },
+        details_text="[binary content — this text should not be visible; the PDFView should be]",
+        visibility={"File metadata": "allow", "Document content": "allow"},
+        pdf_bytes=_TINY_PDF_BYTES,
+        accept_all_hints=["if I own it", "this folder"],
         connector="drive",
     ))
 
@@ -3172,8 +3313,8 @@ def main() -> None:
         "--scenario",
         help="Run only the scenario(s) whose name contains this text (case-insensitive substring "
              "match against the scenario name shown in the report table, e.g. 'gmail_get_thread' or "
-             "'Settings window' for the settings-window scenarios), instead of the full 100-scenario "
-             "suite (93 tool-approval scenarios plus the seven settings-window scenarios). For "
+             "'Settings window' for the settings-window scenarios), instead of the full 104-scenario "
+             "suite (97 tool-approval scenarios plus the seven settings-window scenarios). For "
              "grabbing a single updated screenshot -- e.g. for README.md -- without sitting through "
              "the whole run: --scenario 'gmail_get_thread' --screenshot-dir docs/images/screenshots. "
              "Combines with --group (both must match). Matches nothing -> an empty report and a "

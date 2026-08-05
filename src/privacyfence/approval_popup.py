@@ -87,7 +87,7 @@ def show_popup(
     write_content_flags: list[str] | None = None,
     seen_count: int = 0,
     connector: str = "",
-    allow_accept_all: bool = False,
+    accept_all_choices: list[tuple[str, str]] | None = None,
     preview_bytes: bytes = b"",
     preview_mime_type: str = "",
     preview_tables: list[dict] | None = None,
@@ -95,8 +95,7 @@ def show_popup(
     table_only: bool = False,
     upload_forced: bool = False,
     layout: str = NARROW,
-    accept_all_hint: str = "",
-) -> str:
+) -> tuple[str, int | None]:
     """Approval popup for write tools. No PII *gate* applies here -- see
     gate.py's module docstring for why the PII confirmation flow is
     read-only. Same reasoning is why this has no "AI will receive"
@@ -134,12 +133,13 @@ def show_popup(
     call, made from the same TEMP_ACCEPT_ELIGIBLE_OPERATIONS check that
     produced this flag.
 
-    ``allow_accept_all`` adds an "Always allow" button, same as
-    show_read_popup's -- offered only for the handful of write operations
-    with a resource-identity-scoped rule to propose (see auto_accept.py's
-    WRITE_RULE_SUGGESTIONS); gate.py sets this from whether
-    suggest_write_rule() returned anything for this call. False for every
-    other write, identical to today.
+    ``accept_all_choices`` adds one "Always allow" button per entry, same as
+    show_read_popup's -- for the write side this is at most one entry,
+    offered only for the handful of write operations with a
+    resource-identity-scoped rule to propose (see auto_accept.py's
+    WRITE_RULE_SUGGESTIONS); gate.py builds this from whatever
+    suggest_write_rule() returned for this call (empty when it returned
+    None). Empty for every other write, identical to today.
 
     ``preview_bytes``/``preview_mime_type``, when set, render a native image
     view in the details pane instead of the usual plain-text WKWebView --
@@ -167,25 +167,28 @@ def show_popup(
     this per tool from its own _TOOL_LAYOUT table, same as show_read_popup's
     own.
 
-    ``accept_all_hint``, when set, is a short phrase naming the specific
-    rule Always allow would create (e.g. "this folder", "if I'm sender") --
-    shown right on the button itself, not just in the confirmation dialog
-    after clicking. gate.py derives this from the same ``suggest_write_
-    rule()`` result that decides ``allow_accept_all`` -- empty whenever
-    that's False, and also empty for the one unconditional rule
-    (``always_allow``, e.g. gmail_create_draft) that has no category to
-    name. See auto_accept.describe_rule_short's own docstring.
+    Each ``accept_all_choices`` entry is ``(rule_name, short_label)`` --
+    ``short_label`` is a short phrase naming that specific rule (e.g. "this
+    folder", "if I'm sender"), shown right on that button itself, not just
+    in the confirmation dialog after clicking. gate.py builds this from the
+    same ``suggest_write_rule()`` result -- ``short_label`` is empty for the
+    one unconditional rule (``always_allow``, e.g. gmail_create_draft) that
+    has no category to name. See auto_accept.describe_rule_short's own
+    docstring.
 
-    Returns 'accept', 'deny', or 'accept_all' (only offered when
-    allow_accept_all is True).
+    Returns ``(decision, chosen_index)`` -- ``decision`` is 'accept',
+    'deny', or 'accept_all' (only offered when ``accept_all_choices`` is
+    non-empty); ``chosen_index`` is the clicked button's index into
+    ``accept_all_choices`` when ``decision == "accept_all"``, else None.
     """
     return show_native_approval(
-        title=title, preview=preview, details_text=details_text, allow_accept_all=allow_accept_all,
+        title=title, preview=preview, details_text=details_text,
+        accept_all_choices=accept_all_choices,
         temp_accept_eligible=temp_accept_eligible, claude_reason=claude_reason,
         write_content_flags=write_content_flags, seen_count=seen_count, connector=connector,
         preview_bytes=preview_bytes, preview_mime_type=preview_mime_type,
         preview_tables=preview_tables, preview_blocks=preview_blocks, table_only=table_only,
-        upload_forced=upload_forced, layout=layout, accept_all_hint=accept_all_hint,
+        upload_forced=upload_forced, layout=layout,
         # show_popup is unconditionally the write-gate popup -- is_read is a
         # property of which of the two show_* functions was called, not a
         # per-call choice gate.py makes.
@@ -201,7 +204,7 @@ def show_read_popup(
     title: str,
     preview: dict[str, str],
     details_text: str,
-    allow_accept_all: bool,
+    accept_all_choices: list[tuple[str, str]] | None,
     pii_categories: list[str] | None = None,
     visibility: dict[str, str] | None = None,
     claude_reason: str = "",
@@ -216,8 +219,7 @@ def show_read_popup(
     preview_blocks: list[dict] | None = None,
     table_only: bool = False,
     layout: str = NARROW,
-    accept_all_hint: str = "",
-) -> str:
+) -> tuple[str, int | None]:
     """Approval popup for read tools. Full content is always shown before the
     decision, in a scrollable pane — the user never has to click through to
     a second "show details" step.
@@ -258,23 +260,32 @@ def show_read_popup(
     ``layout`` selects the NARROW/WIDE card-stack shape -- gate.py picks
     this per tool from its own _TOOL_LAYOUT table.
 
-    ``accept_all_hint``, when set, is a short phrase naming the specific
-    rule Always allow would create (e.g. "this folder", "if I'm sender") --
-    shown right on the button itself, not just in the confirmation dialog
-    after clicking. gate.py derives this from the same ``suggest_rule()``
-    result that decides ``allow_accept_all``. See show_popup's matching
-    docstring and auto_accept.describe_rule_short.
+    ``accept_all_choices`` (list of ``(rule_name, short_label)`` pairs, one
+    per matching auto-accept rule -- auto_accept.suggest_rule_choices()'s
+    own return shape) adds one "Always allow" button per entry, each
+    labeled with its own short phrase naming that specific rule (e.g. "this
+    folder", "if I'm sender") shown right on the button, not just in the
+    confirmation dialog after clicking. gate.py calls suggest_rule_choices()
+    up front (before showing the popup at all) to build this -- see
+    show_popup's matching docstring and auto_accept.describe_rule_short.
+    Empty means no Always allow button; exactly one candidate renders
+    identically to the old single-button layout; 2+ (only possible for the
+    four auto_accept.SUGGESTION_FAMILIES operations) render their own
+    button row.
 
-    Returns 'accept', 'deny', or 'accept_all' (only offered when
-    allow_accept_all is True).
+    Returns ``(decision, chosen_index)`` -- ``decision`` is 'accept',
+    'deny', or 'accept_all' (only offered when ``accept_all_choices`` is
+    non-empty); ``chosen_index`` is the clicked button's index into
+    ``accept_all_choices`` when ``decision == "accept_all"``, else None.
     """
     return show_native_approval(
-        title=title, preview=preview, details_text=details_text, allow_accept_all=allow_accept_all,
+        title=title, preview=preview, details_text=details_text,
+        accept_all_choices=accept_all_choices,
         pii_categories=pii_categories, visibility=visibility, claude_reason=claude_reason,
         seen_count=seen_count, content_kind=content_kind, pdf_bytes=pdf_bytes, connector=connector,
         preview_bytes=preview_bytes, preview_mime_type=preview_mime_type, new_info=new_info,
         preview_tables=preview_tables, preview_blocks=preview_blocks, table_only=table_only,
-        layout=layout, accept_all_hint=accept_all_hint,
+        layout=layout,
         # show_read_popup is unconditionally the review-gate popup -- see
         # show_popup's own matching comment.
         is_read=True,
@@ -298,37 +309,6 @@ def show_pii_confirmation_popup(categories: list[str]) -> bool:
         "PrivacyFence — Possible PII Detected", lines, ["Cancel", "Proceed"], default="Cancel"
     )
     return clicked == "Proceed"
-
-
-def show_rule_choice_popup(descriptions: list[str]) -> int | None:
-    """Chooser shown after "Always allow" is clicked when more than one rule
-    could be created from the same item (see auto_accept.py's
-    suggest_rule_choices()) -- e.g. a Drive file you own that also lives in
-    an approved folder could become either an i_am_owner or an
-    approved_folder rule. Returns the chosen index into ``descriptions``, or
-    None if cancelled.
-
-    Picking an option here doubles as the "yes, create this" confirmation --
-    there's no separate confirm step afterward, unlike the single-candidate
-    case (show_rule_confirmation_popup), since choosing from an explicit list
-    is already as deliberate an action as clicking Confirm.
-    """
-    opts_as = "{" + ", ".join(_as_str(d) for d in descriptions) + "}"
-    script = (
-        f"set opts to {opts_as}\n"
-        "set chosen to (choose from list opts "
-        'with title "PrivacyFence — Choose Auto-Accept Rule" '
-        'with prompt "More than one rule could be created from this item — choose one:")\n'
-        'if chosen is false then return ""\n'
-        "return item 1 of chosen"
-    )
-    text = _run(script)
-    if text is None:
-        return None
-    try:
-        return descriptions.index(text)
-    except ValueError:
-        return None
 
 
 def show_rule_confirmation_popup(description: str) -> bool:

@@ -853,13 +853,13 @@ class AutoAcceptEvaluator:
 
 # Some operations can produce more than one plausible suggestion -- e.g. a
 # Drive read where you both own the file *and* it's in an approved folder.
-# Each such case is a "family": the default priority order (first match
-# wins) is the tuple below, user-overridable per family via
-# rule_suggestion_priority in settings.yaml (init_suggestion_priority()).
-# Overriding is also how a rule gets excluded from ever being suggested --
-# an omitted name is simply never tried. This governs *only* which rule
-# suggest_rule() offers through "Always allow"; it has no effect on
-# should_auto_accept()'s evaluation of whatever rules are actually
+# Each such case is a "family": the tuple below is a fixed declaration
+# order (not user-configurable -- there used to be a settings.yaml-driven
+# rule_suggestion_priority override here; every matching candidate now gets
+# its own "Always allow" button in the popup, so there's nothing left to
+# prioritize or exclude). This governs *only* the order buttons render in
+# through _all_matching_suggestions()/suggest_rule_choices(); it has no
+# effect on should_auto_accept()'s evaluation of whatever rules are actually
 # configured, so it never needs ARGS_ONLY_RULES/DATA_DEPENDENT_RULES/
 # known_rule_names() changes -- no new rule names are introduced here.
 SUGGESTION_FAMILIES: dict[str, tuple[str, ...]] = {
@@ -874,65 +874,21 @@ SUGGESTION_FAMILIES: dict[str, tuple[str, ...]] = {
 # value at all) -- plain None can't do that job here.
 _NO_MATCH = object()
 
-# family -> configured priority order (from settings.yaml). A family absent
-# here falls back to SUGGESTION_FAMILIES' own order -- see suggestion_order().
-_suggestion_priority: dict[str, list[str]] = {}
-
-
-def init_suggestion_priority(cfg: dict[str, list[str]] | None) -> None:
-    """Load rule_suggestion_priority from settings.yaml at daemon startup."""
-    global _suggestion_priority
-    _suggestion_priority = {family: list(order) for family, order in (cfg or {}).items()}
-
-
-def set_suggestion_priority(family: str, order: list[str]) -> None:
-    """Hot-update one family's order (the menu bar's Move up/down/exclude actions)."""
-    _suggestion_priority[family] = list(order)
-
-
-def suggestion_order(family: str) -> list[str]:
-    """The priority order to try `family`'s candidates in -- configured order
-    if set, else SUGGESTION_FAMILIES' built-in default. An unrecognized
-    `family` (a typo'd or removed name) has no default to fall back to, so
-    it's treated as configured-empty rather than raising -- suggest_rule()
-    then simply never proposes anything for that family, the same as if
-    every candidate had failed to match.
-    """
-    if family in _suggestion_priority:
-        return _suggestion_priority[family]
-    return list(SUGGESTION_FAMILIES.get(family, ()))
-
-
-def _first_matching_suggestion(
-    family: str, candidates: dict[str, Callable[[], Any]]
-) -> tuple[str, Any] | None:
-    """Walk `family`'s priority order, returning the first candidate whose
-    zero-arg check doesn't return _NO_MATCH. A configured name with no
-    matching entry in `candidates` (removed from this operation's
-    possibilities, or a stale/misspelled config entry) is silently skipped,
-    not an error -- same "never crash a popup over a rule-suggestion detail"
-    posture as should_auto_accept()'s own rule-evaluation try/except.
-    """
-    for rule_name in suggestion_order(family):
-        check = candidates.get(rule_name)
-        if check is None:
-            continue
-        value = check()
-        if value is not _NO_MATCH:
-            return (rule_name, value)
-    return None
-
 
 def _all_matching_suggestions(
     family: str, candidates: dict[str, Callable[[], Any]]
 ) -> list[tuple[str, Any]]:
-    """Like `_first_matching_suggestion`, but returns every candidate that
-    matches, not just the first -- still walked in priority order. Used to
-    offer the user an explicit choice when an item matches more than one
-    candidate, instead of always silently picking the top-priority one.
+    """Every candidate in `family` (SUGGESTION_FAMILIES' fixed declaration
+    order) whose zero-arg check doesn't return _NO_MATCH -- one popup button
+    per match, not just the top-priority one. An unrecognized `family` (a
+    typo'd or removed name) has nothing to walk, so it returns empty rather
+    than raising. A candidate name with no matching entry in `candidates`
+    (removed from this operation's possibilities) is silently skipped, not
+    an error -- same "never crash a popup over a rule-suggestion detail"
+    posture as should_auto_accept()'s own rule-evaluation try/except.
     """
     matches = []
-    for rule_name in suggestion_order(family):
+    for rule_name in SUGGESTION_FAMILIES.get(family, ()):
         check = candidates.get(rule_name)
         if check is None:
             continue
@@ -1098,7 +1054,8 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
         return ("trusted_sender_domain", [domain]) if domain else None
 
     if operation_key in _DRIVE_READ_OPERATION_KEYS:
-        return _first_matching_suggestion("drive_read", _drive_read_candidates(ctx))
+        matches = _all_matching_suggestions("drive_read", _drive_read_candidates(ctx))
+        return matches[0] if matches else None
 
     if operation_key == "slack.read_messages":
         cid = ctx.args.get("channel_id", "") or ctx.args.get("channel", "") or ""
@@ -1117,7 +1074,8 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
         return ("approved_channel_all_results", channel_ids) if channel_ids else None
 
     if operation_key == "calendar.read_event_details":
-        return _first_matching_suggestion("calendar_read_event", _calendar_read_event_candidates(ctx))
+        matches = _all_matching_suggestions("calendar_read_event", _calendar_read_event_candidates(ctx))
+        return matches[0] if matches else None
 
     if operation_key == "salesforce.read_record":
         object_type = ctx.args.get("object_type", "")
@@ -1135,10 +1093,12 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
         return ("approved_object_types", object_types) if object_types else None
 
     if operation_key == "jira.read_issue":
-        return _first_matching_suggestion("jira_read_issue", _jira_read_issue_candidates(ctx))
+        matches = _all_matching_suggestions("jira_read_issue", _jira_read_issue_candidates(ctx))
+        return matches[0] if matches else None
 
     if operation_key in ("confluence.read_page", "confluence.download_attachment"):
-        return _first_matching_suggestion("confluence_read_page", _confluence_read_page_candidates(ctx))
+        matches = _all_matching_suggestions("confluence_read_page", _confluence_read_page_candidates(ctx))
+        return matches[0] if matches else None
 
     if operation_key == "telegram.read_chat_messages":
         chat_id = ctx.args.get("chat_id", "")
@@ -1156,15 +1116,19 @@ def suggest_rule(operation_key: str, ctx: ReviewContext) -> tuple[str, Any] | No
 
 
 def suggest_rule_choices(operation_key: str, ctx: ReviewContext) -> list[tuple[str, Any]]:
-    """Every rule suggest_rule() could plausibly propose for this item, in
-    priority order -- not just the highest-priority one.
+    """Every rule that plausibly applies to this item, in
+    SUGGESTION_FAMILIES' fixed declaration order -- the primary API for the
+    review-gate's "Always allow" flow, called up front (before the popup is
+    even shown) rather than only after an "Always allow" click. Each entry
+    becomes its own button in the popup (approval_window_html.py's
+    ``_button_row_html``) -- gate.py no longer picks a single top-priority
+    suggestion to show a hint for and defers the "which one?" question to a
+    second dialog; every match gets its own button up front.
 
     Only the four "family" operations in _MULTI_CANDIDATE_FAMILIES can ever
     have more than one entry here; every other operation has at most one
-    possible suggestion, so this just wraps suggest_rule()'s own result for
-    them. Used by the review-gate's "Always allow" flow to offer an explicit
-    choice when 2+ candidates actually match this item, instead of always
-    silently creating the top-priority one.
+    possible suggestion, so this just wraps suggest_rule()'s own single
+    result for them.
     """
     entry = _MULTI_CANDIDATE_FAMILIES.get(operation_key)
     if entry is None:

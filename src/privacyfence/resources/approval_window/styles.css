@@ -352,6 +352,15 @@ img { display: block; max-width: 100%; }
   padding-top: var(--space-3); border-top: 1px solid var(--color-divider);
 }
 .pf-btn-row-left { display: flex; align-items: center; gap: var(--space-4); min-width: 0; }
+/* 2+ "Always allow" candidates (one item matches more than one
+   auto_accept.SUGGESTION_FAMILIES rule) render here instead of inline in
+   .pf-btn-row-left -- its own left-aligned, wrapping row directly above the
+   Deny/Allow once band, which keeps its fixed position unchanged. See
+   approval_window_html.py's _button_row_html. */
+.pf-btn-row-candidates {
+  display: flex; flex-wrap: wrap; align-items: center;
+  gap: var(--space-2) var(--space-4); flex: none; margin-top: var(--space-3);
+}
 .pf-btn {
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 90px; padding: var(--space-2) var(--space-4);
