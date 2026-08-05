@@ -789,6 +789,22 @@ class SlackClient:
     # Directory caches (whole-workspace user/channel snapshots)
     # ------------------------------------------------------------------ #
 
+    def ensure_directories_fresh(self) -> None:
+        """Eagerly run the same freshness check ``get_user_info``/
+        ``resolve_channel_name``/``resolve_is_group_dm`` would otherwise only
+        run lazily on first use. Meant to be called once right after
+        connecting (see ``daemon_main.py``) so a snapshot that's gone stale
+        while the app was closed (more than a week between restarts) gets
+        refreshed during startup instead of blocking whatever Slack tool
+        call happens to run first. A no-op (no network call at all) when
+        both snapshots are already fresh. Never raises -- same best-effort
+        semantics as the lazy path it shares its implementation with.
+        """
+        if self._user_cache_file:
+            self._ensure_user_directory()
+        if self._channel_cache_file:
+            self._ensure_channel_directory()
+
     def refresh_user_directory(self) -> int:
         """Force an immediate re-sync of the whole Slack user directory via
         ``users.list`` (paginated), replacing the current snapshot and

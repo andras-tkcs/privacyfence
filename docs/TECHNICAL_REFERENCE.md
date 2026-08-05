@@ -301,10 +301,11 @@ pasted directly.
 `get_user_info`/`resolve_channel_name`/`resolve_is_group_dm` check before falling back to a live,
 per-item Slack call — without them, resolving every message author/channel in a `slack_search_messages`
 result costs one `users.info` and one `conversations.info` call per unique sender/channel, every time.
-Both snapshots refresh automatically about once a week the first time they're used after going stale,
-so these two tools exist purely for the exception: someone new (a hire, a channel) needs to resolve
-correctly *before* next week's automatic refresh. Neither tool reads any message content; both are
-auto-approved.
+Both snapshots refresh automatically about once a week — checked on every Slack connector startup (so
+a snapshot that went stale while the app was closed is caught then, not on whatever tool call happens
+to run first) and, in between restarts, lazily on first use once seven days have passed. These two
+tools exist purely for the exception: someone new (a hire, a channel) needs to resolve correctly
+*before* the next automatic refresh. Neither tool reads any message content; both are auto-approved.
 
 ### Google Calendar
 

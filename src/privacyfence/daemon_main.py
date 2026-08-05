@@ -342,6 +342,10 @@ def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list
                 channel_cache_file=str(data_dir() / "slack_channel_cache.json"),
             )
             workspace = client.check_connection()
+            # Warm the user/channel directory caches now if they've gone
+            # stale while the app was closed, rather than waiting for
+            # whatever Slack tool call happens to run first to pay for it.
+            client.ensure_directories_fresh()
             logger.info("Slack connector ready for workspace %r", workspace)
             connector = SlackConnector(client)
             connector.my_email = token.get("email", "")

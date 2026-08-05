@@ -1149,6 +1149,77 @@ class TestGetUserInfo:
 # Weekly directory caches: refresh_user_directory / refresh_channel_directory
 # ---------------------------------------------------------------------------- #
 
+class TestEnsureDirectoriesFresh:
+    """ensure_directories_fresh() -- the eager startup-time counterpart to
+    the lazy per-lookup refresh, called once by daemon_main.py right after
+    connecting so a snapshot gone stale while the app was closed doesn't
+    make the first Slack tool call after restart pay for the refresh."""
+
+    def test_missing_snapshots_refresh_both_on_first_call(self, tmp_path):
+        web_client = MagicMock()
+        web_client.users_list.return_value = {"members": [{"id": "U1", "name": "a"}], "response_metadata": {}}
+        web_client.conversations_list.return_value = {"channels": [{"id": "C1", "name": "general"}], "response_metadata": {}}
+        client = make_client_with_caches(web_client, tmp_path)
+
+        client.ensure_directories_fresh()
+
+        web_client.users_list.assert_called_once()
+        web_client.conversations_list.assert_called_once()
+        assert client._user_cache["U1"].name == "a"
+        assert client._channel_name_cache["C1"] == "general"
+
+    def test_stale_disk_snapshot_refreshes_on_restart(self, tmp_path):
+        stale = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+        (tmp_path / "slack_user_cache.json").write_text(json.dumps({
+            "fetched_at": stale, "users": {"U1": {"id": "U1", "name": "old"}},
+        }), encoding="utf-8")
+        (tmp_path / "slack_channel_cache.json").write_text(json.dumps({
+            "fetched_at": stale, "channels": {"C1": {"name": "old-name", "is_mpim": False}},
+        }), encoding="utf-8")
+        web_client = MagicMock()
+        web_client.users_list.return_value = {"members": [{"id": "U1", "name": "fresh"}], "response_metadata": {}}
+        web_client.conversations_list.return_value = {"channels": [{"id": "C1", "name": "renamed"}], "response_metadata": {}}
+        client = make_client_with_caches(web_client, tmp_path)
+
+        client.ensure_directories_fresh()
+
+        assert client._user_cache["U1"].name == "fresh"
+        assert client._channel_name_cache["C1"] == "renamed"
+
+    def test_fresh_disk_snapshots_make_no_network_calls(self, tmp_path):
+        fresh = datetime.now(timezone.utc).isoformat()
+        (tmp_path / "slack_user_cache.json").write_text(json.dumps({
+            "fetched_at": fresh, "users": {"U1": {"id": "U1", "name": "cached"}},
+        }), encoding="utf-8")
+        (tmp_path / "slack_channel_cache.json").write_text(json.dumps({
+            "fetched_at": fresh, "channels": {"C1": {"name": "general", "is_mpim": False}},
+        }), encoding="utf-8")
+        web_client = MagicMock()
+        client = make_client_with_caches(web_client, tmp_path)
+
+        client.ensure_directories_fresh()
+
+        web_client.users_list.assert_not_called()
+        web_client.conversations_list.assert_not_called()
+
+    def test_no_cache_files_configured_is_a_pure_no_op(self):
+        web_client = MagicMock()
+        client = make_client(web_client)  # no user_cache_file/channel_cache_file
+
+        client.ensure_directories_fresh()
+
+        web_client.users_list.assert_not_called()
+        web_client.conversations_list.assert_not_called()
+
+    def test_never_raises_on_failed_refresh(self, tmp_path):
+        web_client = MagicMock()
+        web_client.users_list.side_effect = slack_error("ratelimited")
+        web_client.conversations_list.side_effect = slack_error("ratelimited")
+        client = make_client_with_caches(web_client, tmp_path)
+
+        client.ensure_directories_fresh()  # must not raise
+
+
 class TestRefreshUserDirectory:
     def test_paginates_and_caches(self, tmp_path):
         web_client = MagicMock()
