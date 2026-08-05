@@ -533,7 +533,13 @@ class TestBuildConnectorsTelegram:
         assert fake.captured_kwargs == {
             "api_id": 123, "api_hash": "hash",
             "session_file": str(tmp_path / "credentials" / "telegram.session"),
+            "chat_cache_file": str(data_dir() / "telegram_chat_cache.json"),
         }
+        # Unlike Slack's SlackClient (see TestBuildConnectorsSlack), the fake
+        # client's directories_refreshed flag must stay False here --
+        # Telegram deliberately does not warm its directory cache eagerly at
+        # startup, only lazily on first tool call.
+        assert fake.directories_refreshed is False
 
     def test_skipped_when_no_app_credentials(self, monkeypatch, tmp_path):
         self._make_session(tmp_path, monkeypatch, exists=True)

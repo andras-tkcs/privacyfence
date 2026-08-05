@@ -431,7 +431,13 @@ def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list
                 api_id=api_id,
                 api_hash=api_hash,
                 session_file=session_file,
+                chat_cache_file=str(data_dir() / "telegram_chat_cache.json"),
             )
+            # Unlike Slack (which connects and warms its directory caches
+            # eagerly right here), Telegram deliberately connects on first
+            # use -- no eager ensure_chat_directory_fresh() call, so a cold
+            # daemon restart doesn't force an MTProto connection before any
+            # Telegram tool has actually been requested.
             logger.info("Telegram connector registered (will connect on first use)")
             connectors.append(TelegramConnector(tg_client))
         except (TelegramClientError, FileNotFoundError, Exception) as exc:

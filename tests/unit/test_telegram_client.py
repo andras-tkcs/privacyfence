@@ -10,12 +10,13 @@ connect() tests, since constructing a real Telethon client touches disk
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from freezegun import freeze_time
 
 from privacyfence.telegram_client import (
     TelegramChat,
@@ -40,6 +41,20 @@ def connected_client(fake_telethon_client: MagicMock) -> TelegramPrivacyFenceCli
     client._client = fake_telethon_client
     client._connected = True
     return client
+
+
+def connected_client_with_cache(fake_telethon_client: MagicMock, tmp_path: Path) -> TelegramPrivacyFenceClient:
+    client = TelegramPrivacyFenceClient(
+        api_id=123, api_hash="hash", session_file="/tmp/unused.session",
+        chat_cache_file=str(tmp_path / "telegram_chat_cache.json"),
+    )
+    client._client = fake_telethon_client
+    client._connected = True
+    return client
+
+
+def fake_dialog(chat_id: int, name: str) -> SimpleNamespace:
+    return SimpleNamespace(name=name, entity=SimpleNamespace(id=chat_id))
 
 
 # ---------------------------------------------------------------------------- #
@@ -519,6 +534,216 @@ class TestSendMessage:
         client = connected_client(fake)
         with pytest.raises(TelegramClientError, match="send_message"):
             await client.send_message(5, "hi")
+
+
+# ---------------------------------------------------------------------------- #
+# Weekly directory cache: refresh_chat_directory
+# ---------------------------------------------------------------------------- #
+
+class TestEnsureChatDirectoryFresh:
+    """ensure_chat_directory_fresh() -- the eager counterpart to the lazy
+    per-lookup refresh. Unlike Slack's ensure_directories_fresh(), nothing in
+    daemon_main.py calls this at connector startup (Telegram connects on
+    first use by design), but it still needs to behave correctly for
+    whatever future/manual caller does invoke it."""
+
+    async def test_missing_snapshot_refreshes_on_first_call(self, tmp_path):
+        fake = MagicMock()
+        fake.get_dialogs = AsyncMock(return_value=[fake_dialog(1, "General")])
+        client = connected_client_with_cache(fake, tmp_path)
+
+        await client.ensure_chat_directory_fresh()
+
+        fake.get_dialogs.assert_awaited_once_with(limit=None)
+        assert client._chat_name_cache[1] == "General"
+
+    async def test_fresh_disk_snapshot_makes_no_network_call(self, tmp_path):
+        fresh = datetime.now(timezone.utc).isoformat()
+        (tmp_path / "telegram_chat_cache.json").write_text(json.dumps({
+            "fetched_at": fresh, "chats": {"1": "cached"},
+        }), encoding="utf-8")
+        fake = MagicMock()
+        client = connected_client_with_cache(fake, tmp_path)
+
+        await client.ensure_chat_directory_fresh()
+
+        fake.get_dialogs.assert_not_called()
+        assert client._chat_name_cache[1] == "cached"
+
+    async def test_no_cache_file_configured_is_a_pure_no_op(self):
+        fake = MagicMock()
+        client = connected_client(fake)  # no chat_cache_file
+
+        await client.ensure_chat_directory_fresh()
+
+        fake.get_dialogs.assert_not_called()
+
+    async def test_never_raises_on_failed_refresh(self, tmp_path):
+        fake = MagicMock()
+        fake.get_dialogs = AsyncMock(side_effect=RuntimeError("flood wait"))
+        client = connected_client_with_cache(fake, tmp_path)
+
+        await client.ensure_chat_directory_fresh()  # must not raise
+
+
+class TestRefreshChatDirectory:
+    async def test_replaces_snapshot_and_caches(self, tmp_path):
+        fake = MagicMock()
+        fake.get_dialogs = AsyncMock(return_value=[
+            fake_dialog(1, "General"), fake_dialog(2, "Jane"),
+        ])
+        client = connected_client_with_cache(fake, tmp_path)
+
+        count = await client.refresh_chat_directory()
+
+        assert count == 2
+        assert client._chat_name_cache == {1: "General", 2: "Jane"}
+        fake.get_dialogs.assert_awaited_once_with(limit=None)
+
+    async def test_saves_snapshot_to_disk(self, tmp_path):
+        fake = MagicMock()
+        fake.get_dialogs = AsyncMock(return_value=[fake_dialog(1, "General")])
+        client = connected_client_with_cache(fake, tmp_path)
+
+        await client.refresh_chat_directory()
+
+        data = json.loads((tmp_path / "telegram_chat_cache.json").read_text(encoding="utf-8"))
+        assert data["chats"]["1"] == "General"
+        assert "fetched_at" in data
+
+    async def test_dialog_missing_entity_id_is_skipped(self, tmp_path):
+        fake = MagicMock()
+        fake.get_dialogs = AsyncMock(return_value=[
+            SimpleNamespace(name="Ghost", entity=SimpleNamespace()),  # no .id
+            fake_dialog(1, "General"),
+        ])
+        client = connected_client_with_cache(fake, tmp_path)
+
+        count = await client.refresh_chat_directory()
+
+        assert count == 1
+        assert client._chat_name_cache == {1: "General"}
+
+    async def test_api_error_raises(self, tmp_path):
+        fake = MagicMock()
+        fake.get_dialogs = AsyncMock(side_effect=RuntimeError("flood wait"))
+        client = connected_client_with_cache(fake, tmp_path)
+        with pytest.raises(TelegramClientError, match="refresh_chat_directory"):
+            await client.refresh_chat_directory()
+
+
+class TestGetChatNameWithDirectoryCache:
+    async def test_directory_hit_skips_live_call(self, tmp_path):
+        fake = MagicMock()
+        fake.get_dialogs = AsyncMock(return_value=[fake_dialog(1, "General")])
+        client = connected_client_with_cache(fake, tmp_path)
+        await client.refresh_chat_directory()
+
+        assert await client.get_chat_name(1) == "General"
+        fake.get_entity.assert_not_called()
+
+    async def test_directory_miss_falls_back_to_live_call(self, tmp_path):
+        entity = MagicMock(spec=User)
+        entity.first_name = "New"
+        entity.last_name = "Contact"
+        fake = MagicMock()
+        fake.get_dialogs = AsyncMock(return_value=[])
+        fake.get_entity = AsyncMock(return_value=entity)
+        client = connected_client_with_cache(fake, tmp_path)
+        await client.refresh_chat_directory()
+
+        name = await client.get_chat_name(9)
+
+        assert name == "New Contact"
+        fake.get_entity.assert_awaited_once()
+
+    async def test_no_cache_file_never_calls_get_dialogs_for_resolution(self):
+        fake = MagicMock()
+        fake.get_entity = AsyncMock(return_value=MagicMock(spec=User, first_name="A", last_name=""))
+        client = connected_client(fake)  # no chat_cache_file
+
+        await client.get_chat_name(1)
+
+        fake.get_dialogs.assert_not_called()
+
+    async def test_stale_disk_snapshot_triggers_automatic_refresh(self, tmp_path):
+        stale = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+        (tmp_path / "telegram_chat_cache.json").write_text(json.dumps({
+            "fetched_at": stale, "chats": {"1": "old-name"},
+        }), encoding="utf-8")
+        fake = MagicMock()
+        fake.get_dialogs = AsyncMock(return_value=[fake_dialog(1, "renamed")])
+        client = connected_client_with_cache(fake, tmp_path)
+
+        assert await client.get_chat_name(1) == "renamed"
+        fake.get_dialogs.assert_awaited_once()
+
+    async def test_fresh_disk_snapshot_skips_refresh(self, tmp_path):
+        fresh = datetime.now(timezone.utc).isoformat()
+        (tmp_path / "telegram_chat_cache.json").write_text(json.dumps({
+            "fetched_at": fresh, "chats": {"1": "cached"},
+        }), encoding="utf-8")
+        fake = MagicMock()
+        client = connected_client_with_cache(fake, tmp_path)
+
+        assert await client.get_chat_name(1) == "cached"
+        fake.get_dialogs.assert_not_called()
+
+    async def test_failed_refresh_respects_retry_cooldown(self, tmp_path):
+        fake = MagicMock()
+        fake.get_dialogs = AsyncMock(side_effect=RuntimeError("flood wait"))
+        fake.get_entity = AsyncMock(return_value=MagicMock(spec=User, first_name="A", last_name=""))
+        client = connected_client_with_cache(fake, tmp_path)
+
+        with freeze_time("2026-01-01 00:00:00"):
+            await client.get_chat_name(1)
+            assert fake.get_dialogs.await_count == 1
+
+        with freeze_time("2026-01-01 00:01:00"):  # within the cooldown
+            await client.get_chat_name(1)
+            assert fake.get_dialogs.await_count == 1
+
+        with freeze_time("2026-01-01 00:10:00"):  # past the cooldown
+            await client.get_chat_name(1)
+            assert fake.get_dialogs.await_count == 2
+
+
+class TestSearchAndGetMessagesWithDirectoryCache:
+    async def test_search_messages_resolves_uncached_chat_name_from_directory(self, tmp_path):
+        msg = SimpleNamespace(
+            id=1, sender=None, date=None, text="found", message="found", out=False, media=None,
+            peer_id=SimpleNamespace(channel_id=42),
+        )
+        fake = MagicMock()
+        fake.get_messages = AsyncMock(return_value=[msg])
+        fake.get_dialogs = AsyncMock(return_value=[fake_dialog(42, "Marketing")])
+        client = connected_client_with_cache(fake, tmp_path)
+
+        results = await client.search_messages("query")
+
+        assert results[0].chat_name == "Marketing"
+
+    async def test_get_messages_resolves_uncached_chat_name_from_directory(self, tmp_path):
+        msg = SimpleNamespace(id=1, sender=None, date=None, text="hi", message="hi", out=False, media=None)
+        fake = MagicMock()
+        fake.get_messages = AsyncMock(return_value=[msg])
+        fake.get_dialogs = AsyncMock(return_value=[fake_dialog(5, "General")])
+        client = connected_client_with_cache(fake, tmp_path)
+
+        messages = await client.get_messages(5)
+
+        assert messages[0].chat_name == "General"
+
+    async def test_directory_still_falls_back_to_str_id_on_a_true_miss(self, tmp_path):
+        msg = SimpleNamespace(id=1, sender=None, date=None, text="hi", message="hi", out=False, media=None)
+        fake = MagicMock()
+        fake.get_messages = AsyncMock(return_value=[msg])
+        fake.get_dialogs = AsyncMock(return_value=[])
+        client = connected_client_with_cache(fake, tmp_path)
+
+        messages = await client.get_messages(999)
+
+        assert messages[0].chat_name == "999"
 
 
 # ---------------------------------------------------------------------------- #

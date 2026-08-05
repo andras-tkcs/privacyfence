@@ -375,9 +375,18 @@ search under this connector's OAuth scope.
 | Tool | Dir | Gate | Preview | Details popup |
 |------|-----|------|----------------|---------------|
 | `telegram_list_chats` | read | auto | — | — |
+| `telegram_refresh_chat_cache` | read | auto | — | — (forces an immediate `get_dialogs` re-sync of the on-disk, weekly-refreshed chat/group/channel name cache that `telegram_get_messages`/`telegram_search_messages` use to resolve which chat a message belongs to; call after a new chat starts so it resolves by name right away) |
 | `telegram_get_messages` | read | review | chat name, message count | All messages |
 | `telegram_search_messages` | read | review | query, result count | All results |
 | `telegram_send_message` | write | popup | — | Chat name, full message text |
+
+`telegram_refresh_chat_cache` refreshes the on-disk snapshot that `get_chat_name`/`get_messages`/
+`search_messages` check before falling back to a bare numeric chat id — without it, any chat not
+already primed by a recent `telegram_list_chats` call (in particular, any chat surfaced only via
+`telegram_search_messages`, or after a daemon restart) shows up unresolved. The snapshot refreshes
+automatically about once a week, lazily on first use once seven days have passed; unlike Slack's
+directory caches, it is *not* also warmed eagerly at connector startup, since Telegram connects on
+first use by design rather than at startup. Reads no message content; auto-approved.
 
 ### Salesforce
 
