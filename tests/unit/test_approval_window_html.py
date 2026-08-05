@@ -38,6 +38,8 @@ def _minimal_kwargs(**overrides):
         temp_accept_text="",
         preview_kicker="Preview (~2 sec read)",
         preview_body_html=build_preview_body_html("Synthetic event body text."),
+        allow_accept_all=False,
+        accept_all_label="Always allow",
     )
     kwargs.update(overrides)
     return kwargs
@@ -345,6 +347,82 @@ class TestTempAcceptDisclosure:
         html = build_card_stack_html(**_minimal_kwargs(temp_accept_text=""))
         assert "Approving this also allows" not in html
 
+    def test_button_row_still_renders_after_the_caption(self):
+        # Always present (unlike this caption itself) -- see
+        # build_card_stack_html's own docstring: the button row is appended
+        # last, after temp_accept_text when present.
+        html = build_card_stack_html(**_minimal_kwargs(
+            temp_accept_text="Approving this also allows further calls like this for a few minutes.",
+        ))
+        assert html.index("Approving this also allows") < html.index('class="pf-btn-row"')
+
+
+class TestButtonRow:
+    """Deny/Allow once/Always allow render as part of this document now
+    (issue #141), not native NSButtons -- see approval_window.py's module
+    docstring for why."""
+
+    def test_deny_and_allow_once_always_render(self):
+        html = build_card_stack_html(**_minimal_kwargs())
+        assert 'data-pf-action="deny"' in html
+        assert 'data-pf-action="accept"' in html
+
+    def test_always_allow_only_renders_when_offered(self):
+        without = build_card_stack_html(**_minimal_kwargs(allow_accept_all=False))
+        assert 'data-pf-action="accept_all"' not in without
+
+        with_ = build_card_stack_html(**_minimal_kwargs(allow_accept_all=True))
+        assert 'data-pf-action="accept_all"' in with_
+
+    def test_accept_all_label_is_rendered_verbatim(self):
+        # This function doesn't compute the hinted label itself --
+        # approval_window.py's controller does (see build_card_stack_html's
+        # own docstring) -- it just renders whatever string it's given.
+        html = build_card_stack_html(**_minimal_kwargs(
+            allow_accept_all=True, accept_all_label="Always allow — this folder",
+        ))
+        assert "Always allow — this folder" in html
+        assert ">Always allow<" not in html
+
+    def test_accept_all_label_is_escaped(self):
+        html = build_card_stack_html(**_minimal_kwargs(
+            allow_accept_all=True, accept_all_label="<script>alert(1)</script>",
+        ))
+        assert "<script>alert(1)</script>" not in html
+        assert "&lt;script&gt;" in html
+
+    def test_all_three_buttons_start_disabled(self):
+        # `role="button" aria-disabled="true"` (an actual button element),
+        # not a bare `aria-disabled="true"` substring search -- that phrase
+        # also appears in styles.css's own vendored CSS comments/selector
+        # text, which this document inlines verbatim.
+        html = build_card_stack_html(**_minimal_kwargs(allow_accept_all=True))
+        assert html.count('role="button" aria-disabled="true"') == 3
+
+    def test_only_allow_once_is_marked_primary(self):
+        # data-pf-primary is what _JS's keydown handler excludes from
+        # Enter/Space activating a focused control -- hitting Enter/Space
+        # must never be able to approve a request nobody has actually
+        # reviewed yet (see _button_row_html's own docstring). Scoped to the
+        # ``="1"``-valued attribute, not a bare ``data-pf-primary`` substring
+        # search -- _JS's own script text also references the bare
+        # attribute name in its keydown-handler selector.
+        html = build_card_stack_html(**_minimal_kwargs(allow_accept_all=True))
+        assert html.count('data-pf-primary="1"') == 1
+        assert 'data-pf-primary="1" aria-label="Allow once" data-pf-action="accept"' in html
+
+    def test_button_row_is_appended_after_the_scrollable_content(self):
+        html = build_card_stack_html(**_minimal_kwargs())
+        assert html.index("What Claude already knows") < html.index('class="pf-btn-row"')
+
+    def test_bridge_script_is_present(self):
+        # The click/keyboard-dispatch bridge (window.webkit.messageHandlers
+        # .pf) -- see this module's own docstring and approval_window.py's.
+        html = build_card_stack_html(**_minimal_kwargs())
+        assert "window.webkit.messageHandlers.pf.postMessage" in html
+        assert "DOMContentLoaded" in html
+        assert "window.__pfEnableButtons" in html
+
 
 class TestPreviewBody:
     def test_plain_text_is_escaped_and_preserves_whitespace(self):
@@ -534,8 +612,12 @@ class TestEscapingAndNoNetwork:
     """Defense in depth: every dynamic string reaching the document must be
     escaped, and the document must never be able to reach out to the
     network -- fonts are embedded as base64 data URIs (see
-    resources/approval_window/styles.css), never linked, and there is no
-    <script> tag anywhere."""
+    resources/approval_window/styles.css), never linked. Since issue #141
+    this document does carry one <script> tag (the button row's own
+    click/keyboard-dispatch bridge, _JS) -- entirely inline, app-authored
+    code, never an external <script src="...">, so the "no network" half of
+    this class's contract still holds; see TestButtonRow for that script's
+    own content."""
 
     def test_title_is_escaped(self):
         html = build_card_stack_html(**_minimal_kwargs(title="<b>hi</b> & \"x\""))
@@ -554,9 +636,13 @@ class TestEscapingAndNoNetwork:
         html = build_card_stack_html(**_minimal_kwargs(pii_categories=["<script>x</script>"]))
         assert "<script>x</script>" not in html
 
-    def test_document_has_no_script_tag(self):
+    def test_exactly_one_inline_script_tag_and_no_external_script_src(self):
+        # Issue #141 added the button row's own click/keyboard-dispatch
+        # bridge (_JS) -- this document is no longer script-free, but it
+        # must still never load a script from anywhere else.
         html = build_card_stack_html(**_minimal_kwargs())
-        assert "<script" not in html
+        assert html.count("<script") == 1
+        assert "<script src" not in html
 
     def test_document_has_no_http_or_https_references(self):
         # In particular: no Google Fonts (or any other) network fetch --

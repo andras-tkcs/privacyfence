@@ -28,10 +28,11 @@ Every gated tool call resolves through exactly one of these:
 
 The first two are the real estate this doc is about — a custom AppKit window
 (`approval_window.py`) with one WKWebView (`approval_window_html.build_card_stack_html`) filling
-the content area, native Deny/Allow once/Always allow buttons in a fixed band below it. The last
-two are plain `osascript display dialog` prompts: one line of text, two buttons, no
-preview/details sections at all, so there's nothing to group — see their docstrings in
-`approval_popup.py` for exact wording.
+the *entire* content area, Deny/Allow once/Always allow included — these three render as part of
+that same HTML document (`approval_window_html.py`'s `_button_row_html`/`_JS`), not native
+NSButtons in a fixed band below it. The last two are plain `osascript display dialog` prompts: one
+line of text, two buttons, no preview/details sections at all, so there's nothing to group — see
+their docstrings in `approval_popup.py` for exact wording.
 
 ## Anatomy of the main window, top to bottom
 
