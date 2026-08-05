@@ -19,7 +19,6 @@ from privacyfence.resource_grants import DRIVE_FOLDER_READ_TARGETS, DRIVE_SANDBO
 from privacyfence.auto_accept import (
     ARGS_ONLY_RULES,
     DATA_DEPENDENT_RULES,
-    SUGGESTION_FAMILIES,
     TOOL_TO_GATE,
     TOOL_TO_OPERATION,
     WRITE_RULE_SUGGESTIONS,
@@ -33,16 +32,13 @@ from privacyfence.auto_accept import (
     get_current_config,
     init_auto_accept_evaluator,
     init_config_path,
-    init_suggestion_priority,
     mutate_grants,
     reload_rules,
     remove_auto_accept_rule,
     set_rules_changed_listener,
-    set_suggestion_priority,
     suggest_rule,
     suggest_rule_choices,
     suggest_write_rule,
-    suggestion_order,
     temp_accept_key,
 )
 
@@ -1030,7 +1026,7 @@ class TestSuggestRule:
 
 class TestDescribeRuleShort:
     """The Always-allow button's own pre-click label -- see gate.py's
-    accept_all_hint comment and approval_window.py's _build_content_view
+    accept_all_choices comment and approval_window.py's _build_content_view
     for where this actually renders."""
 
     def test_read_rule_names_have_short_hints(self):
@@ -1068,86 +1064,46 @@ class TestDescribeRuleShort:
 
 
 # --------------------------------------------------------------------------- #
-# Configurable "Always allow" suggestion priority (SUGGESTION_FAMILIES)
+# Fixed "Always allow" suggestion declaration order (SUGGESTION_FAMILIES) --
+# issue #151 dropped the settings.yaml-configurable rule_suggestion_priority
+# override entirely: every matching candidate now gets its own button, so
+# there's nothing left to prioritize or exclude. These are the regression
+# guard that suggest_rule()'s single-pick branches still walk
+# SUGGESTION_FAMILIES' own fixed order.
 # --------------------------------------------------------------------------- #
 
-class TestSuggestionOrder:
-    def test_unconfigured_family_falls_back_to_the_default(self):
-        assert suggestion_order("drive_read") == list(SUGGESTION_FAMILIES["drive_read"])
-
-    def test_configured_family_overrides_the_default(self):
-        init_suggestion_priority({"drive_read": ["approved_folder", "i_am_owner"]})
-        assert suggestion_order("drive_read") == ["approved_folder", "i_am_owner"]
-
-    def test_set_suggestion_priority_hot_updates_one_family(self):
-        init_suggestion_priority({"drive_read": ["approved_folder", "i_am_owner"]})
-        set_suggestion_priority("calendar_read_event", ["non_private_event"])
-        assert suggestion_order("drive_read") == ["approved_folder", "i_am_owner"]
-        assert suggestion_order("calendar_read_event") == ["non_private_event"]
-
-    def test_unrecognized_family_has_no_default_and_is_empty(self):
-        assert suggestion_order("not_a_real_family") == []
-
-    def test_none_config_is_treated_as_empty(self):
-        init_suggestion_priority(None)
-        assert suggestion_order("drive_read") == list(SUGGESTION_FAMILIES["drive_read"])
-
-
-class TestSuggestRulePriorityIntegration:
+class TestSuggestRuleFixedOrder:
     """suggest_rule()'s four multi-candidate branches, driven through
-    SUGGESTION_FAMILIES/suggestion_order rather than a hardcoded if/elif --
-    these are the regression guard that the refactor didn't change default
-    behavior, plus proof that a configured override actually changes which
-    rule wins."""
+    SUGGESTION_FAMILIES' fixed declaration order rather than a hardcoded
+    if/elif or a settings.yaml-configurable override."""
 
     def test_drive_default_order_prefers_owner_over_folder(self):
-        # Regression: matches the pre-refactor hardcoded priority exactly.
         ctx = make_ctx(
             my_email="me@example.com",
             raw_data=SimpleNamespace(owners=["me@example.com"], parent_ids=["f1"]),
         )
         assert suggest_rule("drive.read_file_contents", ctx) == ("i_am_owner", None)
 
-    def test_drive_configured_order_prefers_folder_over_owner(self):
-        init_suggestion_priority({"drive_read": ["approved_folder", "i_am_owner"]})
+    def test_drive_owner_absent_falls_through_to_folder(self):
         ctx = make_ctx(
-            my_email="me@example.com",
+            my_email="other@example.com",
             raw_data=SimpleNamespace(owners=["me@example.com"], parent_ids=["f1"]),
         )
         assert suggest_rule("drive.read_file_contents", ctx) == ("approved_folder", ["f1"])
 
-    def test_drive_excluding_owner_falls_through_to_folder(self):
-        # Owning the file no longer wins at all -- excluded from the
-        # configured order entirely, not just deprioritized.
-        init_suggestion_priority({"drive_read": ["approved_folder"]})
+    def test_drive_neither_owner_nor_folder_suggests_nothing(self):
         ctx = make_ctx(
             my_email="me@example.com",
-            raw_data=SimpleNamespace(owners=["me@example.com"], parent_ids=["f1"]),
-        )
-        assert suggest_rule("drive.read_file_contents", ctx) == ("approved_folder", ["f1"])
-
-    def test_drive_excluding_owner_with_no_folder_suggests_nothing(self):
-        init_suggestion_priority({"drive_read": ["approved_folder"]})
-        ctx = make_ctx(
-            my_email="me@example.com",
-            raw_data=SimpleNamespace(owners=["me@example.com"], parent_ids=[]),
+            raw_data=SimpleNamespace(owners=["other@example.com"], parent_ids=[]),
         )
         assert suggest_rule("drive.read_file_contents", ctx) is None
 
-    def test_calendar_default_order_matches_pre_refactor_priority(self):
+    def test_calendar_default_order_prefers_organizer(self):
         ctx = make_ctx(
             my_email="me@example.com",
             raw_data=SimpleNamespace(organizer_email="me@example.com", attendees=[], visibility="private"),
         )
         assert suggest_rule("calendar.read_event_details", ctx) == ("i_am_organizer", None)
-
-    def test_calendar_configured_order_prefers_non_private_event(self):
-        init_suggestion_priority({"calendar_read_event": ["non_private_event", "i_am_organizer"]})
-        ctx = make_ctx(
-            my_email="me@example.com",
-            raw_data=SimpleNamespace(organizer_email="me@example.com", attendees=[], visibility="default"),
-        )
-        assert suggest_rule("calendar.read_event_details", ctx) == ("non_private_event", None)
 
     def test_calendar_no_external_attendees_check_skipped_without_my_domain(self):
         # ctx.my_email has no "@", so my_domain is empty and
@@ -1160,58 +1116,38 @@ class TestSuggestRulePriorityIntegration:
         )
         assert suggest_rule("calendar.read_event_details", ctx) == ("non_private_event", None)
 
-    def test_jira_configured_order_prefers_project_over_reporter(self):
-        init_suggestion_priority({"jira_read_issue": ["approved_project_keys", "i_am_reporter", "i_am_assignee"]})
+    def test_jira_default_order_prefers_reporter_over_project(self):
         ctx = make_ctx(
             my_email="me@example.com",
             args={"issue_key": "PFQA-1"},
             raw_data=SimpleNamespace(reporter="me@example.com", assignee=""),
         )
-        assert suggest_rule("jira.read_issue", ctx) == ("approved_project_keys", ["PFQA"])
+        assert suggest_rule("jira.read_issue", ctx) == ("i_am_reporter", None)
 
-    def test_confluence_configured_order_prefers_space_over_author(self):
-        init_suggestion_priority({"confluence_read_page": ["approved_space_keys", "i_am_author"]})
+    def test_confluence_default_order_prefers_author_over_space(self):
         ctx = make_ctx(
             my_email="me@example.com",
             raw_data=SimpleNamespace(author="me@example.com", space_key="ENG"),
         )
-        assert suggest_rule("confluence.read_page", ctx) == ("approved_space_keys", ["ENG"])
-
-    def test_malformed_unknown_rule_name_in_config_is_skipped_not_a_crash(self):
-        # A stale/misspelled config entry has no matching candidate closure
-        # -- _first_matching_suggestion must skip it, not raise, and keep
-        # trying the rest of the configured order.
-        init_suggestion_priority({"drive_read": ["not_a_real_rule", "i_am_owner"]})
-        ctx = make_ctx(
-            my_email="me@example.com",
-            raw_data=SimpleNamespace(owners=["me@example.com"], parent_ids=[]),
-        )
-        assert suggest_rule("drive.read_file_contents", ctx) == ("i_am_owner", None)
+        assert suggest_rule("confluence.read_page", ctx) == ("i_am_author", None)
 
 
 class TestSuggestRuleChoices:
     """suggest_rule_choices() -- every candidate that matches, not just the
-    top-priority one suggest_rule() would pick. Only the four multi-candidate
-    families can ever return more than one entry; everything else just wraps
-    suggest_rule()'s own result."""
+    top-priority one suggest_rule() would pick, in SUGGESTION_FAMILIES'
+    fixed declaration order. Only the four multi-candidate families can ever
+    return more than one entry; everything else just wraps suggest_rule()'s
+    own result. Now the primary API gate.py calls up front to build one
+    "Always allow" button per candidate -- see gate.py's own module
+    docstring."""
 
-    def test_drive_owner_and_folder_both_match_returns_both_in_priority_order(self):
+    def test_drive_owner_and_folder_both_match_returns_both_in_declared_order(self):
         ctx = make_ctx(
             my_email="me@example.com",
             raw_data=SimpleNamespace(owners=["me@example.com"], parent_ids=["f1"]),
         )
         assert suggest_rule_choices("drive.read_file_contents", ctx) == [
             ("i_am_owner", None), ("approved_folder", ["f1"]),
-        ]
-
-    def test_drive_configured_order_changes_the_returned_order_too(self):
-        init_suggestion_priority({"drive_read": ["approved_folder", "i_am_owner"]})
-        ctx = make_ctx(
-            my_email="me@example.com",
-            raw_data=SimpleNamespace(owners=["me@example.com"], parent_ids=["f1"]),
-        )
-        assert suggest_rule_choices("drive.read_file_contents", ctx) == [
-            ("approved_folder", ["f1"]), ("i_am_owner", None),
         ]
 
     def test_drive_only_owner_matches_returns_single_entry_list(self):

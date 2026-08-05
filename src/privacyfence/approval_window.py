@@ -22,16 +22,20 @@ card-stack template itself.
 Bridge protocol (JS -> Python only -- unlike settings_window.py's two-way
 bridge, this window never needs to push fresh state back into the page after
 the initial render): the page posts
-``window.webkit.messageHandlers.pf.postMessage({action: 'resolve', result})``
+``window.webkit.messageHandlers.pf.postMessage({action: 'resolve', result, choice})``
 once a button actually resolves the dialog (``result`` is ``'accept'``,
-``'deny'``, or ``'accept_all'``), delivered here via
+``'deny'``, or ``'accept_all'``; ``choice`` is only present on an
+``'accept_all'`` click -- the clicked button's index into whatever
+``accept_all_choices`` list built the button row, see
+approval_window_html.py's ``_button_row_html``), delivered here via
 ``WKScriptMessageHandler``'s ``userContentController_didReceiveScriptMessage_``
 -- the same ``WKUserContentController``/``"pf"``-named-handler pattern
 settings_window.py's own bridge already established, reused rather than
 inventing a second bridge shape in this codebase (see that module's own
 docstring). ``buttonClicked_``'s old ``sender.tag()`` dispatch is gone
-entirely -- the bridge message's own ``result`` field is now what sets
-``self.result`` before ending the modal session.
+entirely -- the bridge message's own ``result``/``choice`` fields are now
+what set ``self.result``/``self.chosen_index`` before ending the modal
+session.
 
 The §3 disclosure card renders real per-tool "what's new" values
 (``new_info``) or, as a fallback, privacy_filter.category_policy()'s
@@ -176,6 +180,21 @@ _RISK_CARD_BASE_HEIGHT = 96.0  # §4 card: chrome + the "⚠ ..." line + one row
 # CSS estimate as every other constant in this block, just for the one card
 # that's guaranteed present on every single dialog regardless of shape.
 _BUTTON_ROW_HEIGHT = 66.0
+# Extra height for the dedicated candidate-button row 2+ Always-allow
+# candidates render above the Deny/Allow once band (see
+# approval_window_html.py's _button_row_html/.pf-btn-row-candidates) --
+# added on top of _BUTTON_ROW_HEIGHT, which still covers exactly the base
+# Deny/Allow once row every dialog gets regardless. Zero or one candidate
+# means the Always-allow link stays inline in that base row, same as
+# always, so no extra height applies. A single row easily fits the known
+# worst case (3 short candidates, e.g. jira_read_issue's "if I'm reporter"
+# / "if I'm assignee" / "this project") at NARROW's 610px width -- like
+# every other constant in this block, this is a round-number estimate,
+# not a real text measurement; wrapping to a second line just grows this
+# region's own flex row, same as any other CSS-fixed estimate here (see
+# _HEIGHT_SAFETY_MARGIN's own comment for the general "estimate, not
+# measurement" posture).
+_CANDIDATE_ROW_HEIGHT = 34.0
 _MIN_CONTENT_HEIGHT = 260.0
 # Every constant above is a round-number guess, not a real text
 # measurement (see their own comments) -- since <body> is height:100vh
@@ -270,7 +289,13 @@ class ApprovalWindowController(NSObject):
         self.title = ""
         self.preview: dict[str, str] = {}
         self.details_text = ""
-        self.allow_accept_all = False
+        # List of (rule_name, short_label) pairs -- one per auto-accept rule
+        # candidate that matches the current item, in
+        # auto_accept.SUGGESTION_FAMILIES' fixed declaration order. Empty
+        # means no Always allow button at all (old allow_accept_all=False);
+        # see _build_content_view's own comment for how this becomes one
+        # button per entry.
+        self.accept_all_choices: list[tuple[str, str]] = []
         self.temp_accept_eligible = False
         self.pii_categories: list[str] = []
         self.visibility: dict[str, str] = {}
@@ -289,8 +314,13 @@ class ApprovalWindowController(NSObject):
         self.preview_tables: list[dict] = []
         self.preview_blocks: list[dict] = []
         self.table_only: bool = False
-        self.accept_all_hint: str = ""
         self.result = "deny"
+        # Which self.accept_all_choices entry was clicked -- only meaningful
+        # when self.result == "accept_all"; None otherwise (including a
+        # deny/accept, or an accept_all result received without a choice
+        # index, which shouldn't happen against the real button row but
+        # degrades safely -- see userContentController_didReceiveScriptMessage_).
+        self.chosen_index: int | None = None
         self.panel = None
         self._details_view = None
         self._details_html_string = ""
@@ -448,7 +478,14 @@ class ApprovalWindowController(NSObject):
             + _HEIGHT_SAFETY_MARGIN
             + approval_window_html.BODY_VERTICAL_PADDING
         )
-        window_height = content_height + _BUTTON_ROW_HEIGHT
+        button_rows_height = _BUTTON_ROW_HEIGHT
+        # 2+ candidates render their own row above the base Deny/Allow once
+        # band (see _CANDIDATE_ROW_HEIGHT's own comment) -- 0 or 1 leaves
+        # the Always-allow link inline in that base row, same as always, so
+        # no extra height applies.
+        if len(self.accept_all_choices) >= 2:
+            button_rows_height += _CANDIDATE_ROW_HEIGHT
+        window_height = content_height + button_rows_height
         screen = NSScreen.mainScreen()
         if screen is not None:
             window_height = min(window_height, screen.frame().size.height * _MAX_WINDOW_HEIGHT_FRACTION)
@@ -485,19 +522,22 @@ class ApprovalWindowController(NSObject):
         )
         disclosure_rows = self._disclosure_rows()
 
-        # Names the specific rule Always allow would create (e.g. "Always
-        # allow — this folder") instead of a plain, unspecific "Always
-        # allow" -- so the reviewer knows roughly what standing rule they're
-        # about to create before clicking, not only in the confirmation
-        # dialog that follows. Falls back to the plain label when gate.py
-        # has no hint for this rule (the one unconditional rule,
-        # always_allow, or any future rule name describe_rule_short doesn't
-        # recognize yet -- see its own docstring). Computed unconditionally
-        # (not just when self.allow_accept_all) -- build_card_stack_html
-        # simply ignores it when allow_accept_all is False, same as always.
-        accept_all_label = (
-            f"Always allow — {self.accept_all_hint}" if self.accept_all_hint else "Always allow"
-        )
+        # Names the specific rule each Always allow button would create
+        # (e.g. "Always allow — this folder") instead of a plain,
+        # unspecific "Always allow" -- so the reviewer knows roughly what
+        # standing rule they're about to create before clicking, not only
+        # in the confirmation dialog that follows. Falls back to the plain
+        # label when a candidate has no short hint (the one unconditional
+        # rule, always_allow, or any future rule name describe_rule_short
+        # doesn't recognize yet -- see its own docstring). One label per
+        # self.accept_all_choices entry, same order -- build_card_stack_html
+        # turns an empty list into "no Always allow button at all", one
+        # entry into today's single inline button, and 2+ into their own
+        # button row (see approval_window_html.py's _button_row_html).
+        accept_all_labels = [
+            f"Always allow — {hint}" if hint else "Always allow"
+            for _rule_name, hint in self.accept_all_choices
+        ]
 
         html = approval_window_html.build_card_stack_html(
             layout=self.layout,
@@ -515,8 +555,7 @@ class ApprovalWindowController(NSObject):
             temp_accept_text=_TEMP_ACCEPT_DISCLOSURE_TEXT if self.temp_accept_eligible else "",
             preview_kicker=f"Preview ({_reading_time_label(self.details_text)})",
             preview_body_html=preview_body_html,
-            allow_accept_all=self.allow_accept_all,
-            accept_all_label=accept_all_label,
+            accept_all_labels=accept_all_labels,
         )
         # Kept purely for testability -- see test_approval_window_html.py
         # for build_card_stack_html()'s own direct pure-function coverage;
@@ -619,7 +658,10 @@ class ApprovalWindowController(NSObject):
         docstring's "Bridge protocol" paragraph. Replaces the old
         buttonClicked_'s sender.tag() dispatch: the message's own ``result``
         field is what self.result resolves to now, before ending the modal
-        session the same way buttonClicked_ always did."""
+        session the same way buttonClicked_ always did. ``choice`` (present
+        only on an ``accept_all`` click -- see _JS's own ``resolveFrom``)
+        becomes self.chosen_index, the clicked button's index into
+        self.accept_all_choices."""
         try:
             payload = dict(message.body())
         except (TypeError, ValueError):
@@ -634,6 +676,16 @@ class ApprovalWindowController(NSObject):
         # data-pf-action markup never actually produces one.
         result = payload.get("result")
         self.result = result if result in _BRIDGE_RESULTS else "deny"
+        choice = payload.get("choice")
+        # Only meaningful (and only ever sent by _JS) for an accept_all
+        # click -- an int index into self.accept_all_choices. Anything else
+        # (missing, non-int, out of range) degrades to None rather than
+        # raising: gate.py already treats a None chosen_index on
+        # "accept_all" as "cancelled", the safe direction, same as every
+        # other defensive fallback in this bridge handler.
+        self.chosen_index = (
+            int(choice) if isinstance(choice, (int, float)) and self.result == "accept_all" else None
+        )
         NSApplication.sharedApplication().stopModalWithCode_(NSModalResponseStop)
 
     # ------------------------------------------------------------------ #
@@ -684,7 +736,7 @@ def show_native_approval(
     title: str,
     preview: dict[str, str],
     details_text: str,
-    allow_accept_all: bool,
+    accept_all_choices: list[tuple[str, str]] | None = None,
     pii_categories: list[str] | None = None,
     temp_accept_eligible: bool = False,
     visibility: dict[str, str] | None = None,
@@ -703,12 +755,14 @@ def show_native_approval(
     preview_tables: list[dict] | None = None,
     preview_blocks: list[dict] | None = None,
     table_only: bool = False,
-    accept_all_hint: str = "",
-) -> str:
+) -> tuple[str, int | None]:
     """Show the approval window and block until the user picks a button.
 
-    Returns 'accept', 'deny', or 'accept_all' (only reachable when
-    allow_accept_all is True). ``temp_accept_eligible`` adds an
+    Returns ``(decision, chosen_index)``. ``decision`` is 'accept', 'deny',
+    or 'accept_all' (only reachable when ``accept_all_choices`` is
+    non-empty). ``chosen_index`` is the clicked button's index into
+    ``accept_all_choices`` when ``decision == "accept_all"``, else always
+    None. ``temp_accept_eligible`` adds an
     informational disclosure caption above the buttons (see
     ApprovalWindowController._build_content_view); it doesn't change which
     buttons render.
@@ -736,19 +790,23 @@ def show_native_approval(
     ``details_text`` in the WIDE right pane when a table already covers
     the same data -- no-op when ``preview_blocks`` is set).
 
-    ``accept_all_hint``, when set (and ``allow_accept_all`` is True),
-    renders as part of the Always allow button's own label (e.g. "Always
-    allow — this folder") instead of the plain "Always allow" -- see
-    _build_content_view's own comment for the exact format. Empty for
-    the one unconditional rule (``always_allow``) with no category to
-    name, and always empty when ``allow_accept_all`` is False.
+    ``accept_all_choices`` is a list of ``(rule_name, short_label)`` pairs --
+    one per auto-accept rule that plausibly matches this item
+    (auto_accept.suggest_rule_choices()'s own return shape), rendered as one
+    "Always allow" button each (or none, when empty). Each button's own
+    label is "Always allow — {short_label}", or plain "Always allow" when
+    ``short_label`` is empty (the one unconditional rule, ``always_allow``,
+    with no category to name) -- see _build_content_view's own comment for
+    the exact format. Zero or one entry renders pixel-identical to the old
+    single-candidate layout; 2+ render their own button row (see
+    approval_window_html.py's ``_button_row_html``).
     """
     with _popup_lock:
         controller = ApprovalWindowController.alloc().init()
         controller.title = title
         controller.preview = preview or {}
         controller.details_text = details_text
-        controller.allow_accept_all = allow_accept_all
+        controller.accept_all_choices = accept_all_choices or []
         controller.temp_accept_eligible = temp_accept_eligible
         controller.pii_categories = pii_categories or []
         controller.visibility = visibility or {}
@@ -767,9 +825,8 @@ def show_native_approval(
         controller.preview_tables = preview_tables or []
         controller.preview_blocks = preview_blocks or []
         controller.table_only = table_only
-        controller.accept_all_hint = accept_all_hint or ""
 
         controller.performSelectorOnMainThread_withObject_waitUntilDone_(
             "runApproval:", None, True
         )
-        return controller.result
+        return controller.result, controller.chosen_index

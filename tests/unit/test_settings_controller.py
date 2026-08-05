@@ -15,16 +15,21 @@ Also covers the cross-thread AppHelper.callAfter marshaling contract
 docstring -- see TestRunAsyncMarshaling and TestOnChangeMarshaling below for
 why that still matters here.
 
-Two follow-up features restored/rebuilt after the initial #120 pass per
-user direction (see PR history): suggestion-priority reordering
-(TestSuggestionPriorityState/TestSuggestionPriorityMutators, ported from
-menu_bar.py's pre-#120 _move_suggestion_priority/_exclude_suggestion_rule/
-_include_suggestion_rule with no behavior change) and Telegram's in-webview
-multi-step sign-in (TestTelegramStartAuth/TestTelegramSubmitCode/
-TestTelegramSubmit2FA/TestTelegramCancelAuth, replacing the native
-rumps.Window-based flow -- telethon is mocked via MagicMock/AsyncMock, the
-same house style test_telegram_client.py's own tests already use, rather
-than the hand-rolled fake class the deleted native-prompt tests used).
+One follow-up feature rebuilt after the initial #120 pass per user
+direction (see PR history): Telegram's in-webview multi-step sign-in
+(TestTelegramStartAuth/TestTelegramSubmitCode/TestTelegramSubmit2FA/
+TestTelegramCancelAuth, replacing the native rumps.Window-based flow --
+telethon is mocked via MagicMock/AsyncMock, the same house style
+test_telegram_client.py's own tests already use, rather than the
+hand-rolled fake class the deleted native-prompt tests used).
+
+Suggestion-priority reordering (the Rules page's old "Always-allow
+Suggestion Order" section: move up/down, exclude/re-include) was one such
+restored feature but is gone again as of issue #151 -- every auto-accept
+rule that plausibly matches an item now gets its own "Always allow" button
+in the popup, so there's nothing left to prioritize or exclude. See
+git history for the removed TestSuggestionPriorityState/
+TestSuggestionPriorityMutators coverage.
 """
 from __future__ import annotations
 
@@ -1204,84 +1209,6 @@ class TestDriveGrantSummary:
         state = controller._rules_state(controller._load_config())
         summary = state["drive_grant_summary_by_connector"]
         assert summary["sheets"]["rows"] == summary["docs"]["rows"]
-
-
-class TestSuggestionPriorityState:
-    """Restored per user direction after being dropped in the first pass of
-    issue #120 -- the design mockup's Rules page has no UI for this, so this
-    is a deliberate addition on top of the mockup, not something the design
-    itself calls for. See auto_accept.SUGGESTION_FAMILIES/suggestion_order
-    for the engine this wraps."""
-
-    def test_applicable_connectors_get_included_and_excluded_lists(self, controller):
-        state = controller._rules_state(controller._load_config())
-        drive = state["suggestion_priority_by_connector"]["drive"]
-        assert drive == {"family": "drive_read", "included": ["i_am_owner", "approved_folder"], "excluded": []}
-
-    def test_connector_without_a_family_gets_none(self, controller):
-        state = controller._rules_state(controller._load_config())
-        assert state["suggestion_priority_by_connector"]["gmail"] is None
-
-    def test_every_family_connector_is_covered(self, controller):
-        state = controller._rules_state(controller._load_config())
-        covered = {k for k, v in state["suggestion_priority_by_connector"].items() if v is not None}
-        assert covered == set(sc.SUGGESTION_FAMILY_BY_CONNECTOR)
-
-    def test_excluded_rule_appears_in_the_excluded_list(self, controller):
-        controller.exclude_suggestion_rule("drive", "i_am_owner")
-
-        state = controller._rules_state(controller._load_config())
-        drive = state["suggestion_priority_by_connector"]["drive"]
-        assert drive["included"] == ["approved_folder"]
-        assert drive["excluded"] == ["i_am_owner"]
-
-
-class TestSuggestionPriorityMutators:
-    def test_move_up_swaps_with_the_previous_entry(self, controller):
-        controller.move_suggestion_priority("drive", -1, "approved_folder")
-
-        assert sc.suggestion_order("drive_read") == ["approved_folder", "i_am_owner"]
-        assert controller._load_config()["rule_suggestion_priority"]["drive_read"] == ["approved_folder", "i_am_owner"]
-
-    def test_move_down_swaps_with_the_next_entry(self, controller):
-        controller.move_suggestion_priority("drive", 1, "i_am_owner")
-
-        assert sc.suggestion_order("drive_read") == ["approved_folder", "i_am_owner"]
-
-    def test_move_past_either_end_is_a_no_op(self, controller):
-        controller.move_suggestion_priority("drive", -1, "i_am_owner")  # already first
-        assert sc.suggestion_order("drive_read") == ["i_am_owner", "approved_folder"]
-        controller.move_suggestion_priority("drive", 1, "approved_folder")  # already last
-        assert sc.suggestion_order("drive_read") == ["i_am_owner", "approved_folder"]
-
-    def test_move_unknown_rule_name_is_a_no_op(self, controller):
-        controller.move_suggestion_priority("drive", -1, "not_a_real_rule")
-        assert sc.suggestion_order("drive_read") == ["i_am_owner", "approved_folder"]
-
-    def test_move_on_a_connector_with_no_family_is_a_no_op(self, controller):
-        before = controller._load_config()
-        controller.move_suggestion_priority("gmail", -1, "i_am_sender")
-        assert controller._load_config() == before
-
-    def test_exclude_removes_the_rule_from_the_order(self, controller):
-        controller.exclude_suggestion_rule("drive", "i_am_owner")
-        assert sc.suggestion_order("drive_read") == ["approved_folder"]
-
-    def test_include_appends_a_previously_excluded_rule(self, controller):
-        controller.exclude_suggestion_rule("drive", "i_am_owner")
-        controller.include_suggestion_rule("drive", "i_am_owner")
-        assert sc.suggestion_order("drive_read") == ["approved_folder", "i_am_owner"]
-
-    def test_include_an_already_included_rule_is_a_no_op(self, controller):
-        controller.include_suggestion_rule("drive", "i_am_owner")
-        assert sc.suggestion_order("drive_read") == ["i_am_owner", "approved_folder"]
-
-    def test_mutator_persists_to_disk_and_hot_applies(self, controller):
-        controller.exclude_suggestion_rule("drive", "i_am_owner")
-
-        on_disk = controller._load_config()
-        assert on_disk["rule_suggestion_priority"]["drive_read"] == ["approved_folder"]
-        assert sc.suggestion_order("drive_read") == ["approved_folder"]
 
 
 class TestPrivacyFilter:

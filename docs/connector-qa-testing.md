@@ -459,11 +459,10 @@ create a standing rule and silently change every later step in this phase.
     **Pause here**: tell me you're about to call it and that **I will click
     "Always allow"** this time, then wait for me to say go. Once I do, make the
     call and tell me exactly what rule text/scope it proposes — this shares
-    the same `i_am_owner`/`approved_folder` suggestion as `drive_get_file_content`
-    (expect `i_am_owner`, since you created this sheet yourself, unless you've
-    reordered `rule_suggestion_priority.drive_read` to prefer
-    `approved_folder`; if both apply and you haven't excluded one, expect a
-    "choose from list" popup asking which to create instead of one silently
+    the same `i_am_owner`/`approved_folder` candidate(s) as `drive_get_file_content`
+    (expect a single `i_am_owner` button, since you created this sheet
+    yourself; if the sheet is also in an approved folder, expect a second
+    "Always allow — this folder" button alongside it instead of one silently
     winning — see [Multiple matching candidates](always-allow-rules-reference.md#multiple-matching-candidates)).
 13. `drive_sheets_write_range` — write `A1: "hello"`, `A2: "=1+1"` to prove
     formulas evaluate. Popup, Allow once — check for the temp-accept

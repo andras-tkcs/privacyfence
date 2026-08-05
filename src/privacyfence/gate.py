@@ -9,8 +9,12 @@ either returns the data or raises in the same call that fetched it, so
 Claude never holds a tool that can release gated data on its own.
 
   gate="review"  (read tools)
-    Popup offers Deny / Allow once / and — when a plausible auto-accept rule
-    can be derived from the item's attributes — Always allow, which proposes
+    Popup offers Deny / Allow once / and — for every plausible auto-accept
+    rule that can be derived from the item's attributes — an Always allow
+    button, one per candidate (auto_accept.suggest_rule_choices()). Most
+    operations only ever have one candidate, so this is a single button; the
+    four operations in auto_accept.SUGGESTION_FAMILIES can match 2+ rules on
+    the same item and render one button each. Clicking any of them proposes
     (with a second confirmation dialog) a standing rule for similar future
     reads.
 
@@ -103,7 +107,6 @@ from .auto_accept import (
     known_rule_names,
     mutate_grants,
     remove_auto_accept_rule,
-    suggest_rule,
     suggest_rule_choices,
     suggest_write_rule,
     temp_accept_key,
@@ -136,10 +139,6 @@ def show_read_popup(*args, **kwargs):
 
 def show_pii_confirmation_popup(*args, **kwargs):
     return get_approval_ui().show_pii_confirmation_popup(*args, **kwargs)
-
-
-def show_rule_choice_popup(*args, **kwargs):
-    return get_approval_ui().show_rule_choice_popup(*args, **kwargs)
 
 
 def show_rule_confirmation_popup(*args, **kwargs):
@@ -449,16 +448,15 @@ async def gated_call(
             return filtered_data
 
         if gate == "review":
-            suggestion = suggest_rule(operation_key, ctx)
-            # Short, button-label phrase for the specific rule Always allow
-            # would create (e.g. "if I'm sender") -- shown on the button
-            # itself, before the click, not just in the confirmation dialog
-            # that already used describe_rule() for the full sentence. When
-            # 2+ candidates actually match, this still describes only the
-            # top-priority one, same as allow_accept_all's own derivation
-            # below -- the "which one?" choice is only surfaced after the
-            # click (suggest_rule_choices()), unchanged by this.
-            accept_all_hint = describe_rule_short(suggestion[0]) if suggestion else ""
+            # Every auto-accept rule that plausibly matches this item, up
+            # front -- not just a single top-priority hint with the "which
+            # one?" question deferred to a second dialog after the click.
+            # Each becomes its own "Always allow" button in the popup (see
+            # approval_window_html.py's _button_row_html); only ever 2+
+            # entries for the four families in auto_accept.SUGGESTION_
+            # FAMILIES, at most 1 for every other operation.
+            choices = suggest_rule_choices(operation_key, ctx)
+            accept_all_choices = [(rule_name, describe_rule_short(rule_name)) for rule_name, _value in choices]
             # Everything interactive for this item — including the PII
             # confirmation, the "Always allow" confirmation, and persisting
             # the resulting rule — stays inside one continuous lock
@@ -484,45 +482,42 @@ async def gated_call(
                     # blocking every other approval behind it.
                     _deny_unattended(audit, connector, tool, pii_categories=pii_categories)
 
-                decision = await asyncio.to_thread(
-                    show_read_popup, popup_title, preview or {}, details, suggestion is not None,
+                decision, chosen_index = await asyncio.to_thread(
+                    show_read_popup, popup_title, preview or {}, details, accept_all_choices,
                     pii_categories, visibility, claude_reason, seen_count, content_kind, pdf_bytes,
                     connector, preview_bytes, preview_mime_type, new_info=new_info,
                     preview_tables=preview_tables, preview_blocks=preview_blocks,
-                    table_only=table_only, layout=layout, accept_all_hint=accept_all_hint,
+                    table_only=table_only, layout=layout,
                 )
 
                 if decision in ("accept", "accept_all") and pii_categories:
                     decision = await _confirm_pii_or_deny(decision, pii_categories)
 
-                if decision == "accept_all" and suggestion is not None:
-                    # Some operations (e.g. a Drive file you both own and
-                    # that lives in an approved folder) can suggest more than
-                    # one plausible rule for the same item -- ask which one
-                    # rather than always silently creating the top-priority
-                    # candidate suggest_rule() picked. Only ever 2+ entries
-                    # for the four families in SUGGESTION_FAMILIES; every
-                    # other operation gets back exactly `[suggestion]`, so
-                    # this is a no-op for them.
-                    choices = suggest_rule_choices(operation_key, ctx)
-                    if len(choices) > 1:
-                        descriptions = [describe_rule(rn, v) for rn, v in choices]
-                        chosen_idx = await asyncio.to_thread(show_rule_choice_popup, descriptions)
-                        chosen = choices[chosen_idx] if chosen_idx is not None else None
-                    else:
-                        description = describe_rule(*suggestion)
-                        confirmed = await asyncio.to_thread(show_rule_confirmation_popup, description)
-                        chosen = suggestion if confirmed else None
-
+                if decision == "accept_all":
+                    # Which candidate was clicked -- see approval_window.py's
+                    # bridge docstring. Bounds-checked rather than trusted:
+                    # chosen_index comes back from the popup's own JS bridge,
+                    # so an out-of-range or missing index (shouldn't happen
+                    # against the real button row, but not a contract this
+                    # module needs to trust blindly) degrades to "cancelled"
+                    # rather than raising.
+                    chosen = (
+                        choices[chosen_index]
+                        if chosen_index is not None and 0 <= chosen_index < len(choices)
+                        else None
+                    )
                     if chosen is not None:
+                        description = describe_rule(*chosen)
+                        confirmed = await asyncio.to_thread(show_rule_confirmation_popup, description)
                         rule_name, value = chosen
-                        add_auto_accept_rule(operation_key, rule_name, value)
-                        audit(
-                            decision="accepted_via_accept_all", auto_accept_rule=rule_name,
-                            pii_detected=bool(pii_categories),
-                        )
-                        logger.info("Always allow: created rule %r for %s", rule_name, operation_key)
-                        return filtered_data
+                        if confirmed:
+                            add_auto_accept_rule(operation_key, rule_name, value)
+                            audit(
+                                decision="accepted_via_accept_all", auto_accept_rule=rule_name,
+                                pii_detected=bool(pii_categories),
+                            )
+                            logger.info("Always allow: created rule %r for %s", rule_name, operation_key)
+                            return filtered_data
                     # Cancelled rule creation — this item is still accepted, just once.
                     decision = "accept"
 
@@ -542,8 +537,13 @@ async def gated_call(
             # exception, drive_upload_file only.
             file_key = temp_accept_key(operation_key, ctx)
             suggestion = suggest_write_rule(operation_key, ctx)
-            # See the review branch's matching comment above.
-            accept_all_hint = describe_rule_short(suggestion[0]) if suggestion else ""
+            # At most one entry -- no write operation is a
+            # SUGGESTION_FAMILIES multi-candidate case (see gate.py's own
+            # module docstring); kept as a list for the same shape as the
+            # review branch's `choices` above, so the accept_all handling
+            # below reads identically to it.
+            choices = [suggestion] if suggestion is not None else []
+            accept_all_choices = [(suggestion[0], describe_rule_short(suggestion[0]))] if suggestion else []
             # Same "everything interactive stays inside one lock acquisition"
             # reasoning as the review branch above -- the accept-all
             # confirmation and rule persistence must not happen after
@@ -560,12 +560,12 @@ async def gated_call(
                 if is_unattended():
                     _deny_unattended(audit, connector, tool, pii_categories=upload_pii_categories)
 
-                decision = await asyncio.to_thread(
+                decision, chosen_index = await asyncio.to_thread(
                     show_popup, popup_title, preview or {}, details, file_key is not None,
                     claude_reason, write_content_flags, seen_count, connector,
-                    suggestion is not None, preview_bytes, preview_mime_type,
+                    accept_all_choices, preview_bytes, preview_mime_type,
                     preview_tables=preview_tables, preview_blocks=preview_blocks,
-                    table_only=table_only, layout=layout, accept_all_hint=accept_all_hint,
+                    table_only=table_only, layout=layout,
                     # upload_forced selects the distinct "write-forced" PII card (see
                     # show_popup's own docstring) -- upload_pii_categories is only
                     # ever non-empty for drive_upload_file's real PII match, the one write
@@ -577,17 +577,22 @@ async def gated_call(
                     decision = await _confirm_pii_or_deny(decision, upload_pii_categories)
 
                 if decision == "accept_all":
-                    if suggestion is None:
-                        # Shouldn't happen against the real window -- the
-                        # Always-allow button only renders when
-                        # allow_accept_all was True, i.e. suggestion was
-                        # already not None -- but degrade to a plain accept
-                        # rather than falling through to "denied" below if
-                        # it somehow does (same defensive posture as the
-                        # review branch's equivalent case).
+                    # See the review branch's matching comment above --
+                    # bounds-checked against the popup's own JS bridge
+                    # rather than trusted; shouldn't happen against the real
+                    # window (the Always-allow button only renders when
+                    # accept_all_choices was non-empty), but degrades to a
+                    # plain accept rather than falling through to "denied"
+                    # below if it somehow does.
+                    chosen = (
+                        choices[chosen_index]
+                        if chosen_index is not None and 0 <= chosen_index < len(choices)
+                        else None
+                    )
+                    if chosen is None:
                         decision = "accept"
                     else:
-                        rule_name, value = suggestion
+                        rule_name, value = chosen
                         # describe_rule_change(), not describe_rule() -- these
                         # five rule names are shared with a read operation key
                         # too (e.g. jira.read_issue), and describe_rule()'s

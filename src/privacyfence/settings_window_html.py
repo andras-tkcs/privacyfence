@@ -455,42 +455,6 @@ _JS = r"""
   // Rules
   // -------------------------------------------------------------------- //
 
-  function renderSuggestionPriority(sp, connectorKey) {
-    // "Always-allow Suggestion Order" -- which rule Always allow proposes
-    // first when a read could match more than one (e.g. Drive's i_am_owner
-    // vs. approved_folder), user-reorderable, and excludable by moving it
-    // out of the included list entirely. Only rendered for the connectors
-    // SUGGESTION_FAMILY_BY_CONNECTOR covers (see settings_controller.py) --
-    // sp is null for every other connector. Reuses the same pf-link/
-    // pf-link-danger row language as the rule/grant sections above rather
-    // than introducing new styles.
-    if (!sp) return '';
-    var html = '<div class="pf-rule-section"><div class="pf-group-title">Always-allow Suggestion Order</div>';
-    sp.included.forEach(function (ruleName, i) {
-      html += '<div class="pf-rule-row"><div class="pf-input-value pf-input-mono" style="border:none;background:transparent;padding:5px 0;">' + esc(ruleName) + '</div>';
-      if (i > 0) {
-        html += '<div class="pf-link" role="button" tabindex="0" aria-label="Move ' + esc(ruleName) + ' up" ' +
-          dataAttr('move_suggestion_priority', { connector: connectorKey, direction: -1, rule_name: ruleName }) + '>↑ Move up</div>';
-      }
-      if (i < sp.included.length - 1) {
-        html += '<div class="pf-link" role="button" tabindex="0" aria-label="Move ' + esc(ruleName) + ' down" ' +
-          dataAttr('move_suggestion_priority', { connector: connectorKey, direction: 1, rule_name: ruleName }) + '>↓ Move down</div>';
-      }
-      html += '<div class="pf-link-danger" role="button" tabindex="0" aria-label="Never suggest ' + esc(ruleName) + '" ' +
-        dataAttr('exclude_suggestion_rule', { connector: connectorKey, rule_name: ruleName }) + '>✕ Never suggest</div>';
-      html += '</div>';
-    });
-    sp.excluded.forEach(function (ruleName) {
-      html += '<div class="pf-rule-row"><div class="pf-input-value pf-input-mono" style="border:none;background:transparent;padding:5px 0;color:#b3b3b8;">' +
-        esc(ruleName) + ' (excluded)</div>';
-      html += '<div class="pf-link" role="button" tabindex="0" aria-label="Re-include ' + esc(ruleName) + '" ' +
-        dataAttr('include_suggestion_rule', { connector: connectorKey, rule_name: ruleName }) + '>+ Re-include</div>';
-      html += '</div>';
-    });
-    html += '</div>';
-    return html;
-  }
-
   function renderRules(state) {
     var rules = state.rules;
     if (!ui.rulesConnector && rules.connectors.length) ui.rulesConnector = rules.connectors[0].key;
@@ -588,13 +552,10 @@ _JS = r"""
       html += '</div>';
     });
 
-    var suggestionPriority = (rules.suggestion_priority_by_connector || {})[curKey] || null;
-    if (!search) html += renderSuggestionPriority(suggestionPriority, curKey);
-
     var anyGrantRows = grantSections.some(function (gs) { return gs.rows.length > 0; });
     if (search && totalRows === 0 && !anyGrantRows) {
       html += '<div class="pf-rules-empty">' + (search ? 'No matches.' : 'Nothing here.') + '</div>';
-    } else if (!search && ruleSections.length === 0 && grantSections.length === 0 && !suggestionPriority && !driveSummary) {
+    } else if (!search && ruleSections.length === 0 && grantSections.length === 0 && !driveSummary) {
       html += '<div class="pf-rules-empty">All operations always auto-approved — no rules needed.</div>';
     }
 

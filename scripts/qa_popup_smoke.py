@@ -37,7 +37,13 @@ documents gets a real on-screen click, not just a representative handful. (RG-2 
 that's genuinely distinct from RG-1's, the native-PDF body -- see that doc's "View groups"
 section.) A handful of RG-1 tools additionally get two "RG-1 stress" readability variants (long
 text/many rows/columns, with and without a PII banner) beyond their one baseline entry -- see the
-"RG-1 stress" section below for why. Preview/details data is
+"RG-1 stress" section below for why. Each of the four multi-candidate operations in
+auto_accept.SUGGESTION_FAMILIES (drive reads, calendar_get_event_details, jira_get_issue,
+confluence reads) additionally gets one "(N Always-allow candidates)" variant beyond its
+single-candidate baseline -- issue #151's multi-button window, showing 2+ real "Always allow"
+buttons rendered in their own row instead of one hinted button (see approval_window_html.py's
+_button_row_html); every other RG-1/RG-2 tool's baseline entry itself already covers the
+single-candidate (0 or 1 button) case with no dedicated variant needed. Preview/details data is
 realistic-but-synthetic, sourced from tests/fixtures/live/*/*.json (recorded, redacted real API
 responses -- see scripts/qa_fixture_recorder.py) and docs/qa-environment-setup.md's own PFQA/
 [QATEST] naming conventions, rather than generic placeholder strings -- see that doc's "one rule
@@ -49,18 +55,22 @@ progressive disclosure, the Gmail-style header, native PDFView) are folded into 
 scenarios rather than kept as separate generic ones -- see the inline comment at each such
 scenario in _scenarios().
 
-Thirteen more, non-tool scenarios run last, in two groups. Seven exercise the actual tray status
+Eleven more, non-tool scenarios run last, in two groups. Seven exercise the actual tray status
 item and, from it, the settings window issue #120 replaced the old NSMenu tree / "Manage
 Auto-accept Rules…" native window with (see the "Settings window" scenarios near the bottom of
 _scenarios()) -- real clicks into that window's own web content, the same web-content-click
 technique issue #141 brought to every tool-approval scenario's own Deny/Allow once/Always allow
-above (see _click_button's own docstring). Six more exercise dialog_window.py's small
-confirmation/list-picker host (see the "Dialog window" scenarios just above the settings-window
-ones) -- issue #145 ported these off `osascript display dialog`/`choose from list`, and they reuse
-_click_button/_wait_for_button_enabled directly rather than a new helper, since dialog_window_html.py's
-buttons/choice rows carry the identical role="button"/aria-disabled/aria-label markup issue #141
-gave the main approval window's own button row. 106 scenarios total: 93 tool-approval scenarios,
-6 dialog-window scenarios, and the seven settings-window scenarios.
+above (see _click_button's own docstring). Four more exercise dialog_window.py's small
+confirmation host (see the "Dialog window" scenarios just above the settings-window ones) --
+issue #145 ported these off `osascript display dialog`, and they reuse _click_button/
+_wait_for_button_enabled directly rather than a new helper, since dialog_window_html.py's
+buttons carry the identical role="button"/aria-disabled/aria-label markup issue #141 gave the
+main approval window's own button row. (dialog_window.py's other shape, the list-picker
+build_choice_html/show_choice_dialog, has no scenario here -- issue #151's multi-button "Always
+allow" redesign deleted its one auto-accept caller; its only remaining caller,
+settings_controller.py's Atlassian resource picker, needs a live OAuth session to exercise for
+real.) 108 scenarios total: 97 tool-approval scenarios, 4 dialog-window scenarios, and the seven
+settings-window scenarios.
 
 Every tool-approval scenario renders through the one real card-stack rendering
 (approval_window_html.py). Each scenario's narrow/wide shape (_TOOL_LAYOUT below) is a fixed,
@@ -86,7 +96,7 @@ has installed):
         --screenshot-dir docs/images/screenshots --pause-seconds 3
     .venv/bin/python scripts/qa_popup_smoke.py --scenario "status item → window opens" \\
         --screenshot-dir docs/images/screenshots --pause-seconds 3
-    # dialog_window.py's own small confirmation/list-picker host (issue #145):
+    # dialog_window.py's own small confirmation host (issue #145):
     .venv/bin/python scripts/qa_popup_smoke.py --scenario "Dialog window"
     # Review-gate (read) dialogs only, or popup-gate (write) dialogs only:
     .venv/bin/python scripts/qa_popup_smoke.py --group rg --screenshot-dir /tmp/rg_shots
@@ -692,6 +702,33 @@ def _run_scenario(
     if click_title == "Always allow" and popup_kwargs.get("accept_all_hint"):
         click_title = f"Always allow — {popup_kwargs['accept_all_hint']}"
 
+    # show_native_approval() itself no longer takes allow_accept_all/
+    # accept_all_hint (issue #151's multi-button rewrite) -- it takes
+    # accept_all_choices: list[(rule_name, short_label)], one entry per
+    # matching candidate. Translated here, once, rather than touching every
+    # individual scenario call below: allow_accept_all=True + a single
+    # accept_all_hint (the overwhelming majority of scenarios -- one
+    # candidate) becomes a one-entry list, same visual/behavioral result as
+    # the old allow_accept_all=True/accept_all_hint pair. A scenario can
+    # instead set accept_all_hints=[...] directly (2+ entries) to render the
+    # real multi-button row for one of the four auto_accept.SUGGESTION_
+    # FAMILIES operations -- see the "(N Always-allow candidates)" scenarios
+    # below. The dummy per-entry rule_name here is never shown on screen
+    # (only chosen_index and the label matter for this script); it only has
+    # to be unique enough that click_title's own derivation above (matching
+    # entry 0's hint) still lines up with the real first button's label.
+    accept_all_hints = popup_kwargs.pop("accept_all_hints", None)
+    allow_accept_all = popup_kwargs.pop("allow_accept_all", False)
+    accept_all_hint = popup_kwargs.pop("accept_all_hint", "")
+    if accept_all_hints is not None:
+        popup_kwargs["accept_all_choices"] = [
+            (f"candidate_{i}", hint) for i, hint in enumerate(accept_all_hints)
+        ]
+    elif allow_accept_all:
+        popup_kwargs["accept_all_choices"] = [("candidate", accept_all_hint)]
+    else:
+        popup_kwargs["accept_all_choices"] = []
+
     pid = os.getpid()
     click_status_box: list[str] = []
 
@@ -741,7 +778,12 @@ def _run_scenario(
     clicker_thread = threading.Thread(target=clicker, daemon=True)
     clicker_thread.start()
 
-    actual = show_native_approval(**popup_kwargs)
+    # chosen_index (meaningful only when actual == "accept_all") isn't part
+    # of this script's own pass/fail signal -- click_status/expected already
+    # confirm the right button resolved the dialog; which accept_all_choices
+    # index it carried is exercised structurally by _run_scenario's own
+    # click_title <-> accept_all_hint(s) derivation above, not re-checked here.
+    actual, _chosen_index = show_native_approval(**popup_kwargs)
 
     # Two sleeps happen before a click lands on a pre_click_title scenario
     # (pre-click, then the final click), so the join timeout has to cover
@@ -760,36 +802,35 @@ def _run_dialog_scenario(
     pause_seconds: float = 0.3, screenshot_dir: Path | None = None,
 ) -> ScenarioResult:
     """The dialog_window.py counterpart to _run_scenario above -- fires one
-    of approval_popup.show_pii_confirmation_popup/show_rule_confirmation_popup/
-    show_rule_choice_popup (``call``, a zero-arg callable wrapping the real
-    call, same three functions gate.py's real asyncio.to_thread(...) call
-    sites use) on the main thread while a background thread clicks
-    ``click_title`` by aria-label.
+    of approval_popup.show_pii_confirmation_popup/show_rule_confirmation_popup
+    (``call``, a zero-arg callable wrapping the real call, same two functions
+    gate.py's real asyncio.to_thread(...) call sites use) on the main thread
+    while a background thread clicks ``click_title`` by aria-label.
 
     Reuses _click_button/_wait_for_button_enabled unchanged rather than a
     new click helper: dialog_window_html.py's Cancel/Confirm-or-Proceed
-    buttons and choice rows carry the identical role="button"/
-    aria-disabled/aria-label markup issue #141 gave the main approval
-    window's own button row (see approval_window_html.py's
-    _button_row_html), and _wait_for_button_enabled already does the same
-    title-then-description aria-label lookup plus "wait until enabled"
-    gate dialog_window.py's own DOMContentLoaded-driven buttons need --
-    see that function's own docstring.
+    buttons carry the identical role="button"/aria-disabled/aria-label
+    markup issue #141 gave the main approval window's own button row (see
+    approval_window_html.py's _button_row_html), and
+    _wait_for_button_enabled already does the same title-then-description
+    aria-label lookup plus "wait until enabled" gate dialog_window.py's own
+    DOMContentLoaded-driven buttons need -- see that function's own
+    docstring.
 
     Waits on "Cancel" specifically (not "Deny", _run_scenario's own
-    always-present anchor) -- both of dialog_window_html.py's shapes
-    (build_confirmation_html/build_choice_html) always render a Cancel
-    button with that exact label (see approval_popup.py's three call
-    sites, all of which pass cancel_label="Cancel"), so it's the one
-    element guaranteed present regardless of which shape ``call`` pops.
+    always-present anchor) -- dialog_window_html.py's confirmation shape
+    (build_confirmation_html) always renders a Cancel button with that
+    exact label (see approval_popup.py's two call sites, both of which pass
+    cancel_label="Cancel"), so it's the one element guaranteed present
+    regardless of which of the two outcomes ``call`` pops. (The other
+    shape, build_choice_html, has no scenario here at all -- see the
+    "Dialog window" section's own comment below for why.)
 
-    Unlike show_native_approval() (always a string result), these three
-    functions return bool (confirm/cancel) or int | None (choice) --
-    ``expected``/``actual`` are compared via str() so a genuine "no
-    selection" (None) outcome and a click failure (which leaves ``actual``
-    at its own str()'d value, same as any other mismatch) are both visible
-    in the report as a normal expected-vs-actual mismatch, not a
-    ScenarioResult.actual=None special case.
+    Unlike show_native_approval() (always a string result), these two
+    functions return bool (confirm/cancel) -- ``expected``/``actual`` are
+    compared via str() so a click failure (which leaves ``actual`` at its
+    own str()'d value, same as any other mismatch) is visible in the report
+    as a normal expected-vs-actual mismatch, not a special case.
     """
     pid = os.getpid()
     click_status_box: list[str] = []
@@ -865,12 +906,6 @@ QA_PAGE_BODY = (
 QA_ACCOUNT = "PrivacyFence QA — Acme Test Co [QATEST]"
 QA_REPORT = "PrivacyFence QA Report"
 QA_TELEGRAM_SEED = "PrivacyFence QA seed message [QATEST]. No real information."
-
-# Dialog-window scenarios' own rule-choice fixture (below) -- two candidate
-# auto-accept rule descriptions, the same shape auto_accept.suggest_rule_
-# choices() returns when more than one rule could be created from the same
-# item (e.g. a Drive file you own that also lives in an approved folder).
-_QA_RULE_CHOICE_DESCRIPTIONS = ["i_am_owner", f"approved_folder: {QA_DRIVE_FOLDER}"]
 
 # Readability stress-test fixtures (RG-1 stress section below): every RG-1
 # tool's baseline scenario above uses short, single-line content -- these
@@ -1113,16 +1148,18 @@ _TOOL_LAYOUT: dict[str, str] = {
     "tasks_uncomplete_task": "narrow", "tasks_move_task": "narrow",
 }
 
-# Read tools' own top-priority Always-allow rule name, per
-# docs/always-allow-rules-reference.md's Read tools tables -- the
-# WRITE_RULE_SUGGESTIONS-equivalent for the read side, except there's no
-# single shared Python dict to derive this from directly (suggest_rule()'s
-# actual pick depends on live per-call data via SUGGESTION_FAMILIES'
-# priority order, not a static tool->rule mapping) -- so unlike
-# _TOOL_LAYOUT above, this is one, kept in sync with that reference doc's
-# own tables by hand. Tools with no read-gate Always-allow at all (none
-# currently -- every RG-1/RG-2 tool has at least one candidate) simply
-# don't appear here.
+# Read tools' own first-declared Always-allow rule name (auto_accept.
+# SUGGESTION_FAMILIES' fixed declaration order, for the four multi-candidate
+# operations -- see the "(N Always-allow candidates)" scenarios above for
+# the rest of each family), per docs/always-allow-rules-reference.md's Read
+# tools tables -- the WRITE_RULE_SUGGESTIONS-equivalent for the read side,
+# except there's no single shared Python dict to derive this from directly
+# (suggest_rule()'s actual pick depends on live per-call data, e.g. whether
+# the fixture's sender/owner matches my_email, not a static tool->rule
+# mapping) -- so unlike _TOOL_LAYOUT above, this one is kept in sync with
+# that reference doc's own tables by hand. Tools with no read-gate
+# Always-allow at all (none currently -- every RG-1/RG-2 tool has at least
+# one candidate) simply don't appear here.
 _READ_ACCEPT_ALL_TOP_RULE: dict[str, str] = {
     "gmail_get_message": "i_am_sender", "gmail_get_thread": "i_am_sender",
     "gmail_download_attachment": "i_am_sender",
@@ -1660,12 +1697,12 @@ def _scenarios(
     field set all get a real on-screen click at least once, with no redundant duplicate coverage
     of the same mechanic twice.
 
-    Six more scenarios ("Dialog window" section, near the bottom, just above "Settings window")
-    exercise dialog_window.py's small confirmation/list-picker host instead -- both shapes
-    (build_confirmation_html/build_choice_html), both terminal outcomes (accept-or-choose, and
-    Cancel -- the security-relevant default) of each, via the real approval_popup.py functions
-    rather than a direct dialog_window call. Neither RG-N/WG-N tool-approval scenarios nor part of
-    the shared Settings-window app/group -- see that section's own comment.
+    Four more scenarios ("Dialog window" section, near the bottom, just above "Settings window")
+    exercise dialog_window.py's small confirmation host instead -- both terminal outcomes
+    (accept, and Cancel -- the security-relevant default) of each of its two callers
+    (show_pii_confirmation_popup/show_rule_confirmation_popup), via the real approval_popup.py
+    functions rather than a direct dialog_window call. Neither RG-N/WG-N tool-approval scenarios
+    nor part of the shared Settings-window app/group -- see that section's own comment.
 
     `only`, when given, restricts this to the scenarios whose name contains it (case-insensitive)
     -- see main()'s --scenario flag. Filtering happens here, before each matching call site's
@@ -1828,6 +1865,31 @@ def _scenarios(
     ))
 
     results.append(run(
+        # Issue #151's multi-button window: this event matches 2 of
+        # calendar_read_event's 3 candidates (auto_accept.SUGGESTION_
+        # FAMILIES) -- organizer *and* no external attendees -- so the real
+        # popup renders both as their own Always-allow buttons in a
+        # dedicated row above Deny/Allow once, instead of a single hinted
+        # button (see approval_window_html.py's _button_row_html). Resolved
+        # via plain "Allow once" (not either Always-allow button) since this
+        # scenario's own job is the button-row layout, not rule creation --
+        # see test_gate.py for the "which candidate got clicked" behavior.
+        "RG-1 · calendar_get_event_details (2 Always-allow candidates)",
+        click_title="Allow once", expected="accept",
+        title="Read Calendar Event",
+        preview={"Title": QA_EVENT, "Time": QA_EVENT_TIME},
+        new_info={
+            "Attendees": f"{QA_PERSON} (organizer), QA Contact <{QA_CONTACT_EMAIL}>",
+            "Location": "Remote",
+            "Description": "Synthetic PrivacyFence QA test event description. No real information.",
+        },
+        details_text="Synthetic PrivacyFence QA test event. No real information.",
+        claude_reason="Checking the QA event details as requested.",
+        accept_all_hints=["if I organize it", "no external attendees"],
+        connector="calendar",
+    ))
+
+    results.append(run(
         "RG-1 · jira_get_issue",
         click_title="Allow once", expected="accept",
         title="Read Jira Issue",
@@ -1851,6 +1913,39 @@ def _scenarios(
             },
         ],
         allow_accept_all=True,
+        connector="jira",
+    ))
+
+    results.append(run(
+        # Issue #151's multi-button window, jira_read_issue's own family
+        # (auto_accept.SUGGESTION_FAMILIES) -- reporter, assignee, and
+        # project key all three match this synthetic issue, so the real
+        # popup renders 3 Always-allow buttons wrapping in their own row
+        # (see approval_window_html.py's _button_row_html) -- the largest
+        # candidate count of any of the four multi-candidate operations.
+        "RG-1 · jira_get_issue (3 Always-allow candidates)",
+        click_title="Allow once", expected="accept",
+        title="Read Jira Issue",
+        preview={
+            "Project": QA_PROJECT, "Key": QA_JIRA_KEY, "Summary": QA_JIRA_SUMMARY,
+            "Status": "To Do", "Assignee": "Unassigned",
+        },
+        new_info={
+            "Description": "Full description text",
+            "Comments": "Author, created date, and body per comment",
+        },
+        details_text="Synthetic PrivacyFence QA test issue. No real information. Safe to comment "
+                      "on, update, or transition by any automated test.",
+        preview_blocks=[
+            {"type": "field", "label": "Reporter", "value": QA_PERSON},
+            {"type": "heading", "label": "Description"},
+            {"type": "text", "text": "Synthetic PrivacyFence QA test issue description. No real information."},
+            {
+                "type": "table", "caption": "Comments (1)", "headers": ["Author", "Date", "Comment"],
+                "rows": [[QA_PERSON, "2026-07-16", "Synthetic PrivacyFence QA test comment. No real information."]],
+            },
+        ],
+        accept_all_hints=["if I'm reporter", "if I'm assignee", "this project"],
         connector="jira",
     ))
 
@@ -1881,6 +1976,24 @@ def _scenarios(
         },
         details_text=QA_PAGE_BODY,
         allow_accept_all=True,
+        connector="confluence",
+    ))
+
+    results.append(run(
+        # Issue #151's multi-button window, confluence_read_page's own
+        # family (auto_accept.SUGGESTION_FAMILIES) -- author and space key
+        # both match this synthetic page, so the real popup renders 2
+        # Always-allow buttons instead of one hinted button (see
+        # approval_window_html.py's _button_row_html).
+        "RG-1 · confluence_get_page (2 Always-allow candidates)",
+        click_title="Allow once", expected="accept",
+        title="Read Confluence Page",
+        preview={"Title": QA_PAGE, "Space": QA_SPACE},
+        new_info={
+            "Author": QA_PERSON, "Last modified": "2026-07-16", "Page body": "Full page content",
+        },
+        details_text=QA_PAGE_BODY,
+        accept_all_hints=["if I'm author", "this space"],
         connector="confluence",
     ))
 
@@ -2461,6 +2574,31 @@ def _scenarios(
         allow_accept_all=True,
         visibility={"File metadata": "allow", "Document content": "allow"},
         pdf_bytes=_TINY_PDF_BYTES,
+        connector="drive",
+    ))
+
+    results.append(run(
+        # Issue #151's multi-button window, drive_read's own family
+        # (auto_accept.SUGGESTION_FAMILIES, shared by every drive_read
+        # operation key -- resource_grants.DRIVE_FOLDER_READ_TARGETS) --
+        # this synthetic file is both owned by the caller and in an
+        # approved folder, so the real popup renders 2 Always-allow buttons
+        # instead of one hinted button (see approval_window_html.py's
+        # _button_row_html). drive_get_file_content stands in for all
+        # three drive_read operations (drive_get_file_content/drive_
+        # download_file/drive_sheets_get_values) -- they share this same
+        # candidate family and button-row rendering.
+        "RG-2 · drive_get_file_content (2 Always-allow candidates)",
+        click_title="Allow once", expected="accept",
+        title="Read Drive File Content",
+        preview={
+            "File": "PrivacyFence QA test file [QATEST].pdf", "Owner": QA_EMAIL,
+            "Size": "18 KB", "Modified": "2026-07-16",
+        },
+        details_text="[binary content — this text should not be visible; the PDFView should be]",
+        visibility={"File metadata": "allow", "Document content": "allow"},
+        pdf_bytes=_TINY_PDF_BYTES,
+        accept_all_hints=["if I own it", "this folder"],
         connector="drive",
     ))
 
@@ -3210,19 +3348,25 @@ def _scenarios(
 
     # ================================================================== #
     # Dialog window -- not tool-approval dialogs; exercises dialog_window.py's small
-    # confirmation/list-picker host (issue #145 ported these off `osascript display
-    # dialog`/`choose from list`) through the real approval_popup.py functions gate.py's
-    # own asyncio.to_thread(...) call sites use, not a direct dialog_window call --
-    # this exercises the actual production call path end to end, the same way every
-    # tool-approval scenario above calls show_native_approval() rather than reaching
-    # into approval_window.py's controller directly. Fully independent per scenario
-    # (unlike the settings-window group below, which shares one app/window) -- each is
-    # its own blocking call, same as every tool-approval scenario above. Both terminal
-    # outcomes get their own scenario for each of the two shapes (confirmation, choice)
-    # -- Cancel is the security-relevant default (see approval_popup.py's own
-    # docstrings), so it gets a real on-screen click here too, not just the
-    # accept/choose path. Neither an "RG-" nor a "WG-" scenario, so a --group rg/wg run
-    # skips this section entirely, same as the settings-window group below.
+    # confirmation host (issue #145 ported these off `osascript display dialog`) through
+    # the real approval_popup.py functions gate.py's own asyncio.to_thread(...) call
+    # sites use, not a direct dialog_window call -- this exercises the actual production
+    # call path end to end, the same way every tool-approval scenario above calls
+    # show_native_approval() rather than reaching into approval_window.py's controller
+    # directly. Fully independent per scenario (unlike the settings-window group below,
+    # which shares one app/window) -- each is its own blocking call, same as every
+    # tool-approval scenario above. Both terminal outcomes get their own scenario --
+    # Cancel is the security-relevant default (see approval_popup.py's own docstrings),
+    # so it gets a real on-screen click here too, not just the accept path. Neither an
+    # "RG-" nor a "WG-" scenario, so a --group rg/wg run skips this section entirely,
+    # same as the settings-window group below.
+    #
+    # dialog_window.py's *other* shape (build_choice_html/show_choice_dialog) has no
+    # scenario here -- issue #151's multi-button "Always allow" redesign deleted its one
+    # auto-accept caller (approval_popup.show_rule_choice_popup); its only remaining
+    # caller is settings_controller.py's Atlassian multi-resource picker, which needs a
+    # live Jira/Confluence OAuth session to exercise for real and isn't a fit for this
+    # script's synthetic-fixture scenarios.
     # ================================================================== #
     if group_prefix is None:
         results.append(run_dialog(
@@ -3248,16 +3392,6 @@ def _scenarios(
                 "trusted_sender_domain: qa-popup-smoke.example.com"
             ),
             click_title="Cancel", expected=False,
-        ))
-        results.append(run_dialog(
-            "Dialog window · rule choice → pick an option",
-            call=lambda: approval_popup.show_rule_choice_popup(_QA_RULE_CHOICE_DESCRIPTIONS),
-            click_title=_QA_RULE_CHOICE_DESCRIPTIONS[1], expected=1,
-        ))
-        results.append(run_dialog(
-            "Dialog window · rule choice → Cancel (no selection)",
-            call=lambda: approval_popup.show_rule_choice_popup(_QA_RULE_CHOICE_DESCRIPTIONS),
-            click_title="Cancel", expected=None,
         ))
 
     # ================================================================== #
@@ -3322,11 +3456,11 @@ def main() -> None:
         "--scenario",
         help="Run only the scenario(s) whose name contains this text (case-insensitive substring "
              "match against the scenario name shown in the report table, e.g. 'gmail_get_thread', "
-             "'Dialog window' for dialog_window.py's confirmation/list-picker scenarios, or "
-             "'Settings window' for the settings-window scenarios), instead of the full 106-scenario "
-             "suite (93 tool-approval scenarios, 6 dialog-window scenarios, and the seven "
-             "settings-window scenarios). For grabbing a single updated screenshot -- e.g. for "
-             "README.md -- without sitting through the whole run: --scenario 'gmail_get_thread' "
+             "'Dialog window' for dialog_window.py's confirmation scenarios, or 'Settings window' "
+             "for the settings-window scenarios), instead of the full 108-scenario suite (97 "
+             "tool-approval scenarios, 4 dialog-window scenarios, and the seven settings-window "
+             "scenarios). For grabbing a single updated screenshot -- e.g. for README.md -- "
+             "without sitting through the whole run: --scenario 'gmail_get_thread' "
              "--screenshot-dir docs/images/screenshots. Combines with --group (both must match). "
              "Matches nothing -> an empty report and a nonzero exit code, same as any other "
              "all-failed run.",
@@ -3336,7 +3470,7 @@ def main() -> None:
         help="'all' (default): every scenario. 'rg': review-gate (read) scenarios only -- those "
              "whose name starts with 'RG-', per docs/approval-window-content-reference.md's view "
              "groups. 'wg': popup-gate (write) scenarios only ('WG-' prefix). Either excludes the "
-             "six dialog-window and seven settings-window scenarios, which are neither. Combines "
+             "four dialog-window and seven settings-window scenarios, which are neither. Combines "
              "with --scenario (both must match) -- "
              "e.g. --group rg --scenario gmail to see only Gmail's read-side dialogs.",
     )

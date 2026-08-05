@@ -108,7 +108,7 @@ class TestAutoAcceptPath:
     async def test_auto_accepted_returns_filtered_data_without_popup(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "i_am_sender")))
         called = []
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: called.append(a) or "deny")
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: (called.append(a) or "deny", None))
 
         result = await gate.gated_call(**base_kwargs())
 
@@ -155,8 +155,8 @@ class TestAutoAcceptPath:
 class TestReviewGateDecisions:
     async def test_deny_raises_and_audits_rejected(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "deny")
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("deny", None))
 
         with pytest.raises(RuntimeError, match="denied"):
             await gate.gated_call(**base_kwargs(gate="review"))
@@ -166,8 +166,8 @@ class TestReviewGateDecisions:
 
     async def test_plain_accept_returns_filtered_and_audits_approved(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept", None))
 
         result = await gate.gated_call(**base_kwargs(gate="review"))
 
@@ -176,80 +176,72 @@ class TestReviewGateDecisions:
         assert entries[0]["decision"] == "approved"
         assert entries[0]["auto_accept_rule"] == ""
 
-    async def test_show_read_popup_receives_allow_accept_all_true_when_suggestion_exists(self, monkeypatch, audit_dir):
+    async def test_show_read_popup_receives_one_choice_when_suggestion_exists(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: ("i_am_sender", None))
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [("i_am_sender", None)])
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
-            captured["allow_accept_all"] = allow_accept_all
-            return "deny"
+        def fake_show_read_popup(title, preview, details, accept_all_choices, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+            captured["accept_all_choices"] = accept_all_choices
+            return "deny", None
 
         monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
 
         with pytest.raises(RuntimeError):
             await gate.gated_call(**base_kwargs(gate="review"))
 
-        assert captured["allow_accept_all"] is True
+        assert captured["accept_all_choices"] == [("i_am_sender", "if I'm sender")]
 
-    async def test_show_read_popup_receives_allow_accept_all_false_without_suggestion(self, monkeypatch, audit_dir):
+    async def test_show_read_popup_receives_no_choices_without_a_suggestion(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
-            captured["allow_accept_all"] = allow_accept_all
-            return "deny"
+        def fake_show_read_popup(title, preview, details, accept_all_choices, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+            captured["accept_all_choices"] = accept_all_choices
+            return "deny", None
 
         monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
 
         with pytest.raises(RuntimeError):
             await gate.gated_call(**base_kwargs(gate="review"))
 
-        assert captured["allow_accept_all"] is False
+        assert captured["accept_all_choices"] == []
 
-    async def test_show_read_popup_receives_the_short_rule_hint_for_the_top_suggestion(
+    async def test_show_read_popup_receives_two_choices_for_a_multi_candidate_item(
         self, monkeypatch, audit_dir,
     ):
-        # The Always-allow button itself needs to know which specific rule
-        # it would create -- see gate.py's own accept_all_hint comment.
+        # The multi-button window (issue #151): each matching candidate
+        # becomes its own (rule_name, short_label) entry, not a single
+        # top-priority hint.
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: ("i_am_sender", None))
+        monkeypatch.setattr(
+            gate, "suggest_rule_choices",
+            lambda *a, **k: [("i_am_owner", None), ("approved_folder", ["f1"])],
+        )
         captured = {}
 
         def fake_show_read_popup(*args, **kwargs):
-            captured.update(kwargs)
-            return "deny"
+            captured["accept_all_choices"] = args[3]  # positional -- see gate.py's own call
+            return "deny", None
 
         monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
 
         with pytest.raises(RuntimeError):
             await gate.gated_call(**base_kwargs(gate="review"))
 
-        assert captured["accept_all_hint"] == "if I'm sender"
-
-    async def test_show_read_popup_receives_an_empty_hint_without_a_suggestion(self, monkeypatch, audit_dir):
-        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
-        captured = {}
-
-        def fake_show_read_popup(*args, **kwargs):
-            captured.update(kwargs)
-            return "deny"
-
-        monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
-
-        with pytest.raises(RuntimeError):
-            await gate.gated_call(**base_kwargs(gate="review"))
-
-        assert captured["accept_all_hint"] == ""
+        assert captured["accept_all_choices"] == [
+            ("i_am_owner", "if I own it"), ("approved_folder", "this folder"),
+        ]
 
 
 class TestAcceptAll:
     async def test_accept_all_confirmed_creates_rule_and_audits(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: ("trusted_sender_domain", ["example.com"]))
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(
+            gate, "suggest_rule_choices", lambda *a, **k: [("trusted_sender_domain", ["example.com"])],
+        )
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept_all", 0))
         monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
 
         added = []
@@ -265,9 +257,12 @@ class TestAcceptAll:
         assert entries[0]["auto_accept_rule"] == "trusted_sender_domain"
 
     async def test_accept_all_without_suggestion_falls_back_to_plain_approve(self, monkeypatch, audit_dir):
+        # Shouldn't happen against the real window (no Always-allow button
+        # renders with zero choices) -- but a defensive "no matching
+        # candidate" chosen_index must still degrade to a plain accept.
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept_all", None))
         added = []
         monkeypatch.setattr(gate, "add_auto_accept_rule", lambda *a: added.append(a))
 
@@ -280,8 +275,8 @@ class TestAcceptAll:
 
     async def test_accept_all_cancelled_confirmation_still_returns_data_once_but_no_rule(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: ("i_am_sender", None))
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [("i_am_sender", None)])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept_all", 0))
         monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: False)
         added = []
         monkeypatch.setattr(gate, "add_auto_accept_rule", lambda *a: added.append(a))
@@ -296,28 +291,24 @@ class TestAcceptAll:
 
 class TestAcceptAllMultipleChoices:
     """When suggest_rule_choices() returns 2+ candidates for the same item
-    (e.g. a Drive file you own that's also in an approved folder), Always
-    allow must offer an explicit choice instead of always silently creating
-    the top-priority one suggest_rule() itself picked."""
+    (e.g. a Drive file you own that's also in an approved folder), the
+    popup renders one "Always allow" button per candidate (issue #151) --
+    which rule gets created is decided by *which button was clicked*
+    (chosen_index, the popup's own return value), not a second chooser
+    dialog shown after a single generic Always-allow click."""
 
-    async def test_multiple_choices_shows_choice_popup_and_creates_the_chosen_rule(self, monkeypatch, audit_dir):
+    async def test_second_candidate_clicked_creates_that_specific_rule(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: ("i_am_owner", None))
         monkeypatch.setattr(
             gate, "suggest_rule_choices",
             lambda *a, **k: [("i_am_owner", None), ("approved_folder", ["f1"])],
         )
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept_all")
-
+        # Index 1 -- the second button ("approved_folder"'s), not the first.
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept_all", 1))
         confirm_calls = []
         monkeypatch.setattr(
             gate, "show_rule_confirmation_popup",
             lambda description: confirm_calls.append(description) or True,
-        )
-        choice_calls = []
-        monkeypatch.setattr(
-            gate, "show_rule_choice_popup",
-            lambda descriptions: choice_calls.append(descriptions) or 1,  # picks approved_folder
         )
         added = []
         monkeypatch.setattr(gate, "add_auto_accept_rule", lambda op, name, value: added.append((op, name, value)))
@@ -325,22 +316,36 @@ class TestAcceptAllMultipleChoices:
         result = await gate.gated_call(**base_kwargs(gate="review"))
 
         assert result is FILTERED
-        assert len(choice_calls) == 1  # the choice popup was shown ...
-        assert confirm_calls == []     # ... and the single-choice confirm popup was not
+        assert len(confirm_calls) == 1  # the same single-item confirm dialog every candidate gets
         assert added == [("gmail.read_message", "approved_folder", ["f1"])]
         entries = read_audit_entries(audit_dir)
         assert entries[0]["decision"] == "accepted_via_accept_all"
         assert entries[0]["auto_accept_rule"] == "approved_folder"
 
-    async def test_multiple_choices_cancelled_still_accepts_once_but_no_rule(self, monkeypatch, audit_dir):
+    async def test_first_candidate_clicked_creates_that_rule_instead(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: ("i_am_owner", None))
         monkeypatch.setattr(
             gate, "suggest_rule_choices",
             lambda *a, **k: [("i_am_owner", None), ("approved_folder", ["f1"])],
         )
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept_all")
-        monkeypatch.setattr(gate, "show_rule_choice_popup", lambda descriptions: None)  # cancelled
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept_all", 0))
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
+        added = []
+        monkeypatch.setattr(gate, "add_auto_accept_rule", lambda op, name, value: added.append((op, name, value)))
+
+        result = await gate.gated_call(**base_kwargs(gate="review"))
+
+        assert result is FILTERED
+        assert added == [("gmail.read_message", "i_am_owner", None)]
+
+    async def test_multiple_choices_cancelled_confirmation_still_accepts_once_but_no_rule(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(
+            gate, "suggest_rule_choices",
+            lambda *a, **k: [("i_am_owner", None), ("approved_folder", ["f1"])],
+        )
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept_all", 1))
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: False)  # cancelled
         added = []
         monkeypatch.setattr(gate, "add_auto_accept_rule", lambda *a: added.append(a))
 
@@ -351,26 +356,40 @@ class TestAcceptAllMultipleChoices:
         entries = read_audit_entries(audit_dir)
         assert entries[0]["decision"] == "approved"  # accepted once, not via a rule
 
-    async def test_single_matching_candidate_uses_the_plain_confirm_popup_not_the_choice_one(
+    async def test_out_of_range_chosen_index_degrades_to_plain_accept(self, monkeypatch, audit_dir):
+        # Defensive bounds-check against the popup's own JS bridge --
+        # shouldn't happen against the real button row, but must not raise.
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(
+            gate, "suggest_rule_choices",
+            lambda *a, **k: [("i_am_owner", None), ("approved_folder", ["f1"])],
+        )
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept_all", 5))
+        added = []
+        monkeypatch.setattr(gate, "add_auto_accept_rule", lambda *a: added.append(a))
+
+        result = await gate.gated_call(**base_kwargs(gate="review"))
+
+        assert result is FILTERED
+        assert added == []
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "approved"
+
+    async def test_single_matching_candidate_still_uses_the_same_confirm_popup(
         self, monkeypatch, audit_dir,
     ):
-        # Regression guard: suggest_rule_choices() returning exactly one
-        # entry must fall back to today's single-item confirm dialog, not
-        # pop up a one-option "choose from list".
+        # Regression guard: exactly one candidate behaves identically to the
+        # multi-candidate case above, just with only index 0 to click.
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: ("i_am_sender", None))
         monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [("i_am_sender", None)])
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept_all", 0))
         monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
-        choice_calls = []
-        monkeypatch.setattr(gate, "show_rule_choice_popup", lambda descriptions: choice_calls.append(descriptions))
         added = []
         monkeypatch.setattr(gate, "add_auto_accept_rule", lambda op, name, value: added.append((op, name, value)))
 
         result = await gate.gated_call(**base_kwargs(gate="review"))
 
         assert result is FILTERED
-        assert choice_calls == []
         assert added == [("gmail.read_message", "i_am_sender", None)]
 
 
@@ -384,7 +403,7 @@ class TestAcceptAllWrites:
     async def test_accept_all_confirmed_creates_rule_and_audits(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         monkeypatch.setattr(gate, "suggest_write_rule", lambda *a, **k: ("label_name_allowlist", ["Newsletters"]))
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: ("accept_all", 0))
         monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
         added = []
         monkeypatch.setattr(gate, "add_auto_accept_rule", lambda op, name, value: added.append((op, name, value)))
@@ -403,7 +422,7 @@ class TestAcceptAllWrites:
         # describe_rule_change() names operation_key explicitly instead.
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         monkeypatch.setattr(gate, "suggest_write_rule", lambda *a, **k: ("approved_project_keys", ["PFQA"]))
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: ("accept_all", 0))
         captured = {}
 
         def fake_confirm(description):
@@ -421,11 +440,12 @@ class TestAcceptAllWrites:
 
     async def test_accept_all_without_suggestion_falls_back_to_plain_approve(self, monkeypatch, audit_dir):
         # gmail_send_message has no entry in WRITE_RULE_SUGGESTIONS at all --
-        # even if the (real) popup somehow returned "accept_all", there's no
+        # even if the (real) popup somehow returned "accept_all" (no
+        # Always-allow button ever renders with zero choices), there's no
         # suggestion to act on, so this must behave like a plain accept.
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         monkeypatch.setattr(gate, "suggest_write_rule", lambda *a, **k: None)
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: ("accept_all", None))
         added = []
         monkeypatch.setattr(gate, "add_auto_accept_rule", lambda *a: added.append(a))
 
@@ -439,7 +459,7 @@ class TestAcceptAllWrites:
     async def test_accept_all_cancelled_confirmation_still_accepts_once_but_no_rule(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         monkeypatch.setattr(gate, "suggest_write_rule", lambda *a, **k: ("label_name_allowlist", ["Newsletters"]))
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: ("accept_all", 0))
         monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: False)
         added = []
         monkeypatch.setattr(gate, "add_auto_accept_rule", lambda *a: added.append(a))
@@ -456,7 +476,7 @@ class TestAcceptAllWrites:
         # of the 13 Drive/Sheets/Docs write operations that now share the
         # sandbox-folder suggestion.
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: ("accept_all", 0))
         monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
         added = []
         monkeypatch.setattr(gate, "add_auto_accept_rule", lambda op, name, value: added.append((op, name, value)))
@@ -478,7 +498,7 @@ class TestAcceptAllWrites:
         # to scope it to, so this also exercises describe_rule_change's
         # "no value" formatting for the confirmation popup.
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: ("accept_all", 0))
         captured = {}
         monkeypatch.setattr(
             gate, "show_rule_confirmation_popup",
@@ -499,75 +519,75 @@ class TestAcceptAllWrites:
         assert entries[0]["decision"] == "accepted_via_accept_all"
         assert entries[0]["auto_accept_rule"] == "always_allow"
 
-    async def test_show_popup_receives_allow_accept_all_true_when_suggestion_exists(self, monkeypatch, audit_dir):
+    async def test_show_popup_receives_one_choice_when_suggestion_exists(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         monkeypatch.setattr(gate, "suggest_write_rule", lambda *a, **k: ("label_name_allowlist", ["Newsletters"]))
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
-            captured["allow_accept_all"] = allow_accept_all
-            return "accept"
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", accept_all_choices=None, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+            captured["accept_all_choices"] = accept_all_choices
+            return "accept", None
 
         monkeypatch.setattr(gate, "show_popup", fake_show_popup)
 
         await gate.gated_call(**base_kwargs(gate="popup", connector="gmail", tool="gmail_add_label"))
 
-        assert captured["allow_accept_all"] is True
+        assert captured["accept_all_choices"] == [("label_name_allowlist", "this label")]
 
-    async def test_show_popup_receives_allow_accept_all_false_without_suggestion(self, monkeypatch, audit_dir):
+    async def test_show_popup_receives_no_choices_without_suggestion(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         monkeypatch.setattr(gate, "suggest_write_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
-            captured["allow_accept_all"] = allow_accept_all
-            return "accept"
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", accept_all_choices=None, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+            captured["accept_all_choices"] = accept_all_choices
+            return "accept", None
 
         monkeypatch.setattr(gate, "show_popup", fake_show_popup)
 
         await gate.gated_call(**base_kwargs(gate="popup", connector="gmail", tool="gmail_create_draft"))
 
-        assert captured["allow_accept_all"] is False
+        assert captured["accept_all_choices"] == []
 
-    async def test_show_popup_receives_the_short_rule_hint_for_the_top_suggestion(self, monkeypatch, audit_dir):
+    async def test_show_popup_receives_the_short_rule_hint_for_the_suggestion(self, monkeypatch, audit_dir):
         # The write-gate counterpart to the review-gate's own equivalent
-        # test above -- same accept_all_hint derivation, from suggest_
-        # write_rule() instead of suggest_rule().
+        # test above -- same describe_rule_short() derivation, from
+        # suggest_write_rule() instead of suggest_rule_choices().
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         monkeypatch.setattr(gate, "suggest_write_rule", lambda *a, **k: ("label_name_allowlist", ["Newsletters"]))
         captured = {}
 
         def fake_show_popup(*args, **kwargs):
+            captured["accept_all_choices"] = args[8]  # positional -- see gate.py's own call
             captured.update(kwargs)
-            return "accept"
+            return "accept", None
 
         monkeypatch.setattr(gate, "show_popup", fake_show_popup)
 
         await gate.gated_call(**base_kwargs(gate="popup", connector="gmail", tool="gmail_add_label"))
 
-        assert captured["accept_all_hint"] == "this label"
+        assert captured["accept_all_choices"] == [("label_name_allowlist", "this label")]
 
     async def test_show_popup_receives_an_empty_hint_for_the_unconditional_always_allow_rule(
         self, monkeypatch, audit_dir,
     ):
         # gmail_create_draft's real suggestion is always_allow -- the one
         # rule with no category to name, so the button stays plain "Always
-        # allow" even though allow_accept_all is True for it.
+        # allow" even though a choice is still offered for it.
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         monkeypatch.setattr(gate, "suggest_write_rule", lambda *a, **k: ("always_allow", None))
         captured = {}
 
         def fake_show_popup(*args, **kwargs):
-            captured["allow_accept_all"] = args[8]  # positional -- see gate.py's own call
+            captured["accept_all_choices"] = args[8]  # positional -- see gate.py's own call
             captured.update(kwargs)
-            return "accept"
+            return "accept", None
 
         monkeypatch.setattr(gate, "show_popup", fake_show_popup)
 
         await gate.gated_call(**base_kwargs(gate="popup", connector="gmail", tool="gmail_create_draft"))
 
-        assert captured["allow_accept_all"] is True
-        assert captured["accept_all_hint"] == ""
+        assert captured["accept_all_choices"] == [("always_allow", "")]
 
     async def test_show_popup_receives_preview_tables_and_blocks_and_table_only(self, monkeypatch, audit_dir):
         # Regression: these three were threaded through show_read_popup
@@ -581,11 +601,11 @@ class TestAcceptAllWrites:
         monkeypatch.setattr(gate, "suggest_write_rule", lambda *a, **k: None)
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", accept_all_choices=None, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
             captured["preview_tables"] = preview_tables
             captured["preview_blocks"] = preview_blocks
             captured["table_only"] = table_only
-            return "accept"
+            return "accept", None
 
         monkeypatch.setattr(gate, "show_popup", fake_show_popup)
         table = {"headers": ["A", "B"], "rows": [["1", "2"]]}
@@ -607,7 +627,7 @@ class TestAcceptAllWrites:
         # external source" to confirm on a write.
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         monkeypatch.setattr(gate, "suggest_write_rule", lambda *a, **k: ("label_name_allowlist", ["Newsletters"]))
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: ("accept_all", 0))
         monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
         monkeypatch.setattr(gate, "add_auto_accept_rule", lambda *a: None)
 
@@ -817,8 +837,8 @@ class TestPopupGateWrites:
     async def test_accept_returns_filtered_and_audits_approved(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         read_popup_called = []
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: read_popup_called.append(1) or "deny")
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: (read_popup_called.append(1) or "deny", None))
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: ("accept", None))
 
         result = await gate.gated_call(**base_kwargs(gate="popup", tool="gmail_create_draft"))
 
@@ -829,7 +849,7 @@ class TestPopupGateWrites:
 
     async def test_deny_raises_and_audits_rejected(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "deny")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: ("deny", None))
 
         with pytest.raises(RuntimeError, match="denied"):
             await gate.gated_call(**base_kwargs(gate="popup", tool="gmail_create_draft"))
@@ -840,7 +860,7 @@ class TestPopupGateWrites:
     async def test_matching_rule_auto_accepts_without_a_popup(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "trusted_sender_domain")))
         popup_calls = []
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: popup_calls.append(1) or "deny")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: (popup_calls.append(1) or "deny", None))
 
         result = await gate.gated_call(**base_kwargs(gate="popup", tool="gmail_create_draft"))
 
@@ -860,9 +880,9 @@ class TestPopupGateWrites:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", accept_all_choices=None, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
             captured["details"] = details
-            return "accept"
+            return "accept", None
 
         monkeypatch.setattr(gate, "show_popup", fake_show_popup)
         confirm_calls = []
@@ -896,7 +916,7 @@ class TestUploadPiiGate:
 
     async def test_no_upload_pii_scan_text_never_shows_confirmation_popup(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: ("accept", None))
         confirm_calls = []
         monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda *a, **k: confirm_calls.append(1) or True)
 
@@ -907,7 +927,7 @@ class TestUploadPiiGate:
 
     async def test_clean_upload_pii_scan_text_never_shows_confirmation_popup(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: ("accept", None))
         confirm_calls = []
         monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda *a, **k: confirm_calls.append(1) or True)
 
@@ -920,7 +940,7 @@ class TestUploadPiiGate:
 
     async def test_flagged_upload_pii_scan_text_forces_confirmation(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: ("accept", None))
         monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: True)
 
         result = await gate.gated_call(**base_kwargs(
@@ -934,7 +954,7 @@ class TestUploadPiiGate:
 
     async def test_declining_confirmation_denies_the_whole_upload(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: ("accept", None))
         monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: False)
 
         with pytest.raises(RuntimeError, match="denied"):
@@ -958,7 +978,7 @@ class TestUploadPiiGate:
 
         def fake_show_popup(*args, **kwargs):
             captured.update(kwargs)
-            return "accept"
+            return "accept", None
 
         monkeypatch.setattr(gate, "show_popup", fake_show_popup)
         monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: True)
@@ -977,7 +997,7 @@ class TestUploadPiiGate:
 
         def fake_show_popup(*args, **kwargs):
             captured.update(kwargs)
-            return "accept"
+            return "accept", None
 
         monkeypatch.setattr(gate, "show_popup", fake_show_popup)
 
@@ -990,7 +1010,7 @@ class TestUploadPiiGate:
     async def test_flagged_content_overrides_a_matching_auto_accept_rule(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "parent_folder_allowlist")))
         popup_calls = []
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: popup_calls.append(1) or "accept")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: (popup_calls.append(1) or "accept", None))
         monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: True)
 
         result = await gate.gated_call(**base_kwargs(
@@ -1006,7 +1026,7 @@ class TestUploadPiiGate:
     async def test_matching_rule_without_flagged_content_still_auto_accepts_silently(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "parent_folder_allowlist")))
         popup_calls = []
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: popup_calls.append(1) or "deny")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: (popup_calls.append(1) or "deny", None))
 
         result = await gate.gated_call(**base_kwargs(
             gate="popup", tool="drive_upload_file", upload_pii_scan_text="nothing sensitive here",
@@ -1025,9 +1045,9 @@ class TestUploadPiiGate:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", accept_all_choices=None, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
             captured["write_content_flags"] = write_content_flags
-            return "accept"
+            return "accept", None
 
         monkeypatch.setattr(gate, "show_popup", fake_show_popup)
         monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: True)
@@ -1046,12 +1066,12 @@ class TestRequestFingerprint:
 
     async def test_first_time_request_has_zero_seen_count(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
+        def fake_show_read_popup(title, preview, details, accept_all_choices, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
             captured["seen_count"] = seen_count
-            return "accept"
+            return "accept", None
 
         monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
 
@@ -1061,8 +1081,8 @@ class TestRequestFingerprint:
 
     async def test_repeated_approval_increments_seen_count(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept", None))
 
         # Two prior approvals of the exact same (connector, tool, summary).
         await gate.gated_call(**base_kwargs(gate="review"))
@@ -1070,9 +1090,9 @@ class TestRequestFingerprint:
 
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
+        def fake_show_read_popup(title, preview, details, accept_all_choices, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
             captured["seen_count"] = seen_count
-            return "accept"
+            return "accept", None
 
         monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
         await gate.gated_call(**base_kwargs(gate="review"))
@@ -1081,16 +1101,16 @@ class TestRequestFingerprint:
 
     async def test_different_summary_does_not_count_toward_seen_count(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept", None))
 
         await gate.gated_call(**base_kwargs(gate="review", summary="from bob@example.com"))
 
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
+        def fake_show_read_popup(title, preview, details, accept_all_choices, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
             captured["seen_count"] = seen_count
-            return "accept"
+            return "accept", None
 
         monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
         await gate.gated_call(**base_kwargs(gate="review", summary="from alice@example.com"))
@@ -1099,15 +1119,15 @@ class TestRequestFingerprint:
 
     async def test_seen_count_forwarded_to_show_popup_too(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: ("accept", None))
 
         await gate.gated_call(**base_kwargs(gate="popup", tool="gmail_create_draft"))
 
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", accept_all_choices=None, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
             captured["seen_count"] = seen_count
-            return "accept"
+            return "accept", None
 
         monkeypatch.setattr(gate, "show_popup", fake_show_popup)
         await gate.gated_call(**base_kwargs(gate="popup", tool="gmail_create_draft"))
@@ -1116,17 +1136,17 @@ class TestRequestFingerprint:
 
     async def test_rejected_prior_call_does_not_count(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "deny")
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("deny", None))
 
         with pytest.raises(RuntimeError):
             await gate.gated_call(**base_kwargs(gate="review"))
 
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
+        def fake_show_read_popup(title, preview, details, accept_all_choices, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
             captured["seen_count"] = seen_count
-            return "accept"
+            return "accept", None
 
         monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
         await gate.gated_call(**base_kwargs(gate="review"))
@@ -1144,9 +1164,9 @@ class TestWriteContentFlags:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", accept_all_choices=None, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
             captured["write_content_flags"] = write_content_flags
-            return "accept"
+            return "accept", None
 
         monkeypatch.setattr(gate, "show_popup", fake_show_popup)
 
@@ -1161,9 +1181,9 @@ class TestWriteContentFlags:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", accept_all_choices=None, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
             captured["write_content_flags"] = write_content_flags
-            return "accept"
+            return "accept", None
 
         monkeypatch.setattr(gate, "show_popup", fake_show_popup)
 
@@ -1180,10 +1200,10 @@ class TestWriteContentFlags:
         # ever tried to pass it, this call would raise a TypeError.
         # Succeeding here is the assertion.
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
-            return "accept"
+        def fake_show_read_popup(title, preview, details, accept_all_choices, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+            return "accept", None
 
         monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
 
@@ -1195,7 +1215,7 @@ class TestWriteContentFlags:
 
     async def test_flags_never_affect_pii_detected_audit_field(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: ("accept", None))
 
         await gate.gated_call(**base_kwargs(
             gate="popup", tool="gmail_create_draft",
@@ -1214,9 +1234,9 @@ class TestWriteContentFlags:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", accept_all_choices=None, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
             captured["write_content_flags"] = write_content_flags
-            return "accept"
+            return "accept", None
 
         monkeypatch.setattr(gate, "show_popup", fake_show_popup)
 
@@ -1247,9 +1267,9 @@ class TestTempAccept:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", accept_all_choices=None, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
             captured["temp_accept_eligible"] = temp_accept_eligible
-            return "deny"
+            return "deny", None
 
         monkeypatch.setattr(gate, "show_popup", fake_show_popup)
 
@@ -1266,9 +1286,9 @@ class TestTempAccept:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", accept_all_choices=None, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
             captured["temp_accept_eligible"] = temp_accept_eligible
-            return "deny"
+            return "deny", None
 
         monkeypatch.setattr(gate, "show_popup", fake_show_popup)
 
@@ -1283,9 +1303,9 @@ class TestTempAccept:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", accept_all_choices=None, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
             captured["temp_accept_eligible"] = temp_accept_eligible
-            return "deny"
+            return "deny", None
 
         monkeypatch.setattr(gate, "show_popup", fake_show_popup)
 
@@ -1299,7 +1319,7 @@ class TestTempAccept:
     async def test_accept_on_eligible_op_registers_temp_accept_and_audits(self, monkeypatch, audit_dir):
         evaluator = FakeEvaluator()
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: evaluator)
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: ("accept", None))
 
         result = await gate.gated_call(**base_kwargs(
             gate="popup", connector="drive", tool="drive_sheets_write_range", args=self.SHEETS_ARGS,
@@ -1319,7 +1339,7 @@ class TestTempAccept:
         evaluator = AutoAcceptEvaluator({})
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: evaluator)
         popup_calls = []
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: popup_calls.append(1) or "accept")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: (popup_calls.append(1) or "accept", None))
 
         result1 = await gate.gated_call(**base_kwargs(
             gate="popup", connector="drive", tool="drive_sheets_write_range", args=self.SHEETS_ARGS,
@@ -1342,7 +1362,7 @@ class TestTempAccept:
         evaluator = AutoAcceptEvaluator({})
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: evaluator)
         popup_calls = []
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: popup_calls.append(1) or "accept")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: (popup_calls.append(1) or "accept", None))
 
         await gate.gated_call(**base_kwargs(
             gate="popup", connector="drive", tool="drive_sheets_write_range", args=self.SHEETS_ARGS,
@@ -1361,7 +1381,7 @@ class TestTempAccept:
         # accept must never register a temp accept or use the
         # accepted_via_temp_session decision -- it's an ordinary approval.
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: ("accept", None))
 
         result = await gate.gated_call(**base_kwargs(gate="popup", tool="gmail_create_draft"))
 
@@ -1376,7 +1396,7 @@ class TestTempAccept:
         # no confirmation popup and no "pii_detected" in the audit entry.
         evaluator = FakeEvaluator()
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: evaluator)
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: ("accept", None))
         confirm_calls = []
         monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda *a, **k: confirm_calls.append(1) or True)
 
@@ -1406,12 +1426,12 @@ class TestPIIGate:
 
     async def test_read_popup_receives_detected_categories(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
+        def fake_show_read_popup(title, preview, details, accept_all_choices, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
             captured["pii_categories"] = pii_categories
-            return "deny"
+            return "deny", None
 
         monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
 
@@ -1422,12 +1442,12 @@ class TestPIIGate:
 
     async def test_read_popup_receives_empty_list_when_no_pii(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
+        def fake_show_read_popup(title, preview, details, accept_all_choices, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
             captured["pii_categories"] = pii_categories
-            return "deny"
+            return "deny", None
 
         monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
 
@@ -1438,8 +1458,8 @@ class TestPIIGate:
 
     async def test_no_pii_never_shows_confirmation_popup(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept", None))
         confirm_calls = []
         monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda *a, **k: confirm_calls.append(1) or True)
 
@@ -1450,8 +1470,8 @@ class TestPIIGate:
 
     async def test_pii_confirmed_returns_data_and_audits_pii_detected(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept", None))
         monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: True)
 
         result = await gate.gated_call(**base_kwargs(gate="review", details_text=self.PII_TEXT))
@@ -1463,8 +1483,8 @@ class TestPIIGate:
 
     async def test_pii_declined_denies_the_whole_request(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept", None))
         monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: False)
 
         with pytest.raises(RuntimeError, match="denied"):
@@ -1476,8 +1496,8 @@ class TestPIIGate:
 
     async def test_non_pii_deny_audits_pii_detected_false(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "deny")
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("deny", None))
 
         with pytest.raises(RuntimeError):
             await gate.gated_call(**base_kwargs(gate="review", details_text="nothing sensitive here"))
@@ -1487,8 +1507,8 @@ class TestPIIGate:
 
     async def test_pii_confirmation_happens_before_accept_all_rule_confirmation(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: ("i_am_sender", None))
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [("i_am_sender", None)])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept_all", 0))
         call_order = []
         monkeypatch.setattr(
             gate, "show_pii_confirmation_popup",
@@ -1510,8 +1530,8 @@ class TestPIIGate:
 
     async def test_declining_pii_confirmation_on_accept_all_skips_rule_creation(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: ("i_am_sender", None))
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [("i_am_sender", None)])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept_all", 0))
         monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: False)
         rule_confirm_calls = []
         monkeypatch.setattr(
@@ -1535,9 +1555,9 @@ class TestPIIGate:
         # silently pass this through must still stop for human review when
         # the content itself contains likely PII.
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "i_am_sender")))
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
         popup_calls = []
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: popup_calls.append(1) or "accept")
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: (popup_calls.append(1) or "accept", None))
         monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: True)
 
         result = await gate.gated_call(**base_kwargs(gate="review", details_text=self.PII_TEXT))
@@ -1551,8 +1571,8 @@ class TestPIIGate:
 
     async def test_pii_override_still_requires_its_own_confirmation_and_can_be_denied(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "i_am_sender")))
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept", None))
         monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: False)
 
         with pytest.raises(RuntimeError, match="denied"):
@@ -1568,7 +1588,7 @@ class TestPIIGate:
         # takes the silent fast path, exactly as before this feature existed.
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "i_am_sender")))
         popup_calls = []
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: popup_calls.append(1) or "deny")
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: (popup_calls.append(1) or "deny", None))
 
         result = await gate.gated_call(**base_kwargs(gate="review", details_text="nothing sensitive here"))
 
@@ -1592,12 +1612,12 @@ class TestPiiScanText:
         # details_text (shown in the popup) has PII in the "headers", but the
         # caller-supplied pii_scan_text (the actual body) does not.
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
+        def fake_show_read_popup(title, preview, details, accept_all_choices, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
             captured["pii_categories"] = pii_categories
-            return "deny"
+            return "deny", None
 
         monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
 
@@ -1612,12 +1632,12 @@ class TestPiiScanText:
 
     async def test_pii_scan_text_can_detect_pii_absent_from_details_text(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
+        def fake_show_read_popup(title, preview, details, accept_all_choices, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
             captured["pii_categories"] = pii_categories
-            return "deny"
+            return "deny", None
 
         monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
 
@@ -1632,12 +1652,12 @@ class TestPiiScanText:
 
     async def test_pii_scan_text_empty_string_skips_detection_even_if_details_has_pii(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
+        def fake_show_read_popup(title, preview, details, accept_all_choices, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
             captured["pii_categories"] = pii_categories
-            return "deny"
+            return "deny", None
 
         monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
 
@@ -1654,12 +1674,12 @@ class TestPiiScanText:
         # No pii_scan_text passed at all -- same behavior as before this
         # parameter existed.
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
+        def fake_show_read_popup(title, preview, details, accept_all_choices, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
             captured["pii_categories"] = pii_categories
-            return "deny"
+            return "deny", None
 
         monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
 
@@ -1672,19 +1692,19 @@ class TestPiiScanText:
 class TestPopupSerialization:
     async def test_only_one_popup_shown_at_a_time(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
 
         concurrent = 0
         max_concurrent = 0
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
+        def fake_show_read_popup(title, preview, details, accept_all_choices, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
             nonlocal concurrent, max_concurrent
             concurrent += 1
             max_concurrent = max(max_concurrent, concurrent)
             import time
             time.sleep(0.05)
             concurrent -= 1
-            return "accept"
+            return "accept", None
 
         monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
 
@@ -1722,15 +1742,15 @@ class TestQueuedRequestReCheck:
                 return False, ""
 
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: LiveEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: ("i_am_sender", None))
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [("i_am_sender", None)])
         monkeypatch.setattr(gate, "add_auto_accept_rule", lambda op, name, value: rules_created.append(name))
         monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
 
         popup_calls = []
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
+        def fake_show_read_popup(title, preview, details, accept_all_choices, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
             popup_calls.append(title)
-            return "accept_all"
+            return "accept_all", 0
 
         monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
 
@@ -1785,13 +1805,13 @@ class TestQueuedRequestReCheck:
 
         popup_calls = []
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", accept_all_choices=None, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
             popup_calls.append(title)
             wait_until(lambda: len(check_calls) >= 3, timeout=1.0)
             # Simulate a rule appearing (e.g. added from the menu bar) while
             # this dialog is up, independent of anything gated_call did.
             rule_now_active.set()
-            return "deny"
+            return "deny", None
 
         monkeypatch.setattr(gate, "show_popup", fake_show_popup)
 
@@ -1857,9 +1877,9 @@ class TestApprovedObjectTypesNeverPopsUp:
             "salesforce.read_record": [{"rule": "approved_object_types", "value": ["Account"]}],
         })
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: evaluator)
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
         popup_calls = []
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: popup_calls.append(1) or "accept")
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: (popup_calls.append(1) or "accept", None))
 
         result = await gate.gated_call(**base_kwargs(
             connector="salesforce", tool="salesforce_get_record", gate="review",
@@ -1906,7 +1926,7 @@ class TestAuditGapSafety:
         self, monkeypatch, audit_dir
     ):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
 
         def boom(*a, **k):
             raise RuntimeError("native popup crashed")
@@ -1942,8 +1962,8 @@ class TestAuditGapSafety:
         self, monkeypatch, audit_dir
     ):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: ("i_am_sender", None))
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [("i_am_sender", None)])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept_all", 0))
         monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
 
         def boom(*a, **k):
@@ -1962,8 +1982,8 @@ class TestAuditGapSafety:
         # The finally-block safety net must not add a second entry on top of
         # a normal decision.
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept", None))
 
         await gate.gated_call(**base_kwargs(gate="review"))
 
@@ -2008,9 +2028,9 @@ class TestUnattendedMode:
 
     async def test_review_gate_denies_without_popup_when_unattended(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
         called = []
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: called.append(a) or "accept")
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: (called.append(a) or "accept", None))
 
         with gate.unattended_scope(True):
             with pytest.raises(RuntimeError, match="unattended session"):
@@ -2023,7 +2043,7 @@ class TestUnattendedMode:
     async def test_popup_gate_denies_without_popup_when_unattended(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         called = []
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: called.append(a) or "accept")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: (called.append(a) or "accept", None))
 
         with gate.unattended_scope(True):
             with pytest.raises(RuntimeError, match="unattended session"):
@@ -2036,7 +2056,7 @@ class TestUnattendedMode:
     async def test_matching_rule_still_auto_accepts_silently_even_when_unattended(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "i_am_sender")))
         called = []
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: called.append(a) or "deny")
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: (called.append(a) or "deny", None))
 
         with gate.unattended_scope(True):
             result = await gate.gated_call(**base_kwargs(gate="review"))
@@ -2049,7 +2069,7 @@ class TestUnattendedMode:
     async def test_matching_temp_accept_still_auto_accepts_on_writes_when_unattended(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "session_temp_accept")))
         called = []
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: called.append(a) or "deny")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: (called.append(a) or "deny", None))
 
         with gate.unattended_scope(True):
             result = await gate.gated_call(**base_kwargs(gate="popup"))
@@ -2063,7 +2083,7 @@ class TestUnattendedMode:
         # Unattended mode must deny this exactly like the no-match case.
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "trusted_sender_domain")))
         called = []
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: called.append(a) or "accept")
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: (called.append(a) or "accept", None))
 
         pii_text = "Please wire the deposit to DE89370400440532013000, thanks."
         with gate.unattended_scope(True):
@@ -2077,9 +2097,9 @@ class TestUnattendedMode:
 
     async def test_not_unattended_still_shows_popup_as_before(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
         called = []
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: called.append(a) or "accept")
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: (called.append(a) or "accept", None))
 
         result = await gate.gated_call(**base_kwargs(gate="review"))
 
@@ -2095,8 +2115,8 @@ class TestClaudeReason:
 
     async def test_reason_scope_value_reaches_the_audit_entry(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept", None))
 
         with gate.reason_scope("Summarizing the Q3 budget for the user."):
             await gate.gated_call(**base_kwargs(gate="review"))
@@ -2106,8 +2126,8 @@ class TestClaudeReason:
 
     async def test_no_reason_scope_defaults_to_empty_string(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept", None))
 
         await gate.gated_call(**base_kwargs(gate="review"))
 
@@ -2116,12 +2136,12 @@ class TestClaudeReason:
 
     async def test_reason_forwarded_to_show_read_popup(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
         captured = {}
 
-        def fake_show_read_popup(title, preview, details, allow_accept_all, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
+        def fake_show_read_popup(title, preview, details, accept_all_choices, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
             captured["claude_reason"] = claude_reason
-            return "accept"
+            return "accept", None
 
         monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
 
@@ -2134,9 +2154,9 @@ class TestClaudeReason:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", allow_accept_all=False, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow", accept_all_hint=""):
+        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", accept_all_choices=None, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
             captured["claude_reason"] = claude_reason
-            return "accept"
+            return "accept", None
 
         monkeypatch.setattr(gate, "show_popup", fake_show_popup)
 
@@ -2157,8 +2177,8 @@ class TestClaudeReason:
 
     async def test_scope_does_not_leak_to_calls_outside_it(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule", lambda *a, **k: None)
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept", None))
 
         with gate.reason_scope("Only for this one call."):
             pass  # scope already exited before gated_call runs

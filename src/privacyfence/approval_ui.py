@@ -5,7 +5,7 @@ gate.py is the policy engine: auto-accept check -> block on a human decision
 -> audit log. Today the only way to get that human decision is a native
 macOS dialog, but the policy loop itself has no reason to know that -- it
 just needs something that can show the write-gate popup, the review-gate
-popup, and the three smaller confirmation dialogs, and return a decision.
+popup, and the two smaller confirmation dialogs, and return a decision.
 ApprovalUI is that something. NativeApprovalUI (today's only implementation)
 delegates straight through to approval_popup.py, so this adds a seam with no
 behavior change on macOS.
@@ -40,7 +40,7 @@ class ApprovalUI(ABC):
         write_content_flags: list[str] | None = None,
         seen_count: int = 0,
         connector: str = "",
-        allow_accept_all: bool = False,
+        accept_all_choices: list[tuple[str, str]] | None = None,
         preview_bytes: bytes = b"",
         preview_mime_type: str = "",
         preview_tables: list[dict] | None = None,
@@ -48,10 +48,11 @@ class ApprovalUI(ABC):
         table_only: bool = False,
         upload_forced: bool = False,
         layout: str = "narrow",
-        accept_all_hint: str = "",
-    ) -> str:
-        """Approval popup for write tools. Returns 'accept', 'deny', or
-        'accept_all'. See approval_popup.show_popup's docstring."""
+    ) -> tuple[str, int | None]:
+        """Approval popup for write tools. Returns (decision, chosen_index)
+        -- decision is 'accept', 'deny', or 'accept_all'; chosen_index is
+        the clicked button's index into accept_all_choices when decision is
+        'accept_all', else None. See approval_popup.show_popup's docstring."""
 
     @abstractmethod
     def show_read_popup(
@@ -59,7 +60,7 @@ class ApprovalUI(ABC):
         title: str,
         preview: dict[str, str],
         details_text: str,
-        allow_accept_all: bool,
+        accept_all_choices: list[tuple[str, str]] | None,
         pii_categories: list[str] | None = None,
         visibility: dict[str, str] | None = None,
         claude_reason: str = "",
@@ -74,10 +75,12 @@ class ApprovalUI(ABC):
         preview_blocks: list[dict] | None = None,
         table_only: bool = False,
         layout: str = "narrow",
-        accept_all_hint: str = "",
-    ) -> str:
-        """Approval popup for read tools. Returns 'accept', 'deny', or
-        'accept_all'. See approval_popup.show_read_popup's docstring."""
+    ) -> tuple[str, int | None]:
+        """Approval popup for read tools. Returns (decision, chosen_index)
+        -- decision is 'accept', 'deny', or 'accept_all'; chosen_index is
+        the clicked button's index into accept_all_choices when decision is
+        'accept_all', else None. See approval_popup.show_read_popup's
+        docstring."""
 
     @abstractmethod
     def show_pii_confirmation_popup(self, categories: list[str]) -> bool:
@@ -85,14 +88,10 @@ class ApprovalUI(ABC):
         See approval_popup.show_pii_confirmation_popup's docstring."""
 
     @abstractmethod
-    def show_rule_choice_popup(self, descriptions: list[str]) -> int | None:
-        """Chooser for when 2+ auto-accept rules could be created from the
-        same item. See approval_popup.show_rule_choice_popup's docstring."""
-
-    @abstractmethod
     def show_rule_confirmation_popup(self, description: str) -> bool:
-        """Second-step confirmation after "Always allow" is clicked. See
-        approval_popup.show_rule_confirmation_popup's docstring."""
+        """Second-step confirmation after a specific "Always allow" button
+        is clicked. See approval_popup.show_rule_confirmation_popup's
+        docstring."""
 
 
 class NativeApprovalUI(ApprovalUI):
@@ -107,9 +106,6 @@ class NativeApprovalUI(ApprovalUI):
 
     def show_pii_confirmation_popup(self, categories: list[str]) -> bool:
         return approval_popup.show_pii_confirmation_popup(categories)
-
-    def show_rule_choice_popup(self, descriptions: list[str]) -> int | None:
-        return approval_popup.show_rule_choice_popup(descriptions)
 
     def show_rule_confirmation_popup(self, description: str) -> bool:
         return approval_popup.show_rule_confirmation_popup(description)
