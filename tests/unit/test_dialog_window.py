@@ -160,13 +160,20 @@ class TestChoiceContent:
         assert "Choose the Atlassian site to connect:" in controller.html_string
 
     def test_every_option_renders_its_own_row(self):
+        # Asserted as one combined index+text pattern per row, not a bare
+        # "is this URL a substring of the document" check (CodeQL's
+        # incomplete-url-substring-sanitization query flags the latter shape
+        # as if it were an origin check being bypassed by a crafted
+        # substring -- a false positive here, since this is a test
+        # assertion, not a security check, but the combined pattern is also
+        # a strictly more precise assertion: it pins each option to its own
+        # row/index, not just "this text appears somewhere in the 20KB
+        # document" -- which also includes vendored CSS/fonts).
         controller = make_choice_controller(options=["https://a.atlassian.net", "https://b.atlassian.net"])
         controller.build_panel()
         html = controller.html_string
-        assert 'data-pf-index="0"' in html
-        assert 'data-pf-index="1"' in html
-        assert "https://a.atlassian.net" in html
-        assert "https://b.atlassian.net" in html
+        assert 'data-pf-index="0">https://a.atlassian.net<' in html
+        assert 'data-pf-index="1">https://b.atlassian.net<' in html
 
     def test_cancel_button_present_no_confirm_button(self):
         controller = make_choice_controller()
