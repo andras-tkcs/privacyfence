@@ -6,17 +6,45 @@ without prompting.
 
 All methods are async — Telethon is natively asyncio-based.  The connector
 awaits them directly on the IPC event loop.
+
+``TelegramPrivacyFenceClient`` optionally persists a whole-account chat-name
+snapshot to disk (``chat_cache_file``: numeric chat id -> display name, across
+users, groups, and channels). When given, ``get_chat_name``/``get_messages``/
+``search_messages`` check it first, refreshing it from Telegram (``get_dialogs``)
+automatically about once a week, instead of ``search_messages`` in particular
+falling back to a bare numeric chat id for every message whose chat hasn't been
+seen yet this session (``list_chats`` only ever primes the in-memory cache for
+whatever page of dialogs it was last asked for, and that cache doesn't survive
+a restart). Defaults to "" (disabled) -- resolution then behaves exactly as it
+did before this existed. See ``refresh_chat_directory`` for the explicit,
+immediate re-sync the ``telegram_refresh_chat_cache`` bridge tool uses.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# How long the on-disk whole-account chat-name snapshot (see
+# refresh_chat_directory()) is trusted before get_chat_name()/get_messages()/
+# search_messages() transparently re-sync it. A week is plenty for who you
+# chat with to stay useful; the telegram_refresh_chat_cache bridge tool
+# covers the mid-week exception (a brand-new chat that isn't in last week's
+# snapshot yet).
+CHAT_DIRECTORY_CACHE_TTL = timedelta(days=7)
+
+# Floor between automatic re-sync attempts once one has failed (e.g. a
+# transient network error) -- without this, every cache-miss lookup while the
+# directory is stale/unrefreshable would retry the full dialog listing from
+# scratch, recreating the very per-lookup problem this cache exists to avoid.
+_DIRECTORY_RETRY_COOLDOWN = timedelta(minutes=5)
 
 
 class TelegramClientError(Exception):
@@ -83,13 +111,33 @@ class TelegramPrivacyFenceClient:
     combines connect + identity check in one step for daemon startup.
     """
 
-    def __init__(self, api_id: int, api_hash: str, session_file: str) -> None:
+    def __init__(
+        self, api_id: int, api_hash: str, session_file: str, chat_cache_file: str = ""
+    ) -> None:
         self._api_id = api_id
         self._api_hash = api_hash
         self._session_file = session_file
         self._client = None  # telethon.TelegramClient, built lazily
         self._connected = False
+        # Small cache so repeated messages from/about the same chat don't
+        # trigger a fresh lookup each time within a single fetch. Also
+        # doubles as the in-memory home for the whole-account chat directory
+        # snapshot below -- a directory hit and a one-off live resolution are
+        # indistinguishable to callers, both just end up in this same dict.
         self._chat_name_cache: dict[int, str] = {}
+
+        # Weekly on-disk snapshot (see _ensure_chat_directory/
+        # refresh_chat_directory) -- turns the per-uncached-chat get_entity
+        # lookup a search/history fetch would otherwise need for anyone/
+        # anything not already known as of the last refresh into zero.
+        # Empty string (the default) opts this cache out entirely --
+        # resolution behaves exactly as before this existed, no lookup at
+        # all for a chat missing from list_chats()'s in-memory cache (just
+        # the numeric chat id), nothing persisted to disk.
+        self._chat_cache_file = chat_cache_file
+        self._chat_directory_loaded_from_disk = False
+        self._chat_directory_fetched_at: datetime | None = None
+        self._chat_directory_last_attempt: datetime | None = None
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -188,6 +236,8 @@ class TelegramPrivacyFenceClient:
                 f"get_messages(chat_id={chat_id}) failed: {exc}"
             ) from exc
 
+        if self._chat_cache_file:
+            await self._ensure_chat_directory()
         chat_name = self._chat_name_cache.get(chat_id, str(chat_id))
         result: list[TelegramMessage] = []
         for msg in messages:
@@ -206,6 +256,8 @@ class TelegramPrivacyFenceClient:
         except Exception as exc:
             raise TelegramClientError(f"search_messages({query!r}) failed: {exc}") from exc
 
+        if self._chat_cache_file:
+            await self._ensure_chat_directory()
         result: list[TelegramMessage] = []
         for msg in messages:
             chat_id = _peer_id(msg.peer_id)
@@ -217,9 +269,16 @@ class TelegramPrivacyFenceClient:
     async def get_chat_name(self, chat_id: int) -> str:
         """Best-effort chat display-name lookup (cached, never raises).
 
-        Reuses list_chats()'s cache when already populated; otherwise
-        resolves the entity directly via Telethon.
+        When a ``chat_cache_file`` was given at construction, checks the
+        weekly whole-account directory first (see ``_ensure_chat_directory``/
+        ``refresh_chat_directory``); otherwise (or on a directory miss)
+        reuses ``list_chats()``'s in-memory cache when already populated, or
+        resolves the entity directly via Telethon -- same fallback as before
+        this cache existed, for anyone missing from the directory (a chat
+        started since the last refresh).
         """
+        if self._chat_cache_file:
+            await self._ensure_chat_directory()
         if chat_id in self._chat_name_cache:
             return self._chat_name_cache[chat_id]
         try:
@@ -234,6 +293,123 @@ class TelegramPrivacyFenceClient:
         if name:
             self._chat_name_cache[chat_id] = name
         return name
+
+    # ------------------------------------------------------------------ #
+    # Directory cache (whole-account chat-name snapshot)
+    # ------------------------------------------------------------------ #
+
+    async def ensure_chat_directory_fresh(self) -> None:
+        """Eagerly run the same freshness check ``get_chat_name``/
+        ``get_messages``/``search_messages`` would otherwise only run lazily
+        on first use. Intentionally *not* called at connector startup the
+        way Slack's directory-cache counterpart is (see daemon_main.py) --
+        Telegram connects lazily, on first tool call, by design (MTProto has
+        no browser-OAuth equivalent to piggyback a connectivity check on),
+        and forcing a refresh here would force a connection too. Exists for
+        callers that *do* want that eager behavior (a future connector
+        startup path, or a test). A no-op (no network call at all) when the
+        snapshot is already fresh, and best-effort like the lazy path it
+        shares its implementation with -- never raises.
+        """
+        if self._chat_cache_file:
+            await self._ensure_chat_directory()
+
+    async def refresh_chat_directory(self) -> int:
+        """Force an immediate re-sync of every chat/group/channel dialog via
+        ``get_dialogs(limit=None)`` (Telethon paginates internally),
+        replacing the current chat-name snapshot and resetting its weekly
+        TTL. Raises on failure -- unlike the lazy, best-effort refresh
+        ``_ensure_chat_directory`` runs automatically, this is the explicit
+        action a caller takes (the ``telegram_refresh_chat_cache`` bridge
+        tool) when a chat started mid-week needs to resolve correctly right
+        now, rather than waiting for next week's automatic refresh or the
+        one-off ``get_entity`` fallback ``get_chat_name`` already does for
+        any id missing from the directory. Returns the number of chats
+        cached.
+        """
+        await self._ensure_connected()
+        try:
+            dialogs = await self._client.get_dialogs(limit=None)  # type: ignore[union-attr]
+        except Exception as exc:
+            raise TelegramClientError(f"refresh_chat_directory failed: {exc}") from exc
+        names: dict[int, str] = {}
+        for dialog in dialogs:
+            entity_id = getattr(dialog.entity, "id", 0)
+            if entity_id:
+                names[entity_id] = dialog.name or str(entity_id)
+        self._chat_name_cache = names
+        self._chat_directory_loaded_from_disk = True
+        self._chat_directory_fetched_at = datetime.now(timezone.utc)
+        self._save_chat_directory_to_disk()
+        logger.info("Telegram chat directory refreshed: %d chat(s) cached", len(names))
+        return len(names)
+
+    async def _ensure_chat_directory(self) -> None:
+        """Best-effort: loads the on-disk weekly snapshot (once per process)
+        and transparently re-syncs it from Telegram if it's missing or older
+        than a week. Failures are logged and swallowed, subject to a retry
+        cooldown -- a directory miss just means callers fall back to
+        whatever they did before this cache existed (list_chats()'s
+        in-memory cache, a numeric chat id, or a one-off get_entity call)."""
+        if not self._chat_directory_loaded_from_disk:
+            self._load_chat_directory_from_disk()
+            self._chat_directory_loaded_from_disk = True
+        now = datetime.now(timezone.utc)
+        if (
+            self._chat_directory_fetched_at
+            and now - self._chat_directory_fetched_at < CHAT_DIRECTORY_CACHE_TTL
+        ):
+            return
+        if (
+            self._chat_directory_last_attempt
+            and now - self._chat_directory_last_attempt < _DIRECTORY_RETRY_COOLDOWN
+        ):
+            return
+        self._chat_directory_last_attempt = now
+        try:
+            await self.refresh_chat_directory()
+        except TelegramClientError as exc:
+            logger.warning("Could not refresh Telegram chat directory (non-fatal): %s", exc)
+
+    def _load_chat_directory_from_disk(self) -> None:
+        if not self._chat_cache_file or not os.path.exists(self._chat_cache_file):
+            return
+        try:
+            with open(self._chat_cache_file, encoding="utf-8") as fh:
+                data = json.load(fh)
+            fetched_at = datetime.fromisoformat(data.get("fetched_at", ""))
+            raw_chats = data.get("chats") or {}
+        except Exception as exc:
+            logger.warning("Could not load Telegram chat directory cache (non-fatal): %s", exc)
+            return
+        loaded = 0
+        for chat_id_str, name in raw_chats.items():
+            try:
+                chat_id = int(chat_id_str)
+            except (TypeError, ValueError):
+                continue
+            # setdefault: never clobber a fresher live resolution already
+            # cached this session (e.g. via list_chats()) before the disk
+            # load ran.
+            self._chat_name_cache.setdefault(chat_id, name)
+            loaded += 1
+        self._chat_directory_fetched_at = fetched_at
+        logger.debug("Loaded %d cached Telegram chat name(s) from disk", loaded)
+
+    def _save_chat_directory_to_disk(self) -> None:
+        if not self._chat_cache_file or self._chat_directory_fetched_at is None:
+            return
+        payload = {
+            "fetched_at": self._chat_directory_fetched_at.isoformat(),
+            "chats": {str(cid): name for cid, name in self._chat_name_cache.items()},
+        }
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(self._chat_cache_file)), exist_ok=True)
+            with open(self._chat_cache_file, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+            os.chmod(self._chat_cache_file, 0o600)  # DM chat names are real people's names
+        except OSError as exc:
+            logger.warning("Could not save Telegram chat directory cache (non-fatal): %s", exc)
 
     async def send_message(self, chat_id: int, text: str) -> dict:
         """Send a text message to a chat by its numeric id."""

@@ -93,6 +93,27 @@ class TestListChats:
             await connector.call("telegram_list_chats", {})
 
 
+class TestRefreshChatCache:
+    async def test_auto_accepts_and_returns_count(self, tmp_path):
+        init_audit_logger(str(tmp_path))
+        connector, client = make_connector()
+        client.refresh_chat_directory.return_value = 12
+
+        result = await connector.call("telegram_refresh_chat_cache", {})
+
+        assert result == {"cached_chats": 12}
+        entries = (tmp_path / f"{current_week()}.jsonl").read_text(encoding="utf-8").splitlines()
+        assert '"decision": "auto_accepted"' in entries[0]
+        assert '"tool": "telegram_refresh_chat_cache"' in entries[0]
+
+    async def test_client_error_becomes_runtime_error(self):
+        connector, client = make_connector()
+        client.refresh_chat_directory.side_effect = TelegramClientError("refresh_chat_directory failed: flood wait")
+
+        with pytest.raises(RuntimeError, match="refresh_chat_directory failed"):
+            await connector.call("telegram_refresh_chat_cache", {})
+
+
 class TestGetMessages:
     async def test_preview_and_result_field_whitelist(self, gated_call_spy):
         connector, client = make_connector()
