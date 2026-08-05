@@ -39,6 +39,16 @@ webView_didFinishNavigation_). Deny keeps Escape: declining via a reflexive
 keypress is the safe direction, not a risk the way an accidental approve
 would be.
 
+The panel itself starts fully transparent (alpha 0) for the same reason:
+loadHTMLString_baseURL_ is asynchronous even for this fully local document
+(base64 fonts, inlined icons, full CSS bundle), so ordering the window
+front immediately would show it empty -- just a bare titlebar with no
+content underneath -- for however long that load takes, before snapping to
+the real card stack. webView_didFinishNavigation_ (and its two
+webView_didFail...  fail-safes, so a load failure can't leave the panel
+invisible forever) is what fades it in, at the same moment it re-enables
+the buttons -- one "content is actually ready" signal driving both.
+
 AppKit windows must be created and driven on the main thread, but gate.py
 calls in here from the IPC server thread (via asyncio.to_thread). show_native_
 approval() hands the actual window-building to the main thread with
@@ -375,6 +385,12 @@ class ApprovalWindowController(NSObject):
         panel.setReleasedWhenClosed_(False)
         panel.setHidesOnDeactivate_(False)
         panel.center()
+        # Invisible until webView_didFinishNavigation_ (or a fail-safe)
+        # reveals it -- see this class's own module-docstring paragraph on
+        # why. Doesn't show/activate/key anything (still consistent with
+        # this method's "pure construction" contract), just keeps whatever
+        # does get ordered front from being seen until there's content in it.
+        panel.setAlphaValue_(0.0)
         self.panel = panel
 
         content = self._build_content_view(window_width, window_height)
@@ -602,26 +618,31 @@ class ApprovalWindowController(NSObject):
         actually finished loading and painting, so it's now safe to let
         Deny/Allow once/Always allow be clicked -- see _build_content_view
         (where they start disabled) and _action_buttons' comment in
-        init() for why."""
-        self._enable_action_buttons()
+        init() for why -- and to actually reveal the panel (see
+        _build_panel's alphaValue comment): the reviewer never sees an
+        empty window snap to its real content, because there was nothing
+        on screen to see until this fired."""
+        self._reveal_and_enable_actions()
 
     def webView_didFailNavigation_withError_(self, webView, navigation, error) -> None:
         """Fail-safe counterpart to webView_didFinishNavigation_ above: a
-        load that fails outright must still enable the buttons, not leave
-        them permanently disabled. This document is fully local/self-
-        contained (no network, nil base URL), so an actual failure here
-        would be unexpected -- but leaving a reviewer stuck in a modal
-        dialog with no way to even click Deny would be a far worse outcome
-        than the cosmetic issue this whole mechanism exists to fix."""
-        self._enable_action_buttons()
+        load that fails outright must still reveal the panel and enable the
+        buttons, not leave a reviewer staring at an invisible, unresponsive
+        modal dialog forever. This document is fully local/self-contained
+        (no network, nil base URL), so an actual failure here would be
+        unexpected -- but that outcome would be far worse than the cosmetic
+        issue this whole mechanism exists to fix."""
+        self._reveal_and_enable_actions()
 
     def webView_didFailProvisionalNavigation_withError_(self, webView, navigation, error) -> None:
         """Same fail-safe as webView_didFailNavigation_withError_ above, for
         the earlier (provisional) failure point in WKNavigationDelegate's
         callback sequence."""
-        self._enable_action_buttons()
+        self._reveal_and_enable_actions()
 
-    def _enable_action_buttons(self) -> None:
+    def _reveal_and_enable_actions(self) -> None:
+        if self.panel is not None:
+            self.panel.setAlphaValue_(1.0)
         for btn in self._action_buttons:
             btn.setEnabled_(True)
 

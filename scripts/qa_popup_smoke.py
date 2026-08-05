@@ -203,20 +203,22 @@ def _wait_for_button_enabled(pid: int, title: str) -> str:
     (no such button ever appeared), or "TIMEOUT_BUTTON_DISABLED" (it
     exists but never became enabled within WINDOW_WAIT_TIMEOUT_SECONDS).
 
-    v2's Deny/Allow once/Always allow start disabled and only become
-    enabled once the card-stack webview finishes loading (see
+    v2's Deny/Allow once/Always allow start disabled -- and the panel
+    itself starts fully transparent (alphaValue 0) -- and only become
+    enabled/visible once the card-stack webview finishes loading (see
     approval_window.py's webView_didFinishNavigation_ -- loadHTMLString_
     baseURL_ is asynchronous even for local content). This is the actual
     "the popup is ready" signal, distinct from _wait_for_window()'s "the
-    window exists" -- the window appears (and passes _wait_for_window)
-    the instant the NSPanel is created, well before the webview has
+    window exists" -- System Events' accessibility tree lists the NSPanel
+    (and passes _wait_for_window) the instant it's created and ordered
+    front, regardless of its alphaValue, well before the webview has
     painted anything, so a screenshot taken right after _wait_for_window
-    alone can capture a still-blank webview (just the header and disabled
-    buttons) depending on how fast the machine happens to render that
-    run -- not reliably reproducible, and no --pause-seconds value fixes
-    it for certain, only makes the race less likely to lose. Called both
-    by the screenshot step (clicker(), below) and by _click_button()
-    before it actually clicks, so neither can act on a stale window state.
+    alone would capture an empty, still-invisible panel depending on how
+    fast the machine happens to render that run -- not reliably
+    reproducible, and no --pause-seconds value fixes it for certain, only
+    makes the race less likely to lose. Called both by the screenshot step
+    (clicker(), below) and by _click_button() before it actually clicks, so
+    neither can act on a stale window state.
     """
     script = f'''
     tell application "System Events"
@@ -658,13 +660,13 @@ def _run_scenario(
             click_status_box.append(wait_status)
             return
         # The window existing is not the same as it being ready to look
-        # at: v2's webview loads asynchronously and the window appears the
-        # instant the NSPanel is created, well before that finishes (see
-        # _wait_for_button_enabled's own docstring) -- waiting on "Deny"
-        # (always present, never conditional like "Always allow") becoming
-        # enabled is the actual "safe to screenshot" signal. Without this,
-        # a screenshot taken right after _wait_for_window alone could
-        # capture just the header and disabled buttons, a race no
+        # at: v2's webview loads asynchronously, and the NSPanel is created
+        # (and passes _wait_for_window) fully transparent, well before that
+        # finishes (see _wait_for_button_enabled's own docstring) -- waiting
+        # on "Deny" (always present, never conditional like "Always allow")
+        # becoming enabled is the actual "safe to screenshot" signal.
+        # Without this, a screenshot taken right after _wait_for_window
+        # alone could capture an empty, still-invisible panel, a race no
         # --pause-seconds value reliably avoids.
         ready_status = _wait_for_button_enabled(pid, "Deny")
         if ready_status != "ready":
