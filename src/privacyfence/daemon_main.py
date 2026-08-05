@@ -336,7 +336,11 @@ def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list
             if not slack_org.get("client_id"):
                 raise SlackClientError("Slack organization config not installed")
             token = load_slack_token(_resolve_path(TOKEN_FILES["slack"]))
-            client = SlackClient(user_token=token.get("access_token", ""))
+            client = SlackClient(
+                user_token=token.get("access_token", ""),
+                user_cache_file=str(data_dir() / "slack_user_cache.json"),
+                channel_cache_file=str(data_dir() / "slack_channel_cache.json"),
+            )
             workspace = client.check_connection()
             logger.info("Slack connector ready for workspace %r", workspace)
             connector = SlackConnector(client)

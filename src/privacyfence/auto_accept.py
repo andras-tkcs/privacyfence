@@ -201,6 +201,8 @@ TOOL_TO_GATE: dict[str, str] = {
     "slack_list_dms":                  "auto",
     "slack_list_group_chats":          "auto",
     "slack_resolve_permalink":         "auto",
+    "slack_refresh_user_cache":        "auto",
+    "slack_refresh_channel_cache":     "auto",
     "slack_get_channel_history":       "review",
     "slack_get_thread_replies":        "review",
     "slack_search_messages":           "review",

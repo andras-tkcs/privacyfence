@@ -23,6 +23,7 @@ import pytest
 import yaml
 
 from privacyfence import daemon_main
+from privacyfence.paths import data_dir
 
 
 def fake_client_class(*, result=None, connection_error: Exception | None = None,
@@ -300,7 +301,11 @@ class TestBuildConnectorsSlack:
         assert len(connectors) == 1
         assert connectors[0].name == "slack"
         assert connectors[0].my_email == "me@x.com"
-        assert fake.captured_kwargs == {"user_token": "xoxp-1"}
+        assert fake.captured_kwargs == {
+            "user_token": "xoxp-1",
+            "user_cache_file": str(data_dir() / "slack_user_cache.json"),
+            "channel_cache_file": str(data_dir() / "slack_channel_cache.json"),
+        }
 
     def test_skipped_when_org_config_absent(self, monkeypatch):
         fake = fake_client_class(result="my-workspace")

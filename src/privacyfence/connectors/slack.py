@@ -144,6 +144,38 @@ class SlackConnector(Connector):
                 read_only=True,
             ),
             ToolSpec(
+                name="slack_refresh_user_cache",
+                description=(
+                    "Force an immediate refresh of PrivacyFence's local cache of Slack "
+                    "workspace member names/emails, used to resolve message authors in "
+                    "channel history, thread replies, and search results without a "
+                    "per-message users.info call. Refreshes automatically about once a "
+                    "week; call this when a teammate who joined recently isn't resolving "
+                    "correctly yet. Auto-approved -- refreshes name/email lookups only, "
+                    "reads no message content."
+                ),
+                params=[
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
+                ],
+                read_only=True,
+            ),
+            ToolSpec(
+                name="slack_refresh_channel_cache",
+                description=(
+                    "Force an immediate refresh of PrivacyFence's local cache of Slack "
+                    "channel/DM/group-DM names, used to resolve which conversation a "
+                    "message belongs to in search results and history/thread reads "
+                    "without a per-message conversations.info call. Refreshes "
+                    "automatically about once a week; call this after a new channel is "
+                    "created so it resolves by name right away. Auto-approved -- "
+                    "refreshes name lookups only, reads no message content."
+                ),
+                params=[
+                    ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
+                ],
+                read_only=True,
+            ),
+            ToolSpec(
                 name="slack_get_channel_history",
                 description="Fetch recent messages in a Slack channel. Requires user approval.",
                 params=[
@@ -244,6 +276,10 @@ class SlackConnector(Connector):
             return await self._list_group_chats(**args)
         if tool == "slack_resolve_permalink":
             return await self._resolve_permalink(**args)
+        if tool == "slack_refresh_user_cache":
+            return await self._refresh_user_cache(**args)
+        if tool == "slack_refresh_channel_cache":
+            return await self._refresh_channel_cache(**args)
         if tool == "slack_get_channel_history":
             return await self._get_channel_history(**args)
         if tool == "slack_get_thread_replies":
@@ -329,6 +365,24 @@ class SlackConnector(Connector):
             result["channel_id"], t0,
         )
         return result
+
+    async def _refresh_user_cache(self) -> Any:
+        t0 = time.time()
+        count = await self._fetch(self._slack.refresh_user_directory)
+        self._auto_audit(
+            "slack_refresh_user_cache", "Refresh Slack User Cache",
+            "Refresh Slack user directory cache", f"{count} user(s)", t0,
+        )
+        return {"cached_users": count}
+
+    async def _refresh_channel_cache(self) -> Any:
+        t0 = time.time()
+        count = await self._fetch(self._slack.refresh_channel_directory)
+        self._auto_audit(
+            "slack_refresh_channel_cache", "Refresh Slack Channel Cache",
+            "Refresh Slack channel directory cache", f"{count} conversation(s)", t0,
+        )
+        return {"cached_channels": count}
 
     # ------------------------------------------------------------------ #
     # Review gate (reads)

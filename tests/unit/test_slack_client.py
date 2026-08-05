@@ -20,11 +20,12 @@ from __future__ import annotations
 
 import json
 import stat
-from datetime import timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from freezegun import freeze_time
 
 from privacyfence.oauth_loopback import OAuthLoopbackError
 from privacyfence.slack_client import (
@@ -45,6 +46,16 @@ LIVE_FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "live" / "slack"
 
 def make_client(web_client: MagicMock) -> SlackClient:
     client = SlackClient(user_token="xoxp-fake-token")
+    client._client = web_client
+    return client
+
+
+def make_client_with_caches(web_client: MagicMock, tmp_path: Path) -> SlackClient:
+    client = SlackClient(
+        user_token="xoxp-fake-token",
+        user_cache_file=str(tmp_path / "slack_user_cache.json"),
+        channel_cache_file=str(tmp_path / "slack_channel_cache.json"),
+    )
     client._client = web_client
     return client
 
@@ -1132,6 +1143,224 @@ class TestGetUserInfo:
         client = make_client(web_client)
         with pytest.raises(SlackClientError, match="get_user_info"):
             client.get_user_info("U1")
+
+
+# ---------------------------------------------------------------------------- #
+# Weekly directory caches: refresh_user_directory / refresh_channel_directory
+# ---------------------------------------------------------------------------- #
+
+class TestRefreshUserDirectory:
+    def test_paginates_and_caches(self, tmp_path):
+        web_client = MagicMock()
+        web_client.users_list.side_effect = [
+            {"members": [{"id": "U1", "name": "a"}], "response_metadata": {"next_cursor": "page2"}},
+            {"members": [{"id": "U2", "name": "b"}], "response_metadata": {"next_cursor": ""}},
+        ]
+        client = make_client_with_caches(web_client, tmp_path)
+
+        count = client.refresh_user_directory()
+
+        assert count == 2
+        assert set(client._user_cache) == {"U1", "U2"}
+        assert web_client.users_list.call_count == 2
+        assert web_client.users_list.call_args_list[1].kwargs["cursor"] == "page2"
+
+    def test_saves_snapshot_to_disk(self, tmp_path):
+        web_client = MagicMock()
+        web_client.users_list.return_value = {
+            "members": [{"id": "U1", "name": "jdoe", "real_name": "Jane Doe", "profile": {"email": "jane@x.com"}}],
+            "response_metadata": {"next_cursor": ""},
+        }
+        client = make_client_with_caches(web_client, tmp_path)
+
+        client.refresh_user_directory()
+
+        data = json.loads((tmp_path / "slack_user_cache.json").read_text(encoding="utf-8"))
+        assert data["users"]["U1"]["email"] == "jane@x.com"
+        assert "fetched_at" in data
+
+    def test_api_error_raises(self, tmp_path):
+        web_client = MagicMock()
+        web_client.users_list.side_effect = slack_error("ratelimited")
+        client = make_client_with_caches(web_client, tmp_path)
+        with pytest.raises(SlackClientError, match="refresh_user_directory"):
+            client.refresh_user_directory()
+
+
+class TestGetUserInfoWithDirectoryCache:
+    def test_directory_hit_skips_live_call(self, tmp_path):
+        web_client = MagicMock()
+        web_client.users_list.return_value = {
+            "members": [{"id": "U1", "name": "jdoe"}], "response_metadata": {"next_cursor": ""},
+        }
+        client = make_client_with_caches(web_client, tmp_path)
+        client.refresh_user_directory()
+
+        user = client.get_user_info("U1")
+
+        assert user.name == "jdoe"
+        web_client.users_info.assert_not_called()
+
+    def test_directory_miss_falls_back_to_live_call(self, tmp_path):
+        web_client = MagicMock()
+        web_client.users_list.return_value = {"members": [], "response_metadata": {"next_cursor": ""}}
+        web_client.users_info.return_value = {"user": {"id": "U9", "name": "newhire"}}
+        client = make_client_with_caches(web_client, tmp_path)
+        client.refresh_user_directory()
+
+        user = client.get_user_info("U9")
+
+        assert user.name == "newhire"
+        web_client.users_info.assert_called_once()
+
+    def test_no_cache_file_never_calls_users_list(self):
+        # Default make_client() (no user_cache_file) -- behavior identical
+        # to before this cache existed.
+        web_client = MagicMock()
+        web_client.users_info.return_value = {"user": {"id": "U1", "name": "jdoe"}}
+        client = make_client(web_client)
+
+        client.get_user_info("U1")
+
+        web_client.users_list.assert_not_called()
+
+    def test_stale_disk_snapshot_triggers_automatic_refresh(self, tmp_path):
+        cache_file = tmp_path / "slack_user_cache.json"
+        stale = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+        cache_file.write_text(json.dumps({
+            "fetched_at": stale, "users": {"U1": {"id": "U1", "name": "old"}},
+        }), encoding="utf-8")
+        web_client = MagicMock()
+        web_client.users_list.return_value = {
+            "members": [{"id": "U1", "name": "fresh"}], "response_metadata": {"next_cursor": ""},
+        }
+        client = make_client_with_caches(web_client, tmp_path)
+
+        user = client.get_user_info("U1")
+
+        assert user.name == "fresh"
+        web_client.users_list.assert_called_once()
+
+    def test_fresh_disk_snapshot_skips_refresh(self, tmp_path):
+        cache_file = tmp_path / "slack_user_cache.json"
+        fresh = datetime.now(timezone.utc).isoformat()
+        cache_file.write_text(json.dumps({
+            "fetched_at": fresh, "users": {"U1": {"id": "U1", "name": "cached"}},
+        }), encoding="utf-8")
+        web_client = MagicMock()
+        client = make_client_with_caches(web_client, tmp_path)
+
+        user = client.get_user_info("U1")
+
+        assert user.name == "cached"
+        web_client.users_list.assert_not_called()
+
+    def test_failed_refresh_respects_retry_cooldown(self, tmp_path):
+        web_client = MagicMock()
+        web_client.users_list.side_effect = slack_error("ratelimited")
+        web_client.users_info.return_value = {"user": {"id": "U1", "name": "u1"}}
+        client = make_client_with_caches(web_client, tmp_path)
+
+        with freeze_time("2026-01-01 00:00:00"):
+            client.get_user_info("U1")
+            assert web_client.users_list.call_count == 1
+
+        with freeze_time("2026-01-01 00:01:00"):  # within the cooldown
+            client.get_user_info("U1")
+            assert web_client.users_list.call_count == 1
+
+        with freeze_time("2026-01-01 00:10:00"):  # past the cooldown
+            client.get_user_info("U1")
+            assert web_client.users_list.call_count == 2
+
+
+class TestRefreshChannelDirectory:
+    def test_paginates_across_all_conversation_types_and_caches(self, tmp_path):
+        web_client = MagicMock()
+        web_client.conversations_list.side_effect = [
+            {"channels": [{"id": "C1", "name": "general"}], "response_metadata": {"next_cursor": "page2"}},
+            {"channels": [{"id": "G1", "name": "mpdm-a--b-1", "is_mpim": True}], "response_metadata": {"next_cursor": ""}},
+        ]
+        client = make_client_with_caches(web_client, tmp_path)
+
+        count = client.refresh_channel_directory()
+
+        assert count == 2
+        assert client._channel_name_cache == {"C1": "general", "G1": "mpdm-a--b-1"}
+        assert client._channel_is_mpim_cache == {"C1": False, "G1": True}
+        call_kwargs = web_client.conversations_list.call_args_list[0].kwargs
+        assert call_kwargs["types"] == "public_channel,private_channel,mpim,im"
+
+    def test_saves_snapshot_to_disk(self, tmp_path):
+        web_client = MagicMock()
+        web_client.conversations_list.return_value = {
+            "channels": [{"id": "C1", "name": "general", "is_mpim": False}],
+            "response_metadata": {"next_cursor": ""},
+        }
+        client = make_client_with_caches(web_client, tmp_path)
+
+        client.refresh_channel_directory()
+
+        data = json.loads((tmp_path / "slack_channel_cache.json").read_text(encoding="utf-8"))
+        assert data["channels"]["C1"] == {"name": "general", "is_mpim": False}
+
+    def test_api_error_raises(self, tmp_path):
+        web_client = MagicMock()
+        web_client.conversations_list.side_effect = slack_error("ratelimited")
+        client = make_client_with_caches(web_client, tmp_path)
+        with pytest.raises(SlackClientError, match="refresh_channel_directory"):
+            client.refresh_channel_directory()
+
+
+class TestChannelResolutionWithDirectoryCache:
+    def test_resolve_channel_name_directory_hit_skips_live_call(self, tmp_path):
+        web_client = MagicMock()
+        web_client.conversations_list.return_value = {
+            "channels": [{"id": "C1", "name": "general", "is_mpim": False}],
+            "response_metadata": {"next_cursor": ""},
+        }
+        client = make_client_with_caches(web_client, tmp_path)
+        client.refresh_channel_directory()
+
+        assert client.resolve_channel_name("C1") == "general"
+        web_client.conversations_info.assert_not_called()
+
+    def test_resolve_is_group_dm_directory_hit_skips_live_call(self, tmp_path):
+        web_client = MagicMock()
+        web_client.conversations_list.return_value = {
+            "channels": [{"id": "G1", "name": "mpdm-a--b-1", "is_mpim": True}],
+            "response_metadata": {"next_cursor": ""},
+        }
+        client = make_client_with_caches(web_client, tmp_path)
+        client.refresh_channel_directory()
+
+        assert client.resolve_is_group_dm("G1") is True
+        web_client.conversations_info.assert_not_called()
+
+    def test_no_cache_file_never_calls_conversations_list_for_resolution(self):
+        web_client = MagicMock()
+        web_client.conversations_info.return_value = {"channel": {"name": "general"}}
+        client = make_client(web_client)
+
+        client.resolve_channel_name("C1")
+
+        web_client.conversations_list.assert_not_called()
+
+    def test_stale_disk_snapshot_triggers_automatic_refresh(self, tmp_path):
+        cache_file = tmp_path / "slack_channel_cache.json"
+        stale = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+        cache_file.write_text(json.dumps({
+            "fetched_at": stale, "channels": {"C1": {"name": "old-name", "is_mpim": False}},
+        }), encoding="utf-8")
+        web_client = MagicMock()
+        web_client.conversations_list.return_value = {
+            "channels": [{"id": "C1", "name": "renamed", "is_mpim": False}],
+            "response_metadata": {"next_cursor": ""},
+        }
+        client = make_client_with_caches(web_client, tmp_path)
+
+        assert client.resolve_channel_name("C1") == "renamed"
+        web_client.conversations_list.assert_called_once()
 
 
 # ---------------------------------------------------------------------------- #
