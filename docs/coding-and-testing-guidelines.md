@@ -179,7 +179,8 @@ This is the one area where "looks like a style rule" is actually a security inva
 
 ### 2.4 Faking the gate and native UI
 
-- Never let a test spawn a real `osascript` dialog. Stub `show_popup` / `show_read_popup` /
+- Never let a test spawn a real native dialog (an AppKit window, or the odd remaining `osascript`
+  subprocess elsewhere in the codebase). Stub `show_popup` / `show_read_popup` /
   `show_rule_confirmation_popup` via `monkeypatch.setattr` on the module under test, not by mocking
   at the `approval_popup` import site of every caller.
 - Connector tests stub `gated_call` itself (`gated_call_spy` pattern in

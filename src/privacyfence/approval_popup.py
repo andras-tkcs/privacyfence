@@ -7,71 +7,18 @@ what they're approving before they can click Allow once. The main gate
 (show_popup / show_read_popup) renders through approval_window.py's custom
 AppKit window; show_rule_confirmation_popup and show_pii_confirmation_popup
 are smaller secondary prompts (confirming a standing auto-accept rule, or
-confirming approval of content the PII detector flagged) and stay on the
-simpler osascript `display dialog`.
+confirming approval of content the PII detector flagged) and render through
+dialog_window.py's own small AppKit+WKWebView host instead -- the same
+bridge/blocking-wait pattern show_native_approval below uses, just for a
+1-2-button confirmation rather than the full card-stack layout (issue #145
+ported these off the old `osascript display dialog`/`choose from list`
+prompts this module used to build directly).
 """
 from __future__ import annotations
 
-import os
-import subprocess
-import tempfile
-
 from .approval_window import show_native_approval
 from .approval_window_html import NARROW
-
-
-def _as_str(s: str) -> str:
-    """Encode a Python string as an AppleScript string expression."""
-    parts = s.split('"')
-    encoded = ' & quote & '.join(f'"{p}"' for p in parts)
-    return encoded or '""'
-
-
-def _build_message(lines: list[str]) -> str:
-    if not lines:
-        return '""'
-    parts = [_as_str(line) for line in lines]
-    return ' & return & '.join(parts)
-
-
-def _run(script: str) -> str | None:
-    """Run an AppleScript string, return the button clicked or None."""
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".applescript", delete=False, encoding="utf-8"
-    ) as f:
-        f.write(script)
-        fname = f.name
-    try:
-        result = subprocess.run(
-            ["osascript", fname],
-            capture_output=True, text=True,
-        )
-        if result.returncode == 0:
-            out = result.stdout.strip()
-            if out.startswith("button returned:"):
-                return out[len("button returned:"):]
-            return out or None
-        return None
-    finally:
-        try:
-            os.unlink(fname)
-        except OSError:
-            pass
-
-
-def _display_dialog(title: str, lines: list[str], buttons: list[str], default: str) -> str | None:
-    """Show a native dialog with the given buttons; returns the clicked label or None."""
-    msg = _build_message(lines)
-    btns = "{" + ", ".join(f'"{b}"' for b in buttons) + "}"
-    script = (
-        f"set btn to button returned of "
-        f"(display dialog {msg} "
-        f"with title {_as_str(title)} "
-        f"buttons {btns} "
-        f'default button "{default}")\n'
-        f"return btn"
-    )
-    return _run(script)
+from .dialog_window import show_choice_dialog, show_confirmation_dialog
 
 
 # ---------------------------------------------------------------------------- #
@@ -286,18 +233,20 @@ def show_pii_confirmation_popup(categories: list[str]) -> bool:
     personal data in the content just approved.
 
     Defaults to Cancel, same rationale as show_rule_confirmation_popup:
-    hitting Enter shouldn't silently let flagged content through.
+    hitting Enter shouldn't silently let flagged content through -- see
+    dialog_window.show_confirmation_dialog's own docstring for how that's
+    enforced now.
     """
     cats = ", ".join(categories) if categories else "personal data"
-    lines = [
-        f"PrivacyFence detected possible personal data in this content: {cats}.",
-        "",
-        "Are you sure you want to proceed?",
-    ]
-    clicked = _display_dialog(
-        "PrivacyFence — Possible PII Detected", lines, ["Cancel", "Proceed"], default="Cancel"
+    return show_confirmation_dialog(
+        title="PrivacyFence — Possible PII Detected",
+        message_lines=[
+            f"PrivacyFence detected possible personal data in this content: {cats}.",
+            "Are you sure you want to proceed?",
+        ],
+        cancel_label="Cancel",
+        confirm_label="Proceed",
     )
-    return clicked == "Proceed"
 
 
 def show_rule_choice_popup(descriptions: list[str]) -> int | None:
@@ -313,22 +262,11 @@ def show_rule_choice_popup(descriptions: list[str]) -> int | None:
     case (show_rule_confirmation_popup), since choosing from an explicit list
     is already as deliberate an action as clicking Confirm.
     """
-    opts_as = "{" + ", ".join(_as_str(d) for d in descriptions) + "}"
-    script = (
-        f"set opts to {opts_as}\n"
-        "set chosen to (choose from list opts "
-        'with title "PrivacyFence — Choose Auto-Accept Rule" '
-        'with prompt "More than one rule could be created from this item — choose one:")\n'
-        'if chosen is false then return ""\n'
-        "return item 1 of chosen"
+    return show_choice_dialog(
+        title="PrivacyFence — Choose Auto-Accept Rule",
+        prompt="More than one rule could be created from this item — choose one:",
+        options=descriptions,
     )
-    text = _run(script)
-    if text is None:
-        return None
-    try:
-        return descriptions.index(text)
-    except ValueError:
-        return None
 
 
 def show_rule_confirmation_popup(description: str) -> bool:
@@ -337,14 +275,13 @@ def show_rule_confirmation_popup(description: str) -> bool:
     Defaults to Cancel — unlike the main gate, hitting Enter here shouldn't
     silently create a standing rule that skips future approvals.
     """
-    lines = [
-        "PrivacyFence will create an auto-accept rule:",
-        "",
-        description,
-        "",
-        "Future matching requests will be approved automatically, without a popup.",
-    ]
-    clicked = _display_dialog(
-        "PrivacyFence — Confirm Auto-Accept Rule", lines, ["Cancel", "Confirm"], default="Cancel"
+    return show_confirmation_dialog(
+        title="PrivacyFence — Confirm Auto-Accept Rule",
+        message_lines=[
+            "PrivacyFence will create an auto-accept rule:",
+            description,
+            "Future matching requests will be approved automatically, without a popup.",
+        ],
+        cancel_label="Cancel",
+        confirm_label="Confirm",
     )
-    return clicked == "Confirm"

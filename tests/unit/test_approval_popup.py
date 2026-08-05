@@ -1,173 +1,73 @@
-"""Tests for approval_popup.py's dialog plumbing: _run's osascript
-invocation/temp-file handling, _display_dialog's script assembly, the
-Cancel-vs-Confirm mapping in show_rule_confirmation_popup, and that
-show_popup/show_read_popup forward to show_native_approval with the right
-allow_accept_all contract. subprocess.run and show_native_approval are
-mocked throughout -- these must never pop up a real interactive dialog in
-a test run. _as_str/_build_message (the actual injection-relevant string
-escaping) have their own real-osascript round-trip tests in
-test_approval_popup_escaping.py.
+"""Tests for approval_popup.py's dialog plumbing: that show_pii_confirmation_
+popup/show_rule_confirmation_popup/show_rule_choice_popup forward to
+dialog_window.py's show_confirmation_dialog/show_choice_dialog with the
+right title/copy/default-button contract, and that show_popup/show_read_popup
+forward to show_native_approval with the right allow_accept_all contract.
+dialog_window.show_confirmation_dialog/show_choice_dialog and
+show_native_approval are mocked throughout -- these must never pop up a real
+interactive dialog in a test run.
+
+The AppleScript-injection-relevant string-escaping coverage this module used
+to need (test_approval_popup_escaping.py, round-tripping content through a
+real `osascript` process) no longer applies: these three functions build
+their content through dialog_window_html.py's HTML template now, not
+AppleScript source text -- see test_dialog_window_html.py for that module's
+own HTML-escaping coverage.
 """
 from __future__ import annotations
-
-import os
-from types import SimpleNamespace
-
-import pytest
 
 from privacyfence import approval_popup
 
 
-def fake_run_result(returncode: int = 0, stdout: str = ""):
-    return SimpleNamespace(returncode=returncode, stdout=stdout)
-
-
-class TestRun:
-    def test_button_returned_prefix_is_stripped(self, monkeypatch):
-        monkeypatch.setattr(
-            approval_popup.subprocess, "run",
-            lambda *a, **kw: fake_run_result(0, "button returned:Accept\n"),
-        )
-        assert approval_popup._run("some script") == "Accept"
-
-    def test_plain_stdout_without_prefix_returned_as_is(self, monkeypatch):
-        monkeypatch.setattr(
-            approval_popup.subprocess, "run",
-            lambda *a, **kw: fake_run_result(0, "chosen-value\n"),
-        )
-        assert approval_popup._run("some script") == "chosen-value"
-
-    def test_empty_stdout_returns_none(self, monkeypatch):
-        monkeypatch.setattr(approval_popup.subprocess, "run", lambda *a, **kw: fake_run_result(0, ""))
-        assert approval_popup._run("some script") is None
-
-    def test_nonzero_returncode_returns_none(self, monkeypatch):
-        monkeypatch.setattr(approval_popup.subprocess, "run", lambda *a, **kw: fake_run_result(1, "button returned:Accept"))
-        assert approval_popup._run("some script") is None
-
-    def test_script_written_to_a_temp_applescript_file_and_invoked_via_osascript(self, monkeypatch):
-        captured = {}
-        def fake_run(cmd, **kwargs):
-            captured["cmd"] = cmd
-            with open(cmd[1], encoding="utf-8") as f:
-                captured["file_contents"] = f.read()
-            return fake_run_result(0, "")
-        monkeypatch.setattr(approval_popup.subprocess, "run", fake_run)
-
-        approval_popup._run("display dialog \"hi\"")
-
-        assert captured["cmd"][0] == "osascript"
-        assert captured["cmd"][1].endswith(".applescript")
-        assert captured["file_contents"] == "display dialog \"hi\""
-
-    def test_temp_file_is_cleaned_up_after_run(self, monkeypatch):
-        captured = {}
-        def fake_run(cmd, **kwargs):
-            captured["path"] = cmd[1]
-            return fake_run_result(0, "")
-        monkeypatch.setattr(approval_popup.subprocess, "run", fake_run)
-
-        approval_popup._run("script")
-
-        assert not os.path.exists(captured["path"])
-
-    def test_temp_file_cleaned_up_even_when_osascript_fails(self, monkeypatch):
-        captured = {}
-        def fake_run(cmd, **kwargs):
-            captured["path"] = cmd[1]
-            return fake_run_result(1, "")
-        monkeypatch.setattr(approval_popup.subprocess, "run", fake_run)
-
-        approval_popup._run("script")
-
-        assert not os.path.exists(captured["path"])
-
-
-class TestDisplayDialog:
-    def test_assembles_title_buttons_and_default_button_into_the_script(self, monkeypatch):
-        captured = {}
-        def fake_run(script):
-            captured["script"] = script
-            return "Confirm"
-        monkeypatch.setattr(approval_popup, "_run", fake_run)
-
-        result = approval_popup._display_dialog("My Title", ["line one", "line two"], ["Cancel", "Confirm"], default="Cancel")
-
-        script = captured["script"]
-        assert 'with title "My Title"' in script
-        assert 'buttons {"Cancel", "Confirm"}' in script
-        assert 'default button "Cancel"' in script
-        assert result == "Confirm"
-
-    def test_lines_are_joined_via_build_message(self, monkeypatch):
-        captured = {}
-        monkeypatch.setattr(approval_popup, "_run", lambda script: captured.setdefault("script", script))
-
-        approval_popup._display_dialog("T", ["a", "b"], ["OK"], default="OK")
-
-        assert captured["script"].count("return") >= 1  # AppleScript line-join token
-
-
 class TestShowRuleConfirmationPopup:
     def test_confirm_returns_true(self, monkeypatch):
-        monkeypatch.setattr(approval_popup, "_display_dialog", lambda *a, **kw: "Confirm")
+        monkeypatch.setattr(approval_popup, "show_confirmation_dialog", lambda **kw: True)
         assert approval_popup.show_rule_confirmation_popup("i_am_sender") is True
 
     def test_cancel_returns_false(self, monkeypatch):
-        monkeypatch.setattr(approval_popup, "_display_dialog", lambda *a, **kw: "Cancel")
-        assert approval_popup.show_rule_confirmation_popup("i_am_sender") is False
-
-    def test_none_returns_false(self, monkeypatch):
-        monkeypatch.setattr(approval_popup, "_display_dialog", lambda *a, **kw: None)
+        monkeypatch.setattr(approval_popup, "show_confirmation_dialog", lambda **kw: False)
         assert approval_popup.show_rule_confirmation_popup("i_am_sender") is False
 
     def test_default_button_is_cancel_not_confirm(self, monkeypatch):
         captured = {}
-        def fake_display_dialog(title, lines, buttons, default):
-            captured["default"] = default
-            captured["buttons"] = buttons
-            captured["lines"] = lines
-            return "Cancel"
-        monkeypatch.setattr(approval_popup, "_display_dialog", fake_display_dialog)
+        def fake_show_confirmation_dialog(**kwargs):
+            captured.update(kwargs)
+            return False
+        monkeypatch.setattr(approval_popup, "show_confirmation_dialog", fake_show_confirmation_dialog)
 
         approval_popup.show_rule_confirmation_popup("trusted_sender_domain: a.com")
 
-        assert captured["default"] == "Cancel"
-        assert captured["buttons"] == ["Cancel", "Confirm"]
-        assert any("trusted_sender_domain: a.com" in line for line in captured["lines"])
+        # "Cancel is the default" is enforced by dialog_window.py's own
+        # markup (no Enter binding on the confirm button) -- what this
+        # forwarding call controls is just the button's own label, which
+        # must read as an affirmative action, not a plain default like "OK".
+        assert captured["cancel_label"] == "Cancel"
+        assert captured["confirm_label"] == "Confirm"
+        assert captured["title"] == "PrivacyFence — Confirm Auto-Accept Rule"
+        assert any("trusted_sender_domain: a.com" in line for line in captured["message_lines"])
 
 
 class TestShowRuleChoicePopup:
-    def test_returns_the_index_of_the_chosen_description(self, monkeypatch):
-        monkeypatch.setattr(approval_popup, "_run", lambda script: "approved_folder: f1")
-
+    def test_returns_whatever_show_choice_dialog_returns(self, monkeypatch):
+        monkeypatch.setattr(approval_popup, "show_choice_dialog", lambda **kw: 1)
         result = approval_popup.show_rule_choice_popup(["i_am_owner", "approved_folder: f1"])
-
         assert result == 1
 
     def test_cancelled_choice_returns_none(self, monkeypatch):
-        monkeypatch.setattr(approval_popup, "_run", lambda script: None)
+        monkeypatch.setattr(approval_popup, "show_choice_dialog", lambda **kw: None)
         assert approval_popup.show_rule_choice_popup(["i_am_owner", "approved_folder: f1"]) is None
 
-    def test_unrecognized_returned_text_returns_none(self, monkeypatch):
-        # Shouldn't happen against the real "choose from list" (it can only
-        # return one of the options given), but degrade safely rather than
-        # raising if it somehow does.
-        monkeypatch.setattr(approval_popup, "_run", lambda script: "not one of the options")
-        assert approval_popup.show_rule_choice_popup(["i_am_owner", "approved_folder: f1"]) is None
-
-    def test_script_lists_every_description_as_an_option(self, monkeypatch):
+    def test_descriptions_are_forwarded_as_the_options(self, monkeypatch):
         captured = {}
-        def fake_run(script):
-            captured["script"] = script
-            return "i_am_owner"
-        monkeypatch.setattr(approval_popup, "_run", fake_run)
+        def fake_show_choice_dialog(**kwargs):
+            captured.update(kwargs)
+            return None
+        monkeypatch.setattr(approval_popup, "show_choice_dialog", fake_show_choice_dialog)
 
         approval_popup.show_rule_choice_popup(["i_am_owner", "approved_folder: f1"])
 
-        assert '"i_am_owner"' in captured["script"]
-        assert '"approved_folder: f1"' in captured["script"]
-        assert "choose from list" in captured["script"]
+        assert captured["options"] == ["i_am_owner", "approved_folder: f1"]
+        assert captured["title"] == "PrivacyFence — Choose Auto-Accept Rule"
 
 
 class TestShowPopupAndShowReadPopup:
@@ -365,39 +265,37 @@ class TestShowPopupAndShowReadPopup:
 
 class TestShowPiiConfirmationPopup:
     def test_proceed_returns_true(self, monkeypatch):
-        monkeypatch.setattr(approval_popup, "_display_dialog", lambda *a, **kw: "Proceed")
+        monkeypatch.setattr(approval_popup, "show_confirmation_dialog", lambda **kw: True)
         assert approval_popup.show_pii_confirmation_popup(["Email address"]) is True
 
     def test_cancel_returns_false(self, monkeypatch):
-        monkeypatch.setattr(approval_popup, "_display_dialog", lambda *a, **kw: "Cancel")
-        assert approval_popup.show_pii_confirmation_popup(["Email address"]) is False
-
-    def test_none_returns_false(self, monkeypatch):
-        monkeypatch.setattr(approval_popup, "_display_dialog", lambda *a, **kw: None)
+        monkeypatch.setattr(approval_popup, "show_confirmation_dialog", lambda **kw: False)
         assert approval_popup.show_pii_confirmation_popup(["Email address"]) is False
 
     def test_default_button_is_cancel_not_proceed(self, monkeypatch):
         captured = {}
-        def fake_display_dialog(title, lines, buttons, default):
-            captured["default"] = default
-            captured["buttons"] = buttons
-            captured["lines"] = lines
-            return "Cancel"
-        monkeypatch.setattr(approval_popup, "_display_dialog", fake_display_dialog)
+        def fake_show_confirmation_dialog(**kwargs):
+            captured.update(kwargs)
+            return False
+        monkeypatch.setattr(approval_popup, "show_confirmation_dialog", fake_show_confirmation_dialog)
 
         approval_popup.show_pii_confirmation_popup(["Email address", "Phone number"])
 
-        assert captured["default"] == "Cancel"
-        assert captured["buttons"] == ["Cancel", "Proceed"]
-        assert any("Email address, Phone number" in line for line in captured["lines"])
+        # Same "Cancel is enforced by dialog_window.py's own markup" split
+        # as TestShowRuleConfirmationPopup's matching test above -- this
+        # forwarding call only controls the labels/copy.
+        assert captured["cancel_label"] == "Cancel"
+        assert captured["confirm_label"] == "Proceed"
+        assert captured["title"] == "PrivacyFence — Possible PII Detected"
+        assert any("Email address, Phone number" in line for line in captured["message_lines"])
 
     def test_empty_categories_still_shows_generic_dialog(self, monkeypatch):
         captured = {}
-        monkeypatch.setattr(
-            approval_popup, "_display_dialog",
-            lambda title, lines, buttons, default: captured.setdefault("lines", lines) and "Cancel",
-        )
+        def fake_show_confirmation_dialog(**kwargs):
+            captured.update(kwargs)
+            return False
+        monkeypatch.setattr(approval_popup, "show_confirmation_dialog", fake_show_confirmation_dialog)
 
         approval_popup.show_pii_confirmation_popup([])
 
-        assert any("personal data" in line for line in captured["lines"])
+        assert any("personal data" in line for line in captured["message_lines"])

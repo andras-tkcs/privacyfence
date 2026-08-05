@@ -38,6 +38,11 @@ manual steps. It includes:
   asserts on its content (buttons, PII tint/banner, summary rows, details text), without ever
   calling the real modal loop (`runApproval_()`/`NSApplication.runModalForWindow_()`). See
   [§2.2](#22-qa_popup_smokepy) for the one thing this construction-only coverage doesn't reach.
+- `tests/unit/test_dialog_window.py` — the same construction-only tier as `test_approval_window.py`
+  above, for the smaller confirmation/list-picker host (`dialog_window.py`/`dialog_window_html.py`)
+  the PII confirmation, rule confirmation, rule choice, and Atlassian multi-resource picker dialogs
+  render through. Builds the real panel/webview and simulates the "pf" bridge message, never calls
+  `runDialog_()`/`NSApplication.runModalForWindow_()` either.
 - `bridge/test/*.test.ts` (`npm test`, run from `bridge/`) — the Node/TypeScript MCP bridge's own
   suite: IPC framing, error propagation, and tool dispatch, run against `bridge/src/*.ts` directly
   (no build step) via hand-written Node fakes of the daemon (`bridge/test/testDaemon.ts`).
@@ -107,10 +112,10 @@ project's own venv (a bare system `python3` won't have the third-party clients t
 
 ### 2.2 `qa_popup_smoke.py`
 
-`test_approval_window.py` covers popup *content* construction on every PR, but deliberately leaves
-one thing untested: whether the real modal loop actually blocks and a real click actually reaches
-it (e.g. a modal loop wired to the wrong window, or a button whose target/action never fires) —
-exactly the class of failure construction-only tests can't catch.
+`test_approval_window.py`/`test_dialog_window.py` cover popup *content* construction on every PR,
+but deliberately leave one thing untested: whether the real modal loop actually blocks and a real
+click actually reaches it (e.g. a modal loop wired to the wrong window, or a button whose
+target/action never fires) — exactly the class of failure construction-only tests can't catch.
 
 **Never run in CI.** It requires macOS, real AppKit, and Accessibility permission granted to
 whatever process runs it (it drives a real click via `System Events`), and pops real, visible
@@ -118,7 +123,12 @@ windows on-screen for a couple of seconds each — run it locally, not headless.
 
 **When to run this**: whenever `approval_window.py`'s modal-loop plumbing changes (not every popup
 content change — those are covered by `test_approval_window.py` on every PR). Same venv requirement
-as §2.1 — this needs the same pyobjc/AppKit packages the app depends on:
+as §2.1 — this needs the same pyobjc/AppKit packages the app depends on. `dialog_window.py`'s own
+modal loop (`runDialog_`/`NSApplication.runModalForWindow_`, the confirmation/list-picker host —
+see `test_dialog_window.py`'s own module docstring) has the identical construction-only gap, but
+isn't wired into this script yet — a future PR that changes its modal-loop plumbing should extend
+`qa_popup_smoke.py` to cover it rather than relying on `test_dialog_window.py` alone for that class
+of failure:
 
 ```bash
 .venv/bin/python scripts/qa_popup_smoke.py

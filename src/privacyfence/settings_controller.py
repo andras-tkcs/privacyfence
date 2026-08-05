@@ -1,15 +1,17 @@
 """Domain/business logic behind the webview settings window (settings_window.py).
 
-No AppKit/WebKit imports at module level -- this stays importable and
-unit-testable without PyObjC (see docs/coding-and-testing-guidelines.md's
+No unguarded AppKit/WebKit imports at module level -- this stays importable
+and unit-testable without PyObjC (see docs/coding-and-testing-guidelines.md's
 "stay dependency-light" pattern already used by resource_grants.py/
-privacy_filter.py). One thing this module genuinely needs *is*
-AppKit-tainted (rumps.Window is how the Telegram sign-in flow's native text
-prompts still work -- see its own docstring below for why that one flow
-keeps a native prompt) -- that's imported lazily, inside the function that
-needs it, not at module scope, so a plain
-``import privacyfence.settings_controller`` never touches AppKit even though
-that one method does once actually called on a real macOS run.
+privacy_filter.py). A few things this module genuinely needs *are*
+AppKit-tainted -- ``rumps`` (``rumps.alert``'s update-available notification,
+``rumps.quit_application``) and ``dialog_window`` (the Atlassian
+multi-resource picker's confirmation/list-picker host, issue #145) -- both
+imported at module scope but guarded behind ``try/except ImportError``,
+resolving to ``None`` on a machine with no pyobjc installed (this repo's own
+CI-less sandbox, or a future non-interactive test run) rather than failing
+the whole module import. Tests running without pyobjc monkeypatch these
+module attributes directly rather than exercising the real thing.
 
 ``SettingsController`` holds the same instance state ``PrivacyFenceMenuBar``
 used to hold directly, with one method per mutation the old NSMenu tree
@@ -80,13 +82,14 @@ from .atlassian_oauth import authorize_interactive as atlassian_authorize_intera
 from .salesforce_client import authorize_interactive as salesforce_authorize_interactive
 from .slack_client import authorize_interactive as slack_authorize_interactive
 
-# AppHelper/rumps are pyobjc packages -- both ultimately backed by AppKit.
-# Guarded so a plain `import privacyfence.settings_controller` succeeds on a
-# machine with no pyobjc installed (this repo's own CI-less sandbox, or a
-# future non-interactive test run); the names resolve to None there, and
-# every real call site only runs them on an actual macOS/pyobjc process.
-# Tests running on macOS CI monkeypatch these attributes directly, the same
-# way test_menu_bar.py already patches ``menu_bar.AppHelper.callAfter``.
+# AppHelper/rumps/dialog_window are pyobjc packages (dialog_window.py itself
+# imports AppKit/WebKit) -- all three ultimately backed by AppKit. Guarded so
+# a plain `import privacyfence.settings_controller` succeeds on a machine
+# with no pyobjc installed (this repo's own CI-less sandbox, or a future
+# non-interactive test run); the names resolve to None there, and every real
+# call site only runs them on an actual macOS/pyobjc process. Tests running
+# on macOS CI monkeypatch these attributes directly, the same way
+# test_menu_bar.py already patches ``menu_bar.AppHelper.callAfter``.
 try:
     from PyObjCTools import AppHelper
 except ImportError:  # pragma: no cover - exercised only where pyobjc is present
@@ -96,6 +99,11 @@ try:
     import rumps
 except ImportError:  # pragma: no cover - exercised only where pyobjc is present
     rumps = None  # type: ignore[assignment]
+
+try:
+    from . import dialog_window
+except ImportError:  # pragma: no cover - exercised only where pyobjc is present
+    dialog_window = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -944,13 +952,22 @@ class SettingsController:
         self._busy_connectors.add("confluence")
 
         def pick_resource(resources: list[dict[str, Any]]) -> dict[str, Any]:
+            # Runs on work()'s own background thread (see _run_async) --
+            # dialog_window.show_choice_dialog handles marshaling the actual
+            # window build/show onto the main thread and blocking this one
+            # until it resolves, the same convention gate.py's
+            # asyncio.to_thread(show_*_popup, ...) call sites already use.
             options = [r.get("url", r.get("id", "")) for r in resources]
-            choice = _osascript_pick(
+            idx = dialog_window.show_choice_dialog(
                 title="PrivacyFence",
                 prompt="Choose the Atlassian site to connect:",
                 options=options,
             )
-            return next((r for r in resources if r.get("url") == choice), resources[0])
+            # Cancelled picker (idx is None) falls back to the first
+            # resource, same as the old _osascript_pick-based lookup: a
+            # cancelled choice never had a "None of the above, abort" path
+            # of its own, either.
+            return resources[idx] if idx is not None else resources[0]
 
         def work() -> dict[str, Any]:
             return atlassian_authorize_interactive(
@@ -1660,25 +1677,3 @@ class SettingsController:
             "license": LICENSE_NAME,
             "repo_url": REPO_URL,
         }
-
-
-def _osascript_pick(title: str, prompt: str, options: list[str], default: str | None = None) -> str | None:
-    """Show a native macOS list-picker and return the chosen item or None.
-    Kept only for _authenticate_atlassian's multi-resource picker (a real
-    OAuth response can list more than one accessible Atlassian site, with no
-    webview UI for that ambiguity in this pass) -- see
-    _authenticate_atlassian's pick_resource above."""
-    opts_as = "{" + ", ".join(f'"{o}"' for o in options) + "}"
-    default_clause = f' default items {{"{default}"}}' if default in options else ""
-    script = (
-        f'set opts to {opts_as}\n'
-        f'set chosen to (choose from list opts '
-        f'with title "{title}" '
-        f'with prompt "{prompt}"'
-        f'{default_clause})\n'
-        f'if chosen is false then return ""\n'
-        f'return item 1 of chosen'
-    )
-    result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
-    text = result.stdout.strip()
-    return text if text else None
