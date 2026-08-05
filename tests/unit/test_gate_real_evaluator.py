@@ -116,7 +116,7 @@ class TestGmailTrustedSenderDomain:
         # Contrast case: proves the rule above is actually reachable, not
         # vacuously matching everything.
         init_auto_accept_evaluator(self.RULES)
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept", None))
 
         result = await gate.gated_call(**make_kwargs(
             raw_data=SimpleNamespace(sender="mallory@eviltrusted.com"),
@@ -150,7 +150,7 @@ class TestDriveApprovedFolder:
 
     async def test_pii_content_overrides_the_matching_folder_rule(self, monkeypatch, audit_dir):
         init_auto_accept_evaluator(self.RULES)
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept", None))
         monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: True)
 
         result = await gate.gated_call(**make_kwargs(
@@ -173,7 +173,7 @@ class TestDriveApprovedFolder:
         # runs the PII scan (gate.py's module docstring) or consults
         # approved_folder (writes never auto-accept via that rule).
         init_auto_accept_evaluator(self.RULES)
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: ("accept", None))
 
         result = await gate.gated_call(**make_kwargs(
             connector="drive", tool="drive_write_doc_content", gate="popup",
@@ -254,7 +254,7 @@ class TestDriveTempAccept:
 
     async def test_second_call_for_the_same_file_auto_accepts(self, monkeypatch, audit_dir):
         init_auto_accept_evaluator({})
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: ("accept", None))
 
         first = await gate.gated_call(**make_kwargs(
             connector="drive", tool="drive_add_comment", gate="popup",
@@ -280,7 +280,7 @@ class TestDriveTempAccept:
     async def test_a_different_file_is_not_covered(self, monkeypatch, audit_dir):
         init_auto_accept_evaluator({})
         popup_calls = []
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: popup_calls.append(1) or "accept")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: (popup_calls.append(1) or "accept", None))
         await gate.gated_call(**make_kwargs(
             connector="drive", tool="drive_add_comment", gate="popup",
             args={"file_id": "file-abc"},
@@ -323,7 +323,7 @@ class TestSlackGroupDm:
 
     async def test_regular_channel_still_prompts_even_with_the_rule_configured(self, monkeypatch, audit_dir):
         init_auto_accept_evaluator(self.RULES)
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept", None))
 
         result = await gate.gated_call(**make_kwargs(
             connector="slack", tool="slack_get_channel_history", gate="review",
@@ -362,7 +362,7 @@ class TestSlackSearchAllResults:
 
     async def test_one_unapproved_result_gates_the_whole_call(self, monkeypatch, audit_dir):
         init_auto_accept_evaluator(self.RULES)
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept", None))
 
         result = await gate.gated_call(**make_kwargs(
             connector="slack", tool="slack_search_messages", gate="review",
@@ -377,7 +377,7 @@ class TestSlackSearchAllResults:
 
     async def test_no_results_in_approved_channels_gates(self, monkeypatch, audit_dir):
         init_auto_accept_evaluator(self.RULES)
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept", None))
 
         result = await gate.gated_call(**make_kwargs(
             connector="slack", tool="slack_search_messages", gate="review",
@@ -414,7 +414,7 @@ class TestTelegramSearchAllResults:
 
     async def test_one_unapproved_chat_gates_the_whole_call(self, monkeypatch, audit_dir):
         init_auto_accept_evaluator(self.RULES)
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept", None))
 
         result = await gate.gated_call(**make_kwargs(
             connector="telegram", tool="telegram_search_messages", gate="review",
@@ -466,7 +466,7 @@ class TestAlwaysAllowUnconditionalRule:
 
     async def test_gmail_draft_still_prompts_without_the_rule_configured(self, monkeypatch, audit_dir):
         init_auto_accept_evaluator({})
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: ("accept", None))
 
         result = await gate.gated_call(**make_kwargs(
             connector="gmail", tool="gmail_create_draft", gate="popup",
@@ -525,7 +525,7 @@ class TestCalendarIAmOrganizer:
 
     async def test_someone_elses_event_still_prompts(self, monkeypatch, audit_dir):
         init_auto_accept_evaluator(self.RULES)
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept", None))
 
         result = await gate.gated_call(**make_kwargs(
             connector="calendar", tool="calendar_get_event_details", gate="review",
@@ -558,7 +558,7 @@ class TestJiraRules:
 
     async def test_issue_in_other_project_still_prompts(self, monkeypatch, audit_dir):
         init_auto_accept_evaluator({"jira.read_issue": [{"rule": "approved_project_keys", "value": ["PFQA"]}]})
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept", None))
 
         result = await gate.gated_call(**make_kwargs(
             connector="jira", tool="jira_get_issue", gate="review",
@@ -618,7 +618,7 @@ class TestConfluenceRules:
 
     async def test_page_in_other_space_still_prompts(self, monkeypatch, audit_dir):
         init_auto_accept_evaluator({"confluence.read_page": [{"rule": "approved_space_keys", "value": ["PFQA"]}]})
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept", None))
 
         result = await gate.gated_call(**make_kwargs(
             connector="confluence", tool="confluence_get_page", gate="review",
@@ -664,7 +664,7 @@ class TestContactsNoContactInfoChange:
 
     async def test_email_change_still_prompts_even_with_the_rule_configured(self, monkeypatch, audit_dir):
         init_auto_accept_evaluator(self.RULES)
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: ("accept", None))
 
         result = await gate.gated_call(**make_kwargs(
             connector="contacts", tool="contacts_update", gate="popup",
@@ -696,7 +696,7 @@ class TestTasksApprovedTaskList:
 
     async def test_update_in_unapproved_list_still_prompts(self, monkeypatch, audit_dir):
         init_auto_accept_evaluator({"tasks.update_task": [{"rule": "approved_task_list", "value": ["list-a"]}]})
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: ("accept", None))
 
         result = await gate.gated_call(**make_kwargs(
             connector="tasks", tool="tasks_update_task", gate="popup",
@@ -724,7 +724,7 @@ class TestTasksApprovedTaskList:
         init_auto_accept_evaluator(
             {"tasks.move_task": [{"rule": "approved_task_list", "value": ["list-a", "list-b"]}]}
         )
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: ("accept", None))
 
         result = await gate.gated_call(**make_kwargs(
             connector="tasks", tool="tasks_move_task", gate="popup",
@@ -750,7 +750,7 @@ class TestAcceptAllPersistsARealRule:
         auto_accept.init_config_path(str(config_path))
         init_auto_accept_evaluator({})
 
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept_all", 0))
         monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
 
         first = await gate.gated_call(**make_kwargs(
@@ -792,7 +792,7 @@ class TestAcceptAllPersistsARealRuleForWrites:
         auto_accept.init_config_path(str(config_path))
         init_auto_accept_evaluator({})
 
-        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: "accept_all")
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: ("accept_all", 0))
         monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
 
         first = await gate.gated_call(**make_kwargs(
@@ -845,7 +845,7 @@ class TestAcceptAllPersistsARealRuleForWrites:
 
         def fake_show_popup(*a, **k):
             popup_calls.append(1)
-            return "accept_all"
+            return "accept_all", 0
 
         monkeypatch.setattr(gate, "show_popup", fake_show_popup)
         monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
