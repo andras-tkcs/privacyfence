@@ -121,14 +121,15 @@ target/action never fires) — exactly the class of failure construction-only te
 whatever process runs it (it drives a real click via `System Events`), and pops real, visible
 windows on-screen for a couple of seconds each — run it locally, not headless.
 
-**When to run this**: whenever `approval_window.py`'s modal-loop plumbing changes (not every popup
-content change — those are covered by `test_approval_window.py` on every PR). Same venv requirement
-as §2.1 — this needs the same pyobjc/AppKit packages the app depends on. `dialog_window.py`'s own
-modal loop (`runDialog_`/`NSApplication.runModalForWindow_`, the confirmation/list-picker host —
-see `test_dialog_window.py`'s own module docstring) has the identical construction-only gap, but
-isn't wired into this script yet — a future PR that changes its modal-loop plumbing should extend
-`qa_popup_smoke.py` to cover it rather than relying on `test_dialog_window.py` alone for that class
-of failure:
+**When to run this**: whenever `approval_window.py`'s or `dialog_window.py`'s modal-loop plumbing
+changes (not every popup content change — those are covered by `test_approval_window.py`/
+`test_dialog_window.py` on every PR). `dialog_window.py`'s own modal loop (`runDialog_`/
+`NSApplication.runModalForWindow_`, the confirmation/list-picker host — see `test_dialog_window.py`'s
+own module docstring) has the identical construction-only gap `approval_window.py` does, covered by
+this same script's "Dialog window" scenario group (six scenarios: both terminal outcomes of both
+document shapes, driven through the real `approval_popup.py` functions rather than a direct
+`dialog_window` call — see `qa_popup_smoke.py`'s own module docstring). Same venv requirement as
+§2.1 — this needs the same pyobjc/AppKit packages the app depends on:
 
 ```bash
 .venv/bin/python scripts/qa_popup_smoke.py
