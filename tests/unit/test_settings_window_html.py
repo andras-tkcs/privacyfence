@@ -58,10 +58,6 @@ def _make_state(**overrides):
                 "gmail": [],
                 "drive": [],
             },
-            "suggestion_priority_by_connector": {
-                "gmail": None,
-                "drive": {"family": "drive_read", "included": ["i_am_owner", "approved_folder"], "excluded": []},
-            },
             "drive_grant_summary_by_connector": {
                 "gmail": None,
                 "drive": None,
@@ -252,46 +248,6 @@ class TestAboutTemplate:
         html = build_html(_make_state())
         assert "'quit_app'" in html
         assert "'check_for_updates'" in html
-
-
-class TestSuggestionPriorityTemplate:
-    """Restored per user direction -- see settings_controller.py's
-    SUGGESTION_FAMILY_BY_CONNECTOR/_rules_state for the Python side this
-    consumes. String-level checks only (see module docstring for why); the
-    actual per-row ↑/↓/✕/+Re-include rendering logic was verified by
-    executing the extracted JS under Node during development -- see the PR
-    report for exactly what that covered."""
-
-    def test_section_header_and_actions_wired(self):
-        html = build_html(_make_state())
-        assert "Always-allow Suggestion Order" in html
-        assert "'move_suggestion_priority'" in html
-        assert "'exclude_suggestion_rule'" in html
-        assert "'include_suggestion_rule'" in html
-
-    def test_included_and_excluded_rule_names_present(self):
-        state = _make_state()
-        state["rules"]["suggestion_priority_by_connector"]["drive"] = {
-            "family": "drive_read", "included": ["i_am_owner"], "excluded": ["approved_folder"],
-        }
-        html = build_html(state)
-        embedded = _extract_initial_state(html)
-        drive_sp = embedded["rules"]["suggestion_priority_by_connector"]["drive"]
-        assert drive_sp["included"] == ["i_am_owner"]
-        assert drive_sp["excluded"] == ["approved_folder"]
-
-    def test_connector_with_no_family_embeds_null(self):
-        html = build_html(_make_state())
-        embedded = _extract_initial_state(html)
-        assert embedded["rules"]["suggestion_priority_by_connector"]["gmail"] is None
-
-    def test_move_up_down_guards_reference_row_index(self):
-        # The i > 0 / i < length - 1 guards from the pre-#120 menu_bar.py
-        # version (see git history at 1f367ca) -- confirms the loop-index
-        # logic text is present in the shipped JS, not just the action name.
-        html = build_html(_make_state())
-        assert "if (i > 0)" in html
-        assert "if (i < sp.included.length - 1)" in html
 
 
 class TestTelegramModalTemplate:

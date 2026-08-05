@@ -14,7 +14,6 @@ def _reset_singletons():
     auto_accept._INSTANCE = None
     auto_accept._config_path = None
     auto_accept._rules_changed_listener = None
-    auto_accept._suggestion_priority = {}
     audit_log._INSTANCE = None
     approval_ui._INSTANCE = None
     pii_detector._enabled = True
@@ -26,7 +25,6 @@ def _reset_singletons():
     auto_accept._INSTANCE = None
     auto_accept._config_path = None
     auto_accept._rules_changed_listener = None
-    auto_accept._suggestion_priority = {}
     audit_log._INSTANCE = None
     approval_ui._INSTANCE = None
     pii_detector._enabled = True

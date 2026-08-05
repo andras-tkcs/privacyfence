@@ -42,11 +42,8 @@ from . import __version__
 from .app_credentials import telegram_app_credentials
 from .audit_log import AuditLogger, current_week
 from .auto_accept import (
-    SUGGESTION_FAMILIES,
     reload_rules,
     set_rules_changed_listener,
-    set_suggestion_priority,
-    suggestion_order,
 )
 from .calendar_client import CalendarClient
 from .contacts_client import ContactsClient
@@ -267,21 +264,6 @@ RULES_MENU_GROUPS: list[str] = [
 # pointer back to Drive for exactly these two pages, so that's discoverable
 # without already knowing to go check Drive's own page.
 DRIVE_GRANT_SUMMARY_GROUPS: tuple[str, ...] = ("sheets", "docs")
-
-# Which connector's Auto-accept Rules page gets an "Always-allow Suggestion
-# Order" block -- one per auto_accept.SUGGESTION_FAMILIES entry. Drive's
-# family covers drive.read_file_contents/drive.download_file, both under
-# the "drive" connector, so this is a 1:1 connector->family map even though
-# a family could in principle span connectors. Restored per user direction
-# after being dropped in the first pass of issue #120 (the design mockup's
-# Rules page has no UI for this) -- see _rules_state's suggestion_priority_
-# by_connector and settings_window_html.py's rendering of it.
-SUGGESTION_FAMILY_BY_CONNECTOR: dict[str, str] = {
-    "drive": "drive_read",
-    "calendar": "calendar_read_event",
-    "jira": "jira_read_issue",
-    "confluence": "confluence_read_page",
-}
 
 # Connectors authenticated via a shared Google OAuth client (org bundle's
 # "google" section).
@@ -1293,56 +1275,6 @@ class SettingsController:
         _run_async(work, done)
 
     # ------------------------------------------------------------------ #
-    # Suggestion-priority actions (Always-allow Suggestion Order -- see
-    # auto_accept.SUGGESTION_FAMILIES). Restored per user direction; ported
-    # from menu_bar.py's pre-#120 _move_suggestion_priority/
-    # _exclude_suggestion_rule/_include_suggestion_rule (see git history at
-    # 1f367ca) with no behavior change, just addressed by connector name
-    # instead of by family directly (SUGGESTION_FAMILY_BY_CONNECTOR maps
-    # one to the other) since that's what the Rules page's UI is keyed on.
-    # ------------------------------------------------------------------ #
-
-    def _set_suggestion_priority_and_refresh(self, family: str, order: list[str]) -> None:
-        cfg = self._load_config()
-        cfg.setdefault("rule_suggestion_priority", {})[family] = order
-        self._save_config(cfg)
-        set_suggestion_priority(family, order)
-
-    def move_suggestion_priority(self, connector: str, direction: int, rule_name: str) -> dict[str, Any]:
-        family = SUGGESTION_FAMILY_BY_CONNECTOR.get(connector)
-        if family is None:
-            return self.snapshot()
-        order = list(suggestion_order(family))
-        if rule_name not in order:
-            return self.snapshot()
-        idx = order.index(rule_name)
-        new_idx = idx + direction
-        if not (0 <= new_idx < len(order)):
-            return self.snapshot()
-        order[idx], order[new_idx] = order[new_idx], order[idx]
-        self._set_suggestion_priority_and_refresh(family, order)
-        return self.snapshot()
-
-    def exclude_suggestion_rule(self, connector: str, rule_name: str) -> dict[str, Any]:
-        family = SUGGESTION_FAMILY_BY_CONNECTOR.get(connector)
-        if family is None:
-            return self.snapshot()
-        order = [r for r in suggestion_order(family) if r != rule_name]
-        self._set_suggestion_priority_and_refresh(family, order)
-        return self.snapshot()
-
-    def include_suggestion_rule(self, connector: str, rule_name: str) -> dict[str, Any]:
-        family = SUGGESTION_FAMILY_BY_CONNECTOR.get(connector)
-        if family is None:
-            return self.snapshot()
-        order = list(suggestion_order(family))
-        if rule_name in order:
-            return self.snapshot()
-        order.append(rule_name)
-        self._set_suggestion_priority_and_refresh(family, order)
-        return self.snapshot()
-
-    # ------------------------------------------------------------------ #
     # Privacy filter (privacy / drive_privacy / slack_privacy / ... groups,
     # plus Calendar's one standalone toggle)
     # ------------------------------------------------------------------ #
@@ -1492,7 +1424,6 @@ class SettingsController:
         connectors = []
         sections_by_connector: dict[str, list[dict[str, Any]]] = {}
         grants_by_connector: dict[str, list[dict[str, Any]]] = {}
-        suggestion_priority_by_connector: dict[str, dict[str, Any] | None] = {}
         drive_grant_summary_by_connector: dict[str, dict[str, Any] | None] = {}
 
         for cname in RULES_MENU_GROUPS:
@@ -1540,16 +1471,6 @@ class SettingsController:
                 rule_sections.append({"op_key": op_key, "title": short_label, "rows": rows})
             sections_by_connector[cname] = rule_sections
 
-            family = SUGGESTION_FAMILY_BY_CONNECTOR.get(cname)
-            if family is None:
-                suggestion_priority_by_connector[cname] = None
-            else:
-                included = list(suggestion_order(family))
-                excluded = [r for r in SUGGESTION_FAMILIES[family] if r not in included]
-                suggestion_priority_by_connector[cname] = {
-                    "family": family, "included": included, "excluded": excluded,
-                }
-
             count = sum(len(get_grant_entries(grants_cfg, rt)) for rt in resource_types)
             count += sum(len(rules_cfg.get(op_key) or []) for op_key in op_keys)
             connectors.append({"key": cname, "label": cname.capitalize(), "count": count})
@@ -1558,7 +1479,6 @@ class SettingsController:
             "connectors": connectors,
             "sections_by_connector": sections_by_connector,
             "grants_by_connector": grants_by_connector,
-            "suggestion_priority_by_connector": suggestion_priority_by_connector,
             "drive_grant_summary_by_connector": drive_grant_summary_by_connector,
         }
 

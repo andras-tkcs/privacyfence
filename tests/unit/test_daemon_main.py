@@ -1105,19 +1105,36 @@ class TestRunApp:
         # pre-migration one Claude/the caller originally passed in.
         assert len(reloaded) == 1
 
-    def test_rule_suggestion_priority_is_loaded_from_config(self, monkeypatch, tmp_path):
-        from privacyfence import auto_accept
-
+    def test_rule_suggestion_priority_is_ignored_and_logged(self, monkeypatch, tmp_path, caplog):
+        # Issue #151: every matching auto-accept rule now gets its own
+        # "Always allow" button, so there's nothing left to prioritize or
+        # exclude -- a pre-existing rule_suggestion_priority block in a
+        # user's settings.yaml must still load without error (ignored,
+        # logged), same forward-compatible "unknown key is inert" posture
+        # used elsewhere.
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         self._patch_common(monkeypatch)
         monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
 
         config = {"rule_suggestion_priority": {"drive_read": ["approved_folder", "i_am_owner"]}}
-        result = daemon_main.run_app(config, str(tmp_path / "settings.yaml"))
+        with caplog.at_level(logging.INFO):
+            result = daemon_main.run_app(config, str(tmp_path / "settings.yaml"))
 
         assert result == 0
-        assert auto_accept.suggestion_order("drive_read") == ["approved_folder", "i_am_owner"]
+        assert "rule_suggestion_priority is no longer used" in caplog.text
+
+    def test_no_rule_suggestion_priority_logs_nothing_about_it(self, monkeypatch, tmp_path, caplog):
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        self._patch_common(monkeypatch)
+        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
+
+        with caplog.at_level(logging.INFO):
+            result = daemon_main.run_app({}, str(tmp_path / "settings.yaml"))
+
+        assert result == 0
+        assert "rule_suggestion_priority" not in caplog.text
 
     def test_unattended_sessions_disabled_by_default(self, monkeypatch):
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)

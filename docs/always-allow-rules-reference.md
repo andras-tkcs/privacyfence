@@ -22,11 +22,12 @@ remains splits into two sections:
   touched (`gmail_create_draft`, its two reply variants, and their three `_with_attachments`
   counterparts are the one exception — see their rows below).
 
-Where a tool can produce more than one rule, they're checked in priority order and the first match
-wins — clicking Always allow on a message where you're the sender proposes `i_am_sender`, not
-`trusted_sender_domain`, even though the domain would also match. When more than one candidate
-actually matches the item you're looking at, the popup asks which rule to create instead of always
-silently picking the top-priority one — see [Multiple matching candidates](#multiple-matching-candidates)
+Where a tool has more than one *possible* rule, only one condition can ever hold for a given item
+(e.g. a message is from you or it isn't) — clicking Always allow on a message where you're the
+sender proposes `i_am_sender`, not `trusted_sender_domain`, even though checking the domain would
+otherwise be the fallback. Four operations are the one exception: 2+ of their candidates can
+genuinely match the *same* item at once, and the popup renders a separate Always-allow button per
+match instead of picking one — see [Multiple matching candidates](#multiple-matching-candidates)
 below.
 
 **Always allow always writes a plain `auto_accept_rules` entry scoped to one operation key** — even
@@ -68,14 +69,10 @@ The confirmation dialog after clicking still shows the full sentence (`describe_
 | `drive_download_file` | `i_am_owner`, else `approved_folder` |
 | `drive_sheets_get_values` | `i_am_owner`, else `approved_folder` — same family as the two rows above |
 
-The `i_am_owner` / `approved_folder` priority is configurable, not fixed — from **Manage
-Auto-accept Rules… → Drive → Always-allow Suggestion Order** (**↑ Move up** / **↓ Move down** /
-**✕ Never suggest** / **+ Re-include**), or by hand under `rule_suggestion_priority.drive_read` in
-`settings.yaml`. Listing only `approved_folder` there makes Always allow propose it even when
-`i_am_owner` would also match — excluded from consideration entirely, not just deprioritized. See
-[Always-allow suggestion priority](TECHNICAL_REFERENCE.md#always-allow-suggestion-priority). When a
-file is both owned by you *and* in an approved folder, Always allow asks which rule to create
-instead of silently picking whichever one is first in that order — see
+`i_am_owner`/`approved_folder` is a fixed pair, checked in that order, not configurable — see
+[Always-allow suggestion candidates](TECHNICAL_REFERENCE.md#always-allow-suggestion-candidates).
+When a file is both owned by you *and* in an approved folder, Always allow renders **both** as
+their own buttons instead of silently picking one — see
 [Multiple matching candidates](#multiple-matching-candidates) below.
 
 ### Slack
@@ -97,10 +94,8 @@ each group's ID to be individually allowlisted under `approved_channel`.
 |---|---|
 | `calendar_get_event_details` | `i_am_organizer` (you organize it), else `no_external_attendees` (every attendee shares your domain), else `non_private_event` (event isn't marked private) |
 
-This priority order is configurable via **Calendar → Always-allow Suggestion Order** /
-`rule_suggestion_priority.calendar_read_event` — e.g. requiring `no_external_attendees` even when
-you're the organizer, instead of `i_am_organizer` always winning outright. When 2+ of these actually
-match the event, Always allow asks which one to create — see
+This is a fixed order, not configurable. When 2+ of these actually match the event, Always allow
+renders one button per match instead of picking one — see
 [Multiple matching candidates](#multiple-matching-candidates).
 
 ### Telegram
@@ -127,9 +122,9 @@ match the event, Always allow asks which one to create — see
 |---|---|
 | `jira_get_issue` | `i_am_reporter` (you filed it), else `i_am_assignee` (you're assigned), else `approved_project_keys` (issue's project) |
 
-This priority order is configurable via **Jira → Always-allow Suggestion Order** /
-`rule_suggestion_priority.jira_read_issue`. When 2+ of these actually match the issue, Always allow
-asks which one to create — see [Multiple matching candidates](#multiple-matching-candidates).
+This is a fixed order, not configurable. When 2+ of these actually match the issue, Always allow
+renders one button per match instead of picking one — see
+[Multiple matching candidates](#multiple-matching-candidates).
 
 ### Confluence
 
@@ -139,10 +134,10 @@ asks which one to create — see [Multiple matching candidates](#multiple-matchi
 | `confluence_get_page_by_title` | `i_am_author`, else `approved_space_keys` |
 | `confluence_download_attachment` | `i_am_author` (you wrote the page), else `approved_space_keys` (page's space) |
 
-This priority order is configurable via **Confluence → Always-allow Suggestion Order** /
-`rule_suggestion_priority.confluence_read_page` — shared by all three tools above, including
-`confluence_download_attachment`. When 2+ of these actually match the page, Always allow asks
-which one to create — see [Multiple matching candidates](#multiple-matching-candidates).
+This is a fixed order, not configurable, shared by all three tools above including
+`confluence_download_attachment`. When 2+ of these actually match the page, Always allow renders
+one button per match instead of picking one — see
+[Multiple matching candidates](#multiple-matching-candidates).
 
 > Google Contacts and Google Tasks have no `review`-gate tools at all — their only reads
 > (`contacts_list`/`contacts_search`/`contacts_get`, `tasks_list_task_lists`/`tasks_list_tasks`/
@@ -183,14 +178,15 @@ results, the same way `approved_folder`'s suggestion is the file's own `parent_i
 ### Multiple matching candidates
 
 Four of the tables above (Drive, Calendar, Jira, Confluence) list more than one possible rule per
-row because the priority order only decides which one wins *by default* — it doesn't mean the
-others never apply. When you click Always allow on an item where 2+ of a row's candidates actually
-match (e.g. a file you own that's also in an approved folder), a "choose from list" popup names
-each matching candidate and asks which one to create, instead of always silently creating the
-top-priority match. Picking one both selects and creates it — there's no separate confirmation
-dialog afterward, unlike the everyday single-candidate case. Cancelling accepts the item once
-without creating any rule, same as cancelling the single-candidate confirmation does. If only one
-candidate matches, nothing about today's flow changes.
+row because more than one can genuinely apply to the same item at once. When 2+ of a row's
+candidates actually match (e.g. a file you own that's also in an approved folder), the popup
+renders one "Always allow" button per matching candidate, in their own row above Deny/Allow once,
+instead of silently creating just one of them. Clicking any one of those buttons goes straight to
+that specific rule's own confirmation dialog — the same two-click safety margin every Always-allow
+button gets, just triggered by whichever button you picked instead of a separate chooser dialog.
+Cancelling that confirmation accepts the item once without creating any rule, same as cancelling
+the single-candidate confirmation does. If only one candidate matches, you get exactly one button,
+identical to every other Always-allow-eligible tool.
 
 ---
 

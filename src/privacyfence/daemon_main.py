@@ -54,7 +54,6 @@ from .app_credentials import telegram_app_credentials
 from .audit_log import init_audit_logger
 from .auto_accept import (
     init_config_path,
-    init_suggestion_priority,
     migrate_telegram_search_operation_key,
     reload_rules,
 )
@@ -642,7 +641,17 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
             logger.warning("Could not persist auto-accept config migration: %s", exc)
 
     reload_rules(build_effective_rules(config))
-    init_suggestion_priority(config.get("rule_suggestion_priority", {}) or {})
+    if "rule_suggestion_priority" in config:
+        # Issue #151: every matching auto-accept rule now gets its own
+        # "Always allow" button, so there's nothing left to prioritize or
+        # exclude -- same forward-compatible "unknown key is inert" posture
+        # used elsewhere, not a dedicated migration (nothing to migrate
+        # *to*). A pre-existing settings.yaml with this key still loads
+        # without error; it's just never consulted again.
+        logger.info(
+            "rule_suggestion_priority is no longer used -- every matching rule now gets its own "
+            "\"Always allow\" button. Ignoring this settings.yaml key."
+        )
     pii_config = config.get("pii_detection", {}) or {}
     init_pii_detection(
         pii_config.get("enabled", True),

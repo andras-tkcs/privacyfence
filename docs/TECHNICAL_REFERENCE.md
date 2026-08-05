@@ -10,7 +10,7 @@ For the product overview, governance model, screenshots, supported systems, and 
 - [Connectors & privacy matrix](#connectors--privacy-matrix)
 - [Auto-accept grants](#auto-accept-grants)
 - [Auto-accept rules](#auto-accept-rules)
-- [Always-allow suggestion priority](#always-allow-suggestion-priority)
+- [Always-allow suggestion candidates](#always-allow-suggestion-candidates)
 - [Always allow for writes](#always-allow-for-writes)
 - [Reading and proposing auto-accept changes from the bridge](#reading-and-proposing-auto-accept-changes-from-the-bridge)
 - [Scheduled / unattended Cowork tasks](#scheduled--unattended-cowork-tasks)
@@ -660,9 +660,9 @@ separately (the old, still-fully-supported way — configure each rule independe
 `auto_accept_rules`, as before grants existed).
 
 Clicking **Always allow** on a "Read Sheet Values" prompt proposes the same `i_am_owner`/
-`approved_folder` suggestion as `drive.read_file_contents`/`download_file` — see
-[Always-allow suggestion priority](#always-allow-suggestion-priority) below for how the popup
-chooses (or asks) between the two when both apply.
+`approved_folder` candidate(s) as `drive.read_file_contents`/`download_file` — see
+[Always-allow suggestion candidates](#always-allow-suggestion-candidates) below for how the popup
+renders one button per candidate when both apply.
 
 `drive.comment_file` (`drive_add_comment` — also used for comments on Docs and Sheets, since those
 ride the Drive connector's OAuth grant) supports `i_am_owner`, `approved_sandbox_folder`, and
@@ -848,42 +848,37 @@ edits within a personal list while still requiring review for creates.
 
 ---
 
-## Always-allow suggestion priority
+## Always-allow suggestion candidates
 
 Four operations can produce more than one plausible "Always allow" suggestion at once — e.g. a
-Drive read where you both own the file *and* it's in an approved folder. Which one the popup
-proposes is configurable, not hardcoded:
+Drive read where you both own the file *and* it's in an approved folder. Rather than picking one
+to propose, the popup renders **one "Always allow" button per matching candidate**:
 
-| Family (`auto_accept.SUGGESTION_FAMILIES`) | Operations | Default order (first match wins) |
+| Family (`auto_accept.SUGGESTION_FAMILIES`) | Operations | Candidates, in fixed declaration order |
 |---|---|---|
 | `drive_read` | `drive.read_file_contents`, `drive.download_file` | `i_am_owner`, `approved_folder` |
 | `calendar_read_event` | `calendar.read_event_details` | `i_am_organizer`, `no_external_attendees`, `non_private_event` |
 | `jira_read_issue` | `jira.read_issue` | `i_am_reporter`, `i_am_assignee`, `approved_project_keys` |
 | `confluence_read_page` | `confluence.read_page`, `confluence.download_attachment` | `i_am_author`, `approved_space_keys` |
 
-Configure a family's order under `rule_suggestion_priority` in `settings.yaml` (see
-`settings.yaml.example`), or from each connector's **Always-allow Suggestion Order** section on the
-settings window's **Auto-accept Rules** page (`drive`/`calendar`/`jira`/`confluence` only — the
-other connectors have no suggestion family, so they get no such section) — **↑ Move up** /
-**↓ Move down** / **✕ Never suggest** per included rule, **+ Re-include** per excluded one. Listing
-only some of a family's rules **excludes** the rest from ever being suggested, not just
-deprioritizes them — there's one mechanism for both reordering and exclusion. Omitting a family
-entirely keeps the built-in default order shown above.
+`suggest_rule_choices()` (`auto_accept.py`) returns every candidate that actually matches the item
+on screen, walked in the fixed declaration order above — not a single top-priority pick, and not
+configurable (there used to be a `rule_suggestion_priority` `settings.yaml` key controlling this;
+it's gone, since once every match gets its own button there's nothing left to prioritize or
+exclude — a pre-existing `rule_suggestion_priority` block in an older `settings.yaml` still loads
+without error, it's just logged and ignored). An item matching only one candidate still shows
+exactly one button, identical to every other single-candidate operation. An item matching 2+
+candidates shows one button per match, in their own
+row above Deny/Allow once — clicking any one of them goes straight to that rule's own
+confirmation dialog (`show_rule_confirmation_popup()`), the same two-click safety margin every
+other Always-allow button gets; there is no separate "choose from list" dialog. Cancelling that
+confirmation accepts the item once without creating any rule, same as the single-candidate case.
 
-This affects only what the popup's Always allow button *proposes* — it has no effect on which
+This affects only what the popup's Always-allow buttons *propose* — it has no effect on which
 already-configured `auto_accept_rules`/`auto_accept_grants` entries actually auto-accept a call.
-`suggest_rule()` is outside `should_auto_accept()`'s and `preflight_from_args()`'s call graph, and
-this feature introduces no new rule names, so it needs no `ARGS_ONLY_RULES`/`DATA_DEPENDENT_RULES`/
-`known_rule_names()` changes.
-
-**When 2+ candidates actually match the item you're looking at, Always allow asks which rule to
-create** instead of always silently picking the priority order's top match. `suggest_rule_choices()`
-returns every candidate that matches (in the same priority order `suggest_rule()` itself walks); if
-that's more than one, the review gate shows a "choose from list" popup (`show_rule_choice_popup()`)
-naming each candidate rule, and picking one both selects and confirms it — no separate confirmation
-dialog afterward, unlike the single-candidate case. Cancelling accepts the item once without
-creating any rule, same as cancelling the single-candidate confirmation does. If only one candidate
-matches, nothing changes — you still get today's plain "create this rule?" confirmation.
+`suggest_rule_choices()` is outside `should_auto_accept()`'s and `preflight_from_args()`'s call
+graph, and this feature introduces no new rule names, so it needs no `ARGS_ONLY_RULES`/
+`DATA_DEPENDENT_RULES`/`known_rule_names()` changes.
 
 ---
 
