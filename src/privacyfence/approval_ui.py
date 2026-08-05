@@ -1,5 +1,5 @@
 """Approval UI seam: the interface gate.py depends on instead of importing
-approval_popup.py (native macOS osascript/AppKit dialogs) directly.
+approval_popup.py (native macOS AppKit/WKWebView dialogs) directly.
 
 gate.py is the policy engine: auto-accept check -> block on a human decision
 -> audit log. Today the only way to get that human decision is a native
@@ -95,7 +95,7 @@ class ApprovalUI(ABC):
 
 
 class NativeApprovalUI(ApprovalUI):
-    """Today's (and so far only) implementation: native macOS osascript/AppKit
+    """Today's (and so far only) implementation: native macOS AppKit/WKWebView
     dialogs, via approval_popup.py. Pure delegation -- no logic of its own."""
 
     def show_popup(self, *args, **kwargs) -> str:

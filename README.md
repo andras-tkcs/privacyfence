@@ -272,6 +272,10 @@ Continue with the organization configuration and connector authentication steps 
 - [Connector QA testing](docs/connector-qa-testing.md)
 - [Manual pre-release test plan](docs/manual-pre-release-test-plan.md)
 - [Approval window content reference](docs/approval-window-content-reference.md) — what each approval dialog shows, grouped by dialog shape
+- ["Always allow" per-tool reference](docs/always-allow-rules-reference.md) — what clicking Always allow does, tool by tool
+- [What Claude knows before an approval prompt](docs/claude-knowledge-boundary.md)
+- [File type support](docs/file-type-support.md) — attachment previews and PII scanning
+- [PII detection keywords](docs/pii-detection-keywords.md)
 - [Development vs. installed configuration](docs/dev-vs-live-setup.md)
 - [Contributing](CONTRIBUTING.md)
 

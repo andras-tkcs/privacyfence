@@ -39,8 +39,9 @@ menu bar's Trusted-\* submenus — the popup button itself never writes there. S
 
 **The button itself names the specific rule it would create, before you click it** — e.g. "Always
 allow — if I'm sender" or "Always allow — this folder," not a plain, unspecific "Always allow." This
-is `gate.py`'s `accept_all_hint`, derived from the same `suggest_rule()`/`suggest_write_rule()` result
-that decides whether the button appears at all, run through `auto_accept.describe_rule_short()` — a
+is `gate.py`'s `accept_all_choices`, one `(rule_name, short_label)` pair per button, derived from
+the same `suggest_rule_choices()`/`suggest_write_rule()` result that decides whether — and how
+many — buttons appear at all, each label run through `auto_accept.describe_rule_short()` — a
 short, per-rule-*type* phrase (never the specific instance value: "this folder," not the folder's own
 name or id, so the button's width stays predictable regardless of how long any one call's real value
 is). The one exception is `always_allow` (`gmail_create_draft`, its two reply variants, and their
