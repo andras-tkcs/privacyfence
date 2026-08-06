@@ -16,13 +16,39 @@ actually fires).
 
 This is NOT a pytest test and NEVER runs in CI:
   - It requires macOS (real AppKit — approval_window.py has no other
-    implementation) and Accessibility permission granted to whatever
-    process runs it (Terminal, an IDE, ...), since it drives a real click
-    via `System Events`. Granting that to a hosted CI runner isn't
-    something this project's tests.yml does, and isn't worth doing for a
-    failure mode this narrow.
+    implementation).
   - It pops real, visible windows on your screen for a couple of seconds
     each while it runs — run it locally, not headless.
+
+Clicks are delivered from inside this very process: every button in these
+windows is DOM content in a WKWebView, so each scenario locates its button in
+the live DOM, confirms with document.elementFromPoint that the button really
+occupies the spot it measured (nothing covering it, not collapsed to nothing),
+and dispatches a real mousedown/mouseup/click sequence on whatever that
+hit-test returned. Those bubble, so the page's own listener, the ``pf``
+script-message bridge and stopModalWithCode_ all run exactly as they do for a
+human click. See _click_web_button for why the clicks are dispatched in the DOM
+rather than injected as AppKit mouse events (they were, and it crashed).
+
+That means the 97 tool-approval and 4 dialog-window scenarios need **no
+Accessibility permission at all**. The seven settings-window ones still do, but
+only for their first two clicks: the tray status item and the menu it opens are
+native AppKit, not web content, so _click_menu_bar_icon/_click_menu_item still
+go through System Events (which works fine for native UI -- it is specifically
+web content it cannot reach). Everything those scenarios do *inside* the
+settings window is in-process like the rest.
+
+Dropping that dependency for almost the whole suite is a correctness fix, not a
+convenience one. This script used to drive `System Events` throughout, and on
+macOS 26.6 that could not work at all here: WebKit renders web content in a
+separate process and vends its accessibility subtree as a remote AXUIElement
+token rather than as NSAccessibility children (an in-process walk shows the
+WKWebView answering `accessibilityChildren()` with None), so the
+`entire contents of window 1` search used to reach those buttons failed
+against the live window in three different ways across runs -- -1700, -1719
+and -10000 -- and never once returned the button row. Every scenario sat there
+waiting for a human to click. See the "In-process interaction" section comment
+below for the full finding; don't reintroduce a System Events click here.
 
 Run it whenever approval_window.py's modal-loop plumbing changes
 (build_panel() itself, i.e. everything about window *content*, is already
@@ -106,6 +132,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import json
 import os
 import re
 import subprocess
@@ -135,10 +162,15 @@ from AppKit import (  # noqa: E402
     NSApplicationActivationPolicyAccessory,
     NSApplicationActivationPolicyProhibited,
     NSBitmapImageRep,
+    NSDefaultRunLoopMode,
+    NSEventTrackingRunLoopMode,
+    NSModalPanelRunLoopMode,
     NSPNGFileType,
     NSStatusBar,
 )
+from Foundation import NSObject  # noqa: E402
 from PyObjCTools import AppHelper  # noqa: E402
+from WebKit import WKWebView  # noqa: E402
 from rumps import rumps as _rumps_internal  # noqa: E402
 
 from privacyfence import approval_popup, daemon_main, menu_bar  # noqa: E402
@@ -152,6 +184,21 @@ from privacyfence.text_extraction import extract_text, preview_blocks_for  # noq
 
 WINDOW_WAIT_TIMEOUT_SECONDS = 8.0
 
+# How long to wait for a window's *web content* to finish loading, as opposed to
+# WINDOW_WAIT_TIMEOUT_SECONDS' "the NSWindow object exists". Deliberately much
+# more generous, because the first popup of a run pays a one-time cost every
+# later one doesn't: WebKit has to spin up its separate WebContent process
+# before it can render anything. Observed on a real run, the DOM is still empty
+# a full second after the panel exists even when that process is already warm --
+# on a slower or busier machine the cold first load has been seen to overrun an
+# 8s budget, which showed up as the first scenario of a run (and only the first)
+# failing to click and sitting there waiting for a human.
+#
+# Nothing waits this long when things are working: every caller polls and returns
+# the moment its content is ready, so this bound is only ever reached by a
+# genuine failure.
+CONTENT_READY_TIMEOUT_SECONDS = 30.0
+
 
 @dataclass
 class ScenarioResult:
@@ -159,7 +206,9 @@ class ScenarioResult:
     button_clicked: str
     expected: str
     actual: str | None
-    click_status: str  # "clicked" | "TIMEOUT_NO_WINDOW" | "BUTTON_NOT_FOUND" | an osascript error
+    # "clicked" | "TIMEOUT_NO_WINDOW" | "BUTTON_NOT_FOUND" | "BUTTON_NOT_VISIBLE"
+    # | "BUTTON_OCCLUDED" | "TIMEOUT_BUTTON_DISABLED" | a JS/osascript error
+    click_status: str
 
     @property
     def passed(self) -> bool:
@@ -187,133 +236,336 @@ def _run_applescript(script: str) -> str:
             pass
 
 
+# ---------------------------------------------------------------------------- #
+# In-process interaction with our own window's web content
+#
+# Every clickable thing in an approval popup is DOM content inside the panel's
+# WKWebView -- issue #141 moved Deny/Allow once/Always allow off native
+# NSButtons into approval_window_html.py's card stack, and the settings window's
+# controls (issue #120) were web content from the start. The window itself has
+# no native buttons left at all; its only AX children are the WKWebView and the
+# three traffic-light widgets.
+#
+# This section drives that content from *inside* our own process -- no System
+# Events, no osascript, no Accessibility permission -- after establishing on real
+# hardware (2026-08-06, macOS 26.6) that the AppleScript route it replaces cannot
+# work here. Two independent findings, both reproduced directly:
+#
+#   1. An in-process walk of our own NSAccessibility tree shows the WKWebView
+#      answering `accessibilityChildren()` with None. Modern WebKit renders web
+#      content in a separate WebContent process and vends its accessibility
+#      subtree as a remote AXUIElement token, not as NSAccessibility children --
+#      so nothing below the webview is reachable by ordinary AX child traversal.
+#   2. `entire contents of window 1` (the AppleScript idiom this file used to
+#      reach into that subtree) accordingly failed against the very same live
+#      window in three different ways across runs -- -1700, -1719, and -10000 --
+#      and never once returned the button row, including after forcing
+#      AXManualAccessibility on. Those were three symptoms of the one cause
+#      above, not three separate AppleScript bugs to work around.
+#
+# The replacement does not weaken what it replaces. A click here is a real
+# mousedown/mouseup/click sequence dispatched on the element that
+# document.elementFromPoint actually returns for the button's measured centre,
+# carrying those coordinates -- so the page's own listener, the ``pf``
+# script-message bridge, and stopModalWithCode_ all run exactly as they do for a
+# human click (see approval_window.py's
+# userContentController_didReceiveScriptMessage_). System Events' `click` verb
+# never did that: it fired an AX press action, which is a different code path.
+# The hit-test is not decoration -- it means a button that is covered,
+# zero-sized, or scrolled out of view fails loudly instead of silently resolving
+# anyway, a real class of rendering bug the AX route could not have caught.
+#
+# What is genuinely not exercised is WebKit's own translation of a raw OS mouse
+# event into a DOM click. Injecting AppKit mouse events did work and did cover
+# that, but it crashed the process on about half of full-suite runs; see
+# _click_web_button's docstring for the crash and why it is not fixable here.
+# ---------------------------------------------------------------------------- #
+
+# Modes matter: these dispatches have to run while the main thread is parked
+# inside runModalForWindow_ (or an NSMenu tracking session). A plain
+# AppHelper.callAfter/performSelectorOnMainThread schedules in the default mode
+# only, which a modal loop does not service -- see _run_on_main_thread_sync's own
+# docstring for the same caveat stated from the other direction.
+_MAIN_THREAD_MODES = [NSDefaultRunLoopMode, NSModalPanelRunLoopMode, NSEventTrackingRunLoopMode]
+
+
+class _MainThreadRunner(NSObject):
+    """Trampoline for _on_main_thread -- performSelectorOnMainThread needs a
+    real Objective-C selector on an NSObject, not a Python closure."""
+
+    def runBox_(self, box) -> None:
+        func, result_box, error_box, done = box
+        try:
+            result_box.append(func())
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread
+            error_box.append(exc)
+        finally:
+            done.set()
+
+
+_MAIN_THREAD_RUNNER = _MainThreadRunner.alloc().init()
+
+
+def _on_main_thread(func: Callable[[], Any], timeout: float = 10.0) -> Any:
+    """Run `func` on the main thread and block until it finishes, even when
+    the main thread is inside a modal loop -- see _MAIN_THREAD_MODES.
+
+    AppKit and WebKit both require main-thread access; every caller below is a
+    scenario's clicker thread, so this is the only way in.
+    """
+    result_box: list[Any] = []
+    error_box: list[BaseException] = []
+    done = threading.Event()
+    _MAIN_THREAD_RUNNER.performSelectorOnMainThread_withObject_waitUntilDone_modes_(
+        b"runBox:", (func, result_box, error_box, done), False, _MAIN_THREAD_MODES,
+    )
+    if not done.wait(timeout):
+        raise TimeoutError("main-thread dispatch timed out")
+    if error_box:
+        raise error_box[0]
+    return result_box[0] if result_box else None
+
+
+def _all_panels_and_webviews() -> list[tuple[Any, Any]]:
+    """Every visible window of ours that contains a WKWebView, paired with it.
+
+    Replaces the old "first process whose unix id is ..." System Events lookup:
+    we *are* the process, so the window list is just NSApp.windows().
+
+    Returns a list, not the first hit, because more than one such window can be
+    up at once -- the settings window is its own NSWindow, separate from the
+    approval panel, and NSApp.windows() order is not a usefully defined
+    front-to-back order. Callers that want a specific element ask
+    _find_element_webview for the window actually holding it, rather than
+    guessing from position.
+    """
+    def go() -> list[tuple[Any, Any]]:
+        found: list[tuple[Any, Any]] = []
+        for window in NSApplication.sharedApplication().windows():
+            if not window.isVisible():
+                continue
+            stack = [window.contentView()]
+            while stack:
+                view = stack.pop()
+                if isinstance(view, WKWebView):
+                    found.append((window, view))
+                    break
+                stack.extend(view.subviews() or [])
+        return found
+
+    return _on_main_thread(go)
+
+
+def _find_panel_and_webview() -> tuple[Any, Any]:
+    """Any one visible window of ours with a WKWebView in it, or (None, None).
+
+    Only for "is a popup up at all yet" checks (_wait_for_window, the screenshot
+    step), where exactly one window is up by construction. Anything addressing a
+    named element goes through _find_element_webview instead.
+    """
+    found = _all_panels_and_webviews()
+    return found[0] if found else (None, None)
+
+
+def _find_element_webview(aria_label: str, selector: str) -> tuple[Any, Any]:
+    """The (window, webview) whose DOM actually holds the element with this
+    aria-label, or (None, None) if no visible webview has one.
+
+    Asks each webview rather than assuming the element is in whichever window
+    happens to come first: with both an approval panel and the settings window
+    visible, picking by position silently addresses the wrong document.
+    """
+    probe = "(function () { return %s ? 1 : 0; })()" % _js_element_expr(aria_label, selector)
+    for window, webview in _all_panels_and_webviews():
+        value, _error = _eval_js(webview, probe)
+        if value:
+            return window, webview
+    return None, None
+
+
+def _eval_js(webview: Any, source: str, timeout: float = 10.0) -> tuple[Any, Any]:
+    """Evaluate `source` in `webview` and block for its result, returning
+    (value, error). evaluateJavaScript_completionHandler_ is asynchronous and
+    main-thread-only; this gives it the synchronous contract every caller here
+    wants."""
+    box: list[tuple[Any, Any]] = []
+    done = threading.Event()
+
+    def handler(value, error) -> None:
+        box.append((value, error))
+        done.set()
+
+    _on_main_thread(lambda: webview.evaluateJavaScript_completionHandler_(source, handler))
+    if not done.wait(timeout):
+        return None, "JS_TIMEOUT"
+    return box[0]
+
+
+def _js_element_expr(aria_label: str, selector: str = "[data-pf-action]") -> str:
+    """JS expression evaluating to the `selector` element whose aria-label is
+    exactly `aria_label`, or undefined.
+
+    The label is embedded with json.dumps as a JS *string literal* and compared
+    with ===, deliberately not interpolated into a CSS attribute selector: real
+    labels contain apostrophes ("if I'm sender") and em-dashes ("Always allow —
+    ..."), and an apostrophe alone is enough to terminate the surrounding quoted
+    selector and turn the whole expression into a syntax error -- which surfaces
+    as an indistinguishable "element not found", not as an obvious breakage.
+    """
+    return (
+        "Array.prototype.slice.call(document.querySelectorAll(" + json.dumps(selector) + "))"
+        ".filter(function (e) { return e.getAttribute('aria-label') === "
+        + json.dumps(aria_label) + "; })[0]"
+    )
+
+
+
 def _wait_for_window(pid: int) -> str:
-    """Block until our own process's first window appears -- returns "ready",
-    or "TIMEOUT_NO_WINDOW" if it never appeared within
+    """Block until our own approval/settings window and its WKWebView exist --
+    returns "ready", or "TIMEOUT_NO_WINDOW" if none appeared within
     WINDOW_WAIT_TIMEOUT_SECONDS.
 
-    Split out from _click_button() (which used to poll and click in one
-    osascript call) so a screenshot can be taken in between: after the
-    window exists but before the click that may dismiss it.
-
-    Targets the process by unix id, not by name -- a plain `python3
-    scripts/...` invocation's process name varies by how Python itself was
-    installed/framework-built, but its pid is unambiguous.
+    Split out from _click_button() so a screenshot can be taken in between:
+    after the window exists but before the click that dismisses it. `pid` is
+    accepted (and ignored) only to keep every helper in this file on one
+    signature; we are the process, so there is nothing to look up.
     """
-    script = f'''
-    tell application "System Events"
-        set targetProcess to first process whose unix id is {pid}
-        set deadlineTime to (current date) + {WINDOW_WAIT_TIMEOUT_SECONDS}
-        repeat
-            if (exists window 1 of targetProcess) then return "ready"
-            if (current date) > deadlineTime then
-                return "TIMEOUT_NO_WINDOW"
-            end if
-            delay 0.1
-        end repeat
-    end tell
-    '''
-    return _run_applescript(script)
+    deadline = time.time() + WINDOW_WAIT_TIMEOUT_SECONDS
+    while True:
+        window, webview = _find_panel_and_webview()
+        if window is not None and webview is not None:
+            return "ready"
+        if time.time() > deadline:
+            # Name what was actually up instead of a bare timeout: the usual
+            # cause is a window that exists but holds no WKWebView (yet), which
+            # is indistinguishable from "no window at all" without this.
+            def describe() -> str:
+                return ", ".join(
+                    f"{type(w).__name__}(visible={w.isVisible()})"
+                    for w in NSApplication.sharedApplication().windows()
+                ) or "none"
+            return f"TIMEOUT_NO_WINDOW (windows: {_on_main_thread(describe)})"
+        time.sleep(0.05)
 
 
 def _wait_for_button_enabled(pid: int, title: str) -> str:
-    """Block until a Deny/Allow once/Always allow element with this exact
-    displayed text exists AND is enabled on our own process's first window
-    -- returns "ready", "BUTTON_NOT_FOUND" (no such element ever appeared),
-    or "TIMEOUT_BUTTON_DISABLED" (it exists but never became enabled within
-    WINDOW_WAIT_TIMEOUT_SECONDS).
+    """Block until the Deny/Allow once/Always allow button with this exact
+    aria-label exists in the popup's DOM and is enabled -- returns "ready",
+    "BUTTON_NOT_FOUND" (no such element ever appeared), or
+    "TIMEOUT_BUTTON_DISABLED" (it exists but stayed aria-disabled within
+    CONTENT_READY_TIMEOUT_SECONDS).
 
-    Issue #141 moved Deny/Allow once/Always allow off native NSButtons and
-    into the same card-stack WKWebView content everything else in the
-    approval window renders (role="button", aria-disabled toggled by the
-    page's own DOMContentLoaded handling -- see approval_window_html.py's
-    ``_button_row_html``/``_JS``) -- so this now walks `entire contents of
-    window 1` the same way _wait_for_web_element (below, originally written
-    for the *settings*-window's own web content) already does, rather than
-    addressing a native `button "{title}" of window 1`. Title is tried
-    first, description second, same unverified-on-real-hardware fallback
-    reasoning as that section's own header comment -- these buttons carry
-    ``aria-label`` (see _button_row_html), which WebKit may map to either
-    depending on OS/WebKit version, same open question as every other
-    aria-label lookup in this file.
+    These buttons start disabled and the panel itself starts fully transparent
+    (alphaValue 0). So this, not _wait_for_window's "the window object exists",
+    is the real "the popup is ready" signal: measured on a real run, the DOM is
+    still empty at 1s and fully populated by 2s. Called both by the screenshot
+    step and by _click_web_button before it clicks, so neither can act on a
+    half-built window.
 
-    v2's Deny/Allow once/Always allow start disabled -- and the panel
-    itself starts fully transparent (alphaValue 0) -- and only become
-    enabled/visible once the card-stack webview finishes loading (see
-    approval_window.py's webView_didFinishNavigation_ -- loadHTMLString_
-    baseURL_ is asynchronous even for local content). This is the actual
-    "the popup is ready" signal, distinct from _wait_for_window()'s "the
-    window exists" -- System Events' accessibility tree lists the NSPanel
-    (and passes _wait_for_window) the instant it's created and ordered
-    front, regardless of its alphaValue, well before the webview has
-    painted anything, so a screenshot taken right after _wait_for_window
-    alone would capture an empty, still-invisible panel depending on how
-    fast the machine happens to render that run -- not reliably
-    reproducible, and no --pause-seconds value fixes it for certain, only
-    makes the race less likely to lose. Called both by the screenshot step
-    (clicker(), below) and by _click_button() before it actually clicks, so
-    neither can act on a stale window state.
+    Readiness deliberately requires *both* the button being enabled and the
+    panel having become opaque, because those are two different moments and the
+    button wins the race: approval_window_html.py's ``_JS`` enables the row from
+    its own DOMContentLoaded handler, while the panel is only revealed later, by
+    approval_window.py's webView_didFinishNavigation_ (loadHTMLString_baseURL_ is
+    asynchronous even for local content). Waiting on the button alone is enough
+    to click safely but *not* to photograph: --screenshot-dir then captures a
+    fully transparent panel and writes out a blank white PNG, which is exactly
+    how the README screenshots would silently get regenerated as empty images.
+    No --pause-seconds value fixes that reliably; the alpha check does.
+
+    Reads the live DOM in-process rather than an accessibility tree; see this
+    section's header comment for why the AX route cannot work here.
     """
-    script = f'''
-    tell application "System Events"
-        set targetProcess to first process whose unix id is {pid}
-        tell targetProcess
-            set deadlineTime to (current date) + {WINDOW_WAIT_TIMEOUT_SECONDS}
-            repeat
-                set matches to (every UI element of (entire contents of window 1) whose title is "{title}")
-                if (count of matches) = 0 then
-                    set matches to (every UI element of (entire contents of window 1) whose description is "{title}")
-                end if
-                if (count of matches) > 0 then
-                    if (enabled of item 1 of matches) then return "ready"
-                else if (current date) > deadlineTime then
-                    return "BUTTON_NOT_FOUND"
-                end if
-                if (current date) > deadlineTime then return "TIMEOUT_BUTTON_DISABLED"
-                delay 0.1
-            end repeat
-        end tell
-    end tell
-    '''
-    return _run_applescript(script)
+    probe = "(function () { var e = %s; return e ? (e.getAttribute('aria-disabled') === 'true' ? 'DISABLED' : 'ready') : 'NOT_FOUND'; })()" % _js_element_expr(title)
+    deadline = time.time() + CONTENT_READY_TIMEOUT_SECONDS
+    last_status = "BUTTON_NOT_FOUND"
+    while True:
+        for window, webview in _all_panels_and_webviews():
+            value, _error = _eval_js(webview, probe)
+            if value == "ready" and _on_main_thread(lambda w=window: w.alphaValue()) >= 1.0:
+                return "ready"
+            if value == "DISABLED":
+                last_status = "TIMEOUT_BUTTON_DISABLED"
+        if time.time() > deadline:
+            return last_status
+        time.sleep(0.05)
+
+
+def _click_web_button(pid: int, aria_label: str, selector: str = "[data-pf-action]") -> str:
+    """Click a web-content element by its exact aria-label -- returns "clicked",
+    or a failure status naming what went wrong.
+
+    Three steps, each of which can fail loudly:
+
+    1. Measure. getBoundingClientRect() gives the button's live on-screen box.
+       An empty box ("BUTTON_NOT_VISIBLE") means it rendered to nothing.
+    2. Hit-test. document.elementFromPoint() at that box's centre must resolve
+       back to the same element ("BUTTON_OCCLUDED" if it doesn't) -- real proof
+       the button occupies the spot we aimed at and nothing covers it. This is
+       the check that catches a button rendered behind an overlay, collapsed to
+       zero size, or scrolled out of view; the accessibility route this replaced
+       could not see any of that.
+    3. Click. The element the hit-test actually returned -- not the one we looked
+       up, so a mismatch cannot slip through -- gets a real mousedown/mouseup/
+       click sequence dispatched on it, carrying the measured clientX/clientY.
+       They bubble, so the page's own document.body listener, the ``pf``
+       script-message bridge and stopModalWithCode_ all run exactly as they do
+       for a human click (see approval_window_html.py's ``_JS`` and
+       approval_window.py's userContentController_didReceiveScriptMessage_).
+
+    On why this dispatches in the DOM rather than sending an NSEvent into the
+    window: sending real AppKit mouse events *worked*, and would additionally
+    have exercised WebKit's own hit-testing, but it crashed the process outright
+    on roughly half of full-suite runs. An injected mouse event makes AppKit
+    schedule a deferred tracking-area update for that window, and a click here
+    resolves the modal, so runApproval_ closes the panel and tears down its view
+    hierarchy immediately afterwards -- the deferred
+    -[_NSTrackingAreaAKManager _updateActiveTrackingAreasForWindowLocation:]
+    block then runs against freed memory (EXC_BAD_ACCESS on the main thread,
+    confirmed from the crash report). That is inherent to injecting AppKit mouse
+    events into a window that is about to be destroyed, not something this script
+    can order around, so the DOM route is the only stable one. What it gives up
+    is WebKit's internal translation of a raw mouse event into a DOM click --
+    Apple's code, which no wiring bug in *this* repo can break -- while step 2
+    independently verifies the geometry that translation would have depended on.
+    """
+    ready_status = _wait_for_button_enabled(pid, aria_label) if selector == "[data-pf-action]" \
+        else _wait_for_web_element(pid, aria_label, selector)
+    if ready_status != "ready":
+        return ready_status
+    _window, webview = _find_element_webview(aria_label, selector)
+    if webview is None:
+        return "BUTTON_NOT_FOUND"
+
+    source = """(function () {
+  var el = %s;
+  if (!el) return 'BUTTON_NOT_FOUND';
+  var r = el.getBoundingClientRect();
+  if (r.width <= 0 || r.height <= 0) return 'BUTTON_NOT_VISIBLE';
+  var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+  var hit = document.elementFromPoint(cx, cy);
+  var target = hit && hit.closest ? hit.closest(%s) : null;
+  if (target !== el) return 'BUTTON_OCCLUDED';
+  ['mousedown', 'mouseup', 'click'].forEach(function (type) {
+    target.dispatchEvent(new MouseEvent(type, {
+      bubbles: true, cancelable: true, view: window,
+      clientX: cx, clientY: cy, button: 0, buttons: type === 'mousedown' ? 1 : 0,
+    }));
+  });
+  return 'clicked';
+})()""" % (_js_element_expr(aria_label, selector), json.dumps(selector))
+
+    value, error = _eval_js(webview, source)
+    if value is None:
+        return f"JS_ERROR: {error}"
+    return str(value)
 
 
 def _click_button(pid: int, title: str) -> str:
-    """Click a Deny/Allow once/Always allow element on our own process's
-    first window by its exact displayed text -- returns "clicked",
-    "BUTTON_NOT_FOUND"/"TIMEOUT_BUTTON_DISABLED" (see
-    _wait_for_button_enabled), or an osascript-level error string. Assumes
-    the window already exists (call _wait_for_window() first).
-
-    See _wait_for_button_enabled's own docstring for why this walks
-    `entire contents of window 1` (web content) rather than addressing a
-    native `button "{title}" of window 1` -- same title-then-description
-    fallback, same unverified-on-real-hardware status.
-
-    Waits for the button to actually be enabled before clicking -- without
-    this, a click landing before v2's webview finishes loading would
-    "succeed" against a button that doesn't do anything yet, leaving
-    show_native_approval() blocked in runModalForWindow_ forever (the
-    modal never resolves) instead of failing the scenario cleanly.
-    """
-    wait_status = _wait_for_button_enabled(pid, title)
-    if wait_status != "ready":
-        return wait_status
-    script = f'''
-    tell application "System Events"
-        set targetProcess to first process whose unix id is {pid}
-        tell targetProcess
-            set matches to (every UI element of (entire contents of window 1) whose title is "{title}")
-            if (count of matches) = 0 then
-                set matches to (every UI element of (entire contents of window 1) whose description is "{title}")
-            end if
-            if (count of matches) = 0 then return "BUTTON_NOT_FOUND"
-            click item 1 of matches
-        end tell
-    end tell
-    return "clicked"
-    '''
-    return _run_applescript(script)
+    """Click a Deny/Allow once/Always allow button by its exact label --
+    returns "clicked" or a failure status. Thin alias for _click_web_button,
+    kept because the approval-window scenarios read better calling it."""
+    return _click_web_button(pid, title)
 
 
 def _click_menu_bar_icon(pid: int) -> str:
@@ -323,11 +575,16 @@ def _click_menu_bar_icon(pid: int) -> str:
 
     "menu bar 2" is System Events' name for a process's status-bar extras,
     distinct from "menu bar 1" (the app's own File/Edit/... menu bar, which
-    an accessory-policy app like this one doesn't have) -- the same
-    real-click-via-System-Events approach _click_button uses for approval
-    windows, just targeting the status item instead of a window button.
-    Clicking it opens its menu the same way a real user click would; no
-    separate "open the menu" call exists or is needed.
+    an accessory-policy app like this one doesn't have). Clicking it opens its
+    menu the same way a real user click would; no separate "open the menu" call
+    exists or is needed.
+
+    This and _click_menu_item are the only two System Events clicks left in the
+    file. They stay because the tray status item and its NSMenu are native
+    AppKit, which System Events drives perfectly well -- it is specifically
+    WKWebView content it cannot reach (see the in-process section's header
+    comment). They are also the only reason any part of this script still needs
+    Accessibility permission.
     """
     script = f'''
     tell application "System Events"
@@ -353,14 +610,26 @@ def _click_menu_item(pid: int, title: str) -> str:
     way a real user's click would -- no separate "close the menu" step
     exists or is needed, mirroring _click_button's resolve-by-clicking
     contract for approval windows.
+
+    Waits for the item to exist rather than testing once: _click_menu_bar_icon
+    returns as soon as its own click is delivered, but the menu it opens is
+    still animating into place for a moment afterwards. Clicking into that gap
+    is silently accepted -- AppleScript reports success -- and simply does
+    nothing, which then surfaces much later and much less obviously as
+    "the settings window never opened". The caller used to bridge that gap with
+    a fixed --pause-seconds sleep, which meant a correct run depended on a flag
+    whose documented purpose is only how long a human gets to look at each popup.
     """
     script = f'''
     tell application "System Events"
         set targetProcess to first process whose unix id is {pid}
         tell targetProcess
-            if not (exists menu item "{title}" of menu 1 of menu bar item 1 of menu bar 2) then
-                return "MENU_ITEM_NOT_FOUND"
-            end if
+            set deadlineTime to (current date) + {WINDOW_WAIT_TIMEOUT_SECONDS}
+            repeat
+                if (exists menu item "{title}" of menu 1 of menu bar item 1 of menu bar 2) then exit repeat
+                if (current date) > deadlineTime then return "MENU_ITEM_NOT_FOUND"
+                delay 0.1
+            end repeat
             click menu item "{title}" of menu 1 of menu bar item 1 of menu bar 2
         end tell
     end tell
@@ -372,190 +641,127 @@ def _click_menu_item(pid: int, title: str) -> str:
 # ---------------------------------------------------------------------------- #
 # Settings-window (webview) content -- issue #120's settings_window_html.py
 # renders every clickable element as a plain <div> with role="button"/"tab"/
-# "radio"/"switch"/"checkbox" and a stable aria-label (added specifically so
-# this script can address WKWebView content the same way _click_button
-# above addresses one -- see that module's own accessibility-pass comments).
-# _click_button/_wait_for_button_enabled above use this exact same
-# `entire contents of window 1` technique now too (issue #141 moved
-# approval_window.py's own Deny/Allow once/Always allow off native
-# NSButtons and into its card-stack webview's content, the same way
-# settings_window_html.py's controls already were) -- this section's own
-# helpers (_click_web_element/_wait_for_web_element/etc.) stayed separate
-# rather than merging the two into one shared helper, since their aria-label
-# vocabularies serve genuinely different content (this section's own
-# toggle/radio/tab roles have no approval-window equivalent). System Events
-# can, in general, walk into a WKWebView's accessibility tree the same way
-# it walks a window's native subviews, but unlike a native NSButton (a
-# direct child of the window, addressable as `button "title" of window 1`),
-# a web-content element sits several levels deep under an AXWebArea --
-# `entire contents of window 1` is the standard AppleScript idiom for a
-# recursive search that reaches it regardless of nesting depth.
+# "radio"/"switch"/"checkbox" and a stable aria-label, and its text fields as
+# real <input>s carrying one too. All of it is DOM inside the settings window's
+# WKWebView, so these helpers drive it exactly the way the approval-window ones
+# above do -- in-process, via the live DOM; see that section's header comment for
+# why the accessibility route they both used to take cannot work here.
 #
-# UNVERIFIED ON REAL HARDWARE, same limitation as every other honesty note
-# in this file's module docstring applies here too, doubly so: this was the
-# first WKWebView-content UI-scripting attempt in this repo (approval_
-# window.py's own webview was still display-only and native-button-driven,
-# never addressed via System Events, until issue #141), so there was no
-# working precedent to copy exactly when this section was first written.
-# The two known open questions this can't resolve without an
-# actual run: (1) whether WebKit populates an ARIA `aria-label` into the AX
-# element's `title` or its `description` for a given role (this repo's own
-# testing suggests it varies by mapped role -- e.g. a button's accessible
-# name is typically exposed as title, a checkbox/radio's more often as
-# description -- hence the two-strategy fallback below, not a single
-# lookup), and (2) whether `entire contents` actually descends into
-# WKWebView's tree at all on the OS/WebKit version this runs against, or
-# whether reaching web content needs an explicit `UI elements of group 1 of
-# window 1`-style path instead. If scenarios below fail with
-# WEB_ELEMENT_NOT_FOUND on a real run, start by using Accessibility
-# Inspector.app (Xcode's) on the settings window to see exactly what AX
-# tree WebKit is actually exposing, then adjust these two helpers -- not
-# the individual scenario functions, which should never need to know this
-# level of detail.
+# They stay separate from _click_button/_wait_for_button_enabled rather than
+# merging into one shared helper, because their vocabularies genuinely differ:
+# these address any [aria-label] element (toggle/radio/tab/checkbox/input roles
+# with no approval-window equivalent), where the approval window's buttons are
+# specifically the [data-pf-action] row. That difference is the `selector`
+# argument, which is all the two paths actually needed to share.
+#
+# Reading state is likewise a direct DOM read now, which settles by construction
+# the two questions this section's old comment had to leave open -- whether
+# WebKit maps an ARIA label into the AX `title` or `description`, and whether AX
+# `enabled` reflects `aria-disabled` for a role="switch" div. Neither has an
+# answer to depend on any more: _web_element_value reads the aria-checked
+# attribute settings_window_html.py itself writes, and _web_element_enabled reads
+# its aria-disabled, with no OS-version-dependent mapping in between.
 # ---------------------------------------------------------------------------- #
 
-def _wait_for_web_element(pid: int, aria_label: str) -> str:
-    """Block until a web-content element with this aria-label exists inside
-    our own process's first window -- returns "ready" or
-    "TIMEOUT_NO_WEB_ELEMENT". See this section's own header comment for the
-    title-vs-description fallback and its unverified status."""
-    script = f'''
-    tell application "System Events"
-        set targetProcess to first process whose unix id is {pid}
-        tell targetProcess
-            set deadlineTime to (current date) + {WINDOW_WAIT_TIMEOUT_SECONDS}
-            repeat
-                set matches to (every UI element of (entire contents of window 1) whose title is "{aria_label}")
-                if (count of matches) = 0 then
-                    set matches to (every UI element of (entire contents of window 1) whose description is "{aria_label}")
-                end if
-                if (count of matches) > 0 then return "ready"
-                if (current date) > deadlineTime then return "TIMEOUT_NO_WEB_ELEMENT"
-                delay 0.1
-            end repeat
-        end tell
-    end tell
-    '''
-    return _run_applescript(script)
+def _wait_for_web_element(pid: int, aria_label: str, selector: str = "[aria-label]") -> str:
+    """Block until a settings-window element with this exact aria-label exists
+    in the DOM -- returns "ready" or "TIMEOUT_NO_WEB_ELEMENT"."""
+    deadline = time.time() + CONTENT_READY_TIMEOUT_SECONDS
+    while True:
+        _window, webview = _find_element_webview(aria_label, selector)
+        if webview is not None:
+            return "ready"
+        if time.time() > deadline:
+            return "TIMEOUT_NO_WEB_ELEMENT"
+        time.sleep(0.05)
 
 
 def _click_web_element(pid: int, aria_label: str) -> str:
-    """Click a settings-window web-content element by its aria-label --
-    returns "clicked", "TIMEOUT_NO_WEB_ELEMENT", or an osascript-level
-    error string. See this section's own header comment."""
-    wait_status = _wait_for_web_element(pid, aria_label)
-    if wait_status != "ready":
-        return wait_status
-    script = f'''
-    tell application "System Events"
-        set targetProcess to first process whose unix id is {pid}
-        tell targetProcess
-            set matches to (every UI element of (entire contents of window 1) whose title is "{aria_label}")
-            if (count of matches) = 0 then
-                set matches to (every UI element of (entire contents of window 1) whose description is "{aria_label}")
-            end if
-            if (count of matches) = 0 then return "WEB_ELEMENT_NOT_FOUND"
-            click item 1 of matches
-        end tell
-    end tell
-    return "clicked"
-    '''
-    return _run_applescript(script)
+    """Click a settings-window element by its aria-label with a real mouse
+    event -- returns "clicked" or a failure status. Same measure/hit-test/click
+    contract as _click_web_button, just over the wider [aria-label] vocabulary
+    this window uses."""
+    return _click_web_button(pid, aria_label, selector="[aria-label]")
+
+
+def _web_element_attr(aria_label: str, attribute: str, default: str) -> str:
+    """Read one attribute off a settings-window element by aria-label, or
+    "WEB_ELEMENT_NOT_FOUND"/a JS error string. `default` is what to report when
+    the element exists but doesn't carry the attribute at all -- both callers
+    below have a meaningful absent-means-X reading."""
+    _window, webview = _find_element_webview(aria_label, "[aria-label]")
+    if webview is None:
+        return "WEB_ELEMENT_NOT_FOUND"
+    source = "(function () { var e = %s; if (!e) return 'WEB_ELEMENT_NOT_FOUND'; var v = e.getAttribute(%s); return v === null ? %s : v; })()" % (
+        _js_element_expr(aria_label, "[aria-label]"), json.dumps(attribute), json.dumps(default),
+    )
+    value, error = _eval_js(webview, source)
+    if value is None:
+        return f"JS_ERROR: {error}"
+    return str(value)
 
 
 def _web_element_value(pid: int, aria_label: str) -> str:
-    """AX `value` of a web-content element by its aria-label -- for a
-    role="switch"/"radio"/"checkbox" element this is WebKit's mapping of
-    its aria-checked state (typically "1"/"0" or "true"/"false" depending
-    on OS version -- UNVERIFIED which, see this section's header comment),
-    used by the PII-sub-toggle scenario below to confirm a visual on/off
-    state, not just that a click landed. Returns the AX value as a string,
-    or "WEB_ELEMENT_NOT_FOUND"/an osascript-level error string."""
-    script = f'''
-    tell application "System Events"
-        set targetProcess to first process whose unix id is {pid}
-        tell targetProcess
-            set matches to (every UI element of (entire contents of window 1) whose title is "{aria_label}")
-            if (count of matches) = 0 then
-                set matches to (every UI element of (entire contents of window 1) whose description is "{aria_label}")
-            end if
-            if (count of matches) = 0 then return "WEB_ELEMENT_NOT_FOUND"
-            return (value of item 1 of matches) as string
-        end tell
-    end tell
-    '''
-    return _run_applescript(script)
+    """On/off state of a role="switch"/"radio"/"checkbox" element -- its
+    `aria-checked`, "true" or "false" (see settings_window_html.py's
+    toggleHtml/segHtml, which write it) -- or "WEB_ELEMENT_NOT_FOUND".
 
-
-def _set_web_element_text(pid: int, aria_label: str, text: str) -> str:
-    """Focus a settings-window text input by aria-label, select-all, type
-    replacement text, then Tab away to blur it (settings_window_html.py's
-    inputs commit on blur/Enter, not per keystroke -- see that module's own
-    docstring) -- returns "typed" or a failure status. Uses `keystroke`,
-    not AX's `value of` setter, so this exercises the same real keyboard
-    event path a human typing would, matching every other interaction in
-    this script (System-Events-driven, no mocking)."""
-    wait_status = _wait_for_web_element(pid, aria_label)
-    if wait_status != "ready":
-        return wait_status
-    script = f'''
-    tell application "System Events"
-        set targetProcess to first process whose unix id is {pid}
-        tell targetProcess
-            set matches to (every UI element of (entire contents of window 1) whose title is "{aria_label}")
-            if (count of matches) = 0 then
-                set matches to (every UI element of (entire contents of window 1) whose description is "{aria_label}")
-            end if
-            if (count of matches) = 0 then return "WEB_ELEMENT_NOT_FOUND"
-            set focused of item 1 of matches to true
-            keystroke "a" using command down
-            keystroke "{text}"
-            keystroke tab
-        end tell
-    end tell
-    return "typed"
-    '''
-    return _run_applescript(script)
+    Used by the PII-sub-toggle scenario to confirm a real visual on/off state,
+    not merely that a click landed. An element with no aria-checked at all is
+    not a switch, and reports "false" rather than pretending to be on.
+    """
+    return _web_element_attr(aria_label, "aria-checked", "false")
 
 
 def _web_element_enabled(pid: int, aria_label: str) -> str:
-    """AX `enabled` of a web-content element by its aria-label -- "true"/
-    "false" (AppleScript's boolean-to-string coercion), or
-    "WEB_ELEMENT_NOT_FOUND"/an osascript-level error string. Distinct from
-    _web_element_value() above: that reads aria-checked (on/off), this reads
-    whether the element is interactive at all -- used by the PII sub-toggle
-    scenario below to confirm the *disabled* visual state a dimmed
-    (opacity-only CSS, not a native `disabled` attribute -- there is none
-    for a plain <div>) sub-toggle is supposed to carry. See
-    settings_window_html.py's toggleHtml(): a disabled toggle renders
-    `aria-disabled="true"` and omits `tabindex`/`data-action` entirely,
-    rather than anything a browser's own disabled-input semantics would
-    normally give WebKit's accessibility mapping to key off of for free.
+    """Whether a settings-window element is interactive at all -- "true"/"false"
+    -- or "WEB_ELEMENT_NOT_FOUND". Distinct from _web_element_value: that reads
+    aria-checked (on/off), this reads aria-disabled (usable at all).
 
-    UNVERIFIED, same as every other AX-mapping claim in this section's own
-    header comment: whether System Events' generic `enabled` property
-    actually reflects WebKit's mapping of `aria-disabled` for a
-    role="switch" element it exposes (as opposed to, say, always reporting
-    true for any element WebKit exposes at all, since `aria-disabled`
-    doesn't remove an element from the accessibility tree the way a truly
-    native disabled control would) is exactly the kind of thing this
-    section's header comment says needs Accessibility Inspector.app to
-    confirm on a real run, not asserted here.
+    settings_window_html.py's toggleHtml() renders a disabled toggle as
+    `aria-disabled="true"` with no tabindex/data-action, and a plain <div> has no
+    native disabled semantics to fall back on -- so absence of the attribute is
+    exactly what "enabled" means here, hence the "true" default.
     """
-    script = f'''
-    tell application "System Events"
-        set targetProcess to first process whose unix id is {pid}
-        tell targetProcess
-            set matches to (every UI element of (entire contents of window 1) whose title is "{aria_label}")
-            if (count of matches) = 0 then
-                set matches to (every UI element of (entire contents of window 1) whose description is "{aria_label}")
-            end if
-            if (count of matches) = 0 then return "WEB_ELEMENT_NOT_FOUND"
-            return (enabled of item 1 of matches) as string
-        end tell
-    end tell
-    '''
-    return _run_applescript(script)
+    disabled = _web_element_attr(aria_label, "aria-disabled", "false")
+    if disabled in ("true", "false"):
+        return "false" if disabled == "true" else "true"
+    return disabled
+
+
+def _set_web_element_text(pid: int, aria_label: str, text: str) -> str:
+    """Replace a settings-window text input's contents by aria-label, then blur
+    it -- returns "typed" or a failure status.
+
+    settings_window_html.py's inputs commit on blur/Enter rather than per
+    keystroke (see its module docstring), so what has to be exercised is that
+    commit path: this focuses the field, replaces its value, fires the `input`
+    and `change` events a real edit produces, and then blurs it -- the page's own
+    handler runs off those exactly as it would for typing. `text` is passed as a
+    JS string literal, never spliced into source, so quotes and non-ASCII in a
+    rule value can't break the expression.
+    """
+    wait_status = _wait_for_web_element(pid, aria_label)
+    if wait_status != "ready":
+        return wait_status
+    _window, webview = _find_element_webview(aria_label, "[aria-label]")
+    if webview is None:
+        return "WEB_ELEMENT_NOT_FOUND"
+    source = """(function () {
+  var el = %s;
+  if (!el) return 'WEB_ELEMENT_NOT_FOUND';
+  el.focus();
+  el.value = %s;
+  el.dispatchEvent(new Event('input', {bubbles: true}));
+  el.dispatchEvent(new Event('change', {bubbles: true}));
+  el.blur();
+  return 'typed';
+})()""" % (_js_element_expr(aria_label, "[aria-label]"), json.dumps(text))
+    value, error = _eval_js(webview, source)
+    if value is None:
+        return f"JS_ERROR: {error}"
+    return str(value)
+
 
 
 def _wait_for_disk_config(
@@ -599,6 +805,41 @@ def _slugify(name: str) -> str:
     return _SLUG_RE.sub("_", name).strip("_")
 
 
+def _wait_for_paint_settled(timeout: float = 5.0) -> None:
+    """Block until every visible webview of ours has finished laying out text
+    and painted at least one frame with it.
+
+    A window being opaque and its buttons being live does not mean it has been
+    *drawn*: CGWindowListCreateImage captures whatever the compositor last
+    produced, and at default --pause-seconds that frame reliably came back with
+    the full card layout -- panels, borders, the PII banner, the button row --
+    and not one character of text in any of it. Waiting on document.fonts.ready
+    is what actually fixes it (the missing frame is the one before webfont
+    layout lands); the two chained requestAnimationFrames then let the frame
+    that includes the text reach the screen before the capture reads it.
+
+    Best-effort by design: a timeout here means a slightly early screenshot, not
+    a failed scenario, so it never turns a passing run red.
+    """
+    arm = """(function () {
+  if (window.__pfPainted === undefined) {
+    window.__pfPainted = 0;
+    document.fonts.ready.then(function () {
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () { window.__pfPainted = 1; });
+      });
+    });
+  }
+  return window.__pfPainted;
+})()"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        views = _all_panels_and_webviews()
+        if views and all(_eval_js(webview, arm)[0] for _window, webview in views):
+            return
+        time.sleep(0.05)
+
+
 def _screenshot_own_window(pid: int, path: Path) -> bool:
     """Screenshot the first on-screen window owned by our own process (there's
     only ever one at a time -- show_native_approval()'s modal loop means
@@ -616,7 +857,12 @@ def _screenshot_own_window(pid: int, path: Path) -> bool:
     size (verified empirically: a 300x178pt window came back as 824x580px
     with the default option, vs. a clean 600x356px -- exactly 2x retina --
     with this one).
+
+    Waits for paint to settle first -- see _wait_for_paint_settled. Without it
+    the capture is a real but half-drawn frame: boxes, borders and background
+    colors all present, and every single glyph missing.
     """
+    _wait_for_paint_settled()
     window_list = Quartz.CGWindowListCopyWindowInfo(
         Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID
     )
@@ -737,9 +983,9 @@ def _run_scenario(
         # from a different thread than the one show_native_approval() will
         # block on below (the AppKit modal loop). A head start (0.3s by
         # default, --pause-seconds to look before each click) lets the
-        # window actually get created before System Events starts polling
-        # for it -- and, at a larger value, gives a human time to actually
-        # look at what's on screen before it's clicked away.
+        # window actually get created before we start polling for it -- and,
+        # at a larger value, gives a human time to actually look at what's on
+        # screen before it's clicked away.
         time.sleep(pause_seconds)
         wait_status = _wait_for_window(pid)
         if wait_status != "ready":
@@ -790,7 +1036,7 @@ def _run_scenario(
     # both, not just one -- otherwise a large --pause-seconds would make
     # this time out while the clicker thread is still legitimately waiting.
     sleeps = 2 if pre_click_title is not None else 1
-    clicker_thread.join(timeout=sleeps * pause_seconds + WINDOW_WAIT_TIMEOUT_SECONDS + 5)
+    clicker_thread.join(timeout=sleeps * pause_seconds + WINDOW_WAIT_TIMEOUT_SECONDS + CONTENT_READY_TIMEOUT_SECONDS + 5)
     click_status = click_status_box[0] if click_status_box else "clicker thread never finished"
     return ScenarioResult(
         name=name, button_clicked=click_title, expected=expected, actual=actual, click_status=click_status,
@@ -854,7 +1100,7 @@ def _run_dialog_scenario(
 
     result = call()
 
-    clicker_thread.join(timeout=pause_seconds + WINDOW_WAIT_TIMEOUT_SECONDS + 5)
+    clicker_thread.join(timeout=pause_seconds + WINDOW_WAIT_TIMEOUT_SECONDS + CONTENT_READY_TIMEOUT_SECONDS + 5)
     click_status = click_status_box[0] if click_status_box else "clicker thread never finished"
     return ScenarioResult(
         name=name, button_clicked=click_title, expected=str(expected), actual=str(result),
