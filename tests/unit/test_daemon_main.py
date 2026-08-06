@@ -11,10 +11,12 @@ real OAuth/HTTP clients (those are covered separately per-client).
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import threading
+import time
 import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -23,6 +25,8 @@ import pytest
 import yaml
 
 from privacyfence import daemon_main
+from privacyfence.connectors.slack import SlackConnector
+from privacyfence.connectors.telegram import TelegramConnector
 from privacyfence.paths import data_dir
 
 
@@ -312,7 +316,11 @@ class TestBuildConnectorsSlack:
             "user_cache_file": str(data_dir() / "slack_user_cache.json"),
             "channel_cache_file": str(data_dir() / "slack_channel_cache.json"),
         }
-        assert fake.directories_refreshed is True
+        # Directory-cache warming no longer happens inline in
+        # build_connectors() -- it's kicked off separately, in the
+        # background, by _warm_connector_caches() (see run_app()), so a
+        # large workspace's re-sync can't delay the menu bar icon.
+        assert fake.directories_refreshed is False
 
     def test_skipped_when_org_config_absent(self, monkeypatch):
         fake = fake_client_class(result="my-workspace")
@@ -535,10 +543,10 @@ class TestBuildConnectorsTelegram:
             "session_file": str(tmp_path / "credentials" / "telegram.session"),
             "chat_cache_file": str(data_dir() / "telegram_chat_cache.json"),
         }
-        # Unlike Slack's SlackClient (see TestBuildConnectorsSlack), the fake
-        # client's directories_refreshed flag must stay False here --
-        # Telegram deliberately does not warm its directory cache eagerly at
-        # startup, only lazily on first tool call.
+        # Same as Slack (see TestBuildConnectorsSlack): directory-cache
+        # warming is no longer inline in build_connectors() for either
+        # connector -- it's kicked off separately, in the background, by
+        # _warm_connector_caches() (see run_app()).
         assert fake.directories_refreshed is False
 
     def test_skipped_when_no_app_credentials(self, monkeypatch, tmp_path):
@@ -931,6 +939,99 @@ class TestIPCServerThread:
 
 
 # ---------------------------------------------------------------------------- #
+# _warm_connector_caches
+# ---------------------------------------------------------------------------- #
+
+class TestWarmConnectorCaches:
+    """_warm_connector_caches() is what run_app() calls right after the IPC
+    thread is ready -- Slack's client is synchronous, so it gets its own
+    background thread; Telegram's is asyncio-native and has to run on the
+    IPC server's own loop (see the function's docstring). Both are
+    fire-and-forget from the caller's point of view, so these tests poll
+    briefly for the background work to land rather than joining a handle
+    _warm_connector_caches doesn't expose."""
+
+    def _running_loop(self):
+        """A bare event loop on its own thread -- stands in for the IPC
+        server's loop without needing a real IPCServer/socket."""
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        return loop, thread
+
+    def _stop(self, loop, thread):
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=5)
+
+    def _wait_until(self, predicate, timeout=2.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.01)
+        return predicate()
+
+    def test_slack_connector_warmed_on_its_own_background_thread(self):
+        client = MagicMock()
+        connector = SlackConnector(client)
+        loop, thread = self._running_loop()
+        try:
+            daemon_main._warm_connector_caches([connector], loop)
+            assert self._wait_until(lambda: client.ensure_directories_fresh.called)
+        finally:
+            self._stop(loop, thread)
+
+    def test_telegram_connector_warmed_on_the_given_ipc_loop(self):
+        calls: list[threading.Thread] = []
+
+        class FakeTelegramClient:
+            async def ensure_chat_directory_fresh(self):
+                calls.append(threading.current_thread())
+
+        connector = TelegramConnector(FakeTelegramClient())
+        loop, thread = self._running_loop()
+        try:
+            daemon_main._warm_connector_caches([connector], loop)
+            assert self._wait_until(lambda: bool(calls))
+            assert calls[0] is thread
+        finally:
+            self._stop(loop, thread)
+
+    def test_telegram_warm_failure_is_logged_not_raised(self, caplog):
+        class FailingTelegramClient:
+            async def ensure_chat_directory_fresh(self):
+                raise RuntimeError("boom")
+
+        connector = TelegramConnector(FailingTelegramClient())
+        loop, thread = self._running_loop()
+        try:
+            with caplog.at_level(logging.WARNING, logger="privacyfence.daemon"):
+                daemon_main._warm_connector_caches([connector], loop)
+                assert self._wait_until(lambda: "Background Telegram cache warm failed" in caplog.text)
+            assert "boom" in caplog.text
+        finally:
+            self._stop(loop, thread)
+
+    def test_other_connector_types_are_left_untouched(self):
+        other = MagicMock()
+        loop, thread = self._running_loop()
+        try:
+            daemon_main._warm_connector_caches([other], loop)
+            # Nothing to poll for -- this must be a synchronous no-op for a
+            # connector that's neither Slack nor Telegram.
+            other.client.ensure_directories_fresh.assert_not_called()
+        finally:
+            self._stop(loop, thread)
+
+    def test_empty_connector_list_is_a_no_op(self):
+        loop, thread = self._running_loop()
+        try:
+            daemon_main._warm_connector_caches([], loop)  # must not raise
+        finally:
+            self._stop(loop, thread)
+
+
+# ---------------------------------------------------------------------------- #
 # run_app
 # ---------------------------------------------------------------------------- #
 
@@ -941,6 +1042,12 @@ class _FakeIPCServerThread:
         self.server = server
         self._ready = threading.Event()
         self._ready.set()
+        # A harmless non-None placeholder -- real IPCServerThread sets this
+        # to its asyncio event loop, and run_app() only ever passes it
+        # through to _warm_connector_caches() (which is itself mocked out
+        # in most of these tests). Distinct per instance so a test can
+        # assert identity against the specific thread it inspects.
+        self._loop = SimpleNamespace()
         self.started = False
         type(self).instances.append(self)
 
@@ -995,6 +1102,44 @@ class TestRunApp:
         assert menu_bar_calls[0]["ipc_server"] is _FakeIPCServerThread.instances[0].server
         assert _FakeIPCServerThread.instances[0].started is True
         assert release_calls == [1]
+
+    def test_background_cache_warm_kicked_off_with_connectors_and_ipc_loop(self, monkeypatch):
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        connector = SimpleNamespace(name="slack")
+        self._patch_common(monkeypatch, connectors=[connector])
+        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
+        warm_calls = []
+        monkeypatch.setattr(daemon_main, "_warm_connector_caches", lambda conns, loop: warm_calls.append((conns, loop)))
+
+        daemon_main.run_app({}, "config.yaml")
+
+        assert len(warm_calls) == 1
+        assert warm_calls[0][0] == [connector]
+        assert warm_calls[0][1] is _FakeIPCServerThread.instances[0]._loop
+
+    def test_background_cache_warm_skipped_and_logged_if_ipc_loop_never_became_ready(self, monkeypatch, caplog):
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        self._patch_common(monkeypatch)
+        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
+        # Simulate the IPC thread's loop never getting assigned in time
+        # (see IPCServerThread.run()) -- run_app() must not crash on it.
+        original_init = _FakeIPCServerThread.__init__
+
+        def init_with_no_loop(self, server):
+            original_init(self, server)
+            self._loop = None
+        monkeypatch.setattr(_FakeIPCServerThread, "__init__", init_with_no_loop)
+        warm_calls = []
+        monkeypatch.setattr(daemon_main, "_warm_connector_caches", lambda conns, loop: warm_calls.append((conns, loop)))
+
+        with caplog.at_level(logging.WARNING):
+            result = daemon_main.run_app({}, "config.yaml")
+
+        assert result == 0
+        assert warm_calls == []
+        assert "skipping background cache warm" in caplog.text
 
     def test_no_connectors_built_still_starts_ipc_and_menu_bar(self, monkeypatch, caplog):
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)

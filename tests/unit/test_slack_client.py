@@ -1368,9 +1368,10 @@ class TestRefreshChannelDirectory:
         ]
         client = make_client_with_caches(web_client, tmp_path)
 
-        count = client.refresh_channel_directory()
+        count, has_more = client.refresh_channel_directory()
 
         assert count == 2
+        assert has_more is False
         assert client._channel_name_cache == {"C1": "general", "G1": "mpdm-a--b-1"}
         assert client._channel_is_mpim_cache == {"C1": False, "G1": True}
         call_kwargs = web_client.conversations_list.call_args_list[0].kwargs
@@ -1395,6 +1396,76 @@ class TestRefreshChannelDirectory:
         client = make_client_with_caches(web_client, tmp_path)
         with pytest.raises(SlackClientError, match="refresh_channel_directory"):
             client.refresh_channel_directory()
+
+
+class TestRefreshChannelDirectoryPagination:
+    """max_pages bounds each call to that many conversations.list pages,
+    resuming from where the previous call left off -- what the
+    slack_refresh_channel_cache bridge tool uses so a workspace with enough
+    channels to blow past the calling MCP client's tool-call timeout
+    completes over a few bounded calls instead of one unbounded one."""
+
+    def test_stops_after_max_pages_and_reports_has_more(self, tmp_path):
+        web_client = MagicMock()
+        web_client.conversations_list.side_effect = [
+            {"channels": [{"id": "C1", "name": "general"}], "response_metadata": {"next_cursor": "page2"}},
+            {"channels": [{"id": "C2", "name": "random"}], "response_metadata": {"next_cursor": "page3"}},
+        ]
+        client = make_client_with_caches(web_client, tmp_path)
+
+        count, has_more = client.refresh_channel_directory(max_pages=2)
+
+        assert count == 2
+        assert has_more is True
+        assert web_client.conversations_list.call_count == 2
+        assert client._channel_name_cache == {"C1": "general", "C2": "random"}
+
+    def test_partial_refresh_does_not_update_disk_or_ttl(self, tmp_path):
+        web_client = MagicMock()
+        web_client.conversations_list.return_value = {
+            "channels": [{"id": "C1", "name": "general"}], "response_metadata": {"next_cursor": "page2"},
+        }
+        client = make_client_with_caches(web_client, tmp_path)
+
+        client.refresh_channel_directory(max_pages=1)
+
+        assert client._channel_directory_fetched_at is None
+        assert not (tmp_path / "slack_channel_cache.json").exists()
+
+    def test_next_call_resumes_from_saved_cursor(self, tmp_path):
+        web_client = MagicMock()
+        web_client.conversations_list.side_effect = [
+            {"channels": [{"id": "C1", "name": "general"}], "response_metadata": {"next_cursor": "page2"}},
+            {"channels": [{"id": "C2", "name": "random"}], "response_metadata": {"next_cursor": ""}},
+        ]
+        client = make_client_with_caches(web_client, tmp_path)
+
+        first_count, first_has_more = client.refresh_channel_directory(max_pages=1)
+        second_count, second_has_more = client.refresh_channel_directory(max_pages=1)
+
+        assert (first_count, first_has_more) == (1, True)
+        assert (second_count, second_has_more) == (2, False)
+        assert web_client.conversations_list.call_args_list[1].kwargs["cursor"] == "page2"
+        # Only finalized (disk snapshot + TTL) once the walk actually finished.
+        assert client._channel_directory_fetched_at is not None
+        data = json.loads((tmp_path / "slack_channel_cache.json").read_text(encoding="utf-8"))
+        assert set(data["channels"]) == {"C1", "C2"}
+
+    def test_unbounded_call_ignores_max_pages_limit(self, tmp_path):
+        # max_pages=None (the default) is what ensure_directories_fresh()
+        # uses -- walks every page in one call regardless of count.
+        web_client = MagicMock()
+        web_client.conversations_list.side_effect = [
+            {"channels": [{"id": "C1", "name": "general"}], "response_metadata": {"next_cursor": "page2"}},
+            {"channels": [{"id": "C2", "name": "random"}], "response_metadata": {"next_cursor": ""}},
+        ]
+        client = make_client_with_caches(web_client, tmp_path)
+
+        count, has_more = client.refresh_channel_directory()
+
+        assert count == 2
+        assert has_more is False
+        assert web_client.conversations_list.call_count == 2
 
 
 class TestChannelResolutionWithDirectoryCache:

@@ -264,7 +264,7 @@ PrivacyFence for a delete.
 | `slack_list_group_chats` | read | auto | — | — (each entry is `id`, `name`, and resolved `member_ids`/`member_names`; optional `participant` filter matches by user id, handle, or display name, comma-separated to require all of them as members of the same group chat; one extra `conversations.members` call per group chat) |
 | `slack_resolve_permalink` | read | auto | — | — (parses a pasted Slack message permalink into `channel_id`/`channel_name`/`ts`/`thread_ts`, ready for `slack_get_channel_history`/`slack_get_thread_replies`; no Slack API call beyond a best-effort channel-name lookup) |
 | `slack_refresh_user_cache` | read | auto | — | — (forces an immediate `users.list` re-sync of the on-disk, weekly-refreshed user name/email cache that `slack_get_channel_history`/`slack_get_thread_replies`/`slack_search_messages` use to resolve message authors without a per-message `users.info` call; call after a teammate joins mid-week so they resolve correctly before the next automatic refresh) |
-| `slack_refresh_channel_cache` | read | auto | — | — (forces an immediate re-sync of the on-disk, weekly-refreshed channel/DM/group-DM name cache those same read tools use to resolve which conversation a message belongs to without a per-message `conversations.info` call; call after a new channel is created so it resolves by name right away) |
+| `slack_refresh_channel_cache` | read | auto | — | — (forces an immediate re-sync of the on-disk, weekly-refreshed channel/DM/group-DM name cache those same read tools use to resolve which conversation a message belongs to without a per-message `conversations.info` call; call after a new channel is created so it resolves by name right away. On a workspace with enough channels that one call can't finish before the calling MCP client's own tool-call timeout, the result's `has_more` flag comes back `true` — call the tool again to resume from where it left off) |
 | `slack_get_channel_history` | read | review | channel name, message count, first message (80 chars) | All messages |
 | `slack_get_thread_replies` | read | review | channel name, thread starter (80 chars), reply count | All replies |
 | `slack_search_messages` | read | review | query and/or participant, result count | All results |
@@ -301,11 +301,16 @@ pasted directly.
 `get_user_info`/`resolve_channel_name`/`resolve_is_group_dm` check before falling back to a live,
 per-item Slack call — without them, resolving every message author/channel in a `slack_search_messages`
 result costs one `users.info` and one `conversations.info` call per unique sender/channel, every time.
-Both snapshots refresh automatically about once a week — checked on every Slack connector startup (so
-a snapshot that went stale while the app was closed is caught then, not on whatever tool call happens
-to run first) and, in between restarts, lazily on first use once seven days have passed. These two
-tools exist purely for the exception: someone new (a hire, a channel) needs to resolve correctly
-*before* the next automatic refresh. Neither tool reads any message content; both are auto-approved.
+Both snapshots refresh automatically about once a week — checked once the IPC server comes up on every
+daemon restart (so a snapshot that went stale while the app was closed is caught then, not on whatever
+tool call happens to run first), in the background so the refresh can't delay the menu bar icon
+appearing, and, in between restarts, lazily on first use once seven days have passed. These two tools
+exist purely for the exception: someone new (a hire, a channel) needs to resolve correctly *before* the
+next automatic refresh. Neither tool reads any message content; both are auto-approved.
+`slack_refresh_channel_cache` specifically bounds each call to a fixed number of `conversations.list`
+pages so a large workspace can't run one call past the calling MCP client's own timeout — see the table
+above for the `has_more`/resume behavior; the eager background refresh at startup isn't subject to this
+bound, since it isn't racing anyone's timeout.
 
 ### Google Calendar
 
@@ -384,9 +389,12 @@ search under this connector's OAuth scope.
 `search_messages` check before falling back to a bare numeric chat id — without it, any chat not
 already primed by a recent `telegram_list_chats` call (in particular, any chat surfaced only via
 `telegram_search_messages`, or after a daemon restart) shows up unresolved. The snapshot refreshes
-automatically about once a week, lazily on first use once seven days have passed; unlike Slack's
-directory caches, it is *not* also warmed eagerly at connector startup, since Telegram connects on
-first use by design rather than at startup. Reads no message content; auto-approved.
+automatically about once a week — same as Slack's directory caches, checked once the IPC server comes
+up on every daemon restart, in the background so a large account's re-sync can't delay the menu bar
+icon appearing — and, in between restarts, lazily on first use once seven days have passed. This does
+mean a daemon restart now connects to Telegram eagerly rather than waiting for the first Telegram tool
+call, an accepted tradeoff now that the connection happens off the startup critical path. Reads no
+message content; auto-approved.
 
 ### Salesforce
 

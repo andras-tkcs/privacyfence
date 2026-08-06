@@ -209,14 +209,34 @@ class TestRefreshChannelCache:
     async def test_auto_accepts_and_returns_count(self, tmp_path):
         init_audit_logger(str(tmp_path))
         connector, client = make_connector()
-        client.refresh_channel_directory.return_value = 17
+        client.refresh_channel_directory.return_value = (17, False)
 
         result = await connector.call("slack_refresh_channel_cache", {})
 
-        assert result == {"cached_channels": 17}
+        assert result == {"cached_channels": 17, "has_more": False}
         entries = (tmp_path / f"{current_week()}.jsonl").read_text(encoding="utf-8").splitlines()
         assert '"decision": "auto_accepted"' in entries[0]
         assert '"tool": "slack_refresh_channel_cache"' in entries[0]
+
+    async def test_passes_the_page_budget_to_the_client(self):
+        connector, client = make_connector()
+        client.refresh_channel_directory.return_value = (17, False)
+
+        await connector.call("slack_refresh_channel_cache", {})
+
+        client.refresh_channel_directory.assert_called_once_with(
+            max_pages=slack_module._CHANNEL_CACHE_REFRESH_PAGE_BUDGET
+        )
+
+    async def test_has_more_surfaces_a_continuation_note(self):
+        connector, client = make_connector()
+        client.refresh_channel_directory.return_value = (4000, True)
+
+        result = await connector.call("slack_refresh_channel_cache", {})
+
+        assert result["cached_channels"] == 4000
+        assert result["has_more"] is True
+        assert "call slack_refresh_channel_cache again" in result["note"]
 
     async def test_client_error_becomes_runtime_error(self):
         connector, client = make_connector()
@@ -837,6 +857,10 @@ class TestEveryToolIsAudited:
         client.resolve_permalink.return_value = {
             "channel_id": "C1", "channel_name": "eng", "ts": "1.0", "thread_ts": "",
         }
+        # _refresh_channel_cache unpacks a (count, has_more) tuple -- an
+        # unconfigured MagicMock isn't iterable, so it would surface here as
+        # a spurious "raised TypeError" rather than a real audit-trail gap.
+        client.refresh_channel_directory.return_value = (0, False)
         await assert_all_tools_leave_an_audit_trail(
             connector, slack_module, monkeypatch, tmp_path,
             arg_overrides={
