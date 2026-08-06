@@ -360,7 +360,14 @@ img { display: block; max-width: 100%; }
 .pf-btn-row-candidates {
   display: flex; flex-wrap: wrap; align-items: center;
   gap: var(--space-2) var(--space-4); flex: none; margin-top: var(--space-3);
+  padding-top: var(--space-3); border-top: 1px solid var(--color-divider);
 }
+/* The divider belongs above whichever row comes first -- when a
+   candidates row precedes .pf-btn-row (2+ "Always allow" matches, see
+   above), it already carries its own border-top, so .pf-btn-row's own
+   line would otherwise land a second time, directly between the
+   candidates and Deny/Allow once instead of above both. */
+.pf-btn-row-candidates + .pf-btn-row { border-top: none; padding-top: 0; }
 .pf-btn {
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 90px; padding: var(--space-2) var(--space-4);
