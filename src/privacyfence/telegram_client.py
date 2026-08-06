@@ -301,15 +301,21 @@ class TelegramPrivacyFenceClient:
     async def ensure_chat_directory_fresh(self) -> None:
         """Eagerly run the same freshness check ``get_chat_name``/
         ``get_messages``/``search_messages`` would otherwise only run lazily
-        on first use. Intentionally *not* called at connector startup the
-        way Slack's directory-cache counterpart is (see daemon_main.py) --
-        Telegram connects lazily, on first tool call, by design (MTProto has
-        no browser-OAuth equivalent to piggyback a connectivity check on),
-        and forcing a refresh here would force a connection too. Exists for
-        callers that *do* want that eager behavior (a future connector
-        startup path, or a test). A no-op (no network call at all) when the
-        snapshot is already fresh, and best-effort like the lazy path it
-        shares its implementation with -- never raises.
+        on first use. Called once right after daemon startup, same as
+        Slack's directory-cache counterpart -- see ``_warm_connector_caches``
+        in ``daemon_main.py``, which schedules this on the IPC server's own
+        event loop rather than awaiting it inline: Telethon's client binds
+        to whichever loop first connects it, and that has to be the loop
+        every Telegram tool call actually runs on, not a throwaway one.
+        Running it in the background (rather than blocking daemon startup on
+        it, the way an inline call would) also means a snapshot that's gone
+        stale while the app was closed doesn't delay the menu bar icon
+        appearing. This does force a Telegram connection at startup, where
+        before this existed Telegram connected lazily on first tool call --
+        an accepted tradeoff now that the connection happens off the
+        critical path. A no-op (no network call at all) when the snapshot is
+        already fresh, and best-effort like the lazy path it shares its
+        implementation with -- never raises.
         """
         if self._chat_cache_file:
             await self._ensure_chat_directory()

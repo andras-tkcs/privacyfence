@@ -542,10 +542,11 @@ class TestSendMessage:
 
 class TestEnsureChatDirectoryFresh:
     """ensure_chat_directory_fresh() -- the eager counterpart to the lazy
-    per-lookup refresh. Unlike Slack's ensure_directories_fresh(), nothing in
-    daemon_main.py calls this at connector startup (Telegram connects on
-    first use by design), but it still needs to behave correctly for
-    whatever future/manual caller does invoke it."""
+    per-lookup refresh, same as Slack's ensure_directories_fresh(). Called by
+    daemon_main.py's _warm_connector_caches() in the background right after
+    daemon startup (see that function's docstring for why it's scheduled on
+    the IPC server's own event loop rather than awaited inline) -- these
+    tests exercise the method itself, independent of that caller."""
 
     async def test_missing_snapshot_refreshes_on_first_call(self, tmp_path):
         fake = MagicMock()
