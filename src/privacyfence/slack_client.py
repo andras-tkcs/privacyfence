@@ -44,6 +44,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
+from slack_sdk.http_retry.builtin_handlers import RateLimitErrorRetryHandler
 
 from .oauth_loopback import OAuthLoopbackError, run_browser_oauth
 
@@ -70,6 +71,15 @@ CHANNEL_DIRECTORY_CACHE_TTL = timedelta(days=7)
 # scratch, recreating the very per-message-call problem these caches exist
 # to avoid.
 _DIRECTORY_RETRY_COOLDOWN = timedelta(minutes=5)
+
+# How many times a single API call retries a 429 ("ratelimited") response
+# before giving up, waiting the Retry-After header tells it to each time
+# (slack_sdk's RateLimitErrorRetryHandler, attached below). The directory
+# refreshes are the calls most likely to hit this: conversations.list/
+# users.list are paginated, so a large workspace makes many calls back to
+# back and can trip Slack's rate limit mid-refresh even though each
+# individual call is well-formed.
+_RATE_LIMIT_MAX_RETRY_COUNT = 3
 
 # A message permalink's path is /archives/<channel id>/p<17-digit ts>, e.g.
 # /archives/C0123ABCD/p1700000000123456 for ts "1700000000.123456".
@@ -295,6 +305,14 @@ class SlackClient:
                 "PrivacyFence menu bar to sign in."
             )
         self._client = WebClient(token=user_token)
+        # WebClient's own default retry handlers cover connection errors only
+        # -- a 429 would otherwise surface immediately as a SlackClientError
+        # (see refresh_channel_directory/refresh_user_directory's paginated
+        # conversations.list/users.list calls) instead of waiting out the
+        # Retry-After window Slack asks for.
+        self._client.retry_handlers.append(
+            RateLimitErrorRetryHandler(max_retry_count=_RATE_LIMIT_MAX_RETRY_COUNT)
+        )
         # Small cache so repeated messages from the same author/channel don't
         # trigger a fresh API call each time within a single fetch. Also
         # doubles as the in-memory home for the whole-workspace directory
