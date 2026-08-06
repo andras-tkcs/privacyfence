@@ -1467,17 +1467,13 @@ class DriveClient:
             raise DriveClientError(f"move_file get_parents({file_id}) failed: {exc}") from exc
         current_parents = ",".join(file_meta.get("parents", []))
         try:
-            result = (
-                service.files()
-                .update(
-                    fileId=file_id,
-                    addParents=destination_folder_id,
-                    removeParents=current_parents,
-                    fields="id,parents",
-                    supportsAllDrives=True,
-                )
-                .execute()
-            )
+            service.files().update(
+                fileId=file_id,
+                addParents=destination_folder_id,
+                removeParents=current_parents,
+                fields="id,parents",
+                supportsAllDrives=True,
+            ).execute()
         except HttpError as exc:
             raise DriveClientError(f"move_file({file_id}) failed: {exc}") from exc
         logger.info("move_file: file_id=%s dest=%s", file_id, destination_folder_id)

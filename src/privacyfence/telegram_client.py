@@ -22,11 +22,10 @@ immediate re-sync the ``telegram_refresh_chat_cache`` bridge tool uses.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
