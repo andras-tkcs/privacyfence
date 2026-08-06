@@ -15,6 +15,13 @@ from ..slack_client import SlackClient, SlackClientError
 
 logger = logging.getLogger(__name__)
 
+# Bound each slack_refresh_channel_cache bridge-tool call to this many
+# conversations.list pages (200 conversations each -- see
+# SlackClient.refresh_channel_directory). A workspace with enough channels to
+# run one unbounded refresh past the calling MCP client's own tool-call
+# timeout instead completes over a few bounded, resumable calls.
+_CHANNEL_CACHE_REFRESH_PAGE_BUDGET = 20
+
 
 def _message_to_dict(m: Any) -> dict[str, Any]:
     return {
@@ -167,7 +174,10 @@ class SlackConnector(Connector):
                     "message belongs to in search results and history/thread reads "
                     "without a per-message conversations.info call. Refreshes "
                     "automatically about once a week; call this after a new channel is "
-                    "created so it resolves by name right away. Auto-approved -- "
+                    "created so it resolves by name right away. On a workspace with a "
+                    "lot of channels, one call may not finish the whole sync -- check "
+                    "the result's has_more flag and, if true, call this tool again "
+                    "(same args) to continue from where it left off. Auto-approved -- "
                     "refreshes name lookups only, reads no message content."
                 ),
                 params=[
@@ -377,12 +387,20 @@ class SlackConnector(Connector):
 
     async def _refresh_channel_cache(self) -> Any:
         t0 = time.time()
-        count = await self._fetch(self._slack.refresh_channel_directory)
+        count, has_more = await self._fetch(
+            self._slack.refresh_channel_directory, max_pages=_CHANNEL_CACHE_REFRESH_PAGE_BUDGET
+        )
         self._auto_audit(
             "slack_refresh_channel_cache", "Refresh Slack Channel Cache",
             "Refresh Slack channel directory cache", f"{count} conversation(s)", t0,
         )
-        return {"cached_channels": count}
+        result: dict[str, Any] = {"cached_channels": count, "has_more": has_more}
+        if has_more:
+            result["note"] = (
+                "More channels remain to sync -- call slack_refresh_channel_cache "
+                "again to continue."
+            )
+        return result
 
     # ------------------------------------------------------------------ #
     # Review gate (reads)
@@ -645,9 +663,9 @@ class SlackConnector(Connector):
     # Helpers
     # ------------------------------------------------------------------ #
 
-    async def _fetch(self, func, *args) -> Any:
+    async def _fetch(self, func, *args, **kwargs) -> Any:
         try:
-            return await asyncio.to_thread(func, *args)
+            return await asyncio.to_thread(func, *args, **kwargs)
         except SlackClientError as exc:
             logger.error("Slack fetch failed: %s", exc)
             raise RuntimeError(str(exc)) from exc

@@ -8,6 +8,10 @@ socket (see ipc.py's module docstring).
 Threading model:
   - Main thread:   rumps menu bar app (macOS requirement for AppKit).
   - IPC thread:    asyncio event loop serving the bridge socket connection.
+  - Cache warm:    short-lived background thread(s) started right after the IPC
+    thread is up, refreshing Slack/Telegram directory caches if they've gone
+    stale -- see _warm_connector_caches(). Kept off the main thread so a large
+    workspace/account doesn't delay the menu bar icon appearing.
   - Popups:        approval_popup.py shows native AppKit/WKWebView windows (any thread).
 
 Configuration is split into two files (see paths.py):
@@ -341,10 +345,12 @@ def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list
                 channel_cache_file=str(data_dir() / "slack_channel_cache.json"),
             )
             workspace = client.check_connection()
-            # Warm the user/channel directory caches now if they've gone
-            # stale while the app was closed, rather than waiting for
-            # whatever Slack tool call happens to run first to pay for it.
-            client.ensure_directories_fresh()
+            # Directory-cache warming (if stale) happens after the whole
+            # connector list is built, in the background -- see
+            # _warm_connector_caches() in run_app(). Doing it here,
+            # synchronously, used to delay the menu bar icon appearing
+            # until a full users.list/conversations.list re-sync finished,
+            # which read as "the app isn't running yet."
             logger.info("Slack connector ready for workspace %r", workspace)
             connector = SlackConnector(client)
             connector.my_email = token.get("email", "")
@@ -432,17 +438,65 @@ def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list
                 session_file=session_file,
                 chat_cache_file=str(data_dir() / "telegram_chat_cache.json"),
             )
-            # Unlike Slack (which connects and warms its directory caches
-            # eagerly right here), Telegram deliberately connects on first
-            # use -- no eager ensure_chat_directory_fresh() call, so a cold
-            # daemon restart doesn't force an MTProto connection before any
-            # Telegram tool has actually been requested.
-            logger.info("Telegram connector registered (will connect on first use)")
+            # Directory-cache warming happens the same way as Slack's now --
+            # see _warm_connector_caches() in run_app() -- just scheduled on
+            # the IPC server's own event loop rather than awaited here,
+            # since that's the loop Telethon's client ends up bound to on
+            # its first connection (see telegram_client.py).
+            logger.info("Telegram connector registered (chat cache will warm in the background)")
             connectors.append(TelegramConnector(tg_client))
         except (TelegramClientError, FileNotFoundError, Exception) as exc:
             logger.warning("Telegram connector disabled: %s", exc)
 
     return connectors
+
+
+def _warm_connector_caches(connectors: list, ipc_loop: asyncio.AbstractEventLoop) -> None:
+    """Kick off each connector's directory-cache freshness check (Slack's
+    user/channel snapshots, Telegram's chat snapshot) in the background,
+    right after the IPC server is up (see run_app()). Both
+    ensure_directories_fresh() and ensure_chat_directory_fresh() are
+    best-effort and never raise -- a failure here just means the cache
+    stays stale until the next lazy lookup or the explicit
+    slack_refresh_*/telegram_refresh_chat_cache bridge tool, same as if
+    this warming never ran.
+
+    Deliberately not run inline in build_connectors(), and not awaited
+    here either: a full weekly re-sync (users.list/conversations.list/
+    get_dialogs) can take a while on a large workspace/account, and running
+    it synchronously on the main thread used to delay the menu bar icon
+    appearing until it finished -- which read as "the app isn't running
+    yet."
+
+    Slack's client is synchronous (blocking HTTP via slack_sdk), so it gets
+    its own plain background thread. Telegram's is asyncio-native
+    (Telethon) and its client binds to whichever event loop first connects
+    it -- that has to be ``ipc_loop``, the same loop every Telegram tool
+    call already runs on, not a throwaway loop of some other thread -- so
+    it's scheduled there via run_coroutine_threadsafe instead.
+    """
+    for connector in connectors:
+        if isinstance(connector, SlackConnector):
+            threading.Thread(
+                target=connector.client.ensure_directories_fresh,
+                name="slack-cache-warm",
+                daemon=True,
+            ).start()
+        elif isinstance(connector, TelegramConnector):
+            future = asyncio.run_coroutine_threadsafe(
+                connector.client.ensure_chat_directory_fresh(), ipc_loop
+            )
+            future.add_done_callback(_log_cache_warm_failure)
+
+
+def _log_cache_warm_failure(future: "asyncio.Future[None]") -> None:
+    # Defensive only -- ensure_chat_directory_fresh() is documented never to
+    # raise, same as ensure_directories_fresh(). If it somehow does, this is
+    # a background warm with nothing waiting on its result, so log instead
+    # of letting the exception vanish into the event loop's default handler.
+    exc = future.exception()
+    if exc is not None:
+        logger.warning("Background Telegram cache warm failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------- #
@@ -682,6 +736,11 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
     ipc_thread.start()
     ipc_thread._ready.wait(timeout=5)
     logger.info("IPC server ready, starting menu bar")
+
+    if ipc_thread._loop is not None:
+        _warm_connector_caches(connectors, ipc_thread._loop)
+    else:
+        logger.warning("IPC event loop not ready in time; skipping background cache warm")
 
     from .menu_bar import run_menu_bar
     connector_names = [c.name for c in connectors]

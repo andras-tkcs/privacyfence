@@ -339,6 +339,11 @@ class SlackClient:
         self._channel_directory_loaded_from_disk = False
         self._channel_directory_fetched_at: datetime | None = None
         self._channel_directory_last_attempt: datetime | None = None
+        # Slack-side pagination cursor for an in-progress bounded refresh --
+        # see refresh_channel_directory()'s max_pages parameter. None means
+        # "nothing in progress" (either never started, or the last walk
+        # finished cleanly).
+        self._channel_refresh_cursor: str | None = None
 
     # ------------------------------------------------------------------ #
     # Connection
@@ -811,12 +816,16 @@ class SlackClient:
         """Eagerly run the same freshness check ``get_user_info``/
         ``resolve_channel_name``/``resolve_is_group_dm`` would otherwise only
         run lazily on first use. Meant to be called once right after
-        connecting (see ``daemon_main.py``) so a snapshot that's gone stale
-        while the app was closed (more than a week between restarts) gets
-        refreshed during startup instead of blocking whatever Slack tool
-        call happens to run first. A no-op (no network call at all) when
-        both snapshots are already fresh. Never raises -- same best-effort
-        semantics as the lazy path it shares its implementation with.
+        connecting, on a background thread (see ``_warm_connector_caches``
+        in ``daemon_main.py``) so a snapshot that's gone stale while the app
+        was closed (more than a week between restarts) gets refreshed
+        without blocking daemon startup -- this can be a genuinely slow,
+        multi-page ``conversations.list``/``users.list`` walk on a large
+        workspace, and running it synchronously on the main thread would
+        delay the menu bar icon appearing. A no-op (no network call at all)
+        when both snapshots are already fresh. Never raises -- same
+        best-effort semantics as the lazy path it shares its implementation
+        with.
         """
         if self._user_cache_file:
             self._ensure_user_directory()
@@ -858,21 +867,41 @@ class SlackClient:
         logger.info("Slack user directory refreshed: %d user(s) cached", len(users))
         return len(users)
 
-    def refresh_channel_directory(self) -> int:
-        """Force an immediate re-sync of every conversation the token can
-        see (public/private channels, DMs, group DMs) via
-        ``conversations.list`` (paginated, across all four types),
-        replacing the current name/group-DM-flag snapshot and resetting its
-        weekly TTL. Raises on failure, same reasoning as
+    def refresh_channel_directory(self, *, max_pages: int | None = None) -> tuple[int, bool]:
+        """Force a re-sync of every conversation the token can see
+        (public/private channels, DMs, group DMs) via ``conversations.list``
+        (paginated, across all four types), replacing the current name/
+        group-DM-flag snapshot. Raises on failure, same reasoning as
         ``refresh_user_directory``. DM ("im") entries contribute no name
         (that conversation type doesn't have one -- ``resolve_channel_name``
         already returns "" for them) but are fetched anyway so
         ``resolve_is_group_dm`` is covered for every conversation type, not
-        just channels. Returns the number of conversations cached.
+        just channels.
+
+        ``max_pages=None`` (the default) walks every page in one call, same
+        as before this parameter existed -- what the eager background warm
+        at daemon startup uses (``ensure_directories_fresh()``), since
+        that's on its own background thread and isn't racing a caller's
+        timeout. ``max_pages`` set to a positive int instead does at most
+        that many ``conversations.list`` calls (200 conversations each)
+        before returning, merges whatever it fetched into the existing
+        in-memory snapshot, and remembers its Slack-side pagination cursor
+        on the client so the *next* call resumes from there instead of
+        starting over -- what the ``slack_refresh_channel_cache`` bridge
+        tool uses, so a workspace with enough channels to run one unbounded
+        refresh past the calling MCP client's own tool-call timeout instead
+        completes over a few bounded, resumable calls. The on-disk snapshot
+        and weekly TTL are only updated once a walk actually finishes
+        (cursor exhausted) -- a partial refresh is never mistaken for a
+        fresh one; if the daemon restarts mid-walk, the next call just
+        starts over from the first page.
+
+        Returns ``(total conversations cached so far, has_more)``.
         """
-        names: dict[str, str] = {}
-        is_mpim: dict[str, bool] = {}
-        cursor: str | None = None
+        names = dict(self._channel_name_cache)
+        is_mpim = dict(self._channel_is_mpim_cache)
+        cursor = self._channel_refresh_cursor
+        pages_fetched = 0
         try:
             while True:
                 response = self._client.conversations_list(
@@ -887,20 +916,31 @@ class SlackClient:
                         continue
                     names[channel_id] = raw.get("name", "")
                     is_mpim[channel_id] = bool(raw.get("is_mpim", False))
-                cursor = (response.get("response_metadata") or {}).get("next_cursor")
-                if not cursor:
+                cursor = (response.get("response_metadata") or {}).get("next_cursor") or None
+                pages_fetched += 1
+                if not cursor or (max_pages is not None and pages_fetched >= max_pages):
                     break
         except SlackApiError as exc:
             raise SlackClientError(
                 f"refresh_channel_directory failed: {self._describe_error(exc)}"
             ) from exc
+
         self._channel_name_cache = names
         self._channel_is_mpim_cache = is_mpim
         self._channel_directory_loaded_from_disk = True
+        self._channel_refresh_cursor = cursor
+
+        if cursor:
+            logger.info(
+                "Slack channel directory refresh in progress: %d conversation(s) cached so far, more remain",
+                len(names),
+            )
+            return len(names), True
+
         self._channel_directory_fetched_at = datetime.now(timezone.utc)
         self._save_channel_directory_to_disk()
         logger.info("Slack channel directory refreshed: %d conversation(s) cached", len(names))
-        return len(names)
+        return len(names), False
 
     def _ensure_user_directory(self) -> None:
         """Best-effort: loads the on-disk weekly snapshot (once per process)
