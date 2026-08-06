@@ -26,6 +26,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from freezegun import freeze_time
+from slack_sdk.http_retry.builtin_handlers import RateLimitErrorRetryHandler
 
 from privacyfence.oauth_loopback import OAuthLoopbackError
 from privacyfence.slack_client import (
@@ -92,6 +93,19 @@ class TestConstruction:
     def test_empty_token_raises(self):
         with pytest.raises(SlackClientError, match="No Slack user token"):
             SlackClient(user_token="")
+
+    def test_registers_rate_limit_retry_handler(self):
+        # Without this, a 429 ("ratelimited") from a paginated call like
+        # conversations.list/users.list -- see refresh_channel_directory/
+        # refresh_user_directory -- surfaces immediately as a
+        # SlackClientError instead of retrying after Slack's Retry-After
+        # window, since WebClient's own default retry handlers only cover
+        # connection errors.
+        client = SlackClient(user_token="xoxp-fake-token")
+
+        assert any(
+            isinstance(h, RateLimitErrorRetryHandler) for h in client._client.retry_handlers
+        )
 
 
 # ---------------------------------------------------------------------------- #
