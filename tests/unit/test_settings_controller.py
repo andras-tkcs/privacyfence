@@ -384,7 +384,7 @@ class TestUpdateCheck:
     def test_show_update_available_alert_download_opens_url(self, controller, monkeypatch):
         monkeypatch.setattr(sc, "rumps", SimpleNamespace(alert=lambda **kw: 1))
         open_calls = []
-        monkeypatch.setattr(sc.subprocess, "run", lambda args, **kw: open_calls.append(args))
+        monkeypatch.setattr(sc, "open_path_or_url", lambda target: open_calls.append(target))
 
         result = update_checker.UpdateCheckResult(
             latest_version="v2.2.0", release_url="https://github.com/x/releases/tag/v2.2.0",
@@ -392,7 +392,7 @@ class TestUpdateCheck:
         )
         controller._show_update_available_alert(result)
 
-        assert open_calls == [["open", "https://github.com/x/releases/tag/v2.2.0"]]
+        assert open_calls == ["https://github.com/x/releases/tag/v2.2.0"]
 
     def test_show_update_available_alert_skip_marks_skipped(self, controller, monkeypatch):
         monkeypatch.setattr(sc, "rumps", SimpleNamespace(alert=lambda **kw: 0))
@@ -1274,12 +1274,12 @@ class TestAuditLog:
     def test_export_audit_log_opens_existing_dir(self, controller, monkeypatch):
         log_dir = sc.data_dir() / "logs" / "audit"
         log_dir.mkdir(parents=True)
-        run_calls = []
-        monkeypatch.setattr(sc.subprocess, "run", lambda *a, **k: run_calls.append(a))
+        open_calls = []
+        monkeypatch.setattr(sc, "open_path_or_url", lambda target: open_calls.append(target))
 
         controller.export_audit_log()
 
-        assert run_calls == [(["open", str(log_dir)],)]
+        assert open_calls == [str(log_dir)]
         assert controller.error == ""
 
     def test_export_audit_log_exports_and_opens_the_current_week(self, controller, monkeypatch):
@@ -1294,14 +1294,14 @@ class TestAuditLog:
             summary="s", sender="a@x.com", decision="approved", auto_accept_rule="", latency_seconds=1.0,
         )
         AuditLogger(str(log_dir)).record(entry)
-        run_calls = []
-        monkeypatch.setattr(sc.subprocess, "run", lambda *a, **k: run_calls.append(a))
+        open_calls = []
+        monkeypatch.setattr(sc, "open_path_or_url", lambda target: open_calls.append(target))
 
         controller.export_audit_log()
 
         expected_xlsx = log_dir / f"{week}.xlsx"
         assert expected_xlsx.exists()
-        assert run_calls == [(["open", str(expected_xlsx)],)]
+        assert open_calls == [str(expected_xlsx)]
 
     def test_snapshot_recent_entries_reflect_the_audit_log(self, controller):
         from privacyfence.audit_log import AuditEntry, AuditLogger, current_week

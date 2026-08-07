@@ -16,9 +16,22 @@ npm run typecheck     # bridge/, tsc --noEmit
 pytest -v --cov=src/privacyfence --cov-report=term-missing
 ```
 
-on a `macos-latest` runner (this app depends on real AppKit/PyObjC behavior, so it can't run on
-Linux CI). A 100% pass rate is required to merge, for both suites; the coverage report is
-informational only — nothing gates on a specific percentage.
+on a `macos-latest` **and** a `windows-latest` runner (issue #121) — this app depends on real native
+UI behavior on both (AppKit/PyObjC on macOS, pywebview/WebView2 + pystray on Windows), so neither leg
+can run on Linux CI. A 100% pass rate is required to merge, on both legs, for both suites; the
+coverage report is informational only — nothing gates on a specific percentage.
+
+The four macOS-only test files (`test_menu_bar.py`, `test_approval_window.py`,
+`test_dialog_window.py`, `test_settings_window.py` — each imports its `rumps`/AppKit/WebKit-backed
+module under test directly, not through a platform-dispatched seam) are excluded from collection
+entirely on the Windows leg via `tests/conftest.py`'s `collect_ignore_glob`, not just skipped at run
+time — see that file's own comment for why the distinction matters (a bare in-file `skipif` can't
+prevent a `ModuleNotFoundError` at import time on a machine with no pyobjc installed at all). Their
+Windows counterparts (`test_tray_windows.py`, `test_approval_window_windows.py`,
+`test_dialog_window_windows.py`, `test_settings_window_windows.py`) run on every leg — pywebview/
+pystray aren't installed on macOS either, so those four mock at the same
+`webview`/`pystray`-module boundary described in §1's `test_approval_window.py` entry below, rather
+than needing a Windows machine to run.
 
 This tier is fully self-contained: no network calls to Gmail/Slack/Jira/etc., no credentials, no
 manual steps. It includes:
@@ -119,7 +132,11 @@ target/action never fires) — exactly the class of failure construction-only te
 
 **Never run in CI.** It requires macOS, real AppKit, and Accessibility permission granted to
 whatever process runs it (it drives a real click via `System Events`), and pops real, visible
-windows on-screen for a couple of seconds each — run it locally, not headless.
+windows on-screen for a couple of seconds each — run it locally, not headless. **macOS only** —
+there is no Windows equivalent of this script yet (`approval_window_windows.py`/
+`dialog_window_windows.py`'s modal-loop plumbing has the identical construction-vs-real-click gap,
+just untested by anything beyond `test_approval_window_windows.py`/`test_dialog_window_windows.py`'s
+own mocked-webview coverage — see `docs/windows-port-status.md`).
 
 **When to run this**: whenever `approval_window.py`'s or `dialog_window.py`'s modal-loop plumbing
 changes (not every popup content change — those are covered by `test_approval_window.py`/
@@ -156,11 +173,11 @@ full release-time checklist tying all three tiers together.
 
 | Check | Runs in CI? | When |
 |---|---|---|
-| `pytest` (full suite, incl. the bridge/daemon contract test) | Yes, every PR | Always — this is the merge gate |
-| `npm test` (bridge/'s own suite) | Yes, every PR | Always — this is the merge gate |
-| `npm run typecheck` (bridge/) | Yes, every PR | Always — this is the merge gate |
+| `pytest` (full suite, incl. the bridge/daemon contract test) | Yes, every PR, on both `macos-latest` and `windows-latest` | Always — this is the merge gate |
+| `npm test` (bridge/'s own suite) | Yes, every PR, on both legs | Always — this is the merge gate |
+| `npm run typecheck` (bridge/) | Yes, every PR, on both legs | Always — this is the merge gate |
 | `qa_fixture_recorder.py --check` | No | PR touches a `*_client.py`/`connectors/**` file |
-| `qa_popup_smoke.py` | No | PR touches `approval_window.py`'s modal-loop plumbing |
+| `qa_popup_smoke.py` | No — macOS only, no Windows equivalent yet | PR touches `approval_window.py`'s modal-loop plumbing |
 | `connector-qa-testing.md`'s live Cowork pass | No | Before a release, or a broad gate/auto-accept change |
 
 None of the "No" rows require a credential, secret, or macOS Accessibility permission to ever be

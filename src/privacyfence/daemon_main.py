@@ -1,18 +1,32 @@
-"""PrivacyFence daemon: persistent macOS app that owns the UI, credentials, and connectors.
+"""PrivacyFence daemon: persistent app that owns the tray icon/UI, credentials,
+and connectors. Runs on macOS and Windows (issue #121); see run_app()'s own
+comment for exactly where the two platforms' tray/approval-UI backends are
+selected.
 
-Started at login via LaunchAgent (com.privacyfence.app.plist), or automatically
-by the bridge on first use. Only one instance is allowed (enforced via a lock
-file). The bridge connects to this process over a 127.0.0.1 TCP loopback
-socket (see ipc.py's module docstring).
+Started at login via LaunchAgent (com.privacyfence.app.plist) on macOS or a
+Task Scheduler entry (com.privacyfence.app.task.xml) on Windows, or
+automatically by the bridge on first use. Only one instance is allowed
+(enforced via a lock file -- see _acquire_instance_lock()/
+_release_instance_lock() for the platform-specific locking primitive each OS
+uses). The bridge connects to this process over a 127.0.0.1 TCP loopback
+socket (see ipc.py's module docstring -- deliberately not a Unix domain
+socket, precisely because that has no equivalent under Windows' asyncio
+event loop at all).
 
 Threading model:
-  - Main thread:   rumps menu bar app (macOS requirement for AppKit).
+  - Main thread:   the tray app -- rumps on macOS (an AppKit requirement),
+    pystray+pywebview on Windows (see tray_windows.py's own module docstring
+    for why *that* combination also needs one framework pinned to the main
+    thread).
   - IPC thread:    asyncio event loop serving the bridge socket connection.
   - Cache warm:    short-lived background thread(s) started right after the IPC
     thread is up, refreshing Slack/Telegram directory caches if they've gone
     stale -- see _warm_connector_caches(). Kept off the main thread so a large
     workspace/account doesn't delay the menu bar icon appearing.
-  - Popups:        approval_popup.py shows native AppKit/WKWebView windows (any thread).
+  - Popups:        approval_popup.py shows native AppKit/WKWebView windows on
+    macOS (any thread) or approval_window_windows.py's pywebview windows on
+    Windows (any thread -- see that module's own docstring for how it hands
+    window creation off to the main thread's pywebview loop).
 
 Configuration is split into two files (see paths.py):
   - ``org/org_config.json``    — organization-level app registrations (Google
@@ -41,7 +55,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import fcntl
 import json
 import logging
 import os
@@ -50,6 +63,15 @@ import sys
 import threading
 from pathlib import Path
 from typing import Any
+
+# fcntl/msvcrt are each only available on their own OS -- neither exists at
+# all on the other, so which one this module imports has to be decided at
+# import time, not inside _acquire_instance_lock()/_release_instance_lock()
+# themselves (see those functions for the actual platform-branch logic).
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
 
 import yaml
 
@@ -125,6 +147,27 @@ _lock_fd: int | None = None
 
 def _acquire_instance_lock() -> bool:
     global _lock_fd
+    if sys.platform == "win32":
+        # msvcrt has no flock/LOCK_EX equivalent -- the standard recipe
+        # (also how portalocker's Windows backend works) is to lock a
+        # 1-byte region of the file via msvcrt.locking(), which raises
+        # OSError immediately (LK_NBLCK is the non-blocking mode, matching
+        # flock's LOCK_NB above) if another process already holds it.
+        # Windows allows locking a region past the file's current EOF, so
+        # this works even before anything has been written to a fresh
+        # LOCK_FILE. O_RDWR (not O_WRONLY) because msvcrt.locking requires
+        # the descriptor be readable too.
+        fd = os.open(LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        except OSError:
+            os.close(fd)
+            return False
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, str(os.getpid()).encode())
+        _lock_fd = fd
+        return True
+
     fd = os.open(LOCK_FILE, os.O_CREAT | os.O_WRONLY, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -141,7 +184,16 @@ def _release_instance_lock() -> None:
     global _lock_fd
     if _lock_fd is not None:
         try:
-            fcntl.flock(_lock_fd, fcntl.LOCK_UN)
+            if sys.platform == "win32":
+                # Unlock the same 1-byte region locked in
+                # _acquire_instance_lock() -- msvcrt.locking() operates on
+                # the region starting at the descriptor's *current* file
+                # position, which the pid write above moved forward, so
+                # this has to seek back to 0 first.
+                os.lseek(_lock_fd, 0, os.SEEK_SET)
+                msvcrt.locking(_lock_fd, msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(_lock_fd, fcntl.LOCK_UN)
             os.close(_lock_fd)
         except OSError:
             pass
@@ -773,7 +825,18 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
     else:
         logger.warning("IPC event loop not ready in time; skipping background cache warm")
 
-    from .menu_bar import run_menu_bar
+    # Platform-dispatched at the one call site that needs it, rather than
+    # making menu_bar.py itself cross-platform. Both modules expose the
+    # identical run_menu_bar(config_path, connectors, ipc_server,
+    # connector_objs=None) signature, so nothing past this import needs to
+    # know which one is running. The approval-popup seam (approval_ui.py)
+    # needs no equivalent dispatch here -- it already defaults to
+    # NativeApprovalUI on every platform, which itself dispatches by
+    # sys.platform one layer down, in approval_popup.py.
+    if sys.platform == "win32":
+        from .tray_windows import run_menu_bar
+    else:
+        from .menu_bar import run_menu_bar
     connector_names = [c.name for c in connectors]
     try:
         run_menu_bar(

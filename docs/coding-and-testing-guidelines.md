@@ -179,10 +179,24 @@ This is the one area where "looks like a style rule" is actually a security inva
 
 ### 2.4 Faking the gate and native UI
 
-- Never let a test spawn a real native dialog (an AppKit window, or the odd remaining `osascript`
-  subprocess elsewhere in the codebase). Stub `show_popup` / `show_read_popup` /
-  `show_rule_confirmation_popup` via `monkeypatch.setattr` on the module under test, not by mocking
-  at the `approval_popup` import site of every caller.
+- Never let a test spawn a real native dialog (an AppKit window, a pywebview/WebView2 window on
+  Windows, or the odd remaining `osascript` subprocess elsewhere in the codebase). Stub `show_popup` /
+  `show_read_popup` / `show_rule_confirmation_popup` via `monkeypatch.setattr` on the module under
+  test, not by mocking at the `approval_popup` import site of every caller.
+- A module that only exists for one OS (`menu_bar.py`/`approval_window.py`/`dialog_window.py`/
+  `settings_window.py` on macOS; `tray_windows.py`/`approval_window_windows.py`/
+  `dialog_window_windows.py`/`settings_window_windows.py`/`webview_bridge_windows.py` on Windows,
+  issue #121) guards its native/third-party import at module scope
+  (`try: import rumps / except ImportError: rumps = None`, or the win32 modules'
+  `try: import webview / except ImportError: webview = None`) so the module — and its tests — stay
+  importable on every platform, monkeypatching that guarded attribute the same way
+  `test_approval_ui.py` monkeypatches `approval_popup`'s free functions rather than requiring the
+  real dependency installed. The four AppKit-only test files that predate this convention
+  (`test_menu_bar.py`, `test_approval_window.py`, `test_dialog_window.py`, `test_settings_window.py`)
+  import their macOS-only module directly instead and are excluded from collection outright on
+  non-darwin via `tests/conftest.py`'s `collect_ignore_glob` — a new macOS-only test file should
+  follow that same exclusion rather than relying on an in-file `skipif` alone (see that conftest's
+  own comment for why the distinction matters).
 - Connector tests stub `gated_call` itself (`gated_call_spy` pattern in
   `test_gmail_connector.py`) to capture exactly what a tool sends into the gate — `preview`,
   `details_text`, `raw_data`, `filtered_data`, `args`, `gate` — and assert on those kwargs, rather

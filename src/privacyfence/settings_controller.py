@@ -1,30 +1,43 @@
-"""Domain/business logic behind the webview settings window (settings_window.py).
+"""Domain/business logic behind the webview settings window (settings_window.py
+on macOS, settings_window_windows.py on Windows -- issue #121).
 
 No unguarded AppKit/WebKit imports at module level -- this stays importable
 and unit-testable without PyObjC (see docs/coding-and-testing-guidelines.md's
-"stay dependency-light" pattern already used by resource_grants.py/
-privacy_filter.py). A few things this module genuinely needs *are*
-AppKit-tainted -- ``rumps`` (``rumps.alert``'s update-available notification,
+guarded-import convention, also used by resource_grants.py/privacy_filter.py).
+A few things this module genuinely needs *are* platform-tainted --
+``rumps`` (``rumps.alert``'s update-available notification,
 ``rumps.quit_application``) and ``dialog_window`` (the Atlassian
 multi-resource picker's confirmation/list-picker host, issue #145) -- both
 imported at module scope but guarded behind ``try/except ImportError``,
-resolving to ``None`` on a machine with no pyobjc installed (this repo's own
-CI-less sandbox, or a future non-interactive test run) rather than failing
-the whole module import. Tests running without pyobjc monkeypatch these
-module attributes directly rather than exercising the real thing.
+resolving to ``None`` on a machine with neither pyobjc nor pywebview
+installed (this repo's own CI-less sandbox, or a future non-interactive test
+run) rather than failing the whole module import. ``dialog_window`` itself
+resolves to either the AppKit module or dialog_window_windows.py depending on
+``sys.platform`` -- both implement the identical ``show_choice_dialog``
+signature this module calls, so the one call site
+(``_authenticate_atlassian``'s ``pick_resource``) doesn't need to know or
+care which. Tests running without the real native dependency monkeypatch
+these module attributes directly rather than exercising the real thing.
 
 ``SettingsController`` holds the same instance state ``PrivacyFenceMenuBar``
-used to hold directly, with one method per mutation the old NSMenu tree
-performed (see menu_bar.py's git history pre-#120 for the shape this was
-extracted from) -- every mutating method follows load config -> mutate ->
-save config -> hot-reload -> return a fresh ``snapshot()`` for the caller
-(settings_window.py) to push into the webview. Long-running work (OAuth
-flows, org-config file picker's subprocess, grant name resolution) runs on a
-background thread via ``_run_async``, with the result marshaled back onto
-the main thread via ``PyObjCTools.AppHelper.callAfter`` before this module
-touches ``self`` again -- AppKit/the webview are not thread-safe, and
-``self.on_change`` (set by settings_window.py) is expected to touch the
-webview directly.
+(macOS) / ``PrivacyFenceTray`` (Windows) used to hold directly, with one
+method per mutation the old NSMenu tree performed (see menu_bar.py's git
+history pre-#120 for the shape this was extracted from) -- every mutating
+method follows load config -> mutate -> save config -> hot-reload -> return a
+fresh ``snapshot()`` for the caller (settings_window.py/
+settings_window_windows.py) to push into the webview. Long-running work
+(OAuth flows, org-config file picker, grant name resolution) runs on a
+background thread via ``_run_async``, with the result marshaled back onto the
+UI-owning thread via ``_call_on_main_thread()`` before this module touches
+``self`` again -- ``AppHelper.callAfter`` on macOS (a real AppKit
+requirement), a direct call on Windows (see that function's own docstring for
+why no equivalent hop is needed there) -- and ``self.on_change`` (set by
+whichever window host configured this controller) is expected to touch the
+webview directly. The org-config file picker itself is
+``pick_org_config_file_hook`` -- an injectable callable (see its own
+docstring on ``__init__``), not always the ``osascript`` prompt: macOS's
+default when unset, Windows sets it to a native file dialog via its own
+window instead.
 """
 from __future__ import annotations
 
@@ -33,6 +46,7 @@ import logging
 import os
 import re
 import subprocess
+import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,6 +67,7 @@ from .drive_client import DriveClient
 from .gmail_client import GmailClient
 from .paths import data_dir, org_dir
 from .pii_detector import set_pii_category_enabled, set_pii_detection_enabled
+from .platform_open import open_path_or_url
 from .privacy_filter import _parse_group as _parse_privacy_group
 from .privacy_filter import _VALID_POLICIES as PRIVACY_POLICIES
 from .privacy_filter import init_privacy_filter
@@ -98,11 +113,36 @@ except ImportError:  # pragma: no cover - exercised only where pyobjc is present
     rumps = None  # type: ignore[assignment]
 
 try:
-    from . import dialog_window
+    # dialog_window.py (AppKit) and dialog_window_windows.py (pywebview,
+    # issue #121) implement the identical show_choice_dialog/
+    # show_confirmation_dialog signatures -- see either module's own
+    # docstring -- so every call site below (_authenticate_atlassian's
+    # pick_resource) works unmodified regardless of which one this binds to.
+    if sys.platform == "win32":
+        from . import dialog_window_windows as dialog_window
+    else:
+        from . import dialog_window
 except ImportError:  # pragma: no cover - exercised only where pyobjc is present
     dialog_window = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
+
+
+def _call_on_main_thread(func: Callable[[], None]) -> None:
+    """Marshal a callback onto the UI-owning thread. AppHelper.callAfter on
+    macOS -- a real AppKit requirement, Cocoa calls must happen on the main
+    thread. No equivalent hop is needed on Windows: every caller here
+    eventually bottoms out in settings_window_windows.py's evaluate_js call,
+    which pywebview documents as safe from any thread once webview.start()
+    is already running (tray_windows.py's job) -- so this just calls
+    straight through there. Also the safe fallback on a machine with no
+    pyobjc at all (this project's own Linux dev sandbox) rather than
+    crashing on AppHelper being None."""
+    if AppHelper is not None:
+        AppHelper.callAfter(func)
+    else:
+        func()
+
 
 REPO_URL = "https://github.com/andras-tkcs/privacyfence"
 LICENSE_NAME = "Apache-2.0"
@@ -600,6 +640,15 @@ class SettingsController:
         # state's own docstring for the shape.
         self._telegram_auth: dict[str, Any] | None = None
         self.on_change: Callable[[dict[str, Any]], None] | None = None
+        # install_org_config()'s "prompt for a file" step, injectable by
+        # whichever window host configures this controller -- None means
+        # "use the default" (today's macOS osascript picker, see
+        # install_org_config()'s own docstring). settings_window_windows.py
+        # (issue #121) sets this to a pywebview window.create_file_dialog()
+        # call instead, the same "set a callback after construction" pattern
+        # on_change above already establishes (settings_window.py sets that
+        # one in its own configure()).
+        self.pick_org_config_file_hook: Callable[[], str] | None = None
 
         set_rules_changed_listener(self._on_rules_changed)
         if self.ipc_server is not None:
@@ -612,7 +661,7 @@ class SettingsController:
     def _on_rules_changed(self) -> None:
         """Fired by auto_accept.reload_rules(), possibly from the IPC
         server's thread -- marshal the state push onto the main thread."""
-        AppHelper.callAfter(self._push_snapshot)
+        _call_on_main_thread(self._push_snapshot)
 
     def _on_unattended_changed(self) -> None:
         """Fired by ipc_server.py, on its own asyncio thread. No page of
@@ -620,7 +669,7 @@ class SettingsController:
         tray menu's top status line is gone) -- kept wired for a future
         pass, same "plumbing survives, UI doesn't exist yet" posture as
         _latest_update above."""
-        AppHelper.callAfter(self._push_snapshot)
+        _call_on_main_thread(self._push_snapshot)
 
     def _push_snapshot(self) -> None:
         if self.on_change is not None:
@@ -764,7 +813,7 @@ class SettingsController:
             url = result.release_url
             if not url.startswith(("http://", "https://")):
                 url = REPO_RELEASES_URL_FALLBACK
-            subprocess.run(["open", url], check=False)
+            open_path_or_url(url)
         elif resp == 0:
             mark_skipped(result.latest_version)
         else:
@@ -779,15 +828,24 @@ class SettingsController:
         calling (main) thread -- matches the pre-#120 behavior exactly. This
         is an incidental native file-open dialog, not part of what issue
         #120 targets for removal (unlike the NSMenu tree/rules_manager_
-        window.py's own windows)."""
-        script = (
-            'set chosenFile to choose file with prompt '
-            '"Select the organization config bundle your IT team sent you" '
-            'of type {"json", "public.json"}\n'
-            'return POSIX path of chosenFile'
-        )
-        result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
-        src = result.stdout.strip()
+        window.py's own windows).
+
+        The picker itself is pick_org_config_file_hook when the window host
+        set one (settings_window_windows.py, issue #121 -- a pywebview
+        window.create_file_dialog() call, since this controller has no
+        window reference of its own to call that on); the osascript prompt
+        below is the default when unset, i.e. unchanged macOS behavior."""
+        if self.pick_org_config_file_hook is not None:
+            src = self.pick_org_config_file_hook()
+        else:
+            script = (
+                'set chosenFile to choose file with prompt '
+                '"Select the organization config bundle your IT team sent you" '
+                'of type {"json", "public.json"}\n'
+                'return POSIX path of chosenFile'
+            )
+            result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+            src = result.stdout.strip()
         if not src:
             return self.snapshot()
 
@@ -1380,7 +1438,7 @@ class SettingsController:
         if (log_dir / f"{week}.jsonl").exists():
             xlsx_path = AuditLogger(str(log_dir)).export_week_to_excel(week)
 
-        subprocess.run(["open", xlsx_path or str(log_dir)], check=False)
+        open_path_or_url(xlsx_path or str(log_dir))
         self.error = ""
         return self.snapshot()
 

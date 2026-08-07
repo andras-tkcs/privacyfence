@@ -24,7 +24,7 @@ All changes to `main` go through pull requests. Direct pushes are blocked.
 ## Issues
 
 Use GitHub Issues for bug reports and feature requests. Include:
-- macOS version and Python version
+- OS and version (macOS or Windows — see issue #121), and Python version
 - Steps to reproduce (for bugs)
 - What connector is involved, if relevant
 

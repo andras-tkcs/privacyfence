@@ -1,24 +1,45 @@
-"""Native macOS approval popups.
+"""Native approval popups -- macOS (AppKit/WKWebView) or Windows
+(pywebview/WebView2), selected below by sys.platform.
 
 Every gated tool call resolves through exactly one blocking dialog here.
 There is no separate "show details" step and no pending-approval handshake:
 full content is always shown before the decision, so the human always sees
 what they're approving before they can click Allow once. The main gate
 (show_popup / show_read_popup) renders through approval_window.py's custom
-AppKit window; show_rule_confirmation_popup and show_pii_confirmation_popup
-are smaller secondary prompts (confirming a standing auto-accept rule, or
-confirming approval of content the PII detector flagged) and render through
-dialog_window.py's own small AppKit+WKWebView host instead -- the same
-bridge/blocking-wait pattern show_native_approval below uses, just for a
-1-2-button confirmation rather than the full card-stack layout (issue #145
-ported these off the old `osascript display dialog`/`choose from list`
-prompts this module used to build directly).
+AppKit window (or approval_window_windows.py's pywebview one, issue #121);
+show_rule_confirmation_popup and show_pii_confirmation_popup are smaller
+secondary prompts (confirming a standing auto-accept rule, or confirming
+approval of content the PII detector flagged) and render through
+dialog_window.py's own small AppKit+WKWebView host instead (or
+dialog_window_windows.py's pywebview one) -- the same bridge/blocking-wait
+pattern show_native_approval below uses, just for a 1-2-button confirmation
+rather than the full card-stack layout (issue #145 ported these off the old
+`osascript display dialog`/`choose from list` prompts this module used to
+build directly).
+
+This is the one seam approval_ui.NativeApprovalUI needs -- its own docstring
+already anticipated a Windows implementation being wired in at exactly this
+level (a different show_native_approval/show_confirmation_dialog underneath
+the same four free functions below) rather than as a second ApprovalUI
+subclass, since these four functions were already pure orchestration with no
+native code of their own even before this dispatch existed. Both
+approval_window.py/dialog_window.py (macOS) and approval_window_windows.py/
+dialog_window_windows.py (Windows) implement identical signatures/contracts
+for the two functions imported here -- see either pair's own module
+docstrings for why they're deliberately never imported by the platform that
+doesn't apply (each pulls in native-only APIs at module scope).
 """
 from __future__ import annotations
 
-from .approval_window import show_native_approval
+import sys
+
+if sys.platform == "win32":
+    from .approval_window_windows import show_native_approval
+    from .dialog_window_windows import show_confirmation_dialog
+else:
+    from .approval_window import show_native_approval
+    from .dialog_window import show_confirmation_dialog
 from .approval_window_html import NARROW
-from .dialog_window import show_confirmation_dialog
 
 
 # ---------------------------------------------------------------------------- #

@@ -211,19 +211,19 @@ class TestDispatch:
         assert calls == [1]
         assert pushed == []
 
-    def test_open_repo_shells_out_to_open(self, tmp_path, monkeypatch):
+    def test_open_repo_opens_the_repo_url(self, tmp_path, monkeypatch):
         import privacyfence.settings_window as sw
 
         controller = _make_controller(tmp_path, monkeypatch)
         wc = sw.SettingsWindowController.alloc().init()
         wc.configure(controller)
         wc.build_window()
-        run_calls = []
-        monkeypatch.setattr(sw.subprocess, "run", lambda args, **kw: run_calls.append(args))
+        open_calls = []
+        monkeypatch.setattr(sw, "open_path_or_url", lambda target: open_calls.append(target))
 
         wc._dispatch("open_repo", {})
 
-        assert run_calls == [["open", sw.REPO_URL]]
+        assert open_calls == [sw.REPO_URL]
 
     def test_unknown_action_is_logged_and_ignored(self, tmp_path, monkeypatch):
         from privacyfence.settings_window import SettingsWindowController

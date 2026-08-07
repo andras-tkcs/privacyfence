@@ -39,7 +39,8 @@ The sections below preserve the complete tool-level and implementation-level beh
 ## Review model
 
 Every tool call passes through one of three gate values. `review` and `popup` are both native
-macOS popups PrivacyFence shows itself — there is no separate Claude Cowork-side approval step
+popups PrivacyFence shows itself (macOS or Windows — see [`docs/windows-port-status.md`](windows-port-status.md)
+for the Windows implementation) — there is no separate Claude Cowork-side approval step
 for either one. What differs between them is direction and button set (see below).
 
 | Gate | Behaviour |
@@ -1215,7 +1216,9 @@ the only download you need:
 
 ### From source
 
-**Requirements:** Python 3.11+, macOS
+**Requirements:** Python 3.11+, macOS or Windows (Windows: see
+[`docs/windows-port-status.md`](windows-port-status.md) for what's implemented and what still wants
+real-machine verification)
 
 ```bash
 git clone https://github.com/andras-tkcs/privacyfence
@@ -1344,7 +1347,7 @@ See [`config/settings.yaml.example`](../src/privacyfence/resources/settings.yaml
 
 - The bridge is stateless and disposable — Claude can kill and restart it at any time without losing any state. All state (credentials, tokens, filters, queue) lives in the daemon.
 - IPC between the bridge and the daemon uses a newline-delimited JSON protocol over a 127.0.0.1 TCP loopback socket, on an OS-assigned ephemeral port discovered via `~/.privacyfence/ipc_port` and authenticated by a per-launch random token (`~/.privacyfence/ipc_token`) required as the first line of every connection (see `src/privacyfence/ipc.py`'s module docstring).
-- The daemon uses two threads: the main thread runs the rumps menu bar app (a hard macOS requirement for AppKit) and an IPC thread runs the asyncio event loop serving the bridge connection. The main approval window is native AppKit/WKWebView (see `approval_window.py`), shown from any thread via `performSelectorOnMainThread_withObject_waitUntilDone_`; the smaller secondary confirmation/list-picker dialogs (PII confirmation, rule confirmation, rule choice, the Atlassian multi-resource picker) are a second, much smaller AppKit+WKWebView host with the same bridge/blocking-wait pattern (see `dialog_window.py`/`dialog_window_html.py`) — `approval_popup.py` no longer shells out to `osascript` at all. `gate.py` reaches all of these through the pluggable `ApprovalUI` interface (`approval_ui.py`) rather than importing `approval_popup` directly — today's only implementation is `NativeApprovalUI`, but the seam exists so a future UI (e.g. mobile remote approval) can plug in without changing the policy loop.
+- The daemon uses two threads: the main thread runs the tray app (rumps on macOS — a hard AppKit requirement; pystray+pywebview on Windows, see `tray_windows.py`) and an IPC thread runs the asyncio event loop serving the bridge connection. The main approval window is native AppKit/WKWebView on macOS (see `approval_window.py`) or pywebview/WebView2 on Windows (see `approval_window_windows.py`), shown from any thread; the smaller secondary confirmation/list-picker dialogs (PII confirmation, rule confirmation, rule choice, the Atlassian multi-resource picker) are a second, much smaller host with the same bridge/blocking-wait pattern (see `dialog_window.py`/`dialog_window_html.py` or their Windows counterparts) — `approval_popup.py` no longer shells out to `osascript` at all, and dispatches between the macOS and Windows hosts by `sys.platform`. `gate.py` reaches all of these through the pluggable `ApprovalUI` interface (`approval_ui.py`) rather than importing `approval_popup` directly — today's only implementation is `NativeApprovalUI`, but the seam exists so a future UI (e.g. mobile remote approval) can plug in without changing the policy loop.
 - All tools are advertised to Claude with `readOnlyHint = true` — see below.
 - The approval window follows the system's light/dark appearance automatically — no config or menu bar toggle, it reads `NSApp`'s current appearance.
 - The daemon checks GitHub Releases once a day for a newer version (`update_checker.py`) and shows a one-time native alert dialog if one is found (`Download` / `Skip This Version` / `Remind Me Later`) — never downloads or installs anything automatically; there's no persistent menu item for it. On by default; toggle from the settings window's **General** page ("Check for Updates") or `update_check.enabled` in `settings.yaml`. See [security-and-compliance.md](security-and-compliance.md) for what this network call does and doesn't send.

@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import json
 import logging
-import subprocess
 from typing import Any
 
 import objc
@@ -57,6 +56,7 @@ from WebKit import WKUserContentController, WKWebView, WKWebViewConfiguration
 
 from . import approval_window
 from . import settings_window_html
+from .platform_open import open_path_or_url
 from .settings_controller import REPO_URL, SettingsController
 
 logger = logging.getLogger(__name__)
@@ -225,7 +225,7 @@ class SettingsWindowController(NSObject):
             self.controller.quit_app()
             return
         if action == "open_repo":
-            subprocess.run(["open", REPO_URL], check=False)
+            open_path_or_url(REPO_URL)
             return
 
         method = getattr(self.controller, action, None)

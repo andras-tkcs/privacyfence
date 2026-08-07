@@ -9,10 +9,12 @@
 # supplies the Node runtime itself (server.type = "node" in the manifest —
 # see mcpb/manifest.json.tmpl). This script does NOT depend on build_dmg.sh.
 #
-# The bridge still talks to the PrivacyFence daemon over a Unix socket, so the
-# daemon (PrivacyFence.app, built separately by build_dmg.sh, still Python)
-# must be installed and configured on its own — this bundle only wires up the
-# MCP server entry.
+# The bridge still talks to the PrivacyFence daemon over a 127.0.0.1 TCP
+# loopback connection (see src/privacyfence/ipc.py's module docstring), so
+# the daemon (PrivacyFenceApp.app on macOS, built separately by
+# build_dmg.sh; PrivacyFenceApp.exe on Windows, built by build_windows.ps1 —
+# still Python either way) must be installed and configured on its own —
+# this bundle only wires up the MCP server entry.
 #
 # Prerequisites:
 #   node + npm on PATH (npm installs bridge/'s build-time deps; npx runs the
