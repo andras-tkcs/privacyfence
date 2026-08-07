@@ -192,6 +192,8 @@ _TOOL_LAYOUT: dict[str, str] = {
     "confluence_update_page": WIDE,
     "tasks_complete_task": NARROW,
     "tasks_uncomplete_task": NARROW, "tasks_move_task": NARROW,
+    "apps_script_get_content": WIDE, "apps_script_write_content": WIDE,
+    "apps_script_get_execution_log": WIDE,
 }
 
 _popup_lock = asyncio.Lock()  # only one native dialog on screen at a time

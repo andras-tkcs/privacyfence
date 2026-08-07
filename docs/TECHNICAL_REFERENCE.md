@@ -470,6 +470,29 @@ passed through as-is and surface Jira's own validation error if the shape is wro
 | `tasks_uncomplete_task` | write | popup | — | Task list, task |
 | `tasks_move_task` | write | popup | — | Task, from list, to list |
 
+### Apps Script
+
+**Auth:** OAuth2. Reads/writes script *source* only — PrivacyFence never runs a script. There is
+deliberately no execute/run tool: see issue #154's "Non-goals" and `apps_script_client.py`'s
+module docstring. The user runs a script themselves in the Apps Script editor (or via its own
+triggers), under their own Google account, through Apps Script's own separate consent screen —
+untouched by PrivacyFence.
+
+| Tool | Dir | Gate | Preview | Details popup |
+|------|-----|------|----------------|---------------|
+| `apps_script_list_projects` | read | auto | — | — |
+| `apps_script_get_content` | read | review | project name, file count | Full source of every file |
+| `apps_script_write_content` | write | popup | — | Project name, file names/types, full new source of every file |
+| `apps_script_get_execution_log` | read | review | project name, execution count | Function, status, start time, duration per recent run |
+
+`apps_script_get_execution_log` surfaces the result of a run the **user** triggered outside
+PrivacyFence (via the Processes API's `listScriptProcesses`) — status/duration/which function ran,
+not a live `console.log` transcript; see `apps_script_client.py`'s module docstring for why.
+`apps_script_write_content` always replaces a project's entire file set (there is no
+single-file/partial update in the underlying API), the same "show full resulting content, not a
+diff" precedent `drive_write_doc_content` set. `apps_script_write_content` has no configurable
+auto-accept rule yet — Allow-once-only, like most new write tools at first cut.
+
 ---
 
 ## Auto-accept grants
@@ -863,7 +886,7 @@ edits within a personal list while still requiring review for creates.
 > `tasks.task_lists`. One task-list grant's `create`/`edit`/`complete`/`move` capabilities cover
 > all five task-write operations at once (`complete` covers both complete and uncomplete).
 
-> **Google Contacts**: `contacts_list`, `contacts_search`, and `contacts_get` are unconditionally auto-accepted. `contacts_update`, `contacts_create`, `contacts_add_label`, and `contacts_remove_label` are all `popup`-gated; `no_contact_info_change` above is the only configurable auto-accept rule, and it applies only to `contacts_update`. Contact deletion is not supported. **Google Tasks**: all three read tools plus `tasks_list_task_lists` are unconditionally auto-accepted; the five write tools (`tasks_create_task`, `tasks_update_task`, `tasks_complete_task`, `tasks_uncomplete_task`, `tasks_move_task`) are `popup`-gated, each independently configurable via `approved_task_list` above. **Telegram**: `telegram_list_chats` is unconditionally auto-accepted; `telegram_get_messages` and `telegram_search_messages` are `review`-gated by default but configurable via the rules above (sharing one operation key, `telegram.read_chat_messages`); `telegram_send_message` is `popup`-gated with no configurable rule. **Jira and Confluence** read tools (`jira_get_issue`, `confluence_get_page`, `confluence_get_page_by_title`, `confluence_download_attachment`) are `review`-gated by default but configurable via the rules above; their write tools remain `popup`-gated with no configurable rule, except `jira_transition_issue`, which accepts `approved_project_keys` as noted above.
+> **Google Contacts**: `contacts_list`, `contacts_search`, and `contacts_get` are unconditionally auto-accepted. `contacts_update`, `contacts_create`, `contacts_add_label`, and `contacts_remove_label` are all `popup`-gated; `no_contact_info_change` above is the only configurable auto-accept rule, and it applies only to `contacts_update`. Contact deletion is not supported. **Google Tasks**: all three read tools plus `tasks_list_task_lists` are unconditionally auto-accepted; the five write tools (`tasks_create_task`, `tasks_update_task`, `tasks_complete_task`, `tasks_uncomplete_task`, `tasks_move_task`) are `popup`-gated, each independently configurable via `approved_task_list` above. **Telegram**: `telegram_list_chats` is unconditionally auto-accepted; `telegram_get_messages` and `telegram_search_messages` are `review`-gated by default but configurable via the rules above (sharing one operation key, `telegram.read_chat_messages`); `telegram_send_message` is `popup`-gated with no configurable rule. **Jira and Confluence** read tools (`jira_get_issue`, `confluence_get_page`, `confluence_get_page_by_title`, `confluence_download_attachment`) are `review`-gated by default but configurable via the rules above; their write tools remain `popup`-gated with no configurable rule, except `jira_transition_issue`, which accepts `approved_project_keys` as noted above. **Apps Script**: `apps_script_list_projects` is unconditionally auto-accepted; `apps_script_get_content` and `apps_script_get_execution_log` are `review`-gated with no configurable rule; `apps_script_write_content` is `popup`-gated with no configurable rule (Allow-once-only at first cut — see issue #154 open question 2).
 
 ---
 

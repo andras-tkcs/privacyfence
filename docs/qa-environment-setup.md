@@ -57,7 +57,7 @@ grants](TECHNICAL_REFERENCE.md#auto-accept-grants) for the full reference.
 ## Prerequisites
 
 - [ ] Authenticate every connector you want to test, from the PrivacyFence menu bar
-  - [ ] Gmail, Drive, Calendar, Contacts, Tasks — [`google-cloud-setup.md`](google-cloud-setup.md)
+  - [ ] Gmail, Drive, Calendar, Contacts, Tasks, Apps Script — [`google-cloud-setup.md`](google-cloud-setup.md)
   - [ ] Slack — [`slack-setup.md`](slack-setup.md)
   - [ ] Jira & Confluence — [`atlassian-setup.md`](atlassian-setup.md)
   - [ ] Salesforce — [`salesforce-setup.md`](salesforce-setup.md)

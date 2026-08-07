@@ -210,6 +210,21 @@ auto-approved unconditionally. `notes` is filtered through `tasks_privacy`'s `no
 (default `allow`, so unchanged unless configured), the one field on a task that can carry
 arbitrary personal content.
 
+## Google Apps Script
+
+| Tool | Gate | Fields Claude gets |
+|---|---|---|
+| `apps_script_list_projects` | auto | `id`, `name`, `created_time`, `modified_time` per project — no source |
+| `apps_script_get_content` | review | full source of every file in the project: `name`, `type`, `source` |
+| `apps_script_get_execution_log` | review | per recent run: `function_name`, `status`, `start_time`, `duration`, `process_type` — not a `console.log` transcript, see `apps_script_client.py`'s module docstring |
+| `apps_script_write_content` | popup | n/a — Claude supplies the new source itself |
+
+Apps Script has no gated-read `preview`/`filtered_data` split worth calling out beyond the tables
+above: `apps_script_get_content` returns the entire project's source (there's no lower-sensitivity
+"metadata only" tier the way Drive's `file_metadata` sits below `file_content`), and
+`apps_script_get_execution_log` returns exactly the status/duration/function-name fields the
+Processes API exposes, nothing more.
+
 ## Category-based redaction: what can actually be blocked or redacted
 
 The "AI will receive" checklist's three icons (`✓` allow / `◐` redact / `✗` block) are
@@ -240,10 +255,11 @@ specific call sites (the table below is exhaustive for all six). **Calendar is a
 `calendar_get_free_busy`'s one known leak (full event titles for colleagues the authenticated
 account can see) is governed by a single settings.yaml boolean
 (`calendar.free_busy_full_event_details`), not a `privacy_filter.py` category — Calendar has no
-category schema and never calls `apply_text`/`apply_list`. **Telegram, Salesforce, and Jira have
-neither** — grep confirms zero `apply_text`/`apply_list` calls in `telegram.py`, `salesforce.py`,
-or `jira.py`. **Every field for those three connectors, listed in the tables above, is delivered in
-full, unconditionally — there is no config option that blocks or redacts any of it.** (The
+category schema and never calls `apply_text`/`apply_list`. **Telegram, Salesforce, Jira, and Apps
+Script have neither** — grep confirms zero `apply_text`/`apply_list` calls in `telegram.py`,
+`salesforce.py`, `jira.py`, or `apps_script.py`. **Every field for those four connectors, listed in
+the tables above, is delivered in full, unconditionally — there is no config option that blocks or
+redacts any of it.** (The
 separate, automatic PII detector still scans and can flag a red banner + force a second
 confirmation on any connector's content — but it never removes or replaces data, it only warns;
 see `approval-window-content-reference.md`'s row 5.)
