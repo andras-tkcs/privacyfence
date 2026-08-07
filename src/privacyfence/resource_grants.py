@@ -76,14 +76,6 @@ class GrantResourceType:
     value_of: Callable[[dict[str, Any]], Any] = field(
         default_factory=lambda: (lambda entry: entry)
     )
-    # (client) -> [(resource_id, display_name), ...] when the connector has a
-    # cheap, already-auto-gated listing call — lets the "+ Add …" menu item
-    # offer a live picker by name instead of asking the user to paste an ID.
-    # None for resources with no such call (Drive folders: there is no "list
-    # every folder I can see" API short of the heavier Google Picker
-    # integration — see docs at the time this shipped) — those fall back to
-    # paste-ID-or-URL entry in the menu bar.
-    list_candidates: Callable[[Any], list[tuple[str, str]]] | None = None
 
     def id_of(self, entry: dict[str, Any]) -> str:
         return str(entry.get(self.id_field, ""))
@@ -159,36 +151,6 @@ def _resolve_salesforce_report(client: Any, resource_id: str) -> str | None:
         return _find_by(client.list_reports(), "id", resource_id)
     except Exception:
         return None
-
-
-def _list_task_lists(client: Any) -> list[tuple[str, str]]:
-    return [(tl.id, tl.title) for tl in client.list_task_lists()]
-
-
-def _list_slack_channels(client: Any) -> list[tuple[str, str]]:
-    return [(c.id, f"#{c.name}") for c in client.list_channels()]
-
-
-def _list_telegram_chats(client: Any) -> list[tuple[str, str]]:
-    import asyncio
-
-    return [(str(c.id), c.name) for c in asyncio.run(client.list_chats())]
-
-
-def _list_jira_projects(client: Any) -> list[tuple[str, str]]:
-    return [(p.key, f"{p.key} — {p.name}") for p in client.list_projects()]
-
-
-def _list_confluence_spaces(client: Any) -> list[tuple[str, str]]:
-    return [(s.key, f"{s.key} — {s.name}") for s in client.list_spaces()]
-
-
-def _list_calendars(client: Any) -> list[tuple[str, str]]:
-    return [(c.id, c.summary) for c in client.list_calendars()]
-
-
-def _list_salesforce_reports(client: Any) -> list[tuple[str, str]]:
-    return [(r.id, r.name) for r in client.list_reports()]
 
 
 # Canonical enumeration of every (operation_key, rule_name) pair a trusted
@@ -290,7 +252,6 @@ GRANT_RESOURCE_TYPES: tuple[GrantResourceType, ...] = (
         },
         resolver=_resolve_task_list,
         value_of=_plain_value_of("id"),
-        list_candidates=_list_task_lists,
     ),
     GrantResourceType(
         connector="slack", config_key="channels", id_field="id",
@@ -310,7 +271,6 @@ GRANT_RESOURCE_TYPES: tuple[GrantResourceType, ...] = (
         },
         resolver=_resolve_slack_channel,
         value_of=_plain_value_of("id"),
-        list_candidates=_list_slack_channels,
     ),
     GrantResourceType(
         connector="telegram", config_key="chats", id_field="id",
@@ -331,7 +291,6 @@ GRANT_RESOURCE_TYPES: tuple[GrantResourceType, ...] = (
         },
         resolver=_resolve_telegram_chat,
         value_of=_plain_value_of("id"),
-        list_candidates=_list_telegram_chats,
     ),
     GrantResourceType(
         connector="jira", config_key="projects", id_field="key",
@@ -355,7 +314,6 @@ GRANT_RESOURCE_TYPES: tuple[GrantResourceType, ...] = (
         },
         resolver=_resolve_jira_project,
         value_of=_plain_value_of("key"),
-        list_candidates=_list_jira_projects,
     ),
     GrantResourceType(
         connector="confluence", config_key="spaces", id_field="key",
@@ -374,7 +332,6 @@ GRANT_RESOURCE_TYPES: tuple[GrantResourceType, ...] = (
         },
         resolver=_resolve_confluence_space,
         value_of=_plain_value_of("key"),
-        list_candidates=_list_confluence_spaces,
     ),
     GrantResourceType(
         connector="calendar", config_key="calendars", id_field="id",
@@ -390,7 +347,6 @@ GRANT_RESOURCE_TYPES: tuple[GrantResourceType, ...] = (
         },
         resolver=_resolve_calendar,
         value_of=_plain_value_of("id"),
-        list_candidates=_list_calendars,
     ),
     GrantResourceType(
         connector="salesforce", config_key="reports", id_field="id",
@@ -402,7 +358,6 @@ GRANT_RESOURCE_TYPES: tuple[GrantResourceType, ...] = (
         },
         resolver=_resolve_salesforce_report,
         value_of=_plain_value_of("id"),
-        list_candidates=_list_salesforce_reports,
     ),
 )
 

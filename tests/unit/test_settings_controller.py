@@ -42,6 +42,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from privacyfence import auto_accept, daemon_main, resource_names, settings_controller as sc, update_checker
+from privacyfence import resource_grants as rg
 
 
 def wait_until(predicate, timeout=2.0, interval=0.005) -> bool:
@@ -1370,6 +1371,38 @@ class TestSnapshotStructure:
         rule_titles = {s["title"] for s in state["rules"]["sections_by_connector"]["tasks"]}
         assert "Trusted Task Lists" in grant_titles
         assert rule_titles == {"Create task", "Update task", "Complete task", "Uncomplete task", "Move task"}
+
+
+class TestGrantIdHint:
+    """Bottom-of-page "ask Claude for the ID" tip (settings_controller.py's
+    _grant_id_hint) -- there's no live "+ Add..." picker by resource name
+    (issue #167, decided not to build), so this is the UI's answer to "how do
+    I even get a folder/channel/chat ID to paste into a grant row"."""
+
+    def test_every_connector_with_a_grant_resource_type_gets_a_hint(self, controller):
+        state = controller.snapshot()
+        hints = state["rules"]["grant_hint_by_connector"]
+        for rt in rg.GRANT_RESOURCE_TYPES:
+            assert hints.get(rt.connector), f"no hint for {rt.connector!r}"
+
+    def test_connectors_with_no_grant_resource_type_get_no_hint(self, controller):
+        # gmail/contacts trust by attribute (sender domain, label...), not by
+        # a resource ID a grant row could hold; sheets/docs aren't real
+        # connectors and have no grant section of their own (see
+        # settings_controller.DRIVE_GRANT_SUMMARY_GROUPS) -- none of the four
+        # has anything to ask Claude for here.
+        state = controller.snapshot()
+        hints = state["rules"]["grant_hint_by_connector"]
+        for cname in ("gmail", "contacts", "sheets", "docs"):
+            assert hints.get(cname) is None
+
+    def test_hint_is_tool_specific(self, controller):
+        state = controller.snapshot()
+        hints = state["rules"]["grant_hint_by_connector"]
+        assert "Drive folder ID" in hints["drive"]
+        assert "channel ID" in hints["slack"]
+        assert "chat ID" in hints["telegram"]
+        assert hints["drive"] != hints["slack"]
 
 
 class TestRuleUiCompleteness:

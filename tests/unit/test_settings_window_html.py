@@ -62,6 +62,10 @@ def _make_state(**overrides):
                 "gmail": None,
                 "drive": None,
             },
+            "grant_hint_by_connector": {
+                "gmail": None,
+                "drive": "Don't have the ID handy? Ask Claude — e.g. “What's the Drive folder ID for the Q3 Reports folder?” — then paste it into the Resource ID field above.",
+            },
         },
         "privacy": {
             "groups": [{"key": "privacy", "label": "Gmail"}, {"key": "calendar", "label": "Calendar"}],
@@ -210,6 +214,25 @@ class TestRulesAndGrantsTemplate:
         html = build_html(_make_state())
         assert "drive_grant_summary_by_connector" in html
         assert 'data-rules-nav="drive"' in html
+
+    def test_grant_hint_field_referenced(self):
+        # Bottom-of-page "ask Claude for the ID" tip (settings_controller.py's
+        # _grant_id_hint) -- tool-specific per connector, sourced from
+        # state.rules.grant_hint_by_connector rather than hardcoded here.
+        html = build_html(_make_state())
+        assert "grant_hint_by_connector" in html
+        assert "pf-grant-hint" in html
+
+    def test_copy_id_attribute_wired(self):
+        # Right-click a grant row to copy its resource ID (see
+        # copyToClipboard/onContextMenu) -- eases reusing the same
+        # folder/channel/chat ID across multiple grant rows, since the
+        # "Name" field only ever shows a resolved/hand-typed display name,
+        # never the raw ID.
+        html = build_html(_make_state())
+        assert "data-copy-id" in html
+        assert "onContextMenu" in html
+        assert "copyToClipboard" in html
 
 
 class TestPrivacySegmentedControl:
