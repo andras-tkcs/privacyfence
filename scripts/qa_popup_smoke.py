@@ -155,7 +155,6 @@ if sys.platform != "darwin":
     sys.exit(1)
 
 import Quartz  # noqa: E402
-import rumps  # noqa: E402
 import yaml  # noqa: E402
 from AppKit import (  # noqa: E402
     NSApplication,

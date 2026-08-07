@@ -50,7 +50,7 @@ from typing import Any, Callable
 
 from .audit_log import AuditEntry, current_week, get_audit_logger
 from .auto_accept import TOOL_TO_GATE, TOOL_TO_OPERATION, get_auto_accept_evaluator, get_current_config
-from .connector import Connector, ToolSpec
+from .connector import Connector
 from .gate import propose_rule_change, reason_scope, unattended_scope
 from .ipc import HOST, LINE_LIMIT, PORT_FILE, TOKEN_FILE, VERSION
 
