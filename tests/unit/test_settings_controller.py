@@ -7,8 +7,9 @@ same behavior, now exercised through SettingsController's methods instead of
 PrivacyFenceMenuBar's. Native-picker-specific tests (_osascript_pick-driven
 rule/policy selection, the old int-value/list-value rumps.Window prompts)
 were dropped rather than ported, since the Auto-accept Rules page now edits
-rule_type/value as plain text (see settings_controller.py's own docstring on
-why) -- there is no picker left to test.
+rule_type via an in-webview dropdown (RULES_BY_OPERATION-constrained, not a
+native AppKit picker) and value as plain text (see settings_controller.py's
+own docstring on why) -- there is no native picker left to test.
 
 Also covers the cross-thread AppHelper.callAfter marshaling contract
 (_run_async/on_change) that used to live in test_menu_bar.py's "P6" module
