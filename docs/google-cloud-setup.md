@@ -1,6 +1,6 @@
 # Google Cloud Console Setup
 
-This guide walks through creating a Google Cloud project, configuring OAuth, and enabling the APIs that PrivacyFence's Gmail, Drive, Calendar, Contacts, and Tasks connectors require. If your organization also does Workspace room/resource booking, there's a second, separate project involved — see "Room directory sync" below.
+This guide walks through creating a Google Cloud project, configuring OAuth, and enabling the APIs that PrivacyFence's Gmail, Drive, Calendar, Contacts, Tasks, and Apps Script connectors require. If your organization also does Workspace room/resource booking, there's a second, separate project involved — see "Room directory sync" below.
 
 Google is organization-level config: **one IT admin does this once**, packages the result into PrivacyFence's organization config bundle, and distributes it. Individual users never touch the Google Cloud Console — they just click **Authenticate…** in the menu bar and sign in with their browser.
 
@@ -28,6 +28,7 @@ Open **APIs & Services → Library** and enable each of the following APIs one b
 | Google People API | `People API` | Contacts connector |
 | Google Calendar API | `Google Calendar API` | Calendar connector |
 | Google Tasks API | `Tasks API` | Google Tasks connector |
+| Apps Script API | `Apps Script API` | Apps Script connector (`apps_script_get_content`, `apps_script_write_content`, `apps_script_get_execution_log`) |
 
 For each: click the API in the search results, then click **Enable**.
 
@@ -36,6 +37,8 @@ For each: click the API in the search results, then click **Enable**.
 > **Note:** The Sheets API doesn't need its own OAuth scope or consent-screen entry — it accepts the same `drive` scope already granted, so users don't re-authenticate. It still has to be individually **enabled** in this project's API Library like every other API here; if it's left disabled, `drive_sheets_*` calls fail with an `accessNotConfigured` / "API has not been used in project ... before or it is disabled" error even though the user's OAuth token is otherwise valid.
 
 > **Note:** This project deliberately never requests Admin SDK / Workspace-directory scopes. `calendar_list_rooms` (room/resource booking) is served from a static room directory synced separately — see "Room directory sync" below — precisely so that the OAuth client every employee authorizes day to day can never read the Workspace directory.
+
+> **Note:** The Apps Script connector also requests a narrow `drive.metadata.readonly` scope (name/id/timestamps only, never file content) purely to list a user's own standalone script projects — the Apps Script API itself has no "list my projects" endpoint. It runs no script code: there is deliberately no `run`/execute tool. See `apps_script_client.py`'s module docstring.
 
 ### 3. Configure the OAuth consent screen
 
@@ -113,7 +116,7 @@ token then simply can't read your Workspace directory, no matter what.
 
 1. Get `org_config.json` from your IT team.
 2. In the PrivacyFence menu bar: **Organization Config…**, and select the file.
-3. For each Google connector you want (Gmail, Drive, Calendar, Contacts, Tasks): **Connectors → \<service\> → Authenticate…**. Your browser opens to Google's sign-in page — sign in and click **Allow**.
+3. For each Google connector you want (Gmail, Drive, Calendar, Contacts, Tasks, Apps Script): **Connectors → \<service\> → Authenticate…**. Your browser opens to Google's sign-in page — sign in and click **Allow**.
 4. Quit and reopen PrivacyFence to activate the connector.
 
 ---
@@ -130,7 +133,7 @@ Click **Advanced → Go to PrivacyFence (unsafe)** to proceed. This warning appe
 Make sure you created credentials of type **Desktop app**, not Web application — Desktop app clients accept any loopback redirect port, which is what PrivacyFence's OAuth flow uses.
 
 **Scopes not granted / 403 errors** (user)
-Click **Reconnect…** next to the connector in the PrivacyFence menu bar to re-run the OAuth flow. From source, you can also run `privacyfence-app --gmail-oauth` (or `--drive-oauth` / `--contacts-oauth` / `--calendar-oauth` / `--tasks-oauth`).
+Click **Reconnect…** next to the connector in the PrivacyFence menu bar to re-run the OAuth flow. From source, you can also run `privacyfence-app --gmail-oauth` (or `--drive-oauth` / `--contacts-oauth` / `--calendar-oauth` / `--tasks-oauth` / `--apps-script-oauth`).
 
 **`calendar_list_rooms` comes back empty** (user)
 This just means IT hasn't run `scripts/sync_room_directory.py` yet, or hasn't redistributed the
