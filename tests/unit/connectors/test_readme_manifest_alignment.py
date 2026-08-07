@@ -21,6 +21,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from privacyfence.auto_accept import TOOL_TO_GATE
+from privacyfence.connectors.apps_script import AppsScriptConnector
 from privacyfence.connectors.calendar import CalendarConnector
 from privacyfence.connectors.confluence import ConfluenceConnector
 from privacyfence.connectors.contacts import ContactsConnector
@@ -35,7 +36,7 @@ from privacyfence.connectors.telegram import TelegramConnector
 CONNECTOR_CLASSES = [
     GmailConnector, DriveConnector, SlackConnector, CalendarConnector,
     ContactsConnector, SalesforceConnector, JiraConnector, ConfluenceConnector,
-    TasksConnector, TelegramConnector,
+    TasksConnector, TelegramConnector, AppsScriptConnector,
 ]
 
 README_PATH = Path(__file__).resolve().parents[3] / "docs" / "TECHNICAL_REFERENCE.md"

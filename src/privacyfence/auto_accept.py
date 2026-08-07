@@ -136,6 +136,9 @@ TOOL_TO_OPERATION: dict[str, str] = {
     "tasks_complete_task":            "tasks.complete_task",
     "tasks_uncomplete_task":          "tasks.uncomplete_task",
     "tasks_move_task":                "tasks.move_task",
+    "apps_script_get_content":        "apps_script.read_content",
+    "apps_script_write_content":      "apps_script.write_content",
+    "apps_script_get_execution_log":  "apps_script.read_execution_log",
 }
 
 # Maps tool name -> the gate it goes through: "auto" (never reaches gated_call
@@ -268,6 +271,11 @@ TOOL_TO_GATE: dict[str, str] = {
     "tasks_complete_task":             "popup",
     "tasks_uncomplete_task":           "popup",
     "tasks_move_task":                 "popup",
+    # Apps Script
+    "apps_script_list_projects":       "auto",
+    "apps_script_get_content":         "review",
+    "apps_script_write_content":       "popup",
+    "apps_script_get_execution_log":   "review",
 }
 
 # Every _rule_* method on AutoAcceptEvaluator classified into exactly one of
