@@ -30,7 +30,6 @@ from privacyfence.calendar_client import (
     CalendarAttendee,
     CalendarClient,
     CalendarClientError,
-    CalendarEvent,
     CalendarListEntry,
     FreeBusyResult,
     FreeBusySlot,
