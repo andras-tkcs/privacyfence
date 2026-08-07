@@ -196,6 +196,17 @@ input[type=text]:focus { outline: 2px solid #0071e3; outline-offset: 0; }
 .pf-rule-row .pf-input-type { width: 190px; flex-shrink: 0; }
 .pf-rule-row .pf-input-value { flex: 1; }
 .pf-rules-empty { font-size: 13px; color: #8a8a8e; }
+.pf-grant-hint {
+  font-size: 11.5px; color: #8a8a8e; margin-top: 18px; padding-top: 14px;
+  border-top: 1px solid #ececef; max-width: 560px; line-height: 1.5;
+}
+
+/* ---- Copy-ID toast (right-click a grant row -- see data-copy-id) ---- */
+.pf-copy-toast {
+  position: fixed; background: #1d1d1f; color: #fff; font-size: 11px; font-weight: 500;
+  padding: 4px 9px; border-radius: 5px; pointer-events: none; z-index: 999; opacity: .95;
+  transform: translate(-50%, -100%);
+}
 
 /* ---- Privacy ---- */
 .pf-policy-row {
@@ -315,6 +326,36 @@ _JS = r"""
       (disabled ? 'aria-disabled="true"' : 'tabindex="0"') +
       (ariaLabel ? ' aria-label="' + esc(ariaLabel) + '"' : '') + ' ' + attrs +
       '><div class="pf-knob"></div></div>';
+  }
+
+  // Right-click-to-copy for a grant row's resource ID (data-copy-id, see
+  // renderRules) -- document.execCommand('copy') rather than
+  // navigator.clipboard.writeText, since this is an offline file:// document
+  // (loadHTMLString_baseURL_, see this module's docstring) and the async
+  // Clipboard API is only available in a secure context; the legacy
+  // execCommand path has no such restriction and still works from a
+  // contextmenu event's user activation.
+  function copyToClipboard(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    try { document.execCommand('copy'); } catch (err) { /* best-effort */ }
+    document.body.removeChild(ta);
+  }
+
+  function showCopyToast(x, y, text) {
+    var toast = document.createElement('div');
+    toast.className = 'pf-copy-toast';
+    toast.textContent = text;
+    toast.style.left = x + 'px';
+    toast.style.top = (y - 8) + 'px';
+    document.body.appendChild(toast);
+    setTimeout(function () { toast.remove(); }, 900);
   }
 
   function segGroupHtml(items, groupLabel) {
@@ -505,7 +546,13 @@ _JS = r"""
       html += '<div class="pf-grant-section"><div class="pf-group-title">' + esc(gs.title) + '</div>';
       matchingRows.forEach(function (r) {
         var row = r.row, idx = r.idx;
-        html += '<div class="pf-grant-row"><div class="pf-grant-row-fields">';
+        // data-copy-id: right-click anywhere in the row copies its resource
+        // ID -- the "Name" field only ever shows a resolved/hand-typed
+        // display name (resource_names.py), so this is the fast path for
+        // reusing the same folder/channel/chat's ID in another grant row
+        // without re-selecting text out of the ID input by hand.
+        var copyAttr = row.id ? ' data-copy-id="' + esc(row.id) + '" title="Right-click to copy ID"' : '';
+        html += '<div class="pf-grant-row"' + copyAttr + '><div class="pf-grant-row-fields">';
         html += '<input type="text" class="pf-input" placeholder="Name" aria-label="' + esc(gs.title) + ' name" value="' + esc(row.name) + '" ' +
           'data-grant-field="name" data-connector="' + esc(curKey) + '" data-config-key="' + esc(gs.config_key) + '" data-idx="' + idx + '"/>';
         html += '<input type="text" class="pf-input pf-input-mono" placeholder="Resource ID" aria-label="' + esc(gs.title) + ' resource ID" value="' + esc(row.id) + '" ' +
@@ -557,6 +604,11 @@ _JS = r"""
       html += '<div class="pf-rules-empty">' + (search ? 'No matches.' : 'Nothing here.') + '</div>';
     } else if (!search && ruleSections.length === 0 && grantSections.length === 0 && !driveSummary) {
       html += '<div class="pf-rules-empty">All operations always auto-approved — no rules needed.</div>';
+    }
+
+    var grantHint = (rules.grant_hint_by_connector || {})[curKey];
+    if (grantHint && !search) {
+      html += '<div class="pf-grant-hint">' + esc(grantHint) + '</div>';
     }
 
     html += '</div>';
@@ -862,6 +914,16 @@ _JS = r"""
     if (el.hasAttribute('data-grant-field')) { commitGrantField(el); return; }
   }
 
+  function onContextMenu(e) {
+    var copyEl = e.target.closest('[data-copy-id]');
+    if (!copyEl) return;
+    var id = copyEl.getAttribute('data-copy-id');
+    if (!id) return;
+    e.preventDefault();
+    copyToClipboard(id);
+    showCopyToast(e.clientX, e.clientY, 'Copied ID');
+  }
+
   function onInput(e) {
     var el = e.target;
     if (el.hasAttribute('data-rules-search')) {
@@ -912,6 +974,7 @@ _JS = r"""
     document.body.addEventListener('blur', onBlur, true);
     document.body.addEventListener('input', onInput);
     document.body.addEventListener('keydown', onKeydown);
+    document.body.addEventListener('contextmenu', onContextMenu);
     render(window.__pfInitialState);
   });
 })();
