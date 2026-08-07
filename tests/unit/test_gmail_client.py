@@ -22,7 +22,6 @@ import base64
 import email
 import email.policy
 import json
-import os
 import stat
 import threading
 import time
@@ -37,7 +36,6 @@ from privacyfence.gmail_client import (
     GmailClient,
     GmailClientError,
     GmailMessage,
-    GmailThread,
     resolve_attachment_destination,
 )
 from googleapiclient.errors import HttpError

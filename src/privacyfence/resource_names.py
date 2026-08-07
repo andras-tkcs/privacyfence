@@ -39,13 +39,6 @@ logger = logging.getLogger(__name__)
 
 CACHE_TTL_SECONDS = 15 * 60
 
-# States a caller (the menu) can render when a resolved/cached name isn't
-# available. Distinguished so the menu can explain *why* rather than just
-# showing the raw ID.
-RESOLVING = "resolving"
-NOT_CONNECTED = "not_connected"
-NOT_FOUND = "not_found"
-
 
 def _cache_file() -> Path:
     return data_dir() / "resource_name_cache.json"
