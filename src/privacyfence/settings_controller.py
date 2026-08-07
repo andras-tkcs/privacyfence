@@ -1144,9 +1144,10 @@ class SettingsController:
         return self.snapshot()
 
     # ------------------------------------------------------------------ #
-    # Rule actions (Auto-accept Rules page -- plain rule_type/value text
-    # rows, per the design; see this module's docstring/the PR report for
-    # why this no longer goes through a native picker the way menu_bar.py's
+    # Rule actions (Auto-accept Rules page -- rule_type is a dropdown
+    # constrained to RULES_BY_OPERATION[op_key], value is a plain text field,
+    # per the design; see this module's docstring/the PR report for why
+    # this no longer goes through a native picker the way menu_bar.py's
     # pre-#120 _add_rule/_add_rule_value did)
     # ------------------------------------------------------------------ #
 
@@ -1485,7 +1486,16 @@ class SettingsController:
                     for r in op_rules
                     if not r.get("_grant")
                 ]
-                rule_sections.append({"op_key": op_key, "title": short_label, "rows": rows})
+                rule_sections.append({
+                    "op_key": op_key,
+                    "title": short_label,
+                    "rows": rows,
+                    # Valid rule names for this operation -- drives the rule-type
+                    # dropdown client-side (renderRules' ruleTypeLabel()) instead of
+                    # a free-text field the user had to already know the rule name
+                    # to fill in correctly.
+                    "rule_type_options": RULES_BY_OPERATION.get(op_key, []),
+                })
             sections_by_connector[cname] = rule_sections
 
             count = sum(len(get_grant_entries(grants_cfg, rt)) for rt in resource_types)

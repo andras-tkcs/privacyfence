@@ -549,10 +549,12 @@ dropped that in favor of the same manual Name/Resource-ID entry for every connec
 
 Every existing rule under `auto_accept_rules` that isn't a resource grant (domain trust, label
 matching, file-type allowlists, and similar — see [Auto-accept rules](#auto-accept-rules)) lives on
-that same connector's page as a `rule_type` / `value` row, also plain text committed on blur/Enter.
-A list-valued rule's `value` field takes a comma-separated list directly (e.g. `domain1.com,
-domain2.com`) in one field, rather than an earlier menu-bar version's one-value-at-a-time **+ Add
-value…** / **✕ Remove** treatment.
+that same connector's page as a `rule_type` / `value` row. `rule_type` is a dropdown listing only
+the rule names that operation actually supports (`RULES_BY_OPERATION` in settings_controller.py),
+committed immediately on selection rather than requiring the rule name to be typed by hand; `value`
+stays a plain text field, committed on blur/Enter. A list-valued rule's `value` field takes a
+comma-separated list directly (e.g. `domain1.com, domain2.com`) in one field, rather than an earlier
+menu-bar version's one-value-at-a-time **+ Add value…** / **✕ Remove** treatment.
 
 **Sheets** and **Docs** get their own top-level sidebar pages in this window (neither is a real
 connector — both ride on Drive's OAuth grant, see [Auto-accept rules](#auto-accept-rules)'s Drive
