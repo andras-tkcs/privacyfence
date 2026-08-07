@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+PrivacyFence daemon Task Scheduler entry — auto-starts at login (Windows
+equivalent of com.privacyfence.app.plist's LaunchAgent, issue #121).
+
+Same "static file + hand-copy instructions" posture as the plist: neither OS
+gets in-app install/uninstall automation from this project today (see
+daemon_main.py's module docstring), so this mirrors that rather than adding
+new automation only one platform would get.
+
+Install (from an elevated or regular PowerShell/cmd prompt — registering a
+per-user logon task doesn't require admin rights):
+  schtasks /create /tn "PrivacyFence" /xml com.privacyfence.app.task.xml
+
+Uninstall:
+  schtasks /delete /tn "PrivacyFence" /f
+
+Before installing, replace the two placeholder paths below:
+  - Command: the absolute path to privacyfence-app.exe (inside your
+    PyInstaller onedir build, or .venv\Scripts\privacyfence-app.exe in a
+    dev checkout).
+  - WorkingDirectory: your privacyfence project root, so config\
+    settings.yaml resolves correctly in a dev checkout (a packaged build
+    resolves everything under %USERPROFILE%\.privacyfence instead — see
+    paths.py — so WorkingDirectory matters less there, but Task Scheduler
+    requires the element to be present regardless).
+-->
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>PrivacyFence daemon -- governance UI and connector host.</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <!-- No automatic restart-on-crash configured here (Task Scheduler's
+         own RestartOnFailure element would go under this Settings block) —
+         unlike the LaunchAgent plist's KeepAlive.SuccessfulExit=false,
+         that's keyed off the process's own exit code, and daemon_main.py
+         doesn't yet distinguish "crashed" from "another instance already
+         running" (both return non-zero — see run_app()'s own instance-lock
+         check), so an automatic restart loop against the latter would just
+         spin. Worth revisiting alongside real Windows QA
+         (docs/windows-port-status.md) rather than guessed at here. -->
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <!-- Replace with the absolute path to privacyfence-app.exe. -->
+      <Command>C:\Path\To\privacyfence-app.exe</Command>
+      <!-- Replace with your privacyfence project root (dev checkout) or
+           leave as the packaged build's own install directory. -->
+      <WorkingDirectory>C:\Path\To\privacyfence</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

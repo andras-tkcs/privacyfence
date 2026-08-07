@@ -1,19 +1,23 @@
 """Approval UI seam: the interface gate.py depends on instead of importing
-approval_popup.py (native macOS AppKit/WKWebView dialogs) directly.
+approval_popup.py (native OS-level approval dialogs) directly.
 
 gate.py is the policy engine: auto-accept check -> block on a human decision
--> audit log. Today the only way to get that human decision is a native
-macOS dialog, but the policy loop itself has no reason to know that -- it
-just needs something that can show the write-gate popup, the review-gate
-popup, and the two smaller confirmation dialogs, and return a decision.
-ApprovalUI is that something. NativeApprovalUI (today's only implementation)
-delegates straight through to approval_popup.py, so this adds a seam with no
-behavior change on macOS.
+-> audit log. The policy loop itself has no reason to know how that human
+decision actually gets shown -- it just needs something that can show the
+write-gate popup, the review-gate popup, and the two smaller confirmation
+dialogs, and return a decision. ApprovalUI is that something.
+NativeApprovalUI (today's only implementation) delegates straight through to
+approval_popup.py, so this adds a seam with no behavior change on either
+platform it already covers: approval_popup.py's own module docstring is
+where macOS (AppKit/WKWebView) vs. Windows (pywebview/WebView2, issue #121)
+gets picked, by sys.platform -- NativeApprovalUI doesn't need to know that
+either, "native" here meaning "whatever this OS's own dialog surface is,"
+not "macOS specifically."
 
-A future implementation (e.g. routing approval requests to a phone for
-issue #55's mobile remote approval, or a Windows-native dialog for #121)
-only needs to implement this interface and call init_approval_ui() with an
-instance of it -- gate.py's own call sites never change.
+A further implementation (e.g. routing approval requests to a phone for
+issue #55's mobile remote approval) only needs to implement this interface
+and call init_approval_ui() with an instance of it -- gate.py's own call
+sites never change.
 """
 from __future__ import annotations
 

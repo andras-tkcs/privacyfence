@@ -74,13 +74,31 @@ class TestBundleMacosDir:
         monkeypatch.setattr(paths, "is_bundled", lambda: False)
         assert paths.bundle_macos_dir() is None
 
-    def test_parent_of_executable_when_bundled(self, monkeypatch):
+    def test_parent_of_executable_when_bundled_on_macos(self, monkeypatch):
         monkeypatch.setattr(paths, "is_bundled", lambda: True)
+        monkeypatch.setattr(sys, "platform", "darwin")
         monkeypatch.setattr(sys, "executable", "/Applications/PrivacyFenceApp.app/Contents/MacOS/privacyfence-app")
 
         result = paths.bundle_macos_dir()
 
         assert result == Path("/Applications/PrivacyFenceApp.app/Contents/MacOS")
+
+    def test_none_when_bundled_on_windows(self, monkeypatch):
+        # No Contents/MacOS-style layout exists in a Windows onedir build --
+        # see bundle_dir() for the cross-platform equivalent a Windows
+        # caller should use instead.
+        monkeypatch.setattr(paths, "is_bundled", lambda: True)
+        monkeypatch.setattr(sys, "platform", "win32")
+        # Forward slashes, not backslashes -- Windows accepts either, but
+        # this sandbox's pathlib.Path resolves to PosixPath regardless of
+        # the monkeypatched sys.platform (it's picked at interpreter
+        # startup, not read dynamically), and PosixPath only splits on "/".
+        # A real Windows machine's WindowsPath handles backslashes the same
+        # way; this just keeps the test meaningful when run from a
+        # non-Windows host too.
+        monkeypatch.setattr(sys, "executable", "C:/Program Files/PrivacyFence/privacyfence-app.exe")
+
+        assert paths.bundle_macos_dir() is None
 
 
 class TestAppBundlePath:
@@ -88,10 +106,57 @@ class TestAppBundlePath:
         monkeypatch.setattr(paths, "is_bundled", lambda: False)
         assert paths.app_bundle_path() is None
 
-    def test_app_bundle_root_when_bundled(self, monkeypatch):
+    def test_app_bundle_root_when_bundled_on_macos(self, monkeypatch):
         monkeypatch.setattr(paths, "is_bundled", lambda: True)
+        monkeypatch.setattr(sys, "platform", "darwin")
         monkeypatch.setattr(sys, "executable", "/Applications/PrivacyFenceApp.app/Contents/MacOS/privacyfence-app")
 
         result = paths.app_bundle_path()
 
         assert result == Path("/Applications/PrivacyFenceApp.app")
+
+    def test_none_when_bundled_on_windows(self, monkeypatch):
+        monkeypatch.setattr(paths, "is_bundled", lambda: True)
+        monkeypatch.setattr(sys, "platform", "win32")
+        # Forward slashes, not backslashes -- Windows accepts either, but
+        # this sandbox's pathlib.Path resolves to PosixPath regardless of
+        # the monkeypatched sys.platform (it's picked at interpreter
+        # startup, not read dynamically), and PosixPath only splits on "/".
+        # A real Windows machine's WindowsPath handles backslashes the same
+        # way; this just keeps the test meaningful when run from a
+        # non-Windows host too.
+        monkeypatch.setattr(sys, "executable", "C:/Program Files/PrivacyFence/privacyfence-app.exe")
+
+        assert paths.app_bundle_path() is None
+
+
+class TestBundleDir:
+    def test_none_when_not_bundled(self, monkeypatch):
+        monkeypatch.setattr(paths, "is_bundled", lambda: False)
+        assert paths.bundle_dir() is None
+
+    def test_executables_own_directory_when_bundled_on_windows(self, monkeypatch):
+        monkeypatch.setattr(paths, "is_bundled", lambda: True)
+        monkeypatch.setattr(sys, "platform", "win32")
+        # Forward slashes, not backslashes -- Windows accepts either, but
+        # this sandbox's pathlib.Path resolves to PosixPath regardless of
+        # the monkeypatched sys.platform (it's picked at interpreter
+        # startup, not read dynamically), and PosixPath only splits on "/".
+        # A real Windows machine's WindowsPath handles backslashes the same
+        # way; this just keeps the test meaningful when run from a
+        # non-Windows host too.
+        monkeypatch.setattr(sys, "executable", "C:/Program Files/PrivacyFence/privacyfence-app.exe")
+
+        result = paths.bundle_dir()
+
+        assert result == Path("C:/Program Files/PrivacyFence")
+
+    def test_executables_own_directory_when_bundled_on_macos(self, monkeypatch):
+        # Same value bundle_macos_dir() returns on macOS -- bundle_dir() is
+        # the cross-platform name, bundle_macos_dir() the macOS-specific one
+        # kept for its existing (currently caller-less) name/meaning.
+        monkeypatch.setattr(paths, "is_bundled", lambda: True)
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setattr(sys, "executable", "/Applications/PrivacyFenceApp.app/Contents/MacOS/privacyfence-app")
+
+        assert paths.bundle_dir() == paths.bundle_macos_dir()

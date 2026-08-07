@@ -5,12 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "privacyfence"
 version = "3.4.0"
-description = "macOS menu bar privacy proxy between Claude (MCP) and your personal data"
+description = "Menu bar / tray privacy proxy between Claude (MCP) and your personal data (macOS, Windows)"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Andras Takacs", email = "privacyfence@tkcs.name" }]
 dependencies = [
+    # Cross-platform -- no sys_platform marker needed, installs everywhere.
     "google-auth>=2.23.0",
     "google-auth-oauthlib>=1.1.0",
     "google-api-python-client>=2.100.0",
@@ -22,12 +23,30 @@ dependencies = [
     "simple-salesforce>=1.12.0",
     "requests>=2.31.0",
     "certifi>=2024.2.2",
-    "rumps>=0.4.0",
-    "pyobjc-framework-Cocoa>=10.0",
-    "pyobjc-framework-WebKit>=10.0",
-    "pyobjc-framework-Quartz>=10.0",
     "openpyxl>=3.1",
     "pypdf>=5.0",
+    # macOS: rumps.App (tray/menu bar) and the pyobjc frameworks
+    # approval_window.py/dialog_window.py/settings_window.py build native
+    # AppKit/WKWebView windows with (menu_bar.py). See tray_windows.py/
+    # approval_window_windows.py/dialog_window_windows.py/
+    # settings_window_windows.py for the Windows-only equivalents below --
+    # issue #121. Every module importing one of these guards the import
+    # (try/except ImportError, same pattern settings_controller.py already
+    # used pre-#121 for its own rumps/dialog_window dependency), so
+    # `pip install privacyfence` on the *other* platform never fails even
+    # though these five packages themselves are never installed there.
+    "rumps>=0.4.0; sys_platform == 'darwin'",
+    "pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'",
+    "pyobjc-framework-WebKit>=10.0; sys_platform == 'darwin'",
+    "pyobjc-framework-Quartz>=10.0; sys_platform == 'darwin'",
+    # Windows: pystray (tray icon), pywebview (approval/dialog/settings
+    # windows, via WebView2 -- pywebview's default Windows backend, which
+    # additionally needs the WebView2 runtime itself; see
+    # docs/windows-port-status.md) and Pillow (pystray's own icon-image
+    # dependency, tray_windows.py loads the bundled PNG through it).
+    "pystray>=0.19; sys_platform == 'win32'",
+    "pywebview>=5.0; sys_platform == 'win32'",
+    "Pillow>=10.0; sys_platform == 'win32'",
 ]
 
 [project.scripts]

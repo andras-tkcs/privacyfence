@@ -748,6 +748,69 @@ class TestInstanceLock:
         daemon_main._release_instance_lock()  # must not raise
 
 
+class _FakeMsvcrt:
+    """Minimal stand-in for the stdlib msvcrt module's locking() -- exists
+    only on Windows, so this sandbox (like any dev/CI machine testing the
+    win32 branch from macOS/Linux) has to fake it rather than import the
+    real thing. Models exactly the one behavior _acquire_instance_lock()/
+    _release_instance_lock() depend on: LK_NBLCK raises OSError if the
+    region is already locked (by anyone -- msvcrt has no concept of "locked
+    by this same fd is fine", same as flock), LK_UNLCK always succeeds."""
+
+    LK_NBLCK = 1
+    LK_UNLCK = 2
+
+    def __init__(self):
+        self.locked = False
+
+    def locking(self, fd, mode, nbytes):
+        if mode == self.LK_NBLCK:
+            if self.locked:
+                raise OSError("already locked")
+            self.locked = True
+        elif mode == self.LK_UNLCK:
+            self.locked = False
+
+
+class TestInstanceLockWindows:
+    """Same four contracts as TestInstanceLock above, exercised on the
+    msvcrt.locking() branch _acquire_instance_lock()/_release_instance_lock()
+    take when sys.platform == "win32" -- see those functions' own comments
+    for why the two OSes need genuinely different primitives here (fcntl
+    doesn't exist on Windows at all, msvcrt.locking() has no exact flock
+    equivalent)."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_lock_state(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(daemon_main, "LOCK_FILE", str(tmp_path / "privacyfence.lock"))
+        monkeypatch.setattr(daemon_main.sys, "platform", "win32")
+        monkeypatch.setattr(daemon_main, "msvcrt", _FakeMsvcrt(), raising=False)
+        daemon_main._lock_fd = None
+        yield
+        daemon_main._release_instance_lock()
+
+    def test_first_acquire_succeeds(self):
+        assert daemon_main._acquire_instance_lock() is True
+
+    def test_second_acquire_fails_while_first_is_held(self):
+        assert daemon_main._acquire_instance_lock() is True
+        assert daemon_main._acquire_instance_lock() is False
+
+    def test_acquire_succeeds_again_after_release(self):
+        assert daemon_main._acquire_instance_lock() is True
+        daemon_main._release_instance_lock()
+        assert daemon_main._acquire_instance_lock() is True
+
+    def test_release_without_acquire_is_a_no_op(self):
+        daemon_main._release_instance_lock()  # must not raise
+
+    def test_pid_is_written_to_the_lock_file(self):
+        daemon_main._acquire_instance_lock()
+
+        with open(daemon_main.LOCK_FILE, encoding="utf-8") as fh:
+            assert fh.read() == str(os.getpid())
+
+
 # ---------------------------------------------------------------------------- #
 # run_*_oauth: headless/dev CLI setup commands
 # ---------------------------------------------------------------------------- #

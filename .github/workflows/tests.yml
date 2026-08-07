@@ -11,9 +11,19 @@ permissions:
 
 jobs:
   test:
-    # macOS-only project (rumps/PyObjC, real Unix-socket/osascript-backed
-    # tests) — must run on the same platform the app actually ships for.
-    runs-on: macos-latest
+    # Ships on macOS (rumps/PyObjC) and Windows (pystray/pywebview, issue
+    # #121) — each platform's tests must run on that same OS, since both
+    # the real Unix-... err, real 127.0.0.1-loopback-backed IPC tests (see
+    # ipc.py's module docstring) and the native-UI-backed ones (osascript/
+    # AppKit on macOS, pywebview/WebView2 on Windows) exercise real OS
+    # behavior, not something a single Linux runner could stand in for on
+    # either platform's behalf.
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -26,6 +36,10 @@ jobs:
         with:
           node-version: '22'
 
+      # pyproject.toml's dependencies carry sys_platform markers (rumps/
+      # pyobjc-* on darwin, pystray/pywebview/Pillow on win32) — this one
+      # command installs the right set for whichever OS this leg is on,
+      # nothing OS-specific needed here.
       - name: Install dependencies
         run: pip install -e ".[test]"
 
@@ -59,5 +73,10 @@ jobs:
       # pytest-timeout (configured in pyproject.toml) also fails any test
       # that hangs, so a stuck test can't stall the job indefinitely. The
       # coverage report here is informational only — nothing gates on it.
+      # tests/conftest.py's collect_ignore_glob excludes the four
+      # AppKit-only test files (test_menu_bar.py/test_approval_window.py/
+      # test_dialog_window.py/test_settings_window.py) on this leg, the
+      # same way none of Windows's own pystray/pywebview-only test files
+      # get excluded on macos-latest — see that conftest's own comment.
       - name: Run test suite (100% pass rate required)
         run: pytest -v --cov=src/privacyfence --cov-report=term-missing

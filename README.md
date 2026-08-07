@@ -2,7 +2,7 @@
 
 **Human control and policy enforcement for AI access to enterprise data.**
 
-PrivacyFence is a local enterprise AI governance layer for macOS. It sits between an MCP-compatible AI assistant and the business systems it can access, so data reads and actions are reviewed, governed, and logged before they are executed.
+PrivacyFence is a local enterprise AI governance layer for macOS and Windows. It sits between an MCP-compatible AI assistant and the business systems it can access, so data reads and actions are reviewed, governed, and logged before they are executed.
 
 Instead of granting an AI assistant broad, persistent access and relying on the assistant to use it safely, PrivacyFence applies an independent control point:
 
@@ -13,7 +13,7 @@ Instead of granting an AI assistant broad, persistent access and relying on the 
 - **Connector-level control** across common enterprise systems
 - **Local credential ownership**: credentials remain in the PrivacyFence daemon, not in the AI-facing bridge
 
-> PrivacyFence currently runs on macOS and integrates with Claude through MCP. Its governance model is designed around a broader problem: controlling how AI assistants access and act on enterprise information.
+> PrivacyFence runs on macOS and Windows and integrates with Claude through MCP. Its governance model is designed around a broader problem: controlling how AI assistants access and act on enterprise information. The Windows build is newer and less battle-tested than the macOS one — see [`docs/windows-port-status.md`](docs/windows-port-status.md) for what's implemented versus what still wants real-machine verification before a production rollout.
 
 ---
 
@@ -177,7 +177,7 @@ The detailed tool-by-tool privacy matrix is maintained in [Technical Reference](
 PrivacyFence is split into two processes:
 
 - **`privacyfence-bridge`** is a small, ephemeral MCP server started by the AI client. It has no service credentials and forwards requests over a local, token-authenticated TCP loopback connection.
-- **`privacyfence-app`** is the persistent macOS daemon. It owns credentials, connector clients, policy evaluation, approval dialogs, PII detection, temporary approvals, and the audit log.
+- **`privacyfence-app`** is the persistent daemon (macOS or Windows). It owns credentials, connector clients, policy evaluation, approval dialogs, PII detection, temporary approvals, and the audit log.
 
 The bridge is disposable. The daemon is the authoritative security and governance boundary.
 
@@ -289,7 +289,7 @@ data.
 
 Current implementation assumptions:
 
-- macOS host
+- macOS or Windows host (Windows support is newer — see [`docs/windows-port-status.md`](docs/windows-port-status.md))
 - local daemon and local approval UI
 - MCP-compatible AI client
 - per-user connector authentication

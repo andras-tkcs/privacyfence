@@ -31,14 +31,34 @@ def org_dir() -> Path:
 
 
 def bundle_macos_dir() -> Path | None:
-    """Path to Contents/MacOS inside the .app bundle, or None in dev."""
-    if is_bundled():
+    """Path to Contents/MacOS inside the .app bundle, or None in dev or on a
+    non-macOS bundle. A PyInstaller Windows onedir build has no
+    Contents/MacOS-style layout at all (the exe just sits in its own dist
+    directory) -- see bundle_dir() for the cross-platform equivalent
+    ("whatever directory the frozen executable itself lives in"), which is
+    what a Windows caller wants instead."""
+    if is_bundled() and sys.platform == "darwin":
         return Path(sys.executable).parent
     return None
 
 
 def app_bundle_path() -> Path | None:
-    """Path to PrivacyFenceApp.app itself, or None in dev."""
-    if is_bundled():
+    """Path to PrivacyFenceApp.app itself, or None in dev or on a non-macOS
+    bundle. Same darwin-only reasoning as bundle_macos_dir() -- the three
+    levels this walks up (Contents/MacOS/exe -> Contents/MacOS ->
+    Contents -> *.app) only mean anything inside an actual .app bundle."""
+    if is_bundled() and sys.platform == "darwin":
         return Path(sys.executable).parent.parent.parent
+    return None
+
+
+def bundle_dir() -> Path | None:
+    """Cross-platform "root of the frozen build" -- the directory the
+    executable itself lives in, or None in dev. On macOS this is the same
+    directory bundle_macos_dir() returns (Contents/MacOS); on Windows, a
+    PyInstaller onedir build has no bundle layout to walk up out of at all,
+    so this is simply where privacyfence-app.exe sits (alongside its own
+    _internal/ support directory)."""
+    if is_bundled():
+        return Path(sys.executable).parent
     return None
