@@ -1599,6 +1599,110 @@ class TestPIIGate:
         assert entries[0]["pii_detected"] is False
 
 
+class TestPiiAlreadyReviewed:
+    """pii_already_reviewed lets a caller that can prove nothing has
+    touched this exact content since PrivacyFence's own last write to it
+    (connectors/drive.py's own_write_revisions) skip the PII gate's *forced
+    confirmation* -- not PII detection itself, and not the ordinary review
+    popup when no auto-accept rule matches. See gate.py's module docstring
+    ("A second, narrower exception...") for the full reasoning.
+    """
+
+    PII_TEXT = "Please wire the deposit to DE89370400440532013000."
+
+    async def test_matching_rule_with_pii_already_reviewed_auto_accepts_silently(
+        self, monkeypatch, audit_dir,
+    ):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "i_am_sender")))
+        popup_calls = []
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: (popup_calls.append(1) or "deny", None))
+
+        result = await gate.gated_call(**base_kwargs(
+            gate="review", details_text=self.PII_TEXT, pii_already_reviewed=True,
+        ))
+
+        assert result is FILTERED
+        assert popup_calls == []  # no popup at all -- same fast path as the no-PII case
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "auto_accepted"
+        # Audit trail stays honest about what pii_detector actually found,
+        # even though the confirmation step it would normally force here
+        # was suppressed.
+        assert entries[0]["pii_detected"] is True
+
+    async def test_pii_already_reviewed_without_a_matching_rule_shows_the_ordinary_popup_unflagged(
+        self, monkeypatch, audit_dir,
+    ):
+        # pii_already_reviewed only ever suppresses the *extra* PII
+        # confirmation step, never the ordinary review popup itself: with no
+        # auto-accept rule matching, the popup still appears -- just without
+        # the PII banner or the second "Are you sure?" confirmation.
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        captured = {}
+
+        def fake_show_read_popup(title, preview, details, accept_all_choices, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+            captured["pii_categories"] = pii_categories
+            return "accept", None
+
+        monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
+        confirm_calls = []
+        monkeypatch.setattr(
+            gate, "show_pii_confirmation_popup",
+            lambda categories: confirm_calls.append(categories) or True,
+        )
+
+        result = await gate.gated_call(**base_kwargs(
+            gate="review", details_text=self.PII_TEXT, pii_already_reviewed=True,
+        ))
+
+        assert result is FILTERED
+        assert captured["pii_categories"] == []  # no PII banner shown
+        assert confirm_calls == []  # no second confirmation forced
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "approved"
+        assert entries[0]["pii_detected"] is True
+
+    async def test_pii_already_reviewed_defaults_to_false_and_changes_nothing(
+        self, monkeypatch, audit_dir,
+    ):
+        # Confirms a caller that doesn't pass this parameter at all gets
+        # exactly today's behavior -- the override is strictly opt-in.
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "i_am_sender")))
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        popup_calls = []
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: (popup_calls.append(1) or "accept", None))
+        monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: True)
+
+        result = await gate.gated_call(**base_kwargs(gate="review", details_text=self.PII_TEXT))
+
+        assert result is FILTERED
+        assert popup_calls == [1]  # still shown -- pii_already_reviewed defaults False
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["pii_detected"] is True
+
+    async def test_pii_already_reviewed_has_no_effect_on_the_write_gate(self, monkeypatch, audit_dir):
+        # gate="popup" never computes pii_categories at all (see gate.py's
+        # module docstring) -- pii_already_reviewed has nothing to suppress
+        # there, and must not accidentally weaken upload_pii_scan_text's own,
+        # separate forced confirmation for drive_upload_file.
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "show_popup", lambda *a, **k: ("accept", None))
+        confirm_calls = []
+        monkeypatch.setattr(
+            gate, "show_pii_confirmation_popup",
+            lambda categories: confirm_calls.append(categories) or True,
+        )
+
+        result = await gate.gated_call(**base_kwargs(
+            gate="popup", tool="drive_upload_file",
+            upload_pii_scan_text=self.PII_TEXT, pii_already_reviewed=True,
+        ))
+
+        assert result is FILTERED
+        assert confirm_calls == [["IBAN (bank account number)"]]  # still forced
+
+
 class TestPiiScanText:
     """``pii_scan_text`` lets a caller scan different text than what's shown
     in the popup (``details_text``) -- e.g. an email body without its From/To

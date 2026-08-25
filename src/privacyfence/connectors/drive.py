@@ -84,6 +84,16 @@ class DriveConnector(Connector):
         self._drive = client
         self.my_email: str = ""
         self.session_created_ids: set[str] = set()
+        # file_id -> Drive modifiedTime as of PrivacyFence's own last write to
+        # that file. Lets a subsequent read of the *exact same, still-
+        # unchanged* content skip the PII gate's forced confirmation (not PII
+        # detection itself) -- see gate.py's pii_already_reviewed and its
+        # module docstring. Same daemon-process lifetime and cross-chat
+        # sharing as session_created_ids above, and the same
+        # never-persisted-to-disk tradeoff -- restarting the daemon forgets
+        # it, which is fine: the next read of a previously-"reviewed" file
+        # just falls back to the ordinary PII gate once, not a security gap.
+        self.own_write_revisions: dict[str, str] = {}
 
     @property
     def name(self) -> str:
@@ -686,6 +696,7 @@ class DriveConnector(Connector):
                 "Document content": category_policy("drive_privacy", "file_content"),
             },
             pdf_bytes=pdf_bytes,
+            pii_already_reviewed=self._pii_already_reviewed(file_id, modified),
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={"file_id": file_id},
@@ -724,6 +735,9 @@ class DriveConnector(Connector):
             visibility={"Cell values": category_policy("drive_privacy", "file_content")},
             preview_tables=[table] if values else [],
             table_only=True,
+            pii_already_reviewed=self._pii_already_reviewed(
+                spreadsheet_id, getattr(drive_file, "modified_time", "")
+            ),
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={"spreadsheet_id": spreadsheet_id, "range_a1": range_a1},
@@ -814,6 +828,7 @@ class DriveConnector(Connector):
             preview_bytes=preview_bytes,
             preview_mime_type=preview_mime_type,
             preview_blocks=preview_blocks_for(details, pii_scan_text),
+            pii_already_reviewed=self._pii_already_reviewed(file_id, modified),
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={"file_id": file_id, "destination_dir": destination_dir},
@@ -844,7 +859,9 @@ class DriveConnector(Connector):
             session_created_ids=self.session_created_ids,
             args={"file_id": file_id},
         )
-        return await self._fetch(self._drive.write_doc_rich_content, file_id, markdown)
+        result = await self._fetch(self._drive.write_doc_rich_content, file_id, markdown)
+        await self._note_own_write(file_id)
+        return result
 
     async def _docs_edit_content(
         self, file_id: str, find_text: str, replace_markdown: str, replace_all: bool = False
@@ -872,9 +889,11 @@ class DriveConnector(Connector):
             session_created_ids=self.session_created_ids,
             args={"file_id": file_id},
         )
-        return await self._fetch(
+        result = await self._fetch(
             self._drive.edit_doc_content, file_id, find_text, replace_markdown, replace_all
         )
+        await self._note_own_write(file_id)
+        return result
 
     async def _docs_format_content(
         self,
@@ -921,9 +940,11 @@ class DriveConnector(Connector):
             session_created_ids=self.session_created_ids,
             args={"file_id": file_id},
         )
-        return await self._fetch(
+        result = await self._fetch(
             self._drive.format_doc_content, file_id, find_text, bold, italic, highlight_color, text_color, replace_all
         )
+        await self._note_own_write(file_id)
+        return result
 
     async def _upload_file(
         self,
@@ -1039,6 +1060,7 @@ class DriveConnector(Connector):
         file_id = result.get("id", "")
         if file_id:
             self.session_created_ids.add(file_id)
+            await self._note_own_write(file_id)
         return result
 
     async def _write_file_content(self, file_id: str, content: str) -> Any:
@@ -1061,7 +1083,9 @@ class DriveConnector(Connector):
             session_created_ids=self.session_created_ids,
             args={"file_id": file_id},
         )
-        return await self._fetch(self._drive.write_file_content, file_id, content)
+        result = await self._fetch(self._drive.write_file_content, file_id, content)
+        await self._note_own_write(file_id, result.get("modified_time", ""))
+        return result
 
     async def _move_file(self, file_id: str, destination_folder_id: str) -> Any:
         drive_file = await self._fetch(self._drive.get_file_metadata, file_id)
@@ -1165,7 +1189,9 @@ class DriveConnector(Connector):
             session_created_ids=self.session_created_ids,
             args={"spreadsheet_id": spreadsheet_id, "range_a1": range_a1},
         )
-        return await self._fetch(self._drive.write_sheet_values, spreadsheet_id, range_a1, parsed_values)
+        result = await self._fetch(self._drive.write_sheet_values, spreadsheet_id, range_a1, parsed_values)
+        await self._note_own_write(spreadsheet_id)
+        return result
 
     async def _sheets_add_sheet(
         self, spreadsheet_id: str, title: str, rows: int = 1000, cols: int = 26
@@ -1192,7 +1218,9 @@ class DriveConnector(Connector):
             session_created_ids=self.session_created_ids,
             args={"spreadsheet_id": spreadsheet_id, "title": title, "rows": rows, "cols": cols},
         )
-        return await self._fetch(self._drive.add_sheet, spreadsheet_id, title, rows, cols)
+        result = await self._fetch(self._drive.add_sheet, spreadsheet_id, title, rows, cols)
+        await self._note_own_write(spreadsheet_id)
+        return result
 
     async def _sheet_title_for(self, spreadsheet_id: str, sheet_id: int) -> str:
         """Best-effort tab title for `sheet_id` (the numeric id every
@@ -1232,7 +1260,9 @@ class DriveConnector(Connector):
             session_created_ids=self.session_created_ids,
             args={"spreadsheet_id": spreadsheet_id, "sheet_id": sheet_id, "new_title": new_title},
         )
-        return await self._fetch(self._drive.rename_sheet, spreadsheet_id, sheet_id, new_title)
+        result = await self._fetch(self._drive.rename_sheet, spreadsheet_id, sheet_id, new_title)
+        await self._note_own_write(spreadsheet_id)
+        return result
 
     async def _sheets_format_range(
         self,
@@ -1304,11 +1334,13 @@ class DriveConnector(Connector):
             session_created_ids=self.session_created_ids,
             args={"spreadsheet_id": spreadsheet_id, "sheet_id": sheet_id, "range_a1": range_a1},
         )
-        return await self._fetch(
+        result = await self._fetch(
             self._drive.format_sheet_range, spreadsheet_id, sheet_id, range_a1,
             bold, italic, background_color, text_color, number_format,
             horizontal_alignment, freeze_rows, freeze_cols, column_width, merge_type,
         )
+        await self._note_own_write(spreadsheet_id)
+        return result
 
     async def _sheets_insert_dimensions(
         self,
@@ -1356,10 +1388,12 @@ class DriveConnector(Connector):
                 "dimension": dimension, "start_index": start_index, "count": count,
             },
         )
-        return await self._fetch(
+        result = await self._fetch(
             self._drive.insert_dimensions, spreadsheet_id, sheet_id, dimension,
             start_index, count, inherit_from_before,
         )
+        await self._note_own_write(spreadsheet_id)
+        return result
 
     async def _sheets_delete_dimensions(
         self, spreadsheet_id: str, sheet_id: int, dimension: str, start_index: int, count: int = 1
@@ -1399,9 +1433,11 @@ class DriveConnector(Connector):
                 "dimension": dimension, "start_index": start_index, "count": count,
             },
         )
-        return await self._fetch(
+        result = await self._fetch(
             self._drive.delete_dimensions, spreadsheet_id, sheet_id, dimension, start_index, count,
         )
+        await self._note_own_write(spreadsheet_id)
+        return result
 
     # ------------------------------------------------------------------ #
     # Helpers
@@ -1413,6 +1449,40 @@ class DriveConnector(Connector):
         except DriveClientError as exc:
             logger.error("Drive fetch failed: %s", exc)
             raise RuntimeError(str(exc)) from exc
+
+    async def _note_own_write(self, file_id: str, modified_time: str = "") -> None:
+        """Record that PrivacyFence itself just wrote ``file_id``'s current
+        content, keyed by the file's resulting Drive ``modifiedTime`` -- see
+        ``own_write_revisions``'s own docstring in ``__init__``.
+
+        ``modified_time`` lets a caller that already has it (``write_
+        file_content``'s own response carries ``modifiedTime``) skip an
+        extra round trip; every other write tool goes through the Docs/
+        Sheets APIs, whose responses don't carry Drive-level metadata, so
+        this re-fetches it with one cheap ``get_file_metadata`` call.
+        Best-effort and non-raising: the write itself already succeeded by
+        the time this runs, so a failed metadata re-fetch here only costs
+        the next read of this file the PII-gate shortcut, not the write.
+        """
+        if not modified_time:
+            try:
+                drive_file = await self._fetch(self._drive.get_file_metadata, file_id)
+            except RuntimeError:
+                logger.warning("_note_own_write: metadata re-fetch failed for %s", file_id)
+                return
+            modified_time = getattr(drive_file, "modified_time", "") or ""
+        if modified_time:
+            self.own_write_revisions[file_id] = modified_time
+
+    def _pii_already_reviewed(self, file_id: str, modified_time: str) -> bool:
+        """True when ``file_id``'s current ``modifiedTime`` still matches the
+        value recorded right after PrivacyFence's own last write to it --
+        i.e. nothing (a human collaborator, another app, a different Claude
+        session) has touched this exact content since. Passed straight
+        through to ``gated_call``'s ``pii_already_reviewed`` -- see that
+        parameter's docstring for what it does and doesn't suppress.
+        """
+        return bool(modified_time) and self.own_write_revisions.get(file_id) == modified_time
 
     def _auto_audit(
         self, tool: str, tool_name: str, summary: str, sender: str, created_at: float
