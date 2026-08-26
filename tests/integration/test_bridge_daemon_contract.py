@@ -62,6 +62,33 @@ pytestmark = [
 ]
 
 
+def _bridge_env(home: Path, **extra: str) -> dict[str, str]:
+    """Environment for a spawned bridge subprocess, redirected to treat
+    ``home`` as its home directory (bridge/src/protocol.ts's PORT_FILE/
+    TOKEN_FILE are ``path.join(os.homedir(), ".privacyfence", ...)``, so
+    this is the only lever this test has to point the bridge at
+    running_daemon's ephemeral token/port files instead of a real
+    ~/.privacyfence).
+
+    Sets both HOME and USERPROFILE: Node's os.homedir() reads USERPROFILE
+    on Windows and ignores HOME entirely there, while HOME is what it (and
+    every POSIX tool) reads elsewhere -- setting only one silently no-ops
+    on the other platform's bridge process, leaving it pointed at whatever
+    real ~/.privacyfence happens to exist on that machine instead of this
+    test's isolated one.
+
+    Starts from a full copy of this process's own environment rather than
+    a bare {"HOME": ...} dict: the mcp package's stdio_client() only
+    inherits a fixed, POSIX-flavored allowlist (HOME/LOGNAME/PATH/SHELL/
+    TERM/USER) into the child by default, dropping Windows essentials like
+    SystemRoot/PATHEXT/USERPROFILE/TEMP that node.exe (and Windows' C
+    runtime underneath it) needs to start reliably at all -- passing our
+    own complete `env` here is what it merges the (POSIX-only) default
+    onto, in effect overriding it in full.
+    """
+    return {**os.environ, "HOME": str(home), "USERPROFILE": str(home), **extra}
+
+
 class EchoConnector(Connector):
     """A minimal real connector -- exercises the manifest -> dynamic
     tool-registration -> tool-call path end to end, not a mocked stand-in."""
@@ -162,7 +189,7 @@ async def test_bridge_lists_and_calls_the_real_daemons_tools(running_daemon, bui
     params = StdioServerParameters(
         command="node",
         args=[str(built_bridge_entry)],
-        env={"HOME": str(bridge_home)},
+        env=_bridge_env(bridge_home),
     )
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
@@ -199,7 +226,7 @@ async def test_bridge_refuses_a_stale_daemon_version(running_daemon, bridge_home
         command="node",
         args=["--import", "tsx", "src/index.ts"],
         cwd=str(BRIDGE_DIR),
-        env={"HOME": str(bridge_home), "BRIDGE_VERSION": "0.0.1-deliberately-stale"},
+        env=_bridge_env(bridge_home, BRIDGE_VERSION="0.0.1-deliberately-stale"),
     )
     with pytest.raises(Exception):  # noqa: B017 -- broken pipe / connection closed, exact type is mcp/anyio internals
         async with stdio_client(params) as (read, write):

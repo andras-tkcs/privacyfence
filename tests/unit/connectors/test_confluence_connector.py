@@ -418,7 +418,7 @@ class TestDownloadAttachment:
         assert kwargs["raw_data"]["space_key"] == "ENG"
         assert kwargs["raw_data"]["author"] == "alice@example.com"
         assert kwargs["sender"] == "alice@example.com"
-        assert result == {"path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024}
+        assert result == {"path": dest_path, "name": "report.pdf", "size_bytes": 1024}
         assert kwargs["pii_scan_text"] == ""  # unrecognized type, nothing prefetched to scan
         assert kwargs["preview_blocks"] == [{"type": "text", "text": kwargs["details_text"]}]
         client.download_attachment.assert_called_once_with("p1", "att-1", "report.pdf", "/tmp")
