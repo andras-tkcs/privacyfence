@@ -24,6 +24,7 @@ TestAutoTools below for the regression coverage.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -410,7 +411,8 @@ class TestDownloadFile:
 
     async def test_download_file_preview_and_args(self, gated_call_spy):
         connector, client = make_connector()
-        client.download_file.return_value = {"name": "Q3 Report.pdf", "path": "/tmp/Q3 Report.pdf", "size_bytes": 4096}
+        dest_path = os.path.join("/tmp", "Q3 Report.pdf")
+        client.download_file.return_value = {"name": "Q3 Report.pdf", "path": dest_path, "size_bytes": 4096}
         client.get_file_metadata.return_value = make_file(
             name="Q3 Report.pdf", mime_type="application/pdf", size=4096,
         )
@@ -418,12 +420,15 @@ class TestDownloadFile:
 
         result = await connector.call("drive_download_file", {"file_id": "f1", "destination_dir": "/tmp"})
 
-        assert result == {"name": "Q3 Report.pdf", "path": "/tmp/Q3 Report.pdf", "size_bytes": 4096}
+        assert result == {"name": "Q3 Report.pdf", "path": dest_path, "size_bytes": 4096}
         kwargs = gated_call_spy[0]
         assert kwargs["gate"] == "review"
         # Saved to / no-content-returned are new-on-approval facts, not
         # already-known metadata -- see connectors/drive.py's comment.
-        assert kwargs["new_info"]["Saved to"] == "/tmp/Q3 Report.pdf"
+        # resolve_download_destination() builds this with os.path.join, so
+        # the separator is the host OS's native one (backslash on Windows) --
+        # match that here rather than hardcoding a POSIX path.
+        assert kwargs["new_info"]["Saved to"] == dest_path
         assert "None" in kwargs["new_info"]["Content returned to Claude"]
         assert kwargs["preview"]["Size"] == "4,096 bytes"
         assert kwargs["args"] == {"file_id": "f1", "destination_dir": "/tmp"}
@@ -471,13 +476,16 @@ class TestDownloadFile:
         client.get_file_metadata.return_value = make_file(
             name="Q3 Report", mime_type="application/vnd.google-apps.document", size=0,
         )
-        client.download_file.return_value = {"name": "Q3 Report.txt", "path": "/tmp/Q3 Report.txt", "size_bytes": 512}
+        dest_path = os.path.join("/tmp", "Q3 Report.txt")
+        client.download_file.return_value = {"name": "Q3 Report.txt", "path": dest_path, "size_bytes": 512}
 
         await connector.call("drive_download_file", {"file_id": "f1", "destination_dir": "/tmp"})
 
         kwargs = gated_call_spy[0]
         assert kwargs["preview"]["File"] == "Q3 Report.txt"
-        assert kwargs["new_info"]["Saved to"] == "/tmp/Q3 Report.txt"
+        # resolve_download_destination() builds this with os.path.join --
+        # see test_download_file_preview_and_args's comment.
+        assert kwargs["new_info"]["Saved to"] == dest_path
 
     async def test_thumbnail_link_present_fetches_a_preview(self, gated_call_spy):
         connector, client = make_connector()

@@ -19,7 +19,6 @@ lifecycle to test here -- only the initial authorize + token-file save path.
 from __future__ import annotations
 
 import json
-import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -41,6 +40,8 @@ from privacyfence.slack_client import (
     load_token_file,
 )
 from slack_sdk.errors import SlackApiError
+
+from ..helpers import assert_owner_only_permissions
 
 LIVE_FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "live" / "slack"
 
@@ -187,7 +188,7 @@ class TestAuthorizeInteractive:
         }
         saved = json.loads(token_file.read_text(encoding="utf-8"))
         assert saved == result
-        assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
+        assert_owner_only_permissions(token_file)
 
     def test_account_email_lookup_failure_is_non_fatal(self, monkeypatch, tmp_path):
         monkeypatch.setattr("privacyfence.slack_client.run_browser_oauth", _invoke_exchange)

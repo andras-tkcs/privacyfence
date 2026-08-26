@@ -12,6 +12,7 @@ Cowork preview.
 """
 from __future__ import annotations
 
+import os
 from unittest.mock import MagicMock
 
 import pytest
@@ -384,7 +385,8 @@ class TestDownloadAttachment:
         connector, client = make_connector()
         client.get_page.return_value = make_page(title="Runbook", space_key="ENG", author="alice@example.com")
         client.list_attachments.return_value = [self._attachment(media_type="application/octet-stream")]
-        client.download_attachment.return_value = {"path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024}
+        dest_path = os.path.join("/tmp", "report.pdf")
+        client.download_attachment.return_value = {"path": dest_path, "name": "report.pdf", "size_bytes": 1024}
 
         result = await connector.call(
             "confluence_download_attachment",
@@ -400,7 +402,10 @@ class TestDownloadAttachment:
         assert kwargs["preview"]["Size"] == "1,024 bytes"
         # Will save to / no-content-returned are new-on-approval facts, not
         # already-known metadata -- see connectors/confluence.py's comment.
-        assert kwargs["new_info"]["Will save to"] == "/tmp/report.pdf"
+        # resolve_attachment_destination() builds this with os.path.join, so
+        # the separator is the host OS's native one (backslash on Windows) --
+        # match that here rather than hardcoding a POSIX path.
+        assert kwargs["new_info"]["Will save to"] == dest_path
         assert "None" in kwargs["new_info"]["Content returned to Claude"]
         assert kwargs["details_text"] == "The attachment above will be downloaded to the destination shown."
         assert kwargs["filtered_data"] is None

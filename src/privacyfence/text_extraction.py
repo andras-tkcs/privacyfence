@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import io
 import logging
+import mimetypes
+import os
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -65,6 +67,38 @@ _ARCHIVE_MAX_ENTRIES = 200
 
 # MIME types extract_text() can do something with, beyond the text/* prefix.
 EXTRACTABLE_MIME_TYPES = frozenset({"application/pdf", _DOCX_MIME, _PPTX_MIME, _XLSX_MIME, _ARCHIVE_MIME})
+
+# Extension -> MIME type for exactly the formats above, consulted by
+# guess_mime_type() before falling back to mimetypes.guess_type(). On
+# Windows, mimetypes.init() additionally merges in whatever
+# HKEY_CLASSES_ROOT happens to have registered for an extension (see
+# read_windows_registry() in the stdlib mimetypes module) -- on a machine
+# with no Office-adjacent app installed (e.g. a CI runner), that lookup can
+# leave an Office Open XML extension unresolved where macOS/Linux's
+# always-present built-in table resolves it reliably. These five are the
+# only extensions any caller here actually branches on, so hardcoding them
+# removes the platform variance entirely rather than trying to patch
+# mimetypes' registry behavior.
+_KNOWN_EXTENSION_MIME_TYPES: dict[str, str] = {
+    ".docx": _DOCX_MIME,
+    ".pptx": _PPTX_MIME,
+    ".xlsx": _XLSX_MIME,
+    ".pdf": "application/pdf",
+    ".zip": _ARCHIVE_MIME,
+}
+
+
+def guess_mime_type(filename: str) -> str | None:
+    """mimetypes.guess_type(filename)[0], except the formats extract_text()
+    understands are resolved from a fixed table first -- see
+    _KNOWN_EXTENSION_MIME_TYPES's own comment for why those specifically
+    can't be left to mimetypes' platform-dependent behavior. Every other
+    extension (images, plain text, anything else) still goes through
+    mimetypes.guess_type(), which is reliable for those."""
+    ext = os.path.splitext(filename)[1].lower()
+    if ext in _KNOWN_EXTENSION_MIME_TYPES:
+        return _KNOWN_EXTENSION_MIME_TYPES[ext]
+    return mimetypes.guess_type(filename)[0]
 
 
 def is_prefetch_worthy(mime_type: str) -> bool:

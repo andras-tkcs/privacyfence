@@ -17,7 +17,6 @@ itself -- see test_tasks_client.py's module docstring for why.
 from __future__ import annotations
 
 import json
-import stat
 import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -36,6 +35,8 @@ from privacyfence.calendar_client import (
     _has_timezone,
 )
 from googleapiclient.errors import HttpError
+
+from ..helpers import assert_owner_only_permissions
 
 LIVE_FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "live" / "calendar"
 
@@ -182,7 +183,7 @@ class TestSaveToken:
         client._save_token(fake_creds)
 
         assert token_file.read_text(encoding="utf-8") == '{"token": "abc"}'
-        assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
+        assert_owner_only_permissions(token_file)
 
     def test_chmod_failure_is_non_fatal(self, tmp_path, monkeypatch):
         token_file = tmp_path / "token.json"

@@ -22,7 +22,6 @@ import base64
 import email
 import email.policy
 import json
-import stat
 import threading
 import time
 from pathlib import Path
@@ -39,6 +38,8 @@ from privacyfence.gmail_client import (
     resolve_attachment_destination,
 )
 from googleapiclient.errors import HttpError
+
+from ..helpers import assert_owner_only_permissions
 
 LIVE_FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "live" / "gmail"
 
@@ -193,7 +194,7 @@ class TestSaveToken:
         client._save_token(fake_creds)
 
         assert token_file.read_text(encoding="utf-8") == '{"token": "abc"}'
-        assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
+        assert_owner_only_permissions(token_file)
 
     def test_chmod_failure_is_non_fatal(self, tmp_path, monkeypatch):
         token_file = tmp_path / "token.json"

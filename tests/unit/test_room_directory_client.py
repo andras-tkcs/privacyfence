@@ -7,7 +7,6 @@ out of CalendarClient.
 """
 from __future__ import annotations
 
-import stat
 from unittest.mock import MagicMock
 
 import pytest
@@ -19,6 +18,8 @@ from privacyfence.room_directory_client import (
     RoomDirectoryClientError,
 )
 from googleapiclient.errors import HttpError
+
+from ..helpers import assert_owner_only_permissions
 
 
 def make_client(service: MagicMock) -> RoomDirectoryClient:
@@ -153,7 +154,7 @@ class TestSaveToken:
         client._save_token(fake_creds)
 
         assert token_file.read_text(encoding="utf-8") == '{"token": "abc"}'
-        assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
+        assert_owner_only_permissions(token_file)
 
 
 class TestGetService:

@@ -19,7 +19,7 @@ from ..drive_client import (
 )
 from ..gate import current_reason, gated_call
 from ..privacy_filter import apply_list, apply_text, category_policy
-from ..text_extraction import extract_text, is_prefetch_worthy, preview_blocks_for
+from ..text_extraction import extract_text, guess_mime_type, is_prefetch_worthy, preview_blocks_for
 
 logger = logging.getLogger(__name__)
 
@@ -954,7 +954,6 @@ class DriveConnector(Connector):
         content_base64: str = "",
     ) -> Any:
         import base64
-        import mimetypes
         import os
 
         if bool(local_path.strip()) == bool(content_base64.strip()):
@@ -978,7 +977,7 @@ class DriveConnector(Connector):
             # of, so it's worth reading -- but only for types is_prefetch_
             # worthy() recognizes, under a sane cap, since it's a disk read
             # of a file that could be arbitrarily large.
-            guessed_mime, _ = mimetypes.guess_type(display_name)
+            guessed_mime = guess_mime_type(display_name)
             if (
                 guessed_mime and is_prefetch_worthy(guessed_mime)
                 and 0 < size_bytes <= _UPLOAD_PREVIEW_MAX_BYTES
@@ -1016,7 +1015,7 @@ class DriveConnector(Connector):
             # MCP tool argument, already bounded by the daemon's own
             # wire-protocol line limit (ipc.py's LINE_LIMIT), unlike
             # local_path's unbounded disk read above.
-            guessed_mime, _ = mimetypes.guess_type(display_name) if name.strip() else (None, None)
+            guessed_mime = guess_mime_type(display_name) if name.strip() else None
             if guessed_mime and decoded:
                 if guessed_mime.startswith("image/"):
                     preview_bytes = decoded

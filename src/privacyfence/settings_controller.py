@@ -1477,8 +1477,15 @@ class SettingsController:
         org_installed_date = ""
         if org_installed:
             try:
-                org_installed_date = datetime.fromtimestamp(org_path.stat().st_mtime).strftime("%b %-d, %Y")
-            except OSError:
+                # No "%-d" here (day of month, no leading zero) -- that's a
+                # glibc/macOS strftime extension; Windows' C runtime doesn't
+                # support it and raises ValueError: Invalid format string.
+                # dt.day is already a leading-zero-free int, so interpolating
+                # it directly sidesteps the platform-specific directive
+                # entirely rather than needing an OS branch here.
+                dt = datetime.fromtimestamp(org_path.stat().st_mtime)
+                org_installed_date = f"{dt:%b} {dt.day}, {dt:%Y}"
+            except (OSError, ValueError):
                 org_installed_date = ""
 
         return {

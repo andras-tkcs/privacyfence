@@ -125,21 +125,28 @@ def built_bridge_entry() -> Path:
     the way the unbundled dev path can (see
     test_bridge_refuses_a_stale_daemon_version).
     """
-    if shutil.which("npm") is None:
+    # Resolved once and reused below rather than passing the bare "npm" to
+    # subprocess.run: on Windows npm is npm.cmd, and CreateProcess() (what
+    # subprocess.run uses without shell=True) doesn't do the .cmd/.bat
+    # implicit-extension search cmd.exe's own PATH lookup does -- a bare
+    # "npm" there raises FileNotFoundError ([WinError 2]) even though
+    # shutil.which() (which does check PATHEXT) just found it fine.
+    npm = shutil.which("npm")
+    if npm is None:
         pytest.skip("npm not on PATH -- this fixture builds the bridge via `npm install`/`npm run build`")
     try:
         subprocess.run(
-            ["npm", "install", "--silent"], cwd=BRIDGE_DIR, check=True, capture_output=True, timeout=180
+            [npm, "install", "--silent"], cwd=BRIDGE_DIR, check=True, capture_output=True, timeout=180
         )
         subprocess.run(
-            ["npm", "run", "build", "--silent"],
+            [npm, "run", "build", "--silent"],
             cwd=BRIDGE_DIR,
             check=True,
             capture_output=True,
             timeout=60,
             env={**os.environ, "BRIDGE_VERSION": REAL_VERSION},
         )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as exc:
         pytest.skip(f"could not build bridge/dist/bridge.js: {exc}")
     if not BRIDGE_ENTRY.exists():
         pytest.skip(f"{BRIDGE_ENTRY} missing after build")

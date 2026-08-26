@@ -2,10 +2,33 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
+import sys
 
 from privacyfence.audit_log import current_week, init_audit_logger
 from privacyfence.auto_accept import ReviewContext
 from privacyfence.connector import Connector, ToolSpec
+
+
+def assert_owner_only_permissions(path: str | os.PathLike) -> None:
+    """Assert a just-saved credential/token file is locked down to owner-only
+    (0o600) -- every OAuth client's ``_save_token``/``authorize_interactive``
+    calls ``os.chmod(path, 0o600)`` right after writing one, and IPCServer
+    does the same for its token file.
+
+    Windows has no POSIX permission bits: ``os.chmod`` there only maps the
+    read-only attribute, so ``os.stat().st_mode`` always reports 0o666 for a
+    writable file regardless of what was chmod'd -- real owner-only
+    protection would need a Windows ACL (e.g. via ``win32security``), not
+    attempted yet (see docs/windows-port-status.md's "Explicitly out of
+    scope" section). The strict mode-bits assertion is therefore POSIX-only;
+    on Windows this just confirms the file was written at all.
+    """
+    assert os.path.exists(path)
+    if sys.platform == "win32":
+        return
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
 
 
 def make_ctx(**overrides) -> ReviewContext:

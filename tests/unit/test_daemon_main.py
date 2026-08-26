@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import threading
 import time
 import uuid
@@ -108,7 +109,11 @@ class TestResolvePath:
 
     def test_relative_path_is_joined_with_project_root(self, monkeypatch):
         monkeypatch.setattr(daemon_main, "PROJECT_ROOT", "/tmp/pf-root")
-        assert daemon_main._resolve_path("credentials/x.json") == "/tmp/pf-root/credentials/x.json"
+        # Build both the input and the expectation with os.path.join rather
+        # than a "credentials/x.json" literal, so this doesn't assume a
+        # POSIX separator -- see _resolve_path's own comment.
+        relative = os.path.join("credentials", "x.json")
+        assert daemon_main._resolve_path(relative) == os.path.join("/tmp/pf-root", relative)
 
 
 class TestGoogleClientConfig:
@@ -1129,6 +1134,20 @@ class _FakeIPCServerThread:
 
 
 class TestRunApp:
+    # run_app() itself picks between menu_bar.py (macOS) and tray_windows.py
+    # (Windows) by sys.platform at the one call site that needs it -- see
+    # that function's own comment. These tests don't fake sys.platform (that's
+    # TestAcquireInstanceLock's job), so they exercise whichever branch the
+    # host running the suite actually takes, and must patch run_menu_bar on
+    # that same module or the "wrong" one goes uncalled while the real one
+    # (menu_bar.py's unconditional `import rumps`, unavailable on Windows)
+    # blows up the import.
+    _RUN_MENU_BAR_TARGET = (
+        "privacyfence.tray_windows.run_menu_bar"
+        if sys.platform == "win32"
+        else "privacyfence.menu_bar.run_menu_bar"
+    )
+
     def _patch_common(self, monkeypatch, connectors=None):
         connectors = [] if connectors is None else connectors
         monkeypatch.setattr(daemon_main, "init_config_path", lambda path: None)
@@ -1164,7 +1183,7 @@ class TestRunApp:
         self._patch_common(monkeypatch, connectors=[connector])
 
         menu_bar_calls = []
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: menu_bar_calls.append(kw))
+        monkeypatch.setattr(self._RUN_MENU_BAR_TARGET, lambda **kw: menu_bar_calls.append(kw))
 
         result = daemon_main.run_app({}, "config.yaml")
 
@@ -1181,7 +1200,7 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         connector = SimpleNamespace(name="slack")
         self._patch_common(monkeypatch, connectors=[connector])
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
+        monkeypatch.setattr(self._RUN_MENU_BAR_TARGET, lambda **kw: None)
         warm_calls = []
         monkeypatch.setattr(daemon_main, "_warm_connector_caches", lambda conns, loop: warm_calls.append((conns, loop)))
 
@@ -1195,7 +1214,7 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         self._patch_common(monkeypatch)
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
+        monkeypatch.setattr(self._RUN_MENU_BAR_TARGET, lambda **kw: None)
         # Simulate the IPC thread's loop never getting assigned in time
         # (see IPCServerThread.run()) -- run_app() must not crash on it.
         original_init = _FakeIPCServerThread.__init__
@@ -1219,7 +1238,7 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         self._patch_common(monkeypatch, connectors=[])
         menu_bar_calls = []
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: menu_bar_calls.append(kw))
+        monkeypatch.setattr(self._RUN_MENU_BAR_TARGET, lambda **kw: menu_bar_calls.append(kw))
 
         with caplog.at_level(logging.WARNING):
             result = daemon_main.run_app({}, "config.yaml")
@@ -1235,7 +1254,7 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         self._patch_common(monkeypatch, connectors=[])
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
+        monkeypatch.setattr(self._RUN_MENU_BAR_TARGET, lambda **kw: None)
         config = {"drive_privacy": {"categories": {"file_list": "allow", "file_metadata": "block"}}}
 
         with caplog.at_level(logging.WARNING):
@@ -1249,7 +1268,7 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         self._patch_common(monkeypatch, connectors=[])
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
+        monkeypatch.setattr(self._RUN_MENU_BAR_TARGET, lambda **kw: None)
         config = {"drive_privacy": {"categories": {"file_list": "allow", "file_metadata": "allow"}}}
 
         with caplog.at_level(logging.WARNING):
@@ -1265,7 +1284,7 @@ class TestRunApp:
 
         def raise_interrupt(**kw):
             raise KeyboardInterrupt()
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", raise_interrupt)
+        monkeypatch.setattr(self._RUN_MENU_BAR_TARGET, raise_interrupt)
 
         with caplog.at_level(logging.INFO):
             result = daemon_main.run_app({}, "config.yaml")
@@ -1282,7 +1301,7 @@ class TestRunApp:
 
         def raise_other(**kw):
             raise RuntimeError("menu bar crashed")
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", raise_other)
+        monkeypatch.setattr(self._RUN_MENU_BAR_TARGET, raise_other)
 
         with pytest.raises(RuntimeError, match="menu bar crashed"):
             daemon_main.run_app({}, "config.yaml")
@@ -1299,7 +1318,7 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         self._patch_common(monkeypatch)
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
+        monkeypatch.setattr(self._RUN_MENU_BAR_TARGET, lambda **kw: None)
         reloaded = []
         monkeypatch.setattr(daemon_main, "reload_rules", lambda rules: reloaded.append(rules))
 
@@ -1339,7 +1358,7 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         self._patch_common(monkeypatch)
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
+        monkeypatch.setattr(self._RUN_MENU_BAR_TARGET, lambda **kw: None)
 
         config = {"rule_suggestion_priority": {"drive_read": ["approved_folder", "i_am_owner"]}}
         with caplog.at_level(logging.INFO):
@@ -1352,7 +1371,7 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         self._patch_common(monkeypatch)
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
+        monkeypatch.setattr(self._RUN_MENU_BAR_TARGET, lambda **kw: None)
 
         with caplog.at_level(logging.INFO):
             result = daemon_main.run_app({}, str(tmp_path / "settings.yaml"))
@@ -1364,7 +1383,7 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         self._patch_common(monkeypatch)
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
+        monkeypatch.setattr(self._RUN_MENU_BAR_TARGET, lambda **kw: None)
 
         daemon_main.run_app({}, "config.yaml")
 
@@ -1375,7 +1394,7 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         self._patch_common(monkeypatch)
         monkeypatch.setattr(daemon_main, "load_org_config", lambda: {"unattended_sessions": {"enabled": True}})
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
+        monkeypatch.setattr(self._RUN_MENU_BAR_TARGET, lambda **kw: None)
 
         daemon_main.run_app({}, "config.yaml")
 
@@ -1387,7 +1406,7 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         self._patch_common(monkeypatch)
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
+        monkeypatch.setattr(self._RUN_MENU_BAR_TARGET, lambda **kw: None)
 
         daemon_main.run_app({"unattended_sessions": {"enabled": True}}, "config.yaml")
 
@@ -1397,7 +1416,7 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         fake_audit_logger = self._patch_common(monkeypatch)
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
+        monkeypatch.setattr(self._RUN_MENU_BAR_TARGET, lambda **kw: None)
 
         daemon_main.run_app({}, "config.yaml")
 

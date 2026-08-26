@@ -14,7 +14,6 @@ import asyncio
 import json
 import logging
 import os
-import stat
 import uuid
 
 import pytest
@@ -26,6 +25,8 @@ from privacyfence.connector import Connector, ToolSpec
 from privacyfence.gate import current_reason
 from privacyfence.ipc import LINE_LIMIT
 from privacyfence.ipc_server import IPCServer
+
+from ..helpers import assert_owner_only_permissions
 
 
 @pytest.fixture
@@ -149,8 +150,7 @@ class TestLifecycle:
         server = IPCServer([])
         await server.start()
         try:
-            assert os.path.exists(short_socket_path)
-            assert stat.S_IMODE(os.stat(short_socket_path).st_mode) == 0o600
+            assert_owner_only_permissions(short_socket_path)
             with open(short_socket_path, encoding="utf-8") as f:
                 assert f.read() == server._token
         finally:

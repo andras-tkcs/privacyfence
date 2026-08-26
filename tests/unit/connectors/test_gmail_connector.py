@@ -17,6 +17,7 @@ spawning a real approval popup. Two things matter most here:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -535,7 +536,8 @@ class TestDownloadAttachment:
         client.get_message.return_value = self._message_with_attachment(
             mime_type="application/octet-stream",
         )
-        client.download_attachment.return_value = {"path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024}
+        dest_path = os.path.join("/tmp", "report.pdf")
+        client.download_attachment.return_value = {"path": dest_path, "name": "report.pdf", "size_bytes": 1024}
 
         result = await connector.call(
             "gmail_download_attachment",
@@ -549,14 +551,17 @@ class TestDownloadAttachment:
         assert kwargs["preview"]["Size"] == "1,024 bytes"
         # Will save to / no-content-returned are new-on-approval facts, not
         # already-known metadata -- see connectors/gmail.py's comment.
-        assert kwargs["new_info"]["Will save to"] == "/tmp/report.pdf"
+        # resolve_attachment_destination() builds this with os.path.join, so
+        # the separator is the host OS's native one (backslash on Windows) --
+        # match that here rather than hardcoding a POSIX path.
+        assert kwargs["new_info"]["Will save to"] == dest_path
         assert "None" in kwargs["new_info"]["Content returned to Claude"]
         # MIME type used to only appear in details_text (duplicating the
         # rest of the preview fields); it now lives in preview only.
         assert kwargs["details_text"] == "The attachment above will be downloaded to the destination shown."
         assert kwargs["filtered_data"] is None
         assert kwargs["args"] == {"message_id": "m1", "attachment_name": "report.pdf"}
-        assert result == {"path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024}
+        assert result == {"path": dest_path, "name": "report.pdf", "size_bytes": 1024}
         assert kwargs["pii_scan_text"] == ""  # unrecognized type, nothing prefetched to scan
         client.download_attachment.assert_called_once_with("m1", "att-1", "report.pdf", "/tmp")
 

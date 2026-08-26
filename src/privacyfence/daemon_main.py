@@ -124,18 +124,23 @@ LOCK_FILE = os.path.join(PROJECT_ROOT, "privacyfence.lock")
 
 # Where each connector's per-user credential is cached. Purely internal — no
 # longer user-configurable, since org app registration and per-user auth are
-# now handled separately (see module docstring).
+# now handled separately (see module docstring). Built with os.path.join
+# rather than a "credentials/foo" literal so _resolve_path()'s
+# os.path.join(PROJECT_ROOT, ...) never has to join a native separator onto
+# a component that already has a forward slash baked into it -- on Windows,
+# os.path.join only inserts its separator *between* arguments, so a literal
+# embedded "/" survives unconverted and produces a path mixing "\" and "/".
 TOKEN_FILES: dict[str, str] = {
-    "gmail": "credentials/token.json",
-    "drive": "credentials/drive_token.json",
-    "calendar": "credentials/calendar_token.json",
-    "contacts": "credentials/contacts_token.json",
-    "tasks": "credentials/tasks_token.json",
-    "apps_script": "credentials/apps_script_token.json",
-    "slack": "credentials/slack_token.json",
-    "salesforce": "credentials/salesforce_token.json",
-    "atlassian": "credentials/atlassian_token.json",
-    "telegram": "credentials/telegram.session",
+    "gmail": os.path.join("credentials", "token.json"),
+    "drive": os.path.join("credentials", "drive_token.json"),
+    "calendar": os.path.join("credentials", "calendar_token.json"),
+    "contacts": os.path.join("credentials", "contacts_token.json"),
+    "tasks": os.path.join("credentials", "tasks_token.json"),
+    "apps_script": os.path.join("credentials", "apps_script_token.json"),
+    "slack": os.path.join("credentials", "slack_token.json"),
+    "salesforce": os.path.join("credentials", "salesforce_token.json"),
+    "atlassian": os.path.join("credentials", "atlassian_token.json"),
+    "telegram": os.path.join("credentials", "telegram.session"),
 }
 
 _lock_fd: int | None = None
@@ -205,7 +210,16 @@ def _release_instance_lock() -> None:
 # ---------------------------------------------------------------------------- #
 
 def _resolve_path(path: str) -> str:
-    if os.path.isabs(path):
+    # os.path.isabs() alone isn't enough on Windows: ntpath.isabs() requires
+    # a drive letter (or UNC root) to call a path "absolute", so a
+    # drive-relative-root path like "/etc/hosts" -- fine on macOS/Linux, and
+    # exactly the shape a settings.yaml written on one of those platforms (or
+    # typed into a POSIX-style shell on Windows, e.g. git-bash) would carry --
+    # would otherwise fall through to the join below and get silently rerooted
+    # onto PROJECT_ROOT's drive rather than left alone. A leading slash of
+    # either kind means the caller already gave us a rooted path; don't
+    # second-guess it on either platform.
+    if os.path.isabs(path) or path.startswith(("/", "\\")):
         return path
     return os.path.join(PROJECT_ROOT, path)
 
@@ -259,7 +273,7 @@ def setup_logging(config: dict[str, Any]) -> None:
     log_cfg = config.get("logging", {}) or {}
     level_name = str(log_cfg.get("level", "INFO")).upper()
     level = getattr(logging, level_name, logging.INFO)
-    log_file = _resolve_path(log_cfg.get("file", "logs/privacyfence.log"))
+    log_file = _resolve_path(log_cfg.get("file", os.path.join("logs", "privacyfence.log")))
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
     fmt = logging.Formatter("%(asctime)s %(levelname)-8s [%(name)s] %(message)s")

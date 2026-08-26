@@ -16,7 +16,6 @@ are exercised for real, with only ``requests.post`` mocked underneath.
 from __future__ import annotations
 
 import json
-import stat
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -36,6 +35,8 @@ from privacyfence.salesforce_client import (
     authorize_interactive,
     load_token_file,
 )
+
+from ..helpers import assert_owner_only_permissions
 
 LIVE_FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "live" / "salesforce"
 
@@ -167,7 +168,7 @@ class TestAuthorizeInteractive:
         assert result == {"access_token": "tok", "refresh_token": "rt", "instance_url": "https://my.salesforce.com"}
         saved = json.loads(token_file.read_text(encoding="utf-8"))
         assert saved == result
-        assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
+        assert_owner_only_permissions(token_file)
 
     def test_authorize_url_includes_pkce_challenge_and_scopes(self, monkeypatch, tmp_path):
         captured = {}
