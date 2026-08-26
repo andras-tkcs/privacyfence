@@ -157,6 +157,26 @@ routes it to the normal popup — tinted, with the second confirmation — whene
 contains likely PII. A request that matches a rule *and* has no PII in its content still takes the
 silent auto-accept path exactly as before this gate existed.
 
+**Second exception, read-side only: content unchanged since PrivacyFence's own last write.**
+Every write tool that changes a file's own content (`drive_write_doc_content`,
+`drive_docs_edit_content`, `drive_docs_format_content`, `drive_write_file_content`,
+`drive_upload_file`, and every `drive_sheets_*` write tool) records, in memory, the Drive
+`modifiedTime` that write left the file at
+(`DriveConnector.own_write_revisions` in [`connectors/drive.py`](../src/privacyfence/connectors/drive.py)).
+`drive_get_file_content`, `drive_sheets_get_values`, and `drive_download_file` each check their
+target file's *current* `modifiedTime` against that record. When it still matches exactly, the PII
+gate's forced second confirmation is skipped for that one read — not PII detection itself: the
+category labels still feed the audit log's `pii_detected` field, and the ordinary review popup
+still appears if no other auto-accept rule matches, just without the red tint or the "Are you
+sure?" step. The reasoning: this is Claude reading back content it (or a human, via
+`drive_upload_file`) already put there and a human already saw once in that write's own approval
+popup, so a second confirmation on every re-read is friction, not an extra safety check. The
+moment anything else touches the file — a human collaborator, another app, a different Claude
+session — `modifiedTime` moves and the very next read goes through the ordinary PII gate again, no
+manual revocation needed. Same lifetime and cross-chat sharing as
+[`created_this_session`](#auto-accept-rules) below: it lives in memory only, tied to the daemon
+process, and is forgotten on restart.
+
 **Toggle:** enable or disable the whole gate from the settings window's **General** page (**PII
 Detection Gate**), or set `pii_detection.enabled: true|false` directly in `config/settings.yaml`.
 Enabled by default.
