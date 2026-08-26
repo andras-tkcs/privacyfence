@@ -146,9 +146,21 @@ separately matched) — the confirmation dialog is the only visible sign anythin
 
 This is a local, regex-based heuristic (see `src/privacyfence/pii_detector.py`) — it runs
 entirely on-device with no network calls, and it can both miss real PII and flag things that
-aren't; treat a hit as "look more carefully," not a guarantee either way. It never logs or stores
-the matched text itself, only the category labels (e.g. "IBAN (bank account number)") — those
-category labels, and whether any were flagged, are recorded in the [audit log](#audit-log).
+aren't; treat a hit as "look more carefully," not a guarantee either way. By default it never logs
+or stores the matched text itself, only the category labels (e.g. "IBAN (bank account number)") —
+those category labels, and whether any were flagged, are recorded in the [audit log](#audit-log).
+
+**One opt-in exception, off by default:** `pii_detection.audit_match_details` in `settings.yaml`
+(restart required) turns on a PII-refinement trial capture — meant to be enabled for a bounded
+window, then turned back off, not left on indefinitely. With it on, an *approved* request's audit
+entry also records the literal matched text for a label/keyword category (e.g. "salary") or a
+redacted form for a category whose match is itself the sensitive value (IBAN, credit card number,
+national ID/tax numbers, IP address, currency figures — see `pii_detector.py`'s
+`describe_match_for_audit()`); a request that wasn't approved (denied, denied unattended, or an
+unexpected error) never has the matched text recorded, only a fixed "details hidden" placeholder.
+The category-label breakdown itself (`pii_categories` in the audit log, "PII Categories" in the
+Excel export) is always recorded regardless of this setting — only the literal/redacted text is
+opt-in.
 
 The scan runs before any [auto-accept rule](#auto-accept-rules) is checked and overrides a
 matching one: auto-accept rules are scoped to metadata (sender domain, folder, "I am the
@@ -1158,7 +1170,7 @@ display is currently missing.
 
 ## Audit log
 
-Every decision — accepted, denied, or auto-accepted — is appended to a JSON-lines file in `logs/audit/YYYY-WNN.jsonl`. At startup, any week that has a `.jsonl` file but no `.xlsx` is automatically exported to a formatted Excel workbook with a colour-coded **Decisions** sheet and a **Summary** tab. Each entry also records whether the [PII detection gate](#pii-detection-gate) flagged the content (category labels only — never the matched text itself).
+Every decision — accepted, denied, or auto-accepted — is appended to a JSON-lines file in `logs/audit/YYYY-WNN.jsonl`. At startup, any week that has a `.jsonl` file but no `.xlsx` is automatically exported to a formatted Excel workbook with a colour-coded **Decisions** sheet and a **Summary** tab (the latter includes a "By PII category" breakdown when any entry has one). Each entry also records whether the [PII detection gate](#pii-detection-gate) flagged the content and which category label(s) (e.g. "IBAN (bank account number)") — never the matched text itself, unless the opt-in `pii_detection.audit_match_details` trial setting described in that section is turned on, and even then only for an approved request, and only ever in redacted form for a category whose match is itself the sensitive value.
 
 Two decision values relate to [scheduled/unattended tasks](#scheduled--unattended-cowork-tasks):
 `denied_unattended` (a call denied without ever prompting, because the connection was in an

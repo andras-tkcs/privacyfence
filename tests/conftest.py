@@ -19,6 +19,7 @@ def _reset_singletons():
     pii_detector._enabled = True
     pii_detector._changed_listener = None
     pii_detector._disabled_categories.clear()
+    pii_detector._audit_match_details_enabled = False
     privacy_filter._GROUPS = {}
     resource_names._INSTANCE = None
     yield
@@ -30,5 +31,6 @@ def _reset_singletons():
     pii_detector._enabled = True
     pii_detector._changed_listener = None
     pii_detector._disabled_categories.clear()
+    pii_detector._audit_match_details_enabled = False
     privacy_filter._GROUPS = {}
     resource_names._INSTANCE = None

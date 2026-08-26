@@ -15,10 +15,14 @@ from privacyfence import pii_detector
 from privacyfence.pii_detector import (
     _iban_valid,
     _luhn_valid,
+    _redact_value,
+    describe_match_for_audit,
     detect_categories,
     detect_pii_categories,
     init_pii_detection,
+    is_pii_audit_match_details_enabled,
     is_pii_detection_enabled,
+    scan_pii_for_audit,
     scan_text,
     set_pii_category_enabled,
     set_pii_detection_changed_listener,
@@ -376,3 +380,103 @@ class TestOptionalCategoryToggle:
     def test_master_disable_short_circuits_before_category_filtering(self):
         init_pii_detection(False)
         assert detect_pii_categories("Server at 192.168.1.100.") == []
+
+
+class TestAuditMatchDetailsToggle:
+    """The PII-refinement trial switch -- opt-in, off by default, and
+    entirely separate from the whole-gate enabled switch above."""
+
+    def test_off_by_default(self):
+        assert is_pii_audit_match_details_enabled() is False
+
+    def test_init_pii_detection_turns_it_on(self):
+        init_pii_detection(True, audit_match_details=True)
+        assert is_pii_audit_match_details_enabled() is True
+
+    def test_init_pii_detection_leaves_it_off_by_default(self):
+        init_pii_detection(True)
+        assert is_pii_audit_match_details_enabled() is False
+
+    def test_no_effect_on_the_whole_gate_enabled_switch(self):
+        init_pii_detection(True, audit_match_details=True)
+        assert is_pii_detection_enabled() is True
+
+
+class TestScanPiiForAudit:
+    """scan_pii_for_audit() is the one place in this module that returns the
+    literal matched text -- see the module docstring's "deliberate
+    exception" paragraph. Everything above (scan_text, detect_categories,
+    detect_pii_categories) is unaffected and stays category-only."""
+
+    def test_returns_category_and_literal_text(self):
+        matches = scan_pii_for_audit("Wire to DE89370400440532013000 today.")
+        assert len(matches) == 1
+        assert matches[0].category == "IBAN (bank account number)"
+        assert matches[0].text == "DE89370400440532013000"
+
+    def test_empty_when_nothing_matches(self):
+        assert scan_pii_for_audit("nothing sensitive here") == []
+
+    def test_empty_when_detection_disabled(self):
+        init_pii_detection(False)
+        assert scan_pii_for_audit("Wire to DE89370400440532013000 today.") == []
+
+    def test_respects_disabled_optional_categories(self):
+        init_pii_detection(True, detect_ip_addresses=False)
+        assert scan_pii_for_audit("Server at 192.168.1.100.") == []
+
+    def test_multiple_categories_each_carry_their_own_text(self):
+        text = "Wire to DE89370400440532013000 or reach the server at 192.168.1.100."
+        matches = {m.category: m.text for m in scan_pii_for_audit(text)}
+        assert matches == {
+            "IBAN (bank account number)": "DE89370400440532013000",
+            "IP address": "192.168.1.100",
+        }
+
+
+class TestDescribeMatchForAudit:
+    """Value-bearing categories (the match IS the sensitive value) get
+    redacted; label/keyword categories (the match is a trigger word, not a
+    value) are returned as-is."""
+
+    def test_value_bearing_category_is_redacted(self):
+        result = describe_match_for_audit("IBAN (bank account number)", "DE89370400440532013000")
+        assert result != "DE89370400440532013000"
+        assert result.startswith("DE")
+        assert result.endswith("00")
+        assert "•" in result
+
+    def test_label_category_is_returned_literally(self):
+        assert describe_match_for_audit("Salary/compensation information", "salary") == "salary"
+
+    def test_english_personal_data_reference_is_returned_literally(self):
+        assert describe_match_for_audit("English personal data reference", "date of birth") == "date of birth"
+
+    def test_credit_card_is_redacted(self):
+        result = describe_match_for_audit("Credit card number", "4111 1111 1111 1111")
+        assert result != "4111 1111 1111 1111"
+        assert "•" in result
+
+    def test_ip_address_is_redacted(self):
+        result = describe_match_for_audit("IP address", "192.168.1.100")
+        assert result != "192.168.1.100"
+        assert "•" in result
+        # Separators (the dots) are left alone -- only alphanumeric characters are masked.
+        assert result.count(".") == 3
+
+
+class TestRedactValue:
+    def test_short_value_fully_masked(self):
+        assert _redact_value("1234") == "••••"
+
+    def test_keeps_first_and_last_two_alnum_chars(self):
+        # "DE89370400440532013000" is 22 characters, all alphanumeric (no
+        # separators) -- first 2 ("DE") and last 2 ("00") survive, the 18
+        # characters between them are fully masked.
+        assert _redact_value("DE89370400440532013000") == "DE" + "•" * 18 + "00"
+
+    def test_separators_preserved(self):
+        result = _redact_value("123-45-6789")
+        assert result.count("-") == 2
+        assert result[0] == "1"
+        assert result[-1] == "9"

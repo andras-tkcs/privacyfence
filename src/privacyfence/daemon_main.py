@@ -32,8 +32,8 @@ Configuration is split into two files (see paths.py):
     never carries Workspace-admin directory scope.
   - ``config/settings.yaml``   — per-user settings: privacy policy,
     connectors{enabled}, auto_accept_rules,
-    pii_detection{enabled, detect_ip_addresses, detect_financial_figures}. No
-    secrets live here.
+    pii_detection{enabled, detect_ip_addresses, detect_financial_figures,
+    audit_match_details}. No secrets live here.
 Per-user credentials (OAuth tokens, Telegram session) live under
 ``credentials/``, one file per connector.
 """
@@ -748,6 +748,7 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
         pii_config.get("enabled", True),
         detect_ip_addresses=pii_config.get("detect_ip_addresses", True),
         detect_financial_figures=pii_config.get("detect_financial_figures", True),
+        audit_match_details=pii_config.get("audit_match_details", False),
     )
     init_privacy_filter(config)
     for warning in check_consistency_warnings():

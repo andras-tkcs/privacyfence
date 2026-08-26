@@ -7,6 +7,7 @@ import pytest
 from freezegun import freeze_time
 
 from privacyfence.audit_log import (
+    APPROVED_LIKE_DECISIONS,
     AuditEntry,
     AuditLogger,
     current_week,
@@ -56,6 +57,66 @@ class TestPiiDetectedField:
         )
         entry = AuditEntry(**legacy)
         assert entry.pii_detected is False
+
+
+class TestPiiCategoriesField:
+    def test_defaults_to_empty_list(self):
+        assert make_entry().pii_categories == []
+
+    def test_round_trips_through_jsonl(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry(pii_categories=["IBAN (bank account number)", "IP address"]))
+
+        line = (tmp_path / "2026-W28.jsonl").read_text(encoding="utf-8").splitlines()[0]
+        assert json.loads(line)["pii_categories"] == ["IBAN (bank account number)", "IP address"]
+
+    def test_old_jsonl_lines_without_the_field_still_parse(self):
+        legacy = dict(
+            timestamp="2026-07-06T12:00:00+00:00", week="2026-W28", request_id="",
+            connector="gmail", tool="gmail_get_message", tool_name="Read Gmail message",
+            summary="s", sender="a@example.com", decision="approved",
+            auto_accept_rule="", latency_seconds=1.0,
+        )
+        entry = AuditEntry(**legacy)
+        assert entry.pii_categories == []
+
+    def test_each_entry_gets_its_own_list_not_a_shared_default(self):
+        # dataclass mutable-default pitfall: default_factory=list must give
+        # each AuditEntry its own list, not one shared across every instance
+        # missing the kwarg.
+        a = make_entry()
+        b = make_entry()
+        a.pii_categories.append("IBAN (bank account number)")
+        assert b.pii_categories == []
+
+
+class TestPiiMatchDetailsField:
+    def test_defaults_to_empty_string(self):
+        assert make_entry().pii_match_details == ""
+
+    def test_round_trips_through_jsonl(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry(pii_match_details="Salary/compensation information: salary"))
+
+        line = (tmp_path / "2026-W28.jsonl").read_text(encoding="utf-8").splitlines()[0]
+        assert json.loads(line)["pii_match_details"] == "Salary/compensation information: salary"
+
+    def test_old_jsonl_lines_without_the_field_still_parse(self):
+        legacy = dict(
+            timestamp="2026-07-06T12:00:00+00:00", week="2026-W28", request_id="",
+            connector="gmail", tool="gmail_get_message", tool_name="Read Gmail message",
+            summary="s", sender="a@example.com", decision="approved",
+            auto_accept_rule="", latency_seconds=1.0,
+        )
+        entry = AuditEntry(**legacy)
+        assert entry.pii_match_details == ""
+
+
+class TestApprovedLikeDecisionsIsPublic:
+    def test_expected_members(self):
+        assert APPROVED_LIKE_DECISIONS == {
+            "approved", "auto_accepted", "accepted_via_accept_all", "accepted_via_temp_session",
+        }
 
 
 class TestClaudeReasonField:
@@ -138,7 +199,12 @@ class TestExportWeekToExcel:
         openpyxl = pytest.importorskip("openpyxl")
 
         logger = AuditLogger(str(tmp_path))
-        logger.record(make_entry(decision="approved", pii_detected=True, claude_reason="Summarizing for the user."))
+        logger.record(make_entry(
+            decision="approved", pii_detected=True,
+            pii_categories=["IBAN (bank account number)"],
+            pii_match_details="IBAN (bank account number): DE••••••••••••••••••00",
+            claude_reason="Summarizing for the user.",
+        ))
         logger.record(make_entry(decision="auto_accepted", auto_accept_rule="i_am_sender"))
         logger.record(make_entry(decision="rejected"))
 
@@ -157,8 +223,16 @@ class TestExportWeekToExcel:
         pii_col = [ws.cell(row=r, column=11).value for r in range(2, 5)]
         assert pii_col == ["Yes", None, None]  # openpyxl reads back "" cells as None
 
-        assert ws.cell(row=1, column=12).value == "Claude's Reason (unverified)"
-        reason_col = [ws.cell(row=r, column=12).value for r in range(2, 5)]
+        assert ws.cell(row=1, column=12).value == "PII Categories"
+        categories_col = [ws.cell(row=r, column=12).value for r in range(2, 5)]
+        assert categories_col == ["IBAN (bank account number)", None, None]
+
+        assert ws.cell(row=1, column=13).value == "PII Match Details"
+        details_col = [ws.cell(row=r, column=13).value for r in range(2, 5)]
+        assert details_col == ["IBAN (bank account number): DE••••••••••••••••••00", None, None]
+
+        assert ws.cell(row=1, column=14).value == "Claude's Reason (unverified)"
+        reason_col = [ws.cell(row=r, column=14).value for r in range(2, 5)]
         assert reason_col == ["Summarizing for the user.", None, None]
 
         summary = wb["Summary"]
@@ -168,6 +242,20 @@ class TestExportWeekToExcel:
         assert summary_rows["Auto-accepted"] == 1
         assert summary_rows["Rejected"] == 1
         assert summary_rows["PII flagged (any decision)"] == 1
+        assert summary_rows["IBAN (bank account number)"] == 1
+
+    def test_export_omits_category_breakdown_when_no_entry_has_categories(self, tmp_path):
+        pytest.importorskip("openpyxl")
+        import openpyxl
+
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry(decision="approved"))
+
+        output = logger.export_week_to_excel("2026-W28")
+        wb = openpyxl.load_workbook(output)
+        summary = wb["Summary"]
+        labels = [row[0].value for row in summary.iter_rows(min_row=2) if row[0].value]
+        assert "By PII category (refinement trial)" not in labels
 
     def test_export_skips_malformed_lines(self, tmp_path):
         pytest.importorskip("openpyxl")

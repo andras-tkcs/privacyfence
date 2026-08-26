@@ -117,8 +117,13 @@ matching rule (a `review` call is content-blind to the rule, so PII in an otherw
 sender/folder still routes to a human) and tints the dialog, forcing one additional explicit
 confirmation on top of Allow once — see [PII detection gate](TECHNICAL_REFERENCE.md#pii-detection-gate) in the
 Technical Reference. It is a best-effort heuristic layered on top of human review, not a substitute for it,
-and it never logs or stores the matched text — only category labels, in the audit entry for that
-decision. It does not otherwise run on the `popup` (write) direction: that content is normally
+and by default it never logs or stores the matched text — only category labels, in the audit entry
+for that decision. An opt-in setting (`pii_detection.audit_match_details`, off by default, meant
+for a bounded refinement-trial window rather than everyday use) additionally records the matched
+text for an *approved* decision only — redacted for a category whose match is itself the sensitive
+value (IBAN, credit card, national ID/tax numbers, IP address, currency figures) — and never for a
+denied one; see the Technical Reference section above for the full contract. It does not otherwise
+run on the `popup` (write) direction: that content is normally
 Claude's own generated output for an action already described in chat, not external personal data
 newly reaching Claude. `drive_upload_file` is the one deliberate exception — its payload can be an
 arbitrary local file Claude never actually read, so it gets the same real scan and forced

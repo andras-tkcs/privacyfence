@@ -127,6 +127,18 @@ pii_detection:
   detect_ip_addresses: true
   detect_financial_figures: true
 
+  # PII-refinement trial capture -- OFF by default, and not meant to stay on
+  # indefinitely. When true, the audit log's "PII Match Details" column also
+  # records the literal matched text (redacted for value-bearing categories
+  # like IBAN/credit card/national IDs -- see docs/TECHNICAL_REFERENCE.md's
+  # "PII detection gate" section) for a request that was actually approved,
+  # or a fixed "details hidden" placeholder for one that was denied. There's
+  # no menu-bar toggle for this one deliberately -- set it for a bounded
+  # trial window (restart required to pick it up), review the weekly Excel
+  # export's "By PII category" breakdown to see which patterns are noisy,
+  # then turn it back off.
+  audit_match_details: false
+
 update_check:
   # Once-a-day background check against GitHub Releases
   # (https://github.com/andras-tkcs/privacyfence/releases) for a newer version. Never downloads

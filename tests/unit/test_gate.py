@@ -20,6 +20,7 @@ import pytest
 from privacyfence import gate
 from privacyfence.audit_log import init_audit_logger
 from privacyfence.auto_accept import AutoAcceptEvaluator
+from privacyfence.pii_detector import init_pii_detection
 
 
 def wait_until(predicate, timeout=2.0, interval=0.005) -> bool:
@@ -1597,6 +1598,104 @@ class TestPIIGate:
         entries = read_audit_entries(audit_dir)
         assert entries[0]["decision"] == "auto_accepted"
         assert entries[0]["pii_detected"] is False
+
+
+class TestPiiCategoriesAndMatchDetailsInAuditLog:
+    """pii_categories is always recorded (category labels only -- the same
+    thing the popup banner already shows). pii_match_details is the opt-in
+    PII-refinement trial capture (pii_detection.audit_match_details), off by
+    default: '' unless turned on, and even then only the literal/redacted
+    matched text for an approved request -- a fixed placeholder, never the
+    matched text, for anything else."""
+
+    PII_TEXT = "Please wire the deposit to DE89370400440532013000, thanks."
+
+    async def test_pii_categories_always_populated_regardless_of_trial_setting(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept", None))
+        monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: True)
+
+        result = await gate.gated_call(**base_kwargs(gate="review", details_text=self.PII_TEXT))
+
+        assert result is FILTERED
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["pii_categories"] == ["IBAN (bank account number)"]
+        assert entries[0]["pii_match_details"] == ""  # trial setting is off by default
+
+    async def test_no_pii_leaves_categories_and_details_empty(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept", None))
+
+        result = await gate.gated_call(**base_kwargs(gate="review", details_text="nothing sensitive here"))
+
+        assert result is FILTERED
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["pii_categories"] == []
+        assert entries[0]["pii_match_details"] == ""
+
+    async def test_approved_request_gets_redacted_match_text_when_trial_setting_on(self, monkeypatch, audit_dir):
+        init_pii_detection(True, audit_match_details=True)
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept", None))
+        monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: True)
+
+        result = await gate.gated_call(**base_kwargs(gate="review", details_text=self.PII_TEXT))
+
+        assert result is FILTERED
+        entries = read_audit_entries(audit_dir)
+        details = entries[0]["pii_match_details"]
+        assert details.startswith("IBAN (bank account number): ")
+        assert "DE89370400440532013000" not in details  # value-bearing category -- redacted, not literal
+        assert "•" in details
+
+    async def test_denied_request_gets_hidden_placeholder_not_matched_text_when_trial_setting_on(
+        self, monkeypatch, audit_dir,
+    ):
+        init_pii_detection(True, audit_match_details=True)
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept", None))
+        monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: False)
+
+        with pytest.raises(RuntimeError, match="denied"):
+            await gate.gated_call(**base_kwargs(gate="review", details_text=self.PII_TEXT))
+
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "rejected"
+        assert entries[0]["pii_match_details"] == "User confirmed: details hidden"
+        assert "DE89370400440532013000" not in entries[0]["pii_match_details"]
+
+    async def test_label_category_logs_literal_text_when_approved_and_trial_setting_on(self, monkeypatch, audit_dir):
+        init_pii_detection(True, audit_match_details=True)
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept", None))
+        monkeypatch.setattr(gate, "show_pii_confirmation_popup", lambda categories: True)
+
+        result = await gate.gated_call(**base_kwargs(
+            gate="review", details_text="Please confirm your salary before Friday.",
+        ))
+
+        assert result is FILTERED
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["pii_match_details"] == "Salary/compensation information: salary"
+
+    async def test_auto_accepted_with_no_pii_leaves_match_details_empty_even_with_trial_setting_on(
+        self, monkeypatch, audit_dir,
+    ):
+        init_pii_detection(True, audit_match_details=True)
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "i_am_sender")))
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("deny", None))  # must never be called
+
+        result = await gate.gated_call(**base_kwargs(gate="review", details_text="nothing sensitive here"))
+
+        assert result is FILTERED
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "auto_accepted"
+        assert entries[0]["pii_match_details"] == ""
 
 
 class TestPiiAlreadyReviewed:
