@@ -74,6 +74,21 @@ second confirmation (``_confirm_pii_or_deny``) the read side gets, gated
 strictly to this one operation rather than reopening "writes get the PII
 gate" as a general rule.
 
+A second, narrower exception on the *read* side: ``pii_already_reviewed``, set
+by a caller that can prove the exact content behind this read is content
+PrivacyFence itself wrote to this same file, still completely unchanged
+since -- e.g. drive_get_file_content reading back a Google Doc whose Drive
+``modifiedTime`` still matches the value recorded right after PrivacyFence's
+own last write to it (see connectors/drive.py's ``own_write_revisions``).
+``pii_categories`` still feeds the audit log's ``pii_detected`` field
+faithfully either way; this only suppresses the forced second confirmation,
+on the theory that a human already saw this exact content in the write's own
+approval popup and re-confirming it on every subsequent re-read is pure
+friction, not an extra safety check. The instant anything else modifies the
+file -- a human collaborator, another app, a different Claude session --
+``modifiedTime`` no longer matches and the very next read goes through the
+ordinary PII gate again, no manual revocation needed.
+
 Callers should pass ``pii_scan_text`` whenever a review-gate ``details_text``
 mixes structural envelope metadata (an email's From/To headers, a chat
 message's channel/sender, a page's author) with the actual content (body,
@@ -192,6 +207,8 @@ _TOOL_LAYOUT: dict[str, str] = {
     "confluence_update_page": WIDE,
     "tasks_complete_task": NARROW,
     "tasks_uncomplete_task": NARROW, "tasks_move_task": NARROW,
+    "apps_script_get_content": WIDE, "apps_script_write_content": WIDE,
+    "apps_script_get_execution_log": WIDE,
 }
 
 _popup_lock = asyncio.Lock()  # only one native dialog on screen at a time
@@ -353,6 +370,11 @@ async def gated_call(
         # (whose payload can be an arbitrary local file Claude never read) is a deliberate, narrow
         # exception to "writes don't get the real PII gate" -- every other popup-gate call must
         # leave this at its default.
+    pii_already_reviewed: bool = False,  # Read-gate-only escape hatch from the PII confirmation
+        # step (not from PII detection itself -- see module docstring's "second, narrower
+        # exception" paragraph). Set only when the caller can prove nothing has touched this exact
+        # content since PrivacyFence's own last write to it. Anything else -- no matching auto-
+        # accept rule, a popup-gate write, upload_pii_scan_text -- is unaffected.
     my_email: str = "",
     session_created_ids: set | None = None,
     args: dict | None = None,
@@ -410,6 +432,12 @@ async def gated_call(
         detect_pii_categories(upload_pii_scan_text)
         if gate == "popup" and upload_pii_scan_text else []
     )
+    # The value everything below actually branches on for "does PII force a
+    # popup/confirmation". pii_categories itself (the raw detector result)
+    # stays untouched so the audit log's pii_detected field below keeps
+    # reporting what was genuinely found, regardless of whether the
+    # confirmation step it would normally force got suppressed here.
+    pii_forces_confirmation = [] if pii_already_reviewed else pii_categories
     # Request fingerprint: "you've approved this exact (connector, tool,
     # summary) N times this week" -- read directly from the audit log,
     # same synchronous-call
@@ -442,8 +470,11 @@ async def gated_call(
         evaluator = get_auto_accept_evaluator()
         auto_ok, matched_rule = evaluator.should_auto_accept(operation_key, ctx)
 
-        if auto_ok and not pii_categories and not upload_pii_categories:
-            audit(decision="auto_accepted", auto_accept_rule=matched_rule, pii_detected=False)
+        if auto_ok and not pii_forces_confirmation and not upload_pii_categories:
+            audit(
+                decision="auto_accepted", auto_accept_rule=matched_rule,
+                pii_detected=bool(pii_categories) or bool(upload_pii_categories),
+            )
             logger.info("Auto-accepted: %s/%s rule=%r", connector, tool, matched_rule)
             return filtered_data
 
@@ -467,10 +498,16 @@ async def gated_call(
             async with _popup_lock:
                 # Re-check: while this call was queued behind another popup, that
                 # popup's "Always allow" may have just created a rule that now
-                # covers this item too. A PII match still overrides it either way.
+                # covers this item too. An unreviewed PII match still overrides it
+                # either way -- pii_forces_confirmation, not pii_categories itself,
+                # since pii_already_reviewed's own carve-out (see module docstring)
+                # is unaffected by anything decided while queued.
                 auto_ok, matched_rule = evaluator.should_auto_accept(operation_key, ctx)
-                if auto_ok and not pii_categories:
-                    audit(decision="auto_accepted", auto_accept_rule=matched_rule, pii_detected=False)
+                if auto_ok and not pii_forces_confirmation:
+                    audit(
+                        decision="auto_accepted", auto_accept_rule=matched_rule,
+                        pii_detected=bool(pii_categories),
+                    )
                     logger.info("Auto-accepted while queued: %s/%s rule=%r", connector, tool, matched_rule)
                     return filtered_data
 
@@ -480,18 +517,18 @@ async def gated_call(
                     # way, nobody's here to answer a popup. Fail this one
                     # step now instead of hanging on _popup_lock forever and
                     # blocking every other approval behind it.
-                    _deny_unattended(audit, connector, tool, pii_categories=pii_categories)
+                    _deny_unattended(audit, connector, tool, pii_categories=pii_forces_confirmation)
 
                 decision, chosen_index = await asyncio.to_thread(
                     show_read_popup, popup_title, preview or {}, details, accept_all_choices,
-                    pii_categories, visibility, claude_reason, seen_count, content_kind, pdf_bytes,
+                    pii_forces_confirmation, visibility, claude_reason, seen_count, content_kind, pdf_bytes,
                     connector, preview_bytes, preview_mime_type, new_info=new_info,
                     preview_tables=preview_tables, preview_blocks=preview_blocks,
                     table_only=table_only, layout=layout,
                 )
 
-                if decision in ("accept", "accept_all") and pii_categories:
-                    decision = await _confirm_pii_or_deny(decision, pii_categories)
+                if decision in ("accept", "accept_all") and pii_forces_confirmation:
+                    decision = await _confirm_pii_or_deny(decision, pii_forces_confirmation)
 
                 if decision == "accept_all":
                     # Which candidate was clicked -- see approval_window.py's

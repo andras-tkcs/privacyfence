@@ -371,6 +371,36 @@ RULE_HINTS: dict[str, str] = {
     "approved_task_list":    "MDAwMDAwMDAwMDAwMDAwMDAwMDA6MDow",
 }
 
+# Tool-specific example prompts shown at the bottom of a connector's Rules
+# page, for every connector with at least one grantable resource type (see
+# resource_grants.GRANT_RESOURCE_TYPES) -- there's no live "+ Add..." picker
+# by resource name (issue #167 -- decided not to build one), so a grant row
+# only ever accepts the resource's raw ID/key. This nudges the user toward
+# the fastest way to get one: asking Claude, who already has read access.
+GRANT_ID_HINT_EXAMPLES: dict[str, str] = {
+    "drive": "“What's the Drive folder ID for the Q3 Reports folder?”",
+    "tasks": "“What's the ID of my Groceries task list?”",
+    "slack": "“What's the channel ID for #general?”",
+    "telegram": "“What's the chat ID for my conversation with Alice?”",
+    "jira": "“What's the project key for the Engineering project?”",
+    "confluence": "“What's the space key for the Engineering space?”",
+    "calendar": "“What's the calendar ID for my Work calendar?”",
+    "salesforce": "“What's the report ID for the Pipeline report?”",
+}
+
+
+def _grant_id_hint(cname: str) -> str | None:
+    """Bottom-of-page hint for `cname`'s Rules page, or None for a connector
+    (or Sheets/Docs, see RULES_MENU_GROUPS) with no grantable resource type
+    at all -- gmail/contacts trust by attribute (sender domain, label...),
+    not by a resource ID a grant row could hold, so there's nothing to ask
+    Claude for here."""
+    example = GRANT_ID_HINT_EXAMPLES.get(cname)
+    if not example:
+        return None
+    return f"Don't have the ID handy? Ask Claude — e.g. {example} — then paste it into the Resource ID field above."
+
+
 # Display metadata for the Privacy Filter page -- mirrors the group/category
 # schema documented in resources/settings.yaml.example and enforced by
 # privacy_filter.py. Every group privacy_filter.py knows about needs an
@@ -1202,9 +1232,10 @@ class SettingsController:
         return self.snapshot()
 
     # ------------------------------------------------------------------ #
-    # Rule actions (Auto-accept Rules page -- plain rule_type/value text
-    # rows, per the design; see this module's docstring/the PR report for
-    # why this no longer goes through a native picker the way menu_bar.py's
+    # Rule actions (Auto-accept Rules page -- rule_type is a dropdown
+    # constrained to RULES_BY_OPERATION[op_key], value is a plain text field,
+    # per the design; see this module's docstring/the PR report for why
+    # this no longer goes through a native picker the way menu_bar.py's
     # pre-#120 _add_rule/_add_rule_value did)
     # ------------------------------------------------------------------ #
 
@@ -1500,6 +1531,7 @@ class SettingsController:
         sections_by_connector: dict[str, list[dict[str, Any]]] = {}
         grants_by_connector: dict[str, list[dict[str, Any]]] = {}
         drive_grant_summary_by_connector: dict[str, dict[str, Any] | None] = {}
+        grant_hint_by_connector: dict[str, str | None] = {}
 
         for cname in RULES_MENU_GROUPS:
             resource_types = resource_types_for_connector(cname)
@@ -1509,6 +1541,7 @@ class SettingsController:
             drive_grant_summary_by_connector[cname] = (
                 self._drive_grant_summary(grants_cfg) if cname in DRIVE_GRANT_SUMMARY_GROUPS else None
             )
+            grant_hint_by_connector[cname] = _grant_id_hint(cname) if resource_types else None
 
             grant_sections = []
             for rt in resource_types:
@@ -1543,7 +1576,16 @@ class SettingsController:
                     for r in op_rules
                     if not r.get("_grant")
                 ]
-                rule_sections.append({"op_key": op_key, "title": short_label, "rows": rows})
+                rule_sections.append({
+                    "op_key": op_key,
+                    "title": short_label,
+                    "rows": rows,
+                    # Valid rule names for this operation -- drives the rule-type
+                    # dropdown client-side (renderRules' ruleTypeLabel()) instead of
+                    # a free-text field the user had to already know the rule name
+                    # to fill in correctly.
+                    "rule_type_options": RULES_BY_OPERATION.get(op_key, []),
+                })
             sections_by_connector[cname] = rule_sections
 
             count = sum(len(get_grant_entries(grants_cfg, rt)) for rt in resource_types)
@@ -1555,6 +1597,7 @@ class SettingsController:
             "sections_by_connector": sections_by_connector,
             "grants_by_connector": grants_by_connector,
             "drive_grant_summary_by_connector": drive_grant_summary_by_connector,
+            "grant_hint_by_connector": grant_hint_by_connector,
         }
 
     def _drive_grant_summary(self, grants_cfg: dict[str, Any]) -> dict[str, Any]:

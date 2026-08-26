@@ -33,10 +33,13 @@ rules search box's live text) lives in the JS-side ``ui`` object below and is
 merged with the Python-pushed state on every render, using the same field
 names the design's own ``Component.state`` used (``section``,
 ``rulesConnector``, ``privacyGroup``, ``rulesSearch``) -- never sent to
-Python. Text inputs (rule_type/value, grant name/id, rules search) commit on
+Python. Text inputs (rule value, grant name/id, rules search) commit on
 blur/Enter, not per keystroke, so a bridge round-trip mid-typing can't steal
 focus/cursor position; toggles/segmented controls/buttons act immediately on
-click since they're discrete, not free text.
+click since they're discrete, not free text -- same reasoning covers the rule
+type field, a ``<select>`` (options are the operation's RULES_BY_OPERATION
+list, see settings_controller.py) rather than a text input, so it commits on
+``change``, not blur.
 """
 from __future__ import annotations
 
@@ -143,6 +146,7 @@ input[type=text]:focus { outline: 2px solid #0071e3; outline-offset: 0; }
   border: 1px solid #d3d4d9; border-radius: 6px; padding: 5px 8px; font-size: 12.5px; background: #fff;
 }
 .pf-input-mono { font-family: ui-monospace, monospace; }
+select.pf-input { cursor: pointer; }
 
 /* ---- Connectors page ---- */
 .pf-connector-row {
@@ -196,6 +200,17 @@ input[type=text]:focus { outline: 2px solid #0071e3; outline-offset: 0; }
 .pf-rule-row .pf-input-type { width: 190px; flex-shrink: 0; }
 .pf-rule-row .pf-input-value { flex: 1; }
 .pf-rules-empty { font-size: 13px; color: #8a8a8e; }
+.pf-grant-hint {
+  font-size: 11.5px; color: #8a8a8e; margin-top: 18px; padding-top: 14px;
+  border-top: 1px solid #ececef; max-width: 560px; line-height: 1.5;
+}
+
+/* ---- Copy-ID toast (right-click a grant row -- see data-copy-id) ---- */
+.pf-copy-toast {
+  position: fixed; background: #1d1d1f; color: #fff; font-size: 11px; font-weight: 500;
+  padding: 4px 9px; border-radius: 5px; pointer-events: none; z-index: 999; opacity: .95;
+  transform: translate(-50%, -100%);
+}
 
 /* ---- Privacy ---- */
 .pf-policy-row {
@@ -315,6 +330,36 @@ _JS = r"""
       (disabled ? 'aria-disabled="true"' : 'tabindex="0"') +
       (ariaLabel ? ' aria-label="' + esc(ariaLabel) + '"' : '') + ' ' + attrs +
       '><div class="pf-knob"></div></div>';
+  }
+
+  // Right-click-to-copy for a grant row's resource ID (data-copy-id, see
+  // renderRules) -- document.execCommand('copy') rather than
+  // navigator.clipboard.writeText, since this is an offline file:// document
+  // (loadHTMLString_baseURL_, see this module's docstring) and the async
+  // Clipboard API is only available in a secure context; the legacy
+  // execCommand path has no such restriction and still works from a
+  // contextmenu event's user activation.
+  function copyToClipboard(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    try { document.execCommand('copy'); } catch (err) { /* best-effort */ }
+    document.body.removeChild(ta);
+  }
+
+  function showCopyToast(x, y, text) {
+    var toast = document.createElement('div');
+    toast.className = 'pf-copy-toast';
+    toast.textContent = text;
+    toast.style.left = x + 'px';
+    toast.style.top = (y - 8) + 'px';
+    document.body.appendChild(toast);
+    setTimeout(function () { toast.remove(); }, 900);
   }
 
   function segGroupHtml(items, groupLabel) {
@@ -455,6 +500,17 @@ _JS = r"""
   // Rules
   // -------------------------------------------------------------------- //
 
+  // Rule-name -> dropdown label: "i_am_sender" -> "I am sender". Purely
+  // mechanical (underscores to spaces, sentence-case) rather than a second
+  // hand-maintained label table alongside RULES_BY_OPERATION/RULE_HINTS --
+  // one that could quietly drift out of sync the way OPERATION_LABELS
+  // already has dedicated regression tests to catch (see
+  // TestRuleUiCompleteness in test_settings_controller.py).
+  function ruleTypeLabel(ruleType) {
+    var s = String(ruleType || '').replace(/_/g, ' ');
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  }
+
   function renderRules(state) {
     var rules = state.rules;
     if (!ui.rulesConnector && rules.connectors.length) ui.rulesConnector = rules.connectors[0].key;
@@ -505,7 +561,13 @@ _JS = r"""
       html += '<div class="pf-grant-section"><div class="pf-group-title">' + esc(gs.title) + '</div>';
       matchingRows.forEach(function (r) {
         var row = r.row, idx = r.idx;
-        html += '<div class="pf-grant-row"><div class="pf-grant-row-fields">';
+        // data-copy-id: right-click anywhere in the row copies its resource
+        // ID -- the "Name" field only ever shows a resolved/hand-typed
+        // display name (resource_names.py), so this is the fast path for
+        // reusing the same folder/channel/chat's ID in another grant row
+        // without re-selecting text out of the ID input by hand.
+        var copyAttr = row.id ? ' data-copy-id="' + esc(row.id) + '" title="Right-click to copy ID"' : '';
+        html += '<div class="pf-grant-row"' + copyAttr + '><div class="pf-grant-row-fields">';
         html += '<input type="text" class="pf-input" placeholder="Name" aria-label="' + esc(gs.title) + ' name" value="' + esc(row.name) + '" ' +
           'data-grant-field="name" data-connector="' + esc(curKey) + '" data-config-key="' + esc(gs.config_key) + '" data-idx="' + idx + '"/>';
         html += '<input type="text" class="pf-input pf-input-mono" placeholder="Resource ID" aria-label="' + esc(gs.title) + ' resource ID" value="' + esc(row.id) + '" ' +
@@ -537,9 +599,23 @@ _JS = r"""
       html += '<div class="pf-rule-section"><div class="pf-group-title">' + esc(sec.title) + '</div>';
       sec.rows.forEach(function (row, idx) {
         html += '<div class="pf-rule-row">';
-        html += '<input type="text" class="pf-input pf-input-type pf-input-mono" placeholder="rule_type" aria-label="' +
-          esc(sec.title) + ' rule type, row ' + (idx + 1) + '" value="' + esc(row.rule_type) + '" ' +
-          'data-rule-field="rule_type" data-op-key="' + esc(sec.op_key) + '" data-idx="' + idx + '"/>';
+        // Rule type is picked from the fixed list of rule names this operation
+        // actually supports (sec.rule_type_options, from RULES_BY_OPERATION) --
+        // a dropdown instead of a text field the user had to already know a
+        // value like "i_am_sender" to type correctly. row.rule_type is kept as
+        // an option even if it's fallen out of rule_type_options (a legacy/
+        // stale rule name) so selecting it doesn't silently blank the row.
+        var typeOptions = (sec.rule_type_options || []).slice();
+        if (row.rule_type && typeOptions.indexOf(row.rule_type) === -1) typeOptions.unshift(row.rule_type);
+        html += '<select class="pf-input pf-input-type" aria-label="' +
+          esc(sec.title) + ' rule type, row ' + (idx + 1) + '" ' +
+          'data-rule-field="rule_type" data-op-key="' + esc(sec.op_key) + '" data-idx="' + idx + '">';
+        html += '<option value=""' + (row.rule_type ? '' : ' selected') + '>Select rule type…</option>';
+        typeOptions.forEach(function (opt) {
+          html += '<option value="' + esc(opt) + '"' + (row.rule_type === opt ? ' selected' : '') + '>' +
+            esc(ruleTypeLabel(opt)) + '</option>';
+        });
+        html += '</select>';
         html += '<input type="text" class="pf-input pf-input-value" placeholder="value" aria-label="' +
           esc(sec.title) + ' value, row ' + (idx + 1) + '" value="' + esc(row.value) + '" ' +
           'data-rule-field="value" data-op-key="' + esc(sec.op_key) + '" data-idx="' + idx + '"/>';
@@ -557,6 +633,11 @@ _JS = r"""
       html += '<div class="pf-rules-empty">' + (search ? 'No matches.' : 'Nothing here.') + '</div>';
     } else if (!search && ruleSections.length === 0 && grantSections.length === 0 && !driveSummary) {
       html += '<div class="pf-rules-empty">All operations always auto-approved — no rules needed.</div>';
+    }
+
+    var grantHint = (rules.grant_hint_by_connector || {})[curKey];
+    if (grantHint && !search) {
+      html += '<div class="pf-grant-hint">' + esc(grantHint) + '</div>';
     }
 
     html += '</div>';
@@ -862,6 +943,25 @@ _JS = r"""
     if (el.hasAttribute('data-grant-field')) { commitGrantField(el); return; }
   }
 
+  function onChange(e) {
+    var el = e.target;
+    // Rule-type dropdown -- a discrete choice, not free text, so it commits
+    // immediately on selection like the toggles/segmented controls do (see
+    // this module's docstring), rather than waiting for blur/Enter the way
+    // the rule-value/grant text inputs do.
+    if (el.tagName === 'SELECT' && el.hasAttribute('data-rule-field')) { commitRuleField(el); return; }
+  }
+
+  function onContextMenu(e) {
+    var copyEl = e.target.closest('[data-copy-id]');
+    if (!copyEl) return;
+    var id = copyEl.getAttribute('data-copy-id');
+    if (!id) return;
+    e.preventDefault();
+    copyToClipboard(id);
+    showCopyToast(e.clientX, e.clientY, 'Copied ID');
+  }
+
   function onInput(e) {
     var el = e.target;
     if (el.hasAttribute('data-rules-search')) {
@@ -910,8 +1010,10 @@ _JS = r"""
   document.addEventListener('DOMContentLoaded', function () {
     document.body.addEventListener('click', onClick);
     document.body.addEventListener('blur', onBlur, true);
+    document.body.addEventListener('change', onChange);
     document.body.addEventListener('input', onInput);
     document.body.addEventListener('keydown', onKeydown);
+    document.body.addEventListener('contextmenu', onContextMenu);
     render(window.__pfInitialState);
   });
 })();

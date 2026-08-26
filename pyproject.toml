@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "privacyfence"
-version = "3.4.0"
+version = "3.4.1"
 description = "Menu bar / tray privacy proxy between Claude (MCP) and your personal data (macOS, Windows)"
 readme = "README.md"
 requires-python = ">=3.11"

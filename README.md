@@ -164,6 +164,7 @@ mode denies unmatched requests immediately instead of leaving a popup open for n
 | Jira | Read, create, update, comment on, and transition issues |
 | Confluence | Read, create, and update pages; list and download page attachments |
 | Google Tasks | Read, create, update, complete, uncomplete, and move tasks |
+| Google Apps Script | Read and write script project source; read the result of a run you triggered yourself (PrivacyFence never runs scripts) |
 | Telegram | Read chats, search messages, and send messages |
 
 The detailed tool-by-tool privacy matrix is maintained in [Technical Reference](docs/TECHNICAL_REFERENCE.md#connectors--privacy-matrix).

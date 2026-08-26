@@ -86,6 +86,7 @@ from .auto_accept import (
 from .pii_detector import init_pii_detection
 from .privacy_filter import check_consistency_warnings, init_privacy_filter
 from .resource_grants import build_effective_rules, migrate_rules_to_grants
+from .connectors.apps_script import AppsScriptConnector
 from .connectors.calendar import CalendarConnector
 from .connectors.confluence import ConfluenceConnector
 from .connectors.contacts import ContactsConnector
@@ -96,6 +97,7 @@ from .connectors.salesforce import SalesforceConnector
 from .connectors.slack import SlackConnector
 from .connectors.tasks import TasksConnector
 from .connectors.telegram import TelegramConnector
+from .apps_script_client import AppsScriptClient, AppsScriptClientError
 from .atlassian_oauth import AtlassianOAuthError
 from .atlassian_oauth import authorize_interactive as atlassian_authorize_interactive
 from .atlassian_oauth import load_token_file as load_atlassian_token
@@ -129,6 +131,7 @@ TOKEN_FILES: dict[str, str] = {
     "calendar": "credentials/calendar_token.json",
     "contacts": "credentials/contacts_token.json",
     "tasks": "credentials/tasks_token.json",
+    "apps_script": "credentials/apps_script_token.json",
     "slack": "credentials/slack_token.json",
     "salesforce": "credentials/salesforce_token.json",
     "atlassian": "credentials/atlassian_token.json",
@@ -383,6 +386,21 @@ def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list
             connectors.append(TasksConnector(client))
         except (TasksClientError, FileNotFoundError) as exc:
             logger.warning("Tasks connector disabled: %s", exc)
+
+    # Apps Script
+    if enabled("apps_script"):
+        try:
+            if not google_client_config:
+                raise AppsScriptClientError("Google organization config not installed")
+            client = AppsScriptClient(
+                client_config=google_client_config,
+                token_file=_resolve_path(TOKEN_FILES["apps_script"]),
+            )
+            email = client.check_connection()
+            logger.info("Apps Script connector ready for %s", email)
+            connectors.append(AppsScriptConnector(client))
+        except (AppsScriptClientError, FileNotFoundError) as exc:
+            logger.warning("Apps Script connector disabled: %s", exc)
 
     # Slack
     if enabled("slack"):
@@ -648,6 +666,19 @@ def run_tasks_oauth(org_config: dict[str, Any]) -> int:
     return 0
 
 
+def run_apps_script_oauth(org_config: dict[str, Any]) -> int:
+    client_config = _google_client_config(org_config)
+    client = AppsScriptClient(client_config=client_config, token_file=_resolve_path(TOKEN_FILES["apps_script"]))
+    try:
+        client.authorize_interactive()
+        email = client.check_connection()
+    except AppsScriptClientError as exc:
+        print(f"Apps Script OAuth setup failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"Apps Script OAuth complete. Authorized as: {email}")
+    return 0
+
+
 def run_slack_oauth(org_config: dict[str, Any]) -> int:
     slack_org = org_config.get("slack") or {}
     if not slack_org.get("client_id") or not slack_org.get("client_secret"):
@@ -837,6 +868,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--contacts-oauth", action="store_true")
     parser.add_argument("--calendar-oauth", action="store_true")
     parser.add_argument("--tasks-oauth", action="store_true")
+    parser.add_argument("--apps-script-oauth", action="store_true")
     parser.add_argument("--slack-oauth", action="store_true")
     parser.add_argument("--salesforce-oauth", action="store_true")
     parser.add_argument("--atlassian-oauth", action="store_true")
@@ -849,7 +881,8 @@ def main(argv: list[str] | None = None) -> int:
 
     oauth_flag = (
         args.gmail_oauth or args.drive_oauth or args.contacts_oauth
-        or args.calendar_oauth or args.tasks_oauth or args.slack_oauth
+        or args.calendar_oauth or args.tasks_oauth or args.apps_script_oauth
+        or args.slack_oauth
         or args.salesforce_oauth or args.atlassian_oauth or args.telegram_setup
     )
 
@@ -874,6 +907,8 @@ def main(argv: list[str] | None = None) -> int:
                 return run_calendar_oauth(org_config)
             if args.tasks_oauth:
                 return run_tasks_oauth(org_config)
+            if args.apps_script_oauth:
+                return run_apps_script_oauth(org_config)
             if args.slack_oauth:
                 return run_slack_oauth(org_config)
             if args.salesforce_oauth:

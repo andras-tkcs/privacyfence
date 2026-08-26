@@ -79,17 +79,20 @@ def _no_ambient_telegram(monkeypatch):
     monkeypatch.setattr(daemon_main, "telegram_app_credentials", lambda: None)
 
 
-_GOOGLE_CLIENT_ATTRS = ["GmailClient", "DriveClient", "CalendarClient", "ContactsClient", "TasksClient"]
+_GOOGLE_CLIENT_ATTRS = [
+    "GmailClient", "DriveClient", "CalendarClient", "ContactsClient", "TasksClient",
+    "AppsScriptClient",
+]
 
 
 @pytest.fixture(autouse=True)
 def _no_ambient_google_clients(monkeypatch):
     """Google-family tests are parametrized to mock only the one *Client class
-    under test, leaving the other four as the real classes -- previously safe
+    under test, leaving the others as the real classes -- previously safe
     because they'd fail closed on a missing token file. A real, valid token
     for any of them in this checkout's credentials/ (e.g. from `--tasks-oauth`
     or the menu bar) would let that one actually construct and succeed,
-    silently changing these tests' results. Default all five to fail closed;
+    silently changing these tests' results. Default all six to fail closed;
     a test overrides one via its own monkeypatch.setattr, same as above."""
     for attr in _GOOGLE_CLIENT_ATTRS:
         monkeypatch.setattr(daemon_main, attr, fake_client_class(init_error=FileNotFoundError("no token file")))
@@ -179,8 +182,8 @@ class TestLoadOrgConfig:
 
 # ---------------------------------------------------------------------------- #
 # build_connectors: the Google-backed connectors (gmail, drive, calendar,
-# contacts, tasks) all follow the same "needs installed google org config,
-# then check_connection()" shape.
+# contacts, tasks, apps_script) all follow the same "needs installed google
+# org config, then check_connection()" shape.
 # ---------------------------------------------------------------------------- #
 
 GOOGLE_CONNECTORS = [
@@ -189,6 +192,7 @@ GOOGLE_CONNECTORS = [
     pytest.param("calendar", "CalendarClient", "CalendarClientError", "CalendarConnector", id="calendar"),
     pytest.param("contacts", "ContactsClient", "ContactsClientError", "ContactsConnector", id="contacts"),
     pytest.param("tasks", "TasksClient", "TasksClientError", "TasksConnector", id="tasks"),
+    pytest.param("apps_script", "AppsScriptClient", "AppsScriptClientError", "AppsScriptConnector", id="apps_script"),
 ]
 
 GOOGLE_ORG_CONFIG = {"google": {"client_id": "id", "client_secret": "secret"}}
@@ -257,11 +261,12 @@ class TestBuildConnectorsGoogleFamily:
         monkeypatch.setattr(daemon_main, "CalendarClient", fake_client_class(result="user@example.com"))
         monkeypatch.setattr(daemon_main, "ContactsClient", fake_client_class(result="user@example.com"))
         monkeypatch.setattr(daemon_main, "TasksClient", fake_client_class(result="user@example.com"))
+        monkeypatch.setattr(daemon_main, "AppsScriptClient", fake_client_class(result="user@example.com"))
 
         connectors = daemon_main.build_connectors({}, GOOGLE_ORG_CONFIG)
 
         names = {c.name for c in connectors}
-        assert names == {"drive", "calendar", "contacts", "tasks"}
+        assert names == {"drive", "calendar", "contacts", "tasks", "apps_script"}
 
 
 class TestBuildConnectorsCalendarFreeBusySetting:
@@ -606,8 +611,11 @@ class TestBuildConnectorsCrossCutting:
     def test_no_connectors_configured_returns_empty_list_not_fatal(self):
         assert daemon_main.build_connectors({}, {}) == []
 
-    def test_all_nine_connectors_built_together(self, monkeypatch, tmp_path):
-        for attr in ("GmailClient", "DriveClient", "CalendarClient", "ContactsClient", "TasksClient"):
+    def test_all_ten_connectors_built_together(self, monkeypatch, tmp_path):
+        for attr in (
+            "GmailClient", "DriveClient", "CalendarClient", "ContactsClient", "TasksClient",
+            "AppsScriptClient",
+        ):
             monkeypatch.setattr(daemon_main, attr, fake_client_class(result="user@example.com"))
         monkeypatch.setattr(daemon_main, "load_slack_token", lambda path: {"access_token": "t"})
         monkeypatch.setattr(daemon_main, "SlackClient", fake_client_class(result="ws"))
@@ -631,7 +639,7 @@ class TestBuildConnectorsCrossCutting:
         connectors = daemon_main.build_connectors({}, org_config)
 
         assert {c.name for c in connectors} == {
-            "gmail", "drive", "calendar", "contacts", "tasks",
+            "gmail", "drive", "calendar", "contacts", "tasks", "apps_script",
             "slack", "salesforce", "jira", "confluence", "telegram",
         }
 
@@ -691,8 +699,8 @@ class TestParseArgs:
         args = daemon_main.parse_args([])
         assert not any([
             args.gmail_oauth, args.drive_oauth, args.contacts_oauth, args.calendar_oauth,
-            args.tasks_oauth, args.slack_oauth, args.salesforce_oauth, args.atlassian_oauth,
-            args.telegram_setup,
+            args.tasks_oauth, args.apps_script_oauth, args.slack_oauth, args.salesforce_oauth,
+            args.atlassian_oauth, args.telegram_setup,
         ])
 
     def test_config_flag_overrides_default(self):
@@ -705,6 +713,7 @@ class TestParseArgs:
         ("--contacts-oauth", "contacts_oauth"),
         ("--calendar-oauth", "calendar_oauth"),
         ("--tasks-oauth", "tasks_oauth"),
+        ("--apps-script-oauth", "apps_script_oauth"),
         ("--slack-oauth", "slack_oauth"),
         ("--salesforce-oauth", "salesforce_oauth"),
         ("--atlassian-oauth", "atlassian_oauth"),
@@ -715,7 +724,7 @@ class TestParseArgs:
         assert getattr(args, attr) is True
         other_attrs = {
             "gmail_oauth", "drive_oauth", "contacts_oauth", "calendar_oauth", "tasks_oauth",
-            "slack_oauth", "salesforce_oauth", "atlassian_oauth", "telegram_setup",
+            "apps_script_oauth", "slack_oauth", "salesforce_oauth", "atlassian_oauth", "telegram_setup",
         } - {attr}
         assert not any(getattr(args, other) for other in other_attrs)
 
@@ -821,6 +830,7 @@ GOOGLE_OAUTH_RUNNERS = [
     pytest.param("run_contacts_oauth", "ContactsClient", "ContactsClientError", id="contacts"),
     pytest.param("run_calendar_oauth", "CalendarClient", "CalendarClientError", id="calendar"),
     pytest.param("run_tasks_oauth", "TasksClient", "TasksClientError", id="tasks"),
+    pytest.param("run_apps_script_oauth", "AppsScriptClient", "AppsScriptClientError", id="apps_script"),
 ]
 
 
@@ -1420,6 +1430,7 @@ class TestMain:
         ("--contacts-oauth", "run_contacts_oauth"),
         ("--calendar-oauth", "run_calendar_oauth"),
         ("--tasks-oauth", "run_tasks_oauth"),
+        ("--apps-script-oauth", "run_apps_script_oauth"),
         ("--slack-oauth", "run_slack_oauth"),
         ("--salesforce-oauth", "run_salesforce_oauth"),
         ("--atlassian-oauth", "run_atlassian_oauth"),

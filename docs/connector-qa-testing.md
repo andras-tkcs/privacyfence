@@ -108,7 +108,7 @@ missing and skips only the steps that need it.
 
 ````markdown
 You are connected to my personal accounts (Gmail, Drive/Sheets, Slack, Calendar,
-Contacts, Tasks, Telegram, Salesforce, Jira, Confluence) through the `privacyfence`
+Contacts, Tasks, Apps Script, Telegram, Salesforce, Jira, Confluence) through the `privacyfence`
 MCP server. I'm QA-testing PrivacyFence itself, not asking you to do real work — so
 go connector by connector, in the order below, and actually call the tools rather
 than describing what you'd do.

@@ -1479,6 +1479,126 @@ class TestDocsEditAndFormatContent:
         assert gated_call_spy[0]["preview"]["Format"] == "(no changes)"
 
 
+class TestPiiAlreadyReviewedTracking:
+    """own_write_revisions/_note_own_write/_pii_already_reviewed: the
+    connector-side half of gate.py's pii_already_reviewed carve-out (see
+    that parameter's docstring). A write records the file's resulting Drive
+    modifiedTime; a subsequent read only claims "already reviewed" when the
+    file's *current* modifiedTime still matches exactly what was recorded --
+    anything else in between (a human edit, another app, a different write
+    this connector doesn't track) must fall back to the ordinary PII gate.
+    """
+
+    async def test_doc_write_records_revision_via_an_extra_metadata_fetch(self, gated_call_spy):
+        # write_doc_rich_content (Docs API) doesn't return Drive-level
+        # modifiedTime in its own response, unlike write_file_content --
+        # _note_own_write has to re-fetch it.
+        connector, client = make_connector()
+        client.get_file_metadata.side_effect = [
+            make_file(name="Notes", modified_time="2026-08-25T09:00:00Z"),  # preview lookup
+            make_file(name="Notes", modified_time="2026-08-25T09:05:00Z"),  # _note_own_write's re-fetch
+        ]
+        client.write_doc_rich_content.return_value = {"file_id": "f1"}
+
+        await connector.call("drive_write_doc_content", {"file_id": "f1", "markdown": "hi"})
+
+        assert connector.own_write_revisions["f1"] == "2026-08-25T09:05:00Z"
+        assert client.get_file_metadata.call_count == 2
+
+    async def test_write_file_content_reuses_its_own_response_without_an_extra_fetch(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file(name="notes.txt")
+        client.write_file_content.return_value = {"file_id": "f1", "modified_time": "2026-08-25T10:00:00Z"}
+
+        await connector.call("drive_write_file_content", {"file_id": "f1", "content": "hello"})
+
+        assert connector.own_write_revisions["f1"] == "2026-08-25T10:00:00Z"
+        # write_file_content's own response already carried modified_time,
+        # so _note_own_write shouldn't need a second round trip beyond the
+        # one _write_file_content already makes for its own preview.
+        assert client.get_file_metadata.call_count == 1
+
+    async def test_upload_file_records_own_write_revision(self, gated_call_spy):
+        connector, client = make_connector()
+        client.upload_file.return_value = {"id": "uploaded1", "name": "greeting.txt"}
+        client.get_file_metadata.return_value = make_file(
+            id="uploaded1", modified_time="2026-08-25T11:00:00Z",
+        )
+
+        await connector.call(
+            "drive_upload_file", {"content_base64": "aGVsbG8=", "name": "greeting.txt"},
+        )
+
+        assert connector.own_write_revisions["uploaded1"] == "2026-08-25T11:00:00Z"
+
+    async def test_note_own_write_metadata_fetch_failure_degrades_gracefully(self, gated_call_spy):
+        # The write itself already succeeded by the time _note_own_write
+        # runs -- a failed bookkeeping re-fetch must not raise, only cost
+        # the next read of this file the PII-gate shortcut.
+        connector, client = make_connector()
+        client.get_file_metadata.side_effect = [
+            make_file(name="Notes"),  # preview lookup succeeds
+            DriveClientError("temporary failure"),  # _note_own_write's re-fetch fails
+        ]
+        client.write_doc_rich_content.return_value = {"file_id": "f1"}
+
+        result = await connector.call("drive_write_doc_content", {"file_id": "f1", "markdown": "hi"})
+
+        assert result == {"file_id": "f1"}
+        assert "f1" not in connector.own_write_revisions
+
+    async def test_get_file_content_reports_pii_already_reviewed_when_unchanged_since_own_write(
+        self, gated_call_spy,
+    ):
+        connector, client = make_connector()
+        connector.own_write_revisions["f1"] = "2026-08-25T09:00:00Z"
+        client.get_file_content.return_value = DriveFileContent(
+            file=make_file(modified_time="2026-08-25T09:00:00Z"), content_text="hello",
+        )
+
+        await connector.call("drive_get_file_content", {"file_id": "f1"})
+
+        assert gated_call_spy[0]["pii_already_reviewed"] is True
+
+    async def test_get_file_content_reports_not_reviewed_when_modified_since_own_write(
+        self, gated_call_spy,
+    ):
+        # Someone/something else touched the file since our last write --
+        # modifiedTime has moved on, so this must fall back to the ordinary
+        # PII gate rather than trusting stale content.
+        connector, client = make_connector()
+        connector.own_write_revisions["f1"] = "2026-08-25T09:00:00Z"
+        client.get_file_content.return_value = DriveFileContent(
+            file=make_file(modified_time="2026-08-25T09:05:00Z"), content_text="hello, now with a human's edit",
+        )
+
+        await connector.call("drive_get_file_content", {"file_id": "f1"})
+
+        assert gated_call_spy[0]["pii_already_reviewed"] is False
+
+    async def test_get_file_content_reports_not_reviewed_when_never_written_by_us(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_content.return_value = DriveFileContent(file=make_file(), content_text="hello")
+
+        await connector.call("drive_get_file_content", {"file_id": "f1"})
+
+        assert gated_call_spy[0]["pii_already_reviewed"] is False
+
+    async def test_sheets_get_values_reflects_own_write_tracking(self, gated_call_spy):
+        connector, client = make_connector()
+        connector.own_write_revisions["sheet1"] = "2026-08-25T09:00:00Z"
+        client.get_file_metadata.return_value = make_file(
+            id="sheet1", modified_time="2026-08-25T09:00:00Z",
+        )
+        client.get_sheet_values.return_value = [["a", "b"]]
+
+        await connector.call(
+            "drive_sheets_get_values", {"spreadsheet_id": "sheet1", "range_a1": "A1:B1"},
+        )
+
+        assert gated_call_spy[0]["pii_already_reviewed"] is True
+
+
 class TestFieldCompleteness:
     """End to end: a fully-populated raw Drive API file -> the real
     DriveClient._parse_file/get_file_content -> the real connector's popup

@@ -269,7 +269,47 @@ oversight measure**, sitting in front of the AI system rather than being one:
 
 ---
 
-## 9. Vulnerability reporting
+## 9. Vendor risk criteria: no ISMS, no BCP, no SLA — and why that's a risk-acceptance decision, not a security gap
+
+Standard vendor-risk questionnaires typically ask for a certified information security
+management framework (e.g. ISO 27001), a Business Continuity Plan, and a contractual risk-response
+process or SLA. **PrivacyFence has none of these**, and reviewers should not expect to find them —
+but the reason is structural, not an oversight, and it doesn't change the technical risk assessment
+in §§2–8.
+
+| Criterion | Status | Why, and what it does (and doesn't) mean |
+|---|---|---|
+| Certified information security framework (ISO 27001, SOC 2, etc.) | Not established | These certifications attest to controls around *operated infrastructure* — the thing being certified is an organization's data centers, access management, incident processes, etc. PrivacyFence has none of that to certify: there is no PrivacyFence-operated infrastructure at all (§2). A certification program doesn't map onto software that runs entirely on the employee's own machine. |
+| Business Continuity Plan | None | A BCP protects continuity of a *service*. There is no PrivacyFence-operated service whose outage could disrupt your organization — if the maintainer became unreachable tomorrow, already-installed copies keep running locally exactly as before; nothing in PrivacyFence's core function depends on ongoing vendor availability beyond the pre-existing OAuth relationships you already have with Google/Slack/Salesforce/Atlassian, plus the optional, disable-able daily update check (§2). Continuity risk here is really *source availability* risk, and it is mitigated by the code being open source: your organization can audit, fork, or internally maintain a pinned version independent of the original maintainer. |
+| Risk response process / SLA | None | There is no support contract. Suspected security issues go to **privacyfence@tkcs.name** or a public GitHub issue (§10 below) and are handled best-effort, not against a committed response time. Organizations that need a guaranteed patch turnaround should treat that as a real gap to plan around (e.g., pin to an internally reviewed release rather than auto-updating, and assign an internal owner able to patch or roll back if a report doesn't land in time) — not assume it away. |
+
+**Why this doesn't add Information Security Risk in itself:** these three gaps describe the
+*absence of vendor governance overhead*, not a technical vulnerability. The technical risk profile
+that actually determines exposure — no vendor infrastructure in the data path, no new data
+processor, no vendor-held credentials, a local-only audit trail, human-in-the-loop enforcement on
+every sensitive call, code-signed and notarized releases — is unaffected by any of the three (§§2–8).
+A vendor with a full ISMS and an SLA but a hosted backend in the request path is a *different*, and
+in some respects larger, attack surface than a tool with none of that governance but nothing to
+attack because there's no vendor infrastructure to reach.
+
+**Recommended path for reviewers:** because PrivacyFence cannot supply an ISMS certification, BCP,
+or contractual SLA, approve it through your organization's formal risk-acceptance / exception
+process rather than a standard vendor-security sign-off — using the architectural mitigations in
+§§2–8 as the supporting rationale, and the compensating controls below as the conditions attached
+to that acceptance:
+
+- Install from code-signed, notarized releases (§8) rather than building from an unreviewed
+  checkout; pin to a specific reviewed version rather than auto-updating into unreviewed changes.
+- Assign an internal owner responsible for periodic review of new releases and for patching/rolling
+  back if a vulnerability is reported and no fix lands quickly.
+- Treat the local audit log (§5) — not a vendor SLA — as your incident-visibility mechanism, and
+  decide separately whether it needs centralized collection for your compliance program.
+- Re-run this section's assessment (or your own source review, since the code is open) periodically,
+  rather than treating this document as a one-time attestation.
+
+---
+
+## 10. Vulnerability reporting
 
 Report suspected security issues to **privacyfence@tkcs.name** rather than filing a public GitHub
 issue. Include reproduction steps and, where relevant, which connector and gate configuration was
@@ -277,7 +317,7 @@ involved.
 
 ---
 
-## 10. Quick-reference FAQ for reviewers
+## 11. Quick-reference FAQ for reviewers
 
 | Question | Answer |
 |---|---|
@@ -289,3 +329,4 @@ involved.
 | Who is the data controller/processor under GDPR? | Your organization remains the controller; PrivacyFence does not add a new processor since it operates entirely within your own infrastructure boundary. |
 | Does PrivacyFence make AI Act risk-tier determinations for us? | No. It's a deployer-side control (human oversight, access restriction, audit trail) — the risk classification of your AI use case is your organization's own determination. |
 | Is the app notarized by Apple? | Yes — see §8. |
+| Does PrivacyFence have a certified ISMS, a Business Continuity Plan, or a contractual SLA? | No — see §9. Because there's no vendor-operated infrastructure to certify or keep continuous, these don't map onto local software the way they would a hosted vendor. Approve through your organization's risk-acceptance process, using §§2–8's architecture as the supporting rationale, not a standard vendor-security sign-off. |

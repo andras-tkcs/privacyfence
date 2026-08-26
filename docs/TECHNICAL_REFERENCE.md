@@ -158,6 +158,26 @@ routes it to the normal popup — tinted, with the second confirmation — whene
 contains likely PII. A request that matches a rule *and* has no PII in its content still takes the
 silent auto-accept path exactly as before this gate existed.
 
+**Second exception, read-side only: content unchanged since PrivacyFence's own last write.**
+Every write tool that changes a file's own content (`drive_write_doc_content`,
+`drive_docs_edit_content`, `drive_docs_format_content`, `drive_write_file_content`,
+`drive_upload_file`, and every `drive_sheets_*` write tool) records, in memory, the Drive
+`modifiedTime` that write left the file at
+(`DriveConnector.own_write_revisions` in [`connectors/drive.py`](../src/privacyfence/connectors/drive.py)).
+`drive_get_file_content`, `drive_sheets_get_values`, and `drive_download_file` each check their
+target file's *current* `modifiedTime` against that record. When it still matches exactly, the PII
+gate's forced second confirmation is skipped for that one read — not PII detection itself: the
+category labels still feed the audit log's `pii_detected` field, and the ordinary review popup
+still appears if no other auto-accept rule matches, just without the red tint or the "Are you
+sure?" step. The reasoning: this is Claude reading back content it (or a human, via
+`drive_upload_file`) already put there and a human already saw once in that write's own approval
+popup, so a second confirmation on every re-read is friction, not an extra safety check. The
+moment anything else touches the file — a human collaborator, another app, a different Claude
+session — `modifiedTime` moves and the very next read goes through the ordinary PII gate again, no
+manual revocation needed. Same lifetime and cross-chat sharing as
+[`created_this_session`](#auto-accept-rules) below: it lives in memory only, tied to the daemon
+process, and is forgotten on restart.
+
 **Toggle:** enable or disable the whole gate from the settings window's **General** page (**PII
 Detection Gate**), or set `pii_detection.enabled: true|false` directly in `config/settings.yaml`.
 Enabled by default.
@@ -471,6 +491,29 @@ passed through as-is and surface Jira's own validation error if the shape is wro
 | `tasks_uncomplete_task` | write | popup | — | Task list, task |
 | `tasks_move_task` | write | popup | — | Task, from list, to list |
 
+### Apps Script
+
+**Auth:** OAuth2. Reads/writes script *source* only — PrivacyFence never runs a script. There is
+deliberately no execute/run tool: see issue #154's "Non-goals" and `apps_script_client.py`'s
+module docstring. The user runs a script themselves in the Apps Script editor (or via its own
+triggers), under their own Google account, through Apps Script's own separate consent screen —
+untouched by PrivacyFence.
+
+| Tool | Dir | Gate | Preview | Details popup |
+|------|-----|------|----------------|---------------|
+| `apps_script_list_projects` | read | auto | — | — |
+| `apps_script_get_content` | read | review | project name, file count | Full source of every file |
+| `apps_script_write_content` | write | popup | — | Project name, file names/types, full new source of every file |
+| `apps_script_get_execution_log` | read | review | project name, execution count | Function, status, start time, duration per recent run |
+
+`apps_script_get_execution_log` surfaces the result of a run the **user** triggered outside
+PrivacyFence (via the Processes API's `listScriptProcesses`) — status/duration/which function ran,
+not a live `console.log` transcript; see `apps_script_client.py`'s module docstring for why.
+`apps_script_write_content` always replaces a project's entire file set (there is no
+single-file/partial update in the underlying API), the same "show full resulting content, not a
+diff" precedent `drive_write_doc_content` set. `apps_script_write_content` has no configurable
+auto-accept rule yet — Allow-once-only, like most new write tools at first cut.
+
 ---
 
 ## Auto-accept grants
@@ -550,10 +593,12 @@ dropped that in favor of the same manual Name/Resource-ID entry for every connec
 
 Every existing rule under `auto_accept_rules` that isn't a resource grant (domain trust, label
 matching, file-type allowlists, and similar — see [Auto-accept rules](#auto-accept-rules)) lives on
-that same connector's page as a `rule_type` / `value` row, also plain text committed on blur/Enter.
-A list-valued rule's `value` field takes a comma-separated list directly (e.g. `domain1.com,
-domain2.com`) in one field, rather than an earlier menu-bar version's one-value-at-a-time **+ Add
-value…** / **✕ Remove** treatment.
+that same connector's page as a `rule_type` / `value` row. `rule_type` is a dropdown listing only
+the rule names that operation actually supports (`RULES_BY_OPERATION` in settings_controller.py),
+committed immediately on selection rather than requiring the rule name to be typed by hand; `value`
+stays a plain text field, committed on blur/Enter. A list-valued rule's `value` field takes a
+comma-separated list directly (e.g. `domain1.com, domain2.com`) in one field, rather than an earlier
+menu-bar version's one-value-at-a-time **+ Add value…** / **✕ Remove** treatment.
 
 **Sheets** and **Docs** get their own top-level sidebar pages in this window (neither is a real
 connector — both ride on Drive's OAuth grant, see [Auto-accept rules](#auto-accept-rules)'s Drive
@@ -862,7 +907,7 @@ edits within a personal list while still requiring review for creates.
 > `tasks.task_lists`. One task-list grant's `create`/`edit`/`complete`/`move` capabilities cover
 > all five task-write operations at once (`complete` covers both complete and uncomplete).
 
-> **Google Contacts**: `contacts_list`, `contacts_search`, and `contacts_get` are unconditionally auto-accepted. `contacts_update`, `contacts_create`, `contacts_add_label`, and `contacts_remove_label` are all `popup`-gated; `no_contact_info_change` above is the only configurable auto-accept rule, and it applies only to `contacts_update`. Contact deletion is not supported. **Google Tasks**: all three read tools plus `tasks_list_task_lists` are unconditionally auto-accepted; the five write tools (`tasks_create_task`, `tasks_update_task`, `tasks_complete_task`, `tasks_uncomplete_task`, `tasks_move_task`) are `popup`-gated, each independently configurable via `approved_task_list` above. **Telegram**: `telegram_list_chats` is unconditionally auto-accepted; `telegram_get_messages` and `telegram_search_messages` are `review`-gated by default but configurable via the rules above (sharing one operation key, `telegram.read_chat_messages`); `telegram_send_message` is `popup`-gated with no configurable rule. **Jira and Confluence** read tools (`jira_get_issue`, `confluence_get_page`, `confluence_get_page_by_title`, `confluence_download_attachment`) are `review`-gated by default but configurable via the rules above; their write tools remain `popup`-gated with no configurable rule, except `jira_transition_issue`, which accepts `approved_project_keys` as noted above.
+> **Google Contacts**: `contacts_list`, `contacts_search`, and `contacts_get` are unconditionally auto-accepted. `contacts_update`, `contacts_create`, `contacts_add_label`, and `contacts_remove_label` are all `popup`-gated; `no_contact_info_change` above is the only configurable auto-accept rule, and it applies only to `contacts_update`. Contact deletion is not supported. **Google Tasks**: all three read tools plus `tasks_list_task_lists` are unconditionally auto-accepted; the five write tools (`tasks_create_task`, `tasks_update_task`, `tasks_complete_task`, `tasks_uncomplete_task`, `tasks_move_task`) are `popup`-gated, each independently configurable via `approved_task_list` above. **Telegram**: `telegram_list_chats` is unconditionally auto-accepted; `telegram_get_messages` and `telegram_search_messages` are `review`-gated by default but configurable via the rules above (sharing one operation key, `telegram.read_chat_messages`); `telegram_send_message` is `popup`-gated with no configurable rule. **Jira and Confluence** read tools (`jira_get_issue`, `confluence_get_page`, `confluence_get_page_by_title`, `confluence_download_attachment`) are `review`-gated by default but configurable via the rules above; their write tools remain `popup`-gated with no configurable rule, except `jira_transition_issue`, which accepts `approved_project_keys` as noted above. **Apps Script**: `apps_script_list_projects` is unconditionally auto-accepted; `apps_script_get_content` and `apps_script_get_execution_log` are `review`-gated with no configurable rule; `apps_script_write_content` is `popup`-gated with no configurable rule (Allow-once-only at first cut — see issue #154 open question 2).
 
 ---
 
