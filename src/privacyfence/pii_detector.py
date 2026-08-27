@@ -71,6 +71,33 @@ def _luhn_valid(candidate: str) -> bool:
     return checksum % 10 == 0
 
 
+def _card_grouping_valid(candidate: str) -> bool:
+    """Reject digit runs whose separator grouping doesn't match how card
+    numbers are actually displayed -- groups of 4 (with the last group
+    possibly shorter), or the Amex (4-6-5) / Diners Club (4-6-4)
+    exceptions. An ungrouped run (no space/dash separators at all) always
+    passes this check; only *inconsistent* grouping is rejected.
+
+    Needed on top of the Luhn checksum: a Luhn-valid 13-19 digit run isn't
+    rare enough on its own -- e.g. a calendar's "CW 35  24 25 26 27 28 29
+    30" week/date row, flattened by text extraction into "35 24 25 26 27
+    28 29 30", is 16 digits grouped in pairs that happens to pass Luhn.
+    Real card numbers are never displayed in pairs, so this filters that
+    class of false positive without touching the (4,4,4,4)-style grouping
+    real cards actually use."""
+    groups = [g for g in re.split(r"[ -]", candidate.strip()) if g]
+    if len(groups) <= 1:
+        return True
+    lengths = [len(g) for g in groups]
+    if lengths in ([4, 6, 5], [4, 6, 4]):
+        return True
+    return all(n == 4 for n in lengths[:-1]) and 1 <= lengths[-1] <= 4
+
+
+def _credit_card_valid(candidate: str) -> bool:
+    return _luhn_valid(candidate) and _card_grouping_valid(candidate)
+
+
 def _iban_valid(candidate: str) -> bool:
     """ISO 7064 mod-97-10 checksum, used to keep the IBAN pattern from
     matching arbitrary alphanumeric identifiers (Drive file IDs, Jira/
@@ -106,7 +133,7 @@ _PATTERNS: list[_PIIPattern] = [
     # the module docstring for why (email signatures make them near-universal
     # false positives on this gate's typical input).
     _p("IBAN (bank account number)", r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b", validator=_iban_valid),
-    _p("Credit card number", r"\b(?:\d[ -]?){13,19}\b", validator=_luhn_valid),
+    _p("Credit card number", r"\b(?:\d[ -]?){13,19}\b", validator=_credit_card_valid),
     _p(
         "IP address",
         r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b",
