@@ -34,6 +34,16 @@ const UNIFORM_READ_ONLY_ANNOTATIONS: ToolAnnotations = {
   idempotentHint: true,
 };
 
+// How often a heartbeat notifications/progress fires while a connector
+// tool call is outstanding (docs/slack-performance-review.md's R7/P1
+// item 8). Some MCP hosts reset their own request timeout on receiving
+// one (per the MCP spec's resetTimeoutOnProgress); others (reported: Claude
+// Cowork) don't act on it at all -- either way this is free to send and
+// never the primary fix (the P0 work already shrank most fetches well
+// under a client's timeout), just a defensive floor for the ones it still
+// isn't under.
+const PROGRESS_INTERVAL_MS = 5000;
+
 function paramSchema(p: ToolParamDict): z.ZodTypeAny {
   let base: z.ZodTypeAny;
   switch (p.annotation) {
@@ -94,7 +104,13 @@ function toCallToolResult(value: unknown): CallToolResult {
   return { content: [{ type: "text", text }] };
 }
 
-function registerConnectorTool(server: McpServer, ipc: IPCClientLike, connectorName: string, spec: ToolSpecDict): void {
+function registerConnectorTool(
+  server: McpServer,
+  ipc: IPCClientLike,
+  connectorName: string,
+  spec: ToolSpecDict,
+  progressIntervalMs: number
+): void {
   server.registerTool(
     spec.name,
     {
@@ -102,25 +118,58 @@ function registerConnectorTool(server: McpServer, ipc: IPCClientLike, connectorN
       inputSchema: buildInputShape(spec.params),
       annotations: UNIFORM_READ_ONLY_ANNOTATIONS,
     },
-    async (args: Record<string, unknown>): Promise<CallToolResult> => {
+    async (args: Record<string, unknown>, extra): Promise<CallToolResult> => {
+      // A progressToken is only present when the calling host actually
+      // asked for progress updates (passed onprogress to its own
+      // callTool) -- sending a notification without one would be
+      // protocol-invalid, so the heartbeat is skipped entirely rather than
+      // sent to nobody.
+      const progressToken = extra._meta?.progressToken;
+      let progress = 0;
+      const heartbeat: ReturnType<typeof setInterval> | undefined =
+        progressToken === undefined
+          ? undefined
+          : setInterval(() => {
+              progress += 1;
+              extra
+                .sendNotification({
+                  method: "notifications/progress",
+                  params: { progressToken, progress, message: "Waiting on PrivacyFence…" },
+                })
+                .catch(() => {
+                  // Best-effort -- a progress notification failing to send
+                  // must never fail the tool call itself.
+                });
+            }, progressIntervalMs);
       try {
-        const result = await ipc.call(connectorName, spec.name, args);
+        const result = await ipc.call(connectorName, spec.name, args, extra.signal);
         return toCallToolResult(result);
       } catch (exc) {
         if (exc instanceof IPCError) throw new Error(exc.message);
         throw exc;
+      } finally {
+        if (heartbeat !== undefined) clearInterval(heartbeat);
       }
     }
   );
   console.error(`Registered tool: ${spec.name} (connector=${connectorName})`);
 }
 
-export function registerTools(server: McpServer, ipc: IPCClientLike, manifest: Manifest): void {
+/**
+ * progressIntervalMs overrides PROGRESS_INTERVAL_MS -- for tests only (see
+ * tools.test.ts); every production call site relies on the default.
+ */
+export function registerTools(
+  server: McpServer,
+  ipc: IPCClientLike,
+  manifest: Manifest,
+  progressIntervalMs: number = PROGRESS_INTERVAL_MS
+): void {
   let total = 0;
   const connectors: ConnectorManifestEntry[] = manifest.connectors ?? [];
   for (const connectorInfo of connectors) {
     for (const toolDict of connectorInfo.tools ?? []) {
-      registerConnectorTool(server, ipc, connectorInfo.name, toolDict);
+      registerConnectorTool(server, ipc, connectorInfo.name, toolDict, progressIntervalMs);
       total++;
     }
   }
