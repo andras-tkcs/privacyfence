@@ -1007,6 +1007,70 @@ class TestMobileDeviceCLI:
         assert "Alice's iPhone" in out
         assert [d.device_id for d in store.list_active_devices()] == ["dev1"]
 
+    def test_pwa_release_public_key_from_org_config_is_passed_to_begin_pairing(self, monkeypatch, tmp_path, capsys):
+        import time as time_module
+
+        from privacyfence.mobile_relay_pairing import PairedDevice, PairingSession
+
+        self._patch_store(monkeypatch, tmp_path)
+        captured = {}
+
+        def fake_begin_pairing(relay_url, identity, **kw):
+            captured["pwa_release_public_key"] = kw.get("pwa_release_public_key")
+            return PairingSession(
+                relay_url=relay_url, mailbox_id="mbox1", token="tok1",
+                daemon_public_key=identity.public_key, pairing_secret=b"\x00" * 32,
+                expires_at=time_module.time() + 60,
+            )
+        monkeypatch.setattr("privacyfence.mobile_relay_pairing.begin_pairing", fake_begin_pairing)
+        monkeypatch.setattr(
+            "privacyfence.mobile_relay_pairing.complete_pairing",
+            lambda session, identity, **kw: PairedDevice(
+                device_id="dev1", device_name="Phone", device_public_key=b"\x00" * 32,
+                mailbox_id="mbox1", token="tok1", shared_key=b"\x00" * 32, paired_at=time_module.time(),
+            ),
+        )
+
+        raw_key = b"\x04" + b"\x02" * 64
+        code = daemon_main.run_pair_mobile_device({
+            "mobile_relay": {
+                "enabled": True, "relay_url": "https://relay.example.org:8765",
+                "pwa_release_public_key_base64": __import__("base64").b64encode(raw_key).decode("ascii"),
+            },
+        })
+
+        assert code == 0
+        assert captured["pwa_release_public_key"] == raw_key
+
+    def test_missing_pwa_release_public_key_prints_a_note_but_still_succeeds(self, monkeypatch, tmp_path, capsys):
+        import time as time_module
+
+        from privacyfence.mobile_relay_pairing import PairedDevice, PairingSession
+
+        self._patch_store(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            "privacyfence.mobile_relay_pairing.begin_pairing",
+            lambda relay_url, identity, **kw: PairingSession(
+                relay_url=relay_url, mailbox_id="mbox1", token="tok1",
+                daemon_public_key=identity.public_key, pairing_secret=b"\x00" * 32,
+                expires_at=time_module.time() + 60,
+            ),
+        )
+        monkeypatch.setattr(
+            "privacyfence.mobile_relay_pairing.complete_pairing",
+            lambda session, identity, **kw: PairedDevice(
+                device_id="dev1", device_name="Phone", device_public_key=b"\x00" * 32,
+                mailbox_id="mbox1", token="tok1", shared_key=b"\x00" * 32, paired_at=time_module.time(),
+            ),
+        )
+
+        code = daemon_main.run_pair_mobile_device({
+            "mobile_relay": {"enabled": True, "relay_url": "https://relay.example.org:8765"},
+        })
+
+        assert code == 0
+        assert "no mobile_relay.pwa_release_public_key_base64 configured" in capsys.readouterr().out
+
 
 class TestListMobileDevicesRunner:
     def _patch_store(self, monkeypatch, tmp_path):

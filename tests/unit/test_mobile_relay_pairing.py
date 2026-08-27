@@ -235,6 +235,42 @@ class TestPairingSessionQrPayload:
         assert not hasattr(session, "shared_key")
         assert json.loads(serialized) == payload  # round-trips as plain JSON
 
+    def test_omits_pwa_release_public_key_when_not_configured(self):
+        session = PairingSession(
+            relay_url="https://r", mailbox_id="m", token="t",
+            daemon_public_key=b"\x01" * 32, pairing_secret=b"\x02" * 32, expires_at=time.time() + 60,
+        )
+        assert "pwa_release_public_key" not in session.qr_payload()
+
+    def test_includes_pwa_release_public_key_when_configured(self):
+        session = PairingSession(
+            relay_url="https://r", mailbox_id="m", token="t",
+            daemon_public_key=b"\x01" * 32, pairing_secret=b"\x02" * 32, expires_at=time.time() + 60,
+            pwa_release_public_key=b"\x05" * 65,
+        )
+        payload = session.qr_payload()
+        assert base64.b64decode(payload["pwa_release_public_key"]) == b"\x05" * 65
+
+
+class TestBeginPairingCarriesPwaReleaseKey:
+    def test_pwa_release_public_key_flows_through_to_the_session(self, relay_url):
+        identity_private, identity_public = _generate_x25519_keypair()
+        from privacyfence.mobile_relay_pairing import DaemonIdentity
+
+        identity = DaemonIdentity(private_key=identity_private, public_key=identity_public)
+        session = begin_pairing(relay_url, identity, pwa_release_public_key=b"\x09" * 65)
+
+        assert session.pwa_release_public_key == b"\x09" * 65
+
+    def test_defaults_to_none(self, relay_url):
+        identity_private, identity_public = _generate_x25519_keypair()
+        from privacyfence.mobile_relay_pairing import DaemonIdentity
+
+        identity = DaemonIdentity(private_key=identity_private, public_key=identity_public)
+        session = begin_pairing(relay_url, identity)
+
+        assert session.pwa_release_public_key is None
+
     def test_is_expired(self):
         future = PairingSession("r", "m", "t", b"\x00" * 32, b"\x00" * 32, expires_at=time.time() + 60)
         past = PairingSession("r", "m", "t", b"\x00" * 32, b"\x00" * 32, expires_at=time.time() - 1)

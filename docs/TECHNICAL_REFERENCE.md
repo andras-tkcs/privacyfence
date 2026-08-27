@@ -1176,21 +1176,32 @@ at the Mac itself. See [issue #55](https://github.com/andras-tkcs/privacyfence/i
 full architecture (an on-prem relay, reachable only over a pinned-key WireGuard tunnel, as the
 Mac's and phone's shared mailbox) and its phasing. Phase 1 wired the daemon in as a pure outbound
 mailbox client via the `ApprovalUI` seam (`approval_ui.py`) — `gate.py` itself is unchanged. Phase
-2 (this section) replaced Phase 1's single pre-shared mailbox key with real pairing/enrollment,
-multi-device support, revocation, and key rotation. Still not shipped: the production phone app and
-a settings-window pairing UI (Phase 3) — Phase 0's spike PWA under `spikes/mobile-relay-phase0/` is
-a throwaway prototype only, never pointed at a real deployment.
+2 replaced Phase 1's single pre-shared mailbox key with real pairing/enrollment, multi-device
+support, revocation, and key rotation. Phase 3 (this section) is the real phone-side app: a
+vanilla-JS PWA under [`mobile-approval-pwa/`](../mobile-approval-pwa) — see its own README for the
+full picture — plus the signed/pinned bundle-release mechanism issue #55 calls out as "not
+optional". Phase 0's spike PWA under `spikes/mobile-relay-phase0/` remains a throwaway prototype
+only, never pointed at a real deployment, now fully superseded by `mobile-approval-pwa/`. Still not
+shipped: a settings-window pairing/device-list UI and QR-code scanning (see
+`mobile-approval-pwa/README.md`'s "Not yet built").
 
 **Off by default**, same as unattended sessions above. `org_config.json` (never `settings.yaml`)
 holds only the org-wide relay address — no secrets, since every user in an org receives an
 identical copy of this file:
 
 ```json
-{ "mobile_relay": { "enabled": true, "relay_url": "http://10.55.0.1:8765" } }
+{
+  "mobile_relay": {
+    "enabled": true,
+    "relay_url": "http://10.55.0.1:8765",
+    "pwa_release_public_key_base64": "BIWY..."
+  }
+}
 ```
 
-Build it with `--mobile-relay-url`/`--disable-mobile-relay` in
-[scripts/build_org_bundle.py](../scripts/build_org_bundle.py). Per-device mailbox/token/key
+Build it with `--mobile-relay-url`/`--disable-mobile-relay`/`--pwa-release-public-key` in
+[scripts/build_org_bundle.py](../scripts/build_org_bundle.py) (the last one requires the first —
+see "Signed/pinned bundle releases" below). Per-device mailbox/token/key
 material is per-user local state instead (`credentials/mobile_relay_devices.json`, 0600 — same
 convention as every OAuth token file in `daemon_main.py`'s `TOKEN_FILES`), because Phase 1
 originally put it in `org_config.json` directly, which in hindsight would have meant every user's
@@ -1210,6 +1221,19 @@ privacyfence-app --list-mobile-devices
 privacyfence-app --revoke-mobile-device <device_id>
 privacyfence-app --rotate-mobile-relay-identity   # revokes every device; re-pair each one after
 ```
+
+**Signed/pinned bundle releases.** The pairing payload also carries the org's PWA release
+*public* key (from `org_config.json`'s `pwa_release_public_key_base64` above), so a phone's trust
+in that key is bootstrapped at the same physically-authenticated moment as the mailbox pairing
+itself — never from the PWA's own first page load, which a network attacker controlling its host
+could otherwise forge. `scripts/generate_pwa_release_key.py` generates the org's ECDSA-P256
+release keypair (once, offline); `scripts/sign_pwa_bundle.py` hashes and signs
+`mobile-approval-pwa/`'s files into `bundle_manifest.json`/`.sig` every time a new build is
+published. The PWA's service worker (`mobile-approval-pwa/sw.js` +
+`mobile-approval-pwa/js/release_verify.js`) pins the key in IndexedDB right after pairing and
+re-verifies the published bundle against it on every update, refusing to cache (and warning the
+user about) anything that doesn't match — see `mobile-approval-pwa/README.md` for the full trust
+model, including its accepted trust-on-first-use boundaries.
 
 Revocation is entirely local and instant (`PairingStore.revoke()` flips one flag in that JSON
 file) — no phone cooperation needed, and `MobileRelayApprovalUI` re-reads the active device list on

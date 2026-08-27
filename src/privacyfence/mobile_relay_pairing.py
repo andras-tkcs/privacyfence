@@ -191,13 +191,25 @@ class PairingSession:
     daemon_public_key: bytes
     pairing_secret: bytes
     expires_at: float
+    # Org-wide ECDSA P-256 public key (raw, uncompressed-point encoding)
+    # used to verify mobile-approval-pwa/ bundle releases -- see
+    # scripts/generate_pwa_release_key.py and
+    # mobile-approval-pwa/js/release_verify.js's own docstring for the full
+    # trust model this plugs into. None if the org hasn't configured PWA
+    # release signing (org_config.json's mobile_relay.pwa_release_public_
+    # key_base64) -- Phase 3's signing mechanism is meaningful once an org
+    # actually hosts the PWA, but pairing itself doesn't require it.
+    pwa_release_public_key: bytes | None = None
 
     def qr_payload(self) -> dict:
         """Everything a QR code (rendered by a future UI) would encode --
         enough for the phone to complete pairing, and nothing more (no
         daemon private key, no derived shared_key -- that doesn't exist
-        yet)."""
-        return {
+        yet). Carrying pwa_release_public_key here -- when configured -- is
+        what lets the PWA pin its bundle-signing trust anchor at the same
+        physically-authenticated moment pairing itself happens, rather than
+        trusting whatever key its own first page load happened to fetch."""
+        payload = {
             "v": 1,
             "relay_url": self.relay_url,
             "mailbox_id": self.mailbox_id,
@@ -206,6 +218,9 @@ class PairingSession:
             "pairing_secret": base64.b64encode(self.pairing_secret).decode("ascii"),
             "expires_at": self.expires_at,
         }
+        if self.pwa_release_public_key is not None:
+            payload["pwa_release_public_key"] = base64.b64encode(self.pwa_release_public_key).decode("ascii")
+        return payload
 
     def is_expired(self) -> bool:
         return time.time() > self.expires_at
@@ -326,15 +341,26 @@ class PairingStore:
 
 
 def begin_pairing(
-    relay_url: str, identity: DaemonIdentity, *, pairing_ttl_seconds: float = DEFAULT_PAIRING_TTL_SECONDS,
+    relay_url: str,
+    identity: DaemonIdentity,
+    *,
+    pairing_ttl_seconds: float = DEFAULT_PAIRING_TTL_SECONDS,
+    pwa_release_public_key: bytes | None = None,
 ) -> PairingSession:
     """Mint a fresh mailbox and a one-time pairing_secret. Raises
-    MobileRelayClientError if the relay can't be reached."""
+    MobileRelayClientError if the relay can't be reached.
+
+    `pwa_release_public_key`, when the org has one configured (org_config.
+    json's mobile_relay.pwa_release_public_key_base64), is carried into the
+    resulting session's qr_payload() so it gets pinned at pairing time --
+    see PairingSession's own docstring for why that matters more than
+    baking the key into the PWA bundle itself.
+    """
     mailbox_id, token = request_new_mailbox(relay_url)
     return PairingSession(
         relay_url=relay_url, mailbox_id=mailbox_id, token=token,
         daemon_public_key=identity.public_key, pairing_secret=secrets.token_bytes(_X25519_KEY_SIZE),
-        expires_at=time.time() + pairing_ttl_seconds,
+        expires_at=time.time() + pairing_ttl_seconds, pwa_release_public_key=pwa_release_public_key,
     )
 
 

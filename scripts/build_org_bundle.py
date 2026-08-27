@@ -119,12 +119,18 @@ def build_parser() -> argparse.ArgumentParser:
     mobile_relay.add_argument(
         "--mobile-relay-url", metavar="URL",
         help="Base URL of the on-prem relay, reachable over its WireGuard tunnel "
-             "(e.g. http://10.55.0.1:8765). IT/org hosts this centrally, and this URL is "
-             "the *only* mobile-relay setting that belongs in this org-wide bundle -- "
-             "per-device mailbox/token/key material is per-user local state now (Phase 2's "
-             "PairingStore), never something every employee gets an identical copy of. "
-             "Each user pairs their own phone with `privacyfence-app --pair-mobile-device` "
-             "after installing this bundle.",
+             "(e.g. http://10.55.0.1:8765). IT/org hosts this centrally. Per-device mailbox/"
+             "token/key material is per-user local state now (Phase 2's PairingStore), never "
+             "something every employee gets an identical copy of -- each user pairs their own "
+             "phone with `privacyfence-app --pair-mobile-device` after installing this bundle.",
+    )
+    mobile_relay.add_argument(
+        "--pwa-release-public-key", metavar="BASE64",
+        help="The org's mobile-approval-pwa release public key (from "
+             "scripts/generate_pwa_release_key.py's public_key_base64) -- pinned into every "
+             "phone's trust store at pairing time so it can verify signed PWA bundle updates "
+             "(Phase 3). Not a secret; safe to distribute in this bundle. Optional -- pairing "
+             "still works without it, just without a pinned bundle-signing trust anchor.",
     )
     mobile_relay.add_argument(
         "--disable-mobile-relay", action="store_true",
@@ -179,9 +185,14 @@ def main(argv: list[str] | None = None) -> int:
         bundle["unattended_sessions"] = {"enabled": False}
 
     if args.mobile_relay_url:
-        bundle["mobile_relay"] = {"enabled": True, "relay_url": args.mobile_relay_url}
+        mobile_relay: dict[str, Any] = {"enabled": True, "relay_url": args.mobile_relay_url}
+        if args.pwa_release_public_key:
+            mobile_relay["pwa_release_public_key_base64"] = args.pwa_release_public_key
+        bundle["mobile_relay"] = mobile_relay
     elif args.disable_mobile_relay:
         bundle["mobile_relay"] = {"enabled": False}
+    elif args.pwa_release_public_key:
+        raise SystemExit("--pwa-release-public-key requires --mobile-relay-url (or --merge onto an existing enabled bundle).")
 
     services = [k for k in ("google", "slack", "salesforce", "atlassian") if k in bundle]
     if not services and "unattended_sessions" not in bundle and "mobile_relay" not in bundle:

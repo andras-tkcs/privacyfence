@@ -155,17 +155,17 @@ def relay_url_from_org_config(org_config: dict[str, Any]) -> str | None:
     config" philosophy daemon_main.py's build_connectors() already uses for
     every other integration.
 
-    Deliberately the *only* thing this reads from org_config.json for this
-    feature -- mailbox_id/token/shared_key used to live here too in Phase 1,
-    which in hindsight was a real bug waiting to happen for any org with
-    more than one user: org_config.json is the *same* file distributed to
-    everyone, so a single shared mailbox+key there would have meant every
-    user's daemon posting into one mailbox any of them could decrypt and
-    answer for. Phase 2 fixes this: relay_url is the only thing that's
-    genuinely org-wide; mailbox_id/token/shared_key are per-device secrets
-    that belong in each user's own local PairingStore
-    (mobile_relay_pairing.py), never in a file every employee receives an
-    identical copy of.
+    mailbox_id/token/shared_key used to live here too in Phase 1, which in
+    hindsight was a real bug waiting to happen for any org with more than
+    one user: org_config.json is the *same* file distributed to everyone,
+    so a single shared mailbox+key there would have meant every user's
+    daemon posting into one mailbox any of them could decrypt and answer
+    for. Phase 2 fixes this: relay_url (and pwa_release_public_key_from_
+    org_config()'s value, below -- also genuinely org-wide and never
+    secret) are the only mobile_relay fields this org-wide file should ever
+    carry; mailbox_id/token/shared_key are per-device secrets that belong
+    in each user's own local PairingStore (mobile_relay_pairing.py), never
+    in a file every employee receives an identical copy of.
     """
     section = org_config.get("mobile_relay") or {}
     if not section.get("enabled", False):
@@ -178,6 +178,31 @@ def relay_url_from_org_config(org_config: dict[str, Any]) -> str | None:
         )
         return None
     return relay_url.rstrip("/")
+
+
+def pwa_release_public_key_from_org_config(org_config: dict[str, Any]) -> bytes | None:
+    """Extract the org's PWA bundle-release public key from org_config.json's
+    "mobile_relay.pwa_release_public_key_base64", or None if absent/invalid.
+
+    Not a secret -- generate_pwa_release_key.py's whole point is that the
+    matching *private* key never goes anywhere near this file or the
+    daemon at all -- so, unlike mailbox_id/token/shared_key, this is a
+    legitimate org-wide value alongside relay_url. See mobile_relay_
+    pairing.py's PairingSession.pwa_release_public_key and mobile-approval-
+    pwa/js/release_verify.js for what it's used for.
+    """
+    section = org_config.get("mobile_relay") or {}
+    key_b64 = section.get("pwa_release_public_key_base64", "")
+    if not key_b64:
+        return None
+    try:
+        return base64.b64decode(key_b64, validate=True)
+    except (ValueError, TypeError) as exc:
+        logger.warning(
+            "org_config.json's mobile_relay.pwa_release_public_key_base64 is not valid base64 (%s) "
+            "-- PWA bundle signature verification will not be pinned at pairing time", exc,
+        )
+        return None
 
 
 @dataclass

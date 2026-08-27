@@ -713,7 +713,11 @@ def run_telegram_setup() -> int:
 # human" shape.
 
 def run_pair_mobile_device(org_config: dict[str, Any]) -> int:
-    from .mobile_relay_client import MobileRelayClientError, relay_url_from_org_config
+    from .mobile_relay_client import (
+        MobileRelayClientError,
+        pwa_release_public_key_from_org_config,
+        relay_url_from_org_config,
+    )
     from .mobile_relay_pairing import MobileRelayPairingError, begin_pairing, complete_pairing
 
     relay_url = relay_url_from_org_config(org_config)
@@ -724,11 +728,19 @@ def run_pair_mobile_device(org_config: dict[str, Any]) -> int:
             file=sys.stderr,
         )
         return 1
+    pwa_release_public_key = pwa_release_public_key_from_org_config(org_config)
+    if pwa_release_public_key is None:
+        print(
+            "Note: no mobile_relay.pwa_release_public_key_base64 configured -- the paired phone "
+            "won't be able to pin a trust anchor for verifying signed PWA bundle releases "
+            "(see scripts/generate_pwa_release_key.py). Fine for now if you haven't published "
+            "the PWA yet; re-pair once you have."
+        )
 
     store = _mobile_relay_pairing_store()
     identity = store.get_or_create_identity()
     try:
-        session = begin_pairing(relay_url, identity)
+        session = begin_pairing(relay_url, identity, pwa_release_public_key=pwa_release_public_key)
     except MobileRelayClientError as exc:
         print(f"Could not start pairing: {exc}", file=sys.stderr)
         return 1

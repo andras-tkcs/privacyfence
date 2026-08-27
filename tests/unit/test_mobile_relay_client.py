@@ -23,6 +23,7 @@ from privacyfence.mobile_relay_client import (
     compute_auth_tag,
     decrypt_payload,
     encrypt_payload,
+    pwa_release_public_key_from_org_config,
     relay_url_from_org_config,
     request_new_mailbox,
     verify_auth_tag,
@@ -109,6 +110,29 @@ class TestRelayUrlFromOrgConfig:
             "shared_key_base64": "should-be-ignored",
         }}
         assert relay_url_from_org_config(org_config) == "https://r"
+
+
+# ---------------------------------------------------------------------------- #
+# pwa_release_public_key_from_org_config
+# ---------------------------------------------------------------------------- #
+
+class TestPwaReleasePublicKeyFromOrgConfig:
+    def test_missing_key_returns_none(self):
+        assert pwa_release_public_key_from_org_config({"mobile_relay": {"enabled": True}}) is None
+
+    def test_missing_section_returns_none(self):
+        assert pwa_release_public_key_from_org_config({}) is None
+
+    def test_invalid_base64_returns_none(self):
+        org_config = {"mobile_relay": {"pwa_release_public_key_base64": "not valid base64!!!"}}
+        assert pwa_release_public_key_from_org_config(org_config) is None
+
+    def test_valid_key_decodes(self):
+        raw_key = b"\x04" + b"\x01" * 64  # uncompressed-point-shaped, doesn't need to be a real key here
+        org_config = {"mobile_relay": {
+            "pwa_release_public_key_base64": base64.b64encode(raw_key).decode("ascii"),
+        }}
+        assert pwa_release_public_key_from_org_config(org_config) == raw_key
 
 
 # ---------------------------------------------------------------------------- #
