@@ -2419,3 +2419,62 @@ class TestDefaultDetails:
 
         out = gate._default_details(Weird())
         assert out == "weird-fallback"
+
+
+class TestRunInPopupExecutor:
+    """gate._run_in_popup_executor -- the dedicated single-thread executor
+    every native dialog call runs on (see docs/slack-performance-review.md's
+    R6), instead of asyncio.to_thread's default pool shared with every
+    connector's own blocking I/O.
+    """
+
+    async def test_runs_the_call_and_returns_its_result(self):
+        def fn(x, *, y):
+            return x, y
+
+        result = await gate._run_in_popup_executor(fn, 5, y=9)
+
+        assert result == (5, 9)
+
+    async def test_runs_on_a_dedicated_thread_not_the_default_pool(self):
+        seen = {}
+
+        def fn():
+            seen["thread"] = threading.current_thread().name
+
+        await gate._run_in_popup_executor(fn)
+
+        assert seen["thread"].startswith("pf-popup")
+
+    async def test_stays_prompt_while_the_default_to_thread_pool_is_saturated(self):
+        # The scenario this executor exists for: a handful of slow
+        # connector calls (a Slack rate-limit retry sleeping out
+        # Retry-After, worst case) occupy every worker in the default
+        # asyncio.to_thread pool. A popup dispatched at the same time must
+        # not queue behind them.
+        default_pool_size = min(32, (__import__("os").cpu_count() or 1) + 4)
+        release = threading.Event()
+
+        def occupy_a_worker():
+            release.wait(timeout=2.0)
+
+        occupiers = [asyncio.to_thread(occupy_a_worker) for _ in range(default_pool_size)]
+        await asyncio.sleep(0.05)  # let every occupier actually start running
+
+        def popup():
+            return "still responsive"
+
+        try:
+            result = await asyncio.wait_for(gate._run_in_popup_executor(popup), timeout=1.0)
+        finally:
+            release.set()
+            await asyncio.gather(*occupiers)
+
+        assert result == "still responsive"
+
+    async def test_exceptions_propagate(self):
+        def fn():
+            raise ValueError("boom")
+
+        with pytest.raises(ValueError, match="boom"):
+            await gate._run_in_popup_executor(fn)

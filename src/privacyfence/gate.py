@@ -114,10 +114,12 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import functools
 import json
 import logging
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
 
@@ -231,6 +233,32 @@ _TOOL_LAYOUT: dict[str, str] = {
 }
 
 _popup_lock = asyncio.Lock()  # only one native dialog on screen at a time
+
+# Every native dialog this module shows (the approval popup itself, the PII
+# confirmation, the "Always allow" rule confirmation) runs on this dedicated
+# single-thread executor rather than asyncio.to_thread's default pool. That
+# default pool (min(32, cpu_count + 4) workers) is shared with every
+# connector's own blocking I/O (asyncio.to_thread wraps every *_client.py
+# call the same way -- see connectors/slack.py's _fetch for one example).
+# A handful of slow calls -- Slack's rate-limit retry sleeping out a
+# Retry-After window is the one this was written for -- can occupy every
+# worker in that shared pool, and _popup_lock already serializes dialogs to
+# one at a time regardless, so nothing is lost by giving that one dialog
+# thread a lane connector I/O can never fill. See
+# docs/slack-performance-review.md's R6.
+_popup_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pf-popup")
+
+
+async def _run_in_popup_executor(func, *args, **kwargs) -> Any:
+    """``await`` counterpart to ``asyncio.to_thread`` that runs on
+    ``_popup_executor`` instead of the default pool -- see that executor's
+    comment for why. ``asyncio.to_thread`` itself has no way to choose a
+    different executor, hence this thin wrapper around
+    ``loop.run_in_executor`` (which only accepts positional args, so a
+    keyword-argument call is bound via ``functools.partial`` first).
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_popup_executor, functools.partial(func, *args, **kwargs))
 
 # Set by ipc_server.py around a single dispatched request, for the duration
 # of that request only, when the request came in on a connection that
@@ -561,7 +589,7 @@ async def gated_call(
                     # blocking every other approval behind it.
                     _deny_unattended(audit, connector, tool, pii_categories=pii_forces_confirmation)
 
-                decision, chosen_index = await asyncio.to_thread(
+                decision, chosen_index = await _run_in_popup_executor(
                     show_read_popup, popup_title, preview or {}, details, accept_all_choices,
                     pii_forces_confirmation, visibility, claude_reason, seen_count, content_kind, pdf_bytes,
                     connector, preview_bytes, preview_mime_type, new_info=new_info,
@@ -587,7 +615,7 @@ async def gated_call(
                     )
                     if chosen is not None:
                         description = describe_rule(*chosen)
-                        confirmed = await asyncio.to_thread(show_rule_confirmation_popup, description)
+                        confirmed = await _run_in_popup_executor(show_rule_confirmation_popup, description)
                         rule_name, value = chosen
                         if confirmed:
                             add_auto_accept_rule(operation_key, rule_name, value)
@@ -639,7 +667,7 @@ async def gated_call(
                 if is_unattended():
                     _deny_unattended(audit, connector, tool, pii_categories=upload_pii_categories)
 
-                decision, chosen_index = await asyncio.to_thread(
+                decision, chosen_index = await _run_in_popup_executor(
                     show_popup, popup_title, preview or {}, details, file_key is not None,
                     claude_reason, write_content_flags, seen_count, connector,
                     accept_all_choices, preview_bytes, preview_mime_type,
@@ -681,7 +709,7 @@ async def gated_call(
                         # describe_rule_change() names operation_key explicitly
                         # and reads correctly regardless of direction.
                         description = describe_rule_change("add", operation_key, rule_name, value)
-                        confirmed = await asyncio.to_thread(show_rule_confirmation_popup, description)
+                        confirmed = await _run_in_popup_executor(show_rule_confirmation_popup, description)
                         if confirmed:
                             add_auto_accept_rule(operation_key, rule_name, value)
                             audit(
@@ -793,7 +821,7 @@ async def propose_rule_change(
         )
 
     async with _popup_lock:
-        confirmed = await asyncio.to_thread(show_rule_confirmation_popup, description)
+        confirmed = await _run_in_popup_executor(show_rule_confirmation_popup, description)
 
     if not confirmed:
         _audit(
@@ -903,7 +931,7 @@ async def _confirm_pii_or_deny(decision: str, pii_categories: list[str]) -> str:
     """Extra gate for content the PII detector flagged: forces one more
     explicit confirmation on top of the popup's own Allow once/Always allow,
     declining which is treated as a deny of the whole request."""
-    confirmed = await asyncio.to_thread(show_pii_confirmation_popup, pii_categories)
+    confirmed = await _run_in_popup_executor(show_pii_confirmation_popup, pii_categories)
     return decision if confirmed else "deny"
 
 
