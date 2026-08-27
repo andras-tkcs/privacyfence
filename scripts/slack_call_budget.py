@@ -22,6 +22,7 @@ import argparse
 import collections
 import os
 import sys
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
@@ -41,6 +42,7 @@ TIER_PER_MINUTE = {
     "users.info": 100,
     "users.list": 20,
     "search.messages": 20,
+    "users.conversations": 100,  # matches conversations.members' tier
 }
 # Round trip to slack.com. The sync WebClient builds a fresh urllib opener
 # per call (no connection pooling), so each of these also pays a TLS
@@ -62,6 +64,15 @@ def _page(items, key, cursor, size):
     return Resp({key: items[start:start + size], "response_metadata": {"next_cursor": nxt}})
 
 
+def _channel_members(channel_id: str, n_users: int) -> list[str]:
+    """Deterministic synthetic membership (6 users) for one channel/group
+    chat -- varies by channel so conversations_members (the per-item fake)
+    and users_conversations (the fast-path fake) agree on who's in what,
+    without maintaining a second real membership table."""
+    idx = int(channel_id[1:])
+    return [f"U{(idx * 7 + j) % n_users:04d}" for j in range(6)]
+
+
 def make_fake_web_client(users, channels, ims, mpims, history_cap):
     class FakeWebClient:
         def __init__(self, *a, **k):
@@ -77,7 +88,20 @@ def make_fake_web_client(users, channels, ims, mpims, history_cap):
 
         def conversations_members(self, channel=None, **k):
             calls["conversations.members"] += 1
-            return Resp({"members": [f"U{i:04d}" for i in range(6)]})
+            return Resp({"members": _channel_members(channel, len(users))})
+
+        def users_conversations(self, user=None, types="", cursor=None, limit=200, **k):
+            calls["users.conversations"] += 1
+            ids: list[str] = []
+            for t in types.split(","):
+                t = t.strip()
+                if t in ("public_channel", "private_channel"):
+                    ids += [c["id"] for c in channels if user in _channel_members(c["id"], len(users))]
+                elif t == "mpim":
+                    ids += [c["id"] for c in mpims if user in _channel_members(c["id"], len(users))]
+                elif t == "im":
+                    ids += [d["id"] for d in ims if d["user"] == user]
+            return _page(ids, "channels", cursor, limit)
 
         def conversations_info(self, channel=None, **k):
             calls["conversations.info"] += 1
@@ -132,8 +156,16 @@ def wall_clock(counts: dict[str, int], distributed: bool) -> tuple[float, float,
 def run_case(label, fn, *, warm, fixtures, distributed):
     users, channels, ims, mpims = fixtures
     calls.clear()
-    client = sc.SlackClient("xoxp-fake")  # no cache files: directory caches off
     if warm:
+        # A real deployment always configures both cache files (see
+        # daemon_main.py) -- pointing them at a path that never gets
+        # written to keeps this fully offline while still exercising the
+        # "cache file configured" code paths (_resolve_user_name_cached,
+        # the users.conversations fast path) rather than the "no cache at
+        # all" fallback behavior.
+        client = sc.SlackClient(
+            "xoxp-fake", user_cache_file="/nonexistent/u.json", channel_cache_file="/nonexistent/c.json"
+        )
         client._user_cache = {
             u["id"]: sc.SlackUser(id=u["id"], name=u["name"], real_name=u["real_name"])
             for u in users
@@ -142,6 +174,16 @@ def run_case(label, fn, *, warm, fixtures, distributed):
         client._channel_is_mpim_cache = {
             c["id"]: bool(c.get("is_mpim")) for c in channels + ims + mpims
         }
+        # Mark both directories as already loaded and fresh -- otherwise
+        # the first cache-file-configured lookup would trigger a real
+        # (synchronous, since no snapshot has "loaded" yet) refresh walk.
+        now = datetime.now(timezone.utc)
+        client._user_directory_loaded_from_disk = True
+        client._user_directory_fetched_at = now
+        client._channel_directory_loaded_from_disk = True
+        client._channel_directory_fetched_at = now
+    else:
+        client = sc.SlackClient("xoxp-fake")  # no cache files: directory caches off
     calls.clear()
     fn(client)
     counts = dict(calls)
@@ -197,8 +239,9 @@ def main() -> int:
           f"{args.ims} DMs, {args.mpims} group DMs")
     print(f"Slack app: {'distributed outside the Marketplace (history/replies 1/min, 15 objects)' if args.distributed else 'internal or Marketplace-approved (history/replies Tier 3)'}")
     for warm in (True, False):
-        state = "directory caches WARM (steady state)" if warm else \
-                "directory caches COLD (first use, or the weekly TTL just expired)"
+        state = "directory caches WARM (steady state: user_cache_file/channel_cache_file configured, populated)" if warm else \
+                "directory caches DISABLED (user_cache_file/channel_cache_file unset -- a supported but non-default config; "\
+                "daemon_main.py always sets both, so production is always in the WARM state above shortly after startup)"
         print(f"\n{state}\n{'-' * 78}")
         for label, fn in cases:
             run_case(label, fn, warm=warm, fixtures=fixtures, distributed=args.distributed)
