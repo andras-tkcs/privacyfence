@@ -194,6 +194,76 @@ that long. Small next to R1–R4, but it is pure overhead on the critical path.
 
 ---
 
+## 3a. Why the existing directory caches don't fix this
+
+The `user_cache_file` / `channel_cache_file` snapshots do work, and they do exactly what they were
+built for. Same call, same workspace: **644 Slack API calls cold, 55 warm** — every one of the 600
+`users.info` calls eliminated. The reason the connector is still unusable is that the caches cover a
+different axis from the one that now dominates.
+
+### They cache `id → name`; every participant tool asks `name → conversations`
+
+`users.list` gives id→display name; `conversations.list` gives id→channel name and `is_mpim`.
+But `_matches_participant` is handed a *name* and has to find the conversations it belongs to, so it
+enumerates every DM, group chat and channel and string-compares each resolved name. Warm, each
+comparison is a free dict hit — but the enumeration is still O(n), and for group chats and channels
+enumerating means one API call per item.
+
+A reverse index (`display name` / `handle` / `email` → `user_id`), built once from the snapshot
+already on disk, turns "which DMs involve Bob" into a dict lookup plus an id comparison. That is
+P0.1 in §5, and it is a small addition on top of the existing caches, not a replacement for them.
+
+### `conversations.members` is not cached at all — and it is now the whole wall clock
+
+Neither snapshot carries membership; `conversations.list` doesn't return members for `mpim` or
+channel types, which is precisely why `_parse_group_chat` and `_channel_matches_participant` call
+`conversations.members` per item. With both caches present and stamped fresh today, one
+`slack_search_messages(participant=…)` still issues **66 live calls — 40 of them
+`conversations.members`**, and three identical `list_group_chats(participant=…)` calls in a row
+issue 40, then 80, then 120 cumulative member calls. There is no reuse between calls, and no reuse
+within one.
+
+There is also a better API for this question than caching would be.
+[`users.conversations`](https://api.slack.com/methods/users.conversations) accepts a `user`
+parameter and returns the conversations shared by the calling user and that user — one paginated
+call, in place of "enumerate everything, then ask who is in each". Combined with the reverse index
+above (which supplies the `user_id` from a name), `slack_list_channels(participant=…)` goes from
+**100 `conversations.members` calls to one**.
+
+### Cache *misses* are never remembered
+
+`get_user_info` writes to `_user_cache` only on success; on `SlackApiError` it raises,
+`_resolve_user_name` swallows it and returns `""`, and nothing is recorded. So any id absent from
+`users.list` costs a live, failing `users.info` **on every message it appears in, on every fetch,
+indefinitely.**
+
+The common case is bots. `_parse_message` uses `raw.get("user", "") or raw.get("bot_id", "")`, and
+`bot_id` values are `B…`, which never appear in `users.list`. Three identical
+`get_channel_history` calls against a channel carrying one CI-bot message produce 1, 2, then 3
+cumulative failing `users.info(B…)` calls. In the warm participant search above, that was **11
+wasted round trips — more than the `conversations.history` fetches themselves**. Deactivated users,
+deleted accounts and Slack Connect external users behave the same way. A negative-result cache (even
+a short-TTL one) removes the whole class.
+
+### Two ways a warm cache silently reverts to a cold one
+
+- **The TTL refresh runs on the request path.** One `get_user_info` against an 8-day-old snapshot
+  triggers ten sequential `users.list` pages before the popup can open. Startup warming only helps
+  sessions that begin after the boundary — this is R5, and it is the reason the "cold" column is not
+  a first-run-only curiosity.
+- **A bounded channel refresh is never persisted.** `refresh_channel_directory(max_pages=20)` — what
+  the `slack_refresh_channel_cache` tool uses — merges into memory but writes no file and stamps no
+  TTL unless the cursor is exhausted. Verified: `max_pages=2` cached 400 conversations and created no
+  cache file. A daemon restart mid-walk starts over at page one.
+
+One thing the caches are *not* guilty of: a failed refresh does not discard a good snapshot.
+`refresh_user_directory` raises before it reassigns `_user_cache`, so the disk entries keep serving
+and the 5-minute cooldown prevents a retry storm. The degraded case is a fresh install with no file
+yet — there, a failed `users.list` means every lookup is a live `users.info` for the next five
+minutes (measured: 50 lookups → 50 calls).
+
+---
+
 ## 4. Correctness bugs found alongside
 
 Independent of performance; both of the first two are demonstrated by targeted runs against a fake
@@ -220,12 +290,19 @@ Independent of performance; both of the first two are demonstrated by targeted r
    `slack_get_channel_history(limit=50)` returns 15 messages with nothing in the result saying it
    was truncated, so Claude reasons as though it read the whole window.
 
-5. **Substring participant matching fans out.** `_matches_participant` matches display names by
+5. **A message from a bot re-issues a failing `users.info` on every fetch, forever.**
+   `_parse_message` uses `raw.get("user", "") or raw.get("bot_id", "")`; `bot_id` values are `B…`
+   and never appear in `users.list`, so they always miss. `get_user_info` caches only successes, so
+   the miss is never remembered — measured at 1, 2, 3 cumulative failing calls across three
+   identical `get_channel_history` runs, and 11 wasted round trips inside one warm participant
+   search. Same for deactivated, deleted and Slack Connect users.
+
+6. **Substring participant matching fans out.** `_matches_participant` matches display names by
    substring, so `"user 7"` matches `User 7`, `User 70`…`User 79`. Each extra match costs a
    `conversations.history` call in `_search_by_participant`. Exact/prefix match with a substring
    fallback only when nothing matched exactly would fix both the cost and the false positives.
 
-6. **The directory caches are not thread-safe.** `_user_cache`, `_channel_name_cache`,
+7. **The directory caches are not thread-safe.** `_user_cache`, `_channel_name_cache`,
    `_channel_is_mpim_cache` and `_channel_refresh_cursor` are mutated from the `slack-cache-warm`
    thread (`daemon_main.py:497`) and from every `asyncio.to_thread` worker with no lock. The
    check-then-act in `_ensure_*_directory` can also start two full walks concurrently — the
@@ -233,7 +310,7 @@ Independent of performance; both of the first two are demonstrated by targeted r
    `refresh_channel_directory`'s read-modify-write of `_channel_refresh_cursor` can lose pages when
    the warm thread and the `slack_refresh_channel_cache` tool overlap.
 
-7. **Cold-cache participant search: maximum cost, zero value.** In the cold run, the 644-call
+8. **Cold-cache participant search: maximum cost, zero value.** In the cold run, the 644-call
    participant search returned **no results** — with the user directory empty, `_resolve_user_name`
    falls back to a raw id, so a name needle matches nothing. It spends six minutes to answer
    "nothing found", which is also wrong.
@@ -245,53 +322,61 @@ Independent of performance; both of the first two are demonstrated by targeted r
 ### P0 — makes the connector usable
 
 1. **Resolve participants through an index, not through the API.** Build a reverse index
-   (`display name` / `handle` / `email` → `user_id`) once from the cached user directory, resolve
-   the needle to ids up front, then match by id. This deletes the `users.info`×600 fan-out and lets
-   `list_group_chats`/`list_channels` skip most `conversations.members` calls entirely.
-   *Removes the single largest term in both the warm and cold columns.*
+   (`display name` / `handle` / `email` → `user_id`) once from the cached user directory — the
+   snapshot is already on disk, this only adds the reverse mapping — and resolve the needle to ids
+   up front. Then replace the per-item `conversations.members` walk with a single
+   `users.conversations(user=<id>)` call, which returns exactly the conversations shared with that
+   user. *Removes the single largest term in both the warm and cold columns: 100
+   `conversations.members` calls become one.*
 
-2. **Never make a live per-item lookup on the approval path.** `_resolve_user_name`,
+2. **Cache negative lookups.** `get_user_info` must record "this id has no resolvable user" (a
+   short TTL is enough) instead of raising and leaving nothing behind. Better still, skip the lookup
+   for `B…` ids entirely — they are bots and `users.info` will never resolve them. Removes §4.5
+   outright.
+
+3. **Never make a live per-item lookup on the approval path.** `_resolve_user_name`,
    `resolve_channel_name` and `resolve_is_group_dm` should be **cache-only** while a gated fetch is
    in progress, degrading to the raw id and letting the result carry a "run `slack_refresh_user_cache`"
    hint. Name decoration is not worth a minute of the user's time, and it is never load-bearing for
    the approval decision — the popup already shows the id when a name is unavailable.
 
-3. **Cap the fan-out explicitly.** `_search_by_participant` should stop hard-coding
+4. **Cap the fan-out explicitly.** `_search_by_participant` should stop hard-coding
    `max_results=1000` and should bound the number of conversations it reads history from (say 5),
    reporting the cap in the result. Tie `count` to the number of conversations rather than
    multiplying by it.
 
-4. **Pool connections and parallelise.** Either hand `WebClient` a pooled transport, or move the
+5. **Pool connections and parallelise.** Either hand `WebClient` a pooled transport, or move the
    connector to `slack_sdk.web.async_client.AsyncWebClient` (aiohttp, pooled, natively concurrent)
    and `asyncio.gather` the per-conversation fetches behind a small semaphore (4–6). Combined with
-   (1)–(3) this is the difference between 23 s and well under a second.
+   (1)–(4) this is the difference between 23 s and well under a second.
 
-5. **Get the stale-directory refresh off the request path.** `_ensure_*_directory` should never
+6. **Get the stale-directory refresh off the request path.** `_ensure_*_directory` should never
    refresh inline: serve the stale snapshot, schedule the refresh on the existing background warm
    thread, and make it single-flight under a lock.
 
-6. **Give the popups their own executor.** A dedicated single-thread `ThreadPoolExecutor` for
+7. **Give the popups their own executor.** A dedicated single-thread `ThreadPoolExecutor` for
    `show_read_popup` / `show_popup` / the confirmation dialogs, passed via
    `loop.run_in_executor`, so connector I/O can never starve the UI (R6). Cheap, and it fixes a
    whole class of "the app feels frozen" reports across every connector.
 
 ### P1 — makes the failure modes survivable
 
-7. **Emit `notifications/progress` from the bridge** every ~5 s while a call is outstanding. Free on
+8. **Emit `notifications/progress` from the bridge** every ~5 s while a call is outstanding. Free on
    hosts that ignore it, decisive on hosts that honour it.
-8. **Wire `extra.signal` to a new `cancel` IPC method** so an abandoned call stops instead of
+9. **Wire `extra.signal` to a new `cancel` IPC method** so an abandoned call stops instead of
    opening a stale approval window.
-9. **Replace the blanket `read_only` dedupe exemption** with write-invalidation per connector, so a
+10. **Replace the blanket `read_only` dedupe exemption** with write-invalidation per connector, so a
    timeout retry reuses the already-approved result instead of re-popping (R8).
-10. **Surface truncation** when Slack returns fewer messages than `limit` requested.
-11. **Lock the directory caches; make `_ensure_*` single-flight.**
+11. **Surface truncation** when Slack returns fewer messages than `limit` requested.
+12. **Lock the directory caches; make `_ensure_*` single-flight,** and persist a bounded
+    `refresh_channel_directory` walk (cursor included) so a restart resumes instead of restarting.
 
 ### P2 — correctness and hygiene
 
-12. Fix `list_channels`' filter-then-truncate ordering; paginate `conversations.members` (§4.1, §4.2).
-13. Drop the thread fetch from `slack_send_message`'s preview, or make it opt-in (§4.3).
-14. Move `detect_pii_categories` and `recent_matches` off the event loop (R9).
-15. **Verify the org's Slack app is internal** — single workspace, public distribution never
+13. Fix `list_channels`' filter-then-truncate ordering; paginate `conversations.members` (§4.1, §4.2).
+14. Drop the thread fetch from `slack_send_message`'s preview, or make it opt-in (§4.3).
+15. Move `detect_pii_categories` and `recent_matches` off the event loop (R9).
+16. **Verify the org's Slack app is internal** — single workspace, public distribution never
     activated — and say so explicitly in `docs/slack-setup.md`, with a warning that activating
     distribution drops `conversations.history`/`.replies` to 1 req/min and 15 messages.
 
