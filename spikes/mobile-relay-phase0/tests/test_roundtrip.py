@@ -98,7 +98,7 @@ class TestPairWakeDecideRoundTrip:
             params={"token": token, "request_id": request_id, "wait": 2},
         )
         assert daemon_poll.status_code == 200
-        assert daemon_poll.json() == {"request_id": request_id, "decision": "approved"}
+        assert daemon_poll.json() == {"request_id": request_id, "decision": "approved", "auth": ""}
 
     def test_deny_round_trips_too(self, relay_url: str) -> None:
         mailbox_id, token = pair(relay_url)
@@ -280,3 +280,55 @@ class TestStaleDecisionGuard:
             json={"request_id": "some-other-stale-request", "decision": "approved"},
         )
         assert resp.status_code == 410
+
+
+class TestAuthPassthrough:
+    """The relay stores and forwards an `auth` field opaquely -- never
+    generating, validating, or interpreting it itself -- so a caller can
+    layer its own decision-authentication scheme on top (see
+    src/privacyfence/mobile_relay_client.py's compute_auth_tag/
+    verify_auth_tag, added after this spike, for the real one)."""
+
+    def test_auth_field_round_trips_from_decision_post_to_decision_poll(self, relay_url: str) -> None:
+        mailbox_id, token = pair(relay_url)
+        request_id = str(uuid.uuid4())
+        requests.post(
+            f"{relay_url}/mailbox/{mailbox_id}",
+            params={"token": token},
+            json={"request_id": request_id, "payload": {}},
+        )
+
+        requests.post(
+            f"{relay_url}/mailbox/{mailbox_id}/decision",
+            params={"token": token},
+            json={"request_id": request_id, "decision": "approved", "auth": "opaque-tag-value"},
+        )
+
+        resp = requests.get(
+            f"{relay_url}/mailbox/{mailbox_id}/decision",
+            params={"token": token, "request_id": request_id, "wait": 0},
+        )
+        assert resp.json()["auth"] == "opaque-tag-value"
+
+    def test_omitted_auth_defaults_to_empty_string_not_a_missing_key(self, relay_url: str) -> None:
+        """A caller checking `body.get("auth", "")` must always find the
+        key present -- never having to distinguish "no auth field at all"
+        from "an empty one"."""
+        mailbox_id, token = pair(relay_url)
+        request_id = str(uuid.uuid4())
+        requests.post(
+            f"{relay_url}/mailbox/{mailbox_id}",
+            params={"token": token},
+            json={"request_id": request_id, "payload": {}},
+        )
+        requests.post(
+            f"{relay_url}/mailbox/{mailbox_id}/decision",
+            params={"token": token},
+            json={"request_id": request_id, "decision": "denied"},  # no "auth" key at all
+        )
+
+        resp = requests.get(
+            f"{relay_url}/mailbox/{mailbox_id}/decision",
+            params={"token": token, "request_id": request_id, "wait": 0},
+        )
+        assert resp.json()["auth"] == ""

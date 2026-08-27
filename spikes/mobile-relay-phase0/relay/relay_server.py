@@ -70,6 +70,14 @@ class PendingRequest:
     ttl_seconds: float
     decision: str | None = None
     decision_at: float | None = None
+    # Opaque pass-through only -- the relay never generates, validates, or
+    # interprets this. A caller that wants a decision authenticated end to
+    # end (peer identity + replay protection -- see
+    # src/privacyfence/mobile_relay_client.py's compute_auth_tag/
+    # verify_auth_tag, added in that real daemon client after this spike)
+    # sets it when posting a decision and checks it themselves when reading
+    # one back.
+    decision_auth: str = ""
 
     def is_expired(self, now: float) -> bool:
         return now - self.created_at > self.ttl_seconds
@@ -309,6 +317,7 @@ class RelayRequestHandler(BaseHTTPRequestHandler):
                 return
             pending.decision = decision
             pending.decision_at = time.time()
+            pending.decision_auth = body.get("auth", "")
 
         self._send_json(200, {"request_id": request_id, "decision": decision})
 
@@ -328,7 +337,11 @@ class RelayRequestHandler(BaseHTTPRequestHandler):
                 if pending is not None and pending.request_id == request_id:
                     if pending.decision is not None:
                         self._send_json(
-                            200, {"request_id": request_id, "decision": pending.decision}
+                            200,
+                            {
+                                "request_id": request_id, "decision": pending.decision,
+                                "auth": pending.decision_auth,
+                            },
                         )
                         return
                 elif pending is None:

@@ -729,6 +729,31 @@ class TestParseArgs:
         assert not any(getattr(args, other) for other in other_attrs)
 
 
+class TestParseArgsMobileFlags:
+    def test_defaults_have_no_mobile_flags_set(self):
+        args = daemon_main.parse_args([])
+        assert args.pair_mobile_device is False
+        assert args.list_mobile_devices is False
+        assert args.revoke_mobile_device is None
+        assert args.rotate_mobile_relay_identity is False
+
+    def test_pair_mobile_device_flag(self):
+        args = daemon_main.parse_args(["--pair-mobile-device"])
+        assert args.pair_mobile_device is True
+
+    def test_list_mobile_devices_flag(self):
+        args = daemon_main.parse_args(["--list-mobile-devices"])
+        assert args.list_mobile_devices is True
+
+    def test_revoke_mobile_device_takes_a_device_id(self):
+        args = daemon_main.parse_args(["--revoke-mobile-device", "dev123"])
+        assert args.revoke_mobile_device == "dev123"
+
+    def test_rotate_mobile_relay_identity_flag(self):
+        args = daemon_main.parse_args(["--rotate-mobile-relay-identity"])
+        assert args.rotate_mobile_relay_identity is True
+
+
 # ---------------------------------------------------------------------------- #
 # Instance lock
 # ---------------------------------------------------------------------------- #
@@ -891,6 +916,187 @@ class TestTelegramSetupRunner:
         assert code == 0
         assert captured["authorized"] is True
         assert captured["session_file"] in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------- #
+# Mobile device pairing/enrollment CLI (issue #55, Phase 2)
+# ---------------------------------------------------------------------------- #
+
+class TestMobileDeviceCLI:
+    def _patch_store(self, monkeypatch, tmp_path):
+        from privacyfence.mobile_relay_pairing import PairingStore
+
+        store = PairingStore(str(tmp_path / "store.json"))
+        monkeypatch.setattr(daemon_main, "_mobile_relay_pairing_store", lambda: store)
+        return store
+
+    def test_pair_mobile_device_no_relay_configured_returns_1(self, capsys):
+        code = daemon_main.run_pair_mobile_device({})
+        assert code == 1
+        assert "No relay configured" in capsys.readouterr().err
+
+    def test_pair_mobile_device_begin_pairing_failure_returns_1(self, monkeypatch, tmp_path, capsys):
+        from privacyfence.mobile_relay_client import MobileRelayClientError
+
+        self._patch_store(monkeypatch, tmp_path)
+
+        def raiser(*a, **kw):
+            raise MobileRelayClientError("relay unreachable")
+        monkeypatch.setattr("privacyfence.mobile_relay_pairing.begin_pairing", raiser)
+
+        code = daemon_main.run_pair_mobile_device({
+            "mobile_relay": {"enabled": True, "relay_url": "https://r"},
+        })
+
+        assert code == 1
+        assert "relay unreachable" in capsys.readouterr().err
+
+    def test_pair_mobile_device_handshake_failure_returns_1(self, monkeypatch, tmp_path, capsys):
+        from privacyfence.mobile_relay_pairing import MobileRelayPairingError, PairingSession
+
+        self._patch_store(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            "privacyfence.mobile_relay_pairing.begin_pairing",
+            lambda relay_url, identity, **kw: PairingSession(
+                relay_url=relay_url, mailbox_id="m", token="t",
+                daemon_public_key=identity.public_key, pairing_secret=b"\x00" * 32,
+                expires_at=__import__("time").time() + 60,
+            ),
+        )
+
+        def raiser(*a, **kw):
+            raise MobileRelayPairingError("no handshake received")
+        monkeypatch.setattr("privacyfence.mobile_relay_pairing.complete_pairing", raiser)
+
+        code = daemon_main.run_pair_mobile_device({
+            "mobile_relay": {"enabled": True, "relay_url": "https://r"},
+        })
+
+        assert code == 1
+        assert "no handshake received" in capsys.readouterr().err
+
+    def test_pair_mobile_device_success_saves_device_and_prints_payload(self, monkeypatch, tmp_path, capsys):
+        import time as time_module
+
+        from privacyfence.mobile_relay_pairing import PairedDevice, PairingSession
+
+        store = self._patch_store(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            "privacyfence.mobile_relay_pairing.begin_pairing",
+            lambda relay_url, identity, **kw: PairingSession(
+                relay_url=relay_url, mailbox_id="mbox1", token="tok1",
+                daemon_public_key=identity.public_key, pairing_secret=b"\x00" * 32,
+                expires_at=time_module.time() + 60,
+            ),
+        )
+        fake_device = PairedDevice(
+            device_id="dev1", device_name="Alice's iPhone", device_public_key=b"\x00" * 32,
+            mailbox_id="mbox1", token="tok1", shared_key=b"\x00" * 32, paired_at=time_module.time(),
+        )
+        monkeypatch.setattr(
+            "privacyfence.mobile_relay_pairing.complete_pairing", lambda session, identity, **kw: fake_device,
+        )
+
+        code = daemon_main.run_pair_mobile_device({
+            "mobile_relay": {"enabled": True, "relay_url": "https://relay.example.org:8765"},
+        })
+
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "mbox1" in out  # the printed QR payload
+        assert "Alice's iPhone" in out
+        assert [d.device_id for d in store.list_active_devices()] == ["dev1"]
+
+
+class TestListMobileDevicesRunner:
+    def _patch_store(self, monkeypatch, tmp_path):
+        from privacyfence.mobile_relay_pairing import PairingStore
+
+        store = PairingStore(str(tmp_path / "store.json"))
+        monkeypatch.setattr(daemon_main, "_mobile_relay_pairing_store", lambda: store)
+        return store
+
+    def test_no_devices_prints_none_paired(self, monkeypatch, tmp_path, capsys):
+        self._patch_store(monkeypatch, tmp_path)
+
+        code = daemon_main.run_list_mobile_devices()
+
+        assert code == 0
+        assert "No devices paired" in capsys.readouterr().out
+
+    def test_lists_active_and_revoked_devices(self, monkeypatch, tmp_path, capsys):
+        from privacyfence.mobile_relay_pairing import PairedDevice
+
+        store = self._patch_store(monkeypatch, tmp_path)
+        store.add_device(PairedDevice(
+            device_id="dev1", device_name="Active Phone", device_public_key=b"\x00" * 32,
+            mailbox_id="m1", token="t1", shared_key=b"\x00" * 32, paired_at=0.0,
+        ))
+        store.add_device(PairedDevice(
+            device_id="dev2", device_name="Revoked Phone", device_public_key=b"\x00" * 32,
+            mailbox_id="m2", token="t2", shared_key=b"\x00" * 32, paired_at=0.0,
+        ))
+        store.revoke("dev2")
+
+        code = daemon_main.run_list_mobile_devices()
+
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "dev1" in out and "Active Phone" in out and "active" in out
+        assert "dev2" in out and "Revoked Phone" in out and "revoked" in out
+
+
+class TestRevokeMobileDeviceRunner:
+    def _patch_store(self, monkeypatch, tmp_path):
+        from privacyfence.mobile_relay_pairing import PairingStore
+
+        store = PairingStore(str(tmp_path / "store.json"))
+        monkeypatch.setattr(daemon_main, "_mobile_relay_pairing_store", lambda: store)
+        return store
+
+    def test_revoking_an_active_device_succeeds(self, monkeypatch, tmp_path, capsys):
+        from privacyfence.mobile_relay_pairing import PairedDevice
+
+        store = self._patch_store(monkeypatch, tmp_path)
+        store.add_device(PairedDevice(
+            device_id="dev1", device_name="Phone", device_public_key=b"\x00" * 32,
+            mailbox_id="m", token="t", shared_key=b"\x00" * 32, paired_at=0.0,
+        ))
+
+        code = daemon_main.run_revoke_mobile_device("dev1")
+
+        assert code == 0
+        assert "Revoked device dev1" in capsys.readouterr().out
+        assert store.list_active_devices() == []
+
+    def test_revoking_an_unknown_device_returns_1(self, monkeypatch, tmp_path, capsys):
+        self._patch_store(monkeypatch, tmp_path)
+
+        code = daemon_main.run_revoke_mobile_device("does-not-exist")
+
+        assert code == 1
+        assert "No active device" in capsys.readouterr().err
+
+
+class TestRotateMobileRelayIdentityRunner:
+    def test_rotating_revokes_active_devices_and_reports_the_count(self, monkeypatch, tmp_path, capsys):
+        from privacyfence.mobile_relay_pairing import PairedDevice, PairingStore
+
+        store = PairingStore(str(tmp_path / "store.json"))
+        monkeypatch.setattr(daemon_main, "_mobile_relay_pairing_store", lambda: store)
+        original_identity = store.get_or_create_identity()
+        store.add_device(PairedDevice(
+            device_id="dev1", device_name="Phone", device_public_key=b"\x00" * 32,
+            mailbox_id="m", token="t", shared_key=b"\x00" * 32, paired_at=0.0,
+        ))
+
+        code = daemon_main.run_rotate_mobile_relay_identity()
+
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "revoked all 1" in out
+        assert store.list_active_devices() == []
+        assert store.get_or_create_identity().private_key != original_identity.private_key
 
 
 # ---------------------------------------------------------------------------- #
@@ -1351,7 +1557,20 @@ class TestInitMobileRelayApprovalUI:
     own lazy `from .menu_bar import run_menu_bar` regardless of this
     feature, which needs a real rumps install this test file's own
     environment may not have; the function under test here never touches
-    menu_bar at all."""
+    menu_bar at all.
+
+    Phase 2 moved mailbox_id/token/shared_key out of org_config.json into a
+    local PairingStore (mobile_relay_client.py's relay_url_from_org_config
+    docstring explains why) -- _mobile_relay_pairing_store() is monkeypatched
+    to point at a tmp_path store instead of this installation's real one.
+    """
+
+    def _patch_store(self, monkeypatch, tmp_path):
+        from privacyfence.mobile_relay_pairing import PairingStore
+
+        store = PairingStore(str(tmp_path / "store.json"))
+        monkeypatch.setattr(daemon_main, "_mobile_relay_pairing_store", lambda: store)
+        return store
 
     def test_no_mobile_relay_section_leaves_the_default_native_ui_in_place(self):
         from privacyfence.approval_ui import NativeApprovalUI, get_approval_ui
@@ -1364,24 +1583,61 @@ class TestInitMobileRelayApprovalUI:
         from privacyfence.approval_ui import NativeApprovalUI, get_approval_ui
 
         daemon_main._init_mobile_relay_approval_ui({
-            "mobile_relay": {"enabled": False, "relay_url": "https://r", "mailbox_id": "m",
-                              "token": "t", "shared_key_base64": "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMA=="},
+            "mobile_relay": {"enabled": False, "relay_url": "https://relay.example.org:8765"},
         })
 
         assert isinstance(get_approval_ui(), NativeApprovalUI)
 
-    def test_valid_enabled_section_installs_a_composite_racing_native_and_mobile(self):
-        import base64
+    def test_missing_relay_url_leaves_the_default_native_ui_in_place(self):
+        from privacyfence.approval_ui import NativeApprovalUI, get_approval_ui
 
+        daemon_main._init_mobile_relay_approval_ui({"mobile_relay": {"enabled": True}})
+
+        assert isinstance(get_approval_ui(), NativeApprovalUI)
+
+    def test_enabled_relay_but_no_paired_devices_leaves_the_default_native_ui_in_place(
+        self, monkeypatch, tmp_path,
+    ):
+        from privacyfence.approval_ui import NativeApprovalUI, get_approval_ui
+
+        self._patch_store(monkeypatch, tmp_path)
+        org_config = {"mobile_relay": {"enabled": True, "relay_url": "https://relay.example.org:8765"}}
+
+        daemon_main._init_mobile_relay_approval_ui(org_config)
+
+        assert isinstance(get_approval_ui(), NativeApprovalUI)
+
+    def test_enabled_relay_with_only_revoked_devices_leaves_the_default_native_ui_in_place(
+        self, monkeypatch, tmp_path,
+    ):
+        from privacyfence.approval_ui import NativeApprovalUI, get_approval_ui
+        from privacyfence.mobile_relay_pairing import PairedDevice
+
+        store = self._patch_store(monkeypatch, tmp_path)
+        device = PairedDevice(
+            device_id="dev1", device_name="Phone", device_public_key=b"\x00" * 32,
+            mailbox_id="m", token="t", shared_key=b"\x00" * 32, paired_at=0.0,
+        )
+        store.add_device(device)
+        store.revoke("dev1")
+        org_config = {"mobile_relay": {"enabled": True, "relay_url": "https://relay.example.org:8765"}}
+
+        daemon_main._init_mobile_relay_approval_ui(org_config)
+
+        assert isinstance(get_approval_ui(), NativeApprovalUI)
+
+    def test_enabled_relay_with_an_active_device_installs_a_composite(self, monkeypatch, tmp_path):
         from privacyfence.approval_ui import NativeApprovalUI, get_approval_ui
         from privacyfence.composite_approval_ui import CompositeApprovalUI
         from privacyfence.mobile_relay_approval_ui import MobileRelayApprovalUI
+        from privacyfence.mobile_relay_pairing import PairedDevice
 
-        org_config = {"mobile_relay": {
-            "enabled": True, "relay_url": "https://relay.example.org:8765",
-            "mailbox_id": "mbox1", "token": "tok1",
-            "shared_key_base64": base64.b64encode(b"0" * 32).decode("ascii"),
-        }}
+        store = self._patch_store(monkeypatch, tmp_path)
+        store.add_device(PairedDevice(
+            device_id="dev1", device_name="Phone", device_public_key=b"\x00" * 32,
+            mailbox_id="m", token="t", shared_key=b"\x00" * 32, paired_at=0.0,
+        ))
+        org_config = {"mobile_relay": {"enabled": True, "relay_url": "https://relay.example.org:8765"}}
 
         daemon_main._init_mobile_relay_approval_ui(org_config)
 
@@ -1389,15 +1645,8 @@ class TestInitMobileRelayApprovalUI:
         assert isinstance(ui, CompositeApprovalUI)
         assert isinstance(ui._native, NativeApprovalUI)
         assert isinstance(ui._mobile, MobileRelayApprovalUI)
-
-    def test_incomplete_section_leaves_the_default_native_ui_in_place(self):
-        from privacyfence.approval_ui import NativeApprovalUI, get_approval_ui
-
-        daemon_main._init_mobile_relay_approval_ui({
-            "mobile_relay": {"enabled": True, "relay_url": "https://r"},  # missing mailbox_id/token/key
-        })
-
-        assert isinstance(get_approval_ui(), NativeApprovalUI)
+        assert ui._mobile._relay_url == "https://relay.example.org:8765"
+        assert ui._mobile._pairing_store is store
 
 
 # ---------------------------------------------------------------------------- #
@@ -1460,6 +1709,46 @@ class TestMain:
 
         assert result == 0
         assert len(calls) == 1
+
+    def test_pair_mobile_device_flag_dispatches_with_org_config(self, monkeypatch):
+        self._patch_config(monkeypatch)
+        calls = []
+        monkeypatch.setattr(daemon_main, "run_pair_mobile_device", lambda org_config: calls.append(org_config) or 0)
+
+        result = daemon_main.main(["--pair-mobile-device"])
+
+        assert result == 0
+        assert calls == [{}]
+
+    def test_list_mobile_devices_flag_dispatches_with_no_org_config_arg(self, monkeypatch):
+        self._patch_config(monkeypatch)
+        calls = []
+        monkeypatch.setattr(daemon_main, "run_list_mobile_devices", lambda: calls.append(1) or 0)
+
+        result = daemon_main.main(["--list-mobile-devices"])
+
+        assert result == 0
+        assert calls == [1]
+
+    def test_revoke_mobile_device_flag_dispatches_with_the_device_id(self, monkeypatch):
+        self._patch_config(monkeypatch)
+        calls = []
+        monkeypatch.setattr(daemon_main, "run_revoke_mobile_device", lambda device_id: calls.append(device_id) or 0)
+
+        result = daemon_main.main(["--revoke-mobile-device", "dev123"])
+
+        assert result == 0
+        assert calls == ["dev123"]
+
+    def test_rotate_mobile_relay_identity_flag_dispatches(self, monkeypatch):
+        self._patch_config(monkeypatch)
+        calls = []
+        monkeypatch.setattr(daemon_main, "run_rotate_mobile_relay_identity", lambda: calls.append(1) or 0)
+
+        result = daemon_main.main(["--rotate-mobile-relay-identity"])
+
+        assert result == 0
+        assert calls == [1]
 
     def test_fatal_exception_is_caught_prints_error_and_returns_1(self, monkeypatch, capsys):
         self._patch_config(monkeypatch)

@@ -1,19 +1,33 @@
-"""MobileRelayApprovalUI (issue #55, Phase 1): an ApprovalUI backend that
-routes a gate's popup through the mobile relay's mailbox instead of a native
-macOS dialog.
+"""MobileRelayApprovalUI (issue #55): an ApprovalUI backend that routes a
+gate's popup through the mobile relay's mailbox instead of a native macOS
+dialog.
 
 Used standalone this would make mobile the *only* approval surface; in
 practice it's always wrapped by CompositeApprovalUI (composite_approval_ui.py)
 alongside NativeApprovalUI, so a phone answers *in addition to*, never
-*instead of*, the existing desktop popup -- issue #55's requirement 5 ("the
-existing desktop popup keeps working unmodified").
+*instead of*, the existing desktop popup -- issue #55's requirement 5.
+
+**Multi-device (Phase 2).** This backend doesn't hold one device's
+connection -- it holds a PairingStore (mobile_relay_pairing.py) and reads
+`list_active_devices()` fresh on *every* call, then races all of them
+concurrently: the same first-response-wins mechanics CompositeApprovalUI
+uses one level up, applied here across N phones instead of native-vs-mobile.
+The first device to produce a trustworthy decision wins; the others are
+told to stop (an internal abandon event, same idea as the outer one
+CompositeApprovalUI sets when native wins) but their own eventual
+request/response is otherwise irrelevant -- the exact same "loser left
+running in the background, correctness doesn't depend on it stopping
+promptly" reasoning as composite_approval_ui.py's own docstring. Racing
+against zero devices (a store with no active pairings) is a well-defined
+case too: an immediate deny, same as any other "nothing to answer this"
+outcome, so the composite still just falls back to whatever native does.
 
 Accept/Deny only -- no Always-allow / accept-all from mobile, per issue
-#55's own reasoning: a phone can be handed off or glanced at half-asleep, so
-it must never be the surface that grants a standing or time-limited rule.
-Every method here that has a chosen_index in its return contract therefore
-returns None for it unconditionally; a "decision" from this backend is
-always exactly "approved" or "denied" (mapped to "accept"/"deny").
+#55's own reasoning: a phone can be handed off or glanced at half-asleep,
+so it must never be the surface that grants a standing or time-limited
+rule. Every method here that has a chosen_index in its return contract
+therefore returns None for it unconditionally; a "decision" from this
+backend is always exactly "approved" or "denied" (mapped to "accept"/"deny").
 
 Text-only parity for now: title, preview, full details_text, and the PII/
 content-flag categories (issue #55's requirement 4 -- the red-tinted PII
@@ -30,12 +44,14 @@ second renderer) is Phase 3's job -- see issue #55's phasing and the
 from __future__ import annotations
 
 import logging
+import queue
 import threading
 import uuid
 from typing import Any
 
 from .approval_ui import ApprovalUI
 from .mobile_relay_client import MobileRelayClient, MobileRelayClientError
+from .mobile_relay_pairing import PairingStore
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +66,21 @@ DEFAULT_REQUEST_TIMEOUT_SECONDS = 300.0
 
 class MobileRelayApprovalUI(ApprovalUI):
     def __init__(
-        self, client: MobileRelayClient, *, request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        self,
+        relay_url: str,
+        pairing_store: PairingStore,
+        *,
+        request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
     ) -> None:
-        self._client = client
+        self._relay_url = relay_url
+        self._pairing_store = pairing_store
         self._request_timeout_seconds = request_timeout_seconds
+        # Duck-typed, read by CompositeApprovalUI/gate.py's own future
+        # "answered from mobile, by device X" audit wiring (see
+        # audit_log.py's answered_via field) -- not itself wired up yet
+        # (that's its own follow-up, not Phase 2 scope). "" means either
+        # native answered or no mobile decision was reached at all.
+        self.last_answered_device_name: str = ""
 
     def show_popup(
         self,
@@ -149,33 +176,61 @@ class MobileRelayApprovalUI(ApprovalUI):
         )
         return decision == "approved"
 
-    def _request_decision(self, payload: dict[str, Any], abandon_event: threading.Event | None) -> str:
-        """Post `payload` as a new request and block for its decision.
+    def _request_decision(self, payload: dict[str, Any], outer_abandon_event: threading.Event | None) -> str:
+        """Post `payload` to every currently-active paired device and
+        return the first trustworthy decision any of them produces --
+        "denied" if there are no active devices, every device fails to
+        even post the request, or none answers within the timeout.
 
-        Any failure to even post the request (relay unreachable, bad
-        config) is treated the same as "no mobile decision" -- denied, not
-        raised -- since a phone that can't be reached must never block or
-        fail a call the native popup can still answer (issue #55's
-        requirement 5). CompositeApprovalUI's own race is what actually
-        lets the native side win in that case; this method just needs to
-        resolve to *something* rather than propagate the exception.
+        Deliberately never raises: a phone (or every phone) being
+        unreachable must never fail a call the native popup (raced
+        alongside this by CompositeApprovalUI) can still answer, per issue
+        #55's requirement 5.
         """
-        request_id = uuid.uuid4().hex
-        should_abandon = abandon_event.is_set if abandon_event is not None else (lambda: False)
-
-        try:
-            self._client.post_request(request_id, payload, ttl_seconds=self._request_timeout_seconds)
-        except MobileRelayClientError as exc:
-            logger.warning("Could not post approval request %s to mobile relay: %s", request_id, exc)
+        self.last_answered_device_name = ""
+        devices = self._pairing_store.list_active_devices()
+        if not devices:
+            logger.info("Mobile relay has no active paired devices -- treating this call as denied")
             return "denied"
 
-        decision = self._client.poll_decision(
-            request_id, overall_timeout_seconds=self._request_timeout_seconds, should_abandon=should_abandon,
-        )
-        if decision is None:
-            logger.info(
-                "No trustworthy mobile decision for request %s within timeout -- "
-                "treating as denied (fail closed)", request_id,
+        internal_abandon_event = threading.Event()
+
+        def should_abandon() -> bool:
+            return internal_abandon_event.is_set() or (
+                outer_abandon_event is not None and outer_abandon_event.is_set()
             )
-            return "denied"
-        return decision
+
+        results: queue.Queue[tuple[str, str | None]] = queue.Queue()
+
+        def run(device_name: str, config, request_id: str) -> None:
+            client = MobileRelayClient(config)
+            try:
+                client.post_request(request_id, payload, ttl_seconds=self._request_timeout_seconds)
+            except MobileRelayClientError as exc:
+                logger.warning("Could not post approval request to device %r: %s", device_name, exc)
+                results.put((device_name, None))
+                return
+            decision = client.poll_decision(
+                request_id, overall_timeout_seconds=self._request_timeout_seconds, should_abandon=should_abandon,
+            )
+            results.put((device_name, decision))
+
+        for device in devices:
+            threading.Thread(
+                target=run,
+                args=(device.device_name, device.to_config(self._relay_url), uuid.uuid4().hex),
+                daemon=True,
+            ).start()
+
+        for _ in range(len(devices)):
+            device_name, decision = results.get()
+            if decision is not None:
+                internal_abandon_event.set()
+                self.last_answered_device_name = device_name
+                return decision
+
+        logger.info(
+            "No trustworthy decision from any of %d paired device(s) within timeout -- "
+            "treating as denied (fail closed)", len(devices),
+        )
+        return "denied"

@@ -48,6 +48,8 @@ import os
 import shutil
 import sys
 import threading
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -114,6 +116,7 @@ TOKEN_FILES: dict[str, str] = {
     "salesforce": "credentials/salesforce_token.json",
     "atlassian": "credentials/atlassian_token.json",
     "telegram": "credentials/telegram.session",
+    "mobile_relay": "credentials/mobile_relay_devices.json",
 }
 
 _lock_fd: int | None = None
@@ -701,18 +704,120 @@ def run_telegram_setup() -> int:
 
 
 # ---------------------------------------------------------------------------- #
+# Mobile remote approval: pairing/enrollment CLI (issue #55, Phase 2)
+# ---------------------------------------------------------------------------- #
+# No settings-window UI for this yet (tracked, not cut -- see mobile_relay_
+# pairing.py's own module docstring); these four flags are the concrete
+# enrollment/management path this phase actually ships, mirroring the
+# existing --*-oauth flags' "simple CLI setup step, run occasionally by a
+# human" shape.
+
+def run_pair_mobile_device(org_config: dict[str, Any]) -> int:
+    from .mobile_relay_client import MobileRelayClientError, relay_url_from_org_config
+    from .mobile_relay_pairing import MobileRelayPairingError, begin_pairing, complete_pairing
+
+    relay_url = relay_url_from_org_config(org_config)
+    if relay_url is None:
+        print(
+            "No relay configured. Ask your organization admin to enable mobile_relay in "
+            "org_config.json (see scripts/build_org_bundle.py --mobile-relay-url).",
+            file=sys.stderr,
+        )
+        return 1
+
+    store = _mobile_relay_pairing_store()
+    identity = store.get_or_create_identity()
+    try:
+        session = begin_pairing(relay_url, identity)
+    except MobileRelayClientError as exc:
+        print(f"Could not start pairing: {exc}", file=sys.stderr)
+        return 1
+
+    print(
+        "Scan this on the phone you want to pair (no QR rendering yet -- see "
+        "mobile_relay_pairing.py's module docstring; a settings-window UI is a future "
+        "phase's job, this is the raw payload it would encode):\n"
+    )
+    print(json.dumps(session.qr_payload(), indent=2))
+    print(f"\nWaiting up to {int(session.expires_at - time.time())}s for the device to respond...")
+
+    try:
+        device = complete_pairing(session, identity)
+    except MobileRelayPairingError as exc:
+        print(f"Pairing failed: {exc}", file=sys.stderr)
+        return 1
+
+    store.add_device(device)
+    print(f"Paired device {device.device_name!r} (id {device.device_id}).")
+    return 0
+
+
+def run_list_mobile_devices() -> int:
+    store = _mobile_relay_pairing_store()
+    devices = store.list_all_devices()
+    if not devices:
+        print("No devices paired.")
+        return 0
+    for device in devices:
+        status = "revoked" if device.revoked else "active"
+        paired_at = datetime.fromtimestamp(device.paired_at, tz=timezone.utc).isoformat()
+        print(f"{device.device_id}  {device.device_name!r}  {status}  paired {paired_at}")
+    return 0
+
+
+def run_revoke_mobile_device(device_id: str) -> int:
+    store = _mobile_relay_pairing_store()
+    if store.revoke(device_id):
+        print(f"Revoked device {device_id}.")
+        return 0
+    print(f"No active device with id {device_id!r} (already revoked, or never paired).", file=sys.stderr)
+    return 1
+
+
+def run_rotate_mobile_relay_identity() -> int:
+    store = _mobile_relay_pairing_store()
+    active_before = len(store.list_active_devices())
+    store.rotate_identity()
+    print(
+        f"Rotated this Mac's mobile-approval identity key. This revoked all {active_before} "
+        "previously-active device(s) -- see mobile_relay_pairing.py's module docstring on why "
+        "rotation is revoke-and-re-pair, not in-place. Run --pair-mobile-device again for each "
+        "phone that should still be able to approve requests."
+    )
+    return 0
+
+
+# ---------------------------------------------------------------------------- #
 # Main app
 # ---------------------------------------------------------------------------- #
 
+def _mobile_relay_pairing_store():
+    """Local import (see _init_mobile_relay_approval_ui's own docstring for
+    why) -- returns a PairingStore over this installation's own devices
+    file (TOKEN_FILES["mobile_relay"]), same per-user local-secret
+    convention as every OAuth token file here."""
+    from .mobile_relay_pairing import PairingStore
+
+    return PairingStore(_resolve_path(TOKEN_FILES["mobile_relay"]))
+
+
 def _init_mobile_relay_approval_ui(org_config: dict[str, Any]) -> None:
-    """Issue #55, Phase 1: if org_config.json's "mobile_relay" section is
-    present, enabled, and complete, race the native popup against the
-    mobile relay's mailbox for every approval from here on -- additive
+    """Issue #55: if org_config.json's "mobile_relay" section is enabled
+    and names a relay_url, AND at least one device has been paired (see
+    --pair-mobile-device below), race the native popup against every
+    active paired device for every approval from here on -- additive
     alongside the existing desktop popup, never instead of it (requirement
-    5). A deployment with no mobile_relay section configured takes this
-    function's early-return path and sees zero behavior change: get_
-    approval_ui() keeps lazily defaulting to a bare NativeApprovalUI, same
-    as before this feature existed.
+    5). Either condition missing takes this function's early-return path
+    and leaves get_approval_ui() lazily defaulting to a bare
+    NativeApprovalUI, same as before this feature existed.
+
+    relay_url is the only mobile-relay-related thing org_config.json still
+    holds (org-wide, no secrets, IT-provisioned) -- mailbox_id/token/
+    shared_key are per-device secrets that live in this installation's own
+    local PairingStore now, never in the same file every user in the org
+    receives an identical copy of. See mobile_relay_client.py's
+    relay_url_from_org_config() docstring for why Phase 1 briefly got this
+    wrong.
 
     Imports are local, not at module level, for the same reason menu_bar's
     own import below is local: approval_ui.py (and everything it pulls in)
@@ -723,16 +828,25 @@ def _init_mobile_relay_approval_ui(org_config: dict[str, Any]) -> None:
     from .approval_ui import NativeApprovalUI, init_approval_ui
     from .composite_approval_ui import CompositeApprovalUI
     from .mobile_relay_approval_ui import MobileRelayApprovalUI
-    from .mobile_relay_client import MobileRelayClient, MobileRelayConfig
+    from .mobile_relay_client import relay_url_from_org_config
 
-    relay_config = MobileRelayConfig.from_org_config(org_config)
-    if relay_config is None:
+    relay_url = relay_url_from_org_config(org_config)
+    if relay_url is None:
         return
-    mobile_ui = MobileRelayApprovalUI(MobileRelayClient(relay_config))
+    store = _mobile_relay_pairing_store()
+    active_devices = store.list_active_devices()
+    if not active_devices:
+        logger.info(
+            "Mobile relay is enabled in org_config.json but no device has been paired yet "
+            "(see --pair-mobile-device) -- desktop popup only for now"
+        )
+        return
+    mobile_ui = MobileRelayApprovalUI(relay_url, store)
     init_approval_ui(CompositeApprovalUI(NativeApprovalUI(), mobile_ui))
     logger.info(
-        "Mobile remote approval enabled (issue #55): racing the desktop popup against relay %s",
-        relay_config.relay_url,
+        "Mobile remote approval enabled (issue #55): racing the desktop popup against %d "
+        "paired device(s) via relay %s",
+        len(active_devices), relay_url,
     )
 
 
@@ -845,6 +959,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--salesforce-oauth", action="store_true")
     parser.add_argument("--atlassian-oauth", action="store_true")
     parser.add_argument("--telegram-setup", action="store_true")
+    parser.add_argument(
+        "--pair-mobile-device", action="store_true",
+        help="Pair a new phone for mobile remote approval (issue #55). Prints the pairing "
+             "payload (no QR rendering yet) and waits for the phone to complete the handshake.",
+    )
+    parser.add_argument("--list-mobile-devices", action="store_true")
+    parser.add_argument("--revoke-mobile-device", metavar="DEVICE_ID")
+    parser.add_argument(
+        "--rotate-mobile-relay-identity", action="store_true",
+        help="Generate a fresh identity key for mobile approval, revoking every currently-"
+             "paired device in the process (see mobile_relay_pairing.py's module docstring).",
+    )
     return parser.parse_args(argv)
 
 
@@ -856,7 +982,10 @@ def main(argv: list[str] | None = None) -> int:
         or args.calendar_oauth or args.tasks_oauth or args.apps_script_oauth
         or args.slack_oauth
         or args.salesforce_oauth or args.atlassian_oauth or args.telegram_setup
+        or args.pair_mobile_device
     )
+    mobile_device_management_flag = bool(args.list_mobile_devices or args.revoke_mobile_device
+                                          or args.rotate_mobile_relay_identity)
 
     try:
         config = load_config(args.config)
@@ -889,6 +1018,15 @@ def main(argv: list[str] | None = None) -> int:
                 return run_atlassian_oauth(org_config)
             if args.telegram_setup:
                 return run_telegram_setup()
+            if args.pair_mobile_device:
+                return run_pair_mobile_device(org_config)
+        if mobile_device_management_flag:
+            if args.list_mobile_devices:
+                return run_list_mobile_devices()
+            if args.revoke_mobile_device:
+                return run_revoke_mobile_device(args.revoke_mobile_device)
+            if args.rotate_mobile_relay_identity:
+                return run_rotate_mobile_relay_identity()
         return run_app(config, args.config)
     except Exception as exc:
         logger.error("Fatal error: %s", exc, exc_info=True)

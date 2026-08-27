@@ -1,11 +1,12 @@
-"""Tests for mobile_relay_client.py (issue #55, Phase 1).
+"""Tests for mobile_relay_client.py (issue #55).
 
 Focus: the two things Phase 0's spike explicitly didn't do -- payload
-confidentiality (AES-256-GCM under a shared key) and decision authenticity
-(HMAC tag binding a decision to one request_id, so a device that doesn't
-hold the shared key can't forge one, and a captured tag can't be replayed
-onto a different request) -- plus MobileRelayConfig's fail-closed parsing of
-org_config.json's mobile_relay section.
+confidentiality (AES-256-GCM under a key) and decision authenticity (HMAC
+tag binding a decision to one request_id, so a device that doesn't hold the
+key can't forge one, and a captured tag can't be replayed onto a different
+request) -- plus relay_url_from_org_config()'s fail-closed parsing of
+org_config.json's mobile_relay section, and the pairing-handshake-only
+raw request/decision methods mobile_relay_pairing.py builds on.
 """
 from __future__ import annotations
 
@@ -14,12 +15,17 @@ import json
 
 import pytest
 import requests
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from privacyfence.mobile_relay_client import (
     MobileRelayClient,
     MobileRelayClientError,
     MobileRelayConfig,
+    compute_auth_tag,
+    decrypt_payload,
+    encrypt_payload,
+    relay_url_from_org_config,
+    request_new_mailbox,
+    verify_auth_tag,
 )
 
 VALID_KEY = b"0" * 32
@@ -74,55 +80,101 @@ class _FakeSession:
 
 
 # ---------------------------------------------------------------------------- #
-# MobileRelayConfig.from_org_config
+# relay_url_from_org_config
 # ---------------------------------------------------------------------------- #
 
-class TestMobileRelayConfigFromOrgConfig:
+class TestRelayUrlFromOrgConfig:
     def test_missing_section_returns_none(self):
-        assert MobileRelayConfig.from_org_config({}) is None
+        assert relay_url_from_org_config({}) is None
 
     def test_disabled_section_returns_none(self):
+        org_config = {"mobile_relay": {"enabled": False, "relay_url": "https://r"}}
+        assert relay_url_from_org_config(org_config) is None
+
+    def test_missing_url_returns_none(self):
+        org_config = {"mobile_relay": {"enabled": True}}
+        assert relay_url_from_org_config(org_config) is None
+
+    def test_valid_section_returns_url_with_trailing_slash_stripped(self):
+        org_config = {"mobile_relay": {"enabled": True, "relay_url": "https://relay.example.org:8765/"}}
+        assert relay_url_from_org_config(org_config) == "https://relay.example.org:8765"
+
+    def test_does_not_read_mailbox_id_token_or_shared_key(self):
+        """Regression guard for the Phase 1 design this replaced: those are
+        per-device secrets now (mobile_relay_pairing.PairingStore), never
+        org-wide config -- see relay_url_from_org_config's own docstring."""
         org_config = {"mobile_relay": {
-            "enabled": False, "relay_url": "https://r", "mailbox_id": "m", "token": "t",
-            "shared_key_base64": VALID_KEY_B64,
+            "enabled": True, "relay_url": "https://r",
+            "mailbox_id": "should-be-ignored", "token": "should-be-ignored",
+            "shared_key_base64": "should-be-ignored",
         }}
-        assert MobileRelayConfig.from_org_config(org_config) is None
+        assert relay_url_from_org_config(org_config) == "https://r"
 
-    @pytest.mark.parametrize("missing_field", ["relay_url", "mailbox_id", "token", "shared_key_base64"])
-    def test_missing_required_field_returns_none(self, missing_field):
-        section = {
-            "enabled": True, "relay_url": "https://r", "mailbox_id": "m", "token": "t",
-            "shared_key_base64": VALID_KEY_B64,
-        }
-        del section[missing_field]
-        assert MobileRelayConfig.from_org_config({"mobile_relay": section}) is None
 
-    def test_invalid_base64_returns_none(self):
-        section = {
-            "enabled": True, "relay_url": "https://r", "mailbox_id": "m", "token": "t",
-            "shared_key_base64": "not-valid-base64!!!",
-        }
-        assert MobileRelayConfig.from_org_config({"mobile_relay": section}) is None
+# ---------------------------------------------------------------------------- #
+# encrypt_payload / decrypt_payload / compute_auth_tag / verify_auth_tag
+# ---------------------------------------------------------------------------- #
 
-    def test_wrong_key_length_returns_none(self):
-        short_key_b64 = base64.b64encode(b"too-short").decode("ascii")
-        section = {
-            "enabled": True, "relay_url": "https://r", "mailbox_id": "m", "token": "t",
-            "shared_key_base64": short_key_b64,
-        }
-        assert MobileRelayConfig.from_org_config({"mobile_relay": section}) is None
+class TestCryptoHelpers:
+    def test_encrypt_then_decrypt_round_trips(self):
+        payload = {"tool": "gmail.send_message", "preview": {"To": "alice@example.com"}}
+        ciphertext_b64 = encrypt_payload(VALID_KEY, payload)
+        assert decrypt_payload(VALID_KEY, ciphertext_b64) == payload
 
-    def test_valid_section_builds_config(self):
-        section = {
-            "enabled": True, "relay_url": "https://relay.example.org:8765/", "mailbox_id": "mbox1",
-            "token": "tok1", "shared_key_base64": VALID_KEY_B64,
-        }
-        config = MobileRelayConfig.from_org_config({"mobile_relay": section})
-        assert config is not None
-        assert config.relay_url == "https://relay.example.org:8765"  # trailing slash stripped
-        assert config.mailbox_id == "mbox1"
-        assert config.token == "tok1"
-        assert config.shared_key == VALID_KEY
+    def test_decrypt_with_wrong_key_fails(self):
+        ciphertext_b64 = encrypt_payload(VALID_KEY, {"a": 1})
+        wrong_key = b"1" * 32
+        with pytest.raises(Exception):  # cryptography's InvalidTag
+            decrypt_payload(wrong_key, ciphertext_b64)
+
+    def test_verify_auth_tag_accepts_a_correctly_computed_tag(self):
+        tag = compute_auth_tag(VALID_KEY, "req1", "approved")
+        assert verify_auth_tag(VALID_KEY, "req1", "approved", tag) is True
+
+    def test_verify_auth_tag_rejects_wrong_key(self):
+        tag = compute_auth_tag(VALID_KEY, "req1", "approved")
+        assert verify_auth_tag(b"1" * 32, "req1", "approved", tag) is False
+
+    def test_verify_auth_tag_rejects_empty_string(self):
+        assert verify_auth_tag(VALID_KEY, "req1", "approved", "") is False
+
+
+# ---------------------------------------------------------------------------- #
+# request_new_mailbox
+# ---------------------------------------------------------------------------- #
+
+class TestRequestNewMailbox:
+    def test_returns_mailbox_id_and_token(self):
+        session = _FakeSession(post_responses=[
+            _FakeResponse(201, {"mailbox_id": "mbox1", "token": "tok1"}),
+        ])
+
+        mailbox_id, token = request_new_mailbox("https://relay.example.org:8765", session=session)
+
+        assert (mailbox_id, token) == ("mbox1", "tok1")
+        assert session.post_calls[0]["url"] == "https://relay.example.org:8765/pair"
+
+    def test_strips_trailing_slash_from_relay_url(self):
+        session = _FakeSession(post_responses=[_FakeResponse(201, {"mailbox_id": "m", "token": "t"})])
+
+        request_new_mailbox("https://relay.example.org:8765/", session=session)
+
+        assert session.post_calls[0]["url"] == "https://relay.example.org:8765/pair"
+
+    def test_network_error_raises_client_error(self):
+        session = _FakeSession(post_responses=[requests.ConnectionError("down")])
+        with pytest.raises(MobileRelayClientError):
+            request_new_mailbox("https://r", session=session)
+
+    def test_non_201_status_raises_client_error(self):
+        session = _FakeSession(post_responses=[_FakeResponse(500, text="oops")])
+        with pytest.raises(MobileRelayClientError):
+            request_new_mailbox("https://r", session=session)
+
+    def test_malformed_response_raises_client_error(self):
+        session = _FakeSession(post_responses=[_FakeResponse(201, {"unexpected": "shape"})])
+        with pytest.raises(MobileRelayClientError):
+            request_new_mailbox("https://r", session=session)
 
 
 # ---------------------------------------------------------------------------- #
@@ -155,10 +207,7 @@ class TestPostRequest:
         client.post_request("req1", original, ttl_seconds=120)
 
         ciphertext_b64 = session.post_calls[0]["json"]["payload"]["ciphertext"]
-        blob = base64.b64decode(ciphertext_b64)
-        nonce, ciphertext = blob[:12], blob[12:]
-        plaintext = AESGCM(VALID_KEY).decrypt(nonce, ciphertext, None)
-        assert json.loads(plaintext) == original
+        assert decrypt_payload(VALID_KEY, ciphertext_b64) == original
 
     def test_two_calls_use_different_nonces(self):
         session = _FakeSession(post_responses=[_FakeResponse(201), _FakeResponse(201)])
@@ -191,13 +240,7 @@ class TestPostRequest:
 # ---------------------------------------------------------------------------- #
 
 def valid_auth(config: MobileRelayConfig, request_id: str, decision: str) -> str:
-    import hashlib
-    import hmac as hmac_module
-
-    digest = hmac_module.new(
-        config.shared_key, f"{request_id}:{decision}".encode("utf-8"), hashlib.sha256
-    ).digest()
-    return base64.b64encode(digest).decode("ascii")
+    return compute_auth_tag(config.shared_key, request_id, decision)
 
 
 class TestPollDecision:
@@ -298,3 +341,65 @@ class TestPollDecision:
 
         assert result == "denied"
         assert len(session.get_calls) == 2
+
+
+# ---------------------------------------------------------------------------- #
+# poll_for_request_raw / post_decision_raw (pairing-handshake-only methods)
+# ---------------------------------------------------------------------------- #
+
+class TestPollForRequestRaw:
+    def test_returns_request_id_and_raw_payload_undecrypted(self):
+        config = make_config()
+        session = _FakeSession(get_responses=[
+            _FakeResponse(200, {"request_id": "__pairing__", "payload": {"ciphertext": "opaque-blob"}}),
+        ])
+        client = MobileRelayClient(config, session=session)
+
+        result = client.poll_for_request_raw(overall_timeout_seconds=5)
+
+        assert result == ("__pairing__", {"ciphertext": "opaque-blob"})
+
+    def test_204_keeps_polling_until_timeout_then_returns_none(self):
+        config = make_config()
+        session = _FakeSession(get_responses=[_FakeResponse(204)])
+        client = MobileRelayClient(config, session=session)
+
+        result = client.poll_for_request_raw(overall_timeout_seconds=0.3, long_poll_seconds=0.1)
+
+        assert result is None
+
+    def test_network_error_is_retried_not_fatal(self):
+        config = make_config()
+        session = _FakeSession(get_responses=[
+            requests.ConnectionError("blip"),
+            _FakeResponse(200, {"request_id": "r1", "payload": {"x": 1}}),
+        ])
+        client = MobileRelayClient(config, session=session)
+
+        result = client.poll_for_request_raw(overall_timeout_seconds=5, long_poll_seconds=0.1)
+
+        assert result == ("r1", {"x": 1})
+
+
+class TestPostDecisionRaw:
+    def test_posts_decision_with_caller_supplied_auth(self):
+        session = _FakeSession(post_responses=[_FakeResponse(200)])
+        client = MobileRelayClient(make_config(), session=session)
+
+        client.post_decision_raw("__pairing__", "approved", auth="custom-tag")
+
+        call = session.post_calls[0]
+        assert call["url"] == "https://relay.example.org:8765/mailbox/mbox1/decision"
+        assert call["json"] == {"request_id": "__pairing__", "decision": "approved", "auth": "custom-tag"}
+
+    def test_network_error_raises_client_error(self):
+        session = _FakeSession(post_responses=[requests.ConnectionError("down")])
+        client = MobileRelayClient(make_config(), session=session)
+        with pytest.raises(MobileRelayClientError):
+            client.post_decision_raw("r1", "approved", auth="tag")
+
+    def test_non_200_status_raises_client_error(self):
+        session = _FakeSession(post_responses=[_FakeResponse(409, text="already decided")])
+        client = MobileRelayClient(make_config(), session=session)
+        with pytest.raises(MobileRelayClientError):
+            client.post_decision_raw("r1", "approved", auth="tag")

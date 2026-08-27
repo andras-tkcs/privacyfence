@@ -14,7 +14,7 @@ For the product overview, governance model, screenshots, supported systems, and 
 - [Always allow for writes](#always-allow-for-writes)
 - [Reading and proposing auto-accept changes from the bridge](#reading-and-proposing-auto-accept-changes-from-the-bridge)
 - [Scheduled / unattended Cowork tasks](#scheduled--unattended-cowork-tasks)
-- [Mobile remote approval (issue #55, Phase 1) — experimental](#mobile-remote-approval-issue-55-phase-1--experimental)
+- [Mobile remote approval (issue #55) — experimental](#mobile-remote-approval-issue-55--experimental)
 - [Audit log](#audit-log)
 - [Security, privacy & compliance](#security-privacy--compliance)
 - [Installation](#installation)
@@ -1169,59 +1169,87 @@ display is currently missing.
 
 ---
 
-## Mobile remote approval (issue #55, Phase 1) — experimental
+## Mobile remote approval (issue #55) — experimental
 
 Lets a paired phone answer a `review`/`popup` gate's approval dialog instead of requiring someone
 at the Mac itself. See [issue #55](https://github.com/andras-tkcs/privacyfence/issues/55) for the
 full architecture (an on-prem relay, reachable only over a pinned-key WireGuard tunnel, as the
-Mac's and phone's shared mailbox) and its phasing. This is Phase 1: the daemon wired in as a pure
-outbound mailbox client via the `ApprovalUI` seam (`approval_ui.py`) — `gate.py` itself is
-unchanged. Not yet shipped: real pairing/enrollment UX, multi-device support, key rotation (Phase
-2), and the production phone app (Phase 3) — Phase 0's spike PWA under `spikes/mobile-relay-phase0/`
-is a throwaway prototype only, never pointed at a real deployment.
+Mac's and phone's shared mailbox) and its phasing. Phase 1 wired the daemon in as a pure outbound
+mailbox client via the `ApprovalUI` seam (`approval_ui.py`) — `gate.py` itself is unchanged. Phase
+2 (this section) replaced Phase 1's single pre-shared mailbox key with real pairing/enrollment,
+multi-device support, revocation, and key rotation. Still not shipped: the production phone app and
+a settings-window pairing UI (Phase 3) — Phase 0's spike PWA under `spikes/mobile-relay-phase0/` is
+a throwaway prototype only, never pointed at a real deployment.
 
-**Off by default**, same as unattended sessions above — set in `org_config.json`, never
-`settings.yaml` (a per-organization choice: IT hosts and owns the relay). Build it with
-[scripts/build_org_bundle.py](../scripts/build_org_bundle.py)'s `--mobile-relay-*` flags:
+**Off by default**, same as unattended sessions above. `org_config.json` (never `settings.yaml`)
+holds only the org-wide relay address — no secrets, since every user in an org receives an
+identical copy of this file:
 
 ```json
-{
-  "mobile_relay": {
-    "enabled": true,
-    "relay_url": "http://10.55.0.1:8765",
-    "mailbox_id": "<minted by the relay's /pair endpoint>",
-    "token": "<minted alongside it>",
-    "shared_key_base64": "<32 random bytes, base64 -- --mobile-relay-generate-key mints one>"
-  }
-}
+{ "mobile_relay": { "enabled": true, "relay_url": "http://10.55.0.1:8765" } }
 ```
 
-When present and enabled, `daemon_main.py`'s `_init_mobile_relay_approval_ui()` installs a
-`CompositeApprovalUI` (`composite_approval_ui.py`) wrapping the existing `NativeApprovalUI`
-alongside a new `MobileRelayApprovalUI` (`mobile_relay_approval_ui.py`) — every popup races both,
-first response wins, and the desktop dialog keeps working completely unmodified either way
-(requirement 5). `mobile_relay_client.py` is the actual outbound HTTP client: it AES-256-GCM
-encrypts every request payload to the shared key before it reaches the relay (the relay only ever
-sees ciphertext) and requires an HMAC-SHA256 tag, bound to that specific request's ID, on every
-decision before trusting it — a relay that only holds the mailbox token, or an attacker replaying
-an old decision against a different request, can't forge or misapply one. One shared key stands in
-for Phase 2's real per-device keys, so this phase supports exactly one paired phone.
+Build it with `--mobile-relay-url`/`--disable-mobile-relay` in
+[scripts/build_org_bundle.py](../scripts/build_org_bundle.py). Per-device mailbox/token/key
+material is per-user local state instead (`credentials/mobile_relay_devices.json`, 0600 — same
+convention as every OAuth token file in `daemon_main.py`'s `TOKEN_FILES`), because Phase 1
+originally put it in `org_config.json` directly, which in hindsight would have meant every user's
+daemon sharing one mailbox and one key anyone in the org could decrypt and answer for (see
+`mobile_relay_client.py`'s `relay_url_from_org_config()` docstring).
+
+**Pairing** (`mobile_relay_pairing.py`) is real X25519 key agreement, not a shared secret: the
+daemon holds one long-term identity keypair; each paired device gets its own mailbox and its own
+key, derived via ECDH + HKDF between the daemon's identity and that device's public key — never a
+value either side chose or sent across the wire. A one-time `pairing_secret` protects only the
+bootstrap handshake message (the phone announcing its public key) and is discarded immediately
+after. No settings-window UI or QR-code rendering exists yet, so enrollment is CLI-driven for now:
+
+```sh
+privacyfence-app --pair-mobile-device       # prints the pairing payload, waits for the phone
+privacyfence-app --list-mobile-devices
+privacyfence-app --revoke-mobile-device <device_id>
+privacyfence-app --rotate-mobile-relay-identity   # revokes every device; re-pair each one after
+```
+
+Revocation is entirely local and instant (`PairingStore.revoke()` flips one flag in that JSON
+file) — no phone cooperation needed, and `MobileRelayApprovalUI` re-reads the active device list on
+every call, so it takes effect on the very next approval, no daemon restart. Rotating the daemon's
+own identity key is deliberately coarse: since every device's key was derived from it, rotating
+invalidates every current pairing at once (revoke-and-re-pair, not an in-place re-key) — see that
+module's own docstring for why a smoother scheme isn't required here.
+
+When enabled with at least one active paired device, `daemon_main.py`'s
+`_init_mobile_relay_approval_ui()` installs a `CompositeApprovalUI` (`composite_approval_ui.py`)
+wrapping the existing `NativeApprovalUI` alongside a `MobileRelayApprovalUI`
+(`mobile_relay_approval_ui.py`) — every popup races native against *every currently-active paired
+device at once* (multi-device support), first response wins, and the desktop dialog keeps working
+completely unmodified either way (requirement 5). `mobile_relay_client.py` is the actual outbound
+HTTP client: it AES-256-GCM encrypts every request payload to that device's derived key before it
+reaches the relay (the relay only ever sees ciphertext) and requires an HMAC-SHA256 tag, bound to
+that specific request's ID, on every decision before trusting it — a relay that only holds the
+mailbox token, or an attacker replaying an old decision against a different request, can't forge or
+misapply one.
 
 **Known gaps, tracked as follow-ups, not silent cuts:**
-- If the phone answers first, the native popup has no way to close itself early today
+- If a phone answers first, the native popup has no way to close itself early today
   (`approval_window.py`'s modal loop only exits via its own button click) — it just sits open,
   answered or not, until a human at the Mac clicks something, at which point the click is a no-op
   (the mailbox's per-request-ID idempotency is what actually prevents a stale click from being
   applied — not a cancellation signal). Adding a real abort path needs
   `scripts/qa_popup_smoke.py` verification on real hardware.
-- The relay is never told a request was answered by the desktop popup instead, so a phone that
-  answers after that point has its decision accepted by the relay but simply never read.
+- The relay is never told a request was answered elsewhere (by the desktop popup, or by a
+  different paired device), so the loser's own mailbox just goes unread rather than being told to
+  stop.
 - Mobile approval is text-only for now — `preview_bytes`/`pdf_bytes` (image/PDF embeds) and
   `preview_tables`/`preview_blocks` (structured previews) don't cross the relay yet; a request that
   relies on one of those for full parity is mobile-visible only via its plain-text fields.
 - The audit log's `answered_via` field (`audit_log.py`) exists in the schema but isn't populated
   yet — wiring it into `gate.py`'s own decision recording needs a change to several call sites
   there that's deliberately out of scope for the change that introduced the field itself.
+  `MobileRelayApprovalUI.last_answered_device_name` already tracks which specific device answered,
+  ready for whenever that wiring lands.
+- No settings-window pairing/device-list UI or QR-code rendering -- `--pair-mobile-device` prints
+  the raw pairing payload as JSON today.
 
 ---
 
