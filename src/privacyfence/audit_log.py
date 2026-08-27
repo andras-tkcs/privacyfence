@@ -41,13 +41,17 @@ class AuditEntry:
     sender: str
     decision: str           # "approved" | "rejected" | "auto_accepted" | "accepted_via_accept_all" |
                             # "accepted_via_temp_session" | "denied_unattended" | "policy_check" |
-                            # "rules_listed" |
+                            # "rules_listed" | "cancelled" |
                             # "unattended_session_started" | "unattended_session_ended" |
                             # "rule_changed_via_bridge_proposal" | "rule_removed_via_bridge_proposal" |
                             # "grant_changed_via_bridge_proposal" | "grant_removed_via_bridge_proposal" |
                             # "bridge_proposal_no_op" | "error"
                             # ("error": gate.py's gated_call exited without reaching a normal decision
                             #  branch -- a fallback so an unanticipated failure still leaves a trail)
+                            # ("cancelled": the bridge told the daemon to give up on this request
+                            #  (ipc.py's "cancel" method) -- the MCP client that issued the
+                            #  corresponding tool call gave up on it first, most often because it
+                            #  timed out. Distinct from "error": an expected outcome, not a bug.)
                             # ("denied_unattended": gate.py denied the call without ever prompting,
                             #  because the connection was in an unattended session and no auto-accept
                             #  rule matched -- distinct from "rejected", which is a human's own Deny.
@@ -188,6 +192,7 @@ class AuditLogger:
             "grant_removed_via_bridge_proposal":  PatternFill("solid", fgColor="FFF3CD"),
             "bridge_proposal_no_op": PatternFill("solid", fgColor="F1F3F5"),
             "error":                 PatternFill("solid", fgColor="FF6B6B"),
+            "cancelled":             PatternFill("solid", fgColor="E9ECEF"),
         }
 
         ws.append(HEADERS)

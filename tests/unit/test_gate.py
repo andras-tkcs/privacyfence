@@ -2473,6 +2473,65 @@ class TestPiiAndAuditWorkOffTheEventLoop:
         assert len(ticks) > 5
 
 
+class TestCancellation:
+    """gated_call's own asyncio.CancelledError handling -- what runs when
+    the daemon's IPC server cancels this coroutine's Task in response to a
+    "cancel" request (ipc.py's module docstring): the request still owes
+    exactly one audit entry, now decision="cancelled" instead of the
+    generic "error" fallback.
+    """
+
+    async def test_cancellation_while_waiting_on_the_popup_records_cancelled(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((False, "")))
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        release = threading.Event()
+
+        def slow_popup(*a, **k):
+            release.wait(timeout=2.0)
+            return ("deny", None)
+
+        monkeypatch.setattr(gate, "show_read_popup", slow_popup)
+
+        task = asyncio.create_task(gate.gated_call(**base_kwargs(gate="review")))
+        await asyncio.sleep(0.05)  # let it reach _run_in_popup_executor
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        release.set()  # let the still-blocked popup thread finish; don't leak it
+
+        entries = read_audit_entries(audit_dir)
+        assert entries[-1]["decision"] == "cancelled"
+
+    async def test_cancellation_before_reaching_the_popup_records_cancelled(self, monkeypatch, audit_dir):
+        # Cancelled while queued behind _popup_lock, before show_read_popup
+        # is ever called -- the common case now that P0 shrank most fetches
+        # well under a client's timeout: the clock only still runs out on
+        # the popup wait itself, not the work leading up to it.
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((False, "")))
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        called = []
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: (called.append(1), ("deny", None))[1])
+
+        async def hold_the_lock():
+            async with gate._popup_lock:
+                await asyncio.sleep(2.0)
+
+        holder = asyncio.create_task(hold_the_lock())
+        await asyncio.sleep(0.02)
+        task = asyncio.create_task(gate.gated_call(**base_kwargs(gate="review")))
+        await asyncio.sleep(0.02)  # let it start waiting on _popup_lock
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        holder.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await holder
+
+        assert called == []  # never reached the popup at all
+        entries = read_audit_entries(audit_dir)
+        assert entries[-1]["decision"] == "cancelled"
+
+
 class TestRunInPopupExecutor:
     """gate._run_in_popup_executor -- the dedicated single-thread executor
     every native dialog call runs on (see docs/slack-performance-review.md's

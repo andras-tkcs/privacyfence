@@ -93,6 +93,13 @@ class IPCServer:
         # listen-then-write-files ordering.
         self._token: str = ""
         self._inflight: dict[str, tuple[asyncio.Future, float]] = {}
+        # (id(writer), request "id") -> the asyncio.Task dispatching that
+        # request, for as long as it's in flight -- what the "cancel"
+        # method (see ipc.py's module docstring) looks up to call .cancel()
+        # on. Keyed by connection identity too, not just the request id
+        # alone: each bridge connection's own id counter starts fresh, so
+        # two different connections can otherwise reuse the same id.
+        self._request_tasks: dict[tuple[int, Any], asyncio.Task] = {}
         # connector name -> time.time() of its most recently *completed*
         # write (a non-read_only tool call that didn't raise). See
         # _call_connector's read-reuse check just below _inflight's own
@@ -214,11 +221,19 @@ class IPCServer:
 
     async def _dispatch(self, raw: bytes, writer: asyncio.StreamWriter) -> None:
         req_id = None
+        task_key: tuple[int, Any] | None = None
         try:
             msg = json.loads(raw)
             req_id = msg.get("id")
             method = msg.get("method")
             params = msg.get("params", {})
+            # Registered before dispatching to any handler (including
+            # "cancel" itself, though nothing ever targets a cancel request
+            # -- it completes far too fast) so "cancel" can look this
+            # request up by id the instant its own message is parsed.
+            if req_id is not None:
+                task_key = (id(writer), req_id)
+                self._request_tasks[task_key] = asyncio.current_task()  # type: ignore[assignment]
 
             if method == "health":
                 result = {"version": VERSION, "connectors": list(self._connectors)}
@@ -227,6 +242,8 @@ class IPCServer:
             elif method == "call":
                 with unattended_scope(id(writer) in self._unattended_connections):
                     result = await self._call_connector(params)
+            elif method == "cancel":
+                result = self._cancel_request(id(writer), params)
             elif method == "check_policy":
                 result = self._check_policy(params)
             elif method == "list_rules":
@@ -242,9 +259,33 @@ class IPCServer:
                 raise ValueError(f"Unknown method: {method!r}")
 
             await self._send(writer, {"id": req_id, "result": result})
+        except asyncio.CancelledError:
+            # This request's own task was the target of a "cancel" -- still
+            # owed exactly one response so the bridge's own pending-request
+            # map doesn't leak a promise nothing will ever resolve. _send is
+            # itself best-effort (catches and logs), so no extra guard
+            # needed around it here.
+            logger.info("Request %s cancelled", req_id)
+            await self._send(writer, {"id": req_id, "error": "cancelled"})
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.error("IPC dispatch error for request %s: %s", req_id, exc, exc_info=True)
             await self._send(writer, {"id": req_id, "error": str(exc)})
+        finally:
+            if task_key is not None:
+                self._request_tasks.pop(task_key, None)
+
+    def _cancel_request(self, writer_id: int, params: dict) -> dict:
+        """Handler for the "cancel" method -- see ipc.py's module docstring
+        for the full contract. Synchronous and immediate: finding and
+        signalling the target task never itself needs to await anything.
+        """
+        target_id = params.get("target_id")
+        task = self._request_tasks.get((writer_id, target_id))
+        if task is None or task.done():
+            return {"cancelled": False}
+        task.cancel()
+        return {"cancelled": True}
 
     async def _call_connector(self, params: dict) -> Any:
         connector_name = params["connector"]
@@ -299,6 +340,19 @@ class IPCServer:
         try:
             with reason_scope(reason):
                 result = await connector.call(tool, args)
+        except asyncio.CancelledError:
+            # Not caught by "except Exception" below -- CancelledError is a
+            # BaseException. Popped from _inflight immediately (rather than
+            # left as a done-but-cancelled entry for the dedupe TTL) so a
+            # later, genuinely new identical call starts fresh instead of
+            # being handed -- or itself immediately cancelled by -- this
+            # one's outcome. A concurrent duplicate already awaiting this
+            # exact fut still correctly observes the cancellation; it holds
+            # its own reference to fut independent of the dict.
+            self._inflight.pop(key, None)
+            if not fut.done():
+                fut.cancel()
+            raise
         except Exception as exc:
             fut.set_exception(exc)
             fut.exception()  # mark retrieved so an unwaited future doesn't log "never retrieved"

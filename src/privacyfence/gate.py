@@ -762,6 +762,21 @@ async def gated_call(
 
             audit(decision="rejected", auto_accept_rule="", pii_detected=bool(upload_pii_categories))
             raise RuntimeError("Request denied by user")
+    except asyncio.CancelledError:
+        # The bridge asked the daemon to give up on this request (see
+        # ipc.py's "cancel" method) -- an expected, named outcome, not a
+        # bug, so it gets its own decision rather than falling through to
+        # the generic "error" fallback below. If this fires while still
+        # waiting on a native popup, the dialog itself can't be closed this
+        # way and stays on screen (see ipc.py's own docstring) -- this
+        # entry is still the accurate record of what Claude received:
+        # nothing, because nothing was waiting anymore by the time (if
+        # ever) a human answered it.
+        audit(
+            decision="cancelled", auto_accept_rule="",
+            pii_detected=bool(pii_categories or upload_pii_categories),
+        )
+        raise
     finally:
         if not audited:
             logger.error(

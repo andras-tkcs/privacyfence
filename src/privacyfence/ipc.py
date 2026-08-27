@@ -44,6 +44,35 @@ Methods
 health        {} → {"version": "<str>", "connectors": ["gmail", …]}
 manifest      {} → {"version": "<str>", "connectors": [{"name": "<str>", "tools": [{ToolSpec.to_dict()}]}]}
 call          {"connector": "<str>", "tool": "<str>", "args": {…}} → <tool result>
+cancel        {"target_id": "<str>"} → {"cancelled": <bool>}
+              Requests that the in-flight "call" whose own JSON-RPC "id" was
+              target_id stop as soon as possible -- what the bridge sends
+              when the MCP client that issued the corresponding tool call
+              gives up on it (its own request AbortSignal fires), so the
+              daemon doesn't keep working on, or open an approval popup
+              for, a request nobody is waiting on anymore.
+
+              Cooperative, not forcible: it calls .cancel() on the asyncio
+              Task dispatching target_id, which raises CancelledError at
+              its next await point. If that request is still fetching data
+              (the common case now that most of what used to be slow is
+              fixed -- see docs/slack-performance-review.md), this stops it
+              there, before any popup opens, and gated_call records its own
+              audit entry (decision="cancelled") in its finally block. If it
+              has already reached a native approval popup, the dialog
+              itself can't be closed this way (it's a blocking call on a
+              worker thread, not something the cancelled coroutine still
+              owns) and stays on screen -- cancelling just means nothing is
+              listening for its outcome anymore once a human eventually
+              answers it, same as if the connection had simply dropped.
+
+              cancelled is true if a matching in-flight request was found
+              (whether or not it happened to still be cancellable at that
+              exact moment), false if none was -- already finished, already
+              cancelled, or never existed. Never errors either way, and
+              carries no audit entry of its own; the cancelled request's own
+              decision="cancelled" entry (or its normal completion, if
+              cancel lost the race) is the whole record.
 check_policy  {"connector": "<str>", "tool": "<str>", "args": {…}, "reason": "<str>"} →
               {"gate": "auto"|"review"|"popup",
                "verdict": "auto_accept"|"requires_review"|"unknown",
