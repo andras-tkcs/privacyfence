@@ -589,6 +589,48 @@ class TestListChannels:
         channels = client.list_channels(max_results=5)
         assert len(channels) == 5
 
+    def test_participant_match_past_max_results_is_still_found(self):
+        # Regression for bug #1 in docs/slack-performance-review.md: a
+        # participant filter used to truncate to the first max_results raw
+        # channels *before* filtering, so a match sitting past that cutoff
+        # was silently invisible. Page 1 is 100 non-matching channels; the
+        # one matching channel is on page 2 -- with max_results=100 this
+        # must still be found, not dropped for "already having enough" raw
+        # channels.
+        web_client = MagicMock()
+        page1 = {"channels": [{"id": f"C{i:04d}", "name": f"c{i}"} for i in range(100)],
+                 "response_metadata": {"next_cursor": "page2"}}
+        page2 = {"channels": [{"id": "C0100", "name": "eng"}], "response_metadata": {}}
+        web_client.conversations_list.side_effect = [page1, page2]
+        web_client.users_conversations.return_value = {"channels": ["C0100"], "response_metadata": {}}
+        client = make_client(web_client)
+
+        channels = client.list_channels(participant="U1", max_results=100)
+
+        assert [c.id for c in channels] == ["C0100"]
+
+    def test_participant_match_past_max_results_is_found_via_fallback_walk_too(self):
+        # Same regression as above, but through the per-channel fallback
+        # path -- a name (not a raw id) with no directory configured, so
+        # _resolve_participant_user_ids can't resolve it and falls back to
+        # id-then-name membership matching.
+        web_client = MagicMock()
+        page1 = {"channels": [{"id": f"C{i:04d}", "name": f"c{i}"} for i in range(100)],
+                 "response_metadata": {"next_cursor": "page2"}}
+        page2 = {"channels": [{"id": "C0100", "name": "eng"}], "response_metadata": {}}
+        web_client.conversations_list.side_effect = [page1, page2]
+        members_by_channel = {f"C{i:04d}": [] for i in range(100)}
+        members_by_channel["C0100"] = ["U1"]
+        web_client.conversations_members.side_effect = (
+            lambda channel=None, **k: {"members": members_by_channel[channel]}
+        )
+        web_client.users_info.return_value = {"user": {"id": "U1", "name": "bob", "real_name": "Bob Smith"}}
+        client = make_client(web_client)
+
+        channels = client.list_channels(participant="bob", max_results=100)
+
+        assert [c.id for c in channels] == ["C0100"]
+
     def test_channel_name_cache_populated_during_listing(self):
         web_client = MagicMock()
         web_client.conversations_list.return_value = {
@@ -793,7 +835,7 @@ class TestListGroupChats:
             )
         ]
         assert web_client.conversations_list.call_args.kwargs["types"] == "mpim"
-        web_client.conversations_members.assert_called_once_with(channel="G1", limit=1000)
+        web_client.conversations_members.assert_called_once_with(channel="G1", limit=1000, cursor=None)
 
     def test_participant_filter_matches_any_member(self):
         # conversations_members/users_info are keyed by argument rather than
@@ -861,7 +903,7 @@ class TestListGroupChats:
         )
         # only the matching chat's membership is ever resolved -- G2 is
         # filtered out before it's parsed at all.
-        web_client.conversations_members.assert_called_once_with(channel="G1", limit=1000)
+        web_client.conversations_members.assert_called_once_with(channel="G1", limit=1000, cursor=None)
 
     def test_unresolvable_members_reads_as_empty_not_raising(self):
         web_client = MagicMock()
@@ -1053,6 +1095,23 @@ class TestResolveUserNameCached:
 
 
 class TestResolveMembersCache:
+    def test_paginates_past_the_first_page(self):
+        # Regression for bug #2 in docs/slack-performance-review.md: a
+        # channel with more than 1000 members used to silently lose
+        # everyone past the first page.
+        web_client = MagicMock()
+        web_client.conversations_members.side_effect = [
+            {"members": [f"U{i:04d}" for i in range(1000)], "response_metadata": {"next_cursor": "page2"}},
+            {"members": ["U1000"], "response_metadata": {}},
+        ]
+        client = make_client(web_client)
+
+        members = client._resolve_members("C1")
+
+        assert len(members) == 1001
+        assert "U1000" in members
+        assert web_client.conversations_members.call_count == 2
+
     def test_second_call_within_ttl_reuses_the_cached_result(self):
         web_client = MagicMock()
         web_client.conversations_members.return_value = {"members": ["U1"]}
@@ -1136,6 +1195,27 @@ class TestGetChannelHistory:
         with pytest.raises(SlackClientError, match="get_channel_history"):
             client.get_channel_history("C1")
 
+    def test_has_more_reflects_slacks_own_pagination_signal(self):
+        # Not a len(messages) vs. limit comparison -- a channel with fewer
+        # messages than limit is not truncated; has_more is Slack's own say.
+        web_client = MagicMock()
+        web_client.conversations_info.return_value = {"channel": {"name": "general"}}
+        web_client.conversations_history.return_value = {
+            "messages": [{"text": "hi", "ts": "1"}], "has_more": True,
+        }
+        client = make_client(web_client)
+        messages, has_more = client.get_channel_history("C1")
+        assert len(messages) == 1
+        assert has_more is True
+
+    def test_has_more_defaults_false_when_absent(self):
+        web_client = MagicMock()
+        web_client.conversations_info.return_value = {"channel": {"name": "general"}}
+        web_client.conversations_history.return_value = {"messages": []}
+        client = make_client(web_client)
+        _messages, has_more = client.get_channel_history("C1")
+        assert has_more is False
+
 
 class TestGetThreadReplies:
     def test_requires_channel_id_and_thread_ts(self):
@@ -1150,8 +1230,62 @@ class TestGetThreadReplies:
         web_client.conversations_info.return_value = {"channel": {"name": "general"}}
         web_client.conversations_replies.return_value = {"messages": [{"text": "reply", "ts": "1"}]}
         client = make_client(web_client)
-        replies = client.get_thread_replies("C1", "1.0")
+        replies, has_more = client.get_thread_replies("C1", "1.0")
         assert replies[0].text == "reply"
+        assert has_more is False
+
+    def test_has_more_reflects_slacks_own_pagination_signal(self):
+        web_client = MagicMock()
+        web_client.conversations_info.return_value = {"channel": {"name": "general"}}
+        web_client.conversations_replies.return_value = {
+            "messages": [{"text": "reply", "ts": "1"}], "has_more": True,
+        }
+        client = make_client(web_client)
+        _replies, has_more = client.get_thread_replies("C1", "1.0")
+        assert has_more is True
+
+
+class TestGetMessage:
+    def test_finds_the_message_via_a_single_history_call(self):
+        web_client = MagicMock()
+        web_client.conversations_info.return_value = {"channel": {"name": "eng"}}
+        web_client.conversations_history.return_value = {
+            "messages": [{"text": "root message", "ts": "100.001", "user": "U1"}],
+        }
+        client = make_client(web_client)
+
+        message = client.get_message("C1", "100.001")
+
+        assert message.text == "root message"
+        kwargs = web_client.conversations_history.call_args.kwargs
+        assert kwargs["latest"] == "100.001"
+        assert kwargs["oldest"] == "100.001"
+        assert kwargs["inclusive"] is True
+        assert kwargs["limit"] == 1
+
+    def test_missing_message_returns_none(self):
+        web_client = MagicMock()
+        web_client.conversations_info.return_value = {"channel": {"name": "eng"}}
+        web_client.conversations_history.return_value = {"messages": []}
+        client = make_client(web_client)
+
+        assert client.get_message("C1", "100.001") is None
+
+    def test_api_error_returns_none_without_raising(self):
+        web_client = MagicMock()
+        web_client.conversations_info.return_value = {"channel": {"name": "eng"}}
+        web_client.conversations_history.side_effect = slack_error("channel_not_found")
+        client = make_client(web_client)
+
+        assert client.get_message("C1", "100.001") is None
+
+    def test_empty_channel_id_or_ts_returns_none_without_an_api_call(self):
+        web_client = MagicMock()
+        client = make_client(web_client)
+
+        assert client.get_message("", "100.001") is None
+        assert client.get_message("C1", "") is None
+        web_client.conversations_history.assert_not_called()
 
 
 class TestSearchMessages:
@@ -1869,7 +2003,7 @@ class TestRefreshChannelDirectoryPagination:
         assert web_client.conversations_list.call_count == 2
         assert client._channel_name_cache == {"C1": "general", "C2": "random"}
 
-    def test_partial_refresh_does_not_update_disk_or_ttl(self, tmp_path):
+    def test_partial_refresh_persists_progress_but_not_ttl(self, tmp_path):
         web_client = MagicMock()
         web_client.conversations_list.return_value = {
             "channels": [{"id": "C1", "name": "general"}], "response_metadata": {"next_cursor": "page2"},
@@ -1878,8 +2012,42 @@ class TestRefreshChannelDirectoryPagination:
 
         client.refresh_channel_directory(max_pages=1)
 
+        # Not finalized -- the weekly TTL only advances once a walk
+        # actually finishes.
         assert client._channel_directory_fetched_at is None
-        assert not (tmp_path / "slack_channel_cache.json").exists()
+        # But the merged-so-far snapshot and resume cursor ARE persisted --
+        # see docs/slack-performance-review.md's P1 item on a bounded walk
+        # surviving a daemon restart.
+        cache_file = tmp_path / "slack_channel_cache.json"
+        assert cache_file.exists()
+        data = json.loads(cache_file.read_text(encoding="utf-8"))
+        assert data["channels"] == {"C1": {"name": "general", "is_mpim": False}}
+        assert data["partial_cursor"] == "page2"
+        assert "fetched_at" not in data
+
+    def test_partial_refresh_survives_a_process_restart(self, tmp_path):
+        # The scenario this whole feature exists for: max_pages=1 across
+        # two SEPARATE SlackClient instances sharing the same cache file --
+        # not two calls on the same client (already covered by
+        # test_next_call_resumes_from_saved_cursor) -- simulating the daemon
+        # restarting between bounded slack_refresh_channel_cache calls.
+        web_client = MagicMock()
+        web_client.conversations_list.side_effect = [
+            {"channels": [{"id": "C1", "name": "general"}], "response_metadata": {"next_cursor": "page2"}},
+            {"channels": [{"id": "C2", "name": "random"}], "response_metadata": {"next_cursor": ""}},
+        ]
+        first_client = make_client_with_caches(web_client, tmp_path)
+        first_count, first_has_more = first_client.refresh_channel_directory(max_pages=1)
+        assert (first_count, first_has_more) == (1, True)
+
+        second_client = make_client_with_caches(web_client, tmp_path)  # fresh process
+        second_count, second_has_more = second_client.refresh_channel_directory(max_pages=1)
+
+        assert (second_count, second_has_more) == (2, False)
+        # The second client's own first call resumed from page2, not page1.
+        assert web_client.conversations_list.call_args_list[1].kwargs["cursor"] == "page2"
+        assert second_client._channel_name_cache == {"C1": "general", "C2": "random"}
+        assert second_client._channel_directory_fetched_at is not None
 
     def test_next_call_resumes_from_saved_cursor(self, tmp_path):
         web_client = MagicMock()
