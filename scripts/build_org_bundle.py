@@ -113,6 +113,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicitly turn unattended sessions back off (useful with --merge).",
     )
 
+    mobile_relay = parser.add_argument_group(
+        "Mobile remote approval (issue #55, Phase 1 -- off by default)"
+    )
+    mobile_relay.add_argument(
+        "--mobile-relay-url", metavar="URL",
+        help="Base URL of the on-prem relay, reachable over its WireGuard tunnel "
+             "(e.g. http://10.55.0.1:8765). IT/org hosts this centrally -- see issue #55.",
+    )
+    mobile_relay.add_argument("--mobile-relay-mailbox-id", metavar="ID")
+    mobile_relay.add_argument("--mobile-relay-token", metavar="TOKEN")
+    mobile_relay.add_argument(
+        "--mobile-relay-generate-key", action="store_true",
+        help="Generate a fresh random AES-256 key for shared_key_base64 instead of "
+             "passing --mobile-relay-shared-key (printed once, to stdout, on the way out "
+             "-- distribute it to the paired phone through a separate channel than this bundle).",
+    )
+    mobile_relay.add_argument(
+        "--mobile-relay-shared-key", metavar="BASE64",
+        help="Base64-encoded 32-byte AES-256 key, if not using --mobile-relay-generate-key.",
+    )
+    mobile_relay.add_argument(
+        "--disable-mobile-relay", action="store_true",
+        help="Explicitly turn mobile relay approval back off (useful with --merge).",
+    )
+
     return parser
 
 
@@ -160,10 +185,43 @@ def main(argv: list[str] | None = None) -> int:
     elif args.disable_unattended_sessions:
         bundle["unattended_sessions"] = {"enabled": False}
 
+    mobile_relay_given = any([
+        args.mobile_relay_url, args.mobile_relay_mailbox_id, args.mobile_relay_token,
+        args.mobile_relay_generate_key, args.mobile_relay_shared_key,
+    ])
+    if mobile_relay_given:
+        if args.mobile_relay_generate_key and args.mobile_relay_shared_key:
+            raise SystemExit("--mobile-relay-generate-key and --mobile-relay-shared-key are mutually exclusive.")
+        if not (args.mobile_relay_url and args.mobile_relay_mailbox_id and args.mobile_relay_token):
+            raise SystemExit(
+                "--mobile-relay-url, --mobile-relay-mailbox-id, and --mobile-relay-token "
+                "must be given together."
+            )
+        if args.mobile_relay_generate_key:
+            import base64
+            import secrets
+            shared_key_b64 = base64.b64encode(secrets.token_bytes(32)).decode("ascii")
+            print(
+                f"Generated mobile relay shared key (distribute to the paired phone "
+                f"separately from this bundle -- it is NOT re-printed later):\n  {shared_key_b64}"
+            )
+        elif args.mobile_relay_shared_key:
+            shared_key_b64 = args.mobile_relay_shared_key
+        else:
+            raise SystemExit("Pass --mobile-relay-generate-key or --mobile-relay-shared-key.")
+        bundle["mobile_relay"] = {
+            "enabled": True, "relay_url": args.mobile_relay_url,
+            "mailbox_id": args.mobile_relay_mailbox_id, "token": args.mobile_relay_token,
+            "shared_key_base64": shared_key_b64,
+        }
+    elif args.disable_mobile_relay:
+        bundle["mobile_relay"] = {"enabled": False}
+
     services = [k for k in ("google", "slack", "salesforce", "atlassian") if k in bundle]
-    if not services and "unattended_sessions" not in bundle:
+    if not services and "unattended_sessions" not in bundle and "mobile_relay" not in bundle:
         raise SystemExit(
-            "No service or --enable/disable-unattended-sessions flags given — nothing to write."
+            "No service or --enable/disable-unattended-sessions/--*-mobile-relay flags "
+            "given — nothing to write."
         )
 
     out_path.write_text(json.dumps(bundle, indent=2) + "\n", encoding="utf-8")
@@ -174,6 +232,8 @@ def main(argv: list[str] | None = None) -> int:
     summary = ", ".join(services) or "none"
     if "unattended_sessions" in bundle:
         summary += f", unattended_sessions.enabled={bundle['unattended_sessions']['enabled']}"
+    if "mobile_relay" in bundle:
+        summary += f", mobile_relay.enabled={bundle['mobile_relay']['enabled']}"
     print(f"Wrote {out_path} with: {summary}")
     print(
         'Distribute this file to your users. They install it via "Install/Update '

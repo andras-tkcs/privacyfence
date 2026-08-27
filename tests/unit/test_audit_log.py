@@ -143,6 +143,31 @@ class TestClaudeReasonField:
         assert entry.claude_reason == ""
 
 
+class TestAnsweredViaField:
+    def test_defaults_to_empty_string(self):
+        assert make_entry().answered_via == ""
+
+    def test_round_trips_through_jsonl(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry(answered_via="mobile"))
+
+        line = (tmp_path / "2026-W28.jsonl").read_text(encoding="utf-8").splitlines()[0]
+        assert json.loads(line)["answered_via"] == "mobile"
+
+    def test_old_jsonl_lines_without_the_field_still_parse(self):
+        # Same backward-compatibility need as claude_reason above -- every
+        # entry recorded before issue #55's mobile approval landed has no
+        # "answered_via" key at all.
+        legacy = dict(
+            timestamp="2026-07-06T12:00:00+00:00", week="2026-W28", request_id="",
+            connector="gmail", tool="gmail_get_message", tool_name="Read Gmail message",
+            summary="s", sender="a@example.com", decision="approved",
+            auto_accept_rule="", latency_seconds=1.0,
+        )
+        entry = AuditEntry(**legacy)
+        assert entry.answered_via == ""
+
+
 class TestCurrentWeek:
     @freeze_time("2026-07-06")  # a Monday, ISO week 28 of 2026
     def test_format(self):
@@ -203,7 +228,7 @@ class TestExportWeekToExcel:
             decision="approved", pii_detected=True,
             pii_categories=["IBAN (bank account number)"],
             pii_match_details="IBAN (bank account number): DE••••••••••••••••••00",
-            claude_reason="Summarizing for the user.",
+            claude_reason="Summarizing for the user.", answered_via="mobile",
         ))
         logger.record(make_entry(decision="auto_accepted", auto_accept_rule="i_am_sender"))
         logger.record(make_entry(decision="rejected"))
@@ -234,6 +259,10 @@ class TestExportWeekToExcel:
         assert ws.cell(row=1, column=14).value == "Claude's Reason (unverified)"
         reason_col = [ws.cell(row=r, column=14).value for r in range(2, 5)]
         assert reason_col == ["Summarizing for the user.", None, None]
+
+        assert ws.cell(row=1, column=15).value == "Answered Via"
+        answered_via_col = [ws.cell(row=r, column=15).value for r in range(2, 5)]
+        assert answered_via_col == ["mobile", None, None]
 
         summary = wb["Summary"]
         summary_rows = {row[0].value: row[1].value for row in summary.iter_rows(min_row=2) if row[0].value}

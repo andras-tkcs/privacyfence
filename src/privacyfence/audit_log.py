@@ -109,6 +109,15 @@ class AuditEntry:
                               # Self-reported and unverified -- never treated as fact. Empty for
                               # the automatic session-end-on-disconnect path, which has no reason
                               # to attribute.
+    answered_via: str = ""   # "" (the default -- today's only path, and every non-interactive
+                              # decision: auto_accepted, denied_unattended, etc.) or "mobile" when
+                              # a paired phone answered the approval popup instead of the desktop
+                              # dialog (issue #55's mobile remote approval, Phase 1). Populated by
+                              # CompositeApprovalUI racing the native and mobile-relay backends --
+                              # see composite_approval_ui.py. Wiring this into gate.py's own
+                              # audit() calls is left to that module's own change, not this field's
+                              # addition; a schema that already has the column is what lets that
+                              # land without a second migration of every existing .jsonl reader.
 
 
 class AuditLogger:
@@ -166,8 +175,9 @@ class AuditLogger:
             "Timestamp", "Week", "Connector", "Tool", "Human-Readable Name",
             "Summary", "Sender / Context", "Decision", "Auto-Accept Rule", "Latency (s)",
             "PII Detected", "PII Categories", "PII Match Details", "Claude's Reason (unverified)",
+            "Answered Via",
         ]
-        COL_WIDTHS = [22, 10, 12, 30, 22, 55, 30, 14, 22, 12, 12, 30, 55, 55]
+        COL_WIDTHS = [22, 10, 12, 30, 22, 55, 30, 14, 22, 12, 12, 30, 55, 55, 14]
 
         hdr_font  = Font(bold=True, color="FFFFFF")
         hdr_fill  = PatternFill("solid", fgColor="2D4A6B")
@@ -204,7 +214,7 @@ class AuditLogger:
                 entry.auto_accept_rule or "", round(entry.latency_seconds, 2),
                 "Yes" if entry.pii_detected else "",
                 "; ".join(entry.pii_categories), entry.pii_match_details or "",
-                entry.claude_reason or "",
+                entry.claude_reason or "", entry.answered_via or "",
             ])
             fill = decision_fills.get(entry.decision, PatternFill())
             for col in range(1, len(HEADERS) + 1):

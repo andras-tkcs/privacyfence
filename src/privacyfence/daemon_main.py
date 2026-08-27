@@ -704,6 +704,38 @@ def run_telegram_setup() -> int:
 # Main app
 # ---------------------------------------------------------------------------- #
 
+def _init_mobile_relay_approval_ui(org_config: dict[str, Any]) -> None:
+    """Issue #55, Phase 1: if org_config.json's "mobile_relay" section is
+    present, enabled, and complete, race the native popup against the
+    mobile relay's mailbox for every approval from here on -- additive
+    alongside the existing desktop popup, never instead of it (requirement
+    5). A deployment with no mobile_relay section configured takes this
+    function's early-return path and sees zero behavior change: get_
+    approval_ui() keeps lazily defaulting to a bare NativeApprovalUI, same
+    as before this feature existed.
+
+    Imports are local, not at module level, for the same reason menu_bar's
+    own import below is local: approval_ui.py (and everything it pulls in)
+    needs real AppKit/PyObjC, which most of this module's own tests
+    (anything not exercising run_app() end to end) have no reason to
+    require just to import daemon_main.
+    """
+    from .approval_ui import NativeApprovalUI, init_approval_ui
+    from .composite_approval_ui import CompositeApprovalUI
+    from .mobile_relay_approval_ui import MobileRelayApprovalUI
+    from .mobile_relay_client import MobileRelayClient, MobileRelayConfig
+
+    relay_config = MobileRelayConfig.from_org_config(org_config)
+    if relay_config is None:
+        return
+    mobile_ui = MobileRelayApprovalUI(MobileRelayClient(relay_config))
+    init_approval_ui(CompositeApprovalUI(NativeApprovalUI(), mobile_ui))
+    logger.info(
+        "Mobile remote approval enabled (issue #55): racing the desktop popup against relay %s",
+        relay_config.relay_url,
+    )
+
+
 def run_app(config: dict[str, Any], config_path: str) -> int:
     if not _acquire_instance_lock():
         logger.error("Another instance is already running; exiting.")
@@ -761,6 +793,8 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
     connectors = build_connectors(config, org_config)
     if not connectors:
         logger.warning("No connectors could be initialized; daemon still starting for IPC.")
+
+    _init_mobile_relay_approval_ui(org_config)
 
     unattended_enabled = bool((org_config.get("unattended_sessions", {}) or {}).get("enabled", False))
     ipc_server = IPCServer(connectors, unattended_sessions_enabled=unattended_enabled)

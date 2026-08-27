@@ -1342,6 +1342,65 @@ class TestRunApp:
 
 
 # ---------------------------------------------------------------------------- #
+# _init_mobile_relay_approval_ui: issue #55, Phase 1
+# ---------------------------------------------------------------------------- #
+
+class TestInitMobileRelayApprovalUI:
+    """Unlike TestRunApp above, these call _init_mobile_relay_approval_ui()
+    directly rather than the full run_app() -- run_app() always reaches its
+    own lazy `from .menu_bar import run_menu_bar` regardless of this
+    feature, which needs a real rumps install this test file's own
+    environment may not have; the function under test here never touches
+    menu_bar at all."""
+
+    def test_no_mobile_relay_section_leaves_the_default_native_ui_in_place(self):
+        from privacyfence.approval_ui import NativeApprovalUI, get_approval_ui
+
+        daemon_main._init_mobile_relay_approval_ui({})
+
+        assert isinstance(get_approval_ui(), NativeApprovalUI)
+
+    def test_disabled_mobile_relay_section_leaves_the_default_native_ui_in_place(self):
+        from privacyfence.approval_ui import NativeApprovalUI, get_approval_ui
+
+        daemon_main._init_mobile_relay_approval_ui({
+            "mobile_relay": {"enabled": False, "relay_url": "https://r", "mailbox_id": "m",
+                              "token": "t", "shared_key_base64": "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMA=="},
+        })
+
+        assert isinstance(get_approval_ui(), NativeApprovalUI)
+
+    def test_valid_enabled_section_installs_a_composite_racing_native_and_mobile(self):
+        import base64
+
+        from privacyfence.approval_ui import NativeApprovalUI, get_approval_ui
+        from privacyfence.composite_approval_ui import CompositeApprovalUI
+        from privacyfence.mobile_relay_approval_ui import MobileRelayApprovalUI
+
+        org_config = {"mobile_relay": {
+            "enabled": True, "relay_url": "https://relay.example.org:8765",
+            "mailbox_id": "mbox1", "token": "tok1",
+            "shared_key_base64": base64.b64encode(b"0" * 32).decode("ascii"),
+        }}
+
+        daemon_main._init_mobile_relay_approval_ui(org_config)
+
+        ui = get_approval_ui()
+        assert isinstance(ui, CompositeApprovalUI)
+        assert isinstance(ui._native, NativeApprovalUI)
+        assert isinstance(ui._mobile, MobileRelayApprovalUI)
+
+    def test_incomplete_section_leaves_the_default_native_ui_in_place(self):
+        from privacyfence.approval_ui import NativeApprovalUI, get_approval_ui
+
+        daemon_main._init_mobile_relay_approval_ui({
+            "mobile_relay": {"enabled": True, "relay_url": "https://r"},  # missing mailbox_id/token/key
+        })
+
+        assert isinstance(get_approval_ui(), NativeApprovalUI)
+
+
+# ---------------------------------------------------------------------------- #
 # main(): CLI dispatch
 # ---------------------------------------------------------------------------- #
 
