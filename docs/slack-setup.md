@@ -18,9 +18,8 @@ The Slack app itself is organization-level config: **one IT admin creates it onc
 > **Never click "Activate Public Distribution"** (Manage Distribution, in the left sidebar) — and
 > never distribute the resulting `org_config.json` outside your own organization/workspace.
 > Creating the app "From scratch" in your workspace and stopping there keeps it an **internal**
-> app, which is what every performance number in
-> [`docs/slack-performance-review.md`](slack-performance-review.md) assumes. Slack treats an app
-> distributed outside the Marketplace differently: as of 2025-09-02, `conversations.history` and
+> app, which every rate-limit assumption in this codebase's Slack code depends on. Slack treats an
+> app distributed outside the Marketplace differently: as of 2025-09-02, `conversations.history` and
 > `conversations.replies` — the calls behind `slack_get_channel_history`/`slack_get_thread_replies`/
 > `slack_search_messages` — drop to **1 request per minute with a hard 15-message cap** for such
 > apps. An internal app has none of that; there is no reason to ever activate distribution here, and
