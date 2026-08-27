@@ -1,0 +1,10 @@
+{
+  "name": "PrivacyFence Relay Spike",
+  "short_name": "PF Relay Spike",
+  "description": "Throwaway Phase 0 spike for issue #55 -- not a real approval app.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#111318",
+  "theme_color": "#111318",
+  "icons": []
+}

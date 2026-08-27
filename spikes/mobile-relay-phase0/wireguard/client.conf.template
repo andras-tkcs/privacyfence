@@ -1,0 +1,22 @@
+# WireGuard config for a CLIENT peer -- either the Mac running the
+# privacyfence daemon, or a phone's WireGuard app (used only for this Phase 0
+# spike; Phase 1+ still needs the phone to reach the relay, but the pairing
+# UX in later phases may fold key exchange into the app instead of a
+# hand-edited config like this one).
+#
+# The client only ever dials out to the relay -- it accepts no inbound
+# connections. Fill in the placeholders, then: sudo wg-quick up ./client.conf
+
+[Interface]
+PrivateKey = <CLIENT_PRIVATE_KEY>
+Address = 10.55.0.2/24
+
+[Peer]
+PublicKey = <RELAY_PUBLIC_KEY>
+Endpoint = <RELAY_PUBLIC_HOST_OR_IP>:51820
+AllowedIPs = 10.55.0.1/32
+# Keeps the tunnel alive through NAT so the relay can still reach this
+# client (not needed for the relay-as-mailbox design itself, since the
+# client only ever polls/pushes outbound, but harmless and keeps the
+# handshake fresh).
+PersistentKeepalive = 25

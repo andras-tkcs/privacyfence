@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PrivacyFence Relay Spike</title>
+<link rel="manifest" href="./manifest.json">
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 1.5rem; min-height: 100vh; box-sizing: border-box;
+    background: #111318; color: #e8e9ed;
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  h1 { font-size: 1.1rem; font-weight: 600; color: #9aa0ab; margin: 0 0 1.5rem; }
+  .banner {
+    background: #3a1414; border: 1px solid #7a2626; color: #ffb4b4;
+    border-radius: 8px; padding: 0.75rem 1rem; margin-bottom: 1.5rem; font-size: 0.85rem;
+  }
+  fieldset { border: 1px solid #2a2d36; border-radius: 10px; padding: 1rem; margin: 0 0 1rem; }
+  legend { padding: 0 0.4rem; color: #9aa0ab; font-size: 0.8rem; }
+  label { display: block; font-size: 0.85rem; color: #9aa0ab; margin: 0.6rem 0 0.2rem; }
+  input[type=text] {
+    width: 100%; box-sizing: border-box; background: #1a1d24; border: 1px solid #33363f;
+    border-radius: 6px; color: #e8e9ed; padding: 0.5rem; font-size: 1rem;
+  }
+  button {
+    font-size: 1rem; padding: 0.6rem 1rem; border-radius: 8px; border: none;
+    margin-top: 0.8rem; cursor: pointer; width: 100%;
+  }
+  button.primary { background: #3b82f6; color: white; }
+  button.approve { background: #22c55e; color: #08210f; font-weight: 700; }
+  button.deny { background: #ef4444; color: #250a0a; font-weight: 700; }
+  button.secondary { background: #2a2d36; color: #e8e9ed; }
+  #pending-card { border: 1px solid #33363f; border-radius: 10px; padding: 1rem; margin-bottom: 1rem; }
+  #pending-card pre {
+    white-space: pre-wrap; word-break: break-word; background: #1a1d24; padding: 0.75rem;
+    border-radius: 6px; font-size: 0.85rem; border: 1px solid #33363f;
+  }
+  .pii-flag { color: #ffb4b4; font-weight: 700; }
+  #status { font-size: 0.85rem; color: #9aa0ab; margin-top: 1rem; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+  <h1>PrivacyFence &mdash; Mobile Relay Spike (Phase 0, issue #55)</h1>
+  <div class="banner">
+    This is a throwaway prototype, not a real approval surface. It is not wired to
+    any daemon, does not encrypt anything, and must never be used against real data.
+    See this spike's README.
+  </div>
+
+  <section id="pair-section">
+    <fieldset>
+      <legend>1. Pair with a relay</legend>
+      <label for="relay-url">Relay URL</label>
+      <input type="text" id="relay-url" placeholder="http://10.55.0.1:8765" value="http://127.0.0.1:8765">
+      <button class="primary" id="pair-button">Pair</button>
+    </fieldset>
+  </section>
+
+  <section id="waiting-section" class="hidden">
+    <fieldset>
+      <legend>2. Paired &mdash; waiting for a request</legend>
+      <div id="mailbox-info"></div>
+      <button class="secondary" id="unpair-button">Forget pairing</button>
+    </fieldset>
+  </section>
+
+  <section id="pending-section" class="hidden">
+    <div id="pending-card"></div>
+    <button class="approve" id="approve-button">Approve</button>
+    <button class="deny" id="deny-button">Deny</button>
+  </section>
+
+  <div id="status"></div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
