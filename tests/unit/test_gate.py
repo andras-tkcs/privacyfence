@@ -1991,10 +1991,21 @@ class TestQueuedRequestReCheck:
         # exercises the in-lock re-check -- and doesn't just pass "by
         # accident" because the pre-lock check happened to win a timing race
         # -- the rule is only flipped on after both callers' pre-lock checks
-        # have already run (3rd should_auto_accept call: A's pre-lock check,
-        # A's in-lock re-check, B's pre-lock check). At that point B must
-        # already be blocked waiting for the lock, since a write gated_call
-        # has no other await point in between.
+        # have already run (3rd should_auto_accept call: the lock-winner's
+        # pre-lock check, its in-lock re-check, and the other call's
+        # pre-lock check). At that point the other call must already be
+        # blocked waiting for the lock, since a write gated_call has no
+        # other await point in between the pre-lock check and the lock
+        # acquisition itself.
+        #
+        # Which of the two gated_call() coroutines actually wins the lock
+        # isn't fixed: both do PII/audit scanning via asyncio.to_thread
+        # (gate.py's dedicated-executor rewrite, see docs/slack-performance-
+        # review.md P2.15) before ever reaching should_auto_accept(), and
+        # that work runs on the shared default thread pool -- real OS thread
+        # scheduling, not asyncio's deterministic single-threaded ordering.
+        # So the assertions below key off which result actually got denied
+        # / auto-accepted, not off gather()'s positional order.
         rule_now_active = threading.Event()
         check_calls: list[None] = []
 
@@ -2025,9 +2036,12 @@ class TestQueuedRequestReCheck:
             return_exceptions=True,
         )
 
-        assert len(popup_calls) == 1  # only the first request showed a dialog
-        assert isinstance(results[0], RuntimeError)  # denied, as its popup said
-        assert results[1] is FILTERED  # auto-accepted via the re-check, no popup of its own
+        assert len(popup_calls) == 1  # only the lock-winner showed a dialog
+
+        denied = [r for r in results if isinstance(r, RuntimeError)]
+        auto_accepted = [r for r in results if r is FILTERED]
+        assert len(denied) == 1  # the lock-winner was denied, as its popup said
+        assert len(auto_accepted) == 1  # the other was auto-accepted via the re-check, no popup of its own
 
         entries = read_audit_entries(audit_dir)
         decisions = sorted(e["decision"] for e in entries)
