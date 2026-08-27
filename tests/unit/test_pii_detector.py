@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from privacyfence import pii_detector
 from privacyfence.pii_detector import (
+    _card_grouping_valid,
     _iban_valid,
     _luhn_valid,
     _redact_value,
@@ -42,6 +43,31 @@ class TestLuhnValid:
 
     def test_too_long_is_rejected_before_checksum(self):
         assert _luhn_valid("1" * 20) is False
+
+
+class TestCardGroupingValid:
+    def test_ungrouped_run_passes(self):
+        assert _card_grouping_valid("4111111111111111") is True
+
+    def test_groups_of_four_pass(self):
+        assert _card_grouping_valid("4111 1111 1111 1111") is True
+
+    def test_groups_of_four_with_short_final_group_pass(self):
+        assert _card_grouping_valid("4111-1111-1111-111") is True
+
+    def test_amex_4_6_5_grouping_passes(self):
+        assert _card_grouping_valid("3714 496353 98431") is True
+
+    def test_diners_4_6_4_grouping_passes(self):
+        assert _card_grouping_valid("3056 930902 5904") is True
+
+    def test_pairs_grouping_fails(self):
+        # A calendar/table row (week number + consecutive dates), not how
+        # any real card number is ever displayed.
+        assert _card_grouping_valid("35 24 25 26 27 28 29 30") is False
+
+    def test_inconsistent_grouping_fails(self):
+        assert _card_grouping_valid("41 111111 111 11111") is False
 
 
 class TestIbanValid:
@@ -82,6 +108,14 @@ class TestNoFalsePositivesOnPlainText:
     def test_random_alnum_that_looks_like_iban_prefix_fails_checksum(self):
         assert detect_categories("The Drive file ID is DA12ABCDEFGHIJKLMNOPQRS.") == []
 
+    def test_calendar_week_and_dates_row_is_not_a_credit_card(self):
+        # A weekly-planner PDF's "NEXT FOUR WEEKS" table flattens to
+        # "CW 35  24 25 26 27 28 29 30" when extracted as plain text -- 16
+        # digits in pairs (a week number followed by 7 consecutive dates)
+        # that happens to pass the Luhn checksum. Real card numbers are
+        # never displayed grouped in pairs, so this must stay unflagged.
+        assert detect_categories("CW 35 24 25 26 27 28 29 30") == []
+
 
 class TestLanguageAgnosticPatterns:
     def test_email_address_is_not_flagged(self):
@@ -94,6 +128,18 @@ class TestLanguageAgnosticPatterns:
 
     def test_valid_credit_card_passes_luhn(self):
         assert detect_categories("Card: 4111 1111 1111 1111 exp 10/29") == ["Credit card number"]
+
+    def test_valid_credit_card_ungrouped_passes_luhn(self):
+        assert detect_categories("Card number 4111111111111111 on file.") == ["Credit card number"]
+
+    def test_valid_amex_4_6_5_grouping_is_flagged(self):
+        assert detect_categories("Amex: 3714 496353 98431") == ["Credit card number"]
+
+    def test_luhn_valid_pair_grouped_digits_are_not_a_credit_card(self):
+        # Same reasoning as TestNoFalsePositivesOnPlainText's calendar-row
+        # test above, isolated to the language-agnostic pattern itself:
+        # grouping in pairs isn't how card numbers are ever displayed.
+        assert detect_categories("35 24 25 26 27 28 29 30") == []
 
     def test_international_phone_number_is_not_flagged(self):
         # Deliberate: same rationale as email addresses above.

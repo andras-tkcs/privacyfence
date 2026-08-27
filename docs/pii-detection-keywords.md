@@ -19,7 +19,7 @@ These run regardless of language, since they match a structural format rather th
 | Category | What matches |
 |---|---|
 | IBAN (bank account number) | 2 letters + 2 digits + 11–30 alphanumeric characters, and passes an ISO 7064 mod-97-10 checksum (rules out random Drive/Jira-style IDs that happen to look like an IBAN) |
-| Credit card number | 13–19 digits (spaces/dashes allowed), and passes a Luhn checksum |
+| Credit card number | 13–19 digits (spaces/dashes allowed), passes a Luhn checksum, and — if grouped by spaces/dashes at all — is grouped the way real cards are actually displayed (groups of 4 with a possibly-shorter last group, or the Amex 4-6-5 / Diners Club 4-6-4 exceptions); rules out e.g. a Luhn-valid but pair-grouped table row like a calendar's week-number-plus-dates column |
 | IP address *(optional, see below)* | standard IPv4 (`a.b.c.d`) |
 | Financial figures (currency amounts) *(optional, see below)* | a number adjacent to `$` `€` `£` or `USD/EUR/GBP/HUF/CHF/Ft` — a bare number alone never matches |
 
