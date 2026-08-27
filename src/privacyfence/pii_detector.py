@@ -18,9 +18,24 @@ and flag things that aren't. Treat a hit as "look more carefully before you
 approve," not as a guarantee either way.
 
 Only category labels (e.g. "IBAN (bank account number)") ever leave this
-module -- the matched substrings themselves are deliberately not returned,
-logged, or audited, so the detector itself never becomes a new place PII
-gets copied to.
+module via scan_text()/detect_categories()/detect_pii_categories() -- the
+matched substrings themselves are deliberately not returned, logged, or
+audited by any of those three, so the detector itself never becomes a new
+place PII gets copied to. Every caller outside this module (popup
+rendering, the write-gate's informational content flags, ...) goes through
+one of those three and is unaffected by the paragraph below.
+
+scan_pii_for_audit() is the one deliberate exception: it returns the
+literal matched text alongside its category, for gate.py's opt-in,
+off-by-default PII-refinement trial capture (see is_pii_audit_match_
+details_enabled() below and audit_log.py's pii_match_details field). Even
+with that capture turned on, gate.py never records the literal text for a
+denied request (nothing was released, so there's nothing to gain and real
+cost to keeping it) and, for categories whose match *is* the sensitive
+value rather than a label pointing at one (an IBAN, a credit card number,
+a national ID, an IP address, a currency figure -- see describe_match_for_
+audit()'s _VALUE_BEARING_CATEGORIES), only ever a redacted form even on an
+approved request.
 
 Deliberately NOT detected: email addresses and phone numbers. Nearly every
 message this gate scans is an email, and nearly every email signature
@@ -180,20 +195,29 @@ class PIIMatch:
     end: int
 
 
-def scan_text(text: str) -> list[PIIMatch]:
-    """Return every PII pattern match in ``text``. Matched substrings are
-    intentionally not carried in the result -- only category + position."""
-    if not text:
-        return []
-    matches: list[PIIMatch] = []
+def _iter_raw_matches(text: str):
+    """Shared core of scan_text()/scan_pii_for_audit() below: yield
+    (category, re.Match) for every pattern hit that also clears its
+    validator (Luhn/IBAN checksum, where one applies) and isn't individually
+    disabled. Private and untyped in its return -- the two public callers
+    below decide what each one carries (position-only vs. the matched text
+    itself) rather than this generator committing to a shape either of them
+    would have to unpack."""
     for p in _PATTERNS:
         if p.category in _disabled_categories:
             continue
         for m in p.pattern.finditer(text):
             if p.validator is not None and not p.validator(m.group(0)):
                 continue
-            matches.append(PIIMatch(category=p.category, start=m.start(), end=m.end()))
-    return matches
+            yield p.category, m
+
+
+def scan_text(text: str) -> list[PIIMatch]:
+    """Return every PII pattern match in ``text``. Matched substrings are
+    intentionally not carried in the result -- only category + position."""
+    if not text:
+        return []
+    return [PIIMatch(category=c, start=m.start(), end=m.end()) for c, m in _iter_raw_matches(text)]
 
 
 def detect_categories(text: str) -> list[str]:
@@ -207,6 +231,17 @@ def detect_categories(text: str) -> list[str]:
 
 _enabled = True
 _changed_listener: Callable[[], None] | None = None
+
+# Opt-in, off by default: whether gate.py's audit log should also capture
+# the matched text (redacted for value-bearing categories -- see
+# describe_match_for_audit() below) behind pii_categories, for a deliberate
+# PII-refinement trial period. See init_pii_detection()'s own docstring and
+# audit_log.py's pii_match_details field for the full contract. Config-only
+# (pii_detection.audit_match_details in settings.yaml) -- deliberately not
+# exposed as a menu-bar/settings-window toggle the way the enabled switch
+# and the two optional categories are, since it's meant to be turned on for
+# a bounded trial window, not left as an everyday user-facing option.
+_audit_match_details_enabled = False
 
 # Individually-toggleable categories, keyed by the settings.yaml field name.
 # Unlike the other categories (national IDs, TAJ/tax numbers, ...), IP
@@ -226,12 +261,26 @@ def is_pii_detection_enabled() -> bool:
     return _enabled
 
 
+def is_pii_audit_match_details_enabled() -> bool:
+    return _audit_match_details_enabled
+
+
 def init_pii_detection(
-    enabled: bool, *, detect_ip_addresses: bool = True, detect_financial_figures: bool = True
+    enabled: bool, *, detect_ip_addresses: bool = True, detect_financial_figures: bool = True,
+    audit_match_details: bool = False,
 ) -> None:
-    """Set the initial enabled state at daemon startup."""
-    global _enabled
+    """Set the initial enabled state at daemon startup.
+
+    ``audit_match_details`` is the PII-refinement trial switch (see
+    ``_audit_match_details_enabled``'s own comment above) -- off by default,
+    read from ``pii_detection.audit_match_details`` in settings.yaml. Unlike
+    ``enabled``/the two optional categories, there's no hot-toggle setter for
+    it: it's meant to be set once for a bounded trial window via a daemon
+    restart, not flipped live from the menu bar.
+    """
+    global _enabled, _audit_match_details_enabled
     _enabled = enabled
+    _audit_match_details_enabled = audit_match_details
     _disabled_categories.clear()
     if not detect_ip_addresses:
         _disabled_categories.add(_OPTIONAL_CATEGORIES["detect_ip_addresses"])
@@ -273,3 +322,84 @@ def detect_pii_categories(text: str) -> list[str]:
     if not _enabled:
         return []
     return detect_categories(text)
+
+
+# ---------------------------------------------------------------------------- #
+# Audit-trial capture (opt-in, off by default -- see is_pii_audit_match_
+# details_enabled() above). scan_pii_for_audit()/PIIAuditMatch/describe_
+# match_for_audit() below are the ONE place in this module that ever hands
+# back the literal matched text -- see the module docstring's "deliberate
+# exception" paragraph. Nothing above this point is affected: scan_text(),
+# detect_categories(), and detect_pii_categories() keep returning category
+# labels only, exactly as before.
+# ---------------------------------------------------------------------------- #
+
+# Categories where the regex match IS the sensitive value itself (an
+# account/card/ID number, an IP address, a currency figure), as opposed to a
+# label word merely pointing at one (e.g. "salary", "lakcíme", "date of
+# birth"). Used only by describe_match_for_audit() below to decide whether
+# an approved request's audit entry gets the literal matched text or a
+# redacted form -- label/keyword categories are never personal data on
+# their own, so they're always logged as-is when logged at all.
+_VALUE_BEARING_CATEGORIES = frozenset({
+    "IBAN (bank account number)",
+    "Credit card number",
+    "IP address",
+    "Financial figures (currency amounts)",
+    "Hungarian TAJ number (social security)",
+    "Hungarian tax ID (adóazonosító jel)",
+    "Hungarian ID card number",
+    "German tax ID (Steuer-IdNr.)",
+    "German social insurance number",
+    "US Social Security Number",
+    "UK National Insurance number",
+})
+
+
+def _redact_value(text: str) -> str:
+    """Keep the first/last 2 alphanumeric characters of a value-bearing PII
+    match and mask the rest with '•', leaving separators (spaces, dashes,
+    dots) alone so the match's *shape* (an IBAN's country prefix, an IP
+    address's octet grouping, ...) stays legible without the value itself
+    being reconstructable. Matches with 4 or fewer alphanumeric characters
+    are masked in full -- too short to partially reveal without giving away
+    the whole thing."""
+    alnum_idx = [i for i, c in enumerate(text) if c.isalnum()]
+    if len(alnum_idx) <= 4:
+        return "".join("•" if c.isalnum() else c for c in text)
+    keep = set(alnum_idx[:2]) | set(alnum_idx[-2:])
+    return "".join(c if (i in keep or not c.isalnum()) else "•" for i, c in enumerate(text))
+
+
+@dataclass(frozen=True)
+class PIIAuditMatch:
+    """Like PIIMatch, but also carries the matched text -- see this
+    section's own module-docstring paragraph for why that's safe here and
+    nowhere else in this module. Returned only by scan_pii_for_audit()."""
+    category: str
+    text: str
+
+
+def scan_pii_for_audit(text: str) -> list[PIIAuditMatch]:
+    """gate.py's one entry point for the audit-trial capture: empty list
+    when detection is disabled or nothing matched, otherwise every match
+    with its literal text attached. Mirrors detect_pii_categories()'s own
+    enabled-check so callers don't need to check is_pii_detection_enabled()
+    themselves -- unlike detect_pii_categories(), callers of *this* function
+    should also gate it behind is_pii_audit_match_details_enabled() first,
+    since scanning here is only ever worth doing when that capture is on."""
+    if not _enabled or not text:
+        return []
+    return [PIIAuditMatch(category=c, text=m.group(0)) for c, m in _iter_raw_matches(text)]
+
+
+def describe_match_for_audit(category: str, text: str) -> str:
+    """The literal matched text for a label/keyword category (e.g.
+    "salary", "lakcíme" -- never personal data on its own), or a redacted
+    form for a value-bearing category (see _VALUE_BEARING_CATEGORIES) where
+    the match itself is the sensitive value. Used only by gate.py, only for
+    an approved request's pii_match_details -- see audit_log.py's field
+    docstring for why a denied request never calls this at all."""
+    if category in _VALUE_BEARING_CATEGORIES:
+        return _redact_value(text)
+    return text

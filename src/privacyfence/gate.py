@@ -65,6 +65,19 @@ other way, to a tool Claude already described in chat -- there's no external
 PII to intercept on that side. ``write_content_flags`` (below) is a
 deliberately weaker, informational-only signal for the general write case.
 
+PII-refinement trial capture, opt-in and off by default (pii_detection.
+audit_match_details in settings.yaml -- see pii_detector.
+is_pii_audit_match_details_enabled()): every audit entry always records
+*which* category(ies) pii_detector.py flagged (``pii_categories`` --
+category labels only, same thing the popup banner already shows, so this
+part is always on). When the trial setting is also on, the entry's
+``pii_match_details`` additionally carries the literal matched text (or a
+redacted form for a value-bearing category -- see pii_detector.
+describe_match_for_audit()) for a request that was actually approved, or a
+fixed "details hidden" placeholder -- never the matched text -- for one
+that wasn't. See _pii_match_details_for_audit() and AuditEntry's own
+docstring in audit_log.py for the full contract.
+
 One narrow, deliberate exception: ``upload_pii_scan_text``, only ever set by
 drive_upload_file. Its payload (an arbitrary local file via ``local_path``,
 or inline bytes via ``content_base64``) breaks the "Claude already generated
@@ -110,7 +123,7 @@ from typing import Any
 
 from .approval_ui import get_approval_ui
 from .approval_window_html import NARROW, WIDE
-from .audit_log import AuditEntry, current_week, get_audit_logger
+from .audit_log import APPROVED_LIKE_DECISIONS, AuditEntry, current_week, get_audit_logger
 from .auto_accept import (
     TOOL_TO_OPERATION,
     ReviewContext,
@@ -126,7 +139,13 @@ from .auto_accept import (
     suggest_write_rule,
     temp_accept_key,
 )
-from .pii_detector import detect_pii_categories
+from .pii_detector import (
+    PIIAuditMatch,
+    describe_match_for_audit,
+    detect_pii_categories,
+    is_pii_audit_match_details_enabled,
+    scan_pii_for_audit,
+)
 from .resource_grants import apply_grant_removal, apply_grant_upsert, describe_grant_change, resource_type
 
 logger = logging.getLogger(__name__)
@@ -432,12 +451,33 @@ async def gated_call(
         detect_pii_categories(upload_pii_scan_text)
         if gate == "popup" and upload_pii_scan_text else []
     )
+    # PII-refinement trial capture (opt-in, off by default -- see
+    # pii_detector.is_pii_audit_match_details_enabled()). Mirrors
+    # pii_categories/upload_pii_categories above exactly -- same source
+    # text, same gate scoping -- just also carrying the matched text.
+    # Computed separately, and only when the setting is on, so a default
+    # install never runs this extra scan at all.
+    pii_audit_matches: list[PIIAuditMatch] = (
+        scan_pii_for_audit(details if pii_scan_text is None else pii_scan_text)
+        if gate == "review" and is_pii_audit_match_details_enabled() else []
+    )
+    upload_pii_audit_matches: list[PIIAuditMatch] = (
+        scan_pii_for_audit(upload_pii_scan_text)
+        if gate == "popup" and upload_pii_scan_text and is_pii_audit_match_details_enabled() else []
+    )
     # The value everything below actually branches on for "does PII force a
     # popup/confirmation". pii_categories itself (the raw detector result)
     # stays untouched so the audit log's pii_detected field below keeps
     # reporting what was genuinely found, regardless of whether the
     # confirmation step it would normally force got suppressed here.
     pii_forces_confirmation = [] if pii_already_reviewed else pii_categories
+    # Single pair of values every audit() call below reads (via closure, not
+    # as a parameter -- see audit()'s own body), mirroring pii_detected's
+    # own "pii_categories or upload_pii_categories" combination above.
+    # Mutually exclusive by construction: gate="review" only ever populates
+    # the first of each pair, gate="popup" only the second.
+    audit_pii_categories = pii_categories or upload_pii_categories
+    audit_pii_matches = pii_audit_matches or upload_pii_audit_matches
     # Request fingerprint: "you've approved this exact (connector, tool,
     # summary) N times this week" -- read directly from the audit log,
     # same synchronous-call
@@ -463,6 +503,8 @@ async def gated_call(
             created_at=created_at, request_id=request_id, connector=connector, tool=tool,
             tool_name=tool_name, summary=summary, sender=sender,
             decision=decision, auto_accept_rule=auto_accept_rule, pii_detected=pii_detected,
+            pii_categories=audit_pii_categories,
+            pii_match_details=_pii_match_details_for_audit(audit_pii_matches, decision),
             claude_reason=claude_reason,
         )
 
@@ -825,6 +867,38 @@ def _deny_unattended(audit, connector: str, tool: str, *, pii_categories: list[s
     )
 
 
+def _pii_match_details_for_audit(matches: list[PIIAuditMatch], decision: str) -> str:
+    """Build the audit log's pii_match_details field (see AuditEntry's own
+    docstring in audit_log.py for the full contract). ``matches`` is already
+    [] whenever pii_detection.audit_match_details is off or nothing was
+    detected -- see gated_call's pii_audit_matches/upload_pii_audit_matches
+    -- so this function doesn't need to check that setting itself.
+
+    A request that never actually released its content (``decision`` isn't
+    one of APPROVED_LIKE_DECISIONS -- rejected, denied_unattended, error)
+    gets a fixed placeholder, never the matched text: nothing was gained by
+    showing the content to Claude/the destination in that case, so there's
+    nothing to gain from recording it here either, only cost. Otherwise:
+    one "<category>: <text>" entry per distinct category, text taken from
+    the first match of that category (further occurrences of the same
+    category in one item aren't materially more informative) and redacted
+    per pii_detector.describe_match_for_audit() for value-bearing
+    categories.
+    """
+    if not matches:
+        return ""
+    if decision not in APPROVED_LIKE_DECISIONS:
+        return "User confirmed: details hidden"
+    seen: set[str] = set()
+    parts: list[str] = []
+    for m in matches:
+        if m.category in seen:
+            continue
+        seen.add(m.category)
+        parts.append(f"{m.category}: {describe_match_for_audit(m.category, m.text)}")
+    return "; ".join(parts)
+
+
 async def _confirm_pii_or_deny(decision: str, pii_categories: list[str]) -> str:
     """Extra gate for content the PII detector flagged: forces one more
     explicit confirmation on top of the popup's own Allow once/Always allow,
@@ -844,7 +918,7 @@ def _default_details(raw_data: Any) -> str:
 
 def _audit(
     *, created_at, request_id, connector, tool, tool_name, summary, sender, decision, auto_accept_rule,
-    pii_detected=False, claude_reason="",
+    pii_detected=False, pii_categories=None, pii_match_details="", claude_reason="",
 ) -> None:
     try:
         get_audit_logger().record(AuditEntry(
@@ -860,6 +934,8 @@ def _audit(
             auto_accept_rule=auto_accept_rule,
             latency_seconds=time.time() - created_at,
             pii_detected=pii_detected,
+            pii_categories=pii_categories or [],
+            pii_match_details=pii_match_details,
             claude_reason=claude_reason,
         ))
     except Exception as exc:

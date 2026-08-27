@@ -11,16 +11,20 @@ import logging
 import os
 import threading
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 # Decisions where the AI actually received the data or the write went
-# through -- used by AuditLogger.recent_matches() below to count how many
-# times a request has already been let through, not merely asked about.
-_APPROVED_LIKE_DECISIONS = frozenset({
+# through. Used by AuditLogger.recent_matches() below to count how many
+# times a request has already been let through, not merely asked about --
+# and by gate.py to decide whether an approved-request's PII match ever got
+# released at all, before it will record the literal (or redacted) matched
+# text in pii_match_details rather than the "hidden" placeholder. Public
+# (no leading underscore) for that second, cross-module use.
+APPROVED_LIKE_DECISIONS = frozenset({
     "approved", "auto_accepted", "accepted_via_accept_all", "accepted_via_temp_session",
 })
 
@@ -73,6 +77,28 @@ class AuditEntry:
     auto_accept_rule: str   # rule name if auto_accepted, else ""
     latency_seconds: float
     pii_detected: bool = False  # True if pii_detector.py flagged the content before this decision
+    pii_categories: list[str] = field(default_factory=list)  # Which category label(s) pii_detector.py
+                              # flagged (e.g. "IBAN (bank account number)") -- always populated
+                              # whenever pii_detected is True, regardless of the audit_match_details
+                              # trial setting below. Category labels alone were already surfaced to
+                              # the popup UI before this field existed (see pii_detector.py's module
+                              # docstring), so recording them here is always-on, not opt-in -- unlike
+                              # pii_match_details, this carries no matched text, just which of
+                              # pii_detector.py's ~20 patterns fired, which is what actually lets a
+                              # refinement pass narrow in on which regex is noisy.
+    pii_match_details: str = ""  # "" unless pii_detection.audit_match_details is turned on in
+                              # settings.yaml (see pii_detector.py's is_pii_audit_match_details_
+                              # enabled()) -- the opt-in PII-refinement trial capture, off by
+                              # default. When on and pii_categories is non-empty: "User confirmed:
+                              # details hidden" if this entry's own `decision` is NOT one of
+                              # APPROVED_LIKE_DECISIONS above (rejected, denied_unattended, error --
+                              # nothing was released, so nothing is recorded); otherwise
+                              # "<category>: <text>" pairs (joined by "; ", one per distinct
+                              # category) giving the literal matched text for a label/keyword
+                              # category (e.g. "salary") or a partially redacted form for a
+                              # value-bearing one (e.g. an IBAN) -- see pii_detector.py's
+                              # describe_match_for_audit()/_VALUE_BEARING_CATEGORIES for exactly
+                              # which categories get redacted and how.
     claude_reason: str = ""  # Claude's self-reported reason for the call, from the mandatory
                               # "reason" ToolSpec param every gated/auto tool now declares (see
                               # gate.py's reason_scope), or the "reason" param on the three
@@ -139,9 +165,9 @@ class AuditLogger:
         HEADERS = [
             "Timestamp", "Week", "Connector", "Tool", "Human-Readable Name",
             "Summary", "Sender / Context", "Decision", "Auto-Accept Rule", "Latency (s)",
-            "PII Detected", "Claude's Reason (unverified)",
+            "PII Detected", "PII Categories", "PII Match Details", "Claude's Reason (unverified)",
         ]
-        COL_WIDTHS = [22, 10, 12, 30, 22, 55, 30, 14, 22, 12, 12, 55]
+        COL_WIDTHS = [22, 10, 12, 30, 22, 55, 30, 14, 22, 12, 12, 30, 55, 55]
 
         hdr_font  = Font(bold=True, color="FFFFFF")
         hdr_fill  = PatternFill("solid", fgColor="2D4A6B")
@@ -176,7 +202,9 @@ class AuditLogger:
                 entry.timestamp, entry.week, entry.connector, entry.tool,
                 entry.tool_name, entry.summary, entry.sender, entry.decision,
                 entry.auto_accept_rule or "", round(entry.latency_seconds, 2),
-                "Yes" if entry.pii_detected else "", entry.claude_reason or "",
+                "Yes" if entry.pii_detected else "",
+                "; ".join(entry.pii_categories), entry.pii_match_details or "",
+                entry.claude_reason or "",
             ])
             fill = decision_fills.get(entry.decision, PatternFill())
             for col in range(1, len(HEADERS) + 1):
@@ -206,6 +234,12 @@ class AuditLogger:
         ws2.append(["By connector", ""])
         for connector, cnt in sorted(Counter(e.connector for e in entries).items()):
             ws2.append([connector, cnt])
+        category_counts = Counter(cat for e in entries for cat in e.pii_categories)
+        if category_counts:
+            ws2.append([])
+            ws2.append(["By PII category (refinement trial)", ""])
+            for category, cnt in sorted(category_counts.items()):
+                ws2.append([category, cnt])
         ws2.column_dimensions["A"].width = 24
         ws2.column_dimensions["B"].width = 14
 
@@ -250,7 +284,7 @@ class AuditLogger:
         return entries[:limit]
 
     def recent_matches(self, connector: str, tool: str, summary: str, *, week: str | None = None) -> int:
-        """Count prior approved-like decisions (see _APPROVED_LIKE_DECISIONS)
+        """Count prior approved-like decisions (see APPROVED_LIKE_DECISIONS)
         for the same (connector, tool, summary) in one week's log --
         defaults to the current week. The request-fingerprint feature:
         "you've approved this exact request N times this week," so a
@@ -281,7 +315,7 @@ class AuditLogger:
                     data.get("connector") == connector
                     and data.get("tool") == tool
                     and data.get("summary") == summary
-                    and data.get("decision") in _APPROVED_LIKE_DECISIONS
+                    and data.get("decision") in APPROVED_LIKE_DECISIONS
                 ):
                     count += 1
         return count

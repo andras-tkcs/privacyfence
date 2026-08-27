@@ -84,6 +84,12 @@ for the full reasoning.
 
 This is a local, regex-based heuristic, not a compliance-grade PII classifier — it runs entirely
 on-device with no network calls or third-party NLP, and it can both miss real PII and flag things
-that aren't. A hit means "look more carefully before approving," not a guarantee either way. Only
-the category label (e.g. "IBAN (bank account number)") is ever surfaced or logged — the matched
-text itself is never returned, stored, or audited.
+that aren't. A hit means "look more carefully before approving," not a guarantee either way. By
+default, only the category label (e.g. "IBAN (bank account number)") is ever surfaced or logged —
+the matched text itself is never returned, stored, or audited.
+
+**One opt-in exception:** `pii_detection.audit_match_details` in `settings.yaml`, off by default
+and meant only for a bounded refinement-trial window — see
+[TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md#pii-detection-gate) for the full contract (what
+gets recorded, when, and how national IDs/IBANs/credit card numbers/IP addresses/currency figures
+are redacted even then).
