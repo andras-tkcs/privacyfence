@@ -65,7 +65,10 @@ class FakeConnector(Connector):
         return self._name
 
     def tool_specs(self) -> list[ToolSpec]:
-        return [ToolSpec(name=f"{self._name}_tool", description="test tool", read_only=True)]
+        return [
+            ToolSpec(name=f"{self._name}_tool", description="test read tool", read_only=True),
+            ToolSpec(name=f"{self._name}_write_tool", description="test write tool", read_only=False),
+        ]
 
     async def call(self, tool: str, args: dict) -> object:
         self.calls.append((tool, args))
@@ -592,12 +595,14 @@ class TestDedupeRetries:
         finally:
             await client.close()
 
-    async def test_read_only_tool_does_not_reuse_completed_result(self, running_server):
-        """A read repeated with identical args must see the effect of any
-        write that happened to the same resource in between (e.g. checking
-        an event's visibility right after setting it) -- so completed-result
-        reuse is dropped for every read_only ToolSpec, not just the tools
-        explicitly listed in _DEDUPE_EXEMPT_TOOLS."""
+    async def test_read_only_tool_reuses_completed_result_when_no_write_happened(self, running_server):
+        """The read-side equivalent of test_identical_call_shortly_after_
+        completion_reuses_cached_result: a gated read can sit on the review
+        popup exactly as long as a gated write can, and a client-timeout
+        retry landing just after a human approved it must not re-run the
+        whole fetch and show the popup a second time for a decision already
+        made (docs/slack-performance-review.md's item #8) -- as long as
+        nothing has written to this connector in between."""
         server, socket_path = running_server
         connector = FakeConnector("drive", result="ok")
         server.set_connectors([connector])
@@ -611,7 +616,34 @@ class TestDedupeRetries:
             await client.send({"id": "2", "method": "call", "params": params})
             await client.recv()
 
-            assert len(connector.calls) == 2  # not deduped, despite identical args
+            assert len(connector.calls) == 1  # deduped: no write happened in between
+        finally:
+            await client.close()
+
+    async def test_read_only_tool_does_not_reuse_completed_result_after_a_write(self, running_server):
+        """The case completed-result reuse must still refuse: a read
+        repeated with identical args after an *unrelated* write to the same
+        connector (e.g. checking an event's visibility right after setting
+        it) must see the write's effect, not a cached pre-write result."""
+        server, socket_path = running_server
+        connector = FakeConnector("drive", result="ok")
+        server.set_connectors([connector])
+        client = await _RawClient.connect(server)
+        try:
+            read_params = {"connector": "drive", "tool": "drive_tool", "args": {"file_id": "f1"}}
+            await client.send({"id": "1", "method": "call", "params": read_params})
+            await client.recv()
+
+            write_params = {"connector": "drive", "tool": "drive_write_tool", "args": {"file_id": "f1"}}
+            await client.send({"id": "2", "method": "call", "params": write_params})
+            await client.recv()
+
+            await client.send({"id": "3", "method": "call", "params": read_params})
+            await client.recv()
+
+            # read, write, and a re-run read -- the cached read was refused
+            # because the write completed after it did.
+            assert len(connector.calls) == 3
         finally:
             await client.close()
 
