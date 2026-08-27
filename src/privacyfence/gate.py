@@ -454,10 +454,20 @@ async def gated_call(
     # but a missing entry should degrade to the smaller shape, not raise).
     layout = _TOOL_LAYOUT.get(tool, NARROW)
     # Only the review (read) gate scans for PII -- see module docstring.
-    pii_categories = (
-        detect_pii_categories(details if pii_scan_text is None else pii_scan_text)
-        if gate == "review" else []
-    )
+    # Run via asyncio.to_thread (the default pool, same as every
+    # connector's own blocking I/O -- there's no popup-style latency
+    # sensitivity here that would justify gate.py's own dedicated
+    # _popup_executor): detect_pii_categories/scan_pii_for_audit scan the
+    # full details/pii_scan_text synchronously, which measured ~80ms per
+    # 1000 messages -- fine for one call, but run inline this used to block
+    # every OTHER concurrently-dispatched request on the IPC server's
+    # single event loop for that whole duration (see
+    # docs/slack-performance-review.md's R9).
+    if gate == "review":
+        pii_scan_source = details if pii_scan_text is None else pii_scan_text
+        pii_categories = await asyncio.to_thread(detect_pii_categories, pii_scan_source)
+    else:
+        pii_categories = []
     # A separate, deliberately weaker signal for the popup (write) gate:
     # the same local detector, run over Claude's own drafted content, but
     # informational only -- unlike pii_categories above, this never routes
@@ -469,30 +479,35 @@ async def gated_call(
     # neutral/informational style, not the red tint+banner that implies a
     # confirmation is coming. Exists as its own signal rather than reusing
     # pii_categories's machinery.
-    write_content_flags = detect_pii_categories(details) if gate == "popup" else []
+    if gate == "popup":
+        write_content_flags = await asyncio.to_thread(detect_pii_categories, details)
+    else:
+        write_content_flags = []
     # The one deliberate exception to the comment above: drive_upload_file's
     # payload can be external content Claude never read (see module
     # docstring), so when it supplies upload_pii_scan_text this runs the same
     # real scan pii_categories does -- folded into pii_detected below and
     # routed through _confirm_pii_or_deny, unlike write_content_flags.
-    upload_pii_categories = (
-        detect_pii_categories(upload_pii_scan_text)
-        if gate == "popup" and upload_pii_scan_text else []
-    )
+    if gate == "popup" and upload_pii_scan_text:
+        upload_pii_categories = await asyncio.to_thread(detect_pii_categories, upload_pii_scan_text)
+    else:
+        upload_pii_categories = []
     # PII-refinement trial capture (opt-in, off by default -- see
     # pii_detector.is_pii_audit_match_details_enabled()). Mirrors
     # pii_categories/upload_pii_categories above exactly -- same source
     # text, same gate scoping -- just also carrying the matched text.
     # Computed separately, and only when the setting is on, so a default
     # install never runs this extra scan at all.
-    pii_audit_matches: list[PIIAuditMatch] = (
-        scan_pii_for_audit(details if pii_scan_text is None else pii_scan_text)
-        if gate == "review" and is_pii_audit_match_details_enabled() else []
-    )
-    upload_pii_audit_matches: list[PIIAuditMatch] = (
-        scan_pii_for_audit(upload_pii_scan_text)
-        if gate == "popup" and upload_pii_scan_text and is_pii_audit_match_details_enabled() else []
-    )
+    pii_audit_matches: list[PIIAuditMatch]
+    if gate == "review" and is_pii_audit_match_details_enabled():
+        pii_audit_matches = await asyncio.to_thread(scan_pii_for_audit, pii_scan_source)
+    else:
+        pii_audit_matches = []
+    upload_pii_audit_matches: list[PIIAuditMatch]
+    if gate == "popup" and upload_pii_scan_text and is_pii_audit_match_details_enabled():
+        upload_pii_audit_matches = await asyncio.to_thread(scan_pii_for_audit, upload_pii_scan_text)
+    else:
+        upload_pii_audit_matches = []
     # The value everything below actually branches on for "does PII force a
     # popup/confirmation". pii_categories itself (the raw detector result)
     # stays untouched so the audit log's pii_detected field below keeps
@@ -507,12 +522,16 @@ async def gated_call(
     audit_pii_categories = pii_categories or upload_pii_categories
     audit_pii_matches = pii_audit_matches or upload_pii_audit_matches
     # Request fingerprint: "you've approved this exact (connector, tool,
-    # summary) N times this week" -- read directly from the audit log,
-    # same synchronous-call
-    # pattern _audit()/AuditLogger.record() already use elsewhere in this
-    # function rather than asyncio.to_thread (this file's own established
-    # precedent for small local JSONL reads/writes on the request path).
-    seen_count = get_audit_logger().recent_matches(connector, tool, summary)
+    # summary) N times this week" -- read directly from the audit log.
+    # recent_matches() is a full scan of the current week's JSONL file
+    # (measured ~225ms at 50,000 rows), so -- unlike AuditLogger.record()'s
+    # own small, established-precedent synchronous appends elsewhere in
+    # this module -- it goes through asyncio.to_thread too, for the same
+    # R9 reasoning as the PII scans above. get_audit_logger() itself is a
+    # cheap singleton lookup, called synchronously first so only the actual
+    # file scan runs on the thread.
+    audit_logger = get_audit_logger()
+    seen_count = await asyncio.to_thread(audit_logger.recent_matches, connector, tool, summary)
 
     # Every exit from this function -- including one triggered by an
     # exception nobody anticipated below (a native popup call raising, a

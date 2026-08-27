@@ -10,6 +10,7 @@ filtered_data differs from it -- that's the actual privacy boundary.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import threading
 import time
@@ -18,7 +19,7 @@ from types import SimpleNamespace
 import pytest
 
 from privacyfence import gate
-from privacyfence.audit_log import init_audit_logger
+from privacyfence.audit_log import get_audit_logger, init_audit_logger
 from privacyfence.auto_accept import AutoAcceptEvaluator
 from privacyfence.pii_detector import init_pii_detection
 
@@ -2419,6 +2420,57 @@ class TestDefaultDetails:
 
         out = gate._default_details(Weird())
         assert out == "weird-fallback"
+
+
+class TestPiiAndAuditWorkOffTheEventLoop:
+    """R9 (docs/slack-performance-review.md): detect_pii_categories/
+    scan_pii_for_audit and AuditLogger.recent_matches used to run inline on
+    gated_call's own coroutine -- synchronous, CPU-bound-ish work that
+    blocked every other concurrently-dispatched request on the IPC server's
+    single event loop for however long it took. Proven here the standard
+    way: a slow stand-in for each, run concurrently with a ticker coroutine
+    that must keep making progress throughout -- if the slow call still ran
+    inline, the ticker would freeze for its whole duration instead.
+    """
+
+    @staticmethod
+    async def _ticks_while(coro) -> list[float]:
+        ticks: list[float] = []
+
+        async def ticker():
+            while True:
+                ticks.append(time.monotonic())
+                await asyncio.sleep(0.01)
+
+        ticker_task = asyncio.create_task(ticker())
+        try:
+            await coro
+        finally:
+            ticker_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await ticker_task
+        return ticks
+
+    async def test_detect_pii_categories_does_not_block_concurrent_tasks(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "rule")))
+        monkeypatch.setattr(gate, "detect_pii_categories", lambda text: time.sleep(0.15) or [])
+
+        ticks = await self._ticks_while(gate.gated_call(**base_kwargs(gate="review")))
+
+        # >5 ticks in 0.15s (a 0.01s ticker interval) means the event loop
+        # kept running throughout -- inline, blocked for the whole sleep, it
+        # would show at most one or two.
+        assert len(ticks) > 5
+
+    async def test_recent_matches_does_not_block_concurrent_tasks(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "rule")))
+        monkeypatch.setattr(
+            get_audit_logger(), "recent_matches", lambda *a, **k: time.sleep(0.15) or 0
+        )
+
+        ticks = await self._ticks_while(gate.gated_call(**base_kwargs(gate="review")))
+
+        assert len(ticks) > 5
 
 
 class TestRunInPopupExecutor:
