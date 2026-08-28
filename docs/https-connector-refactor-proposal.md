@@ -1,6 +1,8 @@
 # PrivacyFence as an HTTPS connector — architecture & functional refactoring proposal
 
-**Status: design agreed (§15). Nothing here is implemented yet.**
+**Status: design agreed (§15); the P0 spike is complete and its findings are folded in below
+([`p0-https-connector-spike-findings.md`](p0-https-connector-spike-findings.md)). No production code
+is written yet — P1 is the first phase that lands any.**
 
 This document designs, and validates against the current code, the refactoring that turns
 PrivacyFence from a macOS-only, single-user, stdio-MCP-bridge desktop app into a service with an
@@ -306,6 +308,9 @@ dialog. A list of pending approvals is only meaningful if a gated call can *be* 
    Claude fires several gated calls, collects several `approval_id`s, tells the user "3 steps need
    your approval: *link*", waits on all of them at once, and re-issues each as it clears.
 
+   P0 found that step 6 is where the model actually stops and asks a human rather than re-issuing on
+   its own, which changes what this tool is *for* — see §5.4.
+
 ### 5.3 Why the invariant survives
 
 The original invariant's actual purpose is: *Claude must never hold a capability that releases gated
@@ -347,11 +352,42 @@ invariant holds unchanged per invocation:
 `AuditEntry` gains `decided_at` and the decision vocabulary gains `approval_pending` and `expired`.
 The schema is otherwise untouched, which matters for anyone parsing the JSONL already.
 
-**Claude may not re-call.** A model that reports "needs approval" and then stops is a UX failure, not
-a security failure — fail-closed holds. Mitigations: the hold window covers the fast case entirely;
-tool descriptions state the re-call contract explicitly; `await_approval` gives the model a natural
-thing to do instead of ending the turn. This is P0's question 2 and P3's beta — measured, not
-assumed.
+**Claude may not re-call — P0 measured this, and mostly it does not.** This was the spike's question
+2, and the answer changed the risk's shape rather than confirming it. Across five independent fresh
+Claude Code sessions driving a real MCP tool that returned a pending-shaped result, zero completed the
+fetch → pending → re-call → content loop autonomously; four stopped and asked a human, naming the
+tool's own re-call instruction as a probable **prompt injection**
+([findings §2](p0-https-connector-spike-findings.md)). The mechanism is not the inattention this
+paragraph originally anticipated: an instruction embedded in a tool description or a return payload
+telling the model to repeat a call by itself has exactly the shape Claude's injection defenses are
+built to catch, and the defense fired even in the run whose initiating human prompt pre-authorized
+the behavior by name.
+
+Fail-closed holds — every observed run ended with a human being asked, never with a silent wrong
+action, so the security invariant is if anything reinforced. What changes is the plan:
+
+- **Design for a confirmation turn per pending approval as the common case, not the exception.**
+  `await_approval`'s value is no longer "the model waits instead of ending the turn"; it is "the model
+  has one good thing to offer the human at the point where it stops" — *"3 approvals are pending —
+  want me to keep checking and tell you when they clear?"*. That is copy to write deliberately in P3,
+  not a bug to word away.
+- **Copy-editing the tool description is not the fix.** The defense triggered on every phrasing
+  tested, including the one that pre-empted the injection concern explicitly (which reads as a
+  classic injection shape itself, so it plausibly made things worse). The promising direction is a
+  protocol- or system-level signal that a pending result is a *status* and not an instruction — a
+  distinct MCP content type, if one becomes available — rather than better prose.
+- **The hold window is worth more than D3 assumed.** An approval decided inside it costs no human
+  turn at all; one that falls out of it now costs one. So P2 should establish what tool-call timeout
+  Claude's client actually enforces (§8.3), and P3's beta should treat "raise the hold window as far
+  as that timeout safely allows" as a live option rather than defending the 30 s default.
+- **Only Claude Code was reachable.** Desktop, web and mobile were not testable from the spike's
+  environment. Because the behavior traces to a general safety property rather than a Claude Code
+  quirk, assume it everywhere until checked, and check it on the other three surfaces during P3's
+  beta.
+
+Five runs, one day, one model, one tool description is a real signal and not a proof — P3's beta is
+still where this settles on real traffic. What P0 changes is that the risk is confirmed present
+today, so P3 gets scoped around it rather than hoping it is absent.
 
 **Unattended sessions.** `is_unattended()` short-circuits before any prompt and must keep doing so —
 an unattended session must never receive a pending result, it must be denied immediately, exactly as
@@ -455,6 +491,35 @@ This needs a genuine responsive pass on `resources/approval_window/styles.css`:
 
 The fixed-row-height design decision (every `.pf-kv` row is a fixed size regardless of value length,
 so layout is deterministic from field counts) survives this and should be kept.
+
+**P0 built this patch for real and measured it** ([findings §4](p0-https-connector-spike-findings.md)):
+at a 375×812 viewport the unpatched WIDE card has `documentElement.scrollWidth` of 980 (horizontal
+overflow); the patched one is 375. The shape of the work, in order of size, so whoever does it for
+real does not rediscover it:
+
+1. *Trivial*: `CONTENT_WIDTH`'s fixed `610px`/`980px` → `min(Xpx, 100%)`.
+2. *Small and localized*: the three WIDE-only layout styles (the outer flex row, the left column, the
+   right pane) are **inline** styles in `build_card_stack_html()` today, and an inline style cannot
+   carry a `@media` query — they must become CSS classes first. About a 10-line diff in the WIDE
+   branch. Watch for the silent failure here: leaving the original `class` attribute in place while
+   adding the new one produces a duplicate `class`, which no-ops the override without raising
+   anything.
+3. *The real cost*: naively flipping the outer row to `flex-direction: column` under a breakpoint
+   **does not work**. `flex: 0 0 420px` on the left column sets *height* once the parent's main axis
+   is vertical, and with both panes still `flex:1; min-height:0; overflow-y:auto` — correct for two
+   independently-scrolling regions inside a real `100vh` window — they fight for a height neither
+   needs and content is silently clipped into an invisible nested scroll region. The model that works:
+   below the breakpoint `body` drops `height:100vh` for `min-height:100vh`, and **both** WIDE panes
+   drop to `flex:none; height:auto; overflow:visible`, so each sizes to its content and the page
+   scrolls once, normally.
+4. The `.pf-kv` / `.pf-quote` truncation design needed zero changes at the phone viewport.
+5. **The settings page (§7.2) needs no responsive work** — `settings_window_html`'s layout is already
+   fluid and produced no overflow at 375px. One non-blocking follow-up: the fixed-width nav rail eats
+   over a third of a 375px screen and wraps toggle labels one word per line.
+
+**Sized at roughly a day** of focused work for the CSS/markup change, plus new
+`test_approval_window_html.py` assertions on the breakpoint's output, plus one real device-emulation
+check. That fits inside **P1**'s existing M sizing; it does not need a phase of its own.
 
 ---
 
@@ -741,10 +806,18 @@ Five things to know before choosing:
   `localhost` qualifies, and is a secure context even over plain HTTP; a bare IP address does not.
   This is why D1 pins local mode to `http://localhost:PORT` rather than `http://127.0.0.1:PORT` —
   reached by IP, biometric step-up is simply unavailable there.
-- **Where the link opens decides whether this is dependable.** The approval URL arrives inside a
-  Claude conversation. Passkeys work in the system browser and in Safari View Controller / Android
-  Custom Tabs; a plain embedded webview may not offer the platform authenticator at all. Test this in
-  the Phase 0 spike — it is the difference between a real control and a coin flip.
+- **Where the link opens decides whether this is dependable — and this is still open after P0.** The
+  approval URL arrives inside a Claude conversation. The platform facts are settled: Chrome Custom
+  Tabs (Android) and `SFSafariViewController` / `ASWebAuthenticationSession` (iOS) support platform
+  WebAuthn fully with no app integration, while a bare embedded Android `WebView` does **not** offer
+  the platform-authenticator UI at all. What is *not* publicly documented, and was not reachable from
+  the P0 environment (no real Desktop/iOS/Android Claude apps), is which of those Claude's own apps
+  use for an in-chat link — app-specific behavior that can change between versions
+  ([findings §3](p0-https-connector-spike-findings.md)). **The check is cheap and needs a human with
+  the real apps: host a minimal WebAuthn test page (e.g. `webauthn.io`), post the link into a real
+  Claude conversation on Desktop, iOS and Android, tap it, and see whether the biometric prompt
+  appears.** Roughly ten minutes, and it is an entry condition for P9 — do it before P9 is scheduled,
+  not during it. Until then D7 is a decided mechanism with an unverified delivery path.
 - **Synced passkeys weaken "this device".** iCloud Keychain and Google Password Manager sync passkeys
   across a user's devices. Require `platform` attachment, and check the BE/BS flags in
   `authenticatorData` if "the credential lives only on this phone" is a property the deployment
@@ -811,7 +884,8 @@ not a rewrite.** That was the single biggest feasibility question and it comes b
 ### 11.4 Findings that change the plan
 
 1. **Card CSS is not responsive.** `CONTENT_WIDTH = {narrow: 610, wide: 980}` and `body {height:
-   100vh}` are native-window assumptions. §7.3 — real work, not a tweak.
+   100vh}` are native-window assumptions. §7.3 — real work, not a tweak, and since P0 built the patch
+   for real, bounded work with a known shape: about a day, inside P1.
 2. **Mobile requires `org` mode** — verified against Claude's remote-connector requirements rather
    than assumed. §2. Confirmed as the intended design; the README should say so explicitly.
 3. **Per-user service OAuth is the largest single work item**, larger than the HTTP server itself.
@@ -822,6 +896,12 @@ not a rewrite.** That was the single biggest feasibility question and it comes b
    needs and, for the first time in this codebase, makes possible — everything under `web/` is
    platform-independent. Coverage, contrary to an earlier draft of this document, gates on nothing:
    the bar is a 100% *pass rate*. §13.
+7. **Claude does not autonomously re-call after a pending result** — its prompt-injection defenses
+   treat the re-call contract as a probable attack and it stops to ask a human, on every phrasing
+   tested. Found by the P0 spike, not by static reading. This is the largest single change to how P3
+   should be scoped. §5.4.
+8. **Whether the approval link opens somewhere WebAuthn works is still unknown** — P0 could not test
+   it, and it decides whether D7 is a real control or a coin flip. §10.6.
 
 ---
 
@@ -847,15 +927,15 @@ Two ordering changes fall out of the same review:
 | # | Phase | Depends on | Size | Exit criterion |
 |---|---|---|---|---|
 | **P0** | Spike — throwaway | — | S | **Done** — see [`p0-https-connector-spike-findings.md`](p0-https-connector-spike-findings.md) |
-| **P1** | Web approval surface (`WebApprovalUI`) | P0 | M | A gated call resolves in a browser; native popup still selectable |
+| **P1** | Web approval surface (`WebApprovalUI`) | P0 | M | A gated call resolves in a browser at a phone viewport as well as a desktop one; native popup still selectable |
 | **P2** | MCP over HTTP, **alongside** the bridge | P1 | L | Claude Code drives every tool over `/mcp`; the bridge still works unchanged |
-| **P3** | Deferred approvals + concurrency | P2 | L | Three approvals pending at once, each decidable in any order; `_popup_lock` gone |
+| **P3** | Deferred approvals + concurrency | P2 | L | Three approvals pending at once, each decidable in any order; `_popup_lock` gone; the stop-and-ask path P0 found (§5.4) has designed copy and a measured re-call rate from the beta |
 | **P4** | Settings on the web | P1 | M | Every `SettingsController` action reachable from a browser |
 | **P5** | Retire the bridge | P2, P4 | S | `bridge/`, `ipc.py`, `ipc_server.py` deleted; integration test re-pointed at `/mcp` |
 | **P6** | Principals + per-user storage | P3, P5 | L | Two principals isolated in tests; local mode byte-identical to before |
 | **P7** | Org identity — OIDC, sessions, OAuth 2.1 AS | P6 | L | Claude adds the connector by DCR; audience separation test passes |
 | **P8** | Per-user service authorization | P7 | L | A remote user authorizes Google, Slack, Salesforce, Atlassian and Telegram from a phone |
-| **P9** | Step-up auth (WebAuthn) | P7 | M | Face ID / Touch ID / fingerprint required on a write approval |
+| **P9** | Step-up auth (WebAuthn) | P7, **and the §10.6 link-open check** | M | Face ID / Touch ID / fingerprint required on a write approval |
 | **P10** | Retire the native UI | P4, P9 | M | The four AppKit modules deleted; `rumps`/PyObjC optional extras |
 
 Sizes are relative, not calendar estimates: S is a few days' work, M a week or two, L several weeks.
@@ -888,6 +968,25 @@ and question 2 came back as a real, structural risk — not the model losing the
 prompt-injection defenses treating an in-tool "call yourself again" instruction as a probable attack
 and stopping to ask a human, across every tested phrasing. §5.4 should be read with that finding in
 hand.
+
+### What P0 changed in this plan
+
+| Question | Answer | What it changes here |
+|---|---|---|
+| **1.** Do the documents work as live pages? | **Yes**, both unmodified, driven end to end in headless Chromium against a real `postMessage` → `fetch()` shim; the POST payloads matched exactly what `gate.py` and `settings_window.py` expect today. | Nothing to change — it confirms P1 and P4 are hosting changes. The one `post()` swap in §7.1 really is the whole JS delta. |
+| **2.** Will Claude re-call after a pending result? | **No, mostly** — 0 of 5 fresh Claude Code sessions completed the loop autonomously; 4 stopped and flagged the re-call contract as a probable prompt injection. | The largest change. §5.4 is rewritten around it. P3 is scoped assuming a human confirmation turn per pending approval; P3's beta additionally measures the other three surfaces and treats raising the hold window as a live option; P3's rollback key (below) becomes a supported configuration, not only an escape hatch. |
+| **3.** Does WebAuthn work where the link opens? | **Unanswered** — no real Desktop/iOS/Android Claude app was reachable from the spike environment. | Stays an open risk on D7. §10.6 now names a ten-minute manual check and makes it an entry condition for P9 rather than work inside it. |
+| **4.** What does the responsive pass cost? | **About a day**, with the shape known and two real layout traps already hit and solved. | §7.3 carries the working model. The work stays inside P1's M sizing; P1's exit criterion now names the phone viewport so it is actually verified there. |
+
+**Still open going into P1**, in the order they are needed:
+
+1. The WebAuthn link-open check (§10.6) — cheap, needs a human with real apps, blocks scheduling P9.
+2. The tool-call timeout Claude's client actually enforces (§8.3) — establish it in **P2**; it decides
+   how far the hold window can be raised in P3.
+3. Re-call behavior on Claude Desktop, web and mobile — **P3**'s beta, alongside the Claude Code
+   number P0 already has.
+4. Housekeeping: the throwaway `spike/p0-recall-experiment` branch is still on the remote and should
+   be deleted now that its findings are reviewed.
 
 ### Per-phase definition of done
 
@@ -932,8 +1031,10 @@ untouched. What does change is how Claude reaches the daemon, and that is why P2
 - P1: `init_approval_ui()` — the seam itself. A config key selects native or web.
 - P2: the HTTP listener is off unless configured; the bridge is untouched.
 - P3: a config key restores blocking-only behaviour (hold window = pending TTL, no pending results).
-  Worth keeping until P3 has a stable release behind it, because §5.4's "Claude may not re-call" risk
-  is the one that only real usage settles.
+  After P0 this is no longer just a rollback lever — it is the sane configuration for a single-user
+  `local` deployment where the human is at the desktop anyway, so treat it as a **supported, tested
+  configuration** with a documented default rather than a switch that exists only until P3 is stable.
+  §5.4's "Claude may not re-call" is now a measured behavior, not a hypothetical.
 - P6–P9: `mode: local` is the off switch for everything org-shaped.
 - P10 is the one phase with no rollback — it deletes the fallback. That is why it is last.
 
@@ -950,7 +1051,7 @@ here."
 | P0 | none | Throwaway. |
 | **P1** | **beta**, then stable | The ideal first beta: opt-in, the native popup remains, and the seam is the kill switch. Blast radius is one config key. |
 | **P2** | **beta**, then stable | Dual-transport and reversible — the bridge still works, so a broken `/mcp` costs a user nothing. |
-| **P3** | **beta, and it needs one** | Whether Claude reliably re-calls after a pending result is model- and client-dependent. P0 gives an early read; only a real beta cohort settles it. Do not ship this straight to stable. |
+| **P3** | **beta, and it needs one — more so after P0** | P0's early read came back negative on Claude Code (§5.4): the model stops and asks rather than re-calling. Only a real beta cohort, on all four surfaces and with iterated copy, settles what that costs in practice. Do not ship this straight to stable, and do not size the phase as if the loop were silent. |
 | P4 | stable with P1 | Same surface, same risk profile. |
 | P5 | **stable only** | A deletion should never be the thing a beta cohort is testing. Ship it once P2 has a stable release behind it and the deprecation notice has been visible for a release cycle. |
 | P6 | stable | No user-visible change by construction — local mode must be byte-identical. If it needs a beta, it is not done. |
@@ -1042,6 +1143,6 @@ front.
 | **D4** | Is `org` mode the same artifact as the desktop app? | **Same codebase, separate build target.** The desktop app must not ship an inbound-facing server it never binds. |
 | **D5** | `org` MCP auth: own authorization server, or delegate to the org IdP? | **Own authorization server**, with IdP delegation as a supported configuration. It is what makes the browser session and the MCP token provably one identity. §9.4 |
 | **D6** | Keep the native macOS popup after P10, or delete it? | **Delete it.** Two approval surfaces means two places for a security fix to land, and the `ApprovalUI` seam lets it come back if that proves wrong. |
-| **D7** | Require step-up re-authentication before a *write* approval, and by what mechanism? | **Yes in `org` mode, scoped and configurable — via a WebAuthn platform authenticator** (Face ID / Touch ID / fingerprint / Hello), with IdP `acr_values` step-up as the alternative and OIDC re-auth as the no-passkey fallback. §10.6 |
+| **D7** | Require step-up re-authentication before a *write* approval, and by what mechanism? | **Yes in `org` mode, scoped and configurable — via a WebAuthn platform authenticator** (Face ID / Touch ID / fingerprint / Hello), with IdP `acr_values` step-up as the alternative and OIDC re-auth as the no-passkey fallback. The mechanism is decided; whether the approval link opens somewhere that offers the platform authenticator is **still unverified** — P0 could not reach the real apps, and the ten-minute manual check is P9's entry condition. §10.6 |
 | **D9** | What replaces `id(writer)` as the unattended-session key? | **The Streamable HTTP session identifier**, not a token claim — an MCP session is the exact successor to a connection, whereas a claim would make "unattended" a property of a credential that outlives the run. §9.4 |
 | **D8** | When are #55 and #121 acted on? | **Once this refactoring is complete, not before.** #55 then closes as won't-do pointing at this document; #121 is revisited then, together with a potential Linux version. Closing #55 earlier would leave mobile approval untracked while its replacement is still unbuilt. §14 |
