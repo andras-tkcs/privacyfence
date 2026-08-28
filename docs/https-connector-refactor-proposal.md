@@ -22,7 +22,7 @@ one daemon can serve.
 ## Contents
 
 1. [What exists today](#1-what-exists-today)
-2. [Goals, non-goals, and the one honest limitation](#2-goals-non-goals-and-the-one-honest-limitation)
+2. [Goals, non-goals, and why the mode split exists](#2-goals-non-goals-and-why-the-mode-split-exists)
 3. [Target architecture](#3-target-architecture)
 4. [Operating modes: `local` and `org`](#4-operating-modes-local-and-org)
 5. [The approval protocol: from blocking to deferred](#5-the-approval-protocol-from-blocking-to-deferred)
@@ -120,7 +120,7 @@ Unattended sessions are keyed on `id(writer)` — the identity of a TCP connecti
 
 ---
 
-## 2. Goals, non-goals, and the one honest limitation
+## 2. Goals, non-goals, and why the mode split exists
 
 ### Goals
 
@@ -143,14 +143,14 @@ Unattended sessions are keyed on `id(writer)` — the identity of a TCP connecti
 - Replacing Claude's own client-side permissioning. PrivacyFence remains a separate, independent
   enforcement point.
 
-### The one honest limitation
+### Why there are two modes
 
-**`local` mode cannot serve Claude on a phone, and no amount of design changes that.** A remote MCP
-connector added in claude.ai must be reachable over HTTPS *from Anthropic's infrastructure*; a
-server bound to `127.0.0.1` is not. Claude for iOS and Android use connectors added on claude.ai,
-so they inherit that requirement.
+The two modes are not a preference between deployment styles. The split is the mechanism that makes
+the mobile goal reachable at all: a remote MCP connector added in claude.ai must be reachable over
+HTTPS *from Anthropic's infrastructure*, a server bound to `127.0.0.1` is not, and Claude for iOS
+and Android use the connectors added on claude.ai, so they inherit that requirement.
 
-So the mode split is not a preference, it is the mechanism:
+Hence:
 
 - **`local`** — same trust posture as today (loopback only, single user), used from Claude Code or
   Claude Desktop on the same machine. What it buys over today is concurrent approvals, a web
@@ -158,9 +158,9 @@ So the mode split is not a preference, it is the mechanism:
 - **`org`** — PrivacyFence runs on a host in the organization's trusted infrastructure with a
   reachable HTTPS endpoint. **This is the mode that delivers the mobile goal.**
 
-An individual with no organization who wants mobile is really deploying a one-user `org` mode
-somewhere reachable, or fronting `local` mode with a tunnel. The design should say so rather than
-implying `local` will grow into it.
+An individual with no organization who wants mobile is deploying a one-user `org` mode somewhere
+reachable, or fronting `local` mode with a tunnel. Worth stating in the README so the mode choice
+reads as the deliberate one it is, rather than implying `local` will grow into it.
 
 ---
 
@@ -757,8 +757,8 @@ not a rewrite.** That was the single biggest feasibility question and it comes b
 
 1. **Card CSS is not responsive.** `CONTENT_WIDTH = {narrow: 610, wide: 980}` and `body {height:
    100vh}` are native-window assumptions. §7.3 — real work, not a tweak.
-2. **`local` mode cannot serve mobile Claude.** §2. This should be documented in the README, not
-   discovered by a user.
+2. **Mobile requires `org` mode** — verified against Claude's remote-connector requirements rather
+   than assumed. §2. Confirmed as the intended design; the README should say so explicitly.
 3. **Per-user service OAuth is the largest single work item**, larger than the HTTP server itself.
    §9.3.
 4. **Unattended sessions lose their identity key** when the TCP connection goes away. §9.4.
