@@ -691,13 +691,60 @@ Anyone for whom "a hostname and a pending-approval ID reach Anthropic" is unacce
 | Stale/duplicate decision | First accepted decision for an `approval_id` wins; all later ones rejected |
 | Session theft on a shared/unlocked phone | Short idle timeout; optional step-up re-auth for write approvals (D7) |
 
-### 10.6 The risk that does not go away
+### 10.6 The risk that does not go away, and the step-up options for it
 
 #55 named it and it is unchanged here: **a borrowed or stolen unlocked phone with a live session
 becomes a remote approval instrument for live write actions.** The web design has the same exposure
-the PWA design had. Mitigations available: short session idle timeout, optional re-authentication
-before a write approval, per-approval TTL, and fast session revocation from the settings page. Worth
-deciding explicitly rather than inheriting by default.
+the PWA design had. Short session idle timeouts, per-approval TTL and fast session revocation from
+the settings page all help, but the control that actually closes it is a step-up check on the
+approval itself.
+
+Biometrics from a browser are not the obstacle they used to be. **WebAuthn with a platform
+authenticator *is* Face ID, Touch ID, Android fingerprint and Windows Hello**, driven from an
+ordinary page by `navigator.credentials.get()` with `userVerification: "required"` — no native app,
+no Apple Developer membership, no relay.
+
+| Option | What it actually defends | Phone browser | Cost |
+|---|---|---|---|
+| **WebAuthn platform authenticator** (passkey) | A session stolen and replayed from another device; a handed-over unlocked phone whose holder is not biometrically enrolled on it | Yes — Face ID / Touch ID / fingerprint / Hello | Enrolment flow plus assertion verification; one well-trodden library |
+| **WebAuthn roaming authenticator** (security key) | Same, plus it survives full compromise of the phone itself | Yes, NFC tap — poor ergonomics per approval | Same code path, `cross-platform` attachment |
+| **IdP step-up by `acr_values`** | Whatever the org's IdP enforces — Entra and Okta already do platform-authenticator MFA | Yes, in the IdP's own UX | Near zero in PrivacyFence; depends on IdP support |
+| **OIDC re-auth** (`prompt=login`, `max_age=0`) | A stolen session cookie only — an autofilled password on the owner's own unlocked phone stops nothing | Yes | Two query parameters |
+| **TOTP** | A stolen session cookie | Yes, but a six-digit code per approval is untenable friction | Low — worth having only as recovery |
+| **Typed confirmation** of a token shown on the card | Reflexive or accidental approval, not a determined holder | Yes | Trivial — complements a real factor, never replaces one |
+
+**Recommended: WebAuthn platform authenticator**, with IdP `acr_values` step-up as the org-mode
+alternative where the IdP already does this well, and OIDC re-auth as the fallback for a user with no
+passkey enrolled.
+
+Five things to know before choosing:
+
+- **The OS prompt cannot name the action.** WebAuthn's `txAuthSimple` extension — the one that would
+  have made the sheet say "approve sending this email" — was removed at Level 2 because essentially
+  nothing implemented it. The Face ID sheet says "sign in to pf.example.com". Transaction binding
+  lives in the challenge instead: make it a server nonce bound to the `approval_id` and a hash of the
+  decision payload, and verify that server-side. The signature is then proof this human approved
+  *this* approval, even though the OS text is generic — and the user reads the real action in the
+  PrivacyFence card directly above the prompt.
+- **Verify user verification, not just the signature.** Require `userVerification: "required"` *and*
+  check the UV flag in `authenticatorData`. Skip that check and a credential that only proved
+  presence passes as a biometric.
+- **The RP-ID rule collides with D1.** WebAuthn needs a secure context and a registrable-domain RP
+  ID. `localhost` qualifies, and is a secure context even over plain HTTP; a bare IP address does
+  not. So if D1 lands on loopback HTTP, the server must be reached as `http://localhost:PORT`, not
+  `http://127.0.0.1:PORT`, or biometric step-up is simply unavailable in local mode.
+- **Where the link opens decides whether this is dependable.** The approval URL arrives inside a
+  Claude conversation. Passkeys work in the system browser and in Safari View Controller / Android
+  Custom Tabs; a plain embedded webview may not offer the platform authenticator at all. Test this in
+  the Phase 0 spike — it is the difference between a real control and a coin flip.
+- **Synced passkeys weaken "this device".** iCloud Keychain and Google Password Manager sync passkeys
+  across a user's devices. Require `platform` attachment, and check the BE/BS flags in
+  `authenticatorData` if "the credential lives only on this phone" is a property the deployment
+  actually needs.
+
+And scope it, or it stops working: a step-up on every approval trains people to thumbprint
+reflexively, which defeats the point. Scope it to writes, or to writes plus PII-flagged reads, and
+make the scope configurable.
 
 ### 10.7 Audit
 
@@ -849,6 +896,6 @@ Phase 4 removes that transport entirely.
 | **D4** | Is `org` mode the same artifact as the desktop app, or a separate headless server build? | **Same codebase, separate PyInstaller/container target** — the desktop app should not ship an inbound-facing server it never binds. |
 | **D5** | `org` MCP auth: own authorization server, or delegate to the org IdP? | **Own AS** (§9.4-B), IdP delegation as a supported configuration. |
 | **D6** | Keep the native macOS popup as an option after Phase 6, or delete it? | **Delete it.** Two approval surfaces means two places for a security fix to land, and the seam already lets it come back if needed. |
-| **D7** | Require step-up re-authentication before a *write* approval on the web? | **Yes in `org` mode, configurable** — this is the mitigation for §10.6. |
+| **D7** | Require step-up re-authentication before a *write* approval, and by what mechanism? | **Yes in `org` mode, scoped and configurable — via a WebAuthn platform authenticator** (Face ID / Touch ID / fingerprint / Hello), with IdP `acr_values` step-up as the alternative and OIDC re-auth as the no-passkey fallback. See §10.6. |
 | **D8** | Close #55 as won't-do now, or when Phase 2 lands? | **Now**, pointing at this document — the design decision is what makes it obsolete, not the code. |
 
