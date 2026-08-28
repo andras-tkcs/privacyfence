@@ -1,9 +1,12 @@
 # PrivacyFence as an HTTPS connector — architecture & functional refactoring plan
 
 **Status: design agreed (§15); the P0 spike is complete and its findings are recorded in §12. P1
-(web approval surface) and P2 (MCP over HTTP alongside the bridge) have landed. P2's implementation
-found one gap this document did not have an answer for — how Claude Desktop connects to `local`
-mode once the bridge is gone — now decided as D11 and scheduled as P4b (§12).**
+(web approval surface), P2 (MCP over HTTP alongside the bridge), and P4b (the Desktop stdio shim,
+D11) have landed. P2's implementation found one gap this document did not have an answer for — how
+Claude Desktop connects to `local` mode once the bridge is gone — resolved as D11 and implemented as
+P4b: `PrivacyFence.mcpb` now ships `mcpb/shim/`, a thin stdio-to-Streamable-HTTP transport proxy,
+in place of the old bridge; `bridge/` itself stays in the tree, unchanged and still fronting existing
+installs, until P5 retires it in a later release (§12).**
 
 This document designs, and validates against the current code, the refactoring that turns
 PrivacyFence from a macOS-only, single-user, stdio-MCP-bridge desktop app into a service with an

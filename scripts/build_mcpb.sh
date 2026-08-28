@@ -1,22 +1,26 @@
 #!/usr/bin/env bash
 # Build PrivacyFence.mcpb — a one-click Claude Desktop extension that installs
-# the privacyfence-bridge MCP server (no manual claude_desktop_config.json edits).
+# the privacyfence-mcpb-shim MCP server (no manual claude_desktop_config.json
+# edits).
 #
-# This builds bridge/ on its own — a Node/TypeScript MCP server with no
-# connector clients, no PII detection, no PyObjC/AppKit — bundled by esbuild
-# into a single dependency-free server/bridge.js, so the .mcpb ships with
-# neither a Python framework nor a node_modules/ directory. Claude Desktop
-# supplies the Node runtime itself (server.type = "node" in the manifest —
-# see mcpb/manifest.json.tmpl). This script does NOT depend on build_dmg.sh.
+# This builds mcpb/shim/ on its own — a Node/TypeScript stdio-to-Streamable-
+# HTTP transport proxy with no connector clients, no PII detection, no
+# PyObjC/AppKit, and (unlike the retired bridge/) no tool-schema or manifest
+# knowledge at all — bundled by esbuild into a single dependency-free
+# server/shim.js, so the .mcpb ships with neither a Python framework nor a
+# node_modules/ directory. Claude Desktop supplies the Node runtime itself
+# (server.type = "node" in the manifest — see mcpb/manifest.json.tmpl). This
+# script does NOT depend on build_dmg.sh.
 #
-# The bridge still talks to the PrivacyFence daemon over a Unix socket, so the
+# The shim talks to the PrivacyFence daemon's /mcp endpoint over HTTP, so the
 # daemon (PrivacyFence.app, built separately by build_dmg.sh, still Python)
-# must be installed and configured on its own — this bundle only wires up the
-# MCP server entry.
+# must be installed, configured, and running with web.mcp.enabled on its own
+# — this bundle only wires up the MCP server entry (D11,
+# docs/https-connector-refactor-plan.md §12).
 #
 # Prerequisites:
-#   node + npm on PATH (npm installs bridge/'s build-time deps; npx runs the
-#   @anthropic-ai/mcpb CLI).
+#   node + npm on PATH (npm installs mcpb/shim/'s build-time deps; npx runs
+#   the @anthropic-ai/mcpb CLI).
 #   python3 on PATH (only used to read the version out of pyproject.toml —
 #   the daemon itself is not built by this script).
 #
@@ -36,26 +40,24 @@ OUT="dist/PrivacyFence-${VERSION}.mcpb"
 
 echo "=== Building PrivacyFence.mcpb ${VERSION} ==="
 
-echo "→ Building the Node bridge (bridge/dist/bridge.js)…"
+echo "→ Building the Node shim (mcpb/shim/dist/shim.js)…"
 (
-  cd bridge
+  cd mcpb/shim
   npm ci --silent
-  BRIDGE_VERSION="${VERSION}" npm run build --silent
+  npm run build --silent
 )
 
 echo "→ Staging bundle contents…"
 rm -rf "$STAGE"
 mkdir -p "${STAGE}/server"
-cp bridge/dist/bridge.js "${STAGE}/server/bridge.js"
+cp mcpb/shim/dist/shim.js "${STAGE}/server/shim.js"
 
 sed "s/__VERSION__/${VERSION}/" mcpb/manifest.json.tmpl > "${STAGE}/manifest.json"
 cp src/privacyfence/resources/icon_512.png "${STAGE}/icon.png"
 
-# No code signing needed here: bridge.js is plain JS with no Mach-O binaries
-# (see the file header — the PyInstaller-era Python runtime this used to
-# bundle, and the signing workarounds its packaging required, are gone as of
-# the Node bridge rewrite). Only PrivacyFenceApp.app, built and signed by
-# build_dmg.sh, needs a Developer ID signature and notarization.
+# No code signing needed here: shim.js is plain JS with no Mach-O binaries.
+# Only PrivacyFenceApp.app, built and signed by build_dmg.sh, needs a
+# Developer ID signature and notarization.
 
 echo "→ Validating manifest…"
 npx --yes @anthropic-ai/mcpb validate "${STAGE}/manifest.json"

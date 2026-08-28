@@ -54,6 +54,29 @@ jobs:
         run: npm run build
         working-directory: bridge
 
+      - name: Install shim dependencies
+        run: npm ci
+        working-directory: mcpb/shim
+
+      # mcpb/shim/'s own suite (daemon discovery/launch, the stdio<->
+      # Streamable HTTP proxy — see docs/https-connector-refactor-plan.md
+      # §12, D11) runs against mcpb/shim/src/*.ts directly via tsx, same as
+      # bridge/'s suite above.
+      - name: Run shim test suite
+        run: npm test
+        working-directory: mcpb/shim
+
+      - name: Type-check shim
+        run: npm run typecheck
+        working-directory: mcpb/shim
+
+      # tests/integration/test_shim_mcp_contract.py spawns the real built
+      # shim.js against a real /mcp endpoint -- same reasoning as the bridge
+      # build step above.
+      - name: Build shim
+        run: npm run build
+        working-directory: mcpb/shim
+
       # Plain `pytest` already fails the step (non-zero exit) on the first
       # failing test — no extra flags needed to enforce a 100% pass rate.
       # pytest-timeout (configured in pyproject.toml) also fails any test
@@ -94,8 +117,8 @@ jobs:
       # could catch -- see docs/testing-policy.md §1 for the reasoning and
       # the parallel case (test_settings_window.py) that *does* defer its
       # AppKit import far enough to skip cleanly here instead. tests/
-      # integration/ is excluded too -- it drives the real Node bridge, out
-      # of scope for this job (covered on the macOS job instead).
+      # integration/ is excluded too -- it drives the real Node bridge/shim,
+      # out of scope for this job (covered on the macOS job instead).
       - name: Run the platform-independent test subset
         run: >
           pytest tests/unit -v

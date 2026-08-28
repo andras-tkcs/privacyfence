@@ -182,6 +182,11 @@ PrivacyFence is split into two processes:
 
 The bridge is disposable. The daemon is the authoritative security and governance boundary.
 
+`PrivacyFence.mcpb` now installs a thin stdio-to-HTTP shim in place of the bridge, forwarding
+Claude Desktop's requests to the daemon's own embedded `/mcp` endpoint instead of the bridge's TCP
+socket; the bridge itself keeps working unchanged in the meantime (see
+[the refactor plan](docs/https-connector-refactor-plan.md) for the migration).
+
 ```text
 AI assistant
      │
