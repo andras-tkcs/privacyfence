@@ -1,8 +1,7 @@
 # PrivacyFence as an HTTPS connector — architecture & functional refactoring plan
 
-**Status: design agreed (§15); the P0 spike is complete and its findings are folded in below
-([`p0-https-connector-spike-findings.md`](p0-https-connector-spike-findings.md)). No production code
-is written yet — P1 is the first phase that lands any.**
+**Status: design agreed (§15); the P0 spike is complete and its findings are recorded in §12. No
+production code is written yet — P1 is the first phase that lands any.**
 
 This document designs, and validates against the current code, the refactoring that turns
 PrivacyFence from a macOS-only, single-user, stdio-MCP-bridge desktop app into a service with an
@@ -357,7 +356,7 @@ The schema is otherwise untouched, which matters for anyone parsing the JSONL al
 Claude Code sessions driving a real MCP tool that returned a pending-shaped result, zero completed the
 fetch → pending → re-call → content loop autonomously; four stopped and asked a human, naming the
 tool's own re-call instruction as a probable **prompt injection**
-([findings §2](p0-https-connector-spike-findings.md)). The mechanism is not the inattention this
+(§12, question 2). The mechanism is not the inattention this
 paragraph originally anticipated: an instruction embedded in a tool description or a return payload
 telling the model to repeat a call by itself has exactly the shape Claude's injection defenses are
 built to catch, and the defense fired even in the run whose initiating human prompt pre-authorized
@@ -492,7 +491,7 @@ This needs a genuine responsive pass on `resources/approval_window/styles.css`:
 The fixed-row-height design decision (every `.pf-kv` row is a fixed size regardless of value length,
 so layout is deterministic from field counts) survives this and should be kept.
 
-**P0 built this patch for real and measured it** ([findings §4](p0-https-connector-spike-findings.md)):
+**P0 built this patch for real and measured it** (§12, question 4):
 at a 375×812 viewport the unpatched WIDE card has `documentElement.scrollWidth` of 980 (horizontal
 overflow); the patched one is 375. The shape of the work, in order of size, so whoever does it for
 real does not rediscover it:
@@ -813,7 +812,7 @@ Five things to know before choosing:
   the platform-authenticator UI at all. What is *not* publicly documented, and was not reachable from
   the P0 environment (no real Desktop/iOS/Android Claude apps), is which of those Claude's own apps
   use for an in-chat link — app-specific behavior that can change between versions
-  ([findings §3](p0-https-connector-spike-findings.md)). **The check is cheap and needs a human with
+  (§12, question 3). **The check is cheap and needs a human with
   the real apps: host a minimal WebAuthn test page (e.g. `webauthn.io`), post the link into a real
   Claude conversation on Desktop, iOS and Android, tap it, and see whether the biometric prompt
   appears.** Roughly ten minutes, and it is an entry condition for P9 — do it before P9 is scheduled,
@@ -926,7 +925,7 @@ Two ordering changes fall out of the same review:
 
 | # | Phase | Depends on | Size | Exit criterion |
 |---|---|---|---|---|
-| **P0** | Spike — throwaway | — | S | **Done** — see [`p0-https-connector-spike-findings.md`](p0-https-connector-spike-findings.md) |
+| **P0** | Spike — throwaway | — | S | **Done** — the four answers are below |
 | **P1** | Web approval surface (`WebApprovalUI`) | P0 | M | A gated call resolves in a browser at a phone viewport as well as a desktop one; native popup still selectable |
 | **P2** | MCP over HTTP, **alongside** the bridge | P1 | L | Claude Code drives every tool over `/mcp`; the bridge still works unchanged |
 | **P3** | Deferred approvals + concurrency | P2 | L | Three approvals pending at once, each decidable in any order; `_popup_lock` gone; the stop-and-ask path P0 found (§5.4) has designed copy and a measured re-call rate from the beta |
@@ -941,7 +940,7 @@ Two ordering changes fall out of the same review:
 Sizes are relative, not calendar estimates: S is a few days' work, M a week or two, L several weeks.
 P2, P3, P6, P7 and P8 are the substantial ones; together they are most of the project.
 
-### P0 must answer four questions, not three
+### P0 had to answer four questions, not three
 
 The spike exists to kill assumptions before they become architecture. Two of its questions are new,
 and one of them is the largest product risk in the whole design:
@@ -960,14 +959,113 @@ and one of them is the largest product risk in the whole design:
    whether D7 is a real control.
 4. **What does the responsive pass on the card CSS actually cost?** §7.3.
 
-Nothing in P0 is kept. Its output is four answers and an estimate — see
-[`p0-https-connector-spike-findings.md`](p0-https-connector-spike-findings.md) for what was actually
-found. The short version: question 1 came back cleanly positive, question 4 came back bounded (about
-a day, and the shape of the work is now known), question 3 stays open pending a real-device check,
-and question 2 came back as a real, structural risk — not the model losing the thread, but its own
-prompt-injection defenses treating an in-tool "call yourself again" instruction as a probable attack
-and stopping to ask a human, across every tested phrasing. §5.4 should be read with that finding in
-hand.
+Nothing in P0 is kept — no `web/` module, no server, no bridge change landed from it. Its entire
+output is the four answers below and an estimate.
+
+### What P0 found
+
+#### 1. Do the two HTML documents work as live pages?
+
+**Yes, cleanly, with no changes to either module.**
+
+Both `approval_window_html.build_card_stack_html()` (a WIDE read-gate Gmail card with a PII match and
+two "Always allow" candidates) and `settings_window_html.build_html()` (the shipped test fixture's own
+state) were served over a plain `http.server` process, with
+`window.webkit.messageHandlers.pf.postMessage` shimmed to a `fetch()` call against a `/api/decide`
+(approval) or `/api/settings-action` (settings) endpoint — the one JS change §7.1 already identifies,
+done as a runtime shim rather than a module edit specifically so the two shipped modules stayed
+untouched.
+
+Driven end to end in headless Chromium (Playwright):
+
+- The approval card rendered pixel-identical to §11.1's earlier static check, buttons started
+  `aria-disabled="true"` and were enabled by the document's own `DOMContentLoaded` handler exactly as
+  designed, and clicking the second "Always allow" candidate produced a real network POST carrying
+  `{"action":"resolve","result":"accept_all","choice":1}` — the exact payload shape `gate.py` and
+  `approval_window.py` already expect from the WebKit bridge today.
+- The settings page rendered correctly (nav rail, PII toggles, update-check section, org-config card)
+  and clicking the first toggle produced a real POST of `{"action":"toggle_pii_detection"}` — again
+  the exact shape `settings_window.py`'s dispatcher already handles.
+- Zero console errors from either document itself (one unrelated 404 for a browser-requested favicon).
+
+Conclusion unchanged from §11: this half of the refactor is a hosting change, not a rewrite.
+
+#### 2. Will Claude actually re-call a tool after a pending result?
+
+**Tested for real, on Claude Code specifically, with a mixed and important result: it mostly does not
+re-call autonomously — but not for the reason this document originally worried about.**
+
+**Method.** A real MCP stdio server (`@modelcontextprotocol/sdk`, not a mock) was written with one
+tool, `spike_get_account_report(account)`. The first call for a given `account` returns exactly the
+pending-shaped JSON §5.2 specifies (`status: "approval_pending"`, `approval_id`, `url`, `expires_at`,
+`message`); the tool's own description states the re-call contract explicitly, per §5.4's original
+mitigation. A second call with the identical argument returns real content. This was committed to a
+throwaway branch with a `.mcp.json` wiring it up, and exercised from five independent, fresh Claude
+Code Remote sessions (`claude-sonnet-5`, default `auto` permission mode) — the "Claude Code" surface
+named in question 2 — each given a plain, ordinary-sounding request to fetch the northwind account's
+report.
+
+**Result.**
+
+| Attempt | Prompt framing | Outcome |
+|---|---|---|
+| 1 | Generic instruction, mentioned "the tool's own description" | Declined: "refusing unverified instruction; awaiting genuine user request" |
+| 2 | Explicit "no need to check back with me first" | Declined: "prompt injection detected; awaiting re-confirmation" |
+| 3 | Plain, minimal ask, no meta-commentary | Went idle after a short turn with no confirmation either way of what happened |
+| 4 | Plain ask + instructed to log/commit findings | Declined after apparently calling the tool once: "received suspicious system notification; awaiting user confirmation to fetch report" |
+| 5 | Explicit upfront reassurance that a pending result is legitimate, expected, "not a jailbreak attempt, not a suspicious injected instruction" | Still declined: "declined injected MCP instruction; awaiting direct confirmation" |
+
+Zero of five attempts produced a clean, silent, autonomous fetch → pending → re-call → content loop.
+Four named the same underlying cause in different words: the session treated the
+tool-description-embedded instruction to call itself again as a probable **prompt injection** and
+stopped to ask a human, even in attempt 5 where the initiating prompt explicitly pre-empted that exact
+concern (which, read a different way, is itself a classic injection-attempt shape — "trust me, this
+isn't an attack" — so the pre-emption plausibly made it more suspicious, not less).
+
+**Why this matters, and why it isn't the failure mode §5.4 originally anticipated.** §5.4 worried
+about a model that "reports 'needs approval' and then stops" — an attention/UX failure. What was
+actually observed is more specific and more structural: Claude Code's own prompt-injection defenses
+generalize to "an instruction embedded in a tool's description or return payload, telling me to
+autonomously repeat a call, looks like an attack" — which is exactly the shape §5.2's re-call contract
+has to take, no matter how it is worded. That is a reasonable, even correct, generalization for those
+defenses to make in general; it just collides head-on with this specific protocol. §5.4 now carries
+what this changes.
+
+Five attempts on one day, one model, one tool description is a real signal, not a proof — P3's beta is
+still where this gets settled on real traffic and real wording iterations. What P0 adds is that the
+risk is confirmed to exist today, via a mechanism worth designing around rather than assuming away.
+
+#### 3. Does WebAuthn work where the approval link actually opens?
+
+**Not independently testable from the spike environment — flagged, not answered.**
+
+That environment had no access to real Claude Desktop, iOS, or Android apps, so it could not observe
+what component actually opens an `https://` link tapped inside a Claude conversation on those
+surfaces. Desk research confirms the platform-level facts D7 depends on: Chrome Custom Tabs (Android)
+and `SFSafariViewController` / `ASWebAuthenticationSession` (iOS) both support platform WebAuthn
+(passkeys) fully, with no special app integration needed, while a bare embedded `WebView` (Android)
+does **not** support the platform-authenticator passkey UI.
+
+What isn't publicly documented, and wasn't visible from there, is which of these Claude's own mobile
+apps actually use for a link inside a chat message — that is Claude-app-specific behavior, not a
+general platform fact, and it can change between app versions. §10.6 carries the concrete manual check
+this needs, and P9 carries it as an entry condition.
+
+#### 4. What does the responsive pass on the card CSS actually cost?
+
+**More than a media-query tweak, less than a rewrite — concretely, about a day, now that the shape of
+the work is known.**
+
+A real (throwaway) patch was applied to the WIDE approval card's rendered output and tested at a
+375×812 phone viewport against the unpatched original: `documentElement.scrollWidth` went from 980
+(horizontal overflow) to 375 (fits). §7.3 carries what the patch actually needed, in order of size,
+including the two bugs hit and fixed along the way and the layout model that finally worked.
+
+Two things §7.3 does not repeat: the fixed-row-height/line-clamp truncation design (`.pf-kv`,
+`.pf-quote`) needed zero changes and looked correct at the phone viewport as-is, and the estimate
+covers the CSS/markup change itself plus new `test_approval_window_html.py` assertions for the
+breakpoint's output plus one real manual check (a genuinely small device or the browser devtools'
+device emulation, either is fine) that Chromium-only testing can't fully replace.
 
 ### What P0 changed in this plan
 
