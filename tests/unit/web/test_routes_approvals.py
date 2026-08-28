@@ -12,7 +12,7 @@ import time
 import pytest
 from starlette.testclient import TestClient
 
-from privacyfence.web.routes_approvals import create_app
+from privacyfence.web.routes_approvals import _inject_shim, create_app
 from privacyfence.web_approval_ui import WebApprovalUI
 
 TOKEN = "test-token-0123456789"
@@ -49,6 +49,48 @@ def _pending_card(web_ui, **kwargs):
     card = web_ui.current()
     assert card is not None, "card never registered"
     return t, card, box
+
+
+class TestInjectShim:
+    """Regression coverage for a real bug found by actually clicking Allow
+    in headless Chromium: a naive html.replace("<body>", ..., 1) lands the
+    shim wherever "<body>" first appears in the raw string -- and
+    styles.css's own CSS comments genuinely contain that literal substring
+    (e.g. "the same-colored rail on <body>") inside the document's one
+    <style> block, well before the real tag. The browser then parses the
+    injected <script> as inert CSS text, not a script element: it silently
+    never runs, so window.webkit stays undefined and clicking any button
+    has no effect at all -- no console error, no failed request, nothing.
+    _inject_shim must only ever match the real <body>, after </head>
+    closes.
+    """
+
+    def test_a_body_like_string_inside_a_style_comment_before_head_close_is_not_matched(self):
+        html = (
+            "<html><head><style>/* mentions <body> in a comment */</style></head>"
+            "<body>REAL CONTENT</body></html>"
+        )
+        shimmed = _inject_shim(html, "<script>SHIM</script>")
+        assert shimmed == (
+            "<html><head><style>/* mentions <body> in a comment */</style></head>"
+            "<body><script>SHIM</script>REAL CONTENT</body></html>"
+        )
+
+    def test_lands_after_head_close_and_before_the_real_body_content(self):
+        from privacyfence.card_builder import build_card_html
+
+        html = build_card_html(title="t", preview={}, details_text="d", is_read=True, layout="narrow")
+        shimmed = _inject_shim(html, "<script>SHIM_MARKER</script>")
+        head_close = shimmed.index("</head>")
+        style_close = shimmed.index("</style>")
+        # Deliberately searched from head_close on, not shimmed.index("<body>")
+        # from the start -- the real card template's own styles.css comments
+        # contain the literal substring "<body>" earlier in the document
+        # (inside the <style> block), which is exactly the bug this test
+        # exists to catch; a naive search here would hide it, not prove it.
+        body_open = shimmed.index("<body>", head_close)
+        shim_pos = shimmed.index("SHIM_MARKER")
+        assert style_close < head_close < body_open < shim_pos
 
 
 class TestAuthentication:
