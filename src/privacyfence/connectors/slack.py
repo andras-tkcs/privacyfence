@@ -51,6 +51,23 @@ def _apply_message_privacy(dicts: list[dict[str, Any]], content_category: str) -
     return dicts
 
 
+def _message_page_result(filtered: list[dict[str, Any]], has_more: bool) -> dict[str, Any]:
+    """The value slack_get_channel_history/slack_get_thread_replies actually
+    return to Claude for one page of messages -- {messages, has_more} always,
+    plus note when has_more is true. Slack's own pagination signal
+    (SlackClient.get_channel_history's has_more, not a message-count
+    comparison), not surfacing it left Claude reasoning as though a
+    truncated read were the whole conversation (see
+    docs/slack-performance-review.md's item #4)."""
+    result: dict[str, Any] = {"messages": filtered, "has_more": has_more}
+    if has_more:
+        result["note"] = (
+            "More messages exist beyond what's returned here -- call again with a larger "
+            "limit, or narrow the time range, before treating this as the complete history."
+        )
+    return result
+
+
 class SlackConnector(Connector):
     def __init__(self, client: SlackClient) -> None:
         self._slack = client
@@ -187,7 +204,14 @@ class SlackConnector(Connector):
             ),
             ToolSpec(
                 name="slack_get_channel_history",
-                description="Fetch recent messages in a Slack channel. Requires user approval.",
+                description=(
+                    "Fetch recent messages in a Slack channel. Returns "
+                    "{messages: [...], has_more: bool}, plus a note when has_more is true -- "
+                    "more messages exist than were returned (a small/inactive channel, or a "
+                    "Slack-imposed cap; see docs/slack-setup.md) -- call again with a larger "
+                    "limit, or narrow the time range, to see the rest instead of assuming this "
+                    "is everything. Requires user approval."
+                ),
                 params=[
                     ToolParam("channel_id", "str"),
                     ToolParam("limit", "int", required=False, default=50),
@@ -197,7 +221,12 @@ class SlackConnector(Connector):
             ),
             ToolSpec(
                 name="slack_get_thread_replies",
-                description="Fetch all replies in a Slack thread. Requires user approval.",
+                description=(
+                    "Fetch all replies in a Slack thread. Returns {messages: [...], has_more: "
+                    "bool}, plus a note when has_more is true -- more replies exist than were "
+                    "returned (see slack_get_channel_history's own note on why). Requires user "
+                    "approval."
+                ),
                 params=[
                     ToolParam("channel_id", "str"),
                     ToolParam("thread_ts", "str"),
@@ -407,7 +436,7 @@ class SlackConnector(Connector):
     # ------------------------------------------------------------------ #
 
     async def _get_channel_history(self, channel_id: str, limit: int = 50) -> Any:
-        messages = await self._fetch(self._slack.get_channel_history, channel_id, limit)
+        messages, has_more = await self._fetch(self._slack.get_channel_history, channel_id, limit)
         n = len(messages)
         channel_display = await self._channel_display(channel_id, messages)
         is_group_dm = await self._fetch(self._slack.resolve_is_group_dm, channel_id)
@@ -420,6 +449,8 @@ class SlackConnector(Connector):
         # excerpt would just duplicate one of those two.
         preview = {"Channel": channel_display}
         new_info = {"Messages": str(n)}
+        if has_more:
+            new_info["Note"] = "More messages exist -- Claude will see this too"
         lines = [
             f"[{d['ts']}] {d['user_name'] or d['user_id'] or 'unknown'}: {d['text']}"
             for d in filtered
@@ -436,7 +467,7 @@ class SlackConnector(Connector):
             summary=f"{n} message{'s' if n != 1 else ''} from {channel_display}",
             sender=channel_id,
             raw_data=messages,
-            filtered_data=filtered,
+            filtered_data=_message_page_result(filtered, has_more),
             gate="review",
             preview=preview,
             new_info=new_info,
@@ -453,7 +484,7 @@ class SlackConnector(Connector):
         )
 
     async def _get_thread_replies(self, channel_id: str, thread_ts: str) -> Any:
-        messages = await self._fetch(self._slack.get_thread_replies, channel_id, thread_ts)
+        messages, has_more = await self._fetch(self._slack.get_thread_replies, channel_id, thread_ts)
         n = len(messages)
         channel_display = await self._channel_display(channel_id, messages)
         is_group_dm = await self._fetch(self._slack.resolve_is_group_dm, channel_id)
@@ -466,6 +497,8 @@ class SlackConnector(Connector):
         # right-pane table.
         preview = {"Channel": channel_display}
         new_info = {"Replies": str(max(0, n - 1))}
+        if has_more:
+            new_info["Note"] = "More replies exist -- Claude will see this too"
         lines = [
             f"[{d['ts']}] {d['user_name'] or d['user_id'] or 'unknown'}: {d['text']}"
             for d in filtered
@@ -482,7 +515,7 @@ class SlackConnector(Connector):
             summary=f"{n} repl{'ies' if n != 1 else 'y'} in {channel_display}",
             sender=channel_id,
             raw_data=messages,
-            filtered_data=filtered,
+            filtered_data=_message_page_result(filtered, has_more),
             gate="review",
             preview=preview,
             new_info=new_info,
@@ -620,17 +653,15 @@ class SlackConnector(Connector):
         channel_display = await self._channel_display(channel_id)
         preview = {"Channel": channel_display}
         if thread_ts:
-            # The thread's first (root) message, not the raw timestamp id --
-            # conversations.replies (the same fetch _get_thread_replies uses
-            # for its own root message) returns it as the first entry.
-            # Best-effort: falls back to the raw thread_ts if the fetch
-            # fails, same as other lookups in this file.
-            try:
-                thread_messages = await self._fetch(self._slack.get_thread_replies, channel_id, thread_ts)
-                first_message_text = thread_messages[0].text if thread_messages else ""
-            except RuntimeError:
-                first_message_text = ""
-            preview["In thread"] = first_message_text or thread_ts
+            # The thread's root message, not the raw timestamp id -- one
+            # single-message conversations.history lookup (get_message),
+            # not a full conversations.replies fetch of the whole thread
+            # just to read its first entry (see
+            # docs/slack-performance-review.md's bug #3). Best-effort:
+            # falls back to the raw thread_ts if the message can't be
+            # found, same as other lookups in this file.
+            root_message = await self._fetch(self._slack.get_message, channel_id, thread_ts)
+            preview["In thread"] = (root_message.text if root_message else "") or thread_ts
         if mark_unread:
             preview["Mark unread"] = "after sending"
         await gated_call(

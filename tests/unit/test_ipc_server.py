@@ -65,7 +65,10 @@ class FakeConnector(Connector):
         return self._name
 
     def tool_specs(self) -> list[ToolSpec]:
-        return [ToolSpec(name=f"{self._name}_tool", description="test tool", read_only=True)]
+        return [
+            ToolSpec(name=f"{self._name}_tool", description="test read tool", read_only=True),
+            ToolSpec(name=f"{self._name}_write_tool", description="test write tool", read_only=False),
+        ]
 
     async def call(self, tool: str, args: dict) -> object:
         self.calls.append((tool, args))
@@ -592,12 +595,14 @@ class TestDedupeRetries:
         finally:
             await client.close()
 
-    async def test_read_only_tool_does_not_reuse_completed_result(self, running_server):
-        """A read repeated with identical args must see the effect of any
-        write that happened to the same resource in between (e.g. checking
-        an event's visibility right after setting it) -- so completed-result
-        reuse is dropped for every read_only ToolSpec, not just the tools
-        explicitly listed in _DEDUPE_EXEMPT_TOOLS."""
+    async def test_read_only_tool_reuses_completed_result_when_no_write_happened(self, running_server):
+        """The read-side equivalent of test_identical_call_shortly_after_
+        completion_reuses_cached_result: a gated read can sit on the review
+        popup exactly as long as a gated write can, and a client-timeout
+        retry landing just after a human approved it must not re-run the
+        whole fetch and show the popup a second time for a decision already
+        made (docs/slack-performance-review.md's item #8) -- as long as
+        nothing has written to this connector in between."""
         server, socket_path = running_server
         connector = FakeConnector("drive", result="ok")
         server.set_connectors([connector])
@@ -611,7 +616,34 @@ class TestDedupeRetries:
             await client.send({"id": "2", "method": "call", "params": params})
             await client.recv()
 
-            assert len(connector.calls) == 2  # not deduped, despite identical args
+            assert len(connector.calls) == 1  # deduped: no write happened in between
+        finally:
+            await client.close()
+
+    async def test_read_only_tool_does_not_reuse_completed_result_after_a_write(self, running_server):
+        """The case completed-result reuse must still refuse: a read
+        repeated with identical args after an *unrelated* write to the same
+        connector (e.g. checking an event's visibility right after setting
+        it) must see the write's effect, not a cached pre-write result."""
+        server, socket_path = running_server
+        connector = FakeConnector("drive", result="ok")
+        server.set_connectors([connector])
+        client = await _RawClient.connect(server)
+        try:
+            read_params = {"connector": "drive", "tool": "drive_tool", "args": {"file_id": "f1"}}
+            await client.send({"id": "1", "method": "call", "params": read_params})
+            await client.recv()
+
+            write_params = {"connector": "drive", "tool": "drive_write_tool", "args": {"file_id": "f1"}}
+            await client.send({"id": "2", "method": "call", "params": write_params})
+            await client.recv()
+
+            await client.send({"id": "3", "method": "call", "params": read_params})
+            await client.recv()
+
+            # read, write, and a re-run read -- the cached read was refused
+            # because the write completed after it did.
+            assert len(connector.calls) == 3
         finally:
             await client.close()
 
@@ -633,6 +665,83 @@ class TestDedupeRetries:
             assert first["result"] == "ok"
             assert second["result"] == "ok"
             assert len(connector.calls) == 1
+        finally:
+            await client.close()
+
+
+class TestCancel:
+    """The "cancel" method (ipc.py's module docstring) -- what the bridge
+    sends when the MCP client that issued a tool call gives up on it, so
+    the daemon stops working on (or opens no approval popup for) a request
+    nobody is waiting on anymore.
+    """
+
+    async def test_cancels_an_in_flight_request(self, running_server):
+        server, socket_path = running_server
+        # A long delay -- cancellation must interrupt it, not wait it out.
+        connector = FakeConnector("drive", result="ok", delay=10)
+        server.set_connectors([connector])
+        client = await _RawClient.connect(server)
+        try:
+            params = {"connector": "drive", "tool": "drive_tool", "args": {"file_id": "f1"}}
+            await client.send({"id": "call-1", "method": "call", "params": params})
+            await asyncio.sleep(0.02)  # let the call actually start and register itself
+
+            await client.send({"id": "cancel-1", "method": "cancel", "params": {"target_id": "call-1"}})
+            cancel_response = await client.recv()
+            assert cancel_response == {"id": "cancel-1", "result": {"cancelled": True}}
+
+            call_response = await asyncio.wait_for(client.recv(), timeout=2.0)
+            assert call_response == {"id": "call-1", "error": "cancelled"}
+        finally:
+            await client.close()
+
+    async def test_cancelling_an_already_finished_request_reports_false(self, running_server):
+        server, socket_path = running_server
+        connector = FakeConnector("drive", result="ok")
+        server.set_connectors([connector])
+        client = await _RawClient.connect(server)
+        try:
+            params = {"connector": "drive", "tool": "drive_tool", "args": {"file_id": "f1"}}
+            await client.send({"id": "call-1", "method": "call", "params": params})
+            await client.recv()  # already finished by the time cancel arrives
+
+            await client.send({"id": "cancel-1", "method": "cancel", "params": {"target_id": "call-1"}})
+            assert (await client.recv())["result"] == {"cancelled": False}
+        finally:
+            await client.close()
+
+    async def test_cancelling_an_unknown_id_reports_false_without_raising(self, running_server):
+        server, socket_path = running_server
+        client = await _RawClient.connect(server)
+        try:
+            await client.send({"id": "cancel-1", "method": "cancel", "params": {"target_id": "never-existed"}})
+            assert (await client.recv())["result"] == {"cancelled": False}
+        finally:
+            await client.close()
+
+    async def test_a_cancelled_read_is_not_reused_by_a_later_identical_call(self, running_server):
+        # Cancellation must not poison the dedupe cache for a genuinely new
+        # attempt -- the next identical call gets a fresh try, not the
+        # cancelled outcome.
+        server, socket_path = running_server
+        connector = FakeConnector("drive", result="ok", delay=10)
+        server.set_connectors([connector])
+        client = await _RawClient.connect(server)
+        try:
+            params = {"connector": "drive", "tool": "drive_tool", "args": {"file_id": "f1"}}
+            await client.send({"id": "call-1", "method": "call", "params": params})
+            await asyncio.sleep(0.02)
+            await client.send({"id": "cancel-1", "method": "cancel", "params": {"target_id": "call-1"}})
+            await client.recv()  # cancel-1's own response
+            await client.recv()  # call-1's own {"error": "cancelled"} response
+
+            connector._delay = 0  # the retry should actually run and finish
+            await client.send({"id": "call-2", "method": "call", "params": params})
+            second = await asyncio.wait_for(client.recv(), timeout=2.0)
+
+            assert second == {"id": "call-2", "result": "ok"}
+            assert len(connector.calls) == 2  # a real second attempt, not a reused cancellation
         finally:
             await client.close()
 

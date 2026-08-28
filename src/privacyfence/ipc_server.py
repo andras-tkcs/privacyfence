@@ -25,15 +25,28 @@ silently replay the first call's success). Those are listed in
 genuinely concurrent in-flight retry is still coalesced, since nothing has
 taken effect yet there.
 
-Read-only tools (``ToolSpec.read_only``) lose completed-result reuse
-unconditionally, for the same reason but the opposite direction: a read
-repeated with identical args shortly after an *unrelated* write to the same
-resource (e.g. checking an event's visibility right after setting it) must
-see the write's effect, not a cached pre-write result. Reads are either
-silent or independently gated per call, so there's no popup to double-fire
-in the first place -- the only thing completed-result reuse would buy a read
-is staleness. A genuinely concurrent in-flight duplicate read is still
-coalesced, since no result exists yet to be stale.
+Read-only tools (``ToolSpec.read_only``) lose completed-result reuse only
+when a write to the *same connector* has completed since this particular
+result was produced (``_last_write_at``) -- not unconditionally. The
+concern this guards is real: a read repeated with identical args shortly
+after an unrelated write to the same resource (e.g. checking an event's
+visibility right after setting it) must see the write's effect, not a
+cached pre-write result. But refusing reuse for every completed read,
+always, defeats the whole mechanism for the read side for no reason: a
+gated read sitting on the review popup is exactly as likely to outlast the
+client's timeout as a gated write is, and a retry landing just after the
+human approved it used to re-run the entire fetch and show the popup a
+second time for a decision already made (see
+docs/slack-performance-review.md's item #8) -- reads are silent or
+independently gated per call, so that popup, not staleness, is what
+completed-result reuse actually needs to prevent for them too. A
+genuinely concurrent in-flight duplicate read is still coalesced either
+way, since no result exists yet to be stale. The write-tracking is
+per-connector, not per-resource -- coarser than tracking exactly which
+write could affect which read, but never wrong in the direction that
+matters: at worst it re-runs a read that some unrelated write in the same
+connector didn't actually touch, never serves a read stale relative to a
+write that did.
 """
 
 from __future__ import annotations
@@ -80,6 +93,20 @@ class IPCServer:
         # listen-then-write-files ordering.
         self._token: str = ""
         self._inflight: dict[str, tuple[asyncio.Future, float]] = {}
+        # (id(writer), request "id") -> the asyncio.Task dispatching that
+        # request, for as long as it's in flight -- what the "cancel"
+        # method (see ipc.py's module docstring) looks up to call .cancel()
+        # on. Keyed by connection identity too, not just the request id
+        # alone: each bridge connection's own id counter starts fresh, so
+        # two different connections can otherwise reuse the same id.
+        self._request_tasks: dict[tuple[int, Any], asyncio.Task] = {}
+        # connector name -> time.time() of its most recently *completed*
+        # write (a non-read_only tool call that didn't raise). See
+        # _call_connector's read-reuse check just below _inflight's own
+        # comment -- a cached read older than the connector's own last write
+        # is the one case completed-result reuse must refuse, not every
+        # read unconditionally.
+        self._last_write_at: dict[str, float] = {}
         # Opt-in gate for privacyfence_begin_unattended_session -- see
         # org_config.json's unattended_sessions.enabled. Off by
         # default: a Claude session gaining the ability to switch its own
@@ -194,11 +221,19 @@ class IPCServer:
 
     async def _dispatch(self, raw: bytes, writer: asyncio.StreamWriter) -> None:
         req_id = None
+        task_key: tuple[int, Any] | None = None
         try:
             msg = json.loads(raw)
             req_id = msg.get("id")
             method = msg.get("method")
             params = msg.get("params", {})
+            # Registered before dispatching to any handler (including
+            # "cancel" itself, though nothing ever targets a cancel request
+            # -- it completes far too fast) so "cancel" can look this
+            # request up by id the instant its own message is parsed.
+            if req_id is not None:
+                task_key = (id(writer), req_id)
+                self._request_tasks[task_key] = asyncio.current_task()  # type: ignore[assignment]
 
             if method == "health":
                 result = {"version": VERSION, "connectors": list(self._connectors)}
@@ -207,6 +242,8 @@ class IPCServer:
             elif method == "call":
                 with unattended_scope(id(writer) in self._unattended_connections):
                     result = await self._call_connector(params)
+            elif method == "cancel":
+                result = self._cancel_request(id(writer), params)
             elif method == "check_policy":
                 result = self._check_policy(params)
             elif method == "list_rules":
@@ -222,9 +259,33 @@ class IPCServer:
                 raise ValueError(f"Unknown method: {method!r}")
 
             await self._send(writer, {"id": req_id, "result": result})
+        except asyncio.CancelledError:
+            # This request's own task was the target of a "cancel" -- still
+            # owed exactly one response so the bridge's own pending-request
+            # map doesn't leak a promise nothing will ever resolve. _send is
+            # itself best-effort (catches and logs), so no extra guard
+            # needed around it here.
+            logger.info("Request %s cancelled", req_id)
+            await self._send(writer, {"id": req_id, "error": "cancelled"})
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.error("IPC dispatch error for request %s: %s", req_id, exc, exc_info=True)
             await self._send(writer, {"id": req_id, "error": str(exc)})
+        finally:
+            if task_key is not None:
+                self._request_tasks.pop(task_key, None)
+
+    def _cancel_request(self, writer_id: int, params: dict) -> dict:
+        """Handler for the "cancel" method -- see ipc.py's module docstring
+        for the full contract. Synchronous and immediate: finding and
+        signalling the target task never itself needs to await anything.
+        """
+        target_id = params.get("target_id")
+        task = self._request_tasks.get((writer_id, target_id))
+        if task is None or task.done():
+            return {"cancelled": False}
+        task.cancel()
+        return {"cancelled": True}
 
     async def _call_connector(self, params: dict) -> Any:
         connector_name = params["connector"]
@@ -255,10 +316,17 @@ class IPCServer:
         if entry is not None:
             fut, recorded_at = entry
             still_fresh = (now - recorded_at) < self._DEDUPE_TTL_SECONDS
+            # A completed read is reusable unless some write to this same
+            # connector has completed since -- see the module docstring's
+            # "Read-only tools" paragraph for why this replaced an
+            # unconditional refusal.
+            read_is_stale = self._is_read_only(connector, tool) and (
+                recorded_at <= self._last_write_at.get(connector_name, 0.0)
+            )
             reusable = not fut.done() or (
                 still_fresh
                 and tool not in self._DEDUPE_EXEMPT_TOOLS
-                and not self._is_read_only(connector, tool)
+                and not read_is_stale
             )
             if reusable:
                 logger.info(
@@ -272,11 +340,29 @@ class IPCServer:
         try:
             with reason_scope(reason):
                 result = await connector.call(tool, args)
+        except asyncio.CancelledError:
+            # Not caught by "except Exception" below -- CancelledError is a
+            # BaseException. Popped from _inflight immediately (rather than
+            # left as a done-but-cancelled entry for the dedupe TTL) so a
+            # later, genuinely new identical call starts fresh instead of
+            # being handed -- or itself immediately cancelled by -- this
+            # one's outcome. A concurrent duplicate already awaiting this
+            # exact fut still correctly observes the cancellation; it holds
+            # its own reference to fut independent of the dict.
+            self._inflight.pop(key, None)
+            if not fut.done():
+                fut.cancel()
+            raise
         except Exception as exc:
             fut.set_exception(exc)
             fut.exception()  # mark retrieved so an unwaited future doesn't log "never retrieved"
             raise
         fut.set_result(result)
+        if not self._is_read_only(connector, tool):
+            # A write that raised didn't take effect (or at least isn't
+            # known to have), so only a successful one invalidates cached
+            # reads for this connector -- see the module docstring.
+            self._last_write_at[connector_name] = time.time()
         return result
 
     def _check_policy(self, params: dict) -> dict:

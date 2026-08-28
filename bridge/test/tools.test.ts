@@ -16,9 +16,18 @@ class FakeIPC implements IPCClientLike {
   calls: Array<{ method: string; args: unknown[] }> = [];
   callResult: unknown = { ok: true };
   callError: IPCError | null = null;
+  /** Set by a test to control when call()'s promise settles -- lets it
+   * observe extra.signal firing, or a heartbeat ticking, before the tool
+   * call itself completes. */
+  callGate: Promise<void> | null = null;
+  lastSignal: AbortSignal | undefined;
 
-  async call(connector: string, tool: string, args: Record<string, unknown>): Promise<unknown> {
+  async call(
+    connector: string, tool: string, args: Record<string, unknown>, signal?: AbortSignal
+  ): Promise<unknown> {
     this.calls.push({ method: "call", args: [connector, tool, args] });
+    this.lastSignal = signal;
+    if (this.callGate) await this.callGate;
     if (this.callError) throw this.callError;
     return this.callResult;
   }
@@ -225,6 +234,84 @@ describe("registerTools", () => {
     try {
       await client.callTool({ name: "gmail_list", arguments: {} });
       assert.deepEqual(ipc.calls, [{ method: "call", args: ["gmail", "gmail_list", { limit: 10 }] }]);
+    } finally {
+      await close();
+    }
+  });
+
+  it("emits notifications/progress while a call is outstanding, when the client asked for it", async () => {
+    // docs/slack-performance-review.md's P1 item 8. A short progressIntervalMs
+    // (registerTools' own test-only override -- see its docstring) keeps
+    // this test fast instead of waiting out the real 5s default.
+    const server = new McpServer({ name: "test", version: "0.0.0" });
+    const ipc = new FakeIPC();
+    let releaseCall: () => void = () => {};
+    ipc.callGate = new Promise((resolve) => { releaseCall = resolve; });
+    registerTools(
+      server, ipc, { connectors: [{ name: "gmail", tools: [spec({ name: "gmail_slow" })] }] }, 20
+    );
+
+    const { client, close } = await connectedClient(server);
+    try {
+      const progressUpdates: number[] = [];
+      const callPromise = client.callTool(
+        { name: "gmail_slow", arguments: {} },
+        undefined,
+        { onprogress: (p) => progressUpdates.push(p.progress), resetTimeoutOnProgress: true }
+      );
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      releaseCall();
+      const result = await callPromise;
+
+      assert.equal(result.isError, undefined);
+      assert.ok(progressUpdates.length >= 1, `expected at least one progress update, got ${progressUpdates.length}`);
+      // Strictly increasing, matching the spec's own progress semantics.
+      assert.deepEqual(progressUpdates, [...progressUpdates].sort((a, b) => a - b));
+    } finally {
+      await close();
+    }
+  });
+
+  it("sends no progress notifications when the client didn't ask for them", async () => {
+    const server = new McpServer({ name: "test", version: "0.0.0" });
+    const ipc = new FakeIPC();
+    let releaseCall: () => void = () => {};
+    ipc.callGate = new Promise((resolve) => { releaseCall = resolve; });
+    registerTools(
+      server, ipc, { connectors: [{ name: "gmail", tools: [spec({ name: "gmail_slow" })] }] }, 20
+    );
+
+    const { client, close } = await connectedClient(server);
+    try {
+      // No onprogress -- the SDK won't attach a progressToken, so the
+      // handler must not set up a heartbeat at all (nothing to send it to).
+      const callPromise = client.callTool({ name: "gmail_slow", arguments: {} });
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      releaseCall();
+      const result = await callPromise;
+      assert.equal(result.isError, undefined);
+    } finally {
+      await close();
+    }
+  });
+
+  it("aborts the IPC call's signal when the client gives up on the request", async () => {
+    // What lets the daemon send ipc.py's "cancel" for this request -- see
+    // IPCClient.request's own abort wiring, exercised for real in
+    // ipcClient.test.ts; here just confirming the signal a client-side
+    // timeout produces reaches ipc.call() at all.
+    const server = new McpServer({ name: "test", version: "0.0.0" });
+    const ipc = new FakeIPC();
+    ipc.callGate = new Promise(() => {}); // never resolves on its own
+    registerTools(
+      server, ipc, { connectors: [{ name: "gmail", tools: [spec({ name: "gmail_slow" })] }] }, 20
+    );
+
+    const { client, close } = await connectedClient(server);
+    try {
+      await assert.rejects(client.callTool({ name: "gmail_slow", arguments: {} }, undefined, { timeout: 50 }));
+      assert.ok(ipc.lastSignal !== undefined);
+      assert.equal(ipc.lastSignal!.aborted, true);
     } finally {
       await close();
     }

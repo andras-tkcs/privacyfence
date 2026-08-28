@@ -37,6 +37,8 @@ import json
 import logging
 import os
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -81,9 +83,58 @@ _DIRECTORY_RETRY_COOLDOWN = timedelta(minutes=5)
 # individual call is well-formed.
 _RATE_LIMIT_MAX_RETRY_COUNT = 3
 
+# How long an *unresolvable* user id is remembered as unresolvable. Without
+# this, every id missing from the directory -- a bot, a deactivated account,
+# a Slack Connect external user -- costs a fresh, failing users.info call on
+# every message it appears in, on every fetch, forever: the exact
+# per-message-call problem the positive cache exists to avoid, just on the
+# error path where nothing was being written back at all.
+_NEGATIVE_LOOKUP_TTL = timedelta(hours=1)
+
+# How long a conversation's member list is reused. conversations.list carries
+# no members for channels or group DMs, so the only source is one
+# conversations.members call per conversation; a listing that shows members
+# for 40 group chats is 40 calls every single time without this. Deliberately
+# short -- membership is displayed, never used to decide a participant filter
+# (that goes through users.conversations, which is always live).
+_MEMBERSHIP_CACHE_TTL = timedelta(minutes=10)
+
+# Upper bound on Slack calls in flight at once across the whole process (see
+# _map_concurrent). The synchronous WebClient opens a fresh connection per
+# call, so overlapping them is what hides the per-call TLS handshake; kept
+# low because Slack's rate limits are per method per workspace, and a wider
+# pool just converts round-trip time into 429s.
+_FANOUT_CONCURRENCY = 5
+
+# Ceiling on how many conversations _search_by_participant reads history
+# from. participant resolution (an id, or an exact/unambiguous directory
+# match) already narrows this correctly in the common case; this is the
+# backstop for the rarer case where it resolves loosely -- see that
+# method's own docstring.
+_SEARCH_BY_PARTICIPANT_CONVERSATION_CAP = 10
+
+# Defensive cap on how many pages _conversation_ids_for_user walks. No real
+# Slack account is a member of tens of thousands of conversations, so this
+# never binds in practice -- it exists so a malformed or misbehaving
+# response (an always-truthy cursor) degrades to "stop and use what was
+# fetched" instead of looping forever.
+_USERS_CONVERSATIONS_PAGE_BUDGET = 100
+
+# Same defensive role as _USERS_CONVERSATIONS_PAGE_BUDGET, for
+# _resolve_members' own conversations.members pagination -- 1000 members per
+# page, so this covers up to 1,000,000 members before it would ever bind.
+_CONVERSATIONS_MEMBERS_PAGE_BUDGET = 1000
+
 # A message permalink's path is /archives/<channel id>/p<17-digit ts>, e.g.
 # /archives/C0123ABCD/p1700000000123456 for ts "1700000000.123456".
 _PERMALINK_PATH_RE = re.compile(r"^/archives/([A-Z0-9]+)/p(\d{7,})$")
+
+# Slack ids are prefixed by object type. U/W are human users (W in Enterprise
+# Grid), B is a bot -- and a B id is never returned by users.list and never
+# resolvable via users.info, so it is worth recognizing rather than looking
+# up and failing.
+_USER_ID_RE = re.compile(r"^[UW][A-Z0-9]+$")
+_BOT_ID_RE = re.compile(r"^B[A-Z0-9]+$")
 
 DEFAULT_USER_SCOPES: list[str] = [
     "channels:read", "groups:read", "im:read", "mpim:read",
@@ -95,6 +146,17 @@ DEFAULT_USER_SCOPES: list[str] = [
 
 class SlackClientError(Exception):
     """Raised for unrecoverable Slack client problems (auth, config, API)."""
+
+
+class SlackDirectoryUnavailable(SlackClientError):
+    """Raised when a participant name can't be resolved because the local user
+    directory doesn't know it. Carries an actionable message (refresh the
+    cache) rather than falling back to a whole-workspace scan that would cost
+    hundreds of API calls and, with no directory to resolve names against,
+    still match nothing."""
+
+
+
 
 
 def authorize_interactive(
@@ -178,6 +240,28 @@ def _fetch_account_email(access_token: str, user_id: str) -> str:
     except SlackApiError as exc:
         logger.debug("Could not resolve Slack account email (non-fatal): %s", SlackClient._describe_error(exc))
         return ""
+
+
+def _map_concurrent(items: list[Any], fn, *, max_workers: int = _FANOUT_CONCURRENCY) -> list[Any]:
+    """``[fn(i) for i in items]``, but run up to ``max_workers`` at a time on a
+    throwaway pool. Exists because ``SlackClient`` is synchronous (blocking
+    HTTP via slack_sdk) yet several call sites need one Slack API call per
+    item -- ``conversations.members`` per group chat, ``conversations.history``
+    per matched conversation. The connector already runs the whole client
+    call on its own thread (``SlackConnector._fetch``'s
+    ``asyncio.to_thread``), so nesting a small pool in here overlaps the
+    otherwise-serial round trips (and the TLS handshake each one pays --
+    slack_sdk's sync ``WebClient`` opens a fresh connection per call, no
+    pooling) without touching the event loop. Kept low and created per call,
+    not shared module-wide: Slack's rate limits are per method per
+    workspace, so a wider or longer-lived pool just converts round-trip time
+    into 429s. Preserves ``items``' order; a single item skips the pool
+    entirely.
+    """
+    if len(items) <= 1:
+        return [fn(i) for i in items]
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(items))) as pool:
+        return list(pool.map(fn, items))
 
 
 def load_token_file(token_file: str) -> dict[str, Any]:
@@ -345,6 +429,27 @@ class SlackClient:
         # finished cleanly).
         self._channel_refresh_cursor: str | None = None
 
+        # Ids resolved to "no such user" (a bot, a deactivated account, a
+        # Slack Connect external user, ...) -- see get_user_info(). Without
+        # this, an id absent from the directory costs a fresh, failing
+        # users.info call every time it's looked up, forever.
+        self._user_negative_cache: dict[str, datetime] = {}
+
+        # channel_id -> (member ids, fetched_at). conversations.list carries
+        # no membership for channels or group DMs, so this is the only cache
+        # for what _resolve_members()/conversations.members otherwise fetches
+        # fresh on every single call -- see _MEMBERSHIP_CACHE_TTL's comment
+        # for why this is short-lived rather than folded into the weekly
+        # directory snapshots.
+        self._member_cache: dict[str, tuple[list[str], datetime]] = {}
+
+        # Guards against starting a second concurrent background directory
+        # refresh (see _ensure_user_directory/_ensure_channel_directory) --
+        # a lock per directory, not one shared lock, so a user-directory
+        # refresh never blocks on a channel-directory refresh or vice versa.
+        self._user_directory_refresh_lock = threading.Lock()
+        self._channel_directory_refresh_lock = threading.Lock()
+
     # ------------------------------------------------------------------ #
     # Connection
     # ------------------------------------------------------------------ #
@@ -371,29 +476,64 @@ class SlackClient:
 
         Uses ``conversations.list`` with public and private channel types. When
         ``participant`` is given (a user id, handle, or display name, comma-
-        separated to require all of them), each returned channel's membership is
-        checked via ``conversations.members`` -- one extra Slack API call per
-        channel, same per-item cost ``list_group_chats`` accepts for its own
-        participant filter (see that method's docstring), except a channel's
-        member list is typically far larger, so ``_channel_matches_participant``
-        checks ids first (cheap) and only resolves display names -- one call per
-        unresolved member -- when an id-only match doesn't already decide it.
+        separated to require all of them), the fast path resolves it to user
+        id(s) against the cached user directory and asks ``users.conversations``
+        directly which channels each shares with the caller -- one paginated
+        call per needle, replacing what used to be one ``conversations.members``
+        call *per channel returned*. A participant string the directory can't
+        resolve unambiguously (see ``_resolve_participant_user_ids``) falls back
+        to the old per-channel ``conversations.members`` walk, run concurrently
+        across channels rather than one at a time.
+
+        The filter -- either path -- is applied to each page of
+        ``conversations.list`` as it arrives, and pagination continues until
+        ``max_results`` *matching* channels have been collected or every page
+        has been walked. Filtering only after truncating to the first
+        ``max_results`` raw channels (as this used to) can silently miss a
+        participant who is only a member of a channel that happens to sort
+        past that cutoff -- ``max_results`` bounds how many matches come
+        back, not which channels are eligible to match.
         """
         max_results = self._clamp(max_results, default=100, hi=1000)
+        allowed_ids = self._participant_conversation_ids(
+            participant, types="public_channel,private_channel"
+        ) if participant else None
+        allowed = set(allowed_ids) if allowed_ids is not None else None
+
         channels: list[SlackChannel] = []
         cursor: str | None = None
         try:
             while len(channels) < max_results:
-                page_size = min(200, max_results - len(channels))
+                # Full pages regardless of how many matches are still
+                # needed when filtering -- unlike the unfiltered case, a
+                # page of raw channels doesn't map 1:1 to matches, so
+                # shrinking the request wouldn't reduce API calls, only
+                # the odds of finding enough matches per call.
+                page_size = 200 if participant else min(200, max_results - len(channels))
                 response = self._client.conversations_list(
                     exclude_archived=exclude_archived,
                     types="public_channel,private_channel",
                     limit=page_size,
                     cursor=cursor,
                 )
-                for raw in response.get("channels", []):
-                    channels.append(self._parse_channel(raw))
+                page_raw = response.get("channels", [])
+                for raw in page_raw:
                     self._channel_name_cache[raw.get("id", "")] = raw.get("name", "")
+
+                if not participant:
+                    channels.extend(self._parse_channel(raw) for raw in page_raw)
+                elif allowed is not None:
+                    channels.extend(
+                        self._parse_channel(raw) for raw in page_raw if raw.get("id", "") in allowed
+                    )
+                else:
+                    page_channels = [self._parse_channel(raw) for raw in page_raw]
+                    matches = _map_concurrent(
+                        [c.id for c in page_channels],
+                        lambda cid: self._channel_matches_participant(cid, participant),
+                    )
+                    channels.extend(c for c, ok in zip(page_channels, matches) if ok)
+
                 cursor = (response.get("response_metadata") or {}).get("next_cursor")
                 if not cursor:
                     break
@@ -403,12 +543,6 @@ class SlackClient:
             ) from exc
 
         channels = channels[:max_results]
-
-        if participant:
-            channels = [
-                c for c in channels if self._channel_matches_participant(c.id, participant)
-            ]
-
         logger.info("list_channels returned %d channel(s)", len(channels))
         return channels
 
@@ -462,13 +596,19 @@ class SlackClient:
         ``conversations.list(types="mpim")``.
 
         Unlike channels/DMs, the list response carries no member info for
-        group DMs, so resolving (and hence filtering by) ``participant``
-        costs one extra ``conversations.members`` call per group chat --
-        O(n) Slack API calls where n is the number of group chats returned,
-        not O(1) like ``list_channels``/``list_dms``. ``participant`` may be
-        comma-separated to require all of them as members of the same group
-        chat (AND) -- the same multi-name matching ``search_messages`` uses
-        to resolve e.g. "Bob and Jane's group chat" to one conversation.
+        group DMs, so knowing who's in each one costs one
+        ``conversations.members`` call per chat regardless of ``participant``
+        -- run concurrently (``_map_concurrent``) rather than one at a time.
+        When ``participant`` is given (comma-separated to require all of them
+        as members of the same group chat -- the same multi-name matching
+        ``search_messages`` uses to resolve e.g. "Bob and Jane's group chat"
+        to one conversation) and resolves against the cached user directory,
+        that membership call only runs for the chats ``users.conversations``
+        already confirmed match, typically a handful rather than every chat
+        returned. A participant string the directory can't resolve
+        unambiguously (see ``_resolve_participant_user_ids``) falls back to
+        resolving every chat's membership first and matching by name, same
+        as before this existed.
         """
         max_results = self._clamp(max_results, default=100, hi=1000)
         raw_chats: list[dict[str, Any]] = []
@@ -491,9 +631,15 @@ class SlackClient:
             ) from exc
 
         raw_chats = raw_chats[:max_results]
-        chats = [self._parse_group_chat(raw) for raw in raw_chats]
 
-        if participant:
+        allowed_ids = self._participant_conversation_ids(participant, types="mpim") if participant else None
+        if allowed_ids is not None:
+            allowed = set(allowed_ids)
+            raw_chats = [raw for raw in raw_chats if raw.get("id", "") in allowed]
+
+        chats = _map_concurrent(raw_chats, self._parse_group_chat)
+
+        if participant and allowed_ids is None:
             needles = [p.strip() for p in participant.split(",") if p.strip()]
             chats = [
                 c for c in chats
@@ -509,8 +655,19 @@ class SlackClient:
         limit: int = 50,
         oldest: str = None,
         latest: str = None,
-    ) -> list[SlackMessage]:
-        """Fetch recent messages in a channel via ``conversations.history``."""
+    ) -> tuple[list[SlackMessage], bool]:
+        """Fetch recent messages in a channel via ``conversations.history``.
+
+        Returns ``(messages, has_more)`` -- ``has_more`` is Slack's own
+        pagination signal, not a comparison of ``len(messages)`` against
+        ``limit``: a 3-message channel legitimately returns 3 messages with
+        ``has_more=False``, while a workspace where the Slack app is
+        distributed outside the Marketplace (see slack-setup.md) gets
+        ``has_more=True`` at exactly 15 messages regardless of what
+        ``limit`` asked for. Either way, the caller -- not this method --
+        decides whether/how to disclose that to Claude (see
+        connectors/slack.py's ``_get_channel_history``).
+        """
         if not channel_id:
             raise SlackClientError("get_channel_history requires a channel_id")
         limit = self._clamp(limit, default=50, hi=1000)
@@ -534,15 +691,22 @@ class SlackClient:
             self._parse_message(raw, channel_id, channel_name)
             for raw in response.get("messages", [])
         ]
+        has_more = bool(response.get("has_more", False))
         logger.info(
-            "get_channel_history %s returned %d message(s)", channel_id, len(messages)
+            "get_channel_history %s returned %d message(s), has_more=%s",
+            channel_id, len(messages), has_more,
         )
-        return messages
+        return messages, has_more
 
     def get_thread_replies(
         self, channel_id: str, thread_ts: str
-    ) -> list[SlackMessage]:
-        """Fetch all replies in a thread via ``conversations.replies``."""
+    ) -> tuple[list[SlackMessage], bool]:
+        """Fetch all replies in a thread via ``conversations.replies``.
+
+        Returns ``(messages, has_more)`` -- see ``get_channel_history``'s
+        docstring for what ``has_more`` means and why it isn't derived from
+        a message count.
+        """
         if not channel_id or not thread_ts:
             raise SlackClientError(
                 "get_thread_replies requires a channel_id and thread_ts"
@@ -562,13 +726,43 @@ class SlackClient:
             self._parse_message(raw, channel_id, channel_name)
             for raw in response.get("messages", [])
         ]
+        has_more = bool(response.get("has_more", False))
         logger.info(
-            "get_thread_replies %s/%s returned %d message(s)",
-            channel_id,
-            thread_ts,
-            len(messages),
+            "get_thread_replies %s/%s returned %d message(s), has_more=%s",
+            channel_id, thread_ts, len(messages), has_more,
         )
-        return messages
+        return messages, has_more
+
+    def get_message(self, channel_id: str, ts: str) -> SlackMessage | None:
+        """Fetch a single message by timestamp via one ``conversations.history``
+        call (``latest``/``oldest`` both set to ``ts``, ``inclusive=True``,
+        ``limit=1``) -- for a caller that only needs to display one known
+        message, not fetch a whole channel or thread. ``send_message``'s own
+        "In thread" preview line is the motivating case: reading it used to
+        mean pulling the entire thread via ``get_thread_replies``
+        (``conversations.replies``, the single most rate-limited method
+        under the 2025 non-Marketplace rules -- see slack-setup.md) just to
+        look at its first entry.
+
+        Best-effort, like ``resolve_channel_name`` -- returns None rather
+        than raising on any failure (API error, or the message no longer
+        existing at that timestamp), since a preview line degrading to the
+        raw id/ts is an acceptable fallback here, not a caller error.
+        """
+        if not channel_id or not ts:
+            return None
+        channel_name = self.resolve_channel_name(channel_id)
+        try:
+            response = self._client.conversations_history(
+                channel=channel_id, latest=ts, oldest=ts, inclusive=True, limit=1,
+            )
+        except SlackApiError as exc:
+            logger.debug("Could not fetch message %s/%s (non-fatal): %s", channel_id, ts, exc)
+            return None
+        raw_messages = response.get("messages", [])
+        if not raw_messages:
+            return None
+        return self._parse_message(raw_messages[0], channel_id, channel_name)
 
     def search_messages(
         self, query: str = "", count: int = 20, participant: str = "", days: int = 90
@@ -634,6 +828,16 @@ class SlackClient:
         participant since it has exactly one other party. ``days`` (0 = no
         cutoff) bounds each conversation's history fetch via ``oldest``, same
         reasoning as ``search_messages``'s own ``days`` param.
+
+        ``list_dms``/``list_group_chats`` are asked for up to 1000 matching
+        conversations each -- generous on purpose, since ``participant``'s
+        own resolution (id, or an exact/unambiguous directory match) already
+        narrows this correctly in the common case; ``_SEARCH_BY_PARTICIPANT_
+        CONVERSATION_CAP`` below is the real bound, protecting the fan-out
+        below it against the rarer case where ``participant`` resolves
+        loosely (a substring matching several people) and would otherwise
+        turn one search into a history fetch per accidental match. The
+        history fetches themselves run concurrently (``_map_concurrent``).
         """
         needles = [p.strip() for p in participant.split(",") if p.strip()]
         if not needles:
@@ -646,13 +850,29 @@ class SlackClient:
             c.id for c in self.list_group_chats(max_results=1000, participant=participant)
         ]
 
+        capped = len(channel_ids) > _SEARCH_BY_PARTICIPANT_CONVERSATION_CAP
+        channel_ids = channel_ids[:_SEARCH_BY_PARTICIPANT_CONVERSATION_CAP]
+        if capped:
+            logger.warning(
+                "search_messages participant=%r matched more than %d conversations; "
+                "only reading the first %d",
+                participant, _SEARCH_BY_PARTICIPANT_CONVERSATION_CAP,
+                _SEARCH_BY_PARTICIPANT_CONVERSATION_CAP,
+            )
+
         oldest = None
         if days > 0:
             oldest = str((datetime.now(timezone.utc) - timedelta(days=days)).timestamp())
 
-        messages: list[SlackMessage] = []
-        for channel_id in channel_ids:
-            messages.extend(self.get_channel_history(channel_id, limit=count, oldest=oldest))
+        per_channel = _map_concurrent(
+            channel_ids,
+            lambda channel_id: self.get_channel_history(channel_id, limit=count, oldest=oldest),
+        )
+        # has_more is discarded here -- a participant search already reports
+        # its own aggregate "matched N conversations" / count cap, so a
+        # per-conversation has_more wouldn't have anywhere sensible to
+        # surface at this level.
+        messages: list[SlackMessage] = [m for msgs, _has_more in per_channel for m in msgs]
 
         if query:
             needle = query.lower()
@@ -791,6 +1011,16 @@ class SlackClient:
         runs, and its result is cached in memory, for anyone missing from
         the directory (a bot, or someone who joined since the last refresh),
         same as before this cache existed.
+
+        Two id shapes never reach that live fallback at all: a ``B...`` bot
+        id (``users.info`` can never resolve one -- it isn't a user) fails
+        immediately with no API call, and an id that failed once recently is
+        remembered in ``_user_negative_cache`` for ``_NEGATIVE_LOOKUP_TTL``
+        and fails immediately too. Without this, an id absent from the
+        directory -- a bot, a deactivated account, a Slack Connect external
+        user -- costs a fresh, failing ``users.info`` call every single time
+        it's looked up: on a channel history read, that's once per message
+        it authored, every fetch, forever.
         """
         if not user_id:
             raise SlackClientError("get_user_info requires a user_id")
@@ -798,14 +1028,21 @@ class SlackClient:
             self._ensure_user_directory()
         if user_id in self._user_cache:
             return self._user_cache[user_id]
+        if _BOT_ID_RE.match(user_id):
+            raise SlackClientError(f"get_user_info({user_id}) failed: not a user id (bot)")
+        negative_at = self._user_negative_cache.get(user_id)
+        if negative_at is not None and datetime.now(timezone.utc) - negative_at < _NEGATIVE_LOOKUP_TTL:
+            raise SlackClientError(f"get_user_info({user_id}) failed: previously unresolvable")
         try:
             response = self._client.users_info(user=user_id)
         except SlackApiError as exc:
+            self._user_negative_cache[user_id] = datetime.now(timezone.utc)
             raise SlackClientError(
                 f"get_user_info({user_id}) failed: {self._describe_error(exc)}"
             ) from exc
         user = self._parse_user(response.get("user", {}))
         self._user_cache[user_id] = user
+        self._user_negative_cache.pop(user_id, None)
         return user
 
     # ------------------------------------------------------------------ #
@@ -826,11 +1063,16 @@ class SlackClient:
         when both snapshots are already fresh. Never raises -- same
         best-effort semantics as the lazy path it shares its implementation
         with.
+
+        Passes ``block=True`` -- unlike every lazy caller, this is already
+        running on its own background thread by construction, so there is
+        no request to avoid blocking and no reason to hand a stale snapshot
+        back before the refresh it kicks off has actually finished.
         """
         if self._user_cache_file:
-            self._ensure_user_directory()
+            self._ensure_user_directory(block=True)
         if self._channel_cache_file:
-            self._ensure_channel_directory()
+            self._ensure_channel_directory(block=True)
 
     def refresh_user_directory(self) -> int:
         """Force an immediate re-sync of the whole Slack user directory via
@@ -890,14 +1132,25 @@ class SlackClient:
         starting over -- what the ``slack_refresh_channel_cache`` bridge
         tool uses, so a workspace with enough channels to run one unbounded
         refresh past the calling MCP client's own tool-call timeout instead
-        completes over a few bounded, resumable calls. The on-disk snapshot
-        and weekly TTL are only updated once a walk actually finishes
-        (cursor exhausted) -- a partial refresh is never mistaken for a
-        fresh one; if the daemon restarts mid-walk, the next call just
-        starts over from the first page.
+        completes over a few bounded, resumable calls.
+
+        The in-memory snapshot this merges into is loaded from disk first if
+        it hasn't been already (same as the lazy ``_ensure_channel_directory``
+        path), so a bounded call on a fresh process resumes on top of
+        whatever was already cached, rather than starting from an empty map
+        and briefly losing what's already known. Both the merged-so-far
+        snapshot and the resume cursor are persisted to disk after *every*
+        call, complete or not -- the weekly TTL (``_channel_directory_fetched_at``)
+        only advances once a walk actually finishes (cursor exhausted), so a
+        partial refresh is never mistaken for a fresh one, but the walk
+        itself survives a daemon restart mid-way through instead of
+        starting over from page one.
 
         Returns ``(total conversations cached so far, has_more)``.
         """
+        if not self._channel_directory_loaded_from_disk:
+            self._load_channel_directory_from_disk()
+            self._channel_directory_loaded_from_disk = True
         names = dict(self._channel_name_cache)
         is_mpim = dict(self._channel_is_mpim_cache)
         cursor = self._channel_refresh_cursor
@@ -931,6 +1184,7 @@ class SlackClient:
         self._channel_refresh_cursor = cursor
 
         if cursor:
+            self._save_channel_directory_to_disk()
             logger.info(
                 "Slack channel directory refresh in progress: %d conversation(s) cached so far, more remain",
                 len(names),
@@ -942,13 +1196,32 @@ class SlackClient:
         logger.info("Slack channel directory refreshed: %d conversation(s) cached", len(names))
         return len(names), False
 
-    def _ensure_user_directory(self) -> None:
+    def _ensure_user_directory(self, *, block: bool = False) -> None:
         """Best-effort: loads the on-disk weekly snapshot (once per process)
-        and transparently re-syncs it from Slack if it's missing or older
-        than a week. Failures are logged and swallowed, subject to a retry
-        cooldown -- a directory miss just means ``get_user_info`` falls back
-        to its existing per-id ``users.info`` call, same as if this cache
-        didn't exist."""
+        and re-syncs it from Slack if it's missing or older than a week.
+        Failures are logged and swallowed, subject to a retry cooldown -- a
+        directory miss just means ``get_user_info`` falls back to its
+        existing per-id ``users.info`` call, same as if this cache didn't
+        exist.
+
+        ``block=False`` (the default -- every lazy, per-tool-call caller)
+        serves the existing snapshot immediately, stale or not, and kicks
+        the actual re-sync onto a background thread instead of running it
+        inline: a gated tool call must never sit behind a multi-page
+        ``users.list`` walk just because the weekly TTL happened to expire
+        mid-session (see docs/slack-performance-review.md's R5). The one
+        exception is when no snapshot has ever loaded at all (a fresh
+        install, or on-disk load never having succeeded) -- there's nothing
+        to serve while a background refresh runs, so that case still blocks,
+        same as before background refresh existed. ``block=True`` (used only
+        by ``ensure_directories_fresh``, itself already running on its own
+        background thread at daemon startup) always waits for the refresh
+        to finish before returning.
+
+        The background refresh is single-flight: a lazy call that finds one
+        already in progress (``_user_directory_refresh_lock`` held) returns
+        immediately without starting a second one.
+        """
         if not self._user_directory_loaded_from_disk:
             self._load_user_directory_from_disk()
             self._user_directory_loaded_from_disk = True
@@ -957,16 +1230,32 @@ class SlackClient:
             return
         if self._user_directory_last_attempt and now - self._user_directory_last_attempt < _DIRECTORY_RETRY_COOLDOWN:
             return
+        have_snapshot = self._user_directory_fetched_at is not None
+        if block or not have_snapshot:
+            self._user_directory_last_attempt = now
+            try:
+                self.refresh_user_directory()
+            except SlackClientError as exc:
+                logger.warning("Could not refresh Slack user directory (non-fatal): %s", exc)
+            return
+        if not self._user_directory_refresh_lock.acquire(blocking=False):
+            return
         self._user_directory_last_attempt = now
-        try:
-            self.refresh_user_directory()
-        except SlackClientError as exc:
-            logger.warning("Could not refresh Slack user directory (non-fatal): %s", exc)
 
-    def _ensure_channel_directory(self) -> None:
+        def _run() -> None:
+            try:
+                self.refresh_user_directory()
+            except SlackClientError as exc:
+                logger.warning("Could not refresh Slack user directory (non-fatal): %s", exc)
+            finally:
+                self._user_directory_refresh_lock.release()
+
+        self._spawn_background("slack-user-dir-refresh", _run)
+
+    def _ensure_channel_directory(self, *, block: bool = False) -> None:
         """Channel-directory counterpart to ``_ensure_user_directory`` -- see
-        that method's docstring for the load-once/refresh-if-stale/cooldown
-        reasoning, identical here."""
+        that method's docstring for the block/background-refresh reasoning,
+        identical here."""
         if not self._channel_directory_loaded_from_disk:
             self._load_channel_directory_from_disk()
             self._channel_directory_loaded_from_disk = True
@@ -975,11 +1264,36 @@ class SlackClient:
             return
         if self._channel_directory_last_attempt and now - self._channel_directory_last_attempt < _DIRECTORY_RETRY_COOLDOWN:
             return
+        have_snapshot = self._channel_directory_fetched_at is not None
+        if block or not have_snapshot:
+            self._channel_directory_last_attempt = now
+            try:
+                self.refresh_channel_directory()
+            except SlackClientError as exc:
+                logger.warning("Could not refresh Slack channel directory (non-fatal): %s", exc)
+            return
+        if not self._channel_directory_refresh_lock.acquire(blocking=False):
+            return
         self._channel_directory_last_attempt = now
-        try:
-            self.refresh_channel_directory()
-        except SlackClientError as exc:
-            logger.warning("Could not refresh Slack channel directory (non-fatal): %s", exc)
+
+        def _run() -> None:
+            try:
+                self.refresh_channel_directory()
+            except SlackClientError as exc:
+                logger.warning("Could not refresh Slack channel directory (non-fatal): %s", exc)
+            finally:
+                self._channel_directory_refresh_lock.release()
+
+        self._spawn_background("slack-channel-dir-refresh", _run)
+
+    @staticmethod
+    def _spawn_background(name: str, target: Any) -> None:
+        """Seam around starting a background thread -- a real thread for
+        every production caller; tests substitute a synchronous stand-in
+        (see TestGetUserInfoWithDirectoryCache) so a refresh's effect on the
+        cache can be asserted deterministically without sleeping or joining
+        a real thread."""
+        threading.Thread(target=target, name=name, daemon=True).start()
 
     def _load_user_directory_from_disk(self) -> None:
         if not self._user_cache_file or not os.path.exists(self._user_cache_file):
@@ -1031,8 +1345,15 @@ class SlackClient:
         try:
             with open(self._channel_cache_file, encoding="utf-8") as fh:
                 data = json.load(fh)
-            fetched_at = datetime.fromisoformat(data.get("fetched_at", ""))
+            fetched_at_raw = data.get("fetched_at") or ""
+            # "" (rather than a real timestamp) means the file only ever
+            # holds a partial refresh's progress -- see
+            # refresh_channel_directory's own docstring. Not yet fresh, but
+            # still worth loading: the channels below, and the resume
+            # cursor, both carry real progress a full re-walk would repeat.
+            fetched_at = datetime.fromisoformat(fetched_at_raw) if fetched_at_raw else None
             raw_channels = data.get("channels") or {}
+            partial_cursor = data.get("partial_cursor") or None
         except Exception as exc:
             logger.warning("Could not load Slack channel directory cache (non-fatal): %s", exc)
             return
@@ -1042,14 +1363,25 @@ class SlackClient:
             self._channel_name_cache.setdefault(channel_id, raw.get("name", ""))
             self._channel_is_mpim_cache.setdefault(channel_id, bool(raw.get("is_mpim", False)))
         self._channel_directory_fetched_at = fetched_at
+        if partial_cursor and self._channel_refresh_cursor is None:
+            self._channel_refresh_cursor = partial_cursor
         logger.debug("Loaded %d cached Slack channel(s) from disk", len(raw_channels))
 
     def _save_channel_directory_to_disk(self) -> None:
-        if not self._channel_cache_file or self._channel_directory_fetched_at is None:
+        """Persists the current in-memory channel/group-DM-flag snapshot,
+        called both when a walk completes and, via
+        ``refresh_channel_directory``'s bounded ``max_pages`` path, mid-walk
+        -- so a daemon restart before a bounded refresh finishes resumes
+        from ``_channel_refresh_cursor`` (see that method's docstring)
+        instead of re-walking every conversation from page one. ``fetched_at``
+        is omitted (not written as an empty/garbage value) when no walk has
+        ever completed -- ``_load_channel_directory_from_disk`` treats its
+        absence as "not fresh yet," not as a parse error.
+        """
+        if not self._channel_cache_file:
             return
         channel_ids = set(self._channel_name_cache) | set(self._channel_is_mpim_cache)
-        payload = {
-            "fetched_at": self._channel_directory_fetched_at.isoformat(),
+        payload: dict[str, Any] = {
             "channels": {
                 cid: {
                     "name": self._channel_name_cache.get(cid, ""),
@@ -1058,6 +1390,10 @@ class SlackClient:
                 for cid in channel_ids
             },
         }
+        if self._channel_directory_fetched_at is not None:
+            payload["fetched_at"] = self._channel_directory_fetched_at.isoformat()
+        if self._channel_refresh_cursor:
+            payload["partial_cursor"] = self._channel_refresh_cursor
         try:
             os.makedirs(os.path.dirname(os.path.abspath(self._channel_cache_file)), exist_ok=True)
             with open(self._channel_cache_file, "w", encoding="utf-8") as fh:
@@ -1118,7 +1454,15 @@ class SlackClient:
         return is_mpim
 
     def _resolve_user_name(self, user_id: str) -> str:
-        """Best-effort user display-name lookup (cached, never raises)."""
+        """Best-effort user display-name lookup (cached, never raises). Falls
+        back to a live ``users.info`` call on a cache miss -- reserved for
+        callers where that's bounded and worth it: the public
+        ``resolve_user_name`` wrapper (a handful of ids named in a write's
+        approval popup) and the per-item fallback matching
+        ``_channel_matches_participant`` already only reaches when a
+        participant string can't be resolved via the directory at all. Bulk
+        parsing (a name per message/DM/member returned by a read) uses
+        ``_resolve_user_name_cached`` instead -- see that method."""
         if not user_id:
             return ""
         try:
@@ -1127,16 +1471,186 @@ class SlackClient:
             logger.debug("Could not resolve user name for %s: %s", user_id, exc)
             return ""
 
+    def _resolve_user_name_cached(self, user_id: str) -> str:
+        """Cache-only counterpart to ``_resolve_user_name`` -- never makes a
+        live ``users.info`` call for a miss, degrading to "" (the caller
+        already falls back to the raw id) instead. Used by the bulk parsing
+        paths (``_parse_message``, ``_parse_dm``, ``_parse_group_chat``)
+        that resolve one name per message/DM/member a read returns: a live
+        fallback there is exactly the per-item fan-out this module's
+        directory caches exist to remove, for a name that's cosmetic --
+        never load-bearing for a gated call's approval decision, which
+        already shows the raw id when a name isn't available.
+
+        When no ``user_cache_file`` was configured at all, there is no
+        directory to be cache-only *about* -- falls back to
+        ``_resolve_user_name``'s live-per-id lookup instead, same as every
+        other method in this class when the cache is opted out of.
+        """
+        if not user_id:
+            return ""
+        if not self._user_cache_file:
+            return self._resolve_user_name(user_id)
+        self._ensure_user_directory()
+        user = self._user_cache.get(user_id)
+        return user.short_summary() if user is not None else ""
+
     def _resolve_members(self, channel_id: str) -> list[str]:
-        """Fetch a conversation's member user ids via ``conversations.members``
-        (best-effort, never raises -- an unresolvable channel reads as having
-        no members rather than blocking the whole listing)."""
+        """Fetch a conversation's member user ids via ``conversations.members``,
+        paginated to completion (best-effort, never raises -- an
+        unresolvable channel reads as having no members rather than
+        blocking the whole listing; a channel with more than 1000 members
+        used to silently lose everyone past the first page). Cached for
+        ``_MEMBERSHIP_CACHE_TTL`` -- conversations.list carries no membership
+        for channels or group DMs, so without this every listing call (and
+        every participant filter that falls back to per-item matching) pays
+        this again from scratch, even for a conversation just asked about.
+        """
+        cached = self._member_cache.get(channel_id)
+        if cached is not None:
+            members, fetched_at = cached
+            if datetime.now(timezone.utc) - fetched_at < _MEMBERSHIP_CACHE_TTL:
+                return members
+        members: list[str] = []
+        cursor: str | None = None
         try:
-            response = self._client.conversations_members(channel=channel_id, limit=1000)
-            return list(response.get("members", []) or [])
+            for _ in range(_CONVERSATIONS_MEMBERS_PAGE_BUDGET):
+                response = self._client.conversations_members(
+                    channel=channel_id, limit=1000, cursor=cursor
+                )
+                members.extend(response.get("members", []) or [])
+                cursor = (response.get("response_metadata") or {}).get("next_cursor") or None
+                if not cursor:
+                    break
         except SlackApiError as exc:
             logger.debug("Could not resolve members for %s: %s", channel_id, exc)
             return []
+        self._member_cache[channel_id] = (members, datetime.now(timezone.utc))
+        return members
+
+    def _build_user_name_index(self) -> dict[str, str]:
+        """Lowercased handle / real name / email -> user_id, built fresh from
+        the in-memory user cache each time ``_resolve_participant_user_ids``
+        needs it. A dict comprehension over a few thousand cached users is
+        single-digit milliseconds -- far cheaper than the API calls it
+        replaces -- so this rebuilds on demand rather than maintaining a
+        second cache that could go stale relative to ``_user_cache``.
+        ``setdefault`` keeps the first entry seen for a given key, so a name
+        collision resolves deterministically rather than to whichever user
+        happened to be inserted last.
+        """
+        index: dict[str, str] = {}
+        for user_id, user in self._user_cache.items():
+            for key in (user.name, user.real_name, user.email):
+                if key:
+                    index.setdefault(key.lower(), user_id)
+        return index
+
+    def _resolve_participant_user_ids(self, participant: str) -> list[str] | None:
+        """Resolve every comma-separated needle in ``participant`` to exactly
+        one Slack user id, or None if any needle can't be resolved
+        unambiguously -- the signal callers use to fall back to the old
+        per-item enumeration and matching.
+
+        A needle that already looks like a user id (``_USER_ID_RE``) passes
+        through unchanged -- it may not be in the directory yet (a brand new
+        hire), but the per-item matching this replaces never validated raw
+        ids against the directory either, so this preserves that. A needle
+        that isn't an id is resolved against the cached user directory: an
+        exact (case-insensitive) match on handle, real name, or email wins
+        outright; failing that, a substring match on those same fields is
+        accepted only when it's unique. An ambiguous substring resolves the
+        whole call to None rather than picking one arbitrarily or matching
+        all of them -- letting a needle like "user 7" match every "User 7x"
+        would turn one intended conversation into a fan-out of extra API
+        calls, the opposite of what this method exists to prevent (see
+        docs/slack-performance-review.md's bug #6). The old, unmodified
+        per-item path still applies that same loose substring matching when
+        this returns None, so nothing here narrows what a caller can find --
+        only how cheaply the unambiguous, common case is found.
+        """
+        needles = [p.strip() for p in participant.split(",") if p.strip()]
+        if not needles:
+            return None
+        if self._user_cache_file:
+            self._ensure_user_directory()
+        index = self._build_user_name_index()
+        resolved: list[str] = []
+        for needle in needles:
+            if _USER_ID_RE.match(needle):
+                resolved.append(needle)
+                continue
+            key = needle.lower()
+            exact = index.get(key)
+            if exact is not None:
+                resolved.append(exact)
+                continue
+            candidates = {user_id for name, user_id in index.items() if key in name}
+            if len(candidates) == 1:
+                resolved.append(next(iter(candidates)))
+                continue
+            return None
+        return resolved
+
+    def _conversation_ids_for_user(self, user_id: str, *, types: str) -> list[str] | None:
+        """Every conversation of ``types`` (a Slack conversation-type string,
+        e.g. ``"public_channel,private_channel"`` or ``"mpim"``) that
+        ``user_id`` shares with the token holder, via one paginated
+        ``users.conversations`` call -- the question ``list_channels``/
+        ``list_group_chats``'s old participant filter answered by asking
+        every conversation who its members were instead. Returns None (not
+        an empty list -- that's a real "no matches") on any failure,
+        including an unexpected response shape, so a resolvable participant
+        whose ``users.conversations`` call can't complete falls back to the
+        old per-item enumeration rather than reporting zero matches.
+        """
+        ids: list[str] = []
+        cursor: str | None = None
+        try:
+            for _ in range(_USERS_CONVERSATIONS_PAGE_BUDGET):
+                response = self._client.users_conversations(
+                    user=user_id, types=types, limit=200, cursor=cursor,
+                )
+                ids.extend(response.get("channels", []) or [])
+                cursor = (response.get("response_metadata") or {}).get("next_cursor") or None
+                if not cursor:
+                    break
+        except Exception as exc:  # noqa: BLE001 -- best-effort fallback signal,
+            # not a user-facing error: any failure here (a SlackApiError, or
+            # an unexpected response shape from a test double or a future
+            # API change) must degrade to "the caller falls back to its own
+            # per-item walk," never propagate and abort a call this helper
+            # only exists to make cheaper.
+            logger.debug("users.conversations(%s) failed, falling back: %s", user_id, exc)
+            return None
+        return ids
+
+    def _participant_conversation_ids(self, participant: str, *, types: str) -> list[str] | None:
+        """The ids of conversations of ``types`` that satisfy every
+        comma-separated needle in ``participant`` (AND) -- resolved via
+        ``users.conversations`` instead of enumerating every conversation's
+        membership. None means "couldn't resolve this cheaply," the signal
+        callers use to fall back to their own per-item membership walk;
+        never an empty list unless resolution genuinely found zero matching
+        conversations.
+        """
+        if not participant:
+            return None
+        user_ids = self._resolve_participant_user_ids(participant)
+        if user_ids is None:
+            return None
+        id_sets: list[set[str]] = []
+        for user_id in user_ids:
+            ids = self._conversation_ids_for_user(user_id, types=types)
+            if ids is None:
+                return None
+            id_sets.append(set(ids))
+        if not id_sets:
+            return None
+        result = id_sets[0]
+        for s in id_sets[1:]:
+            result &= s
+        return list(result)
 
     @staticmethod
     def _matches_participant(participant: str, ids: list[str], names: list[str]) -> bool:
@@ -1172,7 +1686,7 @@ class SlackClient:
         return SlackDirectMessage(
             id=raw.get("id", ""),
             user_id=user_id,
-            user_name=self._resolve_user_name(user_id) if user_id else "",
+            user_name=self._resolve_user_name_cached(user_id) if user_id else "",
         )
 
     def _parse_group_chat(self, raw: dict[str, Any]) -> SlackGroupChat:
@@ -1182,7 +1696,7 @@ class SlackClient:
             id=channel_id,
             name=raw.get("name", ""),
             member_ids=member_ids,
-            member_names=[self._resolve_user_name(uid) for uid in member_ids],
+            member_names=[self._resolve_user_name_cached(uid) for uid in member_ids],
         )
 
     def _parse_channel(self, raw: dict[str, Any]) -> SlackChannel:
@@ -1216,7 +1730,7 @@ class SlackClient:
             channel_id=channel_id,
             channel_name=channel_name,
             user_id=user_id,
-            user_name=self._resolve_user_name(user_id) if user_id else "",
+            user_name=self._resolve_user_name_cached(user_id) if user_id else "",
             text=raw.get("text", ""),
             thread_ts=raw.get("thread_ts", ""),
             reply_count=int(raw.get("reply_count", 0) or 0),

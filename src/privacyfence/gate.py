@@ -114,10 +114,12 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import functools
 import json
 import logging
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
 
@@ -231,6 +233,32 @@ _TOOL_LAYOUT: dict[str, str] = {
 }
 
 _popup_lock = asyncio.Lock()  # only one native dialog on screen at a time
+
+# Every native dialog this module shows (the approval popup itself, the PII
+# confirmation, the "Always allow" rule confirmation) runs on this dedicated
+# single-thread executor rather than asyncio.to_thread's default pool. That
+# default pool (min(32, cpu_count + 4) workers) is shared with every
+# connector's own blocking I/O (asyncio.to_thread wraps every *_client.py
+# call the same way -- see connectors/slack.py's _fetch for one example).
+# A handful of slow calls -- Slack's rate-limit retry sleeping out a
+# Retry-After window is the one this was written for -- can occupy every
+# worker in that shared pool, and _popup_lock already serializes dialogs to
+# one at a time regardless, so nothing is lost by giving that one dialog
+# thread a lane connector I/O can never fill. See
+# docs/slack-performance-review.md's R6.
+_popup_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pf-popup")
+
+
+async def _run_in_popup_executor(func, *args, **kwargs) -> Any:
+    """``await`` counterpart to ``asyncio.to_thread`` that runs on
+    ``_popup_executor`` instead of the default pool -- see that executor's
+    comment for why. ``asyncio.to_thread`` itself has no way to choose a
+    different executor, hence this thin wrapper around
+    ``loop.run_in_executor`` (which only accepts positional args, so a
+    keyword-argument call is bound via ``functools.partial`` first).
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_popup_executor, functools.partial(func, *args, **kwargs))
 
 # Set by ipc_server.py around a single dispatched request, for the duration
 # of that request only, when the request came in on a connection that
@@ -426,10 +454,20 @@ async def gated_call(
     # but a missing entry should degrade to the smaller shape, not raise).
     layout = _TOOL_LAYOUT.get(tool, NARROW)
     # Only the review (read) gate scans for PII -- see module docstring.
-    pii_categories = (
-        detect_pii_categories(details if pii_scan_text is None else pii_scan_text)
-        if gate == "review" else []
-    )
+    # Run via asyncio.to_thread (the default pool, same as every
+    # connector's own blocking I/O -- there's no popup-style latency
+    # sensitivity here that would justify gate.py's own dedicated
+    # _popup_executor): detect_pii_categories/scan_pii_for_audit scan the
+    # full details/pii_scan_text synchronously, which measured ~80ms per
+    # 1000 messages -- fine for one call, but run inline this used to block
+    # every OTHER concurrently-dispatched request on the IPC server's
+    # single event loop for that whole duration (see
+    # docs/slack-performance-review.md's R9).
+    if gate == "review":
+        pii_scan_source = details if pii_scan_text is None else pii_scan_text
+        pii_categories = await asyncio.to_thread(detect_pii_categories, pii_scan_source)
+    else:
+        pii_categories = []
     # A separate, deliberately weaker signal for the popup (write) gate:
     # the same local detector, run over Claude's own drafted content, but
     # informational only -- unlike pii_categories above, this never routes
@@ -441,30 +479,35 @@ async def gated_call(
     # neutral/informational style, not the red tint+banner that implies a
     # confirmation is coming. Exists as its own signal rather than reusing
     # pii_categories's machinery.
-    write_content_flags = detect_pii_categories(details) if gate == "popup" else []
+    if gate == "popup":
+        write_content_flags = await asyncio.to_thread(detect_pii_categories, details)
+    else:
+        write_content_flags = []
     # The one deliberate exception to the comment above: drive_upload_file's
     # payload can be external content Claude never read (see module
     # docstring), so when it supplies upload_pii_scan_text this runs the same
     # real scan pii_categories does -- folded into pii_detected below and
     # routed through _confirm_pii_or_deny, unlike write_content_flags.
-    upload_pii_categories = (
-        detect_pii_categories(upload_pii_scan_text)
-        if gate == "popup" and upload_pii_scan_text else []
-    )
+    if gate == "popup" and upload_pii_scan_text:
+        upload_pii_categories = await asyncio.to_thread(detect_pii_categories, upload_pii_scan_text)
+    else:
+        upload_pii_categories = []
     # PII-refinement trial capture (opt-in, off by default -- see
     # pii_detector.is_pii_audit_match_details_enabled()). Mirrors
     # pii_categories/upload_pii_categories above exactly -- same source
     # text, same gate scoping -- just also carrying the matched text.
     # Computed separately, and only when the setting is on, so a default
     # install never runs this extra scan at all.
-    pii_audit_matches: list[PIIAuditMatch] = (
-        scan_pii_for_audit(details if pii_scan_text is None else pii_scan_text)
-        if gate == "review" and is_pii_audit_match_details_enabled() else []
-    )
-    upload_pii_audit_matches: list[PIIAuditMatch] = (
-        scan_pii_for_audit(upload_pii_scan_text)
-        if gate == "popup" and upload_pii_scan_text and is_pii_audit_match_details_enabled() else []
-    )
+    pii_audit_matches: list[PIIAuditMatch]
+    if gate == "review" and is_pii_audit_match_details_enabled():
+        pii_audit_matches = await asyncio.to_thread(scan_pii_for_audit, pii_scan_source)
+    else:
+        pii_audit_matches = []
+    upload_pii_audit_matches: list[PIIAuditMatch]
+    if gate == "popup" and upload_pii_scan_text and is_pii_audit_match_details_enabled():
+        upload_pii_audit_matches = await asyncio.to_thread(scan_pii_for_audit, upload_pii_scan_text)
+    else:
+        upload_pii_audit_matches = []
     # The value everything below actually branches on for "does PII force a
     # popup/confirmation". pii_categories itself (the raw detector result)
     # stays untouched so the audit log's pii_detected field below keeps
@@ -479,12 +522,16 @@ async def gated_call(
     audit_pii_categories = pii_categories or upload_pii_categories
     audit_pii_matches = pii_audit_matches or upload_pii_audit_matches
     # Request fingerprint: "you've approved this exact (connector, tool,
-    # summary) N times this week" -- read directly from the audit log,
-    # same synchronous-call
-    # pattern _audit()/AuditLogger.record() already use elsewhere in this
-    # function rather than asyncio.to_thread (this file's own established
-    # precedent for small local JSONL reads/writes on the request path).
-    seen_count = get_audit_logger().recent_matches(connector, tool, summary)
+    # summary) N times this week" -- read directly from the audit log.
+    # recent_matches() is a full scan of the current week's JSONL file
+    # (measured ~225ms at 50,000 rows), so -- unlike AuditLogger.record()'s
+    # own small, established-precedent synchronous appends elsewhere in
+    # this module -- it goes through asyncio.to_thread too, for the same
+    # R9 reasoning as the PII scans above. get_audit_logger() itself is a
+    # cheap singleton lookup, called synchronously first so only the actual
+    # file scan runs on the thread.
+    audit_logger = get_audit_logger()
+    seen_count = await asyncio.to_thread(audit_logger.recent_matches, connector, tool, summary)
 
     # Every exit from this function -- including one triggered by an
     # exception nobody anticipated below (a native popup call raising, a
@@ -561,7 +608,7 @@ async def gated_call(
                     # blocking every other approval behind it.
                     _deny_unattended(audit, connector, tool, pii_categories=pii_forces_confirmation)
 
-                decision, chosen_index = await asyncio.to_thread(
+                decision, chosen_index = await _run_in_popup_executor(
                     show_read_popup, popup_title, preview or {}, details, accept_all_choices,
                     pii_forces_confirmation, visibility, claude_reason, seen_count, content_kind, pdf_bytes,
                     connector, preview_bytes, preview_mime_type, new_info=new_info,
@@ -587,7 +634,7 @@ async def gated_call(
                     )
                     if chosen is not None:
                         description = describe_rule(*chosen)
-                        confirmed = await asyncio.to_thread(show_rule_confirmation_popup, description)
+                        confirmed = await _run_in_popup_executor(show_rule_confirmation_popup, description)
                         rule_name, value = chosen
                         if confirmed:
                             add_auto_accept_rule(operation_key, rule_name, value)
@@ -639,7 +686,7 @@ async def gated_call(
                 if is_unattended():
                     _deny_unattended(audit, connector, tool, pii_categories=upload_pii_categories)
 
-                decision, chosen_index = await asyncio.to_thread(
+                decision, chosen_index = await _run_in_popup_executor(
                     show_popup, popup_title, preview or {}, details, file_key is not None,
                     claude_reason, write_content_flags, seen_count, connector,
                     accept_all_choices, preview_bytes, preview_mime_type,
@@ -681,7 +728,7 @@ async def gated_call(
                         # describe_rule_change() names operation_key explicitly
                         # and reads correctly regardless of direction.
                         description = describe_rule_change("add", operation_key, rule_name, value)
-                        confirmed = await asyncio.to_thread(show_rule_confirmation_popup, description)
+                        confirmed = await _run_in_popup_executor(show_rule_confirmation_popup, description)
                         if confirmed:
                             add_auto_accept_rule(operation_key, rule_name, value)
                             audit(
@@ -715,6 +762,21 @@ async def gated_call(
 
             audit(decision="rejected", auto_accept_rule="", pii_detected=bool(upload_pii_categories))
             raise RuntimeError("Request denied by user")
+    except asyncio.CancelledError:
+        # The bridge asked the daemon to give up on this request (see
+        # ipc.py's "cancel" method) -- an expected, named outcome, not a
+        # bug, so it gets its own decision rather than falling through to
+        # the generic "error" fallback below. If this fires while still
+        # waiting on a native popup, the dialog itself can't be closed this
+        # way and stays on screen (see ipc.py's own docstring) -- this
+        # entry is still the accurate record of what Claude received:
+        # nothing, because nothing was waiting anymore by the time (if
+        # ever) a human answered it.
+        audit(
+            decision="cancelled", auto_accept_rule="",
+            pii_detected=bool(pii_categories or upload_pii_categories),
+        )
+        raise
     finally:
         if not audited:
             logger.error(
@@ -793,7 +855,7 @@ async def propose_rule_change(
         )
 
     async with _popup_lock:
-        confirmed = await asyncio.to_thread(show_rule_confirmation_popup, description)
+        confirmed = await _run_in_popup_executor(show_rule_confirmation_popup, description)
 
     if not confirmed:
         _audit(
@@ -903,7 +965,7 @@ async def _confirm_pii_or_deny(decision: str, pii_categories: list[str]) -> str:
     """Extra gate for content the PII detector flagged: forces one more
     explicit confirmation on top of the popup's own Allow once/Always allow,
     declining which is treated as a deny of the whole request."""
-    confirmed = await asyncio.to_thread(show_pii_confirmation_popup, pii_categories)
+    confirmed = await _run_in_popup_executor(show_pii_confirmation_popup, pii_categories)
     return decision if confirmed else "deny"
 
 

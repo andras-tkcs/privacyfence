@@ -1189,14 +1189,14 @@ def check_slack(record: bool, manifest: dict[str, Any]) -> list[CheckResult]:
         if not seed_thread_ts:
             # Single call, not a fan-out -- get_channel_history() is a
             # cheap resolve, unlike Gmail's list_messages().
-            history = client.get_channel_history(channel_id, limit=200)
+            history, _has_more = client.get_channel_history(channel_id, limit=200)
             found_message = next((m for m in history if QATEST_TAG in (m.text or "")), None)
             if found_message is None:
                 raise SlackClientError(f"no message carrying {QATEST_TAG} found in {target} history")
             seed_thread_ts = found_message.id
 
         with RawCaptureApiCall(client) as cap:
-            replies = client.get_thread_replies(channel_id, seed_thread_ts)
+            replies, _has_more = client.get_thread_replies(channel_id, seed_thread_ts)
         tagged = bool(replies) and QATEST_TAG in (replies[0].text or "")
         # channel_name is deliberately not part of this gate -- unlike
         # title/summary on the other connectors, a missing channel_name has

@@ -15,6 +15,17 @@ The Slack app itself is organization-level config: **one IT admin creates it onc
 3. Give it a name (e.g. `PrivacyFence`) and select your workspace.
 4. Click **Create App**.
 
+> **Never click "Activate Public Distribution"** (Manage Distribution, in the left sidebar) — and
+> never distribute the resulting `org_config.json` outside your own organization/workspace.
+> Creating the app "From scratch" in your workspace and stopping there keeps it an **internal**
+> app, which every rate-limit assumption in this codebase's Slack code depends on. Slack treats an
+> app distributed outside the Marketplace differently: as of 2025-09-02, `conversations.history` and
+> `conversations.replies` — the calls behind `slack_get_channel_history`/`slack_get_thread_replies`/
+> `slack_search_messages` — drop to **1 request per minute with a hard 15-message cap** for such
+> apps. An internal app has none of that; there is no reason to ever activate distribution here, and
+> doing so is very hard to notice after the fact (existing users keep working, just far slower, with
+> individual message reads silently truncated to 15 lines).
+
 ### 2. Add user token scopes
 
 1. In the left sidebar, go to **OAuth & Permissions**.
@@ -90,3 +101,11 @@ The token has been revoked (e.g. you removed the app from your Slack account, or
 
 **Browser doesn't return to PrivacyFence after clicking Allow**
 Make sure the redirect URL in the Slack app's **OAuth & Permissions** page is exactly `http://127.0.0.1:53682/callback` (IT admin) — Slack requires an exact match.
+
+**Slack reads got slow, or a channel history looks truncated at 15 messages** (IT admin)
+Check **Manage Distribution** on the Slack app — if **Activate Public Distribution** was ever clicked
+(even briefly, even if turned back off), the app may be treated as distributed outside the
+Marketplace, which caps `conversations.history`/`conversations.replies` at 1 request/minute and 15
+messages (see the note under **1. Create a Slack app** above). Deactivating distribution should
+restore internal-app limits; if this keeps recurring, contact Slack support to confirm the app's
+current distribution status.

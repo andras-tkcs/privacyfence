@@ -249,7 +249,7 @@ class TestRefreshChannelCache:
 class TestGetChannelHistory:
     async def test_preview_and_gate(self, gated_call_spy):
         connector, client = make_connector()
-        client.get_channel_history.return_value = [make_message(text="a" * 100)]
+        client.get_channel_history.return_value = ([make_message(text="a" * 100)], False)
 
         await connector.call("slack_get_channel_history", {"channel_id": "C123", "limit": 10})
 
@@ -275,7 +275,7 @@ class TestGetChannelHistory:
 
     async def test_group_dm_channel_is_resolved_and_passed_in_args(self, gated_call_spy):
         connector, client = make_connector()
-        client.get_channel_history.return_value = [make_message()]
+        client.get_channel_history.return_value = ([make_message()], False)
         client.resolve_is_group_dm.return_value = True
 
         await connector.call("slack_get_channel_history", {"channel_id": "G123"})
@@ -289,9 +289,9 @@ class TestGetChannelHistory:
         # line with them) could flag PII that isn't actually in what was
         # said. The scan must only see the message text.
         connector, client = make_connector()
-        client.get_channel_history.return_value = [
-            make_message(user_name="alice@example.com", text="nothing sensitive"),
-        ]
+        client.get_channel_history.return_value = (
+            [make_message(user_name="alice@example.com", text="nothing sensitive")], False,
+        )
 
         await connector.call("slack_get_channel_history", {"channel_id": "C123"})
 
@@ -302,7 +302,7 @@ class TestGetChannelHistory:
 
     async def test_empty_channel_shows_placeholder(self, gated_call_spy):
         connector, client = make_connector()
-        client.get_channel_history.return_value = []
+        client.get_channel_history.return_value = ([], False)
 
         await connector.call("slack_get_channel_history", {"channel_id": "C123"})
 
@@ -313,7 +313,7 @@ class TestGetChannelHistory:
         # No messages means no channel_name to read off a message, so the
         # connector must resolve it directly instead of leaving the raw id.
         connector, client = make_connector()
-        client.get_channel_history.return_value = []
+        client.get_channel_history.return_value = ([], False)
         client.resolve_channel_name.return_value = "announcements"
 
         await connector.call("slack_get_channel_history", {"channel_id": "C123"})
@@ -323,7 +323,7 @@ class TestGetChannelHistory:
 
     async def test_channel_name_unresolvable_falls_back_to_raw_id(self, gated_call_spy):
         connector, client = make_connector()
-        client.get_channel_history.return_value = []
+        client.get_channel_history.return_value = ([], False)
         client.resolve_channel_name.return_value = ""
 
         await connector.call("slack_get_channel_history", {"channel_id": "C123"})
@@ -333,11 +333,37 @@ class TestGetChannelHistory:
     async def test_filtered_data_uses_message_to_dict(self, gated_call_spy):
         connector, client = make_connector()
         msg = make_message()
-        client.get_channel_history.return_value = [msg]
+        client.get_channel_history.return_value = ([msg], False)
 
         result = await connector.call("slack_get_channel_history", {"channel_id": "C123"})
 
-        assert result == [_message_to_dict(msg)]
+        assert result == {"messages": [_message_to_dict(msg)], "has_more": False}
+
+    async def test_has_more_is_surfaced_to_claude_with_a_note(self, gated_call_spy):
+        # docs/slack-performance-review.md's item #4: Slack's own has_more
+        # signal (not a len(messages) vs. limit comparison -- a small
+        # channel legitimately returns fewer messages than asked for) must
+        # reach what Claude actually gets back, not just the human's popup.
+        connector, client = make_connector()
+        client.get_channel_history.return_value = ([make_message()], True)
+
+        result = await connector.call("slack_get_channel_history", {"channel_id": "C123"})
+
+        assert result["has_more"] is True
+        assert "note" in result
+        assert "more" in result["note"].lower()
+        # The human reviewer sees it too, in the popup's own disclosure.
+        assert "Note" in gated_call_spy[0]["new_info"]
+
+    async def test_has_more_false_carries_no_note(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_channel_history.return_value = ([make_message()], False)
+
+        result = await connector.call("slack_get_channel_history", {"channel_id": "C123"})
+
+        assert result["has_more"] is False
+        assert "note" not in result
+        assert "Note" not in gated_call_spy[0]["new_info"]
 
 
 class TestSlackPrivacyFilter:
@@ -349,28 +375,28 @@ class TestSlackPrivacyFilter:
     async def test_message_content_blocked_replaces_text_everywhere(self, gated_call_spy):
         init_privacy_filter({"slack_privacy": {"categories": {"message_content": "block"}}})
         connector, client = make_connector()
-        client.get_channel_history.return_value = [make_message(text="the actual secret")]
+        client.get_channel_history.return_value = ([make_message(text="the actual secret")], False)
 
         result = await connector.call("slack_get_channel_history", {"channel_id": "C123"})
 
         kwargs = gated_call_spy[0]
         assert "the actual secret" not in kwargs["details_text"]
         assert "the actual secret" not in kwargs["pii_scan_text"]
-        assert result[0]["text"] == "[BLOCKED BY PRIVACY FILTER]"
+        assert result["messages"][0]["text"] == "[BLOCKED BY PRIVACY FILTER]"
 
     async def test_user_identity_blocked_replaces_name_and_id(self, gated_call_spy):
         init_privacy_filter({"slack_privacy": {"categories": {"user_identity": "block"}}})
         connector, client = make_connector()
-        client.get_channel_history.return_value = [
-            make_message(user_name="alice", user_id="U1", text="hello")
-        ]
+        client.get_channel_history.return_value = (
+            [make_message(user_name="alice", user_id="U1", text="hello")], False,
+        )
 
         result = await connector.call("slack_get_channel_history", {"channel_id": "C123"})
 
         assert "alice" not in gated_call_spy[0]["details_text"]
-        assert result[0]["user_name"] == "[BLOCKED BY PRIVACY FILTER]"
-        assert result[0]["user_id"] == "[BLOCKED BY PRIVACY FILTER]"
-        assert result[0]["text"] == "hello"  # message_content untouched by this category
+        assert result["messages"][0]["user_name"] == "[BLOCKED BY PRIVACY FILTER]"
+        assert result["messages"][0]["user_id"] == "[BLOCKED BY PRIVACY FILTER]"
+        assert result["messages"][0]["text"] == "hello"  # message_content untouched by this category
 
     async def test_thread_content_uses_its_own_category_not_message_content(self, gated_call_spy):
         # thread_content and message_content are documented as distinct
@@ -378,13 +404,13 @@ class TestSlackPrivacyFilter:
         # the other.
         init_privacy_filter({"slack_privacy": {"categories": {"message_content": "block"}}})
         connector, client = make_connector()
-        client.get_thread_replies.return_value = [make_message(text="reply text")]
+        client.get_thread_replies.return_value = ([make_message(text="reply text")], False)
 
         result = await connector.call(
             "slack_get_thread_replies", {"channel_id": "C123", "thread_ts": "123.456"}
         )
 
-        assert result[0]["text"] == "reply text"
+        assert result["messages"][0]["text"] == "reply text"
 
     async def test_channel_list_blocked_empties_auto_accepted_result(self):
         init_privacy_filter({"slack_privacy": {"categories": {"channel_list": "block"}}})
@@ -446,16 +472,16 @@ class TestSlackPrivacyFilter:
         # reset leaves _GROUPS empty, which must resolve to "allow", not
         # "block" -- this module must never fail closed on missing config.
         connector, client = make_connector()
-        client.get_channel_history.return_value = [make_message(text="business as usual")]
+        client.get_channel_history.return_value = ([make_message(text="business as usual")], False)
 
         result = await connector.call("slack_get_channel_history", {"channel_id": "C123"})
 
-        assert result[0]["text"] == "business as usual"
+        assert result["messages"][0]["text"] == "business as usual"
 
     async def test_visibility_checklist_reflects_resolved_policy(self, gated_call_spy):
         init_privacy_filter({"slack_privacy": {"categories": {"message_content": "block", "user_identity": "allow"}}})
         connector, client = make_connector()
-        client.get_channel_history.return_value = [make_message(text="secret")]
+        client.get_channel_history.return_value = ([make_message(text="secret")], False)
 
         await connector.call("slack_get_channel_history", {"channel_id": "C123"})
 
@@ -465,7 +491,7 @@ class TestSlackPrivacyFilter:
 
     async def test_thread_visibility_uses_thread_content_not_message_content(self, gated_call_spy):
         connector, client = make_connector()
-        client.get_thread_replies.return_value = [make_message(text="reply")]
+        client.get_thread_replies.return_value = ([make_message(text="reply")], False)
 
         await connector.call("slack_get_thread_replies", {"channel_id": "C123", "thread_ts": "123.456"})
 
@@ -476,9 +502,10 @@ class TestSlackPrivacyFilter:
 class TestGetThreadReplies:
     async def test_reply_count_excludes_thread_starter(self, gated_call_spy):
         connector, client = make_connector()
-        client.get_thread_replies.return_value = [
-            make_message(text="starter"), make_message(text="reply 1"), make_message(text="reply 2"),
-        ]
+        client.get_thread_replies.return_value = (
+            [make_message(text="starter"), make_message(text="reply 1"), make_message(text="reply 2")],
+            False,
+        )
 
         await connector.call("slack_get_thread_replies", {"channel_id": "C123", "thread_ts": "t1"})
 
@@ -498,7 +525,7 @@ class TestGetThreadReplies:
 
     async def test_empty_thread_replies_count_never_negative(self, gated_call_spy):
         connector, client = make_connector()
-        client.get_thread_replies.return_value = []
+        client.get_thread_replies.return_value = ([], False)
 
         await connector.call("slack_get_thread_replies", {"channel_id": "C123", "thread_ts": "t1"})
 
@@ -506,12 +533,27 @@ class TestGetThreadReplies:
         assert "Thread starter" not in gated_call_spy[0]["new_info"]
         assert gated_call_spy[0]["preview_tables"] == []
 
+    async def test_has_more_is_surfaced_to_claude_with_a_note(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_thread_replies.return_value = ([make_message(text="starter")], True)
+
+        result = await connector.call(
+            "slack_get_thread_replies", {"channel_id": "C123", "thread_ts": "t1"}
+        )
+
+        assert result["has_more"] is True
+        assert "more" in result["note"].lower()
+        assert "Note" in gated_call_spy[0]["new_info"]
+
     async def test_pii_scan_text_is_message_text_only(self, gated_call_spy):
         connector, client = make_connector()
-        client.get_thread_replies.return_value = [
-            make_message(user_name="alice@example.com", text="starter"),
-            make_message(user_name="bob@example.com", text="reply"),
-        ]
+        client.get_thread_replies.return_value = (
+            [
+                make_message(user_name="alice@example.com", text="starter"),
+                make_message(user_name="bob@example.com", text="reply"),
+            ],
+            False,
+        )
 
         await connector.call("slack_get_thread_replies", {"channel_id": "C123", "thread_ts": "t1"})
 
@@ -729,12 +771,13 @@ class TestSendMessage:
         client.send_message.assert_called_once_with("C123", "hi there", "")
         assert kwargs["sender"] == "C123"
 
-    async def test_thread_reply_preview_shows_the_threads_first_message(self, gated_call_spy):
+    async def test_thread_reply_preview_shows_the_root_message(self, gated_call_spy):
+        # A single get_message lookup (one conversations.history call for
+        # just this one message), not a full get_thread_replies fetch of
+        # the whole thread -- see docs/slack-performance-review.md's bug #3.
         connector, client = make_connector()
         client.send_message.return_value = {"ts": "123.456", "channel_id": "C123"}
-        client.get_thread_replies.return_value = [
-            make_message(text="Kicking off the thread"), make_message(text="a reply"),
-        ]
+        client.get_message.return_value = make_message(text="Kicking off the thread")
 
         await connector.call(
             "slack_send_message", {"channel_id": "C123", "text": "reply", "thread_ts": "100.001"}
@@ -742,12 +785,13 @@ class TestSendMessage:
 
         assert gated_call_spy[0]["preview"]["In thread"] == "Kicking off the thread"
         assert gated_call_spy[0]["args"]["thread_ts"] == "100.001"
-        client.get_thread_replies.assert_called_once_with("C123", "100.001")
+        client.get_message.assert_called_once_with("C123", "100.001")
+        client.get_thread_replies.assert_not_called()
 
     async def test_thread_reply_preview_falls_back_to_raw_ts_when_lookup_fails(self, gated_call_spy):
         connector, client = make_connector()
         client.send_message.return_value = {"ts": "123.456", "channel_id": "C123"}
-        client.get_thread_replies.side_effect = SlackClientError("not found")
+        client.get_message.return_value = None  # best-effort: never raises, degrades to None
 
         await connector.call(
             "slack_send_message", {"channel_id": "C123", "text": "reply", "thread_ts": "100.001"}
@@ -861,6 +905,10 @@ class TestEveryToolIsAudited:
         # unconfigured MagicMock isn't iterable, so it would surface here as
         # a spurious "raised TypeError" rather than a real audit-trail gap.
         client.refresh_channel_directory.return_value = (0, False)
+        # _get_channel_history/_get_thread_replies unpack a (messages,
+        # has_more) tuple, same reasoning.
+        client.get_channel_history.return_value = ([], False)
+        client.get_thread_replies.return_value = ([], False)
         await assert_all_tools_leave_an_audit_trail(
             connector, slack_module, monkeypatch, tmp_path,
             arg_overrides={
