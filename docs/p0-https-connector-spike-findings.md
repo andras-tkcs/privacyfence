@@ -1,7 +1,7 @@
 # P0 spike findings — HTTPS connector refactor
 
 **Status: P0 complete.** This records what the P0 spike in
-[`https-connector-refactor-proposal.md`](https-connector-refactor-proposal.md) (§12, "P0 must
+[`https-connector-refactor-plan.md`](https-connector-refactor-plan.md) (§12, "P0 must
 answer four questions, not three") actually found. Per that section, nothing built for the spike
 itself is kept — no `web/` module, no server, no bridge changes landed from this. This document is
 the spike's entire deliverable: four answers and an estimate.

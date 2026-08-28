@@ -1,4 +1,4 @@
-# PrivacyFence as an HTTPS connector — architecture & functional refactoring proposal
+# PrivacyFence as an HTTPS connector — architecture & functional refactoring plan
 
 **Status: design agreed (§15); the P0 spike is complete and its findings are folded in below
 ([`p0-https-connector-spike-findings.md`](p0-https-connector-spike-findings.md)). No production code
@@ -678,7 +678,7 @@ gated behind `unattended_sessions.enabled` in `org_config.json`.
 
 ### 10.1 The posture change, stated plainly
 
-Issue #55's design was built on a requirement this proposal deliberately drops:
+Issue #55's design was built on a requirement this plan deliberately drops:
 
 > The Mac (`privacyfence-app`) must never accept an inbound connection beyond `localhost` — only
 > ever dials out.
@@ -1122,7 +1122,7 @@ with a potential Linux version** — the two share everything that matters here,
 hard was the native UI and transport layer, not the core. #121's own analysis says the
 connector/policy core is already portable and "the gap is entirely the native UI and transport
 layer" — and it lists as prerequisites the two refactors (#119's `ApprovalUI` seam, #120's webview
-config window) that this proposal now consumes. After P10 the remaining work on either platform
+config window) that this plan now consumes. After P10 the remaining work on either platform
 is packaging, autostart and CI: no `pystray` tray backend and no `pywebview`/WebView2 host are
 needed, because the UI is a browser. The Unix-domain-socket blocker #121 names is already gone (the
 IPC transport is loopback TCP today), and P5 removes that transport entirely.
@@ -1145,4 +1145,5 @@ front.
 | **D6** | Keep the native macOS popup after P10, or delete it? | **Delete it.** Two approval surfaces means two places for a security fix to land, and the `ApprovalUI` seam lets it come back if that proves wrong. |
 | **D7** | Require step-up re-authentication before a *write* approval, and by what mechanism? | **Yes in `org` mode, scoped and configurable — via a WebAuthn platform authenticator** (Face ID / Touch ID / fingerprint / Hello), with IdP `acr_values` step-up as the alternative and OIDC re-auth as the no-passkey fallback. The mechanism is decided; whether the approval link opens somewhere that offers the platform authenticator is **still unverified** — P0 could not reach the real apps, and the ten-minute manual check is P9's entry condition. §10.6 |
 | **D9** | What replaces `id(writer)` as the unattended-session key? | **The Streamable HTTP session identifier**, not a token claim — an MCP session is the exact successor to a connection, whereas a claim would make "unattended" a property of a credential that outlives the run. §9.4 |
+| **D10** | Which HTTP stack does P1 bring in, given the MCP endpoint does not arrive until P2? | **starlette + uvicorn, from P1** — the same stack D2 commits to for P2. P1 has to stand up `web/server.py` and `routes_approvals.py` before any MCP code exists, and a stdlib asyncio server written at P1 would be thrown away at P2 — the waste §12 avoids by ordering P2 ahead of P3. This front-loads D2's single deviation from the stdlib-first rule by one phase rather than adding a second one. §3, §8.2 |
 | **D8** | When are #55 and #121 acted on? | **Once this refactoring is complete, not before.** #55 then closes as won't-do pointing at this document; #121 is revisited then, together with a potential Linux version. Closing #55 earlier would leave mobile approval untracked while its replacement is still unbuilt. §14 |
