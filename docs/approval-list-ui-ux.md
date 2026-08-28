@@ -517,10 +517,6 @@ progressive enhancement, no fallback needed. Cheap, and it makes the always-open
 
 ## 6. Where this lands in the phase plan
 
-The PR-by-PR build order for everything below, merged with P3's own protocol work, is in
-[`p3-implementation-plan.md`](p3-implementation-plan.md).
-
-
 The bulk of this is **P3**: the list is only meaningful once several approvals can be pending, and
 §2.3's hold-window state, §2.4's grouping, §3.5's rule-race and §5.5's release marker are all
 descriptions of P3's own protocol. It does not need a phase of its own.
