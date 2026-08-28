@@ -1124,6 +1124,43 @@ untouched. What does change is how Claude reaches the daemon, and that is why P2
 3. P5 lands only after a full beta-then-stable cycle in which both transports shipped, and its
    release notes are the second notice.
 
+**Gap found while implementing P2, not yet resolved by any phase: what replaces the bridge's
+zero-config Desktop experience in `local` mode after P5.** Today `PrivacyFence.mcpb` is what Claude
+Desktop auto-loads with no config file edited and no secret copied anywhere — the bridge discovers
+`ipc_token` itself, locally. `/mcp` has no equivalent for Desktop specifically:
+
+- Claude Desktop's own local `claude_desktop_config.json` does not reliably support a direct
+  Streamable HTTP entry (`"type": "http"`/`"url"`) today — as of this writing there is an open
+  upstream bug where Desktop's config parser mishandles it, up to silently clearing the
+  `mcpServers` section (`anthropics/claude-code#37286`). The practical workaround is a third-party
+  stdio-to-HTTP bridge (`mcp-remote`) launched as the configured "command", which also needs
+  `--allow-http` against local mode's plain-HTTP loopback server (D1) since it defaults to refusing
+  non-HTTPS targets.
+- Settings → Connectors (Desktop/claude.ai's own "add a custom connector" UI) cannot reach a `local`
+  server at all regardless of the above — that flow connects from Anthropic's cloud, not the user's
+  machine, so it requires a publicly-reachable HTTPS URL. That is `org` mode's shape by definition
+  (§2), not `local`'s.
+- D1/§4 make `local` mode's bearer-token-in-a-file posture permanent, not a stopgap P4's "Connect
+  Claude" section removes — that section (point 2 above) makes the token easier to *find*, not
+  easier to *hand to Desktop*. The only phase that removes a manually-configured secret for Desktop
+  is P7's OAuth 2.1 authorization server, and that is scoped to `org` mode only (§9.4) — reachable
+  only by deploying somewhere with a public HTTPS endpoint, not by upgrading PrivacyFence on the
+  same laptop.
+
+So a `local`-mode user who stays on `local` mode across P5 trades a zero-config Desktop connection
+(the bridge) for a manually-configured one (a third-party bridge tool, or whatever P4 actually ships)
+with nothing in this plan currently closing that gap for Desktop specifically. It doesn't block P2
+(the bridge stays fully functional through P5 by design), but P5's own exit criterion ("bridge/,
+ipc.py, ipc_server.py deleted") does not currently name what a `local`-mode Desktop user is left
+with once that lands, and should before P5 is scheduled -- the same "flag it as an entry condition,
+don't discover it during the phase" treatment §10.6 already gives the WebAuthn link-open check ahead
+of P9. Candidate directions, none decided here: PrivacyFence bundling/shipping its own thin
+stdio-to-HTTP shim in place of the bridge (so `.mcpb`'s zero-config property survives, just fronting
+`/mcp` instead of the IPC socket); waiting on Desktop's own HTTP-config support to mature upstream;
+or treating "Desktop + `local` mode + no bridge" as an unsupported combination and steering that user
+to Claude Code (which already has clean native `--transport http --header` support, no bridge tool
+needed) or to `org` mode instead.
+
 **Rollback.** Each phase needs an off switch that does not require a downgrade:
 
 - P1: `init_approval_ui()` — the seam itself. A config key selects native or web.

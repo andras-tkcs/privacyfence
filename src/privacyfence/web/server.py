@@ -23,9 +23,11 @@ token also backs.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import secrets
 import threading
+from collections.abc import AsyncIterator
 
 import uvicorn
 from starlette.requests import Request
@@ -34,7 +36,10 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .. import paths
 from ..web_approval_ui import WebApprovalUI
+from .mcp_auth import load_or_create_mcp_token
+from .mcp_dispatch import McpDispatcher
 from .routes_approvals import create_app as create_approvals_app
+from .routes_mcp import MCP_PATH, mcp_lifespan, mount_mcp
 
 logger = logging.getLogger(__name__)
 
@@ -130,13 +135,41 @@ class _HostAllowlistMiddleware:
 
 
 def build_app(
-    web_ui: WebApprovalUI, *, token: str, allowed_hosts: frozenset[str] = frozenset({"localhost", "127.0.0.1"}),
+    web_ui: WebApprovalUI,
+    *,
+    token: str,
+    allowed_hosts: frozenset[str] = frozenset({"localhost", "127.0.0.1"}),
+    mcp_dispatcher: McpDispatcher | None = None,
+    mcp_token: str | None = None,
 ) -> ASGIApp:
     """The approval routes, wrapped with the Host allowlist and security
     headers every real deployment needs -- routes_approvals.create_app()
     alone (no wrapping) is what tests reach for when they want to exercise
-    the routes without also exercising this middleware stack."""
-    app = create_approvals_app(web_ui, token=token)
+    the routes without also exercising this middleware stack.
+
+    ``mcp_dispatcher`` (P2, docs/https-connector-refactor-plan.md §8) folds
+    the ``/mcp`` Streamable HTTP endpoint into this same app, on its own
+    ``mcp_token`` -- a secret independent of ``token`` (the approval
+    surface's own session/CSRF secret), which is what makes §10.3's
+    audience separation ("the MCP access token must never be accepted on
+    approval-decision endpoints, and the browser session cookie must never
+    be accepted on /mcp") hold structurally rather than by convention. Omit
+    both to get exactly P1's app, unchanged.
+    """
+    extra_routes = []
+    lifespan = None
+    if mcp_dispatcher is not None:
+        if not mcp_token:
+            raise ValueError("mcp_token is required when mcp_dispatcher is given")
+        mcp_route, session_manager = mount_mcp(mcp_dispatcher, token=mcp_token)
+        extra_routes.append(mcp_route)
+
+        @contextlib.asynccontextmanager
+        async def lifespan(_app) -> AsyncIterator[None]:  # noqa: ANN001
+            async with mcp_lifespan(session_manager):
+                yield
+
+    app = create_approvals_app(web_ui, token=token, extra_routes=extra_routes, lifespan=lifespan)
     wrapped: ASGIApp = _HostAllowlistMiddleware(app, allowed_hosts)
     return _SecurityHeadersMiddleware(wrapped)
 
@@ -149,13 +182,26 @@ class WebServer:
     docs/https-connector-refactor-plan.md §12)."""
 
     def __init__(
-        self, web_ui: WebApprovalUI, *, host: str = "localhost", port: int = DEFAULT_PORT, token: str | None = None,
+        self,
+        web_ui: WebApprovalUI,
+        *,
+        host: str = "localhost",
+        port: int = DEFAULT_PORT,
+        token: str | None = None,
+        mcp_dispatcher: McpDispatcher | None = None,
+        mcp_token: str | None = None,
     ) -> None:
         self.host = host
         self.port = port
         self.token = token or load_or_create_token()
+        self.mcp_dispatcher = mcp_dispatcher
+        self.mcp_token = (mcp_token or load_or_create_mcp_token()) if mcp_dispatcher is not None else None
         wrapped = build_app(
-            web_ui, token=self.token, allowed_hosts=frozenset({host, "127.0.0.1", "[::1]"}),
+            web_ui,
+            token=self.token,
+            allowed_hosts=frozenset({host, "127.0.0.1", "[::1]"}),
+            mcp_dispatcher=mcp_dispatcher,
+            mcp_token=self.mcp_token,
         )
         config = uvicorn.Config(wrapped, host=host, port=port, log_level="warning")
         self._server = uvicorn.Server(config)
@@ -164,6 +210,16 @@ class WebServer:
     @property
     def base_url(self) -> str:
         return f"http://{self.host}:{self.port}"
+
+    @property
+    def mcp_url(self) -> str | None:
+        """``None`` unless this server was built with ``mcp_dispatcher`` --
+        the URL to configure in a Streamable HTTP MCP client, e.g.
+        ``claude mcp add --transport http privacyfence <mcp_url> --header
+        "Authorization: Bearer <mcp_token>"``."""
+        if self.mcp_dispatcher is None:
+            return None
+        return f"{self.base_url}{MCP_PATH}"
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._server.run, name="web-server", daemon=True)

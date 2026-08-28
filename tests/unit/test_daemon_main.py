@@ -692,19 +692,21 @@ class TestSetupLogging:
 
 
 # ---------------------------------------------------------------------------- #
-# _maybe_start_web_approval_ui -- the P1 rollback lever (see
+# _maybe_start_web_server -- the P1/P2 rollback levers (see
 # docs/https-connector-refactor-plan.md §12): config/settings.yaml's
-# web.approval_ui selects native (default, untouched) or web.
+# web.approval_ui selects native (default, untouched) or web; web.mcp.enabled
+# independently turns the /mcp endpoint on. Either one alone starts the one
+# embedded server.
 # ---------------------------------------------------------------------------- #
 
-class TestMaybeStartWebApprovalUi:
+class TestMaybeStartWebServer:
     def _no_bind(self, monkeypatch, tmp_path):
         # Never actually binds a real socket -- this suite proves the
         # wiring (which ApprovalUI gets installed, whether a server object
-        # comes back), not uvicorn's own serve loop. web_token also has to
-        # land under an isolated tmp_path, not paths.data_dir()'s real
-        # value (the repo root itself in dev mode) -- see
-        # web/server.py's load_or_create_token().
+        # comes back, whether /mcp is mounted), not uvicorn's own serve
+        # loop. web_token/mcp_token also have to land under an isolated
+        # tmp_path, not paths.data_dir()'s real value (the repo root itself
+        # in dev mode) -- see web/server.py's load_or_create_token().
         from privacyfence import paths
         from privacyfence.web.server import WebServer
         monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
@@ -712,16 +714,23 @@ class TestMaybeStartWebApprovalUi:
         monkeypatch.setattr(WebServer, "start", lambda self: started.update(called=True))
         return started
 
-    def test_no_web_section_stays_native(self, monkeypatch, tmp_path):
+    @staticmethod
+    def _ipc_server():
+        from privacyfence.ipc_server import IPCServer
+        return IPCServer([])
+
+    def test_no_web_section_stays_native_and_starts_nothing(self, monkeypatch, tmp_path):
         from privacyfence.approval_ui import NativeApprovalUI, get_approval_ui
         self._no_bind(monkeypatch, tmp_path)
-        result = daemon_main._maybe_start_web_approval_ui({})
+        result = daemon_main._maybe_start_web_server({}, self._ipc_server(), unattended_sessions_enabled=False)
         assert result is None
         assert isinstance(get_approval_ui(), NativeApprovalUI)
 
-    def test_explicit_native_stays_native(self, monkeypatch, tmp_path):
+    def test_explicit_native_with_mcp_disabled_starts_nothing(self, monkeypatch, tmp_path):
         self._no_bind(monkeypatch, tmp_path)
-        result = daemon_main._maybe_start_web_approval_ui({"web": {"approval_ui": "native"}})
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"approval_ui": "native"}}, self._ipc_server(), unattended_sessions_enabled=False,
+        )
         assert result is None
 
     def test_web_mode_installs_the_web_approval_ui_and_starts_a_server(self, monkeypatch, tmp_path):
@@ -729,19 +738,55 @@ class TestMaybeStartWebApprovalUi:
         from privacyfence.approval_ui import get_approval_ui
         started = self._no_bind(monkeypatch, tmp_path)
 
-        result = daemon_main._maybe_start_web_approval_ui({"web": {"approval_ui": "web", "port": 18765}})
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"approval_ui": "web", "port": 18765}}, self._ipc_server(),
+            unattended_sessions_enabled=False,
+        )
 
         assert result is not None
         assert result.port == 18765
         assert started.get("called") is True
         assert get_approval_ui() is get_web_approval_ui()
         assert isinstance(get_approval_ui(), WebApprovalUI)
+        assert result.mcp_url is None  # web.mcp.enabled wasn't set
 
     def test_web_mode_defaults_to_the_standard_port(self, monkeypatch, tmp_path):
         from privacyfence.web.server import DEFAULT_PORT
         self._no_bind(monkeypatch, tmp_path)
-        result = daemon_main._maybe_start_web_approval_ui({"web": {"approval_ui": "web"}})
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"approval_ui": "web"}}, self._ipc_server(), unattended_sessions_enabled=False,
+        )
         assert result.port == DEFAULT_PORT
+
+    def test_mcp_enabled_alone_starts_a_server_without_touching_the_approval_ui(self, monkeypatch, tmp_path):
+        from privacyfence.approval_ui import NativeApprovalUI, get_approval_ui
+        started = self._no_bind(monkeypatch, tmp_path)
+
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"mcp": {"enabled": True}}}, self._ipc_server(), unattended_sessions_enabled=False,
+        )
+
+        assert result is not None
+        assert started.get("called") is True
+        assert result.mcp_url == f"{result.base_url}/mcp"
+        # web.approval_ui wasn't "web" -- the popup stays native even though
+        # the embedded server is now running for /mcp's sake.
+        assert isinstance(get_approval_ui(), NativeApprovalUI)
+
+    def test_mcp_dispatcher_sees_the_ipc_servers_live_connector_set(self, monkeypatch, tmp_path):
+        self._no_bind(monkeypatch, tmp_path)
+        ipc_server = self._ipc_server()
+
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"mcp": {"enabled": True}}}, ipc_server, unattended_sessions_enabled=False,
+        )
+
+        assert result.mcp_dispatcher.connectors == {}
+        from privacyfence.connectors.gmail import GmailConnector  # any real Connector subclass
+        fake_connector = object.__new__(GmailConnector)
+        ipc_server.set_connectors([fake_connector])
+        # No second push into the dispatcher -- it polls ipc_server.connectors.
+        assert list(result.mcp_dispatcher.connectors) == [fake_connector.name]
 
 
 # ---------------------------------------------------------------------------- #

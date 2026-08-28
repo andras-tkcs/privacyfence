@@ -90,3 +90,65 @@ class TestWebServerConstruction:
     def test_base_url_reflects_host_and_port(self):
         server = WebServer(WebApprovalUI(), host="localhost", port=1234, token=TOKEN)
         assert server.base_url == "http://localhost:1234"
+
+    def test_mcp_url_is_none_without_an_mcp_dispatcher(self):
+        server = WebServer(WebApprovalUI(), token=TOKEN)
+        assert server.mcp_url is None
+        assert server.mcp_token is None
+
+    def test_mcp_url_is_set_when_an_mcp_dispatcher_is_given(self):
+        from privacyfence.web.mcp_dispatch import McpDispatcher
+
+        server = WebServer(
+            WebApprovalUI(), host="localhost", port=1234, token=TOKEN,
+            mcp_dispatcher=McpDispatcher(lambda: {}), mcp_token="mcp-tok",
+        )
+        assert server.mcp_url == "http://localhost:1234/mcp"
+
+
+# --------------------------------------------------------------------------- #
+# §10.3's audience separation: the MCP bearer token and the approval
+# surface's session cookie/CSRF token are different secrets, checked in
+# different middleware, and neither is ever accepted on the other's routes.
+# The one test in this class required to "fail loudly if the middleware is
+# ever reordered" (§10.3/§13).
+# --------------------------------------------------------------------------- #
+
+class TestAudienceSeparation:
+    MCP_TOKEN = "mcp-token-0123456789"
+
+    def _app(self):
+        from privacyfence.web.mcp_dispatch import McpDispatcher
+
+        return build_app(
+            WebApprovalUI(), token=TOKEN, mcp_dispatcher=McpDispatcher(lambda: {}), mcp_token=self.MCP_TOKEN,
+        )
+
+    def test_mcp_rejects_the_approval_surfaces_own_token_as_bearer_auth(self):
+        client = TestClient(self._app(), base_url="http://localhost")
+        resp = client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                            headers={"Authorization": f"Bearer {TOKEN}"})
+        assert resp.status_code == 401
+
+    def test_mcp_accepts_only_its_own_token(self):
+        # Unlike the 401 checks above (rejected in auth middleware, before
+        # ever reaching the session manager), a real "initialize" needs the
+        # session manager's task group running -- hence `with`, which is
+        # what makes TestClient run the app's ASGI lifespan.
+        with TestClient(self._app(), base_url="http://localhost") as client:
+            resp = client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                                headers={"Authorization": f"Bearer {self.MCP_TOKEN}"})
+        assert resp.status_code != 401
+
+    def test_approvals_decide_rejects_the_mcp_token_as_csrf(self):
+        client = TestClient(self._app(), base_url="http://localhost")
+        # A valid *session cookie* (from the approval surface's own token)
+        # but the *MCP* token presented as the CSRF value -- the double-
+        # submit check must still fail, since these are different secrets.
+        client.cookies.set("pf_session", TOKEN)
+        resp = client.post(
+            "/api/approvals/some-id/decide",
+            json={"result": "deny", "csrf": self.MCP_TOKEN},
+            headers={"Authorization": f"Bearer {self.MCP_TOKEN}"},
+        )
+        assert resp.status_code == 401

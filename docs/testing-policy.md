@@ -74,6 +74,16 @@ manual steps. It includes:
   security headers, idempotent decisions — no real socket, see
   [`https-connector-refactor-plan.md`](https-connector-refactor-plan.md) §13). Platform-independent —
   covered by both the `test` and `test-linux` jobs below.
+- `tests/unit/web/test_mcp_dispatch.py`, `tests/unit/web/test_routes_mcp.py` — the `/mcp` endpoint's
+  own coverage, added at P2: `McpDispatcher`'s dedupe/staleness/gating dispatch and meta-tools
+  (`test_mcp_dispatch.py`, ported test-for-test from the equivalent `IPCServer` coverage in
+  `test_ipc_server.py` below — see `mcp_dispatch.py`'s own module docstring for why this is a
+  separate implementation rather than a shared refactor) and the wire-protocol/auth layer on top of
+  it (`test_routes_mcp.py`), driven with the real official `mcp` Python client over an in-process
+  ASGI transport — no real socket, same posture as the approval routes above. `TestAudienceSeparation`
+  in `tests/unit/web/test_server.py` is the one required to fail loudly if the MCP bearer-token and
+  approval-surface session-cookie middleware are ever reordered (§10.3 of the refactor plan).
+  Platform-independent — covered by both the `test` and `test-linux` jobs below.
 - `bridge/test/*.test.ts` (`npm test`, run from `bridge/`) — the Node/TypeScript MCP bridge's own
   suite: IPC framing, error propagation, and tool dispatch, run against `bridge/src/*.ts` directly
   (no build step) via hand-written Node fakes of the daemon (`bridge/test/testDaemon.ts`).
@@ -85,8 +95,10 @@ manual steps. It includes:
   client over real MCP-over-stdio, proving the two independently-maintained protocol
   implementations above (bridge's own suite against Node fakes, `test_ipc_server.py` against a
   hand-rolled Python client) actually agree with each other, not just with their own mocks. Skips
-  automatically if Node isn't on `PATH`; CI installs it, so this runs there. Needs the `mcp` package
-  (test-only, see `pyproject.toml`'s `[project.optional-dependencies].test`).
+  automatically if Node isn't on `PATH`; CI installs it, so this runs there. Uses the official `mcp`
+  Python client, a runtime dependency since P2 (`pyproject.toml`'s `[project.dependencies]` — see
+  `docs/https-connector-refactor-plan.md` §8.2/D2) rather than a test-only one; `test_routes_mcp.py`
+  above uses the same client against `/mcp` directly.
 
 ## 2. Local-only checks — run manually before opening/updating a relevant PR, never in CI
 

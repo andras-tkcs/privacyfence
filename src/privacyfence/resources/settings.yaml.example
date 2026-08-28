@@ -232,7 +232,20 @@ web:
   # the embedded HTTP server off entirely and returns to today's behavior,
   # no downgrade needed. Default "native" -- the web surface ships opt-in.
   approval_ui: native
-  # Port the embedded HTTP server listens on when approval_ui is "web".
-  # Always bound to localhost only in this (local) mode -- see
-  # web/server.py's module docstring.
+  # Port the embedded HTTP server listens on -- shared by the approval
+  # surface above and the /mcp endpoint below, one server either way. Always
+  # bound to localhost only in this (local) mode -- see web/server.py's
+  # module docstring.
   port: 8765
+  mcp:
+    # Turns on the /mcp Streamable HTTP endpoint (see
+    # docs/https-connector-refactor-plan.md's P2) -- Claude talks to
+    # PrivacyFence directly over HTTP instead of through the
+    # privacyfence-bridge Node process. Independent of approval_ui above:
+    # a gated call reaching a connector over /mcp still shows whichever
+    # popup (native or web) approval_ui selects. Off by default -- the
+    # bridge keeps working unchanged either way; this is additive, not a
+    # replacement, until P5 retires the bridge. Once enabled, point a
+    # Streamable HTTP MCP client at http://localhost:<port>/mcp with
+    # `Authorization: Bearer <the token in ~/.privacyfence/mcp_token>`.
+    enabled: false
