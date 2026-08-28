@@ -32,7 +32,7 @@ one daemon can serve.
 9. [Identity, authentication, and multi-user state](#9-identity-authentication-and-multi-user-state)
 10. [Security analysis](#10-security-analysis)
 11. [Validation: what was checked, and what it showed](#11-validation-what-was-checked-and-what-it-showed)
-12. [Phasing](#12-phasing)
+12. [Implementation plan](#12-implementation-plan)
 13. [Testing strategy](#13-testing-strategy)
 14. [Relationship to #55 and #121](#14-relationship-to-55-and-121)
 15. [Decisions taken](#15-decisions-taken)
@@ -350,7 +350,7 @@ The schema is otherwise untouched, which matters for anyone parsing the JSONL al
 **Claude may not re-call.** A model that reports "needs approval" and then stops is a UX failure, not
 a security failure — fail-closed holds. Mitigations: the hold window covers the fast case entirely;
 tool descriptions state the re-call contract explicitly; `await_approval` gives the model a natural
-thing to do instead of ending the turn. This should be measured in the Phase 2 spike rather than
+thing to do instead of ending the turn. This is P0's question 2 and P3's beta — measured, not
 assumed.
 
 **Unattended sessions.** `is_unattended()` short-circuits before any prompt and must keep doing so —
@@ -408,6 +408,13 @@ the registry and gains a principal dimension.
   without a refresh.
 - `GET /api/approvals/{id}/preview/{n}` — attachment/PDF bytes (`preview_bytes`, `pdf_bytes`),
   principal-checked, `Cache-Control: no-store`, and gone the moment the approval is decided.
+
+Blocking approvals held those bytes for seconds; pending ones hold them for up to the 15-minute TTL,
+and many can be live at once. So the registry needs a real bound, not just a TTL: a per-principal cap
+on concurrent pending approvals (reject further gated calls with a "too many pending approvals"
+error rather than queueing — fail-closed, and the natural backstop against a runaway agent), and a
+total-bytes cap above which payloads spill to a `0600` file under the principal's directory,
+unlinked on decision or expiry. Neither exists today because neither could.
 
 The one JS change to the existing document: `post()` swaps
 `window.webkit.messageHandlers.pf.postMessage(payload)` for `fetch()` against the decide endpoint.
@@ -592,10 +599,13 @@ admin (org config, connector policy) versus a plain user.
 
 **Decided: (B), with (A) as a supported configuration.**
 
-**Unattended sessions** lose their `id(writer)` key. They rebind to the MCP session identifier from
-the Streamable HTTP session, or to a token claim, with the same lifecycle: entered explicitly,
-cleared when the session ends, audited on both transitions, and still gated behind
-`unattended_sessions.enabled` in `org_config.json`.
+**Unattended sessions** lose their `id(writer)` key. They rebind to **the Streamable HTTP session
+identifier, not a token claim** (D9): today's semantics are per-connection, and an MCP session is the
+exact successor to a connection — it begins, it ends, and its state dies with it. A token claim would
+instead make "unattended" a property of the credential, which outlives any one run and would let a
+scheduled task's posture leak into an interactive session sharing that token. Same lifecycle
+otherwise: entered explicitly, cleared when the session ends, audited on both transitions, and still
+gated behind `unattended_sessions.enabled` in `org_config.json`.
 
 ---
 
@@ -622,7 +632,7 @@ The other #55 requirements survive:
 | 2. Daemon is the sole authority | Held, and strengthened — the decision surface is now served *by* the daemon, not couriered to it. |
 | 3. Zero third parties in the content path | Held. Content never leaves the PrivacyFence host. Only the approval **URL** and the fact that an approval is pending transit Anthropic (§10.4). |
 | 4. Parity with the PII gate | Held. The same card, the same red-tinted PII banner, the same forced second confirmation. |
-| 5. Desktop popup keeps working through rollout | Held through Phase 1–3; Phase 6 retires it deliberately (decision D6). |
+| 5. Desktop popup keeps working through rollout | Held through P1–P9; P10 retires it deliberately (D6). |
 
 And the relay, the WireGuard tunnel, the APNs registration, the Apple Developer membership and the
 signed-PWA bundle mechanism all disappear. That is the substance of "#55 becomes unnecessary".
@@ -808,35 +818,156 @@ not a rewrite.** That was the single biggest feasibility question and it comes b
    §9.3.
 4. **Unattended sessions lose their identity key** when the TCP connection goes away. §9.4.
 5. **Three `SettingsController` paths assume a local desktop** and need real replacements. §7.2.
-6. **100% coverage is the standing bar** (`coding-and-testing-guidelines.md` §2.7) and a new
-   HTTP/auth/TLS layer is a large surface to bring to it. §13.
+6. **CI is macOS-only and has no Linux leg** (`testing-policy.md` §1), which the web layer both
+   needs and, for the first time in this codebase, makes possible — everything under `web/` is
+   platform-independent. Coverage, contrary to an earlier draft of this document, gates on nothing:
+   the bar is a 100% *pass rate*. §13.
 
 ---
 
-## 12. Phasing
+## 12. Implementation plan
 
-Each phase is independently shippable and independently valuable. The `ApprovalUI` seam is what
-makes Phase 1 possible without touching `gate.py` at all.
+Eleven phases, not seven. An earlier draft had a single "org mode" phase carrying principals,
+per-principal storage, OIDC, an OAuth 2.1 authorization server, per-user service authorization and
+rate limits at once — that is a programme, not a phase, and it could not have been implemented step
+by step. It is split below into P6–P9.
 
-| Phase | Scope | Ships |
+Two ordering changes fall out of the same review:
+
+- **MCP over HTTP moves ahead of the deferred protocol** (P2 before P3). Built the other way round,
+  the pending result and `privacyfence_await_approval` would have to be added to `bridge/src/tools.ts`
+  and the IPC protocol first and thrown away one phase later. Built this way, the deferred protocol
+  is written once, on the transport it ships on.
+- **Retiring the bridge becomes its own phase** (P5), separated from adding the HTTP endpoint. The
+  gap between P2 and P5 *is* the migration window: both transports work, so no installed
+  `PrivacyFence.mcpb` breaks on upgrade.
+
+### The phases
+
+| # | Phase | Depends on | Size | Exit criterion |
+|---|---|---|---|---|
+| **P0** | Spike — throwaway | — | S | The four questions below are answered |
+| **P1** | Web approval surface (`WebApprovalUI`) | P0 | M | A gated call resolves in a browser; native popup still selectable |
+| **P2** | MCP over HTTP, **alongside** the bridge | P1 | L | Claude Code drives every tool over `/mcp`; the bridge still works unchanged |
+| **P3** | Deferred approvals + concurrency | P2 | L | Three approvals pending at once, each decidable in any order; `_popup_lock` gone |
+| **P4** | Settings on the web | P1 | M | Every `SettingsController` action reachable from a browser |
+| **P5** | Retire the bridge | P2, P4 | S | `bridge/`, `ipc.py`, `ipc_server.py` deleted; integration test re-pointed at `/mcp` |
+| **P6** | Principals + per-user storage | P3, P5 | L | Two principals isolated in tests; local mode byte-identical to before |
+| **P7** | Org identity — OIDC, sessions, OAuth 2.1 AS | P6 | L | Claude adds the connector by DCR; audience separation test passes |
+| **P8** | Per-user service authorization | P7 | L | A remote user authorizes Google, Slack, Salesforce, Atlassian and Telegram from a phone |
+| **P9** | Step-up auth (WebAuthn) | P7 | M | Face ID / Touch ID / fingerprint required on a write approval |
+| **P10** | Retire the native UI | P4, P9 | M | The four AppKit modules deleted; `rumps`/PyObjC optional extras |
+
+Sizes are relative, not calendar estimates: S is a few days' work, M a week or two, L several weeks.
+P2, P3, P6, P7 and P8 are the substantial ones; together they are most of the project.
+
+### P0 must answer four questions, not three
+
+The spike exists to kill assumptions before they become architecture. Two of its questions are new,
+and one of them is the largest product risk in the whole design:
+
+1. **Do the two HTML documents work as live pages?** Serve both over a local asyncio HTTP server,
+   swap `post()` to `fetch()`, drive one real approval end to end. §11 already answered the rendering
+   half of this offline; this closes the interactive half.
+2. **Will Claude actually re-call a tool after a pending result?** This is testable **today**, with
+   no part of the refactoring built: make one gated tool return a pending-shaped result through the
+   existing bridge and observe what Claude does, across Claude Code, Desktop, web and mobile. If it
+   reports "needs approval" and stops rather than re-calling, the whole of §5's protocol needs a
+   different shape — better to learn that in a day than in P3.
+3. **Does WebAuthn work where the approval link actually opens?** The link arrives inside a Claude
+   conversation. Passkeys work in the system browser and in Safari View Controller / Android Custom
+   Tabs; a plain embedded webview may not offer the platform authenticator at all. This decides
+   whether D7 is a real control.
+4. **What does the responsive pass on the card CSS actually cost?** §7.3.
+
+Nothing in P0 is kept. Its output is four answers and an estimate.
+
+### Per-phase definition of done
+
+Every phase carries the standing checklist in `coding-and-testing-guidelines.md` §2.7. The
+conditional items in that checklist map onto these phases as follows, so nobody has to re-derive it:
+
+| Checklist item | Applies to |
+|---|---|
+| `qa_fixture_recorder.py --check <connector>` | **No phase.** Nothing here touches `*_client.py` or `connectors/**`. If a phase finds itself editing one, that is a signal it has grown beyond its scope. |
+| `qa_popup_smoke.py` | P1 and P3 while the native popup still exists; **retired with it at P10**, replaced by the headless-Chromium smoke test in §13. |
+| `pytest tests/integration -v` (needs Node) | P2 and P5 — both change what is on the wire. The test is re-pointed from stdio to `/mcp` at P5 and stops needing Node. |
+| New module-level singletons get a `tests/conftest.py` reset | P1 (`web_approval_ui`), P3 (`approvals`), P6 (`principal`) — and P6 *removes* most of the existing ones. |
+| Every tool call resolves through `gated_call` and leaves an audit trail | P3 especially: the two-entry pending/release pair in §5.4 is the thing to assert. |
+
+Additionally, every phase from P2 onward must leave the **audience separation** of §10.3 asserted by
+a test that fails loudly if the middleware is reordered.
+
+### CI needs a Linux leg, starting at P1
+
+`testing-policy.md` §1 pins CI to `macos-latest` because the suite depends on real AppKit/PyObjC.
+Everything under `web/`, `approvals.py` and `principal.py` is platform-independent — this is the
+first code in the repo that *can* run on Linux CI, and by P6 it is the majority of the new surface.
+Add a second job running the platform-independent subset on `ubuntu-latest` from P1, and treat it as
+the thing that keeps P10's cross-platform claim honest rather than aspirational. Note this is a
+change to `testing-policy.md` itself, not just to a workflow file.
+
+### Migration and rollback
+
+**Migration.** Existing users have `PrivacyFence.mcpb` installed in Claude Desktop and a
+LaunchAgent-started daemon. Nothing about `~/.privacyfence` changes — the `local` principal's root
+*is* `data_dir()` (§9.2) — so settings, rules, grants, credentials and audit history all carry over
+untouched. What does change is how Claude reaches the daemon, and that is why P2 and P5 are separate:
+
+1. P2 ships the HTTP endpoint with the bridge still working. Nothing breaks on upgrade.
+2. The settings page gains a "Connect Claude" section showing the local URL and token, plus a notice
+   that the bridge is deprecated.
+3. P5 lands only after a full beta-then-stable cycle in which both transports shipped, and its
+   release notes are the second notice.
+
+**Rollback.** Each phase needs an off switch that does not require a downgrade:
+
+- P1: `init_approval_ui()` — the seam itself. A config key selects native or web.
+- P2: the HTTP listener is off unless configured; the bridge is untouched.
+- P3: a config key restores blocking-only behaviour (hold window = pending TTL, no pending results).
+  Worth keeping until P3 has a stable release behind it, because §5.4's "Claude may not re-call" risk
+  is the one that only real usage settles.
+- P6–P9: `mode: local` is the off switch for everything org-shaped.
+- P10 is the one phase with no rollback — it deletes the fallback. That is why it is last.
+
+### What ships as a beta
+
+The beta channel already exists and needs no new machinery: `update_check.include_beta` selects
+GitHub pre-releases, `update_checker.py` ranks `dev`/`alpha`/`beta`/`rc` below a bare `vX.Y.Z`, and
+the on-disk cache records which channel produced it so switching channels behaves. That module's own
+docstring anticipated this: "so a future beta-testing program can start without any further changes
+here."
+
+| Phase | Release | Why |
 |---|---|---|
-| **0. Spike** | Serve both existing HTML documents over a local asyncio HTTP server; swap `post()` to `fetch()`; drive one real approval end to end. Throwaway. | Confidence + the responsive-CSS estimate |
-| **1. `WebApprovalUI`** | `web/server.py`, `web_approval_ui.py` implementing `ApprovalUI`. Single user, still blocking, bridge unchanged, `gate.py` unchanged. Approvals happen in a browser. | Cross-platform approvals; native popup as fallback |
-| **2. Concurrency + deferred protocol** | `approvals.py` registry, hold window, decision ledger, `await_approval` tool, retire `_popup_lock`, rules-changed broadcast, audit additions, responsive CSS. | Multiple pending approvals; the approval link in Claude |
-| **3. Settings on the web** | `routes_settings.py`, the three desktop-assuming controller paths, admin/user split. | Config UI in the browser |
-| **4. MCP over HTTP** | `routes_mcp.py`, local bearer auth, bind/Host/Origin policy. Bridge retired; `ipc.py`/`ipc_server.py` retired. | One process, no Node, no bridge |
-| **5. `org` mode** | `principal.py`, per-principal registries and storage, OIDC login, OAuth 2.1 AS/RS, server-side service-OAuth redirects, rate limits. | **Multi-user; mobile Claude works** |
-| **6. Retire native UI** | Delete `approval_popup.py`, `approval_window.py`, `dialog_window.py`, `settings_window.py`; `rumps`/PyObjC become optional extras; menu bar optional. | Windows/Linux viability (#121) |
+| P0 | none | Throwaway. |
+| **P1** | **beta**, then stable | The ideal first beta: opt-in, the native popup remains, and the seam is the kill switch. Blast radius is one config key. |
+| **P2** | **beta**, then stable | Dual-transport and reversible — the bridge still works, so a broken `/mcp` costs a user nothing. |
+| **P3** | **beta, and it needs one** | Whether Claude reliably re-calls after a pending result is model- and client-dependent. P0 gives an early read; only a real beta cohort settles it. Do not ship this straight to stable. |
+| P4 | stable with P1 | Same surface, same risk profile. |
+| P5 | **stable only** | A deletion should never be the thing a beta cohort is testing. Ship it once P2 has a stable release behind it and the deprecation notice has been visible for a release cycle. |
+| P6 | stable | No user-visible change by construction — local mode must be byte-identical. If it needs a beta, it is not done. |
+| **P7–P9** | **beta, on a separate build target** | Per D4, org mode is a different artifact. Its "beta" is a tagged server/container build for one pilot organization, not a pre-release on the desktop DMG channel. Do not mix the two cohorts. |
+| P10 | stable | Removes the fallback, so it goes out only after org mode has shipped for real. |
 
-Phases 1–4 are strictly additive to the existing security posture. Phase 5 is where the trust
-boundary actually moves, and it should get its own security review under
-`docs/security-and-compliance.md`.
+Version bumps follow `CLAUDE.md`: only when a branch is actually about to be released, in their own
+commit. Most phase PRs carry no bump — a beta is tagged `vX.Y.Z-beta.N` at release time, not
+per-phase.
+
+Phases P1–P5 are strictly additive to the existing security posture. P7 is where the trust boundary
+actually moves, and it should get its own security review recorded in
+`docs/security-and-compliance.md` rather than riding on this document.
 
 ---
 
 ## 13. Testing strategy
 
-The bar is `pytest --cov=src/privacyfence` at **100%**, and the new surface is large.
+The bar is a **100% pass rate**, on `macos-latest`. Coverage is reported
+(`--cov-report=term-missing`) but gates on nothing — `testing-policy.md` §1 says so explicitly, and
+CI runs plain `pytest`. An earlier draft of this document claimed a 100% *coverage* bar; that was
+wrong, and it materially over-stated the cost of the new web layer. What the new surface actually
+owes is the DoD checklist in `coding-and-testing-guidelines.md` §2.7 plus the negative tests below,
+not line-by-line coverage of every socket and TLS branch.
 
 - **`web/` unit tests**: routes tested against an in-process ASGI/HTTP test client, no real socket.
   Auth middleware, CSRF, `Host`/`Origin` policy, principal authorization and the audience separation
@@ -855,10 +986,10 @@ The bar is `pytest --cov=src/privacyfence` at **100%**, and the new surface is l
   bridge over real MCP-over-stdio using the `mcp` client. Its replacement drives the real HTTP MCP
   endpoint with the same client. The test's *purpose* — a wire-protocol change on one side without
   the other fails visibly — is preserved; only the transport changes. This also means the `mcp<2.0`
-  cap in `pyproject.toml` gets revisited as part of Phase 4.
+  cap in `pyproject.toml` gets revisited as part of P2, and the test stops needing Node at P5.
 - **Browser**: a headless-Chromium smoke test rendering both documents and clicking through one
   approval, as the successor to `scripts/qa_popup_smoke.py` (which loses its subject when the native
-  window goes away in Phase 6). §11 is a manual version of exactly this.
+  window goes away at P10). §11 is a manual version of exactly this.
 - **`org` mode**: a two-principal fixture asserting that user A can never see, decide, or read
   anything belonging to user B — approvals, previews, settings, audit entries, connectors.
 
@@ -883,10 +1014,10 @@ with a potential Linux version** — the two share everything that matters here,
 hard was the native UI and transport layer, not the core. #121's own analysis says the
 connector/policy core is already portable and "the gap is entirely the native UI and transport
 layer" — and it lists as prerequisites the two refactors (#119's `ApprovalUI` seam, #120's webview
-config window) that this proposal now consumes. After Phase 6 the remaining work on either platform
+config window) that this proposal now consumes. After P10 the remaining work on either platform
 is packaging, autostart and CI: no `pystray` tray backend and no `pywebview`/WebView2 host are
 needed, because the UI is a browser. The Unix-domain-socket blocker #121 names is already gone (the
-IPC transport is loopback TCP today), and Phase 4 removes that transport entirely.
+IPC transport is loopback TCP today), and P5 removes that transport entirely.
 
 ---
 
@@ -900,9 +1031,10 @@ front.
 |---|---|---|
 | **D1** | `local` mode: loopback HTTP, or real HTTPS with a self-signed certificate? | **Loopback HTTP**, served on `localhost` rather than `127.0.0.1` so WebAuthn stays available (D7). A self-signed certificate would be rejected by MCP clients and risks training people through TLS warnings. TLS opt-in remains. §10.2 |
 | **D2** | MCP server: official `mcp` SDK + starlette/uvicorn, or hand-rolled Streamable HTTP on asyncio? | **The official SDK**, accepting the deviation from the stdlib-first rule. Spec conformance with Claude's client is the acceptance criterion, and it moves. §8.2 |
-| **D3** | Hold window and ledger TTL. | **Hold 30 s, pending TTL 15 min, ledger TTL 5 min, single-use for writes.** All configurable; these defaults are what Phase 2 measures against. §5.2 |
+| **D3** | Hold window and ledger TTL. | **Hold 30 s, pending TTL 15 min, ledger TTL 5 min, single-use for writes.** All configurable; these defaults are what P3's beta measures against. §5.2 |
 | **D4** | Is `org` mode the same artifact as the desktop app? | **Same codebase, separate build target.** The desktop app must not ship an inbound-facing server it never binds. |
 | **D5** | `org` MCP auth: own authorization server, or delegate to the org IdP? | **Own authorization server**, with IdP delegation as a supported configuration. It is what makes the browser session and the MCP token provably one identity. §9.4 |
-| **D6** | Keep the native macOS popup after Phase 6, or delete it? | **Delete it.** Two approval surfaces means two places for a security fix to land, and the `ApprovalUI` seam lets it come back if that proves wrong. |
+| **D6** | Keep the native macOS popup after P10, or delete it? | **Delete it.** Two approval surfaces means two places for a security fix to land, and the `ApprovalUI` seam lets it come back if that proves wrong. |
 | **D7** | Require step-up re-authentication before a *write* approval, and by what mechanism? | **Yes in `org` mode, scoped and configurable — via a WebAuthn platform authenticator** (Face ID / Touch ID / fingerprint / Hello), with IdP `acr_values` step-up as the alternative and OIDC re-auth as the no-passkey fallback. §10.6 |
+| **D9** | What replaces `id(writer)` as the unattended-session key? | **The Streamable HTTP session identifier**, not a token claim — an MCP session is the exact successor to a connection, whereas a claim would make "unattended" a property of a credential that outlives the run. §9.4 |
 | **D8** | When are #55 and #121 acted on? | **Once this refactoring is complete, not before.** #55 then closes as won't-do pointing at this document; #121 is revisited then, together with a potential Linux version. Closing #55 earlier would leave mobile approval untracked while its replacement is still unbuilt. §14 |
