@@ -289,9 +289,11 @@ def _maybe_start_web_server(
             server.base_url, server.token,
         )
     if server.mcp_url:
+        from .web.mcp_auth import MCP_TOKEN_FILE_NAME
+
         logger.info(
-            "MCP-over-HTTP active -- %s (Authorization: Bearer <token in ~/.privacyfence/mcp_token>)",
-            server.mcp_url,
+            "MCP-over-HTTP active -- %s (Authorization: Bearer <token in %s>)",
+            server.mcp_url, data_dir() / MCP_TOKEN_FILE_NAME,
         )
     return server
 
