@@ -18,7 +18,30 @@ pytest -v --cov=src/privacyfence --cov-report=term-missing
 
 on a `macos-latest` runner (this app depends on real AppKit/PyObjC behavior, so it can't run on
 Linux CI). A 100% pass rate is required to merge, for both suites; the coverage report is
-informational only — nothing gates on a specific percentage.
+informational only — nothing gates on a specific percentage. This `test` job is the one a PR needs
+to pass to merge.
+
+Starting at P1 (see [`https-connector-refactor-plan.md`](https-connector-refactor-plan.md) §12),
+`tests.yml` also runs a second, non-blocking `test-linux` job on `ubuntu-latest`:
+
+```bash
+pytest tests/unit -v \
+  --ignore=tests/unit/test_approval_popup.py --ignore=tests/unit/test_approval_window.py \
+  --ignore=tests/unit/test_dialog_window.py --ignore=tests/unit/test_menu_bar.py
+```
+
+Everything under `web/`, `web_approval_ui.py`, `card_builder.py`, and `approval_icons.py` is
+platform-independent — the first code in this repo that *can* run on Linux — and this job is what
+keeps that claim (and, eventually, P10's cross-platform one) honest rather than aspirational, rather
+than only ever exercising these modules on the same macOS runner as everything else. It does **not**
+replace the `test` job above: everything genuinely macOS-only (the four `--ignore`d modules, which
+import an AppKit-tainted module — `approval_popup.py`/`approval_window.py`/`dialog_window.py`/
+`menu_bar.py` — directly at module scope, so their absence here is a real `ImportError` rather than
+something a skip marker could catch) still only runs, and only needs to pass, on `macos-latest`.
+`test_settings_window.py` is the parallel case that *is* included here: it defers its own AppKit
+import inside each test function and carries a `sys.platform != "darwin"` `skipif` marker (see that
+file), so it collects cleanly on Linux and simply reports its tests skipped rather than erroring —
+the model to follow for any future macOS-only test module that should stay Linux-collectible.
 
 This tier is fully self-contained: no network calls to Gmail/Slack/Jira/etc., no credentials, no
 manual steps. It includes:
@@ -43,6 +66,14 @@ manual steps. It includes:
   the PII confirmation, rule confirmation, rule choice, and Atlassian multi-resource picker dialogs
   render through. Builds the real panel/webview and simulates the "pf" bridge message, never calls
   `runDialog_()`/`NSApplication.runModalForWindow_()` either.
+- `tests/unit/test_web_approval_ui.py`, `tests/unit/test_card_builder.py`,
+  `tests/unit/test_approval_icons.py`, `tests/unit/web/` — the web approval surface's own coverage,
+  added at P1: `WebApprovalUI`'s blocking contract (identical to `NativeApprovalUI`'s — see
+  `approval_ui.py`'s ABC), the pure gate-args-to-card-HTML translation, shared icon-asset loading, and
+  the approval routes themselves against an in-process ASGI test client (auth, CSRF, Host allowlist,
+  security headers, idempotent decisions — no real socket, see
+  [`https-connector-refactor-plan.md`](https-connector-refactor-plan.md) §13). Platform-independent —
+  covered by both the `test` and `test-linux` jobs below.
 - `bridge/test/*.test.ts` (`npm test`, run from `bridge/`) — the Node/TypeScript MCP bridge's own
   suite: IPC framing, error propagation, and tool dispatch, run against `bridge/src/*.ts` directly
   (no build step) via hand-written Node fakes of the daemon (`bridge/test/testDaemon.ts`).

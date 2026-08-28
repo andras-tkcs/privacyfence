@@ -11,18 +11,31 @@ from __future__ import annotations
 
 import pytest
 
-from privacyfence import approval_ui
 from privacyfence.approval_ui import ApprovalUI, NativeApprovalUI, get_approval_ui, init_approval_ui
 
 # approval_ui._INSTANCE is reset by tests/conftest.py's autouse _reset_singletons
 # fixture, same as auto_accept/audit_log's own singletons.
 
+# approval_popup (transitively AppKit/WKWebView, via approval_window.py/
+# dialog_window.py) is imported lazily inside NativeApprovalUI's own methods,
+# not at approval_ui.py's module scope -- see that module's own docstring for
+# why. TestNativeApprovalUIDelegation below exercises that real delegation,
+# so it needs the actual privacyfence.approval_popup module importable
+# (macOS/PyObjC only, same as test_approval_popup.py) -- unlike the rest of
+# this file (TestSingletonAccessors), which stays platform-independent, so
+# only that one class is skipped here rather than the whole module.
+try:
+    from privacyfence import approval_popup
+except ImportError:  # pragma: no cover - exercised only where pyobjc is absent
+    approval_popup = None
 
+
+@pytest.mark.skipif(approval_popup is None, reason="requires PyObjC/AppKit (approval_popup.py)")
 class TestNativeApprovalUIDelegation:
     def test_show_popup_forwards_args_and_returns_result(self, monkeypatch):
         captured = {}
         monkeypatch.setattr(
-            approval_ui.approval_popup, "show_popup",
+            approval_popup, "show_popup",
             lambda *a, **kw: captured.update(args=a, kwargs=kw) or ("accept", None),
         )
 
@@ -35,7 +48,7 @@ class TestNativeApprovalUIDelegation:
     def test_show_read_popup_forwards_args_and_returns_result(self, monkeypatch):
         captured = {}
         monkeypatch.setattr(
-            approval_ui.approval_popup, "show_read_popup",
+            approval_popup, "show_read_popup",
             lambda *a, **kw: captured.update(args=a, kwargs=kw) or ("accept_all", 0),
         )
 
@@ -54,7 +67,7 @@ class TestNativeApprovalUIDelegation:
             captured["categories"] = categories
             return True
 
-        monkeypatch.setattr(approval_ui.approval_popup, "show_pii_confirmation_popup", fake)
+        monkeypatch.setattr(approval_popup, "show_pii_confirmation_popup", fake)
 
         assert NativeApprovalUI().show_pii_confirmation_popup(["Phone number"]) is True
         assert captured["categories"] == ["Phone number"]
@@ -66,7 +79,7 @@ class TestNativeApprovalUIDelegation:
             captured["description"] = description
             return False
 
-        monkeypatch.setattr(approval_ui.approval_popup, "show_rule_confirmation_popup", fake)
+        monkeypatch.setattr(approval_popup, "show_rule_confirmation_popup", fake)
 
         assert NativeApprovalUI().show_rule_confirmation_popup("some rule") is False
         assert captured["description"] == "some rule"

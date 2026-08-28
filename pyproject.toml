@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "privacyfence"
-version = "3.4.4"
+version = "4.0.0-alpha1"
 description = "macOS menu bar privacy proxy between Claude (MCP) and your personal data"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -22,12 +22,27 @@ dependencies = [
     "simple-salesforce>=1.12.0",
     "requests>=2.31.0",
     "certifi>=2024.2.2",
-    "rumps>=0.4.0",
-    "pyobjc-framework-Cocoa>=10.0",
-    "pyobjc-framework-WebKit>=10.0",
-    "pyobjc-framework-Quartz>=10.0",
+    # macOS-only: the native menu bar / AppKit approval and settings
+    # windows. Guarded (try/except ImportError) everywhere they're
+    # imported -- see settings_controller.py's and approval_ui.py's own
+    # module docstrings -- specifically so the rest of this package,
+    # including the new web/ approval surface (P1, see
+    # docs/https-connector-refactor-plan.md), stays importable and
+    # testable on a non-macOS platform with these simply absent.
+    "rumps>=0.4.0; sys_platform == 'darwin'",
+    "pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'",
+    "pyobjc-framework-WebKit>=10.0; sys_platform == 'darwin'",
+    "pyobjc-framework-Quartz>=10.0; sys_platform == 'darwin'",
     "openpyxl>=3.1",
     "pypdf>=5.0",
+    # Embedded HTTP(S) server for the web approval surface (D10 in
+    # docs/https-connector-refactor-plan.md §15: this stack is brought in
+    # starting at P1, ahead of the MCP-over-HTTP endpoint itself, so
+    # web/server.py isn't written twice against two different stacks).
+    # Platform-independent -- installed everywhere, unlike the AppKit
+    # dependencies above.
+    "starlette>=0.37,<1.0",
+    "uvicorn>=0.30,<1.0",
 ]
 
 [project.scripts]
@@ -67,6 +82,9 @@ test = [
     # alongside a rewrite of that test's client-side calls.
     "mcp>=1.28,<2.0.0",
     "freezegun>=1.5",
+    # starlette.testclient.TestClient's transport -- test-only, exercising
+    # web/ routes (tests/unit/web/) without a real socket.
+    "httpx>=0.27",
 ]
 
 [tool.pytest.ini_options]

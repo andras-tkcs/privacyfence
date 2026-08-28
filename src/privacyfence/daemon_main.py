@@ -55,6 +55,7 @@ import yaml
 
 from .paths import data_dir, org_dir
 from .app_credentials import telegram_app_credentials
+from .approval_ui import init_approval_ui
 from .audit_log import init_audit_logger
 from .auto_accept import (
     init_config_path,
@@ -225,6 +226,40 @@ def setup_logging(config: dict[str, Any]) -> None:
         root.addHandler(h)
 
     logger.info("Logging initialized → %s", log_file)
+
+
+# ---------------------------------------------------------------------------- #
+# Web approval UI (see docs/https-connector-refactor-plan.md's P1) -- opt-in,
+# selected by config/settings.yaml's web.approval_ui. The seam this switches
+# is approval_ui.init_approval_ui(); native (NativeApprovalUI, AppKit) stays
+# the default so nothing changes for an install that doesn't set this.
+# ---------------------------------------------------------------------------- #
+
+def _maybe_start_web_approval_ui(config: dict[str, Any]) -> Any:
+    """Returns the started WebServer, or None when web.approval_ui isn't
+    "web" -- the whole rollback lever from
+    docs/https-connector-refactor-plan.md §12 ("P1: init_approval_ui() --
+    the seam itself. A config key selects native or web."). Imports the
+    web/starlette/uvicorn stack lazily so a daemon that never opts into this
+    doesn't pay for it at startup, the same "menu_bar imported inside
+    run_app(), not at module scope" posture this module already takes for
+    its own AppKit-only pieces."""
+    web_config = config.get("web", {}) or {}
+    if web_config.get("approval_ui", "native") != "web":
+        return None
+
+    from .web.server import DEFAULT_PORT, WebServer
+    from .web_approval_ui import get_web_approval_ui
+
+    web_ui = get_web_approval_ui()
+    init_approval_ui(web_ui)
+    server = WebServer(web_ui, port=int(web_config.get("port", DEFAULT_PORT)))
+    server.start()
+    logger.info(
+        "Web approval UI active -- approvals open at %s/approvals?token=%s",
+        server.base_url, server.token,
+    )
+    return server
 
 
 def _google_client_config(org_config: dict[str, Any]) -> dict[str, Any]:
@@ -756,6 +791,8 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
 
     audit_logger = init_audit_logger(str(Path(data_dir()) / "logs" / "audit"))
     audit_logger.export_all_pending()
+
+    _maybe_start_web_approval_ui(config)
 
     org_config = load_org_config()
     connectors = build_connectors(config, org_config)

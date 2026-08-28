@@ -222,3 +222,17 @@ logging:
   level: INFO
   # Log file path. Relative paths are resolved against the project root.
   file: logs/privacyfence.log
+
+web:
+  # Which ApprovalUI shows the approval popup -- "native" (today's macOS
+  # AppKit/WKWebView dialog, unchanged) or "web" (the same card, served
+  # over local HTTP and opened in a browser instead -- see
+  # docs/https-connector-refactor-plan.md's P1). This is the rollback lever
+  # for the whole web approval surface: flipping it back to "native" turns
+  # the embedded HTTP server off entirely and returns to today's behavior,
+  # no downgrade needed. Default "native" -- the web surface ships opt-in.
+  approval_ui: native
+  # Port the embedded HTTP server listens on when approval_ui is "web".
+  # Always bound to localhost only in this (local) mode -- see
+  # web/server.py's module docstring.
+  port: 8765
