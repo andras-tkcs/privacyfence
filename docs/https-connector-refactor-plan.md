@@ -429,6 +429,12 @@ the registry and gains a principal dimension.
 
 ### 7.1 Approvals
 
+The endpoint list below is the contract; the human design on top of it — row anatomy, the two
+clocks, grouping, the post-decision flow, and notifications — is worked out in
+[`approval-list-ui-ux.md`](approval-list-ui-ux.md), with a mockup at
+[`mockups/approval-list.html`](mockups/approval-list.html). Nothing there changes this section's
+routes or P3's scope.
+
 - `GET /approvals` — the current principal's pending approvals, newest first. Each collapsed row:
   connector icon, tool title, one-line summary, read/write badge, PII badge, age, expiry countdown.
 - Expanding a row renders **today's card stack, unchanged**, fetched from
