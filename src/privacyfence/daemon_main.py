@@ -229,36 +229,70 @@ def setup_logging(config: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------- #
-# Web approval UI (see docs/https-connector-refactor-plan.md's P1) -- opt-in,
-# selected by config/settings.yaml's web.approval_ui. The seam this switches
-# is approval_ui.init_approval_ui(); native (NativeApprovalUI, AppKit) stays
-# the default so nothing changes for an install that doesn't set this.
+# Web approval UI + MCP-over-HTTP (see docs/https-connector-refactor-plan.md's
+# P1/P2) -- opt-in, selected by config/settings.yaml's web.approval_ui and
+# web.mcp.enabled respectively. web.approval_ui's "web" is the seam
+# approval_ui.init_approval_ui() switches; native (NativeApprovalUI, AppKit)
+# stays the default so nothing changes for an install that doesn't set this.
+# web.mcp.enabled is independent of it (§8 of that document is a transport
+# change, orthogonal to which ApprovalUI shows the resulting popup) -- either
+# setting alone is enough to start the embedded HTTP server; both share the
+# one server/one port, per §3's target architecture.
 # ---------------------------------------------------------------------------- #
 
-def _maybe_start_web_approval_ui(config: dict[str, Any]) -> Any:
-    """Returns the started WebServer, or None when web.approval_ui isn't
-    "web" -- the whole rollback lever from
+def _maybe_start_web_server(
+    config: dict[str, Any], ipc_server: IPCServer, *, unattended_sessions_enabled: bool,
+) -> Any:
+    """Returns the started WebServer, or None when neither web.approval_ui
+    nor web.mcp.enabled opts in -- the rollback lever for each surface from
     docs/https-connector-refactor-plan.md §12 ("P1: init_approval_ui() --
-    the seam itself. A config key selects native or web."). Imports the
-    web/starlette/uvicorn stack lazily so a daemon that never opts into this
-    doesn't pay for it at startup, the same "menu_bar imported inside
-    run_app(), not at module scope" posture this module already takes for
-    its own AppKit-only pieces."""
+    the seam itself. A config key selects native or web." / "P2: the HTTP
+    listener is off unless configured; the bridge is untouched."). Imports
+    the web/starlette/uvicorn/mcp stack lazily so a daemon that never opts
+    into either doesn't pay for it at startup, the same "menu_bar imported
+    inside run_app(), not at module scope" posture this module already
+    takes for its own AppKit-only pieces.
+
+    ``ipc_server`` is already built and holds the real connector set by the
+    time this is called (see run_app's ordering) -- the MCP dispatcher polls
+    ``ipc_server.connectors`` live rather than taking its own snapshot, so a
+    connector rebuild pushed into the bridge (SettingsController.
+    refresh_connectors -> IPCServer.set_connectors) reaches the ``/mcp``
+    endpoint too, with nothing here needing a second push.
+    """
     web_config = config.get("web", {}) or {}
-    if web_config.get("approval_ui", "native") != "web":
+    mcp_config = web_config.get("mcp", {}) or {}
+    use_web_approval_ui = web_config.get("approval_ui", "native") == "web"
+    mcp_enabled = bool(mcp_config.get("enabled", False))
+    if not use_web_approval_ui and not mcp_enabled:
         return None
 
+    from .web.mcp_dispatch import McpDispatcher
     from .web.server import DEFAULT_PORT, WebServer
     from .web_approval_ui import get_web_approval_ui
 
     web_ui = get_web_approval_ui()
-    init_approval_ui(web_ui)
-    server = WebServer(web_ui, port=int(web_config.get("port", DEFAULT_PORT)))
+    if use_web_approval_ui:
+        init_approval_ui(web_ui)
+
+    mcp_dispatcher = None
+    if mcp_enabled:
+        mcp_dispatcher = McpDispatcher(
+            lambda: ipc_server.connectors, unattended_sessions_enabled=unattended_sessions_enabled,
+        )
+
+    server = WebServer(web_ui, port=int(web_config.get("port", DEFAULT_PORT)), mcp_dispatcher=mcp_dispatcher)
     server.start()
-    logger.info(
-        "Web approval UI active -- approvals open at %s/approvals?token=%s",
-        server.base_url, server.token,
-    )
+    if use_web_approval_ui:
+        logger.info(
+            "Web approval UI active -- approvals open at %s/approvals?token=%s",
+            server.base_url, server.token,
+        )
+    if server.mcp_url:
+        logger.info(
+            "MCP-over-HTTP active -- %s (Authorization: Bearer <token in ~/.privacyfence/mcp_token>)",
+            server.mcp_url,
+        )
     return server
 
 
@@ -792,8 +826,6 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
     audit_logger = init_audit_logger(str(Path(data_dir()) / "logs" / "audit"))
     audit_logger.export_all_pending()
 
-    _maybe_start_web_approval_ui(config)
-
     org_config = load_org_config()
     connectors = build_connectors(config, org_config)
     if not connectors:
@@ -801,6 +833,12 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
 
     unattended_enabled = bool((org_config.get("unattended_sessions", {}) or {}).get("enabled", False))
     ipc_server = IPCServer(connectors, unattended_sessions_enabled=unattended_enabled)
+
+    # Built after ipc_server so the MCP dispatcher (if web.mcp.enabled) can
+    # poll ipc_server.connectors for the live connector set -- see
+    # _maybe_start_web_server's own docstring.
+    _maybe_start_web_server(config, ipc_server, unattended_sessions_enabled=unattended_enabled)
+
     ipc_thread = IPCServerThread(ipc_server)
     ipc_thread.start()
     ipc_thread._ready.wait(timeout=5)

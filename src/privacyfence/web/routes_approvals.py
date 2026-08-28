@@ -26,7 +26,7 @@ from html import escape as _html_escape
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
-from starlette.routing import Route
+from starlette.routing import BaseRoute, Route
 
 from ..web_approval_ui import WebApprovalUI
 
@@ -104,12 +104,21 @@ def _check_csrf(request: Request, csrf: str | None) -> bool:
     return hmac.compare_digest(cookie, csrf)
 
 
-def create_app(web_ui: WebApprovalUI, *, token: str) -> Starlette:
+def create_app(
+    web_ui: WebApprovalUI, *, token: str, extra_routes: list[BaseRoute] | None = None, lifespan=None,
+) -> Starlette:
     """Build the Starlette app serving the approval surface. ``token`` is
     the shared local-mode secret (see server.py) -- this function takes it
     as a plain argument rather than reading paths.py itself, so tests can
     construct an app against an isolated WebApprovalUI/token pair with no
     filesystem or global-singleton dependency.
+
+    ``extra_routes``/``lifespan`` are how server.py folds the ``/mcp``
+    endpoint (routes_mcp.py, P2) into this same combined app rather than
+    running a second ASGI app/server on a second port -- one embedded HTTP
+    server, per docs/https-connector-refactor-plan.md §3's target
+    architecture. Both default to nothing so every existing caller
+    (including this module's own tests) is unaffected.
     """
 
     def _authenticated(request: Request) -> bool:
@@ -206,10 +215,11 @@ def create_app(web_ui: WebApprovalUI, *, token: str) -> Starlette:
             return JSONResponse({"status": "already_decided"}, status_code=409)
         return JSONResponse({"status": "ok"})
 
-    routes = [
+    routes: list[BaseRoute] = [
         Route("/", index),
         Route("/approvals", list_approvals),
         Route("/approvals/{id}", show_approval),
         Route("/api/approvals/{id}/decide", decide, methods=["POST"]),
     ]
-    return Starlette(routes=routes)
+    routes.extend(extra_routes or [])
+    return Starlette(routes=routes, lifespan=lifespan)

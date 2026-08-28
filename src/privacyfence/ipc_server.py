@@ -125,6 +125,15 @@ class IPCServer:
         # indicator can stay current without polling.
         self._unattended_changed_listener: Callable[[], None] | None = None
 
+    @property
+    def connectors(self) -> dict[str, Connector]:
+        """Read-only view of the live connector set -- web/mcp_dispatch.py's
+        ``McpDispatcher`` polls this (rather than holding its own copy) so
+        the single call to ``set_connectors`` below (SettingsController.
+        refresh_connectors) keeps both the bridge and the ``/mcp`` endpoint
+        in sync with no second push needed. See daemon_main.py's wiring."""
+        return self._connectors
+
     def set_connectors(self, connectors: list[Connector]) -> None:
         """Swap in a freshly built connector set (e.g. after the menu bar
         authenticates a service or toggles one on/off). Called from the
