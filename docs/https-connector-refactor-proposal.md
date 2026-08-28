@@ -1,6 +1,6 @@
 # PrivacyFence as an HTTPS connector — architecture & functional refactoring proposal
 
-**Status: proposal for review. Nothing here is implemented.**
+**Status: design agreed (§15). Nothing here is implemented yet.**
 
 This document designs, and validates against the current code, the refactoring that turns
 PrivacyFence from a macOS-only, single-user, stdio-MCP-bridge desktop app into a service with an
@@ -35,7 +35,7 @@ one daemon can serve.
 12. [Phasing](#12-phasing)
 13. [Testing strategy](#13-testing-strategy)
 14. [Relationship to #55 and #121](#14-relationship-to-55-and-121)
-15. [Decisions needed before implementation](#15-decisions-needed-before-implementation)
+15. [Decisions taken](#15-decisions-taken)
 
 ---
 
@@ -465,11 +465,11 @@ Preserved deliberately: every tool is advertised with `readOnlyHint = true` /
 `destructiveHint = false`, for the reasons documented in `TECHNICAL_REFERENCE.md` §"Why every tool is
 advertised as read-only".
 
-### 8.2 Recommended: use the official MCP Python SDK
+### 8.2 Decided: use the official MCP Python SDK
 
 `mcp>=1.28,<2.0` is already a test-only dependency, used by
-`tests/integration/test_bridge_daemon_contract.py`. The recommendation is to promote it to a runtime
-dependency for the server side, with an ASGI host (`starlette` + `uvicorn`).
+`tests/integration/test_bridge_daemon_contract.py`. It is promoted to a runtime dependency for the
+server side, with an ASGI host (`starlette` + `uvicorn`).
 
 This breaks the repo's "prefer the standard library over new dependencies" rule, so the
 justification has to be explicit: Streamable HTTP plus OAuth 2.1 protected-resource metadata is a
@@ -480,8 +480,8 @@ provide.
 
 The alternative — hand-rolling Streamable HTTP on `asyncio` in the style of `ipc_server.py` — is
 genuinely feasible (the JSON-RPC framing is already hand-rolled today) and keeps the dependency
-footprint and the PyInstaller bundle small. It is a legitimate choice if dependency minimalism
-outweighs spec-tracking cost. **This is decision D2 in §15.**
+footprint and the PyInstaller bundle small. It was weighed and not taken: spec-tracking cost outweighs
+dependency minimalism here. **See D2 in §15.**
 
 ### 8.3 Protocol specifics to verify at implementation time
 
@@ -590,7 +590,7 @@ admin (org config, connector policy) versus a plain user.
   and — the deciding argument — the browser session and the MCP token are then provably the *same
   identity*, which is what lets an approval page be trusted to answer for a given MCP caller.
 
-**Recommendation: (B), with (A) as a supported configuration.**
+**Decided: (B), with (A) as a supported configuration.**
 
 **Unattended sessions** lose their `id(writer)` key. They rebind to the MCP session identifier from
 the Streamable HTTP session, or to a token claim, with the same lifecycle: entered explicitly,
@@ -634,21 +634,19 @@ certificate and key (paths in `org_config.json`), or it runs behind the org's re
 which case `X-Forwarded-For` / `X-Forwarded-Proto` are honored **only** when an explicit
 `trusted_proxies` list is configured, never by default. HSTS on.
 
-**`local`**: recommend **loopback HTTP, not HTTPS**, and this deliberately deviates from the brief's
-wording. The reasons:
+**`local`**: **loopback HTTP, not HTTPS — served on `localhost`, not `127.0.0.1`**. This
+deliberately deviates from the brief's original wording. The reasons:
 
-- browsers already treat `http://127.0.0.1` as a secure context, so nothing about the web UI is
-  weakened;
+- browsers already treat `http://localhost` as a secure context, so nothing about the web UI is
+  weakened, and WebAuthn (§10.6) stays available, which a bare IP would forbid;
 - a self-signed certificate would be rejected by MCP clients unless the user installs a local CA —
   friction with a real chance of teaching users to click through TLS warnings, which is a net
   security loss;
 - a private key sitting in `~/.privacyfence` protects nothing against an attacker who can already
   read `~/.privacyfence`, which is exactly the boundary the current `ipc_token` design draws.
 
-Offered as an opt-in for anyone who wants it anyway: a generated certificate plus instructions for
-trusting it. **This is decision D1 in §15** — if the "embedded HTTPS server" framing is a hard
-requirement rather than shorthand, the design accommodates it, it just costs the user a trust-store
-step.
+TLS remains available as an opt-in for anyone who wants it anyway: a generated certificate plus
+instructions for trusting it, at the cost of a trust-store step. **See D1 in §15.**
 
 ### 10.3 The control that matters most
 
@@ -713,7 +711,7 @@ no Apple Developer membership, no relay.
 | **TOTP** | A stolen session cookie | Yes, but a six-digit code per approval is untenable friction | Low — worth having only as recovery |
 | **Typed confirmation** of a token shown on the card | Reflexive or accidental approval, not a determined holder | Yes | Trivial — complements a real factor, never replaces one |
 
-**Recommended: WebAuthn platform authenticator**, with IdP `acr_values` step-up as the org-mode
+**Decided: WebAuthn platform authenticator**, with IdP `acr_values` step-up as the org-mode
 alternative where the IdP already does this well, and OIDC re-auth as the fallback for a user with no
 passkey enrolled.
 
@@ -729,10 +727,10 @@ Five things to know before choosing:
 - **Verify user verification, not just the signature.** Require `userVerification: "required"` *and*
   check the UV flag in `authenticatorData`. Skip that check and a credential that only proved
   presence passes as a biometric.
-- **The RP-ID rule collides with D1.** WebAuthn needs a secure context and a registrable-domain RP
-  ID. `localhost` qualifies, and is a secure context even over plain HTTP; a bare IP address does
-  not. So if D1 lands on loopback HTTP, the server must be reached as `http://localhost:PORT`, not
-  `http://127.0.0.1:PORT`, or biometric step-up is simply unavailable in local mode.
+- **The RP-ID rule constrains D1.** WebAuthn needs a secure context and a registrable-domain RP ID.
+  `localhost` qualifies, and is a secure context even over plain HTTP; a bare IP address does not.
+  This is why D1 pins local mode to `http://localhost:PORT` rather than `http://127.0.0.1:PORT` —
+  reached by IP, biometric step-up is simply unavailable there.
 - **Where the link opens decides whether this is dependable.** The approval URL arrives inside a
   Claude conversation. Passkeys work in the system browser and in Safari View Controller / Android
   Custom Tabs; a plain embedded webview may not offer the platform authenticator at all. Test this in
@@ -868,34 +866,43 @@ The bar is `pytest --cov=src/privacyfence` at **100%**, and the new surface is l
 
 ## 14. Relationship to #55 and #121
 
+Both issues are acted on **once this refactoring is complete**, not before — see D8. Until then they
+stay open and unchanged: closing #55 while the thing that replaces it is still unbuilt would leave
+mobile approval untracked.
+
 **#55 — mobile remote approval** becomes unnecessary rather than superseded. Its entire architecture
 existed to move an approval *off* a machine that must never accept inbound connections: a relay host,
 a WireGuard tunnel, an encrypted mailbox, APNs as a content-free wake trigger, an Apple Developer
 membership, a signed-and-pinned PWA bundle. If PrivacyFence itself serves the approval page over
 HTTPS, every one of those components has nothing left to do. The requirements #55 was protecting are
-carried forward explicitly in §10.1, including the one this design deliberately drops and why.
-Recommended closure: **won't do**, with a pointer to this document.
+carried forward explicitly in §10.1, including the one this design deliberately drops and why. On
+completion it closes as **won't do**, pointing at this document.
 
-**#121 — Windows version** is unblocked as a side effect. Its own analysis says the connector/policy
-core is already portable and "the gap is entirely the native UI and transport layer" — and it lists
-as prerequisites the two refactors (#119's `ApprovalUI` seam, #120's webview config window) that this
-proposal now consumes. After Phase 6 the remaining Windows work is packaging, autostart and CI: no
-`pystray` tray backend and no `pywebview`/WebView2 host are needed, because the UI is a browser. The
-Unix-domain-socket blocker #121 names is already gone (the IPC transport is loopback TCP today), and
-Phase 4 removes that transport entirely.
+**#121 — Windows version** is unblocked as a side effect, and is revisited on completion **together
+with a potential Linux version** — the two share everything that matters here, since what made both
+hard was the native UI and transport layer, not the core. #121's own analysis says the
+connector/policy core is already portable and "the gap is entirely the native UI and transport
+layer" — and it lists as prerequisites the two refactors (#119's `ApprovalUI` seam, #120's webview
+config window) that this proposal now consumes. After Phase 6 the remaining work on either platform
+is packaging, autostart and CI: no `pystray` tray backend and no `pywebview`/WebView2 host are
+needed, because the UI is a browser. The Unix-domain-socket blocker #121 names is already gone (the
+IPC transport is loopback TCP today), and Phase 4 removes that transport entirely.
 
 ---
 
-## 15. Decisions needed before implementation
+## 15. Decisions taken
 
-| # | Decision | Recommendation |
+These are settled, not open questions. Implementation proceeds on them; anything that turns out to be
+wrong gets revisited against evidence from the phase that found it, rather than re-litigated up
+front.
+
+| # | Question | Decision |
 |---|---|---|
-| **D1** | `local` mode: loopback HTTP, or real HTTPS with a self-signed certificate? | **Loopback HTTP** (§10.2). Deviates from the brief's wording; say so explicitly if HTTPS is a hard requirement. |
-| **D2** | MCP server: official `mcp` SDK + starlette/uvicorn, or hand-rolled Streamable HTTP on asyncio? | **SDK** (§8.2), accepting the dependency-minimalism cost. |
-| **D3** | Hold window and ledger TTL. | Hold 30 s; pending TTL 15 min; ledger TTL 5 min, single-use for writes. All configurable. |
-| **D4** | Is `org` mode the same artifact as the desktop app, or a separate headless server build? | **Same codebase, separate PyInstaller/container target** — the desktop app should not ship an inbound-facing server it never binds. |
-| **D5** | `org` MCP auth: own authorization server, or delegate to the org IdP? | **Own AS** (§9.4-B), IdP delegation as a supported configuration. |
-| **D6** | Keep the native macOS popup as an option after Phase 6, or delete it? | **Delete it.** Two approval surfaces means two places for a security fix to land, and the seam already lets it come back if needed. |
-| **D7** | Require step-up re-authentication before a *write* approval, and by what mechanism? | **Yes in `org` mode, scoped and configurable — via a WebAuthn platform authenticator** (Face ID / Touch ID / fingerprint / Hello), with IdP `acr_values` step-up as the alternative and OIDC re-auth as the no-passkey fallback. See §10.6. |
-| **D8** | Close #55 as won't-do now, or when Phase 2 lands? | **Now**, pointing at this document — the design decision is what makes it obsolete, not the code. |
-
+| **D1** | `local` mode: loopback HTTP, or real HTTPS with a self-signed certificate? | **Loopback HTTP**, served on `localhost` rather than `127.0.0.1` so WebAuthn stays available (D7). A self-signed certificate would be rejected by MCP clients and risks training people through TLS warnings. TLS opt-in remains. §10.2 |
+| **D2** | MCP server: official `mcp` SDK + starlette/uvicorn, or hand-rolled Streamable HTTP on asyncio? | **The official SDK**, accepting the deviation from the stdlib-first rule. Spec conformance with Claude's client is the acceptance criterion, and it moves. §8.2 |
+| **D3** | Hold window and ledger TTL. | **Hold 30 s, pending TTL 15 min, ledger TTL 5 min, single-use for writes.** All configurable; these defaults are what Phase 2 measures against. §5.2 |
+| **D4** | Is `org` mode the same artifact as the desktop app? | **Same codebase, separate build target.** The desktop app must not ship an inbound-facing server it never binds. |
+| **D5** | `org` MCP auth: own authorization server, or delegate to the org IdP? | **Own authorization server**, with IdP delegation as a supported configuration. It is what makes the browser session and the MCP token provably one identity. §9.4 |
+| **D6** | Keep the native macOS popup after Phase 6, or delete it? | **Delete it.** Two approval surfaces means two places for a security fix to land, and the `ApprovalUI` seam lets it come back if that proves wrong. |
+| **D7** | Require step-up re-authentication before a *write* approval, and by what mechanism? | **Yes in `org` mode, scoped and configurable — via a WebAuthn platform authenticator** (Face ID / Touch ID / fingerprint / Hello), with IdP `acr_values` step-up as the alternative and OIDC re-auth as the no-passkey fallback. §10.6 |
+| **D8** | When are #55 and #121 acted on? | **Once this refactoring is complete, not before.** #55 then closes as won't-do pointing at this document; #121 is revisited then, together with a potential Linux version. Closing #55 earlier would leave mobile approval untracked while its replacement is still unbuilt. §14 |
