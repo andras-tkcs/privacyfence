@@ -10,6 +10,7 @@ filtered_data differs from it -- that's the actual privacy boundary.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import threading
 import time
@@ -18,7 +19,7 @@ from types import SimpleNamespace
 import pytest
 
 from privacyfence import gate
-from privacyfence.audit_log import init_audit_logger
+from privacyfence.audit_log import get_audit_logger, init_audit_logger
 from privacyfence.auto_accept import AutoAcceptEvaluator
 from privacyfence.pii_detector import init_pii_detection
 
@@ -1990,10 +1991,21 @@ class TestQueuedRequestReCheck:
         # exercises the in-lock re-check -- and doesn't just pass "by
         # accident" because the pre-lock check happened to win a timing race
         # -- the rule is only flipped on after both callers' pre-lock checks
-        # have already run (3rd should_auto_accept call: A's pre-lock check,
-        # A's in-lock re-check, B's pre-lock check). At that point B must
-        # already be blocked waiting for the lock, since a write gated_call
-        # has no other await point in between.
+        # have already run (3rd should_auto_accept call: the lock-winner's
+        # pre-lock check, its in-lock re-check, and the other call's
+        # pre-lock check). At that point the other call must already be
+        # blocked waiting for the lock, since a write gated_call has no
+        # other await point in between the pre-lock check and the lock
+        # acquisition itself.
+        #
+        # Which of the two gated_call() coroutines actually wins the lock
+        # isn't fixed: both do PII/audit scanning via asyncio.to_thread
+        # (gate.py's dedicated-executor rewrite, see docs/slack-performance-
+        # review.md P2.15) before ever reaching should_auto_accept(), and
+        # that work runs on the shared default thread pool -- real OS thread
+        # scheduling, not asyncio's deterministic single-threaded ordering.
+        # So the assertions below key off which result actually got denied
+        # / auto-accepted, not off gather()'s positional order.
         rule_now_active = threading.Event()
         check_calls: list[None] = []
 
@@ -2024,9 +2036,12 @@ class TestQueuedRequestReCheck:
             return_exceptions=True,
         )
 
-        assert len(popup_calls) == 1  # only the first request showed a dialog
-        assert isinstance(results[0], RuntimeError)  # denied, as its popup said
-        assert results[1] is FILTERED  # auto-accepted via the re-check, no popup of its own
+        assert len(popup_calls) == 1  # only the lock-winner showed a dialog
+
+        denied = [r for r in results if isinstance(r, RuntimeError)]
+        auto_accepted = [r for r in results if r is FILTERED]
+        assert len(denied) == 1  # the lock-winner was denied, as its popup said
+        assert len(auto_accepted) == 1  # the other was auto-accepted via the re-check, no popup of its own
 
         entries = read_audit_entries(audit_dir)
         decisions = sorted(e["decision"] for e in entries)
@@ -2419,3 +2434,172 @@ class TestDefaultDetails:
 
         out = gate._default_details(Weird())
         assert out == "weird-fallback"
+
+
+class TestPiiAndAuditWorkOffTheEventLoop:
+    """R9 (docs/slack-performance-review.md): detect_pii_categories/
+    scan_pii_for_audit and AuditLogger.recent_matches used to run inline on
+    gated_call's own coroutine -- synchronous, CPU-bound-ish work that
+    blocked every other concurrently-dispatched request on the IPC server's
+    single event loop for however long it took. Proven here the standard
+    way: a slow stand-in for each, run concurrently with a ticker coroutine
+    that must keep making progress throughout -- if the slow call still ran
+    inline, the ticker would freeze for its whole duration instead.
+    """
+
+    @staticmethod
+    async def _ticks_while(coro) -> list[float]:
+        ticks: list[float] = []
+
+        async def ticker():
+            while True:
+                ticks.append(time.monotonic())
+                await asyncio.sleep(0.01)
+
+        ticker_task = asyncio.create_task(ticker())
+        try:
+            await coro
+        finally:
+            ticker_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await ticker_task
+        return ticks
+
+    async def test_detect_pii_categories_does_not_block_concurrent_tasks(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "rule")))
+        monkeypatch.setattr(gate, "detect_pii_categories", lambda text: time.sleep(0.15) or [])
+
+        ticks = await self._ticks_while(gate.gated_call(**base_kwargs(gate="review")))
+
+        # >5 ticks in 0.15s (a 0.01s ticker interval) means the event loop
+        # kept running throughout -- inline, blocked for the whole sleep, it
+        # would show at most one or two.
+        assert len(ticks) > 5
+
+    async def test_recent_matches_does_not_block_concurrent_tasks(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((True, "rule")))
+        monkeypatch.setattr(
+            get_audit_logger(), "recent_matches", lambda *a, **k: time.sleep(0.15) or 0
+        )
+
+        ticks = await self._ticks_while(gate.gated_call(**base_kwargs(gate="review")))
+
+        assert len(ticks) > 5
+
+
+class TestCancellation:
+    """gated_call's own asyncio.CancelledError handling -- what runs when
+    the daemon's IPC server cancels this coroutine's Task in response to a
+    "cancel" request (ipc.py's module docstring): the request still owes
+    exactly one audit entry, now decision="cancelled" instead of the
+    generic "error" fallback.
+    """
+
+    async def test_cancellation_while_waiting_on_the_popup_records_cancelled(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((False, "")))
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        release = threading.Event()
+
+        def slow_popup(*a, **k):
+            release.wait(timeout=2.0)
+            return ("deny", None)
+
+        monkeypatch.setattr(gate, "show_read_popup", slow_popup)
+
+        task = asyncio.create_task(gate.gated_call(**base_kwargs(gate="review")))
+        await asyncio.sleep(0.05)  # let it reach _run_in_popup_executor
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        release.set()  # let the still-blocked popup thread finish; don't leak it
+
+        entries = read_audit_entries(audit_dir)
+        assert entries[-1]["decision"] == "cancelled"
+
+    async def test_cancellation_before_reaching_the_popup_records_cancelled(self, monkeypatch, audit_dir):
+        # Cancelled while queued behind _popup_lock, before show_read_popup
+        # is ever called -- the common case now that P0 shrank most fetches
+        # well under a client's timeout: the clock only still runs out on
+        # the popup wait itself, not the work leading up to it.
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((False, "")))
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        called = []
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: (called.append(1), ("deny", None))[1])
+
+        async def hold_the_lock():
+            async with gate._popup_lock:
+                await asyncio.sleep(2.0)
+
+        holder = asyncio.create_task(hold_the_lock())
+        await asyncio.sleep(0.02)
+        task = asyncio.create_task(gate.gated_call(**base_kwargs(gate="review")))
+        await asyncio.sleep(0.02)  # let it start waiting on _popup_lock
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        holder.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await holder
+
+        assert called == []  # never reached the popup at all
+        entries = read_audit_entries(audit_dir)
+        assert entries[-1]["decision"] == "cancelled"
+
+
+class TestRunInPopupExecutor:
+    """gate._run_in_popup_executor -- the dedicated single-thread executor
+    every native dialog call runs on (see docs/slack-performance-review.md's
+    R6), instead of asyncio.to_thread's default pool shared with every
+    connector's own blocking I/O.
+    """
+
+    async def test_runs_the_call_and_returns_its_result(self):
+        def fn(x, *, y):
+            return x, y
+
+        result = await gate._run_in_popup_executor(fn, 5, y=9)
+
+        assert result == (5, 9)
+
+    async def test_runs_on_a_dedicated_thread_not_the_default_pool(self):
+        seen = {}
+
+        def fn():
+            seen["thread"] = threading.current_thread().name
+
+        await gate._run_in_popup_executor(fn)
+
+        assert seen["thread"].startswith("pf-popup")
+
+    async def test_stays_prompt_while_the_default_to_thread_pool_is_saturated(self):
+        # The scenario this executor exists for: a handful of slow
+        # connector calls (a Slack rate-limit retry sleeping out
+        # Retry-After, worst case) occupy every worker in the default
+        # asyncio.to_thread pool. A popup dispatched at the same time must
+        # not queue behind them.
+        default_pool_size = min(32, (__import__("os").cpu_count() or 1) + 4)
+        release = threading.Event()
+
+        def occupy_a_worker():
+            release.wait(timeout=2.0)
+
+        occupiers = [asyncio.to_thread(occupy_a_worker) for _ in range(default_pool_size)]
+        await asyncio.sleep(0.05)  # let every occupier actually start running
+
+        def popup():
+            return "still responsive"
+
+        try:
+            result = await asyncio.wait_for(gate._run_in_popup_executor(popup), timeout=1.0)
+        finally:
+            release.set()
+            await asyncio.gather(*occupiers)
+
+        assert result == "still responsive"
+
+    async def test_exceptions_propagate(self):
+        def fn():
+            raise ValueError("boom")
+
+        with pytest.raises(ValueError, match="boom"):
+            await gate._run_in_popup_executor(fn)

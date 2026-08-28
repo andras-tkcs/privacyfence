@@ -56,7 +56,7 @@ export interface ProposeRuleChangeParams {
  * there for free since Python doesn't enforce nominal typing at runtime.
  */
 export interface IPCClientLike {
-  call(connector: string, tool: string, args: Record<string, unknown>): Promise<unknown>;
+  call(connector: string, tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
   checkPolicy(
     connector: string,
     tool: string,
@@ -104,8 +104,22 @@ export class IPCClient implements IPCClientLike {
     return this.request("manifest", {});
   }
 
-  async call(connector: string, tool: string, args: Record<string, unknown>): Promise<unknown> {
-    return this.request("call", { connector, tool, args });
+  /**
+   * `signal`, when given, wires the MCP client's own cancellation into the
+   * daemon: if it fires before the request settles, sends ipc.py's
+   * "cancel" method for this exact request's id (see ipc.py's module
+   * docstring for what that does and doesn't stop on the daemon side) --
+   * best-effort, since there is nothing more useful to do if the cancel
+   * itself can't be sent than let the original request settle however it
+   * settles, same as before this existed. Only "call" ever passes a
+   * signal: it's the one method that can sit on a native approval popup
+   * long enough for a client-side timeout to matter (see
+   * docs/slack-performance-review.md's R7/R6).
+   */
+  async call(
+    connector: string, tool: string, args: Record<string, unknown>, signal?: AbortSignal
+  ): Promise<unknown> {
+    return this.request("call", { connector, tool, args }, signal);
   }
 
   async checkPolicy(
@@ -151,7 +165,9 @@ export class IPCClient implements IPCClientLike {
   // Internals
   // -------------------------------------------------------------------- //
 
-  private async request(method: string, params: Record<string, unknown>): Promise<unknown> {
+  private async request(
+    method: string, params: Record<string, unknown>, signal?: AbortSignal
+  ): Promise<unknown> {
     await this.ensureConnected();
     const id = String(this.nextId++);
     const promise = new Promise<unknown>((resolve, reject) => {
@@ -159,6 +175,28 @@ export class IPCClient implements IPCClientLike {
     });
     const msg = JSON.stringify({ id, method, params }) + "\n";
     this.socket!.write(msg);
+    if (signal !== undefined) {
+      const onAbort = (): void => {
+        // Fire-and-forget: this request's own promise settles however the
+        // daemon responds (a "cancelled" error if the cancel lands before
+        // it finishes, its real result/error if not) -- there is nothing
+        // more for the caller to do here either way.
+        this.request("cancel", { target_id: id }).catch(() => {});
+      };
+      if (signal.aborted) {
+        onAbort();
+      } else {
+        signal.addEventListener("abort", onAbort, { once: true });
+        // Stop listening once this request settles on its own so an
+        // unrelated, later abort on the same signal (AbortSignals aren't
+        // necessarily single-use) can't send a cancel for an id that no
+        // longer means anything. The .catch() here is only to keep this
+        // side-effect-only derived promise from raising its own unhandled-
+        // rejection warning -- the real rejection is still the caller's to
+        // handle, via the "promise" this method returns below.
+        promise.finally(() => signal.removeEventListener("abort", onAbort)).catch(() => {});
+      }
+    }
     return promise;
   }
 

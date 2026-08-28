@@ -329,3 +329,89 @@ describe("IPCClient reconnection", () => {
     }
   });
 });
+
+describe("IPCClient cancellation", () => {
+  it("sends ipc.py's cancel for the call's own request id when the signal aborts", async () => {
+    const { daemon, client, teardown } = await setup();
+    try {
+      const controller = new AbortController();
+      const callPromise = client.call("gmail", "gmail_get_message", { message_id: "abc" }, controller.signal);
+      await daemon.waitForNRequests(1);
+      const callId = daemon.received[0]!.id;
+      assert.equal(daemon.received[0]?.method, "call");
+
+      controller.abort();
+      await daemon.waitForNRequests(2);
+
+      assert.equal(daemon.received[1]?.method, "cancel");
+      assert.deepEqual(daemon.received[1]?.params, { target_id: callId });
+
+      // Settle both so the test doesn't leave a pending promise behind --
+      // mirrors what the real daemon does: the cancelled call's own
+      // response is the "error": "cancelled" ipc.py's module docstring
+      // describes, regardless of whether the cancel "won the race".
+      daemon.sendResponse(daemon.received[1]!.id, { result: { cancelled: true } });
+      daemon.sendResponse(callId, { error: "cancelled" });
+      await assert.rejects(callPromise, /cancelled/);
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("sends no cancel when the signal never fires", async () => {
+    const { daemon, client, teardown } = await setup();
+    try {
+      const controller = new AbortController();
+      const callPromise = client.call("gmail", "gmail_get_message", {}, controller.signal);
+      await daemon.waitForNRequests(1);
+      daemon.sendResponse(daemon.received[0]!.id, { result: { ok: true } });
+      await callPromise;
+
+      assert.equal(daemon.received.length, 1); // no cancel ever sent
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("sends an immediate cancel when the signal is already aborted before the call starts", async () => {
+    const { daemon, client, teardown } = await setup();
+    try {
+      const controller = new AbortController();
+      controller.abort();
+      const callPromise = client.call("gmail", "gmail_get_message", {}, controller.signal);
+      await daemon.waitForNRequests(2); // the call itself, then its cancel
+
+      assert.equal(daemon.received[0]?.method, "call");
+      assert.equal(daemon.received[1]?.method, "cancel");
+      assert.deepEqual(daemon.received[1]?.params, { target_id: daemon.received[0]!.id });
+
+      daemon.sendResponse(daemon.received[1]!.id, { result: { cancelled: true } });
+      daemon.sendResponse(daemon.received[0]!.id, { error: "cancelled" });
+      await assert.rejects(callPromise);
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("does not send a cancel for a later abort once the call has already settled", async () => {
+    // AbortSignals aren't necessarily single-use -- the listener this
+    // client attaches must be removed once its own request settles, so an
+    // unrelated later abort on the same signal can't fire a cancel for an
+    // id that no longer means anything.
+    const { daemon, client, teardown } = await setup();
+    try {
+      const controller = new AbortController();
+      const callPromise = client.call("gmail", "gmail_get_message", {}, controller.signal);
+      await daemon.waitForNRequests(1);
+      daemon.sendResponse(daemon.received[0]!.id, { result: { ok: true } });
+      await callPromise;
+
+      controller.abort();
+      await sleep(20); // give a wrongly-still-attached listener a chance to fire
+
+      assert.equal(daemon.received.length, 1);
+    } finally {
+      await teardown();
+    }
+  });
+});

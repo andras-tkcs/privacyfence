@@ -592,7 +592,7 @@ class TestRawCaptureApiCall:
         })
 
         with recorder.RawCaptureApiCall(client) as cap:
-            result = client.get_thread_replies("C1", "1.1")
+            result, _has_more = client.get_thread_replies("C1", "1.1")
 
         assert cap.captured["conversations.replies"]["messages"][0]["text"] == "hi"
         assert result[0].text == "hi"
