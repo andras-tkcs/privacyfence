@@ -846,7 +846,7 @@ Two ordering changes fall out of the same review:
 
 | # | Phase | Depends on | Size | Exit criterion |
 |---|---|---|---|---|
-| **P0** | Spike — throwaway | — | S | The four questions below are answered |
+| **P0** | Spike — throwaway | — | S | **Done** — see [`p0-https-connector-spike-findings.md`](p0-https-connector-spike-findings.md) |
 | **P1** | Web approval surface (`WebApprovalUI`) | P0 | M | A gated call resolves in a browser; native popup still selectable |
 | **P2** | MCP over HTTP, **alongside** the bridge | P1 | L | Claude Code drives every tool over `/mcp`; the bridge still works unchanged |
 | **P3** | Deferred approvals + concurrency | P2 | L | Three approvals pending at once, each decidable in any order; `_popup_lock` gone |
@@ -880,7 +880,14 @@ and one of them is the largest product risk in the whole design:
    whether D7 is a real control.
 4. **What does the responsive pass on the card CSS actually cost?** §7.3.
 
-Nothing in P0 is kept. Its output is four answers and an estimate.
+Nothing in P0 is kept. Its output is four answers and an estimate — see
+[`p0-https-connector-spike-findings.md`](p0-https-connector-spike-findings.md) for what was actually
+found. The short version: question 1 came back cleanly positive, question 4 came back bounded (about
+a day, and the shape of the work is now known), question 3 stays open pending a real-device check,
+and question 2 came back as a real, structural risk — not the model losing the thread, but its own
+prompt-injection defenses treating an in-tool "call yourself again" instruction as a probable attack
+and stopping to ask a human, across every tested phrasing. §5.4 should be read with that finding in
+hand.
 
 ### Per-phase definition of done
 
