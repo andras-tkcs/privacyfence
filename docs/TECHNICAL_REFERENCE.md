@@ -995,13 +995,15 @@ a read operation key too). A value-less rule like `always_allow` shows just "Add
 'always_allow' to 'gmail.create_draft'" — no "= None" — since `WriteRuleSuggestion.value_of` uses a
 `_NO_SUGGESTION` sentinel to tell "nothing to suggest" apart from "the value is legitimately None".
 
-`gate.py`'s popup branch computes `suggest_write_rule(operation_key, ctx)` before acquiring
-`_popup_lock`, wraps a non-`None` result into a single-entry `accept_all_choices` list (via
-`describe_rule_short()`, the same shape the review branch's multi-entry list uses) — the same
-`accept_all_choices` parameter `show_read_popup()` already uses to decide how many buttons to
-render — and handles a resulting `"accept_all"` decision (and its `chosen_index`) inside the same
-lock acquisition as the initial `should_auto_accept()` recheck, mirroring the review branch
-exactly. Every other write operation
+`gate.py`'s popup branch computes `suggest_write_rule(operation_key, ctx)` up front, wraps a
+non-`None` result into a single-entry `accept_all_choices` list (via `describe_rule_short()`, the
+same shape the review branch's multi-entry list uses) — the same `accept_all_choices` parameter
+`show_read_popup()` already uses to decide how many buttons to render — and handles a resulting
+`"accept_all"` decision (and its `chosen_index`) inside the same `_interact()` closure as the
+popup call itself (P3, docs/https-connector-refactor-plan.md §5-§6 — this used to be "the same
+`_popup_lock` acquisition"; the lock is gone, but the ordering guarantee it existed for — the rule
+confirmation and persistence happen as part of the one interaction, not deferred to some later
+observer — is unchanged), mirroring the review branch exactly. Every other write operation
 (roughly a dozen tools, e.g. `gmail_archive_message`, `slack_send_message`) gets `None` from
 `suggest_write_rule()` by construction — there's no fallback path, so they're structurally
 unaffected and their popups are visually unchanged (Deny / Allow once only).

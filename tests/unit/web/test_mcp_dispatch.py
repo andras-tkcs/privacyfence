@@ -19,6 +19,7 @@ import json
 
 import pytest
 
+from privacyfence.approvals import PendingApprovalRegistry
 from privacyfence.audit_log import current_week, init_audit_logger
 from privacyfence.auto_accept import init_auto_accept_evaluator
 from privacyfence.connector import Connector, ToolSpec
@@ -385,3 +386,75 @@ class TestUnattendedSessions:
         dispatcher.begin_unattended_session("s1", "why")
         dispatcher.end_unattended_session("s1")
         assert len(events) == 2
+
+
+class TestAwaitApproval:
+    """privacyfence_await_approval's handler (P3, docs/https-connector-
+    refactor-plan.md §5.2 point 7): long-poll the registry, status only."""
+
+    async def test_no_registry_reports_every_id_as_unknown(self):
+        dispatcher = _dispatcher({})  # registry=None, the default
+        result = await dispatcher.await_approval(["a1", "a2"], timeout_seconds=1)
+        assert result == {"a1": "unknown", "a2": "unknown"}
+
+    async def test_empty_id_list_returns_immediately_with_no_status(self):
+        dispatcher = _dispatcher({}, registry=PendingApprovalRegistry())
+        result = await dispatcher.await_approval([], timeout_seconds=5)
+        assert result == {}
+
+    async def test_returns_as_soon_as_a_pending_approval_is_decided(self):
+        registry = PendingApprovalRegistry(hold_window=5.0, pending_ttl=5.0, ledger_ttl=5.0)
+        dispatcher = _dispatcher({}, registry=registry)
+        approval, _ = registry.register_or_coalesce(
+            dedupe_key="k1", connector="gmail", tool="gmail_get_message", gate_kind="review", request_id="r1",
+        )
+
+        async def _decide_soon():
+            await asyncio.sleep(0.05)
+            registry.finalize(approval.id, "accept")
+
+        results = await asyncio.gather(
+            dispatcher.await_approval([approval.id], timeout_seconds=10),
+            _decide_soon(),
+        )
+        assert results[0] == {approval.id: "approved"}
+
+    async def test_times_out_and_reports_pending_if_nobody_decides(self):
+        registry = PendingApprovalRegistry(hold_window=5.0, pending_ttl=5.0, ledger_ttl=5.0)
+        dispatcher = _dispatcher({}, registry=registry)
+        approval, _ = registry.register_or_coalesce(
+            dedupe_key="k1", connector="gmail", tool="gmail_get_message", gate_kind="review", request_id="r1",
+        )
+
+        result = await dispatcher.await_approval([approval.id], timeout_seconds=1)
+
+        assert result == {approval.id: "pending"}
+
+    async def test_timeout_is_clamped_into_a_sane_range(self):
+        # Never actually waits the full (absurd) requested duration -- the
+        # clamp, not the caller's number, decides how long this can block.
+        registry = PendingApprovalRegistry(hold_window=5.0, pending_ttl=5.0, ledger_ttl=5.0)
+        dispatcher = _dispatcher({}, registry=registry)
+        approval, _ = registry.register_or_coalesce(
+            dedupe_key="k1", connector="gmail", tool="gmail_get_message", gate_kind="review", request_id="r1",
+        )
+        dispatcher._AWAIT_APPROVAL_MAX_TIMEOUT = 1  # keep the test itself fast
+        dispatcher._AWAIT_APPROVAL_POLL_SECONDS = 0.05
+
+        result = await asyncio.wait_for(
+            dispatcher.await_approval([approval.id], timeout_seconds=999_999), timeout=2.0,
+        )
+
+        assert result == {approval.id: "pending"}
+
+    async def test_mixed_ids_report_each_ones_own_status(self):
+        registry = PendingApprovalRegistry(hold_window=5.0, pending_ttl=5.0, ledger_ttl=5.0)
+        dispatcher = _dispatcher({}, registry=registry)
+        approval, _ = registry.register_or_coalesce(
+            dedupe_key="k1", connector="gmail", tool="gmail_get_message", gate_kind="review", request_id="r1",
+        )
+        registry.finalize(approval.id, "deny")
+
+        result = await dispatcher.await_approval([approval.id, "not-a-real-id"], timeout_seconds=1)
+
+        assert result == {approval.id: "denied", "not-a-real-id": "unknown"}

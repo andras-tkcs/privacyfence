@@ -773,6 +773,56 @@ class TestMaybeStartWebServer:
         # the embedded server is now running for /mcp's sake.
         assert isinstance(get_approval_ui(), NativeApprovalUI)
 
+    def test_web_mode_registry_gets_the_real_base_url_once_started(self, monkeypatch, tmp_path):
+        # P3: gate.py's pending-result URL (docs/https-connector-refactor-
+        # plan.md §5.2 point 4) needs the registry to know the server's real
+        # base_url, not just exist -- set once the server actually starts,
+        # not at construction time.
+        from privacyfence.web_approval_ui import get_web_approval_ui
+        self._no_bind(monkeypatch, tmp_path)
+
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"approval_ui": "web", "port": 18765}}, self._ipc_server(),
+            unattended_sessions_enabled=False,
+        )
+
+        registry = get_web_approval_ui().deferred_registry
+        assert registry.approval_url("abc") == f"{result.base_url}/approvals/abc"
+
+    def test_mcp_dispatcher_shares_the_same_registry_as_the_approval_ui(self, monkeypatch, tmp_path):
+        from privacyfence.web_approval_ui import get_web_approval_ui
+        self._no_bind(monkeypatch, tmp_path)
+
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"approval_ui": "web", "mcp": {"enabled": True}}}, self._ipc_server(),
+            unattended_sessions_enabled=False,
+        )
+
+        assert result.mcp_dispatcher._registry is get_web_approval_ui().deferred_registry
+
+    def test_approvals_config_overrides_the_registrys_defaults(self, monkeypatch, tmp_path):
+        from privacyfence.web_approval_ui import get_web_approval_ui
+        self._no_bind(monkeypatch, tmp_path)
+
+        daemon_main._maybe_start_web_server(
+            {
+                "web": {
+                    "approval_ui": "web",
+                    "approvals": {
+                        "hold_window_seconds": 5, "pending_ttl_seconds": 60,
+                        "ledger_ttl_seconds": 30, "max_pending": 3,
+                    },
+                },
+            },
+            self._ipc_server(), unattended_sessions_enabled=False,
+        )
+
+        registry = get_web_approval_ui().deferred_registry
+        assert registry.hold_window == 5
+        assert registry.pending_ttl == 60
+        assert registry.ledger_ttl == 30
+        assert registry.max_pending == 3
+
     def test_mcp_dispatcher_sees_the_ipc_servers_live_connector_set(self, monkeypatch, tmp_path):
         self._no_bind(monkeypatch, tmp_path)
         ipc_server = self._ipc_server()

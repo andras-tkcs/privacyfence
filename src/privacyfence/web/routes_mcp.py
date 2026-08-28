@@ -149,6 +149,10 @@ async def _dispatch_meta_tool(
         return dispatcher.begin_unattended_session(session_key, reason)
     if name == mcp_tools.END_UNATTENDED_SESSION_TOOL.name:
         return dispatcher.end_unattended_session(session_key, reason)
+    if name == mcp_tools.AWAIT_APPROVAL_TOOL.name:
+        return await dispatcher.await_approval(
+            arguments.get("approval_ids") or [], arguments.get("timeout_seconds", 30),
+        )
     raise ValueError(f"Unknown tool: {name!r}")  # pragma: no cover -- unreachable, META_TOOL_NAMES gates this
 
 

@@ -32,6 +32,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Hashable
 
+from ..approvals import PendingApprovalRegistry
 from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..auto_accept import TOOL_TO_GATE, TOOL_TO_OPERATION, get_auto_accept_evaluator, get_current_config
 from ..connector import Connector
@@ -56,12 +57,22 @@ class McpDispatcher:
 
     _DEDUPE_TTL_SECONDS = 30
     _DEDUPE_EXEMPT_TOOLS = frozenset({"gmail_create_label"})
+    # privacyfence_await_approval's own timeout_seconds is clamped into this
+    # range regardless of what the caller asked for -- fail-safe against a
+    # client-supplied value of 0 (busy-poll) or something absurdly large
+    # (holding the connection open indefinitely). Polled, not evented: the
+    # registry has no pub/sub of its own (see approvals.py), and polling a
+    # few in-memory dict lookups is cheap enough not to need one here either.
+    _AWAIT_APPROVAL_MIN_TIMEOUT = 1
+    _AWAIT_APPROVAL_MAX_TIMEOUT = 120
+    _AWAIT_APPROVAL_POLL_SECONDS = 0.5
 
     def __init__(
         self,
         connectors_provider: Callable[[], dict[str, Connector]],
         *,
         unattended_sessions_enabled: bool = False,
+        registry: PendingApprovalRegistry | None = None,
     ) -> None:
         self._connectors_provider = connectors_provider
         self._inflight: dict[str, tuple[Any, float]] = {}
@@ -69,6 +80,12 @@ class McpDispatcher:
         self._unattended_sessions_enabled = unattended_sessions_enabled
         self._unattended_sessions: set[Hashable] = set()
         self._unattended_changed_listener: Callable[[], None] | None = None
+        # The deferred-approval registry privacyfence_await_approval polls
+        # (P3, docs/https-connector-refactor-plan.md §5.2 point 7) -- None
+        # when nothing in this install can ever produce a pending approval
+        # (native-only local mode with /mcp still enabled), in which case
+        # every id this tool is asked about is simply "unknown".
+        self._registry = registry
 
     @property
     def connectors(self) -> dict[str, Connector]:
@@ -250,6 +267,29 @@ class McpDispatcher:
         except Exception as exc:
             logger.warning("Audit log write failed for list_rules: %s", exc)
         return result
+
+    async def await_approval(self, approval_ids: list[str], timeout_seconds: int = 30) -> dict[str, str]:
+        """privacyfence_await_approval's handler: long-poll ``approval_ids``
+        against the registry and return their current status once anything
+        changes, or once the (clamped) timeout elapses -- whichever comes
+        first. Status only, never content (§5.2 point 7 -- see
+        approvals.PendingApprovalRegistry.await_status's own docstring for
+        the exact vocabulary)."""
+        ids = [str(i) for i in (approval_ids or [])]
+        if not ids:
+            return {}
+        if self._registry is None:
+            return {approval_id: "unknown" for approval_id in ids}
+        timeout = max(
+            self._AWAIT_APPROVAL_MIN_TIMEOUT,
+            min(int(timeout_seconds or 0), self._AWAIT_APPROVAL_MAX_TIMEOUT),
+        )
+        deadline = time.time() + timeout
+        while True:
+            statuses = {approval_id: self._registry.await_status(approval_id) for approval_id in ids}
+            if time.time() >= deadline or any(s != "pending" for s in statuses.values()):
+                return statuses
+            await asyncio.sleep(self._AWAIT_APPROVAL_POLL_SECONDS)
 
     @staticmethod
     async def propose_rule_change(params: dict) -> dict:

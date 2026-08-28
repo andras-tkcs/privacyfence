@@ -18,10 +18,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from privacyfence import gate
+from privacyfence import approval_ui, gate
+from privacyfence.approvals import PendingApprovalRegistry
 from privacyfence.audit_log import get_audit_logger, init_audit_logger
 from privacyfence.auto_accept import AutoAcceptEvaluator
 from privacyfence.pii_detector import init_pii_detection
+from privacyfence.web_approval_ui import WebApprovalUI
 
 
 def wait_until(predicate, timeout=2.0, interval=0.005) -> bool:
@@ -40,6 +42,23 @@ def wait_until(predicate, timeout=2.0, interval=0.005) -> bool:
     return predicate()
 
 
+async def wait_until_async(predicate, timeout=2.0, interval=0.005) -> bool:
+    """``wait_until``'s counterpart for use directly in an async test body
+    (the event-loop thread itself): P3's deferred protocol resolves a
+    pending approval via a scheduled asyncio task (approvals._drive_
+    interaction), not a background OS thread, so the poll here must
+    ``await asyncio.sleep`` -- a plain ``time.sleep`` loop would block the
+    only thread that task can ever run on, and the predicate would never
+    become true."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(interval)
+    return predicate()
+    return predicate()
+
+
 class FakeEvaluator:
     def __init__(self, result=(False, "")):
         self.result = result
@@ -52,22 +71,6 @@ class FakeEvaluator:
 
     def register_temp_accept(self, operation_key, file_key, ttl_seconds=None):
         self.temp_accepts_registered.append((operation_key, file_key))
-
-
-@pytest.fixture(autouse=True)
-def _fresh_popup_lock():
-    # gate._popup_lock is a module-level asyncio.Lock, so it outlives any one
-    # test. asyncio.Lock only binds itself to a running event loop lazily, the
-    # first time a second waiter actually contends for it (see cpython's
-    # asyncio.Lock.acquire: an uncontended acquire never calls _get_loop()).
-    # pytest-asyncio gives each test function its own event loop, so once one
-    # test creates real contention on this lock, it's permanently bound to
-    # that (soon-to-be-closed) loop and every later contention test would
-    # raise "bound to a different event loop". Give each test a fresh lock so
-    # tests that exercise concurrent gated_call() waiters never depend on
-    # test execution order.
-    gate._popup_lock = asyncio.Lock()
-    yield
 
 
 @pytest.fixture
@@ -1893,159 +1896,175 @@ class TestPiiScanText:
         assert captured["pii_categories"] == ["IBAN (bank account number)"]
 
 
-class TestPopupSerialization:
-    async def test_only_one_popup_shown_at_a_time(self, monkeypatch, audit_dir):
+class TestConcurrentApprovals:
+    """P3 retires _popup_lock (docs/https-connector-refactor-plan.md §6):
+    "Job 1 -- one dialog at a time" is obsolete, not preserved by some other
+    mechanism -- several genuinely different gated calls now run their
+    interactions concurrently, bounded only by _popup_executor's own worker
+    count. This holds even with no deferred registry active (a plain
+    native-only install), since the registry isn't what used to provide the
+    serialization -- _popup_lock was."""
+
+    async def test_different_requests_run_concurrently(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
 
         concurrent = 0
         max_concurrent = 0
 
-        def fake_show_read_popup(title, preview, details, accept_all_choices, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
+        def fake_show_read_popup(*a, **k):
             nonlocal concurrent, max_concurrent
             concurrent += 1
             max_concurrent = max(max_concurrent, concurrent)
-            import time
             time.sleep(0.05)
             concurrent -= 1
             return "accept", None
 
         monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
 
-        await asyncio.gather(*[
+        results = await asyncio.gather(*[
             gate.gated_call(**base_kwargs(gate="review", tool=f"gmail_get_message_{i}"))
             for i in range(5)
         ])
 
-        assert max_concurrent == 1
+        assert results == [FILTERED] * 5
+        assert max_concurrent > 1
 
 
-class TestQueuedRequestReCheck:
-    """Regression for the race fixed alongside the stale-menu bug: gated_call
-    re-checks should_auto_accept() *after* acquiring _popup_lock, not just
-    before. Without that re-check, a request that was merely queued behind
-    another popup would show its own dialog for something the user had
-    already approved via Always allow (or via a rule added out-of-band, e.g.
-    from the menu bar) a moment earlier.
+class TestCoalescing:
+    """§6's "New coalescing case": two concurrent identical gated calls (the
+    same connector/tool/args) become one pending approval, not two --
+    exercised here with a real WebApprovalUI-backed registry, since
+    coalescing is specifically the registry's job (gate.py has no more lock
+    to serialize identical concurrent calls with, and doesn't try to)."""
 
-    A plain FakeEvaluator with a fixed answer can't exercise this: the whole
-    point is that should_auto_accept()'s answer changes *while a second call
-    is already queued*. These tests use a stateful evaluator whose answer
-    flips only once the racing call has done its work.
-    """
-
-    async def test_second_read_request_auto_accepts_after_first_creates_rule_via_accept_all(
-        self, monkeypatch, audit_dir
+    async def test_two_identical_concurrent_calls_share_one_card_and_decision(
+        self, monkeypatch, audit_dir,
     ):
-        rules_created: list[str] = []
+        registry = PendingApprovalRegistry(hold_window=5.0, pending_ttl=5.0, ledger_ttl=5.0)
+        approval_ui.init_approval_ui(WebApprovalUI(registry=registry))
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
 
-        class LiveEvaluator:
-            def should_auto_accept(self, operation_key, ctx):
-                if rules_created:
-                    return True, rules_created[0]
-                return False, ""
+        async def _decide_once_pending():
+            deadline = time.monotonic() + 2
+            while not registry.list_pending() and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
+            pending = registry.list_pending()
+            assert len(pending) == 1  # one card, not two, for the identical request
+            registry.answer(pending[0].id, "accept")
 
-        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: LiveEvaluator())
-        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [("i_am_sender", None)])
-        monkeypatch.setattr(gate, "add_auto_accept_rule", lambda op, name, value: rules_created.append(name))
-        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
-
-        popup_calls = []
-
-        def fake_show_read_popup(title, preview, details, accept_all_choices, pii_categories=None, visibility=None, claude_reason="", seen_count=0, content_kind="generic", pdf_bytes=b"", connector="", preview_bytes=b"", preview_mime_type="", new_info=None, preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
-            popup_calls.append(title)
-            return "accept_all", 0
-
-        monkeypatch.setattr(gate, "show_read_popup", fake_show_read_popup)
-
-        # Both calls target the same operation. The first (created first,
-        # so it acquires _popup_lock first under asyncio's scheduling) shows
-        # a real popup and creates a standing rule via Always allow. The
-        # second is queued behind the lock the whole time.
-        results = await asyncio.gather(
-            gate.gated_call(**base_kwargs(gate="review", tool="gmail_get_message")),
-            gate.gated_call(**base_kwargs(gate="review", tool="gmail_get_message")),
+        # base_kwargs() carries no `args`, so both calls key identically.
+        (result_a, result_b), _ = await asyncio.gather(
+            asyncio.gather(
+                gate.gated_call(**base_kwargs(gate="review", tool="gmail_get_message")),
+                gate.gated_call(**base_kwargs(gate="review", tool="gmail_get_message")),
+            ),
+            _decide_once_pending(),
         )
 
-        assert results == [FILTERED, FILTERED]
-        # The dialog must have been shown exactly once -- the second caller
-        # was auto-accepted by the re-check, not popped up again.
-        assert len(popup_calls) == 1
+        assert result_a is FILTERED
+        assert result_b is FILTERED
+        entries = read_audit_entries(audit_dir)
+        assert len(entries) == 2  # each invocation still gets exactly one entry of its own
+        assert sorted(e["decision"] for e in entries) == ["approved", "approved"]
+
+
+class TestDeferredApprovalProtocol:
+    """docs/https-connector-refactor-plan.md §5.2: a call that doesn't get a
+    human decision within the registry's hold window returns a structured
+    "approval_pending" result instead of continuing to block; a later,
+    identical call finds the decision in the ledger and releases without a
+    second prompt."""
+
+    async def test_hold_window_elapsing_returns_pending_instead_of_blocking(self, monkeypatch, audit_dir):
+        registry = PendingApprovalRegistry(hold_window=0.05, pending_ttl=5.0, ledger_ttl=5.0)
+        approval_ui.init_approval_ui(WebApprovalUI(registry=registry))
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        # show_read_popup is deliberately left un-mocked here: the real
+        # WebApprovalUI-backed implementation genuinely blocks on a
+        # threading.Event until answered, and nothing in this test ever
+        # answers it -- so this reliably stays pending past the hold window,
+        # unlike a synchronous mock racing the clock.
+
+        result = await gate.gated_call(**base_kwargs(gate="review"))
+
+        assert result["status"] == "approval_pending"
+        assert result["approval_id"]
+        assert "message" in result
 
         entries = read_audit_entries(audit_dir)
-        decisions = sorted(e["decision"] for e in entries)
-        assert decisions == ["accepted_via_accept_all", "auto_accepted"]
+        assert entries[0]["decision"] == "approval_pending"
 
-    async def test_second_write_request_auto_accepts_if_rule_added_while_first_holds_lock(
-        self, monkeypatch, audit_dir
+        # Clean up the still-running background interaction.
+        pending = registry.get(result["approval_id"])
+        registry.answer(pending.id, "deny")
+        await asyncio.sleep(0.02)
+
+    async def test_pending_result_carries_the_configured_base_url(self, monkeypatch, audit_dir):
+        registry = PendingApprovalRegistry(hold_window=0.05, pending_ttl=5.0, ledger_ttl=5.0)
+        registry.set_base_url("http://localhost:8765")
+        approval_ui.init_approval_ui(WebApprovalUI(registry=registry))
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+
+        result = await gate.gated_call(**base_kwargs(gate="review"))
+
+        assert result["url"] == f"http://localhost:8765/approvals/{result['approval_id']}"
+        registry.answer(registry.get(result["approval_id"]).id, "deny")
+        await asyncio.sleep(0.02)
+
+    async def test_reissued_identical_call_releases_from_the_ledger_without_a_second_popup(
+        self, monkeypatch, audit_dir,
     ):
-        # Unlike the review gate, the popup (write) gate has no Always allow of
-        # its own -- but a rule can still appear mid-flight if the user adds
-        # one from the menu bar's "Auto-accept Rules" submenu while a write
-        # popup is on screen. The second, queued write request must not pop
-        # its own dialog once that happens.
-        #
-        # should_auto_accept() is consulted twice per call: once *before* the
-        # lock (a fast path for the common case) and once *inside* it (the
-        # re-check this test targets). To make sure this test actually
-        # exercises the in-lock re-check -- and doesn't just pass "by
-        # accident" because the pre-lock check happened to win a timing race
-        # -- the rule is only flipped on after both callers' pre-lock checks
-        # have already run (3rd should_auto_accept call: the lock-winner's
-        # pre-lock check, its in-lock re-check, and the other call's
-        # pre-lock check). At that point the other call must already be
-        # blocked waiting for the lock, since a write gated_call has no
-        # other await point in between the pre-lock check and the lock
-        # acquisition itself.
-        #
-        # Which of the two gated_call() coroutines actually wins the lock
-        # isn't fixed: both do PII/audit scanning via asyncio.to_thread
-        # (gate.py's dedicated-executor rewrite, see docs/slack-performance-
-        # review.md P2.15) before ever reaching should_auto_accept(), and
-        # that work runs on the shared default thread pool -- real OS thread
-        # scheduling, not asyncio's deterministic single-threaded ordering.
-        # So the assertions below key off which result actually got denied
-        # / auto-accepted, not off gather()'s positional order.
-        rule_now_active = threading.Event()
-        check_calls: list[None] = []
+        registry = PendingApprovalRegistry(hold_window=0.05, pending_ttl=5.0, ledger_ttl=5.0)
+        approval_ui.init_approval_ui(WebApprovalUI(registry=registry))
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
 
-        class LiveEvaluator:
-            def should_auto_accept(self, operation_key, ctx):
-                check_calls.append(None)
-                if rule_now_active.is_set():
-                    return True, "manually_added_rule"
-                return False, ""
+        first = await gate.gated_call(**base_kwargs(gate="review"))
+        assert first["status"] == "approval_pending"
 
-        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: LiveEvaluator())
+        approval = registry.get(first["approval_id"])
+        registry.answer(approval.id, "accept")
+        assert await wait_until_async(lambda: approval.final_decision is not None, timeout=2.0)
+        assert approval.final_decision == "accept"
 
-        popup_calls = []
+        second = await gate.gated_call(**base_kwargs(gate="review"))
 
-        def fake_show_popup(title, preview, details, temp_accept_eligible=False, claude_reason="", write_content_flags=None, seen_count=0, connector="", accept_all_choices=None, preview_bytes=b"", preview_mime_type="", preview_tables=None, preview_blocks=None, table_only=False, upload_forced=False, layout="narrow"):
-            popup_calls.append(title)
-            wait_until(lambda: len(check_calls) >= 3, timeout=1.0)
-            # Simulate a rule appearing (e.g. added from the menu bar) while
-            # this dialog is up, independent of anything gated_call did.
-            rule_now_active.set()
-            return "deny", None
-
-        monkeypatch.setattr(gate, "show_popup", fake_show_popup)
-
-        results = await asyncio.gather(
-            gate.gated_call(**base_kwargs(gate="popup", tool="gmail_create_draft")),
-            gate.gated_call(**base_kwargs(gate="popup", tool="gmail_create_draft")),
-            return_exceptions=True,
-        )
-
-        assert len(popup_calls) == 1  # only the lock-winner showed a dialog
-
-        denied = [r for r in results if isinstance(r, RuntimeError)]
-        auto_accepted = [r for r in results if r is FILTERED]
-        assert len(denied) == 1  # the lock-winner was denied, as its popup said
-        assert len(auto_accepted) == 1  # the other was auto-accepted via the re-check, no popup of its own
-
+        assert second is FILTERED
         entries = read_audit_entries(audit_dir)
-        decisions = sorted(e["decision"] for e in entries)
-        assert decisions == ["auto_accepted", "rejected"]
+        decisions = [e["decision"] for e in entries]
+        assert decisions == ["approval_pending", "approved"]
+        # The release entry's decided_at is the human's real click, distinct
+        # from this entry's own (later) write time -- §5.4.
+        assert entries[1]["decided_at"]
+
+    async def test_write_gate_ledger_entry_is_single_use(self, monkeypatch, audit_dir):
+        # D3: read decisions stay reusable within the ledger TTL; write
+        # decisions don't -- a second identical write must re-gate, not
+        # silently replay the first's approval.
+        registry = PendingApprovalRegistry(hold_window=0.05, pending_ttl=5.0, ledger_ttl=5.0)
+        approval_ui.init_approval_ui(WebApprovalUI(registry=registry))
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_write_rule", lambda *a, **k: None)
+
+        first = await gate.gated_call(**base_kwargs(gate="popup", tool="gmail_create_draft"))
+        assert first["status"] == "approval_pending"
+        approval = registry.get(first["approval_id"])
+        registry.answer(approval.id, "accept")
+        assert await wait_until_async(lambda: approval.final_decision is not None, timeout=2.0)
+
+        second = await gate.gated_call(**base_kwargs(gate="popup", tool="gmail_create_draft"))
+        assert second is FILTERED  # ledger hit, no popup
+
+        third = await gate.gated_call(**base_kwargs(gate="popup", tool="gmail_create_draft"))
+        assert third["status"] == "approval_pending"  # ledger already consumed -- re-gates
+
+        # Clean up the third call's own still-running background interaction.
+        registry.answer(registry.get(third["approval_id"]).id, "deny")
+        await asyncio.sleep(0.02)
 
 
 class TestApprovedObjectTypesNeverPopsUp:
@@ -2516,34 +2535,43 @@ class TestCancellation:
         entries = read_audit_entries(audit_dir)
         assert entries[-1]["decision"] == "cancelled"
 
-    async def test_cancellation_before_reaching_the_popup_records_cancelled(self, monkeypatch, audit_dir):
-        # Cancelled while queued behind _popup_lock, before show_read_popup
-        # is ever called -- the common case now that P0 shrank most fetches
-        # well under a client's timeout: the clock only still runs out on
-        # the popup wait itself, not the work leading up to it.
+    async def test_cancellation_while_coalesced_onto_anothers_interaction_records_cancelled(
+        self, monkeypatch, audit_dir,
+    ):
+        # P3 replacement for the old "cancelled while queued behind
+        # _popup_lock" case: with the lock gone, the analogous "not the one
+        # actually driving the interaction" scenario is a coalesced caller
+        # (§6's "New coalescing case") -- cancelling it must not touch the
+        # card the *other*, still-running caller is showing, and must still
+        # leave exactly one audit entry.
+        registry = PendingApprovalRegistry(hold_window=5.0, pending_ttl=5.0, ledger_ttl=5.0)
+        approval_ui.init_approval_ui(WebApprovalUI(registry=registry))
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((False, "")))
         monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
-        called = []
-        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: (called.append(1), ("deny", None))[1])
+        # show_read_popup left un-mocked: the real WebApprovalUI-backed
+        # implementation, which blocks until answered -- nothing in this
+        # test ever answers it, so the driving call's own interaction never
+        # completes either.
 
-        async def hold_the_lock():
-            async with gate._popup_lock:
-                await asyncio.sleep(2.0)
-
-        holder = asyncio.create_task(hold_the_lock())
-        await asyncio.sleep(0.02)
-        task = asyncio.create_task(gate.gated_call(**base_kwargs(gate="review")))
-        await asyncio.sleep(0.02)  # let it start waiting on _popup_lock
-        task.cancel()
+        driver = asyncio.create_task(gate.gated_call(**base_kwargs(gate="review")))
+        assert await wait_until_async(lambda: bool(registry.list_pending()), timeout=2.0)
+        coalesced = asyncio.create_task(gate.gated_call(**base_kwargs(gate="review")))
+        await asyncio.sleep(0.02)  # let it coalesce and start waiting
+        coalesced.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await task
-        holder.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await holder
+            await coalesced
 
-        assert called == []  # never reached the popup at all
         entries = read_audit_entries(audit_dir)
+        assert len(entries) == 1
         assert entries[-1]["decision"] == "cancelled"
+        assert len(registry.list_pending()) == 1  # the driving call's own card is untouched
+
+        # Clean up the still-running driver.
+        pending = registry.list_pending()[0]
+        registry.answer(pending.id, "deny")
+        driver.cancel()
+        with contextlib.suppress(asyncio.CancelledError, RuntimeError):
+            await driver
 
 
 class TestRunInPopupExecutor:

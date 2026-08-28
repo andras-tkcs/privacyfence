@@ -227,6 +227,35 @@ BEGIN_UNATTENDED_SESSION_TOOL = types.Tool(
     annotations=types.ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
 )
 
+AWAIT_APPROVAL_TOOL = types.Tool(
+    name="privacyfence_await_approval",
+    description=(
+        "Long-poll one or more pending approvals returned by a gated tool call's "
+        "{status: 'approval_pending', approval_id, url, ...} result (docs/https-connector-refactor-"
+        "plan.md §5), and report their status -- status only, never content. Pass every approval_id "
+        "you're waiting on, plus timeout_seconds (how long to wait before returning regardless of "
+        "outcome; keep this comfortably under your own client's tool-call timeout -- it's capped "
+        "server-side regardless). Returns {approval_id: status}, one of: 'pending' (still "
+        "undecided -- keep waiting or check back later), 'approved' (a human said yes -- "
+        "re-issue the ORIGINAL gated tool call with the exact same arguments to actually receive "
+        "the data; this tool never returns content itself, there is no other way to collect it), "
+        "'denied' (a human said no -- re-issuing will not change that), 'expired' (nobody decided "
+        "in time -- re-issuing starts a fresh approval, not a retry of the old one), or 'unknown' "
+        "(not a real approval_id this connection can see -- wrong id, or it belongs to a different "
+        "install). Prefer this over polling the same original tool call repeatedly: it returns as "
+        "soon as any status changes, or once timeout_seconds elapses, whichever comes first."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "approval_ids": {"type": "array", "items": {"type": "string"}},
+            "timeout_seconds": {"type": "integer"},
+        },
+        "required": ["approval_ids"],
+    },
+    annotations=types.ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True),
+)
+
 END_UNATTENDED_SESSION_TOOL = types.Tool(
     name="privacyfence_end_unattended_session",
     description=(
@@ -247,5 +276,6 @@ META_TOOLS: tuple[types.Tool, ...] = (
     PROPOSE_RULE_CHANGE_TOOL,
     BEGIN_UNATTENDED_SESSION_TOOL,
     END_UNATTENDED_SESSION_TOOL,
+    AWAIT_APPROVAL_TOOL,
 )
 META_TOOL_NAMES: frozenset[str] = frozenset(t.name for t in META_TOOLS)

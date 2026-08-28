@@ -1,9 +1,14 @@
 # PrivacyFence as an HTTPS connector — architecture & functional refactoring plan
 
 **Status: design agreed (§15); the P0 spike is complete and its findings are recorded in §12. P1
-(web approval surface) and P2 (MCP over HTTP alongside the bridge) have landed. P2's implementation
-found one gap this document did not have an answer for — how Claude Desktop connects to `local`
-mode once the bridge is gone — now decided as D11 and scheduled as P4b (§12).**
+(web approval surface), P2 (MCP over HTTP alongside the bridge), P4b (the Desktop stdio shim, D11)
+and P3 (deferred approvals + concurrency) have landed. P2's implementation found one gap this
+document did not have an answer for — how Claude Desktop connects to `local` mode once the bridge
+is gone — decided as D11 and shipped as P4b ahead of P3, since neither depended on the other. P3
+retires `_popup_lock` per §6 and implements the deferred-approval protocol from §5; its own beta
+(§12: "P3 | beta, and it needs one") is what still has to confirm the re-call-rate and hold-window
+findings from P0's spike (§5.4) against real traffic on all four Claude surfaces, not just Claude
+Code.**
 
 This document designs, and validates against the current code, the refactoring that turns
 PrivacyFence from a macOS-only, single-user, stdio-MCP-bridge desktop app into a service with an

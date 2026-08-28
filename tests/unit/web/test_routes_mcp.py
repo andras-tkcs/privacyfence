@@ -230,6 +230,20 @@ class TestMetaTools:
         assert result.isError is True
         assert "disabled" in result.content[0].text
 
+    async def test_await_approval_round_trips_to_the_registry(self):
+        # P3: privacyfence_await_approval, reaching the same registry a real
+        # deferred approval would have registered into. No registry wired
+        # here (no WebApprovalUI in this fixture), so every id comes back
+        # "unknown" -- the wire round trip is what this test proves, the
+        # status vocabulary itself is test_mcp_dispatch.py's job.
+        dispatcher = _dispatcher({})
+        async with _connected_session(dispatcher) as session:
+            result = await session.call_tool(
+                "privacyfence_await_approval", {"approval_ids": ["a1"], "timeout_seconds": 1},
+            )
+        assert result.isError is False
+        assert result.structuredContent == {"a1": "unknown"}
+
 
 # --------------------------------------------------------------------------- #
 # Session lifecycle -- unattended-session cleanup on session end. Exercised

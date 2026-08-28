@@ -129,6 +129,37 @@ class TestListApprovals:
         r = client.get(f"/approvals?token={TOKEN}")
         assert r.headers.get("cache-control") == "no-store"
 
+    def test_two_pending_cards_both_link(self, client, web_ui):
+        # P3: several approvals can be pending at once (§6's retirement of
+        # _popup_lock's "one dialog at a time") -- the list must show all of
+        # them, not just the most recent.
+        t1, card1, box1 = _pending_card(web_ui)
+        t2, card2, box2 = _pending_card(web_ui)
+        r = client.get(f"/approvals?token={TOKEN}")
+        assert f"/approvals/{card1.id}" in r.text
+        assert f"/approvals/{card2.id}" in r.text
+        web_ui.resolve(card1.id, "deny")
+        web_ui.resolve(card2.id, "deny")
+        t1.join(timeout=2)
+        t2.join(timeout=2)
+
+
+class TestApprovalsStream:
+    """GET /api/approvals/stream -- §7.1's SSE counterpart to the list page,
+    so it updates live without polling. Only the auth boundary is exercised
+    here: the handler's own generator loops until the client disconnects,
+    which starlette.testclient.TestClient's synchronous, fully-buffering
+    ``stream()`` (it drains an ASGI response before yielding control back,
+    even under ``with client.stream(...)``) can't drive without hanging --
+    a real streaming HTTP client is what this endpoint actually needs to be
+    exercised end-to-end, which is what P0/P1's own manual Chromium checks
+    (§11 of docs/https-connector-refactor-plan.md) already cover the
+    pattern for, not this test client."""
+
+    def test_requires_auth(self, client):
+        r = client.get("/api/approvals/stream")
+        assert r.status_code == 401
+
 
 class TestShowApproval:
     def test_unknown_id_says_no_longer_pending_not_404(self, client):
