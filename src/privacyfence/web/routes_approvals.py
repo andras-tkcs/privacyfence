@@ -68,13 +68,31 @@ def _bridge_shim(*, decide_url: str, csrf: str) -> str:
 
 
 def _inject_shim(html: str, shim: str) -> str:
-    # First child of <body>, not appended at the end -- it must define
-    # window.webkit before approval_window_html.py's/dialog_window_html.py's
-    # own <script> (also a direct child of <body>, added after body_html)
-    # runs its DOMContentLoaded handler; script tags execute in document
-    # order as parsed, so this ordering alone is enough, no defer/async
-    # needed.
-    return html.replace("<body>", "<body>" + shim, 1)
+    """Insert ``shim`` as the first child of the document's real ``<body>``
+    tag. First child, not appended at the end -- it must define
+    window.webkit before approval_window_html.py's/dialog_window_html.py's
+    own <script> (also a direct child of <body>, added after body_html)
+    runs its DOMContentLoaded handler; script tags execute in document
+    order as parsed, so this ordering alone is enough, no defer/async
+    needed.
+
+    Searches for ``<body>`` only *after* ``</head>`` closes, not from the
+    start of the document -- a plain ``html.replace("<body>", ..., 1)``
+    finds whichever "<body>" comes first in the raw string, and the
+    embedded stylesheet's own CSS comments genuinely contain that literal
+    substring (e.g. styles.css: "the same-colored rail on <body>",
+    "racing it on source order across two separate <style> blocks") well
+    before the real tag, inside the document's one <style> block. Landing
+    the shim there instead of in the real body makes the browser parse it
+    as inert CSS text, not a script element -- it silently never runs, so
+    window.webkit stays undefined and the button-row JS's own
+    ``if (window.webkit && ...)`` guard just no-ops on every click. Found
+    by actually driving a served card in headless Chromium and clicking
+    Allow -- see the regression test below.
+    """
+    head_end = html.index("</head>")
+    body_start = html.index("<body>", head_end) + len("<body>")
+    return html[:body_start] + shim + html[body_start:]
 
 
 def _check_csrf(request: Request, csrf: str | None) -> bool:
