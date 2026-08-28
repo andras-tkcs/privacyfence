@@ -7,13 +7,14 @@ generated HTML strings.
 """
 from __future__ import annotations
 
+import re
+
 from privacyfence.approval_window_html import (
     CONTENT_WIDTH,
     DEFAULT_LINE_CLAMP,
     NARROW,
     WIDE,
     _risk_section_html,
-    _WIDE_LEFT_COLUMN_WIDTH,
     build_card_stack_html,
     build_preview_body_html,
     disclosure_rows_from_visibility,
@@ -266,13 +267,16 @@ class TestReadWriteDifferentiation:
 class TestLayoutShapes:
     def test_narrow_layout_has_no_two_column_split(self):
         html = build_card_stack_html(**_minimal_kwargs(layout=NARROW))
-        assert "flex:0 0" not in html
-        assert "width: 610px" in html
+        # .pf-wide-row's own CSS *definition* is always present (styles.css
+        # is one shared, fully-inlined stylesheet) -- only its *use* in the
+        # markup is layout-specific.
+        assert 'class="pf-wide-row"' not in html
+        assert "width: min(610px, 100%)" in html
 
     def test_wide_layout_has_the_two_column_split(self):
         html = build_card_stack_html(**_minimal_kwargs(layout=WIDE))
-        assert f"flex:0 0 {_WIDE_LEFT_COLUMN_WIDTH}px" in html
-        assert f"width: {CONTENT_WIDTH[WIDE]}px" in html
+        assert 'class="pf-wide-row"' in html
+        assert f"width: min({CONTENT_WIDTH[WIDE]}px, 100%)" in html
 
     def test_narrow_layout_has_no_preview_pane_at_all(self):
         # Not a smaller version of WIDE's preview -- genuinely absent, even
@@ -288,32 +292,30 @@ class TestLayoutShapes:
         # spanning the whole column (see build_card_stack_html's own
         # docstring for the trade-off this accepts). No max-height
         # anywhere: the region is bounded by real flex layout, not a
-        # Python estimate.
+        # Python estimate. flex:0 0 420px/overflow-y:auto now live in
+        # styles.css's .pf-wide-left class (see that rule's own comment for
+        # why), not an inline style -- a class is what lets the responsive
+        # @media block override it below the phone-viewport breakpoint.
         html = build_card_stack_html(**_minimal_kwargs(
             layout=WIDE, disclosure_rows=[("Cell values", "x")],
         ))
-        assert (
-            f'class="pf-scroll" style="flex:0 0 {_WIDE_LEFT_COLUMN_WIDTH}px;min-width:0;'
-            'overflow-y:auto;min-height:0"' in html
-        )
+        assert 'class="pf-scroll pf-wide-left"' in html
         assert "max-height" not in html
 
     def test_left_column_is_still_one_shared_scroll_region_with_no_section_3(self):
         # Unconditional -- the wrapper doesn't depend on §3 having content
         # (unlike the old columns_max_height-only-when-needed cap).
         html = build_card_stack_html(**_minimal_kwargs(layout=WIDE, disclosure_rows=[]))
-        assert (
-            f'class="pf-scroll" style="flex:0 0 {_WIDE_LEFT_COLUMN_WIDTH}px;min-width:0;'
-            'overflow-y:auto;min-height:0"' in html
-        )
+        assert 'class="pf-scroll pf-wide-left"' in html
 
     def test_right_pane_is_its_own_independent_scroll_region_for_wide(self):
         # Unlike a Python-estimated pixel cap, this needs no numeric
-        # argument at all -- flex:1;min-height:0;overflow-y:auto always
-        # bounds the right pane to the row's own real height, independent
-        # of the left column's own scroll region.
+        # argument at all -- .pf-wide-right's flex:1;min-height:0;
+        # overflow-y:auto (styles.css) always bounds the right pane to the
+        # row's own real height, independent of the left column's own
+        # scroll region.
         html = build_card_stack_html(**_minimal_kwargs(layout=WIDE))
-        assert "flex:1;min-width:0;border-left:1px solid var(--color-divider);padding-left:24px;overflow-y:auto;min-height:0" in html
+        assert 'class="pf-scroll pf-wide-right"' in html
 
     def test_wide_has_exactly_two_independent_scroll_regions(self):
         # Left column and right pane -- always both, regardless of whether
@@ -321,18 +323,62 @@ class TestLayoutShapes:
         html = build_card_stack_html(**_minimal_kwargs(
             layout=WIDE, disclosure_rows=[("Cell values", "x")],
         ))
-        assert html.count('class="pf-scroll"') == 2
+        assert html.count('class="pf-scroll') == 2
 
     def test_narrow_left_column_is_the_one_shared_scroll_region(self):
         html = build_card_stack_html(**_minimal_kwargs(
             layout=NARROW, disclosure_rows=[("Cell values", "x")],
         ))
-        assert 'class="pf-scroll" style="flex:1;min-height:0;overflow-y:auto"' in html
-        assert html.count('class="pf-scroll"') == 1
+        assert 'class="pf-scroll pf-scroll-region"' in html
+        assert html.count('class="pf-scroll') == 1
 
     def test_wide_preview_pane_still_renders_after_the_left_column(self):
         html = build_card_stack_html(**_minimal_kwargs(layout=WIDE))
         assert html.index("Preview (~2 sec read)") > html.index("What Claude already knows")
+
+    def test_neither_layout_leaves_a_duplicate_class_attribute(self):
+        # The one silent-failure trap named in
+        # docs/https-connector-refactor-plan.md §7.3: leaving the original
+        # class="pf-scroll" in place while separately adding a second
+        # class="..." attribute produces a duplicate attribute that no-ops
+        # the override without raising anything. Every element opened with
+        # class="pf-scroll..." must carry that as its one and only class
+        # attribute -- i.e. never immediately followed by a second
+        # class="..." before the tag closes.
+        for layout in (NARROW, WIDE):
+            html = build_card_stack_html(**_minimal_kwargs(layout=layout))
+            assert re.search(r'class="pf-scroll[^"]*"[^>]*class="', html) is None
+
+
+class TestResponsiveBreakpoint:
+    """§7.3's phone-viewport pass: below a fixed breakpoint the document
+    stops assuming it's inside a fixed-height native window frame. See
+    docs/https-connector-refactor-plan.md §7.3 for the two layout traps
+    this avoids (flex:0 0 420px becoming a height once the row goes
+    vertical; two independently-scrolling flex:1 panes fighting over a
+    height neither needs once body itself isn't 100vh)."""
+
+    def test_body_width_never_exceeds_the_viewport(self):
+        for layout in (NARROW, WIDE):
+            html = build_card_stack_html(**_minimal_kwargs(layout=layout))
+            assert f"width: min({CONTENT_WIDTH[layout]}px, 100%)" in html
+
+    def test_body_height_drops_to_auto_below_the_breakpoint(self):
+        html = build_card_stack_html(**_minimal_kwargs(layout=WIDE))
+        assert "@media (max-width: 700px)" in html
+        assert "body { height: auto; min-height: 100vh; }" in html
+
+    def test_wide_row_and_panes_use_classes_not_inline_style(self):
+        # An inline style="..." can't carry a @media query at all -- see
+        # styles.css's .pf-wide-row/.pf-wide-left/.pf-wide-right comment.
+        # These are the exact inline styles the responsive pass removed --
+        # not a blanket "no style=" check, since the document legitimately
+        # keeps other inline styles elsewhere (e.g. the header's read/write
+        # pill row).
+        html = build_card_stack_html(**_minimal_kwargs(layout=WIDE))
+        assert 'style="display:flex;gap:28px' not in html
+        assert 'style="flex:0 0 420px' not in html
+        assert 'style="flex:1;min-width:0;border-left' not in html
 
 
 class TestTempAcceptDisclosure:

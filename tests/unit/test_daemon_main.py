@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import threading
 import time
 import uuid
@@ -691,6 +692,59 @@ class TestSetupLogging:
 
 
 # ---------------------------------------------------------------------------- #
+# _maybe_start_web_approval_ui -- the P1 rollback lever (see
+# docs/https-connector-refactor-plan.md §12): config/settings.yaml's
+# web.approval_ui selects native (default, untouched) or web.
+# ---------------------------------------------------------------------------- #
+
+class TestMaybeStartWebApprovalUi:
+    def _no_bind(self, monkeypatch, tmp_path):
+        # Never actually binds a real socket -- this suite proves the
+        # wiring (which ApprovalUI gets installed, whether a server object
+        # comes back), not uvicorn's own serve loop. web_token also has to
+        # land under an isolated tmp_path, not paths.data_dir()'s real
+        # value (the repo root itself in dev mode) -- see
+        # web/server.py's load_or_create_token().
+        from privacyfence import paths
+        from privacyfence.web.server import WebServer
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+        started = {}
+        monkeypatch.setattr(WebServer, "start", lambda self: started.update(called=True))
+        return started
+
+    def test_no_web_section_stays_native(self, monkeypatch, tmp_path):
+        from privacyfence.approval_ui import NativeApprovalUI, get_approval_ui
+        self._no_bind(monkeypatch, tmp_path)
+        result = daemon_main._maybe_start_web_approval_ui({})
+        assert result is None
+        assert isinstance(get_approval_ui(), NativeApprovalUI)
+
+    def test_explicit_native_stays_native(self, monkeypatch, tmp_path):
+        self._no_bind(monkeypatch, tmp_path)
+        result = daemon_main._maybe_start_web_approval_ui({"web": {"approval_ui": "native"}})
+        assert result is None
+
+    def test_web_mode_installs_the_web_approval_ui_and_starts_a_server(self, monkeypatch, tmp_path):
+        from privacyfence.web_approval_ui import WebApprovalUI, get_web_approval_ui
+        from privacyfence.approval_ui import get_approval_ui
+        started = self._no_bind(monkeypatch, tmp_path)
+
+        result = daemon_main._maybe_start_web_approval_ui({"web": {"approval_ui": "web", "port": 18765}})
+
+        assert result is not None
+        assert result.port == 18765
+        assert started.get("called") is True
+        assert get_approval_ui() is get_web_approval_ui()
+        assert isinstance(get_approval_ui(), WebApprovalUI)
+
+    def test_web_mode_defaults_to_the_standard_port(self, monkeypatch, tmp_path):
+        from privacyfence.web.server import DEFAULT_PORT
+        self._no_bind(monkeypatch, tmp_path)
+        result = daemon_main._maybe_start_web_approval_ui({"web": {"approval_ui": "web"}})
+        assert result.port == DEFAULT_PORT
+
+
+# ---------------------------------------------------------------------------- #
 # parse_args
 # ---------------------------------------------------------------------------- #
 
@@ -1065,7 +1119,22 @@ class _FakeIPCServerThread:
         self.started = True
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="run_app() reaches menu_bar.run_menu_bar (rumps/AppKit), macOS-only -- "
+    "same posture as test_settings_window.py's own skipif",
+)
 class TestRunApp:
+    """Every test here reaches the real (monkeypatched) run_menu_bar, which
+    means importing privacyfence.menu_bar -- rumps/AppKit, so this whole
+    class is macOS-only, including test_lock_already_held_returns_1_without_
+    building_connectors even though that one specific path returns before
+    ever reaching menu_bar: keeping the skip at class granularity is what
+    lets this file's other, genuinely platform-independent classes
+    (TestBuildConnectors*, TestSetupLogging, TestMaybeStartWebApprovalUi,
+    ...) run on the web/'s Linux CI leg (docs/testing-policy.md §1) without
+    hand-marking each test individually."""
+
     def _patch_common(self, monkeypatch, connectors=None):
         connectors = [] if connectors is None else connectors
         monkeypatch.setattr(daemon_main, "init_config_path", lambda path: None)
