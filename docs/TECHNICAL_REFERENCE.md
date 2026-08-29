@@ -1243,7 +1243,10 @@ the only download you need:
 6. On the **Connectors** page, click **Authenticate…** for each connector you want — this takes
    effect immediately (the daemon's live connector list is hot-reloaded), no quit/reopen needed.
 7. Still in the mounted DMG, double-click **PrivacyFence.mcpb** — Claude Desktop installs the
-   MCP server for you (Settings → Extensions → Install Extension… happens automatically).
+   MCP server for you (Settings → Extensions → Install Extension… happens automatically). The DMG
+   also carries **PrivacyFence (Legacy Bridge).mcpb** — install that one instead only if `/mcp`
+   isn't working for you (see [Connecting Claude](#connecting-claude) below); the two install side
+   by side without conflicting, so it's safe to have both.
 
 ### From source
 
@@ -1311,7 +1314,13 @@ migrated:
 
 `bridge/`, the original Node/TypeScript stdio MCP server this replaced for Desktop, still exists and
 still works during the migration window (P2 through P5) — see the refactor plan for why retiring it
-is its own phase, separate from shipping the replacement.
+is its own phase, separate from shipping the replacement. Until then, `scripts/build_mcpb.sh` builds
+**both** `PrivacyFence.mcpb` (the shim, above) and a second, separate extension —
+**`PrivacyFence (Legacy Bridge).mcpb`** — straight from `bridge/`, unchanged. Both ship in every DMG
+and install side by side with no conflict (their manifests use different `name`s — `privacyfence` vs
+`privacyfence-legacy-bridge` — so Claude Desktop registers them as two distinct MCP servers): the
+legacy one is there purely as a rollback that needs no `web.mcp.enabled`/`/mcp` setup at all, for
+anyone who hits a problem with the new one before P5 actually removes the bridge.
 
 ### Option A: one-click extension (Claude Desktop)
 
@@ -1330,6 +1339,11 @@ daemon's ~185MB. The shim discovers the daemon's `/mcp` URL and bearer token its
 — nothing to copy into Claude Desktop by hand, same zero-config property the bridge had for the IPC
 socket.
 
+If `/mcp` isn't reachable for you yet (e.g. `web.mcp.enabled` can't be turned on in your
+environment), double-click **`PrivacyFence (Legacy Bridge).mcpb`** instead, from the same mounted
+DMG — same daemon, reached the original way, no `/mcp` required. You can have both installed at
+once; only one will actually be able to reach the daemon depending on whether `/mcp` is listening.
+
 To build both artifacts yourself:
 
 ```bash
@@ -1338,10 +1352,11 @@ brew install create-dmg
 bash scripts/build_dmg.sh
 ```
 
-(Node + npm must also be on PATH — used to build `mcpb/shim/` and to run the `@anthropic-ai/mcpb`
-CLI via npx.) This runs `scripts/build_mcpb.sh` as part of assembling the DMG. To build just the
-extension on its own (e.g. for a quick local test without a full DMG), run
-`bash scripts/build_mcpb.sh` directly — it produces `dist/PrivacyFence-<version>.mcpb`.
+(Node + npm must also be on PATH — used to build `mcpb/shim/` and `bridge/`, and to run the
+`@anthropic-ai/mcpb` CLI via npx.) This runs `scripts/build_mcpb.sh` as part of assembling the DMG.
+To build just the extensions on their own (e.g. for a quick local test without a full DMG), run
+`bash scripts/build_mcpb.sh` directly — it produces `dist/PrivacyFence-<version>.mcpb` and
+`dist/PrivacyFence-legacy-bridge-<version>.mcpb`.
 
 ### Option B: `/mcp` directly (Claude Code, or other clients with native Streamable HTTP support)
 
@@ -1358,14 +1373,18 @@ claude mcp add --transport http privacyfence http://localhost:8765/mcp \
 
 ### Option C: manual MCP config via the bridge (legacy, works through P5)
 
-Add the bridge to Claude's MCP config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, or the equivalent path for Claude Code / other MCP clients):
+Usually unnecessary now that the DMG ships `PrivacyFence (Legacy Bridge).mcpb` (Option A) as a
+one-click way to get the same thing — this is for hand-editing the config directly, e.g. against an
+unpacked `.mcpb` or a source checkout. Add the bridge to Claude's MCP config
+(`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, or the equivalent path
+for Claude Code / other MCP clients):
 
 ```json
 {
   "mcpServers": {
-    "privacyfence": {
+    "privacyfence-legacy-bridge": {
       "command": "node",
-      "args": ["/path/to/PrivacyFence.mcpb/server/bridge.js"]
+      "args": ["/path/to/PrivacyFence (Legacy Bridge).mcpb/server/bridge.js"]
     }
   }
 }
