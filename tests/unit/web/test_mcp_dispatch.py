@@ -152,6 +152,34 @@ class TestCall:
         await dispatcher.call("s1", "gmail", "gmail_write_tool", {"x": 1})
         assert len(connector.calls) == 1
 
+    async def test_a_pending_approval_result_is_never_cached_for_reuse(self):
+        # P3 (docs/https-connector-refactor-plan.md §5.2 point 6): a gated
+        # call that returned {"status": "approval_pending", ...} must be
+        # re-runnable immediately -- Claude re-issuing the identical call
+        # is exactly how it collects the real decision from gate.py's
+        # ledger, and that re-issue has to actually reach the connector
+        # again, not be handed the same stale pending blob back by this
+        # dispatcher's own (pre-P3) completed-result cache.
+        class OnceThenRealDataConnector(FakeConnector):
+            def __init__(self):
+                super().__init__("gmail")
+
+            async def call(self, tool, args):
+                self.calls.append((tool, args))
+                if len(self.calls) == 1:
+                    return {"status": "approval_pending", "approval_id": "a1"}
+                return "the real data"
+
+        connector = OnceThenRealDataConnector()
+        dispatcher = _dispatcher({"gmail": connector})
+
+        first = await dispatcher.call("s1", "gmail", "gmail_tool", {"x": 1})
+        second = await dispatcher.call("s1", "gmail", "gmail_tool", {"x": 1})
+
+        assert first == {"status": "approval_pending", "approval_id": "a1"}
+        assert second == "the real data"
+        assert len(connector.calls) == 2  # the re-issue actually ran the connector again
+
     async def test_an_exempt_write_tool_always_reruns_after_completion(self):
         connector = FakeConnector("gmail", result="r")
         dispatcher = _dispatcher({"gmail": connector})

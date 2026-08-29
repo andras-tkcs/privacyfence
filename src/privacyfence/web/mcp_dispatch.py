@@ -32,7 +32,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Hashable
 
-from ..approvals import PendingApprovalRegistry
+from ..approvals import PendingApprovalRegistry, is_pending_result
 from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..auto_accept import TOOL_TO_GATE, TOOL_TO_OPERATION, get_auto_accept_evaluator, get_current_config
 from ..connector import Connector
@@ -160,6 +160,15 @@ class McpDispatcher:
             fut.exception()  # mark retrieved -- see ipc_server.py's identical comment
             raise
         fut.set_result(result)
+        if is_pending_result(result):
+            # P3: never cache a {"status": "approval_pending", ...} result
+            # -- see approvals.is_pending_result's own docstring. Popped
+            # immediately, same as the CancelledError branch above, so the
+            # re-issued call Claude is expected to make once a human
+            # decides (§5.2 point 6) reaches gate.gated_call() again
+            # instead of being handed this same stale pending blob back.
+            self._inflight.pop(key, None)
+            return result
         if not self._is_read_only(connector, tool):
             self._last_write_at[connector_name] = time.time()
         return result
