@@ -107,6 +107,52 @@ class TestWebServerConstruction:
 
 
 # --------------------------------------------------------------------------- #
+# D11 (docs/https-connector-refactor-plan.md §12): the mcp_url discovery
+# file mcpb/shim reads to find /mcp without any config the user has to
+# edit -- the direct successor of ipc.py's PORT_FILE. Only written/cleared
+# when this WebServer actually has an mcp_dispatcher (i.e. web.mcp.enabled);
+# a server started for the approval UI alone must not claim /mcp exists.
+# --------------------------------------------------------------------------- #
+
+class TestMcpUrlFile:
+    def _server(self, tmp_path, monkeypatch, *, with_mcp: bool):
+        from privacyfence import paths
+
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+        kwargs = {}
+        if with_mcp:
+            from privacyfence.web.mcp_dispatch import McpDispatcher
+
+            kwargs = {"mcp_dispatcher": McpDispatcher(lambda: {}), "mcp_token": "mcp-tok"}
+        return WebServer(WebApprovalUI(), host="localhost", port=0, token=TOKEN, **kwargs)
+
+    def test_start_writes_the_file_when_mcp_is_enabled(self, tmp_path, monkeypatch):
+        server = self._server(tmp_path, monkeypatch, with_mcp=True)
+        try:
+            server.start()
+            mcp_url_file = tmp_path / "mcp_url"
+            assert mcp_url_file.exists()
+            assert mcp_url_file.read_text(encoding="utf-8") == server.mcp_url
+            assert oct(mcp_url_file.stat().st_mode)[-3:] == "600"
+        finally:
+            server.stop()
+
+    def test_stop_clears_the_file(self, tmp_path, monkeypatch):
+        server = self._server(tmp_path, monkeypatch, with_mcp=True)
+        server.start()
+        server.stop()
+        assert not (tmp_path / "mcp_url").exists()
+
+    def test_no_file_at_all_when_mcp_is_not_enabled(self, tmp_path, monkeypatch):
+        server = self._server(tmp_path, monkeypatch, with_mcp=False)
+        try:
+            server.start()
+            assert not (tmp_path / "mcp_url").exists()
+        finally:
+            server.stop()
+
+
+# --------------------------------------------------------------------------- #
 # §10.3's audience separation: the MCP bearer token and the approval
 # surface's session cookie/CSRF token are different secrets, checked in
 # different middleware, and neither is ever accepted on the other's routes.

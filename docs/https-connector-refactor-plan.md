@@ -1,9 +1,12 @@
 # PrivacyFence as an HTTPS connector — architecture & functional refactoring plan
 
 **Status: design agreed (§15); the P0 spike is complete and its findings are recorded in §12. P1
-(web approval surface) and P2 (MCP over HTTP alongside the bridge) have landed. P2's implementation
-found one gap this document did not have an answer for — how Claude Desktop connects to `local`
-mode once the bridge is gone — now decided as D11 and scheduled as P4b (§12).**
+(web approval surface), P2 (MCP over HTTP alongside the bridge), and P4b (the Desktop stdio shim,
+D11) have landed. P2's implementation found one gap this document did not have an answer for — how
+Claude Desktop connects to `local` mode once the bridge is gone — resolved as D11 and implemented as
+P4b: `PrivacyFence.mcpb` now ships `mcpb/shim/`, a thin stdio-to-Streamable-HTTP transport proxy,
+in place of the old bridge; `bridge/` itself stays in the tree, unchanged and still fronting existing
+installs, until P5 retires it in a later release (§12).**
 
 This document designs, and validates against the current code, the refactoring that turns
 PrivacyFence from a macOS-only, single-user, stdio-MCP-bridge desktop app into a service with an
@@ -1145,7 +1148,11 @@ untouched. What does change is how Claude reaches the daemon, and that is why P2
    the shim in point 3, not a URL to copy.
 3. P4b re-points `PrivacyFence.mcpb` at `/mcp` through a thin stdio shim (D11, below). The user
    installs the new `.mcpb` the way they installed the old one — double-click — and nothing else
-   about their setup changes.
+   about their setup changes. Until P5, `scripts/build_mcpb.sh`/`build_dmg.sh` also keep shipping a
+   second, separate extension straight from the unchanged `bridge/` —
+   `PrivacyFence (Legacy Bridge).mcpb`, a different `name` in its manifest so it installs alongside
+   the new one without conflict — so a user who hits a problem with `/mcp` has a one-click rollback
+   in the same DMG rather than needing to build the old bridge from source.
 4. P5 lands only after a full beta-then-stable cycle in which both transports shipped **and** the
    P4b shim has had a stable release of its own, and its release notes are the second notice.
 
@@ -1244,7 +1251,10 @@ grew a second endpoint would be the thing to reject in review.
 - P4b: the previous `.mcpb` is the off switch — it is a file, it still installs, and the bridge it
   fronts is still running until P5. This is the reason D11's phase has to land *and reach stable*
   before P5 and not with it: a shim that ships in the same release that deletes the bridge has no
-  rollback at all.
+  rollback at all. Belt-and-braces on top of that: every DMG from P4b through P5 ships
+  `PrivacyFence (Legacy Bridge).mcpb` alongside the new `PrivacyFence.mcpb`, built straight from the
+  unchanged `bridge/` (`scripts/build_mcpb.sh`), so the rollback doesn't require a *previous*
+  release's DMG at all — it's one click in the *current* one.
 - P6–P9: `mode: local` is the off switch for everything org-shaped.
 - P10 is the one phase with no rollback — it deletes the fallback. That is why it is last.
 
