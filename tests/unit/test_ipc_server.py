@@ -494,6 +494,47 @@ class TestDedupeRetries:
         finally:
             await client.close()
 
+    async def test_a_pending_approval_result_is_never_cached_for_reuse(self, running_server):
+        # P3 (docs/https-connector-refactor-plan.md §5.2 point 6): a gated
+        # call that returned {"status": "approval_pending", ...} is
+        # supposed to be re-issued, identically, once a human decides --
+        # and that re-issue has to actually reach gate.gated_call() again
+        # so it can check the decision ledger. Before this was fixed, the
+        # dedupe cache above (built for a synchronous, pre-P3 world where
+        # every completed result was a final answer) treated a pending
+        # result exactly like any other "just finished" one and handed it
+        # right back out for up to _DEDUPE_TTL_SECONDS, so the re-issued
+        # call never actually ran the connector a second time and the real
+        # data could never be collected.
+        server, socket_path = running_server
+
+        class OnceThenRealDataConnector(FakeConnector):
+            def __init__(self):
+                super().__init__("drive")
+
+            async def call(self, tool, args):
+                self.calls.append((tool, args))
+                if len(self.calls) == 1:
+                    return {"status": "approval_pending", "approval_id": "a1"}
+                return "the real data"
+
+        connector = OnceThenRealDataConnector()
+        server.set_connectors([connector])
+        client = await _RawClient.connect(server)
+        try:
+            params = {"connector": "drive", "tool": "drive_tool", "args": {"file_id": "f1"}}
+            await client.send({"id": "1", "method": "call", "params": params})
+            first = await client.recv()
+            assert first["result"] == {"status": "approval_pending", "approval_id": "a1"}
+
+            await client.send({"id": "2", "method": "call", "params": params})
+            second = await client.recv()
+            assert second["result"] == "the real data"
+
+            assert len(connector.calls) == 2  # the re-issue actually ran the connector again
+        finally:
+            await client.close()
+
     async def test_different_args_are_not_deduped(self, running_server):
         server, socket_path = running_server
         connector = FakeConnector("drive", result="ok")

@@ -2,12 +2,14 @@
 pending card or confirmation, and these routes are what let a human actually
 see and decide it from a browser instead of a native dialog.
 
-P1 scope only -- see web_approval_ui.py's own module docstring: at most one
-approval is ever pending at a time (gate.py's ``_popup_lock`` still
-serializes every popup-gate/review-gate call), so ``GET /approvals`` shows
-zero or one row rather than the real per-principal list §7.1 of
-docs/https-connector-refactor-plan.md describes; that list, SSE updates, and
-concurrent decisions are P3's ``_popup_lock`` retirement, not this module's.
+P3: ``GET /approvals`` lists every currently-unanswered card/confirmation
+(approvals.PendingApprovalRegistry.list_pending()), not just one -- several
+can genuinely be pending at once now that gate.py's ``_popup_lock`` is gone
+(§6 of docs/https-connector-refactor-plan.md), each independently
+decidable from its own ``/approvals/{id}`` link. ``GET
+/api/approvals/stream`` is the SSE counterpart (§7.1) so the list page (or
+whatever's showing it) updates live as approvals appear and get decided,
+without polling.
 
 The one JS change to approval_window_html.py's/dialog_window_html.py's
 otherwise-untouched documents (§7.1's own wording, and P0's own validated
@@ -19,16 +21,24 @@ WKWebView or a browser tab.
 """
 from __future__ import annotations
 
+import asyncio
 import hmac
+import json
 import logging
 from html import escape as _html_escape
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from starlette.routing import BaseRoute, Route
 
 from ..web_approval_ui import WebApprovalUI
+
+# How often the SSE stream below checks for a change in what's pending --
+# not a hard real-time guarantee, just short enough that a human watching
+# the list page doesn't perceive a lag. Polling the registry's own
+# in-memory state (cheap) rather than adding a pub/sub mechanism.
+_STREAM_POLL_SECONDS = 1.0
 
 logger = logging.getLogger(__name__)
 
@@ -143,15 +153,22 @@ def create_app(
     async def index(request: Request) -> Response:
         return RedirectResponse(f"/approvals?token={token}" if "token" not in request.query_params else "/approvals")
 
+    def _list_rows() -> list:
+        return web_ui.deferred_registry.list_pending()
+
     async def list_approvals(request: Request) -> Response:
         if not _authenticated(request):
             return _unauthorized()
-        card = web_ui.current()
-        if card is None:
+        pending = _list_rows()
+        if not pending:
             body = "<p>No approvals are currently pending.</p>"
         else:
-            label = "Approval" if card.kind == "card" else "Confirmation"
-            body = f'<p><a href="/approvals/{card.id}">{_html_escape(label)} pending — click to review</a></p>'
+            items = []
+            for card in pending:
+                label = "Approval" if card.kind == "card" else "Confirmation"
+                title = _html_escape(card.tool_name or card.summary or label)
+                items.append(f'<li><a href="/approvals/{card.id}">{_html_escape(label)}: {title}</a></li>')
+            body = f"<ul>{''.join(items)}</ul>"
         response = HTMLResponse(
             "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
             "<title>PrivacyFence — Approvals</title></head>"
@@ -165,14 +182,14 @@ def create_app(
         if not _authenticated(request):
             return _unauthorized()
         approval_id = request.path_params["id"]
-        card = web_ui.current()
-        if card is None or card.id != approval_id:
-            # Covers both "never existed" and "already decided" -- see
-            # web_approval_ui.py's resolve(): a decided card is cleared from
-            # current() immediately, not left around in a resolved state,
-            # so there's nothing here to distinguish between the two. Says
-            # so rather than 404-ing (docs/https-connector-refactor-plan.md
-            # §7.1).
+        card = web_ui.deferred_registry.get(approval_id)
+        if card is None or card.event.is_set():
+            # Covers both "never existed" and "already decided" -- an
+            # answered card is left in the registry a while longer now (it
+            # may still be feeding the decision ledger, see approvals.py),
+            # but there's nothing left here for a human to decide, so this
+            # says so rather than 404-ing (docs/https-connector-refactor-
+            # plan.md §7.1).
             return HTMLResponse(
                 "<!DOCTYPE html><html><body style=\"font:15px sans-serif;padding:40px\">"
                 "This approval is no longer pending — it may already have been decided, "
@@ -184,6 +201,25 @@ def create_app(
         response = HTMLResponse(_inject_shim(card.html, shim), headers={"Cache-Control": "no-store"})
         _set_session_cookie(response)
         return response
+
+    async def approvals_stream(request: Request) -> Response:
+        if not _authenticated(request):
+            return _unauthorized()
+
+        async def event_source():
+            last_ids: tuple[str, ...] | None = None
+            while True:
+                if await request.is_disconnected():
+                    break
+                ids = tuple(card.id for card in _list_rows())
+                if ids != last_ids:
+                    last_ids = ids
+                    yield f"data: {json.dumps(list(ids))}\n\n"
+                await asyncio.sleep(_STREAM_POLL_SECONDS)
+
+        return StreamingResponse(
+            event_source(), media_type="text/event-stream", headers={"Cache-Control": "no-store"},
+        )
 
     async def decide(request: Request) -> Response:
         approval_id = request.path_params["id"]
@@ -220,6 +256,7 @@ def create_app(
         Route("/approvals", list_approvals),
         Route("/approvals/{id}", show_approval),
         Route("/api/approvals/{id}/decide", decide, methods=["POST"]),
+        Route("/api/approvals/stream", approvals_stream),
     ]
     routes.extend(extra_routes or [])
     return Starlette(routes=routes, lifespan=lifespan)

@@ -103,6 +103,21 @@ class ApprovalUI(ABC):
         is clicked. See approval_popup.show_rule_confirmation_popup's
         docstring."""
 
+    @property
+    def deferred_registry(self):  # -> approvals.PendingApprovalRegistry | None
+        """A ``PendingApprovalRegistry`` (approvals.py) this backend is
+        registered with, if it supports the deferred/hold-window protocol
+        (docs/https-connector-refactor-plan.md §5) -- ``None`` (the
+        default) means this backend only ever blocks until a human decides,
+        exactly like every ApprovalUI did before P3. That's
+        NativeApprovalUI's posture below: there is nowhere to send a human
+        a reviewable link for a dialog already on their own screen, so
+        deferring would only turn a wait into an error, not a convenience.
+        gate.py checks this property, not the concrete class, to decide
+        whether to apply the deferred protocol -- see that module's
+        docstring."""
+        return None
+
 
 class NativeApprovalUI(ApprovalUI):
     """Today's (and so far only) macOS implementation: native AppKit/

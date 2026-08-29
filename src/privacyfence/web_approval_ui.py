@@ -2,121 +2,75 @@
 shown, into a page served locally over HTTP (web/routes_approvals.py)
 instead of a native AppKit dialog.
 
-Blocking contract identical to NativeApprovalUI (approval_ui.py):
-show_popup/show_read_popup/show_pii_confirmation_popup/
-show_rule_confirmation_popup still block the calling thread until a human
-decides, the same synchronous handshake gate.py already assumes -- this
-only changes *where* the human looks, not gated_call()'s calling
-convention. See docs/https-connector-refactor-plan.md's P1: the deferred
-(non-blocking) protocol described in that document's §5 is P3's work, not
-this module's -- WebApprovalUI is a hosting change, exactly like
-approval_window_html.py/settings_window_html.py already were (§11 of that
-document).
-
-At most one approval is ever pending at a time in P1: gate.py still
-serializes every popup-gate/review-gate call through its own
-``_popup_lock`` (see gate.py's module docstring), so show_popup/
-show_read_popup/the two confirmation methods are themselves called
-serially -- concurrency (several pending approvals at once, §6 of the
-refactor plan) is P3's ``_popup_lock`` retirement, not this module's.
-``current()`` below is a single slot, not a registry, for exactly that
-reason; it becomes a real per-principal registry (approvals.py) in P3.
+P1 gave this module its own single-slot ``current()``/``PendingCard`` store,
+with a note that it "becomes a real per-principal registry (approvals.py) in
+P3" -- this is that move. Card/confirmation storage now lives entirely in
+``approvals.PendingApprovalRegistry`` (``self._registry``, exposed to gate.py
+via the ``deferred_registry`` property so it can apply the deferred
+protocol -- see approvals.py's and gate.py's own module docstrings); this
+class is left owning only the *rendering* (building the HTML for each kind
+of dialog, via card_builder.py/dialog_window_html.py) and the *blocking
+contract* ApprovalUI's ABC specifies: show_popup/show_read_popup/the two
+confirmation methods still block the calling thread until a human decides,
+same as every ApprovalUI implementation always has -- what changed is that
+several can now be pending, decided in any order, at once.
 """
 from __future__ import annotations
 
-import threading
-import uuid
-
 from . import dialog_window_html
 from .approval_ui import ApprovalUI
+from .approvals import CARD_RESULTS, PendingApproval, PendingApprovalRegistry
 from .card_builder import build_card_html
-
-# Bridge protocol values gate.py's popup-gate/review-gate branches accept
-# back from a resolved card -- same vocabulary as approval_popup.py's
-# native _BRIDGE_RESULTS, and what approval_window_html.py's own _JS already
-# posts (see that module's "Bridge protocol" docstring paragraph).
-_CARD_RESULTS = ("accept", "deny", "accept_all")
-
-
-class PendingCard:
-    """One card (the full approval popup) or confirm (a smaller
-    Cancel/Confirm dialog) waiting on a human decision -- returned by
-    current() for the web route layer to render, and resolved by
-    WebApprovalUI.resolve() once the decision endpoint receives a POST.
-
-    ``id`` is 128 bits of ``uuid4`` entropy: unguessable, but (per
-    docs/https-connector-refactor-plan.md §10.4) not itself treated as a
-    bearer credential -- web/routes_approvals.py is what actually checks
-    the caller is authorized before accepting a decision for it.
-    """
-
-    def __init__(self, kind: str, html: str) -> None:
-        self.id = uuid.uuid4().hex
-        self.kind = kind  # "card" | "confirm"
-        self.html = html
-        self._event = threading.Event()
-        # (result, choice) once resolved -- result is one of _CARD_RESULTS
-        # for kind=="card", or "confirm"/"cancel" for kind=="confirm";
-        # choice is only ever set for a card resolved "accept_all".
-        self.result: str | None = None
-        self.choice: int | None = None
-        self.resolved = False
-
-    def wait(self) -> None:
-        self._event.wait()
-
-    def _resolve(self, result: str, choice: int | None) -> None:
-        self.result = result
-        self.choice = choice
-        self.resolved = True
-        self._event.set()
 
 
 class WebApprovalUI(ApprovalUI):
     """ApprovalUI implementation backing the web approval surface. See
-    module docstring for the single-pending-slot design in P1."""
+    module docstring."""
 
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._current: PendingCard | None = None
+    def __init__(self, *, registry: PendingApprovalRegistry | None = None) -> None:
+        self._registry = registry if registry is not None else PendingApprovalRegistry()
+
+    @property
+    def deferred_registry(self) -> PendingApprovalRegistry:
+        return self._registry
 
     # ------------------------------------------------------------------ #
     # Read side (web/routes_approvals.py): what's pending right now
     # ------------------------------------------------------------------ #
 
-    def current(self) -> PendingCard | None:
-        with self._lock:
-            return self._current
+    def current(self) -> PendingApproval | None:
+        """Back-compat convenience for callers that only ever want "the one
+        thing pending right now" -- the most-recently-created not-yet-
+        answered card/confirmation, or None. web/routes_approvals.py's list
+        view uses ``self._registry.list_pending()`` directly instead, now
+        that more than one can be pending at once."""
+        pending = self._registry.list_pending()
+        return pending[0] if pending else None
 
     # ------------------------------------------------------------------ #
     # Write side (web/routes_approvals.py's decide endpoint)
     # ------------------------------------------------------------------ #
 
     def resolve(self, card_id: str, result: str, choice: int | None = None) -> bool:
-        """Resolve the currently-pending card/confirmation, if ``card_id``
-        matches it and it isn't already resolved. Returns whether the
-        resolution was accepted -- False for an unknown, stale, or
-        already-decided id, which is also what makes a decision POST
-        idempotent (see docs/https-connector-refactor-plan.md §7.1: "the
-        first accepted decision for an id wins; any later one is
-        rejected")."""
-        with self._lock:
-            card = self._current
-            if card is None or card.id != card_id or card.resolved:
-                return False
-            card._resolve(result, choice)
-            # Cleared, not left in place -- current() is a single "what's
-            # pending right now" slot (see module docstring), and a decided
-            # card is no longer pending. web/routes_approvals.py's "not
-            # found" messaging already covers a card_id that no longer
-            # matches anything here, which is exactly what a stale
-            # /approvals/{id} link should show once its card is decided.
-            self._current = None
-            return True
+        """Resolve one UI-step card/confirmation, if ``card_id`` matches a
+        currently-unanswered one. Returns whether the resolution was
+        accepted -- False for an unknown, stale, or already-decided id,
+        which is also what makes a decision POST idempotent (see
+        docs/https-connector-refactor-plan.md §7.1: "the first accepted
+        decision for an id wins; any later one is rejected")."""
+        return self._registry.answer(card_id, result, choice)
 
     # ------------------------------------------------------------------ #
     # ApprovalUI -- blocking calls from gate.py, same signatures as
-    # approval_popup.py's (see approval_ui.py's ABC docstring)
+    # approval_popup.py's (see approval_ui.py's ABC docstring). Each takes
+    # an optional ``approval`` kwarg: gate.py's deferred-protocol callers
+    # (see gate.py's module docstring) pre-register the *main* card via
+    # ``self._registry`` themselves (so they have a stable id/URL to report
+    # back to Claude even before this method returns) and pass it in here;
+    # this method then only has to render into it and block. Called with no
+    # ``approval`` (e.g. directly, as every pre-P3 test in this repo already
+    # does), it registers its own -- unchanged behavior for any caller that
+    # doesn't know about the registry.
     # ------------------------------------------------------------------ #
 
     def show_popup(
@@ -137,6 +91,7 @@ class WebApprovalUI(ApprovalUI):
         table_only: bool = False,
         upload_forced: bool = False,
         layout: str = "narrow",
+        approval: PendingApproval | None = None,
     ) -> tuple[str, int | None]:
         html = build_card_html(
             title=title, preview=preview, details_text=details_text, is_read=False, layout=layout,
@@ -146,7 +101,7 @@ class WebApprovalUI(ApprovalUI):
             preview_tables=preview_tables, preview_blocks=preview_blocks, table_only=table_only,
             upload_forced=upload_forced, temp_accept_eligible=temp_accept_eligible,
         )
-        return self._run_card(html)
+        return self._run_card(html, approval)
 
     def show_read_popup(
         self,
@@ -168,6 +123,7 @@ class WebApprovalUI(ApprovalUI):
         preview_blocks: list[dict] | None = None,
         table_only: bool = False,
         layout: str = "narrow",
+        approval: PendingApproval | None = None,
     ) -> tuple[str, int | None]:
         html = build_card_html(
             title=title, preview=preview, details_text=details_text, is_read=True, layout=layout,
@@ -176,7 +132,7 @@ class WebApprovalUI(ApprovalUI):
             preview_bytes=preview_bytes, preview_mime_type=preview_mime_type, new_info=new_info,
             preview_tables=preview_tables, preview_blocks=preview_blocks, table_only=table_only,
         )
-        return self._run_card(html)
+        return self._run_card(html, approval)
 
     def show_pii_confirmation_popup(self, categories: list[str]) -> bool:
         cats = ", ".join(categories) if categories else "personal data"
@@ -208,21 +164,25 @@ class WebApprovalUI(ApprovalUI):
     # Internals
     # ------------------------------------------------------------------ #
 
-    def _run_card(self, html: str) -> tuple[str, int | None]:
-        card = self._start(PendingCard("card", html))
-        card.wait()
-        result = card.result if card.result in _CARD_RESULTS else "deny"
-        return result, card.choice
+    def _run_card(self, html: str, approval: PendingApproval | None) -> tuple[str, int | None]:
+        # A caller with no pre-registered approval (any direct call that
+        # bypasses gate.py's own deferred-protocol registration, including
+        # every pre-P3 test in this repo) gets a confirm-shaped registration
+        # instead: it has no dedupe_key to coalesce or ledger on, which is
+        # the correct degraded behavior here -- there's no gated-call
+        # context to attach one to.
+        card = approval if approval is not None else self._registry.register_confirm()
+        card.kind = "card"
+        self._registry.set_html(card.id, html)
+        card.event.wait()
+        result = card.result if card.result in CARD_RESULTS else "deny"
+        return result, card.chosen_index_result
 
     def _run_confirm(self, html: str) -> bool:
-        card = self._start(PendingCard("confirm", html))
-        card.wait()
+        card = self._registry.register_confirm()
+        self._registry.set_html(card.id, html)
+        card.event.wait()
         return card.result == "confirm"
-
-    def _start(self, card: PendingCard) -> PendingCard:
-        with self._lock:
-            self._current = card
-        return card
 
 
 _INSTANCE: WebApprovalUI | None = None
@@ -237,4 +197,13 @@ def get_web_approval_ui() -> WebApprovalUI:
     global _INSTANCE
     if _INSTANCE is None:
         _INSTANCE = WebApprovalUI()
+    return _INSTANCE
+
+
+def init_web_approval_ui(registry: PendingApprovalRegistry | None = None) -> WebApprovalUI:
+    """Construct (or replace) the singleton with an explicit registry --
+    daemon_main.py uses this to apply settings.yaml's web.approvals.* hold
+    window/TTL/cap overrides instead of approvals.py's bare defaults."""
+    global _INSTANCE
+    _INSTANCE = WebApprovalUI(registry=registry)
     return _INSTANCE

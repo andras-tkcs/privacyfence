@@ -116,3 +116,36 @@ class TestSingletonAccessors:
     def test_abstract_class_cannot_be_instantiated_directly(self):
         with pytest.raises(TypeError):
             ApprovalUI()  # type: ignore[abstract]
+
+
+class TestDeferredRegistry:
+    """P3's addition to the ABC (docs/https-connector-refactor-plan.md §5):
+    a backend opts into gate.py's deferred/hold-window protocol purely by
+    exposing a registry here -- NativeApprovalUI (and any other backend
+    that doesn't override this) stays on the pre-P3 always-blocking
+    behavior by default."""
+
+    def test_native_approval_ui_has_no_deferred_registry(self):
+        assert NativeApprovalUI().deferred_registry is None
+
+    def test_a_backend_that_overrides_it_is_honored(self):
+        sentinel = object()
+
+        class FakeApprovalUI(ApprovalUI):
+            def show_popup(self, *a, **kw):
+                raise NotImplementedError
+
+            def show_read_popup(self, *a, **kw):
+                raise NotImplementedError
+
+            def show_pii_confirmation_popup(self, categories):
+                raise NotImplementedError
+
+            def show_rule_confirmation_popup(self, description):
+                raise NotImplementedError
+
+            @property
+            def deferred_registry(self):
+                return sentinel
+
+        assert FakeApprovalUI().deferred_registry is sentinel

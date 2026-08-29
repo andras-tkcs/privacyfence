@@ -267,11 +267,27 @@ def _maybe_start_web_server(
     if not use_web_approval_ui and not mcp_enabled:
         return None
 
+    from .approvals import PendingApprovalRegistry
     from .web.mcp_dispatch import McpDispatcher
     from .web.server import DEFAULT_PORT, WebServer
-    from .web_approval_ui import get_web_approval_ui
+    from .web_approval_ui import init_web_approval_ui
 
-    web_ui = get_web_approval_ui()
+    # web.approvals.* overrides D3's defaults (docs/https-connector-refactor-
+    # plan.md §15: "hold 30s, pending TTL 15 min, ledger TTL 5 min" --
+    # "these defaults are what P3's beta measures against"). One registry
+    # backs both the web approval surface and privacyfence_await_approval
+    # (below), whichever of use_web_approval_ui/mcp_enabled is actually on --
+    # constructing it unconditionally here costs nothing (it's just an empty
+    # dict-backed object until something registers into it) and means
+    # turning mcp.enabled on later, without restarting, would find it ready.
+    approvals_config = web_config.get("approvals", {}) or {}
+    registry = PendingApprovalRegistry(
+        hold_window=float(approvals_config.get("hold_window_seconds", 30.0)),
+        pending_ttl=float(approvals_config.get("pending_ttl_seconds", 15 * 60.0)),
+        ledger_ttl=float(approvals_config.get("ledger_ttl_seconds", 5 * 60.0)),
+        max_pending=int(approvals_config.get("max_pending", 50)),
+    )
+    web_ui = init_web_approval_ui(registry=registry)
     if use_web_approval_ui:
         init_approval_ui(web_ui)
 
@@ -279,10 +295,17 @@ def _maybe_start_web_server(
     if mcp_enabled:
         mcp_dispatcher = McpDispatcher(
             lambda: ipc_server.connectors, unattended_sessions_enabled=unattended_sessions_enabled,
+            registry=registry,
         )
 
     server = WebServer(web_ui, port=int(web_config.get("port", DEFAULT_PORT)), mcp_dispatcher=mcp_dispatcher)
     server.start()
+    # The pending-result URL gate.py hands back to Claude (§5.2 point 4) is
+    # only meaningful once the server is actually listening -- set here,
+    # not at registry construction, and left unset (None) if this daemon
+    # never starts the web server at all, in which case gate.py's own
+    # _pending_result() just omits it.
+    registry.set_base_url(server.base_url)
     if use_web_approval_ui:
         logger.info(
             "Web approval UI active -- approvals open at %s/approvals?token=%s",

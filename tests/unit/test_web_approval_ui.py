@@ -189,3 +189,78 @@ class TestResolve:
 class TestSingleton:
     def test_get_web_approval_ui_returns_the_same_instance(self):
         assert get_web_approval_ui() is get_web_approval_ui()
+
+
+class TestDeferredRegistry:
+    """P3: card/confirmation storage moved out of this class's own single
+    slot into approvals.PendingApprovalRegistry (see this module's own
+    docstring) -- exposed here for gate.py's deferred protocol, and reused
+    for this class's own multi-item current()/resolve() contract."""
+
+    def test_deferred_registry_is_exposed(self):
+        ui = WebApprovalUI()
+        assert ui.deferred_registry is not None
+
+    def test_a_registry_can_be_supplied_explicitly(self):
+        from privacyfence.approvals import PendingApprovalRegistry
+
+        registry = PendingApprovalRegistry()
+        ui = WebApprovalUI(registry=registry)
+        assert ui.deferred_registry is registry
+
+    def test_two_concurrent_cards_both_appear_in_the_registrys_list(self):
+        ui = WebApprovalUI()
+        t1 = _thread(lambda: ui.show_popup("First", {}, "d"))
+        t2 = _thread(lambda: ui.show_popup("Second", {}, "d"))
+        t1.start()
+        t2.start()
+        deadline = time.monotonic() + 2
+        while len(ui.deferred_registry.list_pending()) < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        pending = ui.deferred_registry.list_pending()
+        assert len(pending) == 2
+        for card in pending:
+            ui.resolve(card.id, "deny")
+        t1.join(timeout=2)
+        t2.join(timeout=2)
+
+    def test_show_read_popup_registers_into_a_pre_supplied_approval(self):
+        # gate.py's deferred-protocol path pre-registers the approval itself
+        # (via registry.register_or_coalesce) and hands it to show_read_popup
+        # so it already has a stable id/URL before the card is even built --
+        # see web_approval_ui.py's own module docstring.
+        from privacyfence.approvals import PendingApprovalRegistry
+
+        registry = PendingApprovalRegistry()
+        ui = WebApprovalUI(registry=registry)
+        approval, _created = registry.register_or_coalesce(
+            dedupe_key="k1", connector="gmail", tool="gmail_get_message", gate_kind="review", request_id="r1",
+        )
+
+        t = _thread(_resolve_soon, ui, "accept")
+        t.start()
+        result = ui.show_read_popup("Get message", {}, "body", None, approval=approval)
+        t.join(timeout=2)
+
+        assert result == ("accept", None)
+        assert approval.html  # the card was rendered into the pre-registered approval
+        assert approval.result == "accept"
+
+    def test_resolve_soon_helper_finds_the_pre_registered_approval_by_id(self):
+        # Regression guard for _resolve_soon (this module's own helper,
+        # used throughout): it must still work once current() reflects a
+        # multi-item registry, not just a single slot.
+        from privacyfence.approvals import PendingApprovalRegistry
+
+        registry = PendingApprovalRegistry()
+        ui = WebApprovalUI(registry=registry)
+        approval, _created = registry.register_or_coalesce(
+            dedupe_key="k1", connector="gmail", tool="gmail_get_message", gate_kind="review", request_id="r1",
+        )
+
+        t = _thread(_resolve_soon, ui, "deny")
+        t.start()
+        result = ui.show_read_popup("Get message", {}, "body", None, approval=approval)
+        t.join(timeout=2)
+
+        assert result == ("deny", None)

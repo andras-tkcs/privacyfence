@@ -1585,7 +1585,13 @@ def mutate_grants(mutator: Callable[[dict[str, Any]], bool]) -> bool:
 
 
 _INSTANCE: AutoAcceptEvaluator | None = None
-_rules_changed_listener: Callable[[], None] | None = None
+# A list, not a single slot -- P1 through P2 only ever had one subscriber
+# (the menu bar, via set_rules_changed_listener below), but P3 adds a
+# second: approvals.PendingApprovalRegistry's own re-evaluation broadcast
+# (gate.py subscribes it via add_rules_changed_listener), which must not
+# clobber whatever the menu bar already registered, and vice versa.
+_rules_changed_listeners: list[Callable[[], None]] = []
+_rules_changed_listener: Callable[[], None] | None = None  # see set_rules_changed_listener's docstring
 
 
 def get_auto_accept_evaluator() -> AutoAcceptEvaluator:
@@ -1601,7 +1607,12 @@ def init_auto_accept_evaluator(rules_config: dict) -> AutoAcceptEvaluator:
 
 
 def set_rules_changed_listener(callback: Callable[[], None] | None) -> None:
-    """Register a callback fired whenever the live rule set changes.
+    """Register (or, with ``None``, clear) *the* single-slot listener --
+    kept for the one caller that predates P3's multi-listener support
+    (settings_controller.py's own menu-bar refresh) and for tests that
+    patch it directly. Implemented as "replace whatever this call
+    previously added to add_rules_changed_listener's list", so calling this
+    twice doesn't leave two menu-bar callbacks both firing.
 
     The menu bar uses this to refresh its menu (and the "Manage Auto-accept
     Rules…" window, if open) when a rule is created from the approval popup,
@@ -1609,7 +1620,27 @@ def set_rules_changed_listener(callback: Callable[[], None] | None) -> None:
     main thread.
     """
     global _rules_changed_listener
+    if _rules_changed_listener is not None:
+        remove_rules_changed_listener(_rules_changed_listener)
     _rules_changed_listener = callback
+    if callback is not None:
+        add_rules_changed_listener(callback)
+
+
+def add_rules_changed_listener(callback: Callable[[], None]) -> None:
+    """Register an additional callback fired whenever the live rule set
+    changes -- unlike set_rules_changed_listener, doesn't replace any
+    listener already registered this way. approvals.py's rules-changed
+    re-evaluation broadcast (P3) is one such subscriber; more than one can
+    coexist (e.g. the menu bar and the web approval registry, both active
+    in the same process)."""
+    if callback not in _rules_changed_listeners:
+        _rules_changed_listeners.append(callback)
+
+
+def remove_rules_changed_listener(callback: Callable[[], None]) -> None:
+    if callback in _rules_changed_listeners:
+        _rules_changed_listeners.remove(callback)
 
 
 def reload_rules(rules_config: dict) -> None:
@@ -1620,5 +1651,5 @@ def reload_rules(rules_config: dict) -> None:
     else:
         _INSTANCE._rules = rules_config or {}
     logger.info("Auto-accept rules reloaded live (%d operations)", len(_INSTANCE._rules))
-    if _rules_changed_listener is not None:
-        _rules_changed_listener()
+    for listener in list(_rules_changed_listeners):
+        listener()
