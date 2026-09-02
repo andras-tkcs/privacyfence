@@ -261,7 +261,7 @@ layout and optional sections (AI-visibility checklist, PII banner, etc.), see
 | `drive_add_comment` | write | popup | — | File name, full comment text |
 | `drive_sheets_create` | write | auto | — | — |
 | `drive_sheets_get_metadata` | read | auto | — | — |
-| `drive_sheets_get_values` | read | review | spreadsheet name, owner, range | Cell values in the range |
+| `drive_sheets_get_values` | read | review | spreadsheet name, owner, range | Cell values (or formulas, or +formatting) in the range |
 | `drive_sheets_write_range` | write | popup | — | Spreadsheet name, owner, range, values/formulas being written |
 | `drive_sheets_add_sheet` | write | popup | — | Spreadsheet name, owner, new tab title/dimensions |
 | `drive_sheets_rename_sheet` | write | popup | — | Spreadsheet name, owner, tab id, new title |
@@ -275,6 +275,16 @@ intentionally no delete-sheet tool: `drive_sheets_rename_sheet` is the sanctione
 tab for removal (e.g. rename it to `TO BE DELETED - <original title>`) — you delete it by hand
 in the Sheets UI. `drive_sheets_write_range` has no separate "set formula" tool either — a cell
 string starting with `=` is evaluated as a formula, exactly like typing it into the Sheets UI.
+
+`drive_sheets_get_values` defaults to displayed cell values (`value_render_option=FORMATTED_VALUE`,
+e.g. `"$1.00"`); pass `UNFORMATTED_VALUE` for the raw underlying value (e.g. `1`) or `FORMULA` to
+read formula text (e.g. `"=A1+A2"`) instead of its computed result — there's no separate
+"get formulas" tool, same reasoning as writing them. `include_formatting=true` additionally fetches
+a same-shaped grid of per-cell formatting (bold/italic/text color/background color/number
+format/horizontal/vertical alignment/text wrap — the same aspects `drive_sheets_format_range` can
+set), returned alongside the values as `{"values": [...], "formatting": [...]}` instead of a bare
+values grid. Formatting doesn't carry the same PII risk as cell text, so it isn't run through the
+privacy filter/PII scan the way values are.
 
 `drive_docs_edit_content` and `drive_docs_format_content` locate existing text in a Google Doc by
 exact match against its plain text (the same representation `drive_get_file_content` returns) —

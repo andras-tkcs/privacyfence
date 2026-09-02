@@ -684,6 +684,40 @@ def _hex_to_rgb_dict(hex_color: str) -> dict:
     return {"red": r / 255, "green": g / 255, "blue": b / 255}
 
 
+def _rgb_dict_to_hex(color: dict) -> str:
+    """Convert a Sheets API Color dict (0..1 floats, missing channel = 0) to
+    '#rrggbb' -- the inverse of _hex_to_rgb_dict."""
+    r = round(color.get("red", 0) * 255)
+    g = round(color.get("green", 0) * 255)
+    b = round(color.get("blue", 0) * 255)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _cell_format_summary(fmt: dict) -> dict:
+    """Compact one cell's userEnteredFormat down to the aspects
+    format_sheet_range can set, omitting anything left at its default so an
+    unformatted cell summarizes to {}."""
+    out: dict = {}
+    text_style = fmt.get("textFormat", {})
+    if text_style.get("bold"):
+        out["bold"] = True
+    if text_style.get("italic"):
+        out["italic"] = True
+    if "foregroundColor" in text_style:
+        out["text_color"] = _rgb_dict_to_hex(text_style["foregroundColor"])
+    if "backgroundColor" in fmt:
+        out["background_color"] = _rgb_dict_to_hex(fmt["backgroundColor"])
+    if "numberFormat" in fmt:
+        out["number_format"] = fmt["numberFormat"].get("pattern", "")
+    if "horizontalAlignment" in fmt:
+        out["horizontal_alignment"] = fmt["horizontalAlignment"]
+    if "verticalAlignment" in fmt:
+        out["vertical_alignment"] = fmt["verticalAlignment"]
+    if "wrapStrategy" in fmt:
+        out["wrap_strategy"] = fmt["wrapStrategy"]
+    return out
+
+
 class DriveClientError(Exception):
     """Raised for unrecoverable Drive client problems (auth, config, API)."""
 
@@ -1696,22 +1730,79 @@ class DriveClient:
         logger.info("list_sheets %s returned %d tab(s)", spreadsheet_id, len(sheets))
         return sheets
 
-    def get_sheet_values(self, spreadsheet_id: str, range_a1: str) -> list[list]:
-        """Read a range of cell values (A1 notation, e.g. 'Sheet1!A1:C10')."""
+    def get_sheet_values(
+        self, spreadsheet_id: str, range_a1: str, value_render_option: str = "FORMATTED_VALUE"
+    ) -> list[list]:
+        """Read a range of cell values (A1 notation, e.g. 'Sheet1!A1:C10').
+
+        ``value_render_option`` controls what each cell's value represents:
+          - FORMATTED_VALUE (default): the displayed string, e.g. "$1.00".
+          - UNFORMATTED_VALUE: the underlying value with no formatting applied,
+            e.g. 1 instead of "$1.00".
+          - FORMULA: the formula text itself, e.g. "=A1+A2", instead of its
+            computed result -- use this to read formulas rather than values.
+        """
         if not spreadsheet_id or not range_a1:
             raise DriveClientError("get_sheet_values requires spreadsheet_id and range")
+        render_option = (value_render_option or "FORMATTED_VALUE").strip().upper()
+        if render_option not in ("FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA"):
+            raise DriveClientError(
+                f"Invalid value_render_option {value_render_option!r}; use "
+                "FORMATTED_VALUE, UNFORMATTED_VALUE, or FORMULA"
+            )
         service = self._get_sheets_service()
         try:
             result = service.spreadsheets().values().get(
-                spreadsheetId=spreadsheet_id, range=range_a1
+                spreadsheetId=spreadsheet_id, range=range_a1, valueRenderOption=render_option
             ).execute()
         except HttpError as exc:
             raise DriveClientError(
                 f"get_sheet_values({spreadsheet_id}, {range_a1}) failed: {exc}"
             ) from exc
         values = result.get("values", [])
-        logger.info("get_sheet_values %s %s: %d row(s)", spreadsheet_id, range_a1, len(values))
+        logger.info(
+            "get_sheet_values %s %s (%s): %d row(s)",
+            spreadsheet_id, range_a1, render_option, len(values),
+        )
         return values
+
+    def get_sheet_formatting(self, spreadsheet_id: str, range_a1: str) -> list[list[dict]]:
+        """Read per-cell formatting for a range (A1 notation, sheet-name-
+        prefixed, e.g. 'Sheet1!A1:C10'), shaped as a 2D grid lined up with
+        get_sheet_values's own rows/columns for the same range.
+
+        Each cell is a dict covering the same aspects format_sheet_range can
+        set -- bold, italic, text_color, background_color, number_format,
+        horizontal_alignment, vertical_alignment, wrap_strategy -- as
+        '#rrggbb' hex for colors, present only when set (an empty dict means
+        no non-default formatting on that cell). Rows/trailing cells with no
+        formatting at all may be shorter than the sheet's full extent, same
+        as get_sheet_values.
+        """
+        if not spreadsheet_id or not range_a1:
+            raise DriveClientError("get_sheet_formatting requires spreadsheet_id and range")
+        service = self._get_sheets_service()
+        fields = (
+            "sheets.data.rowData.values.userEnteredFormat"
+            "(textFormat(bold,italic,foregroundColor),backgroundColor,numberFormat,"
+            "horizontalAlignment,verticalAlignment,wrapStrategy)"
+        )
+        try:
+            result = service.spreadsheets().get(
+                spreadsheetId=spreadsheet_id, ranges=[range_a1], fields=fields
+            ).execute()
+        except HttpError as exc:
+            raise DriveClientError(
+                f"get_sheet_formatting({spreadsheet_id}, {range_a1}) failed: {exc}"
+            ) from exc
+        sheets = result.get("sheets", [])
+        row_data = sheets[0].get("data", [{}])[0].get("rowData", []) if sheets else []
+        grid = [
+            [_cell_format_summary(cell.get("userEnteredFormat", {})) for cell in row.get("values", [])]
+            for row in row_data
+        ]
+        logger.info("get_sheet_formatting %s %s: %d row(s)", spreadsheet_id, range_a1, len(grid))
+        return grid
 
     def write_sheet_values(
         self, spreadsheet_id: str, range_a1: str, values: list[list], value_input_option: str = "USER_ENTERED"

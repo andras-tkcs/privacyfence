@@ -1140,6 +1140,55 @@ class TestSheetsGatedTools:
         assert len(table["rows"]) == 50
         assert table["footer"] == "… and 10 more row(s)"
 
+    async def test_get_values_formula_render_option_is_forwarded_and_labeled(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file(name="Budget")
+        client.get_sheet_values.return_value = [["=A1+A2"]]
+
+        result = await connector.call(
+            "drive_sheets_get_values",
+            {"spreadsheet_id": "sheet1", "range_a1": "Sheet1!A1", "value_render_option": "FORMULA"},
+        )
+
+        kwargs = gated_call_spy[0]
+        client.get_sheet_values.assert_called_once_with("sheet1", "Sheet1!A1", "FORMULA")
+        assert "(formula)" in kwargs["summary"]
+        assert kwargs["filtered_data"] == [["=A1+A2"]]
+        assert result == [["=A1+A2"]]
+        client.get_sheet_formatting.assert_not_called()
+
+    async def test_get_values_include_formatting_fetches_and_pairs_with_values(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file(name="Budget")
+        client.get_sheet_values.return_value = [["a"]]
+        client.get_sheet_formatting.return_value = [[{"bold": True}]]
+
+        result = await connector.call(
+            "drive_sheets_get_values",
+            {"spreadsheet_id": "sheet1", "range_a1": "Sheet1!A1", "include_formatting": True},
+        )
+
+        kwargs = gated_call_spy[0]
+        client.get_sheet_formatting.assert_called_once_with("sheet1", "Sheet1!A1")
+        assert "formatting" in kwargs["summary"]
+        assert kwargs["filtered_data"] == {"values": [["a"]], "formatting": [[{"bold": True}]]}
+        assert result == {"values": [["a"]], "formatting": [[{"bold": True}]]}
+        # Formatting doesn't carry PII scan / privacy-filter risk the way cell
+        # text does, so it isn't reflected in the values-only preview table.
+        assert kwargs["preview_tables"] == [{"rows": [["a"]]}]
+
+    async def test_get_values_without_include_formatting_skips_formatting_fetch(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file()
+        client.get_sheet_values.return_value = [["a"]]
+
+        await connector.call(
+            "drive_sheets_get_values", {"spreadsheet_id": "sheet1", "range_a1": "A1:B2"}
+        )
+
+        client.get_sheet_formatting.assert_not_called()
+        assert gated_call_spy[0]["filtered_data"] == [["a"]]
+
     async def test_write_range_gate_popup_and_valid_json(self, gated_call_spy):
         connector, client = make_connector()
         client.get_file_metadata.return_value = make_file(name="Budget")
