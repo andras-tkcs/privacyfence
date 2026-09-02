@@ -1892,6 +1892,8 @@ class DriveClient:
         text_color: str = "",
         number_format: str = "",
         horizontal_alignment: str = "",
+        vertical_alignment: str = "",
+        wrap_strategy: str = "",
         freeze_rows: int = -1,
         freeze_cols: int = -1,
         column_width: int = -1,
@@ -1905,6 +1907,12 @@ class DriveClient:
 
         ``range_a1`` is plain A1 notation scoped to ``sheet_id`` (e.g. 'A1:C10',
         no sheet-name prefix - only fully-bounded ranges are supported).
+        ``horizontal_alignment`` is one of LEFT / CENTER / RIGHT.
+        ``vertical_alignment`` is one of TOP / MIDDLE / BOTTOM.
+        ``wrap_strategy`` is one of OVERFLOW_CELL (overflow into empty
+        neighboring cells) / CLIP (cut off at the cell boundary) / WRAP (line
+        break to fit the cell) - matches the Sheets UI's "Overflow"/"Clip"/
+        "Wrap" text-wrapping options.
         ``merge_type`` is one of KEEP / NONE (unmerge) / MERGE_ALL /
         MERGE_COLUMNS / MERGE_ROWS.
         """
@@ -1939,6 +1947,12 @@ class DriveClient:
         if horizontal_alignment:
             cell_format["horizontalAlignment"] = horizontal_alignment.upper()
             fields.append("userEnteredFormat.horizontalAlignment")
+        if vertical_alignment:
+            cell_format["verticalAlignment"] = vertical_alignment.upper()
+            fields.append("userEnteredFormat.verticalAlignment")
+        if wrap_strategy:
+            cell_format["wrapStrategy"] = wrap_strategy.upper()
+            fields.append("userEnteredFormat.wrapStrategy")
         if fields:
             requests.append({
                 "repeatCell": {
