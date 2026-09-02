@@ -1809,6 +1809,51 @@ class TestFormatSheetRange:
         assert cell_format["numberFormat"] == {"type": "NUMBER", "pattern": "0.00%"}
         assert cell_format["horizontalAlignment"] == "CENTER"
 
+    def test_vertical_alignment_and_wrap_strategy(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_sheets(sheets_service)
+
+        client.format_sheet_range("sheet1", 0, "A1:B2", vertical_alignment="middle", wrap_strategy="wrap")
+
+        requests = sheets_service.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+        repeat_cell = requests[0]["repeatCell"]
+        cell_format = repeat_cell["cell"]["userEnteredFormat"]
+        assert cell_format["verticalAlignment"] == "MIDDLE"
+        assert cell_format["wrapStrategy"] == "WRAP"
+        assert "userEnteredFormat.verticalAlignment" in repeat_cell["fields"]
+        assert "userEnteredFormat.wrapStrategy" in repeat_cell["fields"]
+
+    @pytest.mark.parametrize(
+        "wrap_strategy,expected",
+        [("overflow_cell", "OVERFLOW_CELL"), ("clip", "CLIP"), ("wrap", "WRAP")],
+    )
+    def test_wrap_strategy_variants(self, wrap_strategy, expected):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_sheets(sheets_service)
+
+        client.format_sheet_range("sheet1", 0, "A1:B2", wrap_strategy=wrap_strategy)
+
+        requests = sheets_service.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+        cell_format = requests[0]["repeatCell"]["cell"]["userEnteredFormat"]
+        assert cell_format["wrapStrategy"] == expected
+
+    @pytest.mark.parametrize(
+        "vertical_alignment,expected",
+        [("top", "TOP"), ("middle", "MIDDLE"), ("bottom", "BOTTOM")],
+    )
+    def test_vertical_alignment_variants(self, vertical_alignment, expected):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_sheets(sheets_service)
+
+        client.format_sheet_range("sheet1", 0, "A1:B2", vertical_alignment=vertical_alignment)
+
+        requests = sheets_service.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+        cell_format = requests[0]["repeatCell"]["cell"]["userEnteredFormat"]
+        assert cell_format["verticalAlignment"] == expected
+
     def test_column_width_produces_update_dimension_request(self):
         sheets_service = MagicMock()
         sheets_service.spreadsheets.return_value.batchUpdate.return_value.execute.return_value = {}
