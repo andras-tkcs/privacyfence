@@ -24,7 +24,16 @@ from privacyfence.drive_client import (
     DriveFile,
     InlineRun,
     _col_letters_to_index,
+    _docs_content_elements_to_markdown,
+    _docs_list_nesting_is_ordered,
+    _docs_paragraph_is_divider,
     _docs_plain_text_with_index_map,
+    _docs_run_color_notes,
+    _docs_structure_color_sidecar,
+    _docs_structure_to_markdown,
+    _docs_table_column_alignment,
+    _docs_table_to_markdown,
+    _docs_text_run_to_markdown,
     _extract_tables,
     _find_text_matches,
     _hex_to_rgb_dict,
@@ -32,6 +41,7 @@ from privacyfence.drive_client import (
     _offset_to_docs_index,
     _parse_a1_range,
     _parse_inline_runs,
+    _rgb_dict_to_hex,
     _table_cell_start_indices,
     resolve_download_destination,
     resolve_download_name,
@@ -57,6 +67,63 @@ def make_client_with_docs(docs_service: MagicMock) -> DriveClient:
     client = DriveClient(client_config={}, token_file="/tmp/unused-token.json")
     client._local.docs_service = docs_service
     return client
+
+
+def make_client_with_drive_and_docs(service: MagicMock, docs_service: MagicMock) -> DriveClient:
+    """get_file_content's Google-Doc branch needs both: the Drive service
+    for get_file_metadata (name/mimeType), the Docs service for the
+    structured content fetch itself."""
+    client = DriveClient(client_config={}, token_file="/tmp/unused-token.json")
+    client._local.service = service
+    client._local.docs_service = docs_service
+    return client
+
+
+def doc_run(text: str, **style: object) -> dict:
+    """One Docs API textRun, optionally styled -- e.g. doc_run("x", bold=True)
+    or doc_run("x", link={"url": "http://x.com"})."""
+    run: dict = {"content": text}
+    if style:
+        run["textStyle"] = style
+    return run
+
+
+def doc_para(runs: list[dict], heading: str = "", alignment: str = "") -> dict:
+    """One Docs API structural element wrapping a paragraph of doc_run()s,
+    e.g. doc_para([doc_run("bold", bold=True), doc_run("\\n")], heading="HEADING_1")."""
+    paragraph: dict = {"elements": [{"textRun": r} for r in runs]}
+    if heading:
+        paragraph["paragraphStyle"] = {"namedStyleType": heading}
+    if alignment:
+        paragraph.setdefault("paragraphStyle", {})["alignment"] = alignment
+    return {"paragraph": paragraph}
+
+
+def doc_horizontal_rule() -> dict:
+    """One Docs API structural element for a horizontal-rule divider --
+    a paragraph whose sole element is a horizontalRule, no textRun."""
+    return {"paragraph": {"elements": [{"horizontalRule": {}}]}}
+
+
+def doc_list_para(runs: list[dict], list_id: str, nesting_level: int = 0) -> dict:
+    """One Docs API structural element for a list-item paragraph, e.g.
+    doc_list_para([doc_run("item\\n")], "list1", nesting_level=1)."""
+    return {"paragraph": {
+        "elements": [{"textRun": r} for r in runs],
+        "bullet": {"listId": list_id, "nestingLevel": nesting_level},
+    }}
+
+
+def doc_bullet_list_map(list_id: str = "list1", levels: int = 1) -> dict:
+    """A document's top-level `lists` map entry for an unordered list --
+    each level's NestingLevel carries a glyphSymbol, no glyphType."""
+    return {list_id: {"listProperties": {"nestingLevels": [{"glyphSymbol": "●"}] * levels}}}
+
+
+def doc_numbered_list_map(list_id: str = "list1", levels: int = 1) -> dict:
+    """A document's top-level `lists` map entry for a numbered list --
+    each level's NestingLevel carries an ordered glyphType."""
+    return {list_id: {"listProperties": {"nestingLevels": [{"glyphType": "DECIMAL"}] * levels}}}
 
 
 def make_doc(*paragraphs: str) -> dict:
@@ -247,20 +314,170 @@ class TestGetFileContent:
         with pytest.raises(DriveClientError, match="non-empty file_id"):
             client.get_file_content("")
 
-    def test_google_doc_is_exported_as_text_plain(self, monkeypatch):
-        monkeypatch.setattr(drive_client_module, "MediaIoBaseDownload", fake_downloader_class([b"exported text"]))
+    def test_google_doc_is_read_via_docs_api_as_markdown(self):
+        # Regression test: a Google Doc used to be exported through the
+        # Drive API's plain-text export, dropping all formatting -- it now
+        # goes through the structured Docs API instead, same call the
+        # docs_* write tools already use, and comes back as Markdown.
         service = MagicMock()
         service.files.return_value.get.return_value.execute.return_value = {
             "id": "f1", "name": "Doc", "mimeType": "application/vnd.google-apps.document",
         }
-        client = make_client(service)
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.return_value = {
+            "body": {"content": [
+                doc_para([doc_run("Title\n")], heading="HEADING_1"),
+                doc_para([doc_run("bold text", bold=True), doc_run("\n")]),
+            ]}
+        }
+        client = make_client_with_drive_and_docs(service, docs_service)
 
         content = client.get_file_content("f1")
 
-        assert content.content_text == "exported text"
+        assert content.content_text == "# Title\n**bold text**"
         assert content.content_bytes == b""
         assert content.truncated is False
-        service.files.return_value.export_media.assert_called_once_with(fileId="f1", mimeType="text/plain")
+        docs_service.documents.return_value.get.assert_called_once_with(documentId="f1")
+        service.files.return_value.export_media.assert_not_called()
+
+    def test_google_doc_content_is_truncated_at_a_line_boundary(self):
+        # Truncation must land on a complete line, not an arbitrary byte
+        # offset, or a delimiter opened on one line and closed on the next
+        # could be cut in between.
+        service = MagicMock()
+        service.files.return_value.get.return_value.execute.return_value = {
+            "id": "f1", "name": "Doc", "mimeType": "application/vnd.google-apps.document",
+        }
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.return_value = {
+            "body": {"content": [doc_para([doc_run(f"line{i}\n")]) for i in range(50)]}
+        }
+        client = make_client_with_drive_and_docs(service, docs_service)
+
+        content = client.get_file_content("f1", max_bytes=20)
+
+        assert content.truncated is True
+        assert content.content_text == "line0\nline1\nline2"
+        assert len(content.content_text.encode("utf-8")) <= 20
+
+    def test_google_doc_content_with_no_line_break_falls_back_to_a_raw_cut(self):
+        # One huge paragraph with no "\n" inside the cap at all -- there's
+        # no line boundary to back off to, so this falls back to the same
+        # raw byte cut every other get_file_content branch already uses.
+        service = MagicMock()
+        service.files.return_value.get.return_value.execute.return_value = {
+            "id": "f1", "name": "Doc", "mimeType": "application/vnd.google-apps.document",
+        }
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.return_value = {
+            "body": {"content": [doc_para([doc_run("x" * 100 + "\n")])]}
+        }
+        client = make_client_with_drive_and_docs(service, docs_service)
+
+        content = client.get_file_content("f1", max_bytes=20)
+
+        assert content.truncated is True
+        assert content.content_text == "x" * 20
+
+    def test_google_doc_docs_api_error_becomes_drive_client_error(self):
+        service = MagicMock()
+        service.files.return_value.get.return_value.execute.return_value = {
+            "id": "f1", "name": "Doc", "mimeType": "application/vnd.google-apps.document",
+        }
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.side_effect = http_error(500)
+        client = make_client_with_drive_and_docs(service, docs_service)
+
+        with pytest.raises(DriveClientError, match="get_file_content"):
+            client.get_file_content("f1")
+
+    def test_google_doc_highlight_renders_and_reports_non_default_color(self):
+        service = MagicMock()
+        service.files.return_value.get.return_value.execute.return_value = {
+            "id": "f1", "name": "Doc", "mimeType": "application/vnd.google-apps.document",
+        }
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.return_value = {
+            "body": {"content": [doc_para([
+                doc_run("Follow-up", backgroundColor={"color": {"rgbColor": _hex_to_rgb_dict("#b6d7a8")}}),
+                doc_run(": ok\n"),
+            ])]}
+        }
+        client = make_client_with_drive_and_docs(service, docs_service)
+
+        content = client.get_file_content("f1")
+
+        assert content.content_text == "==Follow-up==: ok"
+        assert content.highlights == [{"text": "Follow-up", "hex": "#b6d7a8"}]
+        assert content.text_colors == []
+
+    def test_google_doc_default_highlight_color_has_no_sidecar_entry(self):
+        service = MagicMock()
+        service.files.return_value.get.return_value.execute.return_value = {
+            "id": "f1", "name": "Doc", "mimeType": "application/vnd.google-apps.document",
+        }
+        docs_service = MagicMock()
+        default_hex = drive_client_module._DEFAULT_HIGHLIGHT_COLOR
+        docs_service.documents.return_value.get.return_value.execute.return_value = {
+            "body": {"content": [doc_para([
+                doc_run("x", backgroundColor={"color": {"rgbColor": _hex_to_rgb_dict(default_hex)}}),
+                doc_run("\n"),
+            ])]}
+        }
+        client = make_client_with_drive_and_docs(service, docs_service)
+
+        content = client.get_file_content("f1")
+
+        assert content.content_text == "==x=="
+        assert content.highlights == []
+
+    def test_google_doc_truncation_drops_sidecar_entries_outside_the_cut(self):
+        # A sidecar entry for text that got truncated away would describe
+        # content the caller can no longer see.
+        service = MagicMock()
+        service.files.return_value.get.return_value.execute.return_value = {
+            "id": "f1", "name": "Doc", "mimeType": "application/vnd.google-apps.document",
+        }
+        docs_service = MagicMock()
+        paragraphs = [doc_para([doc_run(f"line{i}\n")]) for i in range(20)]
+        paragraphs.append(doc_para([
+            doc_run("hl", backgroundColor={"color": {"rgbColor": _hex_to_rgb_dict("#b6d7a8")}}),
+            doc_run("\n"),
+        ]))
+        docs_service.documents.return_value.get.return_value.execute.return_value = {
+            "body": {"content": paragraphs}
+        }
+        client = make_client_with_drive_and_docs(service, docs_service)
+
+        content = client.get_file_content("f1", max_bytes=15)
+
+        assert content.truncated is True
+        assert "hl" not in content.content_text
+        assert content.highlights == []
+
+    def test_google_doc_table_reads_as_a_real_gfm_grid(self):
+        service = MagicMock()
+        service.files.return_value.get.return_value.execute.return_value = {
+            "id": "f1", "name": "Doc", "mimeType": "application/vnd.google-apps.document",
+        }
+        docs_service = MagicMock()
+        docs_service.documents.return_value.get.return_value.execute.return_value = {
+            "body": {"content": [{"table": {"tableRows": [
+                {"tableCells": [
+                    {"content": [doc_para([doc_run("Name", bold=True), doc_run("\n")])]},
+                    {"content": [doc_para([doc_run("Qty", bold=True), doc_run("\n")])]},
+                ]},
+                {"tableCells": [
+                    {"content": [doc_para([doc_run("Widget\n")])]},
+                    {"content": [doc_para([doc_run("3\n")])]},
+                ]},
+            ]}}]}
+        }
+        client = make_client_with_drive_and_docs(service, docs_service)
+
+        content = client.get_file_content("f1")
+
+        assert content.content_text == "| Name | Qty |\n| --- | --- |\n| Widget | 3 |"
 
     def test_google_sheet_is_exported_as_csv(self, monkeypatch):
         monkeypatch.setattr(drive_client_module, "MediaIoBaseDownload", fake_downloader_class([b"a,b\n1,2"]))
@@ -848,6 +1065,645 @@ class TestMarkdownToDocsRequests:
         )
         assert not any("updateParagraphStyle" in r for r in requests)
         assert not any("createParagraphBullets" in r for r in requests)
+
+
+# ---------------------------------------------------------------------------- #
+# _docs_structure_to_markdown / _docs_text_run_to_markdown /
+# _docs_content_elements_to_markdown: Docs API -> Markdown (the read-side
+# mirror of _markdown_to_docs_requests)
+# ---------------------------------------------------------------------------- #
+
+class TestDocsTextRunToMarkdown:
+    def test_plain_run(self):
+        assert _docs_text_run_to_markdown(doc_run("hello\n")) == "hello"
+
+    def test_bold(self):
+        assert _docs_text_run_to_markdown(doc_run("x", bold=True)) == "**x**"
+
+    def test_italic(self):
+        assert _docs_text_run_to_markdown(doc_run("x", italic=True)) == "*x*"
+
+    def test_bold_and_italic_together(self):
+        assert _docs_text_run_to_markdown(doc_run("x", bold=True, italic=True)) == "***x***"
+
+    def test_strikethrough(self):
+        assert _docs_text_run_to_markdown(doc_run("x", strikethrough=True)) == "~~x~~"
+
+    def test_underline(self):
+        assert _docs_text_run_to_markdown(doc_run("x", underline=True)) == "__x__"
+
+    def test_code(self):
+        run = doc_run("x", weightedFontFamily={"fontFamily": drive_client_module._CODE_FONT_FAMILY})
+        assert _docs_text_run_to_markdown(run) == "`x`"
+
+    def test_non_code_font_is_not_treated_as_code(self):
+        run = doc_run("x", weightedFontFamily={"fontFamily": "Arial"})
+        assert _docs_text_run_to_markdown(run) == "x"
+
+    def test_link(self):
+        assert _docs_text_run_to_markdown(doc_run("x", link={"url": "http://x.com"})) == "[x](http://x.com)"
+
+    def test_bold_link_nests_link_innermost(self):
+        # Round-trip check: _parse_inline_runs only finds the link if the
+        # outer bold delimiter is what wraps it, not the other way around
+        # (see _docs_text_run_to_markdown's docstring).
+        run = doc_run("x", bold=True, link={"url": "http://x.com"})
+        rendered = _docs_text_run_to_markdown(run)
+        assert rendered == "**[x](http://x.com)**"
+        assert _parse_inline_runs(rendered) == [InlineRun("x", bold=True, url="http://x.com")]
+
+    def test_code_and_link_together_prefers_link(self):
+        # No representation for "code AND link" in this dialect -- the link
+        # wins, monospace styling is dropped (see the docstring).
+        run = doc_run("x", link={"url": "http://x.com"},
+                      weightedFontFamily={"fontFamily": drive_client_module._CODE_FONT_FAMILY})
+        assert _docs_text_run_to_markdown(run) == "[x](http://x.com)"
+
+    def test_bold_code_nests_code_innermost(self):
+        run = doc_run("x", bold=True, weightedFontFamily={"fontFamily": drive_client_module._CODE_FONT_FAMILY})
+        rendered = _docs_text_run_to_markdown(run)
+        assert rendered == "**`x`**"
+        assert _parse_inline_runs(rendered) == [InlineRun("x", bold=True, code=True)]
+
+    def test_all_four_wrap_styles_together_round_trip(self):
+        run = doc_run("x", bold=True, italic=True, underline=True, strikethrough=True)
+        rendered = _docs_text_run_to_markdown(run)
+        assert _parse_inline_runs(rendered) == [
+            InlineRun("x", bold=True, italic=True, underline=True, strikethrough=True)
+        ]
+
+    def test_highlight_wraps_the_run(self):
+        run = doc_run("x", backgroundColor={"color": {"rgbColor": {}}})
+        assert _docs_text_run_to_markdown(run) == "==x=="
+
+    def test_highlight_renders_regardless_of_actual_color(self):
+        # Binary presence only in the Markdown body -- the exact hex isn't
+        # representable here; see _docs_run_color_notes for where it goes.
+        run = doc_run("x", backgroundColor={"color": {"rgbColor": _hex_to_rgb_dict("#b6d7a8")}})
+        assert _docs_text_run_to_markdown(run) == "==x=="
+
+    def test_highlight_combines_with_bold_round_trip(self):
+        run = doc_run("x", bold=True, backgroundColor={"color": {"rgbColor": {}}})
+        rendered = _docs_text_run_to_markdown(run)
+        assert rendered == "==**x**=="
+        assert _parse_inline_runs(rendered) == [InlineRun("x", bold=True, highlight=True)]
+
+    def test_highlight_is_outermost_of_all_five_wrap_styles(self):
+        run = doc_run(
+            "x", bold=True, italic=True, underline=True, strikethrough=True,
+            backgroundColor={"color": {"rgbColor": {}}},
+        )
+        rendered = _docs_text_run_to_markdown(run)
+        assert _parse_inline_runs(rendered) == [
+            InlineRun("x", bold=True, italic=True, underline=True, strikethrough=True, highlight=True)
+        ]
+
+    def test_trailing_paragraph_newline_is_stripped_before_wrapping(self):
+        # Regression guard: wrapping the paragraph's own trailing "\n"
+        # along with real text would leave a raw newline *inside* a
+        # delimited span (e.g. "**bold text\n**"), corrupting every line
+        # boundary downstream of it.
+        assert _docs_text_run_to_markdown(doc_run("bold text\n", bold=True)) == "**bold text**"
+
+    def test_soft_line_break_becomes_a_space(self):
+        assert _docs_text_run_to_markdown(doc_run("line1\x0bline2\n")) == "line1 line2"
+
+    def test_empty_run_yields_empty_string(self):
+        assert _docs_text_run_to_markdown(doc_run("\n")) == ""
+        assert _docs_text_run_to_markdown(doc_run("")) == ""
+
+    def test_suppress_bold_drops_the_bold_wrap(self):
+        assert _docs_text_run_to_markdown(doc_run("x", bold=True), suppress_bold=True) == "x"
+
+    def test_suppress_bold_has_no_effect_without_bold(self):
+        assert _docs_text_run_to_markdown(doc_run("x", italic=True), suppress_bold=True) == "*x*"
+
+    def test_suppress_bold_keeps_every_other_style(self):
+        run = doc_run("x", bold=True, italic=True, underline=True, strikethrough=True)
+        rendered = _docs_text_run_to_markdown(run, suppress_bold=True)
+        assert _parse_inline_runs(rendered) == [
+            InlineRun("x", italic=True, underline=True, strikethrough=True)
+        ]
+
+
+class TestDocsStructureToMarkdown:
+    def test_plain_paragraph(self):
+        doc = {"body": {"content": [doc_para([doc_run("hello world\n")])]}}
+        assert _docs_structure_to_markdown(doc) == "hello world"
+
+    def test_heading_levels_map_to_markdown_prefixes(self):
+        for style, prefix in [
+            ("HEADING_1", "# "), ("HEADING_2", "## "), ("HEADING_3", "### "),
+            ("HEADING_4", "#### "), ("HEADING_5", "##### "), ("HEADING_6", "###### "),
+        ]:
+            doc = {"body": {"content": [doc_para([doc_run("Title\n")], heading=style)]}}
+            assert _docs_structure_to_markdown(doc) == f"{prefix}Title"
+
+    def test_normal_text_style_gets_no_prefix(self):
+        doc = {"body": {"content": [doc_para([doc_run("x\n")], heading="NORMAL_TEXT")]}}
+        assert _docs_structure_to_markdown(doc) == "x"
+
+    def test_multiple_runs_in_one_paragraph_concatenate(self):
+        doc = {"body": {"content": [doc_para([
+            doc_run("plain "), doc_run("bold", bold=True), doc_run(" and "),
+            doc_run("italic", italic=True), doc_run(".\n"),
+        ])]}}
+        assert _docs_structure_to_markdown(doc) == "plain **bold** and *italic*."
+
+    def test_multiple_paragraphs_join_with_newline(self):
+        doc = {"body": {"content": [
+            doc_para([doc_run("Title\n")], heading="HEADING_1"),
+            doc_para([doc_run("plain\n")]),
+        ]}}
+        assert _docs_structure_to_markdown(doc) == "# Title\nplain"
+
+    def test_non_text_paragraph_element_contributes_no_text(self):
+        # An image or footnote reference is a paragraph element with no
+        # textRun and no dedicated handling (unlike a horizontal rule,
+        # phase 2 below) -- for now it's simply skipped, same as the old
+        # plain-text export already lost anything that wasn't a textRun.
+        doc = {"body": {"content": [
+            doc_para([doc_run("above\n")]),
+            {"paragraph": {"elements": [{"inlineObjectElement": {"inlineObjectId": "kix.abc"}}]}},
+            doc_para([doc_run("below\n")]),
+        ]}}
+        assert _docs_structure_to_markdown(doc) == "above\n\nbelow"
+
+    def test_horizontal_rule_renders_as_a_bare_divider_line(self):
+        # Regression test: exact reverse of the write side's
+        # _THEMATIC_BREAK_RE handling -- a horizontalRule element used to
+        # fall into the "no text to render" bucket above (contributing
+        # nothing at all) rather than becoming a real "---" divider line.
+        # This is the "a human inserted one through the Docs UI" shape --
+        # see TestDocsParagraphIsDivider for the write side's own
+        # borderBottom shape, which read the same way.
+        doc = {"body": {"content": [
+            doc_para([doc_run("above\n")]),
+            doc_horizontal_rule(),
+            doc_para([doc_run("below\n")]),
+        ]}}
+        assert _docs_structure_to_markdown(doc) == "above\n---\nbelow"
+
+    def test_horizontal_rule_ignores_any_heading_style_on_its_paragraph(self):
+        # A rule's own paragraph never legitimately carries a
+        # namedStyleType, but the check for it comes first regardless --
+        # confirm a rule never gets a heading prefix even if one turned up.
+        doc = {"body": {"content": [
+            {"paragraph": {
+                "elements": [{"horizontalRule": {}}],
+                "paragraphStyle": {"namedStyleType": "HEADING_1"},
+            }},
+        ]}}
+        assert _docs_structure_to_markdown(doc) == "---"
+
+    def test_consecutive_horizontal_rules(self):
+        doc = {"body": {"content": [doc_horizontal_rule(), doc_horizontal_rule()]}}
+        assert _docs_structure_to_markdown(doc) == "---\n---"
+
+    def test_horizontal_rule_round_trips_through_markdown_to_docs_requests(self):
+        # write_doc_rich_content has no native "insert horizontal rule"
+        # request to round-trip through -- it renders a divider as a
+        # bottom-bordered empty paragraph instead (see
+        # TestMarkdownToDocsRequests.test_thematic_break_becomes_bordered_
+        # paragraph), so the round trip is checked against that shape.
+        doc = {"body": {"content": [
+            doc_para([doc_run("above\n")]),
+            doc_horizontal_rule(),
+            doc_para([doc_run("below\n")]),
+        ]}}
+        markdown = _docs_structure_to_markdown(doc)
+        requests = _markdown_to_docs_requests(markdown)
+        assert requests[0]["insertText"]["text"] == "above\n\nbelow\n"
+        border_reqs = [
+            r for r in requests
+            if "updateParagraphStyle" in r and r["updateParagraphStyle"]["fields"] == "borderBottom"
+        ]
+        assert len(border_reqs) == 1
+
+    def test_horizontal_rule_inside_a_table_cell_does_not_crash(self):
+        # Edge case with no real-world precedent worth optimizing for --
+        # just confirm the recursive cell renderer doesn't choke on it. As
+        # of phase 5 a one-row table's row is the GFM header, so the
+        # literal "---" text lands in both the header and separator rows.
+        doc = {"body": {"content": [{"table": {"tableRows": [
+            {"tableCells": [{"content": [doc_horizontal_rule()]}]},
+        ]}}]}}
+        assert _docs_structure_to_markdown(doc) == "| --- |\n| --- |"
+
+    def test_table_renders_as_a_real_gfm_grid(self):
+        # A table renders as a real GFM pipe table, not flat tab/newline
+        # text -- see TestDocsTableToMarkdown for the dedicated
+        # per-construct coverage (alignment, <br>-joined
+        # multi-paragraph cells, pipe escaping, header-bold suppression).
+        # The header row's bold is suppressed here too (H2 renders
+        # unwrapped) -- GFM's own header row is already visually bold, and
+        # re-emitting "**H2**" would double-bold it on the next write.
+        doc = {"body": {"content": [{"table": {"tableRows": [
+            {"tableCells": [
+                {"content": [doc_para([doc_run("H1\n")])]},
+                {"content": [doc_para([doc_run("H2", bold=True), doc_run("\n")])]},
+            ]},
+            {"tableCells": [
+                {"content": [doc_para([doc_run("a\n")])]},
+                {"content": [doc_para([doc_run("b\n")])]},
+            ]},
+        ]}}]}}
+        assert _docs_structure_to_markdown(doc) == "| H1 | H2 |\n| --- | --- |\n| a | b |"
+
+    def test_empty_document_yields_empty_string(self):
+        assert _docs_structure_to_markdown({"body": {"content": []}}) == ""
+        assert _docs_structure_to_markdown({}) == ""
+
+    def test_round_trips_through_markdown_to_docs_requests_insert_text(self):
+        # The strongest test this feature can have: build a Docs structure,
+        # render it to Markdown, feed that straight into the write side,
+        # and confirm the plain text _markdown_to_docs_requests would
+        # insert matches what a plain-text reading of the same structure
+        # would show -- i.e. formatting markers round-trip losslessly
+        # around the same underlying words.
+        doc = {"body": {"content": [
+            doc_para([doc_run("Title\n")], heading="HEADING_1"),
+            doc_para([
+                doc_run("hello "), doc_run("world", bold=True, italic=True), doc_run("!\n"),
+            ]),
+        ]}}
+        markdown = _docs_structure_to_markdown(doc)
+        requests = _markdown_to_docs_requests(markdown)
+        assert requests[0]["insertText"]["text"] == "Title\nhello world!\n"
+        style_reqs = [r for r in requests if "updateTextStyle" in r]
+        assert style_reqs[0]["updateTextStyle"]["textStyle"] == {"bold": True, "italic": True}
+
+
+class TestDocsParagraphIsDivider:
+    def test_horizontal_rule_element_is_a_divider(self):
+        assert _docs_paragraph_is_divider(doc_horizontal_rule()["paragraph"]) is True
+
+    def test_empty_border_bottom_paragraph_is_a_divider(self):
+        # The shape write_doc_rich_content's own thematic-break handling
+        # actually produces (see TestMarkdownToDocsRequests) -- an empty
+        # paragraph with paragraphStyle.borderBottom set, not a
+        # horizontalRule element at all (the Docs API has no native
+        # "insert horizontal rule" request).
+        paragraph = {
+            "elements": [{"textRun": doc_run("\n")}],
+            "paragraphStyle": {"borderBottom": {"dashStyle": "SOLID"}},
+        }
+        assert _docs_paragraph_is_divider(paragraph) is True
+
+    def test_bordered_paragraph_with_real_text_is_not_a_divider(self):
+        # A bottom border on a paragraph that still has real prose in it
+        # must not be mistaken for a divider and lose its text.
+        paragraph = {
+            "elements": [{"textRun": doc_run("real text\n")}],
+            "paragraphStyle": {"borderBottom": {"dashStyle": "SOLID"}},
+        }
+        assert _docs_paragraph_is_divider(paragraph) is False
+
+    def test_plain_paragraph_is_not_a_divider(self):
+        assert _docs_paragraph_is_divider(doc_para([doc_run("x\n")])["paragraph"]) is False
+
+    def test_border_bottom_on_paragraph_with_no_text_runs_at_all(self):
+        paragraph = {"elements": [], "paragraphStyle": {"borderBottom": {"dashStyle": "SOLID"}}}
+        assert _docs_paragraph_is_divider(paragraph) is True
+
+
+class TestDocsContentElementsToMarkdown:
+    def test_delegates_the_same_way_as_top_level_content(self):
+        # _docs_structure_to_markdown is a thin wrapper over this -- proves
+        # the two stay in sync rather than duplicating every case above.
+        elements = [doc_para([doc_run("x\n")])]
+        assert _docs_content_elements_to_markdown(elements) == _docs_structure_to_markdown(
+            {"body": {"content": elements}}
+        )
+
+
+# ---------------------------------------------------------------------------- #
+# _docs_run_color_notes / _docs_structure_color_sidecar: the color sidecar
+# -- exact highlight/text colors Markdown alone can't carry.
+# ---------------------------------------------------------------------------- #
+
+class TestDocsRunColorNotes:
+    def test_no_style_yields_no_notes(self):
+        assert _docs_run_color_notes(doc_run("x")) == ("", "")
+
+    def test_default_highlight_color_yields_no_note(self):
+        # The plain ==x== _docs_text_run_to_markdown already emits
+        # represents this losslessly -- no sidecar entry needed.
+        run = doc_run("x", backgroundColor={"color": {"rgbColor": _hex_to_rgb_dict(drive_client_module._DEFAULT_HIGHLIGHT_COLOR)}})
+        assert _docs_run_color_notes(run) == ("", "")
+
+    def test_default_highlight_color_comparison_is_case_insensitive(self):
+        run = doc_run("x", backgroundColor={"color": {"rgbColor": _hex_to_rgb_dict(
+            drive_client_module._DEFAULT_HIGHLIGHT_COLOR.upper()
+        )}})
+        assert _docs_run_color_notes(run) == ("", "")
+
+    def test_non_default_highlight_color_is_reported(self):
+        run = doc_run("x", backgroundColor={"color": {"rgbColor": _hex_to_rgb_dict("#b6d7a8")}})
+        assert _docs_run_color_notes(run) == ("#b6d7a8", "")
+
+    def test_any_text_color_is_reported_default_or_not(self):
+        # Markdown has no text-color syntax at all -- unlike highlight,
+        # there's no "already represented" case to skip.
+        run = doc_run("x", foregroundColor={"color": {"rgbColor": _hex_to_rgb_dict("#000000")}})
+        assert _docs_run_color_notes(run) == ("", "#000000")
+
+    def test_both_at_once(self):
+        run = doc_run(
+            "x",
+            backgroundColor={"color": {"rgbColor": _hex_to_rgb_dict("#b6d7a8")}},
+            foregroundColor={"color": {"rgbColor": _hex_to_rgb_dict("#ff0000")}},
+        )
+        assert _docs_run_color_notes(run) == ("#b6d7a8", "#ff0000")
+
+    def test_empty_run_yields_no_notes_even_with_style(self):
+        run = doc_run("\n", backgroundColor={"color": {"rgbColor": _hex_to_rgb_dict("#b6d7a8")}})
+        assert _docs_run_color_notes(run) == ("", "")
+
+
+class TestDocsStructureColorSidecar:
+    def test_no_colors_yields_empty_lists(self):
+        doc = {"body": {"content": [doc_para([doc_run("plain\n")])]}}
+        assert _docs_structure_color_sidecar(doc) == ([], [])
+
+    def test_default_highlight_is_not_in_the_sidecar(self):
+        run = doc_run("x", backgroundColor={"color": {"rgbColor": _hex_to_rgb_dict(
+            drive_client_module._DEFAULT_HIGHLIGHT_COLOR
+        )}})
+        doc = {"body": {"content": [doc_para([run, doc_run("\n")])]}}
+        assert _docs_structure_color_sidecar(doc) == ([], [])
+
+    def test_non_default_highlight_is_collected(self):
+        run = doc_run("Follow-up", backgroundColor={"color": {"rgbColor": _hex_to_rgb_dict("#b6d7a8")}})
+        doc = {"body": {"content": [doc_para([run, doc_run("\n")])]}}
+        highlights, text_colors = _docs_structure_color_sidecar(doc)
+        assert highlights == [{"text": "Follow-up", "hex": "#b6d7a8"}]
+        assert text_colors == []
+
+    def test_text_color_is_collected(self):
+        run = doc_run("red", foregroundColor={"color": {"rgbColor": _hex_to_rgb_dict("#ff0000")}})
+        doc = {"body": {"content": [doc_para([run, doc_run("\n")])]}}
+        highlights, text_colors = _docs_structure_color_sidecar(doc)
+        assert highlights == []
+        assert text_colors == [{"text": "red", "hex": "#ff0000"}]
+
+    def test_multiple_runs_across_multiple_paragraphs(self):
+        hl = doc_run("a", backgroundColor={"color": {"rgbColor": _hex_to_rgb_dict("#b6d7a8")}})
+        fg = doc_run("b", foregroundColor={"color": {"rgbColor": _hex_to_rgb_dict("#00ff00")}})
+        doc = {"body": {"content": [
+            doc_para([hl, doc_run("\n")]),
+            doc_para([fg, doc_run("\n")]),
+        ]}}
+        highlights, text_colors = _docs_structure_color_sidecar(doc)
+        assert highlights == [{"text": "a", "hex": "#b6d7a8"}]
+        assert text_colors == [{"text": "b", "hex": "#00ff00"}]
+
+    def test_collects_from_inside_table_cells(self):
+        hl = doc_run("cell", backgroundColor={"color": {"rgbColor": _hex_to_rgb_dict("#b6d7a8")}})
+        doc = {"body": {"content": [{"table": {"tableRows": [
+            {"tableCells": [{"content": [doc_para([hl, doc_run("\n")])]}]},
+        ]}}]}}
+        highlights, _text_colors = _docs_structure_color_sidecar(doc)
+        assert highlights == [{"text": "cell", "hex": "#b6d7a8"}]
+
+    def test_horizontal_rule_paragraph_does_not_crash(self):
+        # A horizontalRule element has no textRun/textStyle at all --
+        # confirm the walk skips it cleanly rather than erroring.
+        doc = {"body": {"content": [doc_horizontal_rule()]}}
+        assert _docs_structure_color_sidecar(doc) == ([], [])
+
+
+# ---------------------------------------------------------------------------- #
+# _docs_list_nesting_is_ordered / list rendering in _docs_structure_to_markdown
+# ---------------------------------------------------------------------------- #
+
+class TestDocsListNestingIsOrdered:
+    def test_bullet_list_is_not_ordered(self):
+        assert _docs_list_nesting_is_ordered(doc_bullet_list_map(), "list1", 0) is False
+
+    def test_numbered_list_is_ordered(self):
+        assert _docs_list_nesting_is_ordered(doc_numbered_list_map(), "list1", 0) is True
+
+    def test_unknown_list_id_defaults_to_unordered(self):
+        assert _docs_list_nesting_is_ordered({}, "no-such-list", 0) is False
+
+    def test_nesting_level_beyond_the_list_defaults_to_unordered(self):
+        assert _docs_list_nesting_is_ordered(doc_numbered_list_map(levels=1), "list1", 5) is False
+
+    def test_each_ordered_glyph_type_is_recognized(self):
+        for glyph_type in ["DECIMAL", "ZERO_DECIMAL", "UPPER_ALPHA", "ALPHA", "UPPER_ROMAN", "ROMAN"]:
+            doc_lists = {"list1": {"listProperties": {"nestingLevels": [{"glyphType": glyph_type}]}}}
+            assert _docs_list_nesting_is_ordered(doc_lists, "list1", 0) is True
+
+    def test_nesting_levels_are_independent(self):
+        # A list can be bulleted at one level and numbered at another --
+        # each NestingLevel entry is its own glyph type.
+        doc_lists = {"list1": {"listProperties": {"nestingLevels": [
+            {"glyphSymbol": "●"}, {"glyphType": "DECIMAL"},
+        ]}}}
+        assert _docs_list_nesting_is_ordered(doc_lists, "list1", 0) is False
+        assert _docs_list_nesting_is_ordered(doc_lists, "list1", 1) is True
+
+
+class TestDocsListRendering:
+    def test_flat_bullet_list(self):
+        doc = {"body": {"content": [
+            doc_list_para([doc_run("one\n")], "list1"),
+            doc_list_para([doc_run("two\n")], "list1"),
+        ]}, "lists": doc_bullet_list_map()}
+        assert _docs_structure_to_markdown(doc) == "- one\n- two"
+
+    def test_flat_numbered_list(self):
+        # The literal digit doesn't matter -- Docs auto-numbers by list
+        # position, not by what's in the Markdown source, and
+        # _markdown_to_docs_requests' own regex (^\d+\. ) accepts any
+        # digit(s) -- so every line renders "1. ", never "2. ", "3. ", ....
+        doc = {"body": {"content": [
+            doc_list_para([doc_run("one\n")], "list1"),
+            doc_list_para([doc_run("two\n")], "list1"),
+        ]}, "lists": doc_numbered_list_map()}
+        assert _docs_structure_to_markdown(doc) == "1. one\n1. two"
+
+    def test_nested_bullet_list_gets_two_spaces_per_level(self):
+        doc = {"body": {"content": [
+            doc_list_para([doc_run("top\n")], "list1", nesting_level=0),
+            doc_list_para([doc_run("nested\n")], "list1", nesting_level=1),
+        ]}, "lists": doc_bullet_list_map(levels=2)}
+        assert _docs_structure_to_markdown(doc) == "- top\n  - nested"
+
+    def test_missing_lists_map_defaults_every_list_paragraph_to_unordered(self):
+        doc = {"body": {"content": [doc_list_para([doc_run("x\n")], "list1")]}}
+        assert _docs_structure_to_markdown(doc) == "- x"
+
+    def test_list_item_gets_inline_styles_applied(self):
+        doc = {"body": {"content": [
+            doc_list_para([doc_run("bold", bold=True), doc_run(" item\n")], "list1"),
+        ]}, "lists": doc_bullet_list_map()}
+        assert _docs_structure_to_markdown(doc) == "- **bold** item"
+
+    def test_list_paragraph_ignores_any_heading_style(self):
+        # A list paragraph never legitimately carries a namedStyleType, but
+        # the bullet check comes first regardless of what's there.
+        doc = {"body": {"content": [
+            {"paragraph": {
+                "elements": [{"textRun": doc_run("x\n")}],
+                "bullet": {"listId": "list1", "nestingLevel": 0},
+                "paragraphStyle": {"namedStyleType": "HEADING_1"},
+            }},
+        ]}, "lists": doc_bullet_list_map()}
+        assert _docs_structure_to_markdown(doc) == "- x"
+
+    def test_list_mixed_with_heading_and_plain_paragraphs(self):
+        doc = {"body": {"content": [
+            doc_para([doc_run("Title\n")], heading="HEADING_1"),
+            doc_list_para([doc_run("item\n")], "list1"),
+            doc_para([doc_run("after\n")]),
+        ]}, "lists": doc_bullet_list_map()}
+        assert _docs_structure_to_markdown(doc) == "# Title\n- item\nafter"
+
+    def test_list_inside_a_table_cell_gets_the_doc_lists_map_too(self):
+        # Regression guard: the table-cell recursion must thread doc_lists
+        # through, or a list inside a cell would silently default to
+        # unordered even when it's really numbered. As of phase 5 a
+        # one-row table's row is the GFM header (see TestDocsTableToMarkdown
+        # for dedicated multi-row table coverage).
+        doc = {"body": {"content": [{"table": {"tableRows": [
+            {"tableCells": [{"content": [doc_list_para([doc_run("cell item\n")], "list1")]}]},
+        ]}}]}, "lists": doc_numbered_list_map()}
+        assert _docs_structure_to_markdown(doc) == "| 1. cell item |\n| --- |"
+
+    def test_round_trips_through_markdown_to_docs_requests(self):
+        doc = {"body": {"content": [
+            doc_list_para([doc_run("top\n")], "list1", nesting_level=0),
+            doc_list_para([doc_run("nested\n")], "list1", nesting_level=1),
+        ]}, "lists": doc_bullet_list_map(levels=2)}
+        markdown = _docs_structure_to_markdown(doc)
+        requests = _markdown_to_docs_requests(markdown)
+        assert requests[0]["insertText"]["text"] == "top\n\tnested\n"
+        bullet_reqs = [r for r in requests if "createParagraphBullets" in r]
+        assert len(bullet_reqs) == 2
+        assert all(
+            r["createParagraphBullets"]["bulletPreset"] == "BULLET_DISC_CIRCLE_SQUARE"
+            for r in bullet_reqs
+        )
+
+
+# ---------------------------------------------------------------------------- #
+# _docs_table_column_alignment / _docs_table_to_markdown: Docs API tables ->
+# GFM pipe tables
+# ---------------------------------------------------------------------------- #
+
+def doc_table_cell(runs: list[dict], alignment: str = "") -> dict:
+    """One Docs API table cell, its content a single paragraph of
+    doc_run()s, optionally with paragraph alignment -- e.g.
+    doc_table_cell([doc_run("x\\n")], alignment="CENTER")."""
+    return {"content": [doc_para(runs, alignment=alignment) if alignment else doc_para(runs)]}
+
+
+def doc_table(rows: list[list[list[dict]]]) -> dict:
+    """A Docs API table's inner ``{"tableRows": [...]}`` dict, from a
+    3-level nested list -- rows, each a list of cells, each cell a list of
+    doc_run()s for that cell's single paragraph. E.g.
+    doc_table([[[doc_run("A\\n")], [doc_run("B\\n")]], [[doc_run("1\\n")], [doc_run("2\\n")]]])
+    for a 2-row, 2-column table."""
+    return {"tableRows": [
+        {"tableCells": [doc_table_cell(cell_runs) for cell_runs in row]}
+        for row in rows
+    ]}
+
+
+class TestDocsTableColumnAlignment:
+    def test_defaults_to_start_with_no_alignment_set(self):
+        table = doc_table([[[doc_run("x\n")]]])
+        assert _docs_table_column_alignment(table, 0) == "START"
+
+    def test_reads_center_and_end_from_the_header_row(self):
+        table = {"tableRows": [
+            {"tableCells": [doc_table_cell([doc_run("x\n")], "CENTER"), doc_table_cell([doc_run("y\n")], "END")]},
+        ]}
+        assert _docs_table_column_alignment(table, 0) == "CENTER"
+        assert _docs_table_column_alignment(table, 1) == "END"
+
+    def test_unsupported_alignment_defaults_to_start(self):
+        table = {"tableRows": [{"tableCells": [doc_table_cell([doc_run("x\n")], "JUSTIFIED")]}]}
+        assert _docs_table_column_alignment(table, 0) == "START"
+
+    def test_no_rows_defaults_to_start(self):
+        assert _docs_table_column_alignment({"tableRows": []}, 0) == "START"
+
+    def test_column_index_beyond_the_row_defaults_to_start(self):
+        table = doc_table([[[doc_run("x\n")]]])
+        assert _docs_table_column_alignment(table, 5) == "START"
+
+
+class TestDocsTableToMarkdown:
+    def test_basic_grid(self):
+        table = doc_table([
+            [[doc_run("A\n")], [doc_run("B\n")]],
+            [[doc_run("1\n")], [doc_run("2\n")]],
+        ])
+        assert _docs_table_to_markdown(table, {}) == "| A | B |\n| --- | --- |\n| 1 | 2 |"
+
+    def test_header_row_bold_is_suppressed(self):
+        # write_doc_rich_content always bolds row 0 on write
+        # (_insert_table_at_placeholder) -- reading that bold back as
+        # literal **...** would double it up on the next write.
+        table = doc_table([[[doc_run("Head", bold=True), doc_run("\n")]]])
+        assert _docs_table_to_markdown(table, {}) == "| Head |\n| --- |"
+
+    def test_non_header_row_keeps_bold(self):
+        table = doc_table([
+            [[doc_run("Head\n")]],
+            [[doc_run("bold", bold=True), doc_run("\n")]],
+        ])
+        assert _docs_table_to_markdown(table, {}) == "| Head |\n| --- |\n| **bold** |"
+
+    def test_column_alignment_renders_as_separator_syntax(self):
+        table = {"tableRows": [
+            {"tableCells": [
+                doc_table_cell([doc_run("L\n")], "START"),
+                doc_table_cell([doc_run("C\n")], "CENTER"),
+                doc_table_cell([doc_run("R\n")], "END"),
+            ]},
+        ]}
+        assert _docs_table_to_markdown(table, {}) == "| L | C | R |\n| --- | :---: | ---: |"
+
+    def test_literal_pipe_in_a_cell_is_escaped(self):
+        table = doc_table([[[doc_run("a|b\n")]]])
+        assert _docs_table_to_markdown(table, {}) == "| a\\|b |\n| --- |"
+
+    def test_multi_paragraph_cell_joins_with_br(self):
+        table = {"tableRows": [
+            {"tableCells": [{"content": [doc_para([doc_run("line1\n")]), doc_para([doc_run("line2\n")])]}]},
+        ]}
+        assert _docs_table_to_markdown(table, {}) == "| line1<br>line2 |\n| --- |"
+
+    def test_empty_cell_renders_as_blank(self):
+        table = {"tableRows": [{"tableCells": [{"content": []}, doc_table_cell([doc_run("x\n")])]}]}
+        assert _docs_table_to_markdown(table, {}) == "|  | x |\n| --- | --- |"
+
+    def test_no_rows_renders_as_empty_string(self):
+        assert _docs_table_to_markdown({"tableRows": []}, {}) == ""
+
+    def test_list_inside_a_non_header_cell_uses_the_doc_lists_map(self):
+        table = {"tableRows": [
+            {"tableCells": [doc_table_cell([doc_run("Head\n")])]},
+            {"tableCells": [{"content": [doc_list_para([doc_run("item\n")], "list1")]}]},
+        ]}
+        assert _docs_table_to_markdown(table, doc_numbered_list_map()) == "| Head |\n| --- |\n| 1. item |"
+
+    def test_round_trips_through_extract_tables(self):
+        table = doc_table([
+            [[doc_run("A", bold=True), doc_run("\n")], [doc_run("B", bold=True), doc_run("\n")]],
+            [[doc_run("1\n")], [doc_run("2\n")]],
+        ])
+        markdown = _docs_table_to_markdown(table, {})
+        text, tables = _extract_tables(markdown)
+        assert text == tables[0].placeholder
+        assert len(tables) == 1
+        # Header bold suppressed on read, so it round-trips as plain text
+        # here -- write_doc_rich_content re-bolds row 0 fresh on its own.
+        assert tables[0].rows == [["A", "B"], ["1", "2"]]
 
 
 # ---------------------------------------------------------------------------- #
@@ -1589,6 +2445,18 @@ class TestHexToRgbDict:
     def test_non_hex_characters_raise(self):
         with pytest.raises(DriveClientError, match="Invalid hex color"):
             _hex_to_rgb_dict("#zzzzzz")
+
+
+class TestRgbDictToHex:
+    def test_round_trips_through_hex_to_rgb_dict(self):
+        for hex_color in ["#ffcc00", "#000000", "#ffffff", "#b6d7a8", "#123456"]:
+            assert _rgb_dict_to_hex(_hex_to_rgb_dict(hex_color)) == hex_color
+
+    def test_missing_channel_keys_default_to_zero(self):
+        # Docs/Sheets API JSON (proto3) omits a zero-valued channel key
+        # entirely rather than sending 0.0 -- {} means black, not an error.
+        assert _rgb_dict_to_hex({}) == "#000000"
+        assert _rgb_dict_to_hex({"red": 1.0}) == "#ff0000"
 
 
 # ---------------------------------------------------------------------------- #

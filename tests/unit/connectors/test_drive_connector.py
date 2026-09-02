@@ -224,6 +224,72 @@ class TestGetFileContentBugFix:
         assert "alice@example.com" not in kwargs["pii_scan_text"]
 
 
+class TestGetFileContentColorSidecar:
+    """DriveFileContent's highlights/text_colors only reach filtered_data
+    (what Claude actually receives) when non-empty, and go through the same
+    privacy filter as `content` itself -- not a free pass just for
+    traveling in a different field."""
+
+    async def test_absent_when_no_sidecar_entries(self, gated_call_spy):
+        connector, client = make_connector()
+        content = DriveFileContent(file=make_file(), content_text="==flagged==")
+        client.get_file_content.return_value = content
+
+        await connector.call("drive_get_file_content", {"file_id": "f1"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["filtered_data"] == {"file_id": "f1", "content": "==flagged=="}
+        assert "highlights" not in kwargs["filtered_data"]
+        assert "text_colors" not in kwargs["filtered_data"]
+
+    async def test_highlights_passed_through_when_present(self, gated_call_spy):
+        connector, client = make_connector()
+        content = DriveFileContent(
+            file=make_file(), content_text="==Follow-up==",
+            highlights=[{"text": "Follow-up", "hex": "#b6d7a8"}],
+        )
+        client.get_file_content.return_value = content
+
+        await connector.call("drive_get_file_content", {"file_id": "f1"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["filtered_data"]["highlights"] == [{"text": "Follow-up", "hex": "#b6d7a8"}]
+        assert "text_colors" not in kwargs["filtered_data"]
+
+    async def test_text_colors_passed_through_when_present(self, gated_call_spy):
+        connector, client = make_connector()
+        content = DriveFileContent(
+            file=make_file(), content_text="red text",
+            text_colors=[{"text": "red text", "hex": "#ff0000"}],
+        )
+        client.get_file_content.return_value = content
+
+        await connector.call("drive_get_file_content", {"file_id": "f1"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["filtered_data"]["text_colors"] == [{"text": "red text", "hex": "#ff0000"}]
+        assert "highlights" not in kwargs["filtered_data"]
+
+    async def test_sidecar_text_is_privacy_filtered_like_content(self, gated_call_spy):
+        init_privacy_filter({"drive_privacy": {"categories": {"file_content": "block"}}})
+        connector, client = make_connector()
+        content = DriveFileContent(
+            file=make_file(), content_text="==secret==",
+            highlights=[{"text": "secret", "hex": "#b6d7a8"}],
+        )
+        client.get_file_content.return_value = content
+
+        await connector.call("drive_get_file_content", {"file_id": "f1"})
+
+        kwargs = gated_call_spy[0]
+        assert kwargs["filtered_data"]["content"] == "[BLOCKED BY PRIVACY FILTER]"
+        # The highlighted span's own text gets the same treatment -- no
+        # separate, unfiltered path for real document text to leak through.
+        assert kwargs["filtered_data"]["highlights"] == [
+            {"text": "[BLOCKED BY PRIVACY FILTER]", "hex": "#b6d7a8"}
+        ]
+
+
 class TestDrivePrivacyFilter:
     """drive_privacy.categories, enforced -- see privacy_filter.py. Without
     calling init_privacy_filter (every other test class here), every
