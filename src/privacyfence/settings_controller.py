@@ -692,6 +692,20 @@ class SettingsController:
         # telegram_submit_2fa/telegram_cancel_auth below and _telegram_auth_
         # state's own docstring for the shape.
         self._telegram_auth: dict[str, Any] | None = None
+        # P4c (docs/https-connector-refactor-plan.md §16.9): the General
+        # page's "Connect Claude" card. None/None until
+        # set_mcp_connection_info() is called -- daemon_main.py does this
+        # right after constructing the WebServer, which is the one place
+        # that actually knows whether /mcp is bound and what its token is
+        # (web.mcp.enabled off, or no WebServer at all in a native-only
+        # install, both leave this None/None, and the card renders its own
+        # "not available" state instead of a broken URL). The token itself
+        # is deliberately not read here into a snapshot()-visible field --
+        # see reveal_mcp_token() below for why it has its own action
+        # instead, same "never echo a secret into the general snapshot"
+        # posture §16.2.8 established for Telegram's login code/password.
+        self._mcp_url: str | None = None
+        self._mcp_token: str | None = None
         # Kept as a single settable slot -- settings_window.py's own
         # ``controller.on_change = self._push_state`` assignment is
         # unchanged by this phase (see that module's docstring) -- rather
@@ -1566,6 +1580,36 @@ class SettingsController:
         return xlsx_path
 
     # ------------------------------------------------------------------ #
+    # Connect Claude (P4c, docs/https-connector-refactor-plan.md §16.9 --
+    # supersedes the reverted P4b/D11 Desktop shim for every client that
+    # already speaks Streamable HTTP natively, Claude Code first among
+    # them; it is explicitly not a Desktop answer, see D12)
+    # ------------------------------------------------------------------ #
+
+    def set_mcp_connection_info(self, *, url: str | None, token: str | None) -> None:
+        """Called once by daemon_main.py right after the WebServer is
+        constructed -- ``url``/``token`` are ``WebServer.mcp_url``/
+        ``.mcp_token``, both None when ``web.mcp.enabled`` is off or no
+        WebServer exists at all (a native-only install). Not itself a
+        mutating action (no snapshot push): this only ever runs once, at
+        startup, before any window/page has rendered a first snapshot."""
+        self._mcp_url = url
+        self._mcp_token = token
+
+    def reveal_mcp_token(self) -> dict[str, Any]:
+        """The Connect Claude card's "Reveal"/"Copy command" action.
+        Deliberately returns a bare ``{"mcp_token": ...}``, not a fresh
+        snapshot() -- the token never appears in snapshot()'s own
+        `general` state (see __init__'s comment on this), so a caller
+        pushing this return value into a full-state re-render would wipe
+        every other rendered section. settings_window.py's native dispatch
+        and web/routes_settings.py's bridge shim both special-case this
+        action's result into its own ``window.__pfRevealMcpToken(...)``
+        callback rather than ``window.__pfRender``/``_push_state`` for
+        exactly this reason -- see either module's own handling."""
+        return {"mcp_token": self._mcp_token or ""}
+
+    # ------------------------------------------------------------------ #
     # About
     # ------------------------------------------------------------------ #
 
@@ -1623,6 +1667,10 @@ class SettingsController:
             "org_button_label": (
                 "Install/Update Organization Config…" if org_installed else "Install Organization Config…"
             ),
+            # P4c's Connect Claude card -- mcp_token is deliberately absent
+            # here, see __init__'s own comment and reveal_mcp_token() below.
+            "mcp_enabled": self._mcp_url is not None,
+            "mcp_url": self._mcp_url or "",
             "version": __version__,
         }
 

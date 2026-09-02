@@ -261,6 +261,20 @@ select.pf-input { cursor: pointer; }
   transform: translate(-50%, -100%);
 }
 
+/* ---- Connect Claude (P4c, docs/https-connector-refactor-plan.md §16.9) ---- */
+.pf-connect-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.pf-connect-label { width: 46px; flex-shrink: 0; font-size: 12px; font-weight: 600; color: var(--pf-text-muted); }
+.pf-connect-value {
+  flex: 1; border: 1px solid var(--pf-border); border-radius: 6px; padding: 5px 8px; font-size: 12.5px;
+  background: var(--pf-content-bg); font-family: ui-monospace, monospace; overflow-x: auto; white-space: nowrap;
+}
+.pf-connect-cmd-row { display: flex; align-items: flex-start; gap: 10px; margin-top: 4px; }
+.pf-connect-cmd {
+  flex: 1; margin: 0; border: 1px solid var(--pf-border); border-radius: 6px; padding: 8px 10px; font-size: 11.5px;
+  background: var(--pf-content-bg); font-family: ui-monospace, monospace; white-space: pre-wrap; word-break: break-all;
+  color: var(--pf-text);
+}
+
 /* ---- Privacy ---- */
 .pf-policy-row {
   display: flex; align-items: center; justify-content: space-between; padding: 12px 14px;
@@ -348,6 +362,12 @@ _JS = r"""
     // null, and without this the auto-close-on-success check in render()
     // couldn't tell "flow just succeeded" apart from "flow never started".
     telegramAuthWasActive: false,
+    // P4c (docs/https-connector-refactor-plan.md §16.9): null until the
+    // Connect Claude card's Reveal button has actually round-tripped
+    // through reveal_mcp_token() -- see window.__pfRevealMcpToken below.
+    // Never populated from pyState/__pfInitialState; that's the whole
+    // point (see reveal_mcp_token()'s own docstring).
+    mcpTokenRevealed: null,
   };
   var pyState = null;
 
@@ -511,6 +531,53 @@ _JS = r"""
       html += '<div class="pf-export-hint">Not installed</div>';
     }
     html += '</div></div>';
+
+    html += renderConnectClaude(g);
+
+    html += '</div>';
+    return html;
+  }
+
+  // P4c (docs/https-connector-refactor-plan.md §16.9): supersedes the
+  // reverted P4b/D11 Desktop stdio shim for every client that already
+  // speaks Streamable HTTP natively (Claude Code first among them) -- not
+  // a second install artifact, just the URL and bearer token this daemon
+  // is already listening with, shown on the page it already had. Does not
+  // solve Claude Desktop's zero-config problem; see D12 in the plan doc.
+  function renderConnectClaude(g) {
+    var html = '<div class="pf-card"><div class="pf-card-title">Connect Claude</div>';
+    if (!g.mcp_enabled) {
+      html += '<div class="pf-card-desc">/mcp is off -- set <code>web.mcp.enabled: true</code> in settings.yaml ' +
+        'and restart PrivacyFence to connect Claude Code (or any other Streamable-HTTP MCP client) directly.</div>';
+      html += '</div>';
+      return html;
+    }
+    html += '<div class="pf-card-desc" style="margin-bottom:12px;">Add this daemon as an MCP server in Claude Code, ' +
+      'or any other client that speaks Streamable HTTP, using the URL and token below.</div>';
+
+    html += '<div class="pf-connect-row"><div class="pf-connect-label">URL</div>' +
+      '<div class="pf-connect-value">' + esc(g.mcp_url) + '</div>' +
+      '<div class="pf-btn-secondary" role="button" tabindex="0" aria-label="Copy MCP URL" data-mcp-copy="' +
+      esc(g.mcp_url) + '" data-mcp-copy-label="Copied URL">Copy</div></div>';
+
+    var revealed = ui.mcpTokenRevealed;
+    html += '<div class="pf-connect-row"><div class="pf-connect-label">Token</div>';
+    if (revealed == null) {
+      html += '<div class="pf-connect-value">' + '•'.repeat(24) + '</div>' +
+        '<div class="pf-btn-secondary" role="button" tabindex="0" aria-label="Reveal MCP token" ' +
+        dataAttr('reveal_mcp_token', {}) + '>Reveal</div>';
+    } else {
+      html += '<div class="pf-connect-value">' + esc(revealed) + '</div>' +
+        '<div class="pf-btn-secondary" role="button" tabindex="0" aria-label="Copy MCP token" data-mcp-copy="' +
+        esc(revealed) + '" data-mcp-copy-label="Copied token">Copy</div>';
+    }
+    html += '</div>';
+
+    var cmd = 'claude mcp add --transport http privacyfence ' + g.mcp_url +
+      ' --header "Authorization: Bearer ' + (revealed == null ? '<token -- click Reveal above>' : revealed) + '"';
+    html += '<div class="pf-connect-cmd-row"><pre class="pf-connect-cmd">' + esc(cmd) + '</pre>' +
+      '<div class="pf-btn-secondary" role="button" tabindex="0" aria-label="Copy connect command" data-mcp-copy="' +
+      esc(cmd) + '" data-mcp-copy-label="Copied command">Copy</div></div>';
 
     html += '</div>';
     return html;
@@ -931,6 +998,17 @@ _JS = r"""
   }
 
   window.__pfRender = render;
+
+  // P4c (docs/https-connector-refactor-plan.md §16.9): reveal_mcp_token's
+  // result is a bare {"mcp_token": ...}, not a snapshot -- both bridges
+  // (routes_settings.py's web shim and settings_window.py's native
+  // _dispatch) route it here instead of __pfRender, which expects a full
+  // state shape and would otherwise wipe every other rendered section.
+  window.__pfRevealMcpToken = function (result) {
+    ui.mcpTokenRevealed = (result && result.mcp_token) || '';
+    render(pyState);
+  };
+
   window.__pfDebugHook = { ui: ui, render: render, TELEGRAM_STEP_COPY: TELEGRAM_STEP_COPY, onClick: null, onKeydown: null };
 
   // -------------------------------------------------------------------- //
@@ -967,6 +1045,17 @@ _JS = r"""
 
     var repoEl = e.target.closest('[data-action="open_repo"]');
     if (repoEl) { post('open_repo', {}); return; }
+
+    // P4c's Connect Claude card -- URL/token/command Copy buttons. Unlike
+    // [data-copy-id] (right-click, see onContextMenu below) these are
+    // ordinary left-click buttons, since the value to copy isn't otherwise
+    // selectable text the way a grant row's ID display is.
+    var mcpCopyEl = e.target.closest('[data-mcp-copy]');
+    if (mcpCopyEl) {
+      copyToClipboard(mcpCopyEl.getAttribute('data-mcp-copy'));
+      showCopyToast(e.clientX, e.clientY, mcpCopyEl.getAttribute('data-mcp-copy-label') || 'Copied');
+      return;
+    }
 
     var actionEl = e.target.closest('[data-action]');
     if (actionEl) {

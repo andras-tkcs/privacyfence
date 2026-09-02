@@ -1500,6 +1500,53 @@ class TestAuditLog:
         assert state["audit"]["recent"][0]["decision"] == "auto_accepted"
 
 
+class TestConnectClaude:
+    """P4c (docs/https-connector-refactor-plan.md §16.9): the General page's
+    Connect Claude card, superseding the reverted P4b Desktop shim for
+    Claude Code and any other Streamable-HTTP-native client."""
+
+    def test_default_state_is_disabled_with_no_url(self, controller):
+        state = controller.snapshot()
+        assert state["general"]["mcp_enabled"] is False
+        assert state["general"]["mcp_url"] == ""
+
+    def test_set_connection_info_reflects_in_the_snapshot(self, controller):
+        controller.set_mcp_connection_info(url="http://localhost:8765/mcp", token="secret-token")
+
+        state = controller.snapshot()
+
+        assert state["general"]["mcp_enabled"] is True
+        assert state["general"]["mcp_url"] == "http://localhost:8765/mcp"
+
+    def test_token_never_appears_in_the_snapshot(self, controller):
+        # §16.9/__init__'s own comment: same "never echo a secret into the
+        # general snapshot" posture as Telegram's login code/password.
+        controller.set_mcp_connection_info(url="http://localhost:8765/mcp", token="super-secret-token")
+
+        state = controller.snapshot()
+
+        assert "super-secret-token" not in json.dumps(state)
+        assert "mcp_token" not in state["general"]
+
+    def test_reveal_mcp_token_returns_the_token(self, controller):
+        controller.set_mcp_connection_info(url="http://localhost:8765/mcp", token="super-secret-token")
+
+        result = controller.reveal_mcp_token()
+
+        assert result == {"mcp_token": "super-secret-token"}
+
+    def test_reveal_mcp_token_when_disabled_returns_empty_string(self, controller):
+        result = controller.reveal_mcp_token()
+        assert result == {"mcp_token": ""}
+
+    def test_reveal_mcp_token_result_is_not_a_full_snapshot(self, controller):
+        # Deliberately not shaped like snapshot() -- see the method's own
+        # docstring on why a caller must not feed this into __pfRender.
+        controller.set_mcp_connection_info(url="http://localhost:8765/mcp", token="tok")
+        result = controller.reveal_mcp_token()
+        assert set(result.keys()) == {"mcp_token"}
+
+
 class TestAbout:
     def test_quit_app_calls_rumps_quit(self, controller, monkeypatch):
         calls = []

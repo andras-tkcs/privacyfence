@@ -651,6 +651,16 @@ Later/Skip, replacing a native alert), and the repo link (a plain `<a href>`, op
 never a `subprocess.run(["open", ...])` reachable from an HTTP request, which nothing under `web/`
 does at all, by design).
 
+The General page's **Connect Claude** card (P4c, `docs/https-connector-refactor-plan.md` §16.9 —
+supersedes the reverted P4b/D11 Desktop stdio shim, see the [`claude mcp add`](#connecting-claude)
+section above) shows the `/mcp` URL and a ready-to-paste `claude mcp add` command whenever
+`web.mcp.enabled` is on. The bearer token itself is never in the page's initial state — one more
+action, `reveal_mcp_token`, goes through the same allowlisted dispatcher as everything else but
+answers with a bare `{"mcp_token": ...}` rather than a fresh snapshot; both bridges (this page's JS
+and the native settings window's) route that specific response to its own `window.__pfRevealMcpToken`
+callback instead of the generic re-render, so revealing the token can't stomp on the rest of the
+rendered page.
+
 The `/approvals` list (`docs/approval-list-ui-ux.md`) shows every currently-pending card as its own
 row — connector icon, title, a relative timestamp, a **Deny** button right on the row, and a
 **Review →** link to the full card at `/approvals/{id}`. There is deliberately no **Allow** on the

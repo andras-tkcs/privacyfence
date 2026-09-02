@@ -933,6 +933,61 @@ class TestMaybeStartWebServer:
         assert result is not None
         assert isinstance(get_approval_ui(), NativeApprovalUI)
 
+    # ------------------------------------------------------------------ #
+    # P4c (docs/https-connector-refactor-plan.md §16.9): the Connect
+    # Claude card's connection info, wired from the running WebServer into
+    # the (possibly native-hosted) SettingsController regardless of
+    # web.settings.enabled -- both hosts render the same document.
+    # ------------------------------------------------------------------ #
+
+    def test_mcp_enabled_wires_url_and_token_into_the_controller(self, monkeypatch, tmp_path):
+        self._no_bind(monkeypatch, tmp_path)
+        controller = self._controller(tmp_path, monkeypatch)
+
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"mcp": {"enabled": True}, "port": 18765}}, self._ipc_server(),
+            unattended_sessions_enabled=False, controller=controller,
+        )
+
+        assert controller._mcp_url == result.mcp_url == f"{result.base_url}/mcp"
+        assert controller._mcp_token == result.mcp_token
+
+    def test_mcp_disabled_leaves_the_controller_unset(self, monkeypatch, tmp_path):
+        self._no_bind(monkeypatch, tmp_path)
+        controller = self._controller(tmp_path, monkeypatch)
+
+        daemon_main._maybe_start_web_server(
+            {"web": {"settings": {"enabled": True}}}, self._ipc_server(),
+            unattended_sessions_enabled=False, controller=controller,
+        )
+
+        assert controller._mcp_url is None
+        assert controller._mcp_token is None
+
+    def test_wired_even_when_web_settings_itself_is_off(self, monkeypatch, tmp_path):
+        # The native settings window renders the same document -- the
+        # Connect Claude card must work there too, not only when
+        # web.settings.enabled is also on.
+        self._no_bind(monkeypatch, tmp_path)
+        controller = self._controller(tmp_path, monkeypatch)
+
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"mcp": {"enabled": True}}}, self._ipc_server(),
+            unattended_sessions_enabled=False, controller=controller,
+        )
+
+        assert result is not None
+        assert controller._mcp_url == result.mcp_url
+
+    def test_no_controller_at_all_does_not_raise(self, monkeypatch, tmp_path):
+        self._no_bind(monkeypatch, tmp_path)
+
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"mcp": {"enabled": True}}}, self._ipc_server(), unattended_sessions_enabled=False,
+        )
+
+        assert result is not None
+
 
 # ---------------------------------------------------------------------------- #
 # parse_args

@@ -1893,18 +1893,27 @@ this card is for the same machine, same posture as every other `/settings` actio
 attributes the moment it's constructed (§16.3's `build_app`, `mcp_dispatcher`/`mcp_token` params) —
 the same process serving `/settings` has them in memory, so this needs no new discovery file the way
 D11's shim did (that file existed for an *out-of-process* Node consumer; P4c's consumer is the
-in-process settings route). `daemon_main._maybe_start_web_server` passes the running `WebServer`'s
-`mcp_url`/`mcp_token`/`mcp_dispatcher is not None` into `SettingsController` (or the route layer
-directly — an implementation detail, not a design commitment) alongside the existing `controller`
-wiring; `SettingsController.snapshot()` grows a `connect_claude` key carrying them.
+in-process settings route). `daemon_main._maybe_start_web_server` calls a new
+`SettingsController.set_mcp_connection_info(url=, token=)` right after constructing `WebServer`,
+passing `server.mcp_url`/`server.mcp_token` — regardless of `use_web_settings`, since both the native
+window and `/settings` render the same `build_html()` and both need the values live. `snapshot()`'s
+`general` state grows `mcp_enabled`/`mcp_url` (not a separate `connect_claude` key — this ended up
+sitting alongside the PII gate/update-check/org-config fields the General page already carries there,
+one dict, not a second one); the token itself is never in `general` at all, matching the Telegram-
+secrets pattern exactly. A dedicated `reveal_mcp_token()` action — allowlisted like every other
+`/api/settings/{action}`, but answering `{"mcp_token": ...}` rather than a fresh snapshot — is the only
+way the token leaves the process, and both bridges (the web page's JS, the native window's
+`_dispatch`) route that specific response to its own `window.__pfRevealMcpToken` callback instead of
+the generic `window.__pfRender`, which expects a full state shape and would otherwise wipe every other
+rendered section.
 
 **Test requirements**, mirroring §16.7's own discipline: the masked-by-default state is asserted (the
 token string does not appear in `build_html()`'s initial `window.__pfInitialState` in cleartext,
-matching the Telegram-secrets-never-echoed pattern §16.2.8 already established — actually revisit
-this if the reveal has to be server-rendered rather than client-toggled: if masking is CSS-only, the
-real value *is* in the DOM, and that's a different, weaker guarantee worth stating plainly rather than
-accidentally implying the stronger one); `/mcp` disabled renders the explanatory state, not a broken
-URL; the command string round-trips through a copy-button click in the browser smoke test
+matching the Telegram-secrets-never-echoed pattern §16.2.8 already established — this landed as the
+*stronger* guarantee floated above, not the CSS-only one: the token is fetched on demand via
+`reveal_mcp_token()` and is never in `window.__pfInitialState`'s JSON at all, revealed or not, so
+there's no weaker "hidden in the DOM" case to caveat); `/mcp` disabled renders the explanatory state,
+not a broken URL; the command string round-trips through a copy-button click in the browser smoke test
 (`qa_web_smoke.py`, §16.7's own "browser" row).
 
 **Rollback.** None needed — see §12's Rollback list. Turning `web.mcp.enabled` off (P2's own lever)

@@ -80,6 +80,13 @@ _ALLOWED_ACTIONS: frozenset[str] = frozenset({
     "toggle_grant_capability", "add_grant_row", "update_grant_row", "remove_grant_row",
     "set_default_policy", "set_category_policy", "toggle_calendar_free_busy",
     "set_log_level",
+    # P4c (§16.9) -- its result is a bare {"mcp_token": ...}, not a
+    # snapshot; the bridge shim below routes it to its own
+    # window.__pfRevealMcpToken callback instead of window.__pfRender, so
+    # this being in the mechanical dispatcher's allowlist doesn't mean it
+    # follows that dispatcher's usual "return value is a fresh snapshot"
+    # contract -- see reveal_mcp_token()'s own docstring.
+    "reveal_mcp_token",
 })
 
 
@@ -199,8 +206,15 @@ def _settings_bridge_shim(*, csrf: str, repo_url: str) -> str:
         "  var body = Object.assign({}, rest, {csrf: CSRF});"
         "  fetch(url, {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)})"
         "    .then(function(r){ return r.json().then(function(state){ return {ok: r.ok, state: state}; }); })"
-        "    .then(function(res){ if (res.ok && window.__pfRender) { window.__pfRender(res.state); } "
-        "else if (!res.ok) { console.error('PrivacyFence action failed:', action, res.state); } });"
+        # reveal_mcp_token's response is a bare {mcp_token: ...}, not a
+        # snapshot -- routed to its own callback (settings_window_html.py
+        # defines it) rather than __pfRender, which expects a full state
+        # shape and would otherwise wipe every other rendered section.
+        "    .then(function(res){"
+        "      if (!res.ok) { console.error('PrivacyFence action failed:', action, res.state); return; }"
+        "      if (action === 'reveal_mcp_token') { if (window.__pfRevealMcpToken) { window.__pfRevealMcpToken(res.state); } return; }"
+        "      if (window.__pfRender) { window.__pfRender(res.state); }"
+        "    });"
         "}};"
         "})();</script>"
     )
