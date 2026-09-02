@@ -53,7 +53,6 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PORT = 8765
 TOKEN_FILE_NAME = "web_token"
-MCP_URL_FILE_NAME = "mcp_url"
 
 # Content-Security-Policy for a fully self-contained document (see
 # approval_window_html.py's own module docstring: fonts/icons are base64
@@ -85,28 +84,6 @@ def load_or_create_token() -> str:
     path.write_text(token, encoding="utf-8")
     path.chmod(0o600)
     return token
-
-
-def _write_mcp_url_file(url: str) -> None:
-    """The direct successor of ipc.py's PORT_FILE for a client that talks to
-    /mcp instead of the old IPC socket -- see mcpb/shim/src/protocol.ts's
-    module docstring, which reads this same file (D11 in
-    docs/https-connector-refactor-plan.md §12: "WebServer.start() writes
-    ~/.privacyfence/mcp_url when it binds, and clears it on shutdown -- the
-    only new daemon-side surface P4b needs."). 0600 for the same reason
-    web_token/mcp_token are: not a secret itself, but written alongside them
-    under the same directory."""
-    path = paths.data_dir() / MCP_URL_FILE_NAME
-    path.write_text(url, encoding="utf-8")
-    path.chmod(0o600)
-
-
-def _clear_mcp_url_file() -> None:
-    """Called on WebServer.stop() so a shim launched after this daemon exits
-    finds no file rather than a stale, now-dead URL -- the same reasoning
-    ipc_server.py's own shutdown has for not leaving a dangling PORT_FILE
-    behind."""
-    (paths.data_dir() / MCP_URL_FILE_NAME).unlink(missing_ok=True)
 
 
 class _SecurityHeadersMiddleware:
@@ -364,12 +341,8 @@ class WebServer:
         self._thread = threading.Thread(target=self._server.run, name="web-server", daemon=True)
         self._thread.start()
         logger.info("Web approval server listening on %s", self.base_url)
-        if self.mcp_url is not None:
-            _write_mcp_url_file(self.mcp_url)
 
     def stop(self) -> None:
         self._server.should_exit = True
         if self._thread is not None:
             self._thread.join(timeout=5)
-        if self.mcp_url is not None:
-            _clear_mcp_url_file()

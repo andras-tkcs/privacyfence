@@ -13,8 +13,6 @@ this document is about which ones run automatically versus which ones a human ha
 ```bash
 npm test              # bridge/, Node's built-in test runner
 npm run typecheck     # bridge/, tsc --noEmit
-npm test              # mcpb/shim/, Node's built-in test runner
-npm run typecheck     # mcpb/shim/, tsc --noEmit
 pytest -v --cov=src/privacyfence --cov-report=term-missing
 ```
 
@@ -101,27 +99,15 @@ manual steps. It includes:
   Python client, a runtime dependency since P2 (`pyproject.toml`'s `[project.dependencies]` — see
   `docs/https-connector-refactor-plan.md` §8.2/D2) rather than a test-only one; `test_routes_mcp.py`
   above uses the same client against `/mcp` directly.
-- `mcpb/shim/test/*.test.ts` (`npm test`, run from `mcpb/shim/`) — the .mcpb shim's own suite (D11 in
-  `docs/https-connector-refactor-plan.md` §12): daemon discovery/launch (`daemon.test.ts`, the
-  `mcp_url`-file analogue of `bridge/test/daemon.test.ts`'s `ipc_port` coverage) and the stdio<->
-  Streamable HTTP message proxy (`proxy.test.ts`, `index.test.ts` — the latter against a real fake
-  `/mcp` server built on the official SDK's own server classes, not a hand-mocked transport).
-- `npm run typecheck` (`tsc --noEmit`, run from `mcpb/shim/`) — same reasoning as bridge/'s.
-- `tests/integration/test_shim_mcp_contract.py` — the shim's counterpart to
-  `test_bridge_daemon_contract.py`: spawns the real built `mcpb/shim/dist/shim.js` against a real
-  `privacyfence.web.server.WebServer` (with a real bound `/mcp` endpoint) and drives it with the
-  official `mcp` Python client over real MCP-over-stdio. A passthrough test, not a schema test — the
-  shim carries no tool-schema knowledge, so "one `initialize` and one `tools/call` round-trip, with
-  the bearer header attached and `mcp_url` honoured" is the whole of what there is to assert. Skips
-  automatically if Node isn't on `PATH`, same as the bridge's contract test.
 
 ## 2. Local-only checks — run manually before opening/updating a relevant PR, never in CI
 
-Two scripts exist specifically because some failure classes can't be caught by a fully-mocked,
-fully-offline suite. Both are excluded from CI on purpose — one needs real, authenticated
-third-party accounts; the other needs a real screen and a real click — and both print the same
-kind of small, deterministic Markdown report meant to be pasted into the PR description so a
-reviewer doesn't have to re-run anything or have access to the same accounts/hardware themselves.
+Three scripts exist specifically because some failure classes can't be caught by a fully-mocked,
+fully-offline suite. All three are excluded from CI on purpose — one needs real, authenticated
+third-party accounts; another needs a real screen and a real click; the third needs a real browser —
+and all three print the same kind of small, deterministic Markdown report meant to be pasted into
+the PR description so a reviewer doesn't have to re-run anything or have access to the same
+accounts/hardware themselves.
 
 ### 2.1 `qa_fixture_recorder.py --check` / `--record`
 
@@ -248,11 +234,9 @@ full release-time checklist tying all three tiers together.
 
 | Check | Runs in CI? | When |
 |---|---|---|
-| `pytest` (full suite, incl. the bridge/daemon and shim/mcp contract tests) | Yes, every PR | Always — this is the merge gate |
+| `pytest` (full suite, incl. the bridge/daemon contract test) | Yes, every PR | Always — this is the merge gate |
 | `npm test` (bridge/'s own suite) | Yes, every PR | Always — this is the merge gate |
 | `npm run typecheck` (bridge/) | Yes, every PR | Always — this is the merge gate |
-| `npm test` (mcpb/shim/'s own suite) | Yes, every PR | Always — this is the merge gate |
-| `npm run typecheck` (mcpb/shim/) | Yes, every PR | Always — this is the merge gate |
 | `qa_fixture_recorder.py --check` | No | PR touches a `*_client.py`/`connectors/**` file |
 | `qa_popup_smoke.py` | No | PR touches `approval_window.py`'s modal-loop plumbing |
 | `qa_web_smoke.py` | No | PR touches `web_shell.py`, `approval_list_html.py`, web routes' JS, `resources/sw.js`, or the CSP |
