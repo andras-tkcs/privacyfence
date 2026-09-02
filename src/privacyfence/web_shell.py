@@ -79,6 +79,17 @@ body {
   z-index: 1000;
 }
 .pf-shell-toast.shown { opacity: 1; }
+.pf-shell-notif-prompt {
+  bottom: 72px; display: flex; align-items: center; gap: 10px; pointer-events: auto;
+}
+.pf-shell-notif-enable {
+  background: var(--color-accent); color: #fff; border: none; border-radius: var(--radius-md);
+  font-size: 12.5px; font-weight: 600; padding: 5px 10px; cursor: pointer; flex-shrink: 0;
+}
+.pf-sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+}
 @media (max-width: 480px) {
   .pf-shell-header { padding: 8px 12px; gap: 10px; }
   .pf-shell-brand { display: none; }
@@ -94,14 +105,114 @@ body {
 # window.__pfRenderApprovals (whichever the current page defines) own their
 # own page's markup entirely, same separation settings_window_html.py's own
 # bridge already has between "receive a message" and "render it".
+#
+# Notifications (docs/approval-list-ui-ux.md §4), tiers 0-1 only -- no
+# push, no VAPID, nothing leaving the machine (tier 2 is org mode/P7+):
+#   - tier 0: the document title gains a "(N) " badge and a visually
+#     hidden aria-live region announces the count, whenever the approvals
+#     event's row count changes -- works with no permission at all.
+#   - tier 1: registration.showNotification() via resources/sw.js, fired
+#     only when the tab is not focused, rate-limited to one per 5s (§4.2),
+#     grouped into a single "N approvals pending" notification rather than
+#     one per row. **Content invariant (§4.3), enforced by construction
+#     here, not by a detail-level setting yet**: the body is always the
+#     bare count -- "N approval(s) pending" -- never a connector name, tool
+#     name, or the row's own title, all of which approvals.PendingApproval.
+#     summary (and therefore this SSE event's own payload) can carry real
+#     gated content in (an event title, a contact name, a document title --
+#     see gate.py's call sites). That is exactly what a `standard`/
+#     `detailed` notification level would need to show, and is deliberately
+#     not implemented yet: the count-only body below is a safe subset of
+#     `minimal` (§4.3's own table) that cannot leak anything at any
+#     setting, which is what ships until a real per-field allowlist for the
+#     richer levels is built.
+#   - the permission pre-prompt only ever fires from window.__pfNotifPrompt,
+#     called by approval_list_html.py's own script right after a decision
+#     is made (never on page load -- §4.4: "never on page load, a cold
+#     Notification.requestPermission() is what browsers now penalize").
 _STREAM_JS = """
 (function () {
+  // web.notifications.enabled (settings.yaml.example) -- config wiring for
+  // tiers 0-1 together, per that config block's own comment. false turns
+  // off the title badge, the aria-live announcement, service worker
+  // registration, and the permission pre-prompt alike; the live-connection
+  // indicator above is unaffected (it isn't a notification).
+  var NOTIFICATIONS_ENABLED = %(notifications_enabled)s;
+
   var dot = document.getElementById('pf-shell-live-dot');
   var label = document.getElementById('pf-shell-live-label');
+  var announcer = document.getElementById('pf-shell-announcer');
+  var baseTitle = document.title;
+  var lastCount = null;
+  var lastNotifyAt = 0;
+
   function setState(state, text) {
     if (dot) { dot.className = 'pf-shell-live-dot ' + state; }
     if (label) { label.textContent = text; }
   }
+
+  function updateBadge(count) {
+    if (!NOTIFICATIONS_ENABLED) { return; }
+    document.title = count > 0 ? '(' + count + ') ' + baseTitle : baseTitle;
+    if (announcer) {
+      announcer.textContent = count > 0
+        ? count + ' approval' + (count === 1 ? '' : 's') + ' pending'
+        : 'No approvals pending';
+    }
+  }
+
+  function maybeNotify(count) {
+    if (!NOTIFICATIONS_ENABLED) { return; }
+    if (count === 0 || lastCount === null || count <= lastCount) { return; }
+    if (typeof document.hasFocus === 'function' && document.hasFocus()) { return; }
+    var now = Date.now();
+    if (now - lastNotifyAt < 5000) { return; }
+    lastNotifyAt = now;
+    if (!('Notification' in window) || Notification.permission !== 'granted') { return; }
+    if (!('serviceWorker' in navigator)) { return; }
+    var body = count === 1 ? '1 approval pending' : count + ' approvals pending';
+    navigator.serviceWorker.ready.then(function (reg) {
+      reg.showNotification('PrivacyFence', { body: body, tag: 'pf-approvals', renotify: false });
+    }).catch(function () {});
+  }
+
+  function onApprovalsEvent(rows) {
+    var count = (rows || []).length;
+    updateBadge(count);
+    maybeNotify(count);
+    lastCount = count;
+  }
+
+  if (NOTIFICATIONS_ENABLED && 'serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(function () {});
+  }
+
+  window.__pfNotifPrompt = function () {
+    if (!NOTIFICATIONS_ENABLED) { return; }
+    if (!('Notification' in window) || Notification.permission !== 'default') { return; }
+    var already;
+    try { already = localStorage.getItem('pf_notif_prompted'); } catch (e) { already = null; }
+    if (already) { return; }
+    try { localStorage.setItem('pf_notif_prompted', '1'); } catch (e) {}
+    var bar = document.createElement('div');
+    bar.className = 'pf-shell-toast pf-shell-notif-prompt shown';
+    bar.setAttribute('role', 'status');
+    var text = document.createElement('span');
+    text.textContent = 'Want PrivacyFence to notify you when Claude needs approval?';
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'pf-shell-notif-enable';
+    btn.textContent = 'Enable';
+    btn.addEventListener('click', function () {
+      Notification.requestPermission();
+      bar.remove();
+    });
+    bar.appendChild(text);
+    bar.appendChild(btn);
+    document.body.appendChild(bar);
+    setTimeout(function () { if (bar.parentNode) { bar.remove(); } }, 10000);
+  };
+
   setState('reconnecting', 'connecting…');
   if (typeof EventSource === 'undefined') {
     setState('down', "can't reach PrivacyFence");
@@ -114,7 +225,9 @@ _STREAM_JS = """
     if (window.__pfRender) { window.__pfRender(JSON.parse(e.data)); }
   });
   es.addEventListener('approvals', function (e) {
-    if (window.__pfRenderApprovals) { window.__pfRenderApprovals(JSON.parse(e.data)); }
+    var rows = JSON.parse(e.data);
+    if (window.__pfRenderApprovals) { window.__pfRenderApprovals(rows); }
+    onApprovalsEvent(rows);
   });
   window.__pfStateStream = es;
 })();
@@ -131,7 +244,7 @@ def _nav_html(active: str) -> str:
     return "".join(items)
 
 
-def wrap(body_html: str, *, title: str, active: str) -> str:
+def wrap(body_html: str, *, title: str, active: str, notifications_enabled: bool = True) -> str:
     """Full ``<!DOCTYPE html>`` document: tokens.css + the shell's own CSS,
     the header (brand, nav between Approvals/Settings, live indicator), and
     ``body_html`` dropped into ``<main>`` unescaped -- callers own their own
@@ -139,8 +252,13 @@ def wrap(body_html: str, *, title: str, active: str) -> str:
     HTML-building routes already follow throughout this codebase.
 
     ``active`` is one of ``"approvals"``/``"settings"`` -- which nav item
-    renders as current.
+    renders as current. ``notifications_enabled`` is settings.yaml.
+    example's ``web.notifications.enabled`` (default true) -- false turns
+    off tiers 0 and 1 together (title badge, aria-live announcement,
+    service worker registration, the permission pre-prompt), per that
+    config key's own comment.
     """
+    stream_js = _STREAM_JS % {"notifications_enabled": "true" if notifications_enabled else "false"}
     return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -161,7 +279,8 @@ def wrap(body_html: str, *, title: str, active: str) -> str:
 </header>
 <main class="pf-shell-main">{body_html}</main>
 <div class="pf-shell-toast" id="pf-shell-toast" role="status"></div>
-<script>{_STREAM_JS}</script>
+<div class="pf-sr-only" id="pf-shell-announcer" aria-live="polite"></div>
+<script>{stream_js}</script>
 </body>
 </html>
 """

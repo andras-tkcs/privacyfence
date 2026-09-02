@@ -79,6 +79,13 @@ class TestSettingsPage:
         r = client.get("/settings")
         assert r.headers.get("cache-control") == "no-store"
 
+    def test_notifications_enabled_config_reaches_the_page(self, controller):
+        app = create_app(controller, token=TOKEN, notifications_enabled=False)
+        c = TestClient(app, base_url="http://localhost")
+        c.cookies.set("pf_session", TOKEN)
+        r = c.get("/settings")
+        assert "NOTIFICATIONS_ENABLED = false" in r.text
+
 
 class TestActionDispatch:
     def test_unlisted_action_is_404_before_any_getattr(self, client, controller, monkeypatch):

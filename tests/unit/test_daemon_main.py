@@ -905,6 +905,20 @@ class TestMaybeStartWebServer:
 
         assert result.allow_quit is False
 
+    def test_notifications_enabled_defaults_true_and_is_configurable(self, monkeypatch, tmp_path):
+        self._no_bind(monkeypatch, tmp_path)
+
+        default_result = daemon_main._maybe_start_web_server(
+            {"web": {"approval_ui": "web"}}, self._ipc_server(), unattended_sessions_enabled=False,
+        )
+        assert default_result.notifications_enabled is True
+
+        off_result = daemon_main._maybe_start_web_server(
+            {"web": {"approval_ui": "web", "notifications": {"enabled": False}}}, self._ipc_server(),
+            unattended_sessions_enabled=False,
+        )
+        assert off_result.notifications_enabled is False
+
     def test_settings_can_run_with_the_native_approval_ui(self, monkeypatch, tmp_path):
         from privacyfence.approval_ui import NativeApprovalUI, get_approval_ui
 

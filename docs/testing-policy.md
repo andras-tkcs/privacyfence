@@ -198,6 +198,40 @@ scenario here; see `qa_popup_smoke.py`'s own module docstring). Same venv requir
 Paste the printed report into the PR description under a `## Popup smoke check` heading, same
 convention as §2.1.
 
+### 2.3 `qa_web_smoke.py`
+
+`tests/unit/web/`, `test_web_shell.py`, and `test_approval_list_html.py` cover the web surfaces'
+(`/settings`, `/approvals`) HTML/JSON construction and route behavior — CSRF, the settings action
+allowlist, argument validation — on every PR, entirely against Starlette's in-process `TestClient`.
+That deliberately leaves one thing untested: a **real browser** actually parsing and running the JS
+those routes emit. A script tag referencing a DOM element or another script's global defined *later*
+in the document silently no-ops instead of raising in a real browser — this script's own "card
+decide → return-to-list toast" scenario is a regression test for exactly that bug (approval_list_
+html.py's toast/notification-prompt code read `#pf-shell-toast`, defined by web_shell.py *after* it
+in document order, before that element existed — found by running this script during P4's own
+development, not by any unit test). It also confirms the CSP (web/server.py's `_CSP`) actually
+permits what a page needs — e.g. that `worker-src 'self'` really does let `resources/sw.js` register,
+not just that the header string contains the right token.
+
+**Never run in CI.** It needs `playwright` (`pip install playwright` — not a project dependency,
+install it locally) and a Chromium binary, and drives a real embedded HTTP server + real browser
+end to end, which is slower and flakier than the route-level suite that already runs on every PR.
+
+**When to run this**: whenever `web_shell.py`, `approval_list_html.py`, the JS-emitting functions in
+`web/routes_approvals.py`/`web/routes_settings.py`, `resources/sw.js`, or `web/server.py`'s CSP
+changes. Not for a `settings_controller.py`/`settings_window_html.py` change with no web-shell/CSP
+involvement — those are covered by `test_settings_window_html.py`'s construction-only assertions,
+same reasoning `qa_popup_smoke.py`'s own docstring gives for the native window.
+
+```bash
+.venv/bin/pip install playwright
+.venv/bin/python scripts/qa_web_smoke.py
+```
+
+If Playwright's own bundled Chromium isn't installed, pass `--chromium-path` at a Chromium/Chrome
+binary already on disk instead of downloading one. Paste the printed report into the PR description
+under a `## Web smoke check` heading, same convention as §2.1/§2.2.
+
 ## 3. Full manual QA pass — before a release, not per-PR
 
 [`connector-qa-testing.md`](connector-qa-testing.md) drives every tool through a live Claude
@@ -221,6 +255,7 @@ full release-time checklist tying all three tiers together.
 | `npm run typecheck` (mcpb/shim/) | Yes, every PR | Always — this is the merge gate |
 | `qa_fixture_recorder.py --check` | No | PR touches a `*_client.py`/`connectors/**` file |
 | `qa_popup_smoke.py` | No | PR touches `approval_window.py`'s modal-loop plumbing |
+| `qa_web_smoke.py` | No | PR touches `web_shell.py`, `approval_list_html.py`, web routes' JS, `resources/sw.js`, or the CSP |
 | `connector-qa-testing.md`'s live Cowork pass | No | Before a release, or a broad gate/auto-accept change |
 
 None of the "No" rows require a credential, secret, or macOS Accessibility permission to ever be

@@ -256,3 +256,33 @@ web:
     # point a Streamable HTTP MCP client at http://localhost:<port>/mcp
     # with `Authorization: Bearer <the token in ~/.privacyfence/mcp_token>`.
     enabled: true
+  settings:
+    # Serve /settings and its POST /api/settings/{action} dispatcher (see
+    # docs/https-connector-refactor-plan.md §16) -- independent of
+    # approval_ui above: a user can run the web settings page with the
+    # native approval dialog, or the reverse. Rollback lever for this
+    # surface specifically: flipping back to false returns to the native
+    # settings window only, which this phase leaves fully working
+    # (P10 is what eventually retires it). Default false -- opt-in, same
+    # posture as approval_ui.
+    enabled: false
+    # rumps.quit_application() from a browser stops the server rendering
+    # the page it was clicked on -- confirmed in-page either way (§16.2.8),
+    # but this is the local-mode-only kill switch for the action entirely.
+    # Will be refused outright once `mode: org` exists (a future phase);
+    # local mode leans "the token is enough" (§16.8's open question #2).
+    allow_quit: true
+  notifications:
+    # Desktop notifications for a new pending approval while the
+    # /approvals tab is open but not focused (docs/approval-list-ui-ux.md
+    # §4) -- tiers 0 (title badge, aria-live announcement) and 1
+    # (registration.showNotification(), no push service involved, nothing
+    # leaves the machine) only. Body is always the bare pending count
+    # ("N approvals pending") regardless of `detail` below -- the richer
+    # `standard`/`detailed` levels this key is reserved for need a real
+    # per-field allowlist (never the row's own title/summary, which can
+    # carry real gated content) that hasn't been built yet; see
+    # web_shell.py's own module docstring. Tier 2 (web push, a closed tab,
+    # a phone) is org mode/P7+ work and has no key here yet.
+    enabled: true
+    detail: standard # minimal | standard | detailed -- reserved, see above

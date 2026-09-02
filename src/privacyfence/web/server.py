@@ -60,11 +60,15 @@ MCP_URL_FILE_NAME = "mcp_url"
 # data URIs, never a network fetch) -- default-src 'none' with narrow,
 # explicit exceptions for exactly what these pages actually use, not a
 # blanket 'unsafe-inline' grant. See docs/https-connector-refactor-plan.md
-# §10.5.
+# §10.5. worker-src 'self' (P4/W8) is the one addition since P1: without
+# it, registering resources/sw.js for tier-0/1 notifications
+# (web_shell.py's own script) is blocked by the same default-src 'none'
+# every other unlisted fetch type already is -- 'self' only, same-origin,
+# nothing external.
 _CSP = (
     "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
-    "img-src data:; font-src data:; connect-src 'self'; base-uri 'none'; "
-    "form-action 'none'; frame-ancestors 'none'"
+    "img-src data:; font-src data:; connect-src 'self'; worker-src 'self'; "
+    "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 )
 
 
@@ -226,6 +230,7 @@ def build_app(
     controller: SettingsController | None = None,
     allow_quit: bool = True,
     state_stream: StateStream | None = None,
+    notifications_enabled: bool = True,
 ) -> ASGIApp:
     """The approval routes, wrapped with the Host allowlist and security
     headers every real deployment needs -- routes_approvals.create_app()
@@ -261,7 +266,9 @@ def build_app(
         lifespans.append(mcp_lifespan(session_manager))
 
     if controller is not None:
-        extra_routes.extend(build_settings_routes(controller, token=token, allow_quit=allow_quit))
+        extra_routes.extend(build_settings_routes(
+            controller, token=token, allow_quit=allow_quit, notifications_enabled=notifications_enabled,
+        ))
 
     if state_stream is not None:
         extra_routes.append(_state_stream_route(state_stream, token=token))
@@ -275,7 +282,10 @@ def build_app(
             async with _combined_lifespan(lifespans):
                 yield
 
-    app = create_approvals_app(web_ui, token=token, extra_routes=extra_routes, lifespan=lifespan)
+    app = create_approvals_app(
+        web_ui, token=token, extra_routes=extra_routes, lifespan=lifespan,
+        notifications_enabled=notifications_enabled,
+    )
     wrapped: ASGIApp = _HostAllowlistMiddleware(app, allowed_hosts)
     return _SecurityHeadersMiddleware(wrapped)
 
@@ -298,6 +308,7 @@ class WebServer:
         mcp_token: str | None = None,
         controller: SettingsController | None = None,
         allow_quit: bool = True,
+        notifications_enabled: bool = True,
     ) -> None:
         self.host = host
         self.port = port
@@ -306,6 +317,7 @@ class WebServer:
         self.mcp_token = (mcp_token or load_or_create_mcp_token()) if mcp_dispatcher is not None else None
         self.controller = controller
         self.allow_quit = allow_quit
+        self.notifications_enabled = notifications_enabled
         # The state-push channel (§16.3) backs both /settings (async
         # outcomes reaching an open tab) and /approvals (P3's own list, via
         # the same "approvals" event) -- built whenever either surface is
@@ -328,6 +340,7 @@ class WebServer:
             controller=controller,
             allow_quit=allow_quit,
             state_stream=self.state_stream,
+            notifications_enabled=notifications_enabled,
         )
         config = uvicorn.Config(wrapped, host=host, port=port, log_level="warning")
         self._server = uvicorn.Server(config)

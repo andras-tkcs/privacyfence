@@ -276,6 +276,7 @@ def _maybe_start_web_server(
     web_config = config.get("web", {}) or {}
     mcp_config = web_config.get("mcp", {}) or {}
     settings_config = web_config.get("settings", {}) or {}
+    notifications_config = web_config.get("notifications", {}) or {}
     use_web_approval_ui = web_config.get("approval_ui", "native") == "web"
     mcp_enabled = bool(mcp_config.get("enabled", False))
     use_web_settings = bool(settings_config.get("enabled", False)) and controller is not None
@@ -319,6 +320,7 @@ def _maybe_start_web_server(
         mcp_dispatcher=mcp_dispatcher,
         controller=controller if use_web_settings else None,
         allow_quit=bool(settings_config.get("allow_quit", True)),
+        notifications_enabled=bool(notifications_config.get("enabled", True)),
     )
     server.start()
     # The pending-result URL gate.py hands back to Claude (§5.2 point 4) is

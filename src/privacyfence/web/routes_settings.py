@@ -211,6 +211,7 @@ def build_routes(
     *,
     token: str,
     allow_quit: bool = True,
+    notifications_enabled: bool = True,
 ) -> list[BaseRoute]:
     """The Route objects themselves, for server.py to fold into the one
     combined app (extra_routes, same pattern web/routes_mcp.py's
@@ -236,7 +237,10 @@ def build_routes(
         state = _snapshot(controller)
         body = settings_window_html.build_html(state)
         body += _settings_bridge_shim(csrf=token, repo_url=REPO_URL)
-        html = web_shell.wrap(body, title="PrivacyFence — Settings", active="settings")
+        html = web_shell.wrap(
+            body, title="PrivacyFence — Settings", active="settings",
+            notifications_enabled=notifications_enabled,
+        )
         response = HTMLResponse(html, headers={"Cache-Control": "no-store"})
         _set_session_cookie_on(response, token)
         return response
@@ -333,9 +337,13 @@ def build_routes(
     ]
 
 
-def create_app(controller: SettingsController, *, token: str, allow_quit: bool = True) -> Starlette:
+def create_app(
+    controller: SettingsController, *, token: str, allow_quit: bool = True, notifications_enabled: bool = True,
+) -> Starlette:
     """Standalone Starlette app wrapping build_routes() -- what this
     module's own tests construct against, the same "no filesystem/global-
     singleton dependency" convention web/routes_approvals.py's create_app()
     already established."""
-    return Starlette(routes=build_routes(controller, token=token, allow_quit=allow_quit))
+    return Starlette(routes=build_routes(
+        controller, token=token, allow_quit=allow_quit, notifications_enabled=notifications_enabled,
+    ))

@@ -620,6 +620,55 @@ currently-granted folder(s) for read/write and a **Manage in Drive →** link th
 selection there — no checkboxes of its own; the one editable copy of these grants stays on the
 Drive page.
 
+### Web surfaces (`/approvals`, `/settings`)
+
+P4 (`docs/https-connector-refactor-plan.md` §16) puts the same settings UX above, and the approval
+card, on the web — opt-in, alongside the native windows, not a replacement for them yet (P10 is what
+eventually retires those). Two config keys under `web:` in `settings.yaml`:
+
+- `web.approval_ui: web` — P1's own lever, unchanged: approvals render at `/approvals` instead of a
+  native dialog.
+- `web.settings.enabled: true` — turns on `GET /settings` and its `POST /api/settings/{action}`
+  dispatcher, independent of the lever above (a deployment can mix native approvals with the web
+  settings page, or the reverse). `web.settings.allow_quit` (default `true`) gates whether the About
+  page's Quit button works from a browser at all — always behind an in-page confirmation either way.
+
+Both pages, when enabled, share one origin, one session (the same local `web_token` §10 of the
+refactor plan already describes), and one shared chrome (`web_shell.py`): a header with Approvals/
+Settings navigation and a live-connection indicator bound to `GET /api/state/stream` — one SSE
+channel carrying both a `settings` event (`SettingsController.snapshot()`, pushed the moment
+something changes it from anywhere — a rule edited over MCP, a background OAuth flow finishing) and
+an `approvals` event (the pending-approval list), so an open tab never needs a manual refresh.
+
+`/settings`'s own action dispatcher is an **explicit allowlist**, not the native window's
+`getattr(controller, action)` — an unlisted or misspelled action name is a 404 before any lookup
+happens at all, and every argument is validated against the controller method's own type
+annotations (a bad `idx` is a 400, not a 500). Four actions that don't fit "POST an action, get a
+snapshot back" get their own routes instead: uploading an organization config bundle (multipart,
+JSON/`version`-validated, written `0600`), downloading the current week's audit log export
+(`Content-Disposition: attachment`), an in-page "update available" banner (Download/Remind Me
+Later/Skip, replacing a native alert), and the repo link (a plain `<a href>`, opened client-side —
+never a `subprocess.run(["open", ...])` reachable from an HTTP request, which nothing under `web/`
+does at all, by design).
+
+The `/approvals` list (`docs/approval-list-ui-ux.md`) shows every currently-pending card as its own
+row — connector icon, title, a relative timestamp, a **Deny** button right on the row, and a
+**Review →** link to the full card at `/approvals/{id}`. There is deliberately no **Allow** on the
+row: denying without reading the card can't leak anything, and putting an "Allow" button on a
+one-line summary is exactly the habituation failure the full card exists to prevent. Deciding a card
+navigates back to the list (not a dead "close this tab" page) with a toast saying what happened,
+including the 409 case where a rule created elsewhere already resolved it first.
+
+Desktop notifications (`web.notifications.enabled`, default `true`) are tier 0/1 only — a title-bar
+`(N)` badge and an `aria-live` announcement need no permission at all; `registration.showNotification
+()` (via `resources/sw.js`, a service worker with no `push` handler and no cache) fires while a tab
+is open but unfocused, after the browser's own permission prompt, itself only ever offered once,
+right after a person's first decision (never on page load). The notification body is always the bare
+pending count — never a connector, tool, or row title, several of which can carry real gated content
+(an event title, a contact name) — until a real per-field allowlist for the richer `standard`/
+`detailed` levels ships. Push notifications for a closed tab (tier 2) are `org`-mode work, not built
+yet.
+
 ### Name resolution
 
 Grant rows show the resource's real name, resolved via the same connector API calls used
