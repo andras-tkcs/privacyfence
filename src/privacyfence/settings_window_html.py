@@ -44,72 +44,121 @@ list, see settings_controller.py) rather than a text input, so it commits on
 from __future__ import annotations
 
 import json
+from pathlib import Path
+
+# docs/https-connector-refactor-plan.md §16.2.3: the settings page's own
+# palette is restyled onto the same tokens the approval card already
+# defines (resources/tokens.css, extracted from resources/approval_window/
+# styles.css's own :root block -- see that file's own docstring for why it
+# stays a separate export rather than a single shared @import source),
+# rather than the two documents' hand-tuned, independently-drifting hex
+# values they had before this phase. This is a palette swap, not a layout
+# change (§16.8's risk #5) -- every rule below keeps its original spacing/
+# radius/structure; only color values became var(--pf-*)/var(--color-*)
+# references, which is also what makes @media(prefers-color-scheme: dark)
+# (embedded in tokens.css) apply here for the first time, with no second
+# dark block needed in this file.
+_TOKENS_CSS = (Path(__file__).parent / "resources" / "tokens.css").read_text(encoding="utf-8")
 
 # ---------------------------------------------------------------------------- #
-# CSS -- values copied from the design source's inline styles.
+# CSS -- values copied from the design source's inline styles, then (see
+# above) recolored onto the shared token set via a small number of
+# settings-page-specific role aliases (--pf-*) defined here rather than
+# referencing --color-* directly everywhere below: a page-local name for
+# "the muted secondary text color" reads at the call site, and it's one
+# place to reconsider which --color-neutral-N step plays that role, instead
+# of several hundred. Every --pf-* value here is itself just a --color-*
+# reference (or, for the two /-tint colors that need one, a color-mix of
+# one), so nothing below needs its own dark-mode override: tokens.css's
+# @media block already redefines the --color-* values these derive from.
 # ---------------------------------------------------------------------------- #
 
 _CSS = """
+:root {
+  --pf-page-bg: var(--color-bg);
+  --pf-content-bg: var(--color-bg);
+  --pf-nav-bg: var(--color-surface);
+  --pf-surface: var(--color-surface);
+  --pf-surface-2: var(--color-neutral-200);
+  --pf-border: var(--color-divider);
+  --pf-border-strong: var(--color-neutral-400);
+  --pf-text: var(--color-text);
+  --pf-text-muted: var(--color-neutral-600);
+  --pf-text-dim: var(--color-neutral-500);
+  --pf-accent: var(--color-accent);
+  --pf-danger: var(--color-danger);
+  --pf-danger-tint: var(--color-danger-tint);
+  --pf-danger-border: color-mix(in srgb, var(--color-danger) 35%, transparent);
+  --pf-warn: #8a5a00;
+  --pf-warn-tint: #fff3cd;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --pf-warn: #e0a94a;
+    --pf-warn-tint: color-mix(in srgb, #e0a94a 20%, transparent);
+  }
+}
 * { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; height: 100%; background: #f0f1f4; }
+html, body { margin: 0; padding: 0; height: 100%; background: var(--pf-page-bg); }
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', Helvetica, Arial, sans-serif;
-  color: #1d1d1f;
+  color: var(--pf-text);
   overflow: hidden;
 }
 ::selection { background: rgba(0, 113, 227, .25); }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { background: #c6c7cc; border-radius: 6px; }
+::-webkit-scrollbar-thumb { background: var(--pf-border-strong); border-radius: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-input[type=text]:focus { outline: 2px solid #0071e3; outline-offset: 0; }
+input[type=text]:focus { outline: 2px solid var(--pf-accent); outline-offset: 0; }
 
 #app { display: flex; height: 100vh; overflow: hidden; }
 
 /* ---- Left nav ---- */
 .pf-nav {
-  width: 190px; flex-shrink: 0; background: #e6e7eb; border-right: 1px solid #d3d4d9;
+  width: 190px; flex-shrink: 0; background: var(--pf-nav-bg); border-right: 1px solid var(--pf-border);
   padding: 14px 10px; display: flex; flex-direction: column; gap: 2px; height: 100%;
 }
 .pf-navitem {
   padding: 8px 12px; border-radius: 7px; font-size: 13px; cursor: pointer; font-weight: 400;
-  color: #1d1d1f; background: transparent;
+  color: var(--pf-text); background: transparent;
 }
-.pf-navitem.active { font-weight: 600; background: #0071e3; color: #fff; }
+.pf-navitem.active { font-weight: 600; background: var(--pf-accent); color: #fff; }
 .pf-nav-spacer { flex: 1; }
-.pf-nav-version { padding: 8px 10px; font-size: 11px; color: #8a8a8e; }
+.pf-nav-version { padding: 8px 10px; font-size: 11px; color: var(--pf-text-dim); }
 
 /* ---- Content shell ---- */
-.pf-content { flex: 1; overflow: hidden; display: flex; background: #fff; min-width: 0; }
+.pf-content { flex: 1; overflow: hidden; display: flex; background: var(--pf-content-bg); min-width: 0; }
 .pf-page { flex: 1; overflow-y: auto; padding: 36px 44px; }
-.pf-page-title { font-size: 22px; font-weight: 700; color: #1d1d1f; margin: 0 0 22px; }
-.pf-page-subtitle { font-size: 12px; color: #6e6e73; margin-bottom: 22px; max-width: 600px; line-height: 1.5; }
+.pf-page-title { font-size: 22px; font-weight: 700; color: var(--pf-text); margin: 0 0 22px; }
+.pf-page-subtitle { font-size: 12px; color: var(--pf-text-muted); margin-bottom: 22px; max-width: 600px; line-height: 1.5; }
 
 /* ---- Error banner ---- */
 .pf-error-banner {
-  background: #fef2f1; border: 1px solid #f0c2bd; color: #b3261e; border-radius: 8px;
+  background: var(--pf-danger-tint); border: 1px solid var(--pf-danger-border); color: var(--pf-danger); border-radius: 8px;
   padding: 10px 14px; font-size: 12.5px; margin: 16px 44px 0; display: flex;
   align-items: center; justify-content: space-between; gap: 12px;
 }
-.pf-error-dismiss { cursor: pointer; color: #b3261e; font-weight: 600; flex-shrink: 0; }
+.pf-error-dismiss { cursor: pointer; color: var(--pf-danger); font-weight: 600; flex-shrink: 0; }
+.pf-update-banner { border-color: var(--pf-accent); }
 
 /* ---- Cards / rows shared across pages ---- */
 .pf-card {
-  background: #f7f7f8; border: 1px solid #e5e5ea; border-radius: 10px; padding: 16px 20px;
+  background: var(--pf-surface); border: 1px solid var(--pf-border); border-radius: 10px; padding: 16px 20px;
   margin-bottom: 16px; max-width: 620px;
 }
 .pf-card-row { display: flex; align-items: center; justify-content: space-between; }
-.pf-card-title { font-size: 14px; font-weight: 600; color: #1d1d1f; }
-.pf-card-desc { font-size: 12px; color: #6e6e73; margin-top: 3px; max-width: 440px; line-height: 1.4; }
-.pf-divider { height: 1px; background: #e5e5ea; margin: 14px 0; }
+.pf-card-title { font-size: 14px; font-weight: 600; color: var(--pf-text); }
+.pf-card-desc { font-size: 12px; color: var(--pf-text-muted); margin-top: 3px; max-width: 440px; line-height: 1.4; }
+.pf-divider { height: 1px; background: var(--pf-border); margin: 14px 0; }
 .pf-subrow { display: flex; align-items: center; justify-content: space-between; padding: 4px 0; }
-.pf-subrow-label { font-size: 13px; color: #1d1d1f; }
+.pf-subrow-label { font-size: 13px; color: var(--pf-text); }
 
 /* ---- Toggle switch ---- */
 .pf-toggle {
   width: 40px; height: 24px; border-radius: 12px; cursor: pointer; transition: background .15s;
-  background: #d7d8dd; position: relative; flex-shrink: 0;
+  background: var(--pf-border-strong); position: relative; flex-shrink: 0;
 }
-.pf-toggle.on { background: #0071e3; }
+.pf-toggle.on { background: var(--pf-accent); }
 .pf-toggle.disabled { cursor: default; opacity: .5; }
 .pf-knob {
   width: 20px; height: 20px; border-radius: 50%; background: #fff; position: relative;
@@ -119,90 +168,90 @@ input[type=text]:focus { outline: 2px solid #0071e3; outline-offset: 0; }
 
 /* ---- Buttons ---- */
 .pf-btn-primary {
-  background: #0071e3; color: #fff; border: none; border-radius: 7px; padding: 7px 14px;
+  background: var(--pf-accent); color: #fff; border: none; border-radius: 7px; padding: 7px 14px;
   font-size: 13px; font-weight: 500; cursor: pointer;
 }
 .pf-btn-secondary {
-  background: #eceef1; color: #1d1d1f; border: none; border-radius: 7px; padding: 8px 16px;
+  background: var(--pf-surface-2); color: var(--pf-text); border: none; border-radius: 7px; padding: 8px 16px;
   font-size: 13px; font-weight: 500; cursor: pointer;
 }
 .pf-btn-danger {
-  background: #fff; color: #d92d20; border: 1px solid #f0c2bd; border-radius: 7px;
+  background: var(--pf-content-bg); color: var(--pf-danger); border: 1px solid var(--pf-danger-border); border-radius: 7px;
   padding: 8px 16px; font-size: 13px; font-weight: 500; cursor: pointer;
 }
-.pf-link { font-size: 12.5px; color: #0071e3; cursor: pointer; }
-.pf-link-danger { font-size: 12px; color: #d92d20; cursor: pointer; white-space: nowrap; }
+.pf-link { font-size: 12.5px; color: var(--pf-accent); cursor: pointer; }
+.pf-link-danger { font-size: 12px; color: var(--pf-danger); cursor: pointer; white-space: nowrap; }
 
 /* ---- Segmented controls ---- */
-.pf-seg-group { display: flex; background: #eceef1; border-radius: 7px; padding: 2px; flex-shrink: 0; }
-.pf-seg-btn { padding: 5px 12px; font-size: 12px; font-weight: 500; border-radius: 5px; cursor: pointer; color: #6e6e73; }
-.pf-seg-btn.plain-active { background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.15); color: #1d1d1f; }
+.pf-seg-group { display: flex; background: var(--pf-surface-2); border-radius: 7px; padding: 2px; flex-shrink: 0; }
+.pf-seg-btn { padding: 5px 12px; font-size: 12px; font-weight: 500; border-radius: 5px; cursor: pointer; color: var(--pf-text-muted); }
+.pf-seg-btn.plain-active { background: var(--pf-content-bg); box-shadow: 0 1px 2px rgba(0,0,0,.15); color: var(--pf-text); }
 .pf-seg-btn.policy-allow { background: #0071e3; color: #fff; }
 .pf-seg-btn.policy-redact { background: #b76e00; color: #fff; }
 .pf-seg-btn.policy-block { background: #d92d20; color: #fff; }
 
 /* ---- Text inputs ---- */
 .pf-input {
-  border: 1px solid #d3d4d9; border-radius: 6px; padding: 5px 8px; font-size: 12.5px; background: #fff;
+  border: 1px solid var(--pf-border); border-radius: 6px; padding: 5px 8px; font-size: 12.5px; background: var(--pf-content-bg);
 }
 .pf-input-mono { font-family: ui-monospace, monospace; }
 select.pf-input { cursor: pointer; }
 
 /* ---- Connectors page ---- */
 .pf-connector-row {
-  display: flex; align-items: center; gap: 14px; padding: 12px 4px; border-bottom: 1px solid #ececef;
+  display: flex; align-items: center; gap: 14px; padding: 12px 4px; border-bottom: 1px solid var(--pf-border);
   max-width: 760px;
 }
 .pf-connector-icon {
-  width: 34px; height: 34px; border-radius: 9px; background: #e9eaee; display: flex;
+  width: 34px; height: 34px; border-radius: 9px; background: var(--pf-surface-2); display: flex;
   align-items: center; justify-content: center; flex-shrink: 0; overflow: hidden;
 }
 .pf-connector-icon img { width: 22px; height: 22px; object-fit: contain; }
-.pf-connector-label { width: 150px; font-size: 13.5px; color: #1d1d1f; font-weight: 500; flex-shrink: 0; }
+.pf-connector-label { width: 150px; font-size: 13.5px; color: var(--pf-text); font-weight: 500; flex-shrink: 0; }
 .pf-pill { font-size: 11px; padding: 3px 9px; border-radius: 10px; white-space: nowrap; }
-.pf-pill-connected { background: rgba(0,113,227,.1); color: #0071e3; }
-.pf-pill-neutral { background: #f0f0f2; color: #6e6e73; }
-.pf-pill-warn { background: #fff3cd; color: #8a5a00; }
-.pf-pill-missing { background: #fef2f1; color: #d92d20; }
+.pf-pill-connected { background: rgba(0,113,227,.1); color: var(--pf-accent); }
+.pf-pill-neutral { background: var(--pf-surface-2); color: var(--pf-text-muted); }
+.pf-pill-warn { background: var(--pf-warn-tint); color: var(--pf-warn); }
+.pf-pill-missing { background: var(--pf-danger-tint); color: var(--pf-danger); }
 .pf-spacer { flex: 1; }
-.pf-auth-link { font-size: 12.5px; color: #0071e3; cursor: pointer; white-space: nowrap; }
-.pf-auth-link.disabled { color: #b3b3b8; cursor: default; pointer-events: none; }
+.pf-auth-link { font-size: 12.5px; color: var(--pf-accent); cursor: pointer; white-space: nowrap; }
+.pf-auth-link.disabled { color: var(--pf-text-dim); cursor: default; pointer-events: none; }
 
 /* ---- Rules / Privacy shared 2-pane layout ---- */
 .pf-subnav {
-  width: 170px; flex-shrink: 0; background: #f7f7f8; border-right: 1px solid #e5e5ea;
+  width: 170px; flex-shrink: 0; background: var(--pf-surface); border-right: 1px solid var(--pf-border);
   padding: 12px 10px; display: flex; flex-direction: column; overflow-y: auto;
 }
 .pf-subnav-search { margin-bottom: 10px; width: 100%; }
 .pf-subnav-item {
   padding: 7px 10px; border-radius: 7px; font-size: 13px; cursor: pointer; display: flex;
-  justify-content: space-between; margin-bottom: 1px; color: #1d1d1f; font-weight: 400;
+  justify-content: space-between; margin-bottom: 1px; color: var(--pf-text); font-weight: 400;
 }
-.pf-subnav-item.active { background: #0071e3; color: #fff; font-weight: 600; }
+.pf-subnav-item.active { background: var(--pf-accent); color: #fff; font-weight: 600; }
 .pf-subnav-count { font-size: 11px; opacity: .75; }
 .pf-detail-page { flex: 1; overflow-y: auto; padding: 28px 36px; }
-.pf-detail-title { font-size: 18px; font-weight: 700; color: #1d1d1f; margin-bottom: 2px; }
-.pf-detail-subtitle { font-size: 12px; color: #6e6e73; margin-bottom: 20px; max-width: 520px; line-height: 1.5; }
+.pf-detail-title { font-size: 18px; font-weight: 700; color: var(--pf-text); margin-bottom: 2px; }
+.pf-detail-subtitle { font-size: 12px; color: var(--pf-text-muted); margin-bottom: 20px; max-width: 520px; line-height: 1.5; }
 
 /* ---- Grants ---- */
-.pf-group-title { font-size: 13px; font-weight: 600; color: #6e6e73; margin-bottom: 8px; }
+.pf-group-title { font-size: 13px; font-weight: 600; color: var(--pf-text-muted); margin-bottom: 8px; }
 .pf-grant-section { margin-bottom: 22px; }
-.pf-grant-row { background: #f7f7f8; border: 1px solid #e5e5ea; border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+.pf-grant-row { background: var(--pf-surface); border: 1px solid var(--pf-border); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
 .pf-grant-row-fields { display: flex; align-items: center; gap: 10px; }
 .pf-grant-row-fields .pf-input { flex: 1; }
 .pf-caps-row { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
-.pf-cap-chip { padding: 4px 10px; border-radius: 5px; font-size: 11px; cursor: pointer; font-weight: 500; background: #eceef1; color: #6e6e73; }
-.pf-cap-chip.on { background: #0071e3; color: #fff; }
+.pf-cap-chip { padding: 4px 10px; border-radius: 5px; font-size: 11px; cursor: pointer; font-weight: 500; background: var(--pf-surface-2); color: var(--pf-text-muted); }
+.pf-cap-chip.on { background: var(--pf-accent); color: #fff; }
 
 /* ---- Rules ---- */
 .pf-rule-section { margin-bottom: 20px; }
 .pf-rule-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .pf-rule-row .pf-input-type { width: 190px; flex-shrink: 0; }
 .pf-rule-row .pf-input-value { flex: 1; }
-.pf-rules-empty { font-size: 13px; color: #8a8a8e; }
+.pf-rules-empty { font-size: 13px; color: var(--pf-text-dim); }
 .pf-grant-hint {
-  font-size: 11.5px; color: #8a8a8e; margin-top: 18px; padding-top: 14px;
-  border-top: 1px solid #ececef; max-width: 560px; line-height: 1.5;
+  font-size: 11.5px; color: var(--pf-text-dim); margin-top: 18px; padding-top: 14px;
+  border-top: 1px solid var(--pf-border); max-width: 560px; line-height: 1.5;
 }
 
 /* ---- Copy-ID toast (right-click a grant row -- see data-copy-id) ---- */
@@ -215,38 +264,38 @@ select.pf-input { cursor: pointer; }
 /* ---- Privacy ---- */
 .pf-policy-row {
   display: flex; align-items: center; justify-content: space-between; padding: 12px 14px;
-  background: #f7f7f8; border: 1px solid #e5e5ea; border-radius: 8px; margin-bottom: 14px; max-width: 560px;
+  background: var(--pf-surface); border: 1px solid var(--pf-border); border-radius: 8px; margin-bottom: 14px; max-width: 560px;
 }
-.pf-policy-row-label { font-size: 13px; font-weight: 600; color: #1d1d1f; }
-.pf-policy-row-label .pf-muted { font-weight: 400; color: #8a8a8e; }
+.pf-policy-row-label { font-size: 13px; font-weight: 600; color: var(--pf-text); }
+.pf-policy-row-label .pf-muted { font-weight: 400; color: var(--pf-text-dim); }
 .pf-category-row {
   display: flex; align-items: center; justify-content: space-between; padding: 11px 14px;
-  border-bottom: 1px solid #ececef; max-width: 560px;
+  border-bottom: 1px solid var(--pf-border); max-width: 560px;
 }
-.pf-category-label { font-size: 13.5px; color: #1d1d1f; font-weight: 500; }
-.pf-category-key { font-size: 11.5px; color: #8a8a8e; font-family: ui-monospace, monospace; margin-top: 2px; }
+.pf-category-label { font-size: 13.5px; color: var(--pf-text); font-weight: 500; }
+.pf-category-key { font-size: 11.5px; color: var(--pf-text-dim); font-family: ui-monospace, monospace; margin-top: 2px; }
 
 /* ---- Audit ---- */
 .pf-export-row { display: flex; align-items: center; gap: 14px; margin-bottom: 22px; }
-.pf-export-hint { font-size: 12px; color: #6e6e73; }
+.pf-export-hint { font-size: 12px; color: var(--pf-text-muted); }
 .pf-audit-card { max-width: 640px; margin-bottom: 22px; }
 .pf-audit-card-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .pf-audit-card-row:last-child { margin-bottom: 0; }
-.pf-audit-card-title { font-size: 13.5px; font-weight: 600; color: #1d1d1f; }
-.pf-audit-logfile { font-size: 12px; color: #6e6e73; font-family: ui-monospace, monospace; }
-.pf-audit-list { max-width: 640px; border: 1px solid #e5e5ea; border-radius: 10px; overflow: hidden; }
+.pf-audit-card-title { font-size: 13.5px; font-weight: 600; color: var(--pf-text); }
+.pf-audit-logfile { font-size: 12px; color: var(--pf-text-muted); font-family: ui-monospace, monospace; }
+.pf-audit-list { max-width: 640px; border: 1px solid var(--pf-border); border-radius: 10px; overflow: hidden; }
 .pf-audit-row {
-  display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: #fff;
-  border-bottom: 1px solid #ececef;
+  display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: var(--pf-content-bg);
+  border-bottom: 1px solid var(--pf-border);
 }
 .pf-audit-row:last-child { border-bottom: none; }
-.pf-audit-connector { width: 80px; font-size: 12px; color: #6e6e73; flex-shrink: 0; }
-.pf-audit-tool { flex: 1; font-size: 12.5px; color: #1d1d1f; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pf-audit-connector { width: 80px; font-size: 12px; color: var(--pf-text-muted); flex-shrink: 0; }
+.pf-audit-tool { flex: 1; font-size: 12.5px; color: var(--pf-text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pf-audit-badge { font-size: 10.5px; font-weight: 600; padding: 3px 8px; border-radius: 9px; flex-shrink: 0; }
-.pf-audit-badge.denied { background: #fef2f1; color: #d92d20; }
-.pf-audit-badge.auto_accepted { background: rgba(0,113,227,.1); color: #0071e3; }
-.pf-audit-badge.other { background: #eceef1; color: #4a4a4e; }
-.pf-audit-time { width: 70px; text-align: right; font-size: 11.5px; color: #8a8a8e; flex-shrink: 0; }
+.pf-audit-badge.denied { background: var(--pf-danger-tint); color: var(--pf-danger); }
+.pf-audit-badge.auto_accepted { background: rgba(0,113,227,.1); color: var(--pf-accent); }
+.pf-audit-badge.other { background: var(--pf-surface-2); color: var(--pf-text-muted); }
+.pf-audit-time { width: 70px; text-align: right; font-size: 11.5px; color: var(--pf-text-dim); flex-shrink: 0; }
 
 /* ---- About ---- */
 .pf-about-page {
@@ -254,14 +303,14 @@ select.pf-input { cursor: pointer; }
   align-items: center; text-align: center;
 }
 .pf-about-icon {
-  width: 76px; height: 76px; border-radius: 18px; background: #0071e3; color: #fff; font-size: 26px;
+  width: 76px; height: 76px; border-radius: 18px; background: var(--pf-accent); color: #fff; font-size: 26px;
   font-weight: 700; display: flex; align-items: center; justify-content: center; margin-bottom: 18px;
 }
-.pf-about-name { font-size: 20px; font-weight: 700; color: #1d1d1f; }
-.pf-about-version { font-size: 13px; color: #6e6e73; margin-top: 4px; }
-.pf-about-desc { font-size: 13px; color: #4a4a4e; margin-top: 18px; max-width: 420px; line-height: 1.5; }
-.pf-about-repo { margin-top: 20px; font-size: 13px; color: #0071e3; cursor: pointer; }
-.pf-about-license { font-size: 12px; color: #8a8a8e; margin-top: 6px; }
+.pf-about-name { font-size: 20px; font-weight: 700; color: var(--pf-text); }
+.pf-about-version { font-size: 13px; color: var(--pf-text-muted); margin-top: 4px; }
+.pf-about-desc { font-size: 13px; color: var(--pf-text-muted); margin-top: 18px; max-width: 420px; line-height: 1.5; }
+.pf-about-repo { margin-top: 20px; font-size: 13px; color: var(--pf-accent); cursor: pointer; }
+.pf-about-license { font-size: 12px; color: var(--pf-text-dim); margin-top: 6px; }
 .pf-about-buttons { display: flex; gap: 12px; margin-top: 28px; }
 
 /* ---- Telegram sign-in modal ---- */
@@ -274,12 +323,12 @@ select.pf-input { cursor: pointer; }
   align-items: center; justify-content: center; z-index: 100;
 }
 .pf-modal {
-  background: #fff; border-radius: 12px; padding: 24px 28px; width: 360px;
+  background: var(--pf-content-bg); border-radius: 12px; padding: 24px 28px; width: 360px;
   box-shadow: 0 20px 60px rgba(0,0,0,.35);
 }
-.pf-modal-title { font-size: 15px; font-weight: 600; color: #1d1d1f; margin-bottom: 4px; }
-.pf-modal-desc { font-size: 12px; color: #6e6e73; margin-bottom: 14px; line-height: 1.4; }
-.pf-modal-error { font-size: 12px; color: #d92d20; margin-bottom: 10px; }
+.pf-modal-title { font-size: 15px; font-weight: 600; color: var(--pf-text); margin-bottom: 4px; }
+.pf-modal-desc { font-size: 12px; color: var(--pf-text-muted); margin-bottom: 14px; line-height: 1.4; }
+.pf-modal-error { font-size: 12px; color: var(--pf-danger); margin-bottom: 10px; }
 .pf-modal-input { width: 100%; margin-bottom: 16px; }
 .pf-modal-buttons { display: flex; justify-content: flex-end; gap: 10px; }
 """
@@ -410,6 +459,26 @@ _JS = r"""
     var html = '<div class="pf-page">';
     html += '<div class="pf-page-title">General</div>';
 
+    // §16.2.4: the web surface's replacement for _show_update_available_
+    // alert's native rumps.alert() -- an in-page banner whose three
+    // buttons map onto the exact same three outcomes (skip this version /
+    // remind me later / download), rather than a blocking native modal an
+    // HTTP request has no business popping up on the daemon's machine.
+    if (g.update_available) {
+      html += '<div class="pf-card pf-update-banner"><div class="pf-card-row">';
+      html += '<div><div class="pf-card-title">Update available</div>';
+      html += '<div class="pf-card-desc">PrivacyFence ' + esc(g.update_latest_version) +
+        (g.update_is_beta ? ' (beta)' : '') + ' is available (you have ' + esc(g.version) + ').</div></div>';
+      html += '<div style="display:flex;gap:8px;flex-shrink:0;">';
+      html += '<a class="pf-btn-secondary" style="text-decoration:none;display:inline-block" href="' +
+        esc(g.update_release_url || '') + '" target="_blank" rel="noopener">Download</a>';
+      html += '<div class="pf-btn-secondary" role="button" tabindex="0" aria-label="Remind me later" ' +
+        dataAttr('remind_later_update', {}) + '>Remind Me Later</div>';
+      html += '<div class="pf-btn-secondary" role="button" tabindex="0" aria-label="Skip this version" ' +
+        dataAttr('skip_update', {}) + '>Skip</div>';
+      html += '</div></div></div>';
+    }
+
     html += '<div class="pf-card">';
     html += '<div class="pf-card-row"><div><div class="pf-card-title">PII Detection Gate</div>';
     html += '<div class="pf-card-desc">Scans review-popup content for likely personal data (IBANs, national IDs, financial figures) before you approve it. A match requires a second confirmation.</div></div>';
@@ -464,7 +533,8 @@ _JS = r"""
   function renderConnectors(state) {
     var html = '<div class="pf-page">';
     html += '<div class="pf-page-title">Connectors</div>';
-    html += '<div class="pf-page-subtitle">Authenticate a connector to let Claude access it, subject to approval and policy.</div>';
+    html += '<div class="pf-page-subtitle">Authenticate a connector to let Claude access it, subject to approval and policy. ' +
+      'Signing in opens a browser window on the machine running PrivacyFence -- not necessarily this device.</div>';
     state.connectors.forEach(function (c) {
       var status = connectorStatus(c);
       html += '<div class="pf-connector-row">';
@@ -1031,7 +1101,7 @@ def build_html(state: dict) -> str:
     state_json = json.dumps(state)
     return (
         "<title>PrivacyFence Settings</title>"
-        f"<style>{_CSS}</style>"
+        f"<style>{_TOKENS_CSS}{_CSS}</style>"
         '<div id="app"></div>'
         f"<script>window.__pfInitialState = {state_json};</script>"
         f"<script>{_JS}</script>"

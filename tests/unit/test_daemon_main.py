@@ -838,6 +838,87 @@ class TestMaybeStartWebServer:
         # No second push into the dispatcher -- it polls ipc_server.connectors.
         assert list(result.mcp_dispatcher.connectors) == [fake_connector.name]
 
+    # ------------------------------------------------------------------ #
+    # web.settings.enabled -- P4's own rollback lever (§16.6), independent
+    # of web.approval_ui: a deployment can run the web settings page with
+    # the native approval dialog, or the reverse.
+    # ------------------------------------------------------------------ #
+
+    def _controller(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        from privacyfence import resource_names, settings_controller as sc, update_checker
+
+        monkeypatch.setattr(resource_names, "_cache_file", lambda: tmp_path / "rn.json")
+        monkeypatch.setattr(update_checker, "_cache_file", lambda: tmp_path / "uc.json")
+        monkeypatch.setattr(sc, "check_for_update", lambda **kw: None)
+        org_dir_path = tmp_path / "org"
+        org_dir_path.mkdir()
+        monkeypatch.setattr(sc, "org_dir", lambda: org_dir_path)
+        settings_dir = tmp_path / "settings_data"
+        settings_dir.mkdir()
+        monkeypatch.setattr(sc, "data_dir", lambda: settings_dir)
+        config_path = tmp_path / "settings.yaml"
+        config_path.write_text("auto_accept_rules: {}\nconnectors: {}\n", encoding="utf-8")
+        ipc_server = self._ipc_server()
+        return sc.SettingsController(str(config_path), connectors=[], ipc_server=ipc_server)
+
+    def test_settings_not_enabled_leaves_the_server_unbuilt_with_a_controller(self, monkeypatch, tmp_path):
+        self._no_bind(monkeypatch, tmp_path)
+        controller = self._controller(tmp_path, monkeypatch)
+
+        result = daemon_main._maybe_start_web_server(
+            {}, self._ipc_server(), unattended_sessions_enabled=False, controller=controller,
+        )
+
+        assert result is None
+
+    def test_settings_enabled_without_a_controller_starts_nothing(self, monkeypatch, tmp_path):
+        self._no_bind(monkeypatch, tmp_path)
+
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"settings": {"enabled": True}}}, self._ipc_server(), unattended_sessions_enabled=False,
+        )
+
+        assert result is None
+
+    def test_settings_enabled_wires_the_controller_into_the_server(self, monkeypatch, tmp_path):
+        self._no_bind(monkeypatch, tmp_path)
+        controller = self._controller(tmp_path, monkeypatch)
+
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"settings": {"enabled": True}, "port": 18765}}, self._ipc_server(),
+            unattended_sessions_enabled=False, controller=controller,
+        )
+
+        assert result is not None
+        assert result.controller is controller
+
+    def test_allow_quit_defaults_true_and_is_configurable(self, monkeypatch, tmp_path):
+        self._no_bind(monkeypatch, tmp_path)
+        controller = self._controller(tmp_path, monkeypatch)
+
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"settings": {"enabled": True, "allow_quit": False}}}, self._ipc_server(),
+            unattended_sessions_enabled=False, controller=controller,
+        )
+
+        assert result.allow_quit is False
+
+    def test_settings_can_run_with_the_native_approval_ui(self, monkeypatch, tmp_path):
+        from privacyfence.approval_ui import NativeApprovalUI, get_approval_ui
+
+        self._no_bind(monkeypatch, tmp_path)
+        controller = self._controller(tmp_path, monkeypatch)
+
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"settings": {"enabled": True}}}, self._ipc_server(),
+            unattended_sessions_enabled=False, controller=controller,
+        )
+
+        assert result is not None
+        assert isinstance(get_approval_ui(), NativeApprovalUI)
+
 
 # ---------------------------------------------------------------------------- #
 # parse_args

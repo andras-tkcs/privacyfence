@@ -13,36 +13,32 @@ from privacyfence import (
     pii_detector,
     privacy_filter,
     resource_names,
+    settings_controller,
     web_approval_ui,
 )
+from privacyfence.web import state_stream
+
+
+def _reset() -> None:
+    auto_accept._INSTANCE = None
+    auto_accept._config_path = None
+    auto_accept._rules_changed_listener = None
+    auto_accept._rules_changed_listeners.clear()
+    audit_log._INSTANCE = None
+    approval_ui._INSTANCE = None
+    pii_detector._enabled = True
+    pii_detector._changed_listener = None
+    pii_detector._disabled_categories.clear()
+    pii_detector._audit_match_details_enabled = False
+    privacy_filter._GROUPS = {}
+    resource_names._INSTANCE = None
+    web_approval_ui._INSTANCE = None
+    settings_controller._main_dispatch = None
+    state_stream._loop = None
 
 
 @pytest.fixture(autouse=True)
 def _reset_singletons():
-    auto_accept._INSTANCE = None
-    auto_accept._config_path = None
-    auto_accept._rules_changed_listener = None
-    auto_accept._rules_changed_listeners.clear()
-    audit_log._INSTANCE = None
-    approval_ui._INSTANCE = None
-    pii_detector._enabled = True
-    pii_detector._changed_listener = None
-    pii_detector._disabled_categories.clear()
-    pii_detector._audit_match_details_enabled = False
-    privacy_filter._GROUPS = {}
-    resource_names._INSTANCE = None
-    web_approval_ui._INSTANCE = None
+    _reset()
     yield
-    auto_accept._INSTANCE = None
-    auto_accept._config_path = None
-    auto_accept._rules_changed_listener = None
-    auto_accept._rules_changed_listeners.clear()
-    audit_log._INSTANCE = None
-    approval_ui._INSTANCE = None
-    pii_detector._enabled = True
-    pii_detector._changed_listener = None
-    pii_detector._disabled_categories.clear()
-    pii_detector._audit_match_details_enabled = False
-    privacy_filter._GROUPS = {}
-    resource_names._INSTANCE = None
-    web_approval_ui._INSTANCE = None
+    _reset()

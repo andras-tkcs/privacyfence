@@ -22,7 +22,6 @@ WKWebView or a browser tab.
 from __future__ import annotations
 
 import asyncio
-import hmac
 import json
 import logging
 from html import escape as _html_escape
@@ -33,6 +32,12 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from starlette.routing import BaseRoute, Route
 
 from ..web_approval_ui import WebApprovalUI
+from .session_auth import SESSION_COOKIE as _SESSION_COOKIE
+from .session_auth import authenticated as _token_authenticated
+from .session_auth import check_csrf as _csrf_matches
+from .session_auth import check_origin as _origin_ok
+from .session_auth import set_session_cookie as _set_session_cookie_on
+from .session_auth import unauthorized_html as _unauthorized_response
 
 # How often the SSE stream below checks for a change in what's pending --
 # not a hard real-time guarantee, just short enough that a human watching
@@ -42,13 +47,14 @@ _STREAM_POLL_SECONDS = 1.0
 
 logger = logging.getLogger(__name__)
 
-# Session cookie carrying the shared local token (see server.py's docstring
-# for why this is the whole local-mode auth model in P1 -- the same
-# "possession of the token is the authority" posture ~/.privacyfence/
-# ipc_token already has for the bridge). SameSite=Strict + HttpOnly: never
-# sent cross-site, never readable from page JS.
-_SESSION_COOKIE = "pf_session"
-
+# _SESSION_COOKIE re-exported (see the session_auth import above) purely so
+# this module's own docstring/history referencing "pf_session" as a local
+# name still resolves -- session_auth.py is the actual definition now,
+# shared with web/routes_settings.py. See that module's own docstring for
+# why this is the whole local-mode auth model in P1: the same "possession
+# of the token is the authority" posture ~/.privacyfence/ipc_token already
+# has for the bridge. SameSite=Strict + HttpOnly: never sent cross-site,
+# never readable from page JS.
 
 _DECIDED_MESSAGE = "Decision recorded — you can close this tab."
 _FAILED_MESSAGE = "Could not record this decision — please reload and try again."
@@ -105,15 +111,6 @@ def _inject_shim(html: str, shim: str) -> str:
     return html[:body_start] + shim + html[body_start:]
 
 
-def _check_csrf(request: Request, csrf: str | None) -> bool:
-    cookie = request.cookies.get(_SESSION_COOKIE, "")
-    if not cookie or not csrf:
-        return False
-    # constant-time compare -- same posture ipc_server.py's own token check
-    # takes for ~/.privacyfence/ipc_token.
-    return hmac.compare_digest(cookie, csrf)
-
-
 def create_app(
     web_ui: WebApprovalUI, *, token: str, extra_routes: list[BaseRoute] | None = None, lifespan=None,
 ) -> Starlette:
@@ -132,23 +129,13 @@ def create_app(
     """
 
     def _authenticated(request: Request) -> bool:
-        cookie = request.cookies.get(_SESSION_COOKIE, "")
-        if cookie and hmac.compare_digest(cookie, token):
-            return True
-        return hmac.compare_digest(request.query_params.get("token", ""), token)
+        return _token_authenticated(request, token)
 
     def _unauthorized() -> Response:
-        return HTMLResponse(
-            "<!DOCTYPE html><html><body style=\"font:15px sans-serif;padding:40px\">"
-            "Not authorized. Open the link PrivacyFence gave you, including its "
-            "<code>?token=</code> parameter.</body></html>",
-            status_code=401,
-        )
+        return _unauthorized_response()
 
     def _set_session_cookie(response: Response) -> None:
-        response.set_cookie(
-            _SESSION_COOKIE, token, httponly=True, samesite="strict", path="/",
-        )
+        _set_session_cookie_on(response, token)
 
     async def index(request: Request) -> Response:
         return RedirectResponse(f"/approvals?token={token}" if "token" not in request.query_params else "/approvals")
@@ -227,21 +214,30 @@ def create_app(
             payload = await request.json()
         except Exception:
             return JSONResponse({"error": "invalid JSON body"}, status_code=400)
-        if not isinstance(payload, dict) or not _check_csrf(request, payload.get("csrf")):
+        if not isinstance(payload, dict) or not _csrf_matches(request, payload.get("csrf")):
             return JSONResponse({"error": "unauthorized"}, status_code=401)
         # Origin check on top of the double-submit token above -- the two
         # are independent defenses (see docs/https-connector-refactor-plan.md
         # §10.5's CSRF row): a same-site page couldn't forge the cookie
         # value into its own request body, but this also stops a
         # same-origin-cookie-jar edge case from ever mattering.
-        origin = request.headers.get("origin")
-        if origin is not None and origin != f"{request.url.scheme}://{request.url.netloc}":
+        if not _origin_ok(request):
             return JSONResponse({"error": "cross-origin request rejected"}, status_code=403)
         result = payload.get("result")
         choice = payload.get("choice")
         choice = int(choice) if isinstance(choice, (int, float)) else None
-        if not isinstance(result, str):
+        # A card/confirm result is one of approvals.CARD_RESULTS/
+        # CONFIRM_RESULTS -- always a string. A *choice* dialog
+        # (dialog_window_html.build_choice_html, W5's web_prompt.py picker)
+        # posts its selected option's index as a bare number instead (see
+        # that module's own JS -- there is no separate "choice" field), so
+        # an int/float here is accepted too and normalized to its string
+        # form before being handed to web_ui.resolve(); web_prompt.py's own
+        # reader parses it back with int().
+        if isinstance(result, bool) or not isinstance(result, (str, int, float)):
             return JSONResponse({"error": "missing result"}, status_code=400)
+        if not isinstance(result, str):
+            result = str(int(result))
         accepted = web_ui.resolve(approval_id, result, choice)
         if not accepted:
             # Idempotent by design (§7.1): the first accepted decision for

@@ -9,6 +9,26 @@ HTTP server to catch the redirect, CSRF ``state`` verification, and PKCE
 Slack/Salesforce/Atlassian all require an exact-match redirect URI in their app's
 allow-list, so callers must pass a fixed port (unlike Google's "Desktop app" OAuth
 clients, which accept any loopback port).
+
+§16.2.7 of docs/https-connector-refactor-plan.md: ``run_browser_oauth()`` calls
+``webbrowser.open()`` on **the machine running the PrivacyFence daemon**, not on
+whatever device the person clicking "Authenticate…" is holding. In ``local`` mode
+that's the same machine by construction (this is the whole assumption `local`
+mode makes -- see docs/https-connector-refactor-plan.md §4), so it works as-is;
+it stops being true the moment a browser tab reaches a `local`-mode daemon from
+a different device (a phone tunneled to a laptop, say), and it is exactly the
+assumption P8's server-side redirect endpoints (§9.3) replace. Until then, the
+web settings page says so in its own copy next to a connector's Authenticate
+button (settings_window_html.py's `renderConnectors`) rather than leaving it
+implicit -- a cheap, honest statement of a real limitation beats a silent one.
+An even cheaper next step P8 can build on: return ``authorize_url`` to the
+caller and let *the page* open it (a same-machine `window.open`, or a QR code/
+link a phone can follow) instead of this module calling `webbrowser.open()`
+itself -- not done here because every current caller (Slack/Salesforce/
+Atlassian's `_authenticate_*` in settings_controller.py) is a single
+synchronous call this function owns start-to-finish; splitting "get the URL"
+from "wait for the callback" is a real API change for a benefit only `local`
+mode-with-a-different-device even wants.
 """
 
 from __future__ import annotations

@@ -40,8 +40,9 @@ from typing import Any, Callable
 
 import yaml
 
-from . import __version__
+from . import __version__, dialog_window_html, web_prompt
 from .app_credentials import telegram_app_credentials
+from .approval_ui import get_approval_ui
 from .audit_log import AuditLogger, current_week
 from .auto_accept import (
     reload_rules,
@@ -471,11 +472,103 @@ def _google_client_config(org_config: dict[str, Any]) -> dict[str, Any]:
     return {"installed": google}
 
 
+# ---------------------------------------------------------------------------- #
+# §16.2.1's dispatcher seam (docs/https-connector-refactor-plan.md): every
+# background-thread callback in this module used to marshal back onto "the
+# main thread" via a single, hardcoded ``AppHelper.callAfter`` -- fine when
+# an AppKit run loop is hosting (the native settings window), but AppHelper
+# is None without pyobjc (this repo's own CI-less sandbox, a Linux daemon,
+# or any future non-interactive test run), and ``AppHelper.callAfter`` on
+# None raises AttributeError in the daemon thread doing the work, where
+# nothing surfaces it -- authenticate_connector, check_for_updates_now,
+# refresh_connectors, _resolve_names_async, the four Telegram steps, and
+# both change-notification call sites (_on_rules_changed/
+# _on_unattended_changed) were all silently broken headless before this.
+#
+# ``call_on_main`` below is the one place that decides where "the main
+# thread" actually is: AppKit's run loop when pyobjc is present (unchanged
+# behavior on macOS -- this is not a per-instance setting, so a stray
+# import of AppKit anywhere in the process is enough to pick the native
+# path, exactly as before this seam existed), else whatever dispatcher
+# daemon_main.py registered via set_main_dispatcher() for the web server's
+# own asyncio event loop (state_stream.call_soon_threadsafe -- see that
+# module), else -- nothing hosting either one yet, e.g. this module
+# imported standalone, or a unit test -- ``fn`` just runs immediately on
+# the calling (background) thread. That last fallback is correct, not a
+# compromise: there is nothing AppKit/asyncio-sensitive to protect when no
+# host has attached (self.on_change is None and no web listener has
+# subscribed), so running inline only changes *when* on_done observably
+# runs, not whether it's safe to.
+# ---------------------------------------------------------------------------- #
+
+_main_dispatch: Callable[..., None] | None = None
+
+
+def set_main_dispatcher(dispatch: Callable[..., None] | None) -> None:
+    """``dispatch(fn, *args)`` must be safe to call from any thread and must
+    arrange for ``fn(*args)`` to run later on whatever thread it is that
+    "the main context" means for that dispatcher (the web server's event
+    loop, for state_stream.call_soon_threadsafe). Passing ``None`` clears a
+    previously-registered dispatcher -- daemon_main.py never needs to
+    (there's one process, one web server, for its whole lifetime), but
+    tests do, via tests/conftest.py's singleton reset.
+
+    Deliberately never consulted when AppHelper is available (see
+    call_on_main below): the native window and the web surface can be
+    active in the same macOS process at once (settings.web.settings.
+    enabled alongside the native window -- see settings_window.py's own
+    module docstring), and AppKit's run loop is the one thread both can
+    safely touch self/the controller from, so it always wins when it
+    exists at all.
+    """
+    global _main_dispatch
+    _main_dispatch = dispatch
+
+
+def call_on_main(fn: Callable[..., None], *args: Any) -> None:
+    """Marshal ``fn(*args)`` onto "the main thread" -- see this section's
+    own comment above for what that resolves to and why."""
+    if AppHelper is not None:
+        AppHelper.callAfter(fn, *args)
+        return
+    if _main_dispatch is not None:
+        _main_dispatch(fn, *args)
+        return
+    fn(*args)
+
+
+def _pick_resource_index(*, title: str, prompt: str, options: list[str]) -> int | None:
+    """§16.2.2's generalized multi-resource picker: whichever ``ApprovalUI``
+    is currently live decides how the choice is actually shown --
+
+    - web mode (``get_approval_ui().deferred_registry`` is not None):
+      register a choice dialog through the same registry/blocking mechanism
+      every approval card and confirmation already uses (web_prompt.py,
+      dialog_window_html.build_choice_html for the markup), so the browser
+      surfaces it as one more pending card with the same "no longer
+      pending" landing page an approval link already has.
+    - native mode with pyobjc present: dialog_window.show_choice_dialog,
+      unchanged from before this generalization.
+    - neither (no web registry, no pyobjc -- e.g. this module imported
+      standalone, or a test with no UI wired at all): ``None``, which
+      pick_resource's own caller already treats as "fall back to the first
+      resource" -- there was never an abort path of its own to preserve
+      here either.
+    """
+    registry = get_approval_ui().deferred_registry
+    if registry is not None:
+        html = dialog_window_html.build_choice_html(title=title, prompt=prompt, options=options)
+        return web_prompt.block_on_choice(registry, html)
+    if dialog_window is not None:
+        return dialog_window.show_choice_dialog(title=title, prompt=prompt, options=options)
+    return None
+
+
 def _run_async(work: Callable[[], Any], on_done: Callable[[bool, Any], None]) -> None:
     """Run ``work()`` on a background thread.
 
     ``on_done(ok, result)`` is called on the main thread via
-    AppHelper.callAfter -- ``result`` is the return value on success, or the
+    ``call_on_main`` -- ``result`` is the return value on success, or the
     raised exception on failure. Never touch AppKit/the webview from
     ``work``; do it in ``on_done``. Relocated from menu_bar.py's identical
     helper -- see its own pre-#120 history.
@@ -483,9 +576,9 @@ def _run_async(work: Callable[[], Any], on_done: Callable[[bool, Any], None]) ->
     def _runner() -> None:
         try:
             result = work()
-            AppHelper.callAfter(on_done, True, result)
+            call_on_main(on_done, True, result)
         except Exception as exc:  # noqa: BLE001 - surfaced to the user via on_done
-            AppHelper.callAfter(on_done, False, exc)
+            call_on_main(on_done, False, exc)
 
     threading.Thread(target=_runner, daemon=True).start()
 
@@ -599,7 +692,20 @@ class SettingsController:
         # telegram_submit_2fa/telegram_cancel_auth below and _telegram_auth_
         # state's own docstring for the shape.
         self._telegram_auth: dict[str, Any] | None = None
+        # Kept as a single settable slot -- settings_window.py's own
+        # ``controller.on_change = self._push_state`` assignment is
+        # unchanged by this phase (see that module's docstring) -- rather
+        # than migrated onto add_change_listener below, so the native
+        # window's existing tests stay the parity oracle §16.8's risk #1
+        # wants them to be, unaffected by anything web-only.
         self.on_change: Callable[[dict[str, Any]], None] | None = None
+        # Additional listeners, notified alongside on_change (§16.8's risk
+        # #2: "two on_change consumers... make it a list, test that both
+        # fire") -- daemon_main.py subscribes web/state_stream.py's push
+        # here so a rule changed over MCP, an OAuth flow finishing, or any
+        # other background outcome reaches an open browser tab exactly the
+        # way it already reaches an open native window.
+        self._change_listeners: list[Callable[[dict[str, Any]], None]] = []
 
         set_rules_changed_listener(self._on_rules_changed)
         if self.ipc_server is not None:
@@ -612,7 +718,7 @@ class SettingsController:
     def _on_rules_changed(self) -> None:
         """Fired by auto_accept.reload_rules(), possibly from the IPC
         server's thread -- marshal the state push onto the main thread."""
-        AppHelper.callAfter(self._push_snapshot)
+        call_on_main(self._push_snapshot)
 
     def _on_unattended_changed(self) -> None:
         """Fired by ipc_server.py, on its own asyncio thread. No page of
@@ -620,11 +726,23 @@ class SettingsController:
         tray menu's top status line is gone) -- kept wired for a future
         pass, same "plumbing survives, UI doesn't exist yet" posture as
         _latest_update above."""
-        AppHelper.callAfter(self._push_snapshot)
+        call_on_main(self._push_snapshot)
+
+    def add_change_listener(self, fn: Callable[[dict[str, Any]], None]) -> None:
+        self._change_listeners.append(fn)
+
+    def remove_change_listener(self, fn: Callable[[dict[str, Any]], None]) -> None:
+        try:
+            self._change_listeners.remove(fn)
+        except ValueError:
+            pass
 
     def _push_snapshot(self) -> None:
+        state = self.snapshot()
         if self.on_change is not None:
-            self.on_change(self.snapshot())
+            self.on_change(state)
+        for listener in list(self._change_listeners):
+            listener(state)
 
     # ------------------------------------------------------------------ #
     # Config helpers
@@ -744,11 +862,30 @@ class SettingsController:
         self._latest_update = result
         self._push_snapshot()
         if result is not None and result.is_update_available and should_notify_now():
-            # No in-webview "update available" dialog exists yet (see this
-            # class's docstring) -- the native alert is kept as the one
-            # surviving notification path for this specific event so an
-            # available update isn't silently unreported.
-            self._show_update_available_alert(result)
+            if rumps is not None:
+                self._show_update_available_alert(result)
+            # Without pyobjc there is no native run loop to pop a
+            # rumps.alert() onto -- calling it here used to raise
+            # AttributeError on rumps (None) in this background thread,
+            # exactly the §16.2.1 class of bug this phase's call_on_main
+            # seam exists to fix elsewhere. The web settings page's own
+            # in-page banner (renderGeneral's g.update_available, driven by
+            # _general_state below) is this surface's notification instead
+            # -- see docs/https-connector-refactor-plan.md §16.2.4.
+
+    def skip_update(self) -> dict[str, Any]:
+        """The web General page's banner "Skip" button -- same outcome as
+        _show_update_available_alert's "Skip This Version" response."""
+        if self._latest_update is not None:
+            mark_skipped(self._latest_update.latest_version)
+        return self.snapshot()
+
+    def remind_later_update(self) -> dict[str, Any]:
+        """The web General page's banner "Remind Me Later" button -- same
+        outcome as _show_update_available_alert's "Remind Me Later"
+        response."""
+        mark_remind_later()
+        return self.snapshot()
 
     def _show_update_available_alert(self, result: UpdateCheckResult) -> None:
         beta_note = " (beta)" if result.is_beta else ""
@@ -792,17 +929,35 @@ class SettingsController:
             return self.snapshot()
 
         try:
-            with open(src, encoding="utf-8") as fh:
-                data = json.load(fh)
-        except (OSError, json.JSONDecodeError) as exc:
-            self.error = f"Could not read that file as JSON: {exc}"
+            with open(src, "rb") as fh:
+                raw = fh.read()
+        except OSError as exc:
+            self.error = f"Could not read that file: {exc}"
             return self.snapshot()
+        self.install_org_config_bytes(raw)
+        return self.snapshot()
+
+    def install_org_config_bytes(self, raw: bytes) -> None:
+        """The actual validate-then-write step behind install_org_config()
+        above, factored out so web/routes_settings.py's multipart upload
+        (§16.2.4 -- a browser-side file picker replacing osascript's native
+        "choose file" dialog, which has no meaning triggered by an HTTP
+        request) can drive the exact same validation without going through
+        a native file-open dialog at all. Sets self.error on failure,
+        clears it on success -- callers push a fresh snapshot() themselves,
+        the same convention every other mutating method here follows.
+        """
+        try:
+            data = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            self.error = f"Could not read that file as JSON: {exc}"
+            return
         if not isinstance(data, dict) or "version" not in data:
             self.error = (
                 "That file doesn't look like a PrivacyFence organization config bundle "
                 '(expected a JSON object with a "version" field).'
             )
-            return self.snapshot()
+            return
 
         dest = org_dir() / "org_config.json"
         try:
@@ -811,10 +966,9 @@ class SettingsController:
             os.chmod(dest, 0o600)
         except OSError as exc:
             self.error = f"Could not install organization config: {exc}"
-            return self.snapshot()
+            return
 
         self.error = ""
-        return self.snapshot()
 
     # ------------------------------------------------------------------ #
     # Connector actions
@@ -965,20 +1119,23 @@ class SettingsController:
 
         def pick_resource(resources: list[dict[str, Any]]) -> dict[str, Any]:
             # Runs on work()'s own background thread (see _run_async) --
-            # dialog_window.show_choice_dialog handles marshaling the actual
-            # window build/show onto the main thread and blocking this one
-            # until it resolves, the same convention gate.py's
-            # asyncio.to_thread(show_*_popup, ...) call sites already use.
+            # _pick_resource_index below handles marshaling the actual
+            # picker onto whichever surface is live (native window or web)
+            # and blocking this one until it resolves, the same convention
+            # gate.py's asyncio.to_thread(show_*_popup, ...) call sites
+            # already use. See that function's own docstring (§16.2.2: "the
+            # same pattern P1 already solved" -- generalized here rather
+            # than a second, web-only mechanism).
+            #
+            # Two behaviors carried over deliberately, not by accident
+            # (§16.2.2): a cancelled picker (idx is None) falls back to the
+            # first resource -- there was never an abort path of its own,
+            # on either surface; and the options shown are site URLs, not
+            # names.
             options = [r.get("url", r.get("id", "")) for r in resources]
-            idx = dialog_window.show_choice_dialog(
-                title="PrivacyFence",
-                prompt="Choose the Atlassian site to connect:",
-                options=options,
+            idx = _pick_resource_index(
+                title="PrivacyFence", prompt="Choose the Atlassian site to connect:", options=options,
             )
-            # Cancelled picker (idx is None) falls back to the first
-            # resource, same as the old _osascript_pick-based lookup: a
-            # cancelled choice never had a "None of the above, abort" path
-            # of its own, either.
             return resources[idx] if idx is not None else resources[0]
 
         def work() -> dict[str, Any]:
@@ -1384,6 +1541,30 @@ class SettingsController:
         self.error = ""
         return self.snapshot()
 
+    def export_audit_log_path(self) -> str | None:
+        """Web/routes_settings.py's download endpoint's own equivalent of
+        export_audit_log() above (§16.2.4) -- builds this week's .xlsx and
+        returns its path for the route to serve directly, instead of
+        running ``open`` on the daemon's own machine (which shows the file
+        to whoever is sitting at *that* machine, not to the browser that
+        made the request -- possibly a different device entirely). Unlike
+        export_audit_log(), there is nothing sensible to "download" when
+        there's no audit activity for the current week yet (opening the
+        containing folder doesn't translate to an HTTP download), so that
+        case is also an error here, not the silent open-the-folder fallback
+        the native path takes. Sets self.error (and returns None) on
+        either miss; clears it on success.
+        """
+        log_dir = Path(data_dir()) / "logs" / "audit"
+        week = current_week()
+        if not log_dir.exists() or not (log_dir / f"{week}.jsonl").exists():
+            self.error = "No audit log for this week yet."
+            return None
+
+        xlsx_path = AuditLogger(str(log_dir)).export_week_to_excel(week)
+        self.error = ""
+        return xlsx_path
+
     # ------------------------------------------------------------------ #
     # About
     # ------------------------------------------------------------------ #
@@ -1423,12 +1604,20 @@ class SettingsController:
             except OSError:
                 org_installed_date = ""
 
+        latest = self._latest_update
         return {
             "pii_enabled": pii_cfg.get("enabled", True),
             "pii_ip": pii_cfg.get("detect_ip_addresses", True),
             "pii_financial": pii_cfg.get("detect_financial_figures", True),
             "update_check_enabled": update_cfg.get("enabled", True),
             "update_check_beta": update_cfg.get("include_beta", False),
+            # §16.2.4: the web General page's own update-available banner --
+            # see skip_update/remind_later_update and _on_update_check_done
+            # above for the actions it drives.
+            "update_available": bool(latest is not None and latest.is_update_available),
+            "update_latest_version": latest.latest_version if latest is not None else "",
+            "update_release_url": latest.release_url if latest is not None else "",
+            "update_is_beta": bool(latest is not None and latest.is_beta),
             "org_installed": org_installed,
             "org_installed_date": org_installed_date,
             "org_button_label": (
