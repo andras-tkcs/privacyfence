@@ -1261,7 +1261,7 @@ class TestSheetsGatedTools:
         assert "bold=true" in kwargs["preview"]["Format"]
         assert "background=#ffcc00" in kwargs["preview"]["Format"]
         client.format_sheet_range.assert_called_once_with(
-            "sheet1", 0, "A1:B2", "true", "", "#ffcc00", "", "", "", -1, -1, -1, "KEEP"
+            "sheet1", 0, "A1:B2", "true", "", "#ffcc00", "", "", "", "", "", -1, -1, -1, "KEEP"
         )
         assert result == {"requests_applied": 2}
 
@@ -1286,7 +1286,8 @@ class TestSheetsGatedTools:
             {
                 "spreadsheet_id": "sheet1", "sheet_id": 0, "range_a1": "A1:B2",
                 "italic": "true", "text_color": "#000000", "number_format": "0.00%",
-                "horizontal_alignment": "center", "freeze_rows": 1, "freeze_cols": 2,
+                "horizontal_alignment": "center", "vertical_alignment": "middle",
+                "wrap_strategy": "wrap", "freeze_rows": 1, "freeze_cols": 2,
                 "column_width": 100, "merge_type": "MERGE_ALL",
             },
         )
@@ -1294,6 +1295,7 @@ class TestSheetsGatedTools:
         summary = gated_call_spy[0]["preview"]["Format"]
         for expected in (
             "italic=true", "text_color=#000000", "number_format=0.00%", "align=center",
+            "valign=middle", "wrap=wrap",
             "freeze_rows=1", "freeze_cols=2", "column_width=100px", "merge=MERGE_ALL",
         ):
             assert expected in summary

@@ -225,12 +225,14 @@ class DriveConnector(Connector):
                     "Write Markdown content to a Google Doc with rich formatting: "
                     "headings (# through ######), **bold**, *italic*, "
                     "***bold-italic***, ~~strikethrough~~, __underline__, `code`, "
-                    "==highlight==, [link](url) (escape a literal '[' or ']' in "
-                    "the link text as '\\['/'\\]'), bullet/numbered lists (indent "
-                    "a sub-list 2 spaces per nesting level), and GFM pipe tables "
-                    "(a '| --- |' separator row under the header; ':---'/'---:'/"
-                    "':---:' for left/right/center column alignment). "
-                    "Clears the existing document content "
+                    "==highlight== (these five nest freely with each other, e.g. "
+                    "==**bold and highlighted**==), [link](url) (escape a literal "
+                    "'[' or ']' in the link text as '\\['/'\\]'), bullet/numbered "
+                    "lists (indent a sub-list 2 spaces per nesting level), GFM pipe "
+                    "tables (a '| --- |' separator row under the header; ':---'/"
+                    "'---:'/':---:' for left/right/center column alignment), and "
+                    "'---'/'***'/'___' on their own line as a horizontal-rule "
+                    "divider. Clears the existing document content "
                     "before writing — use drive_docs_edit_content or "
                     "drive_docs_format_content instead for a change that "
                     "shouldn't touch the rest of the document. "
@@ -423,11 +425,12 @@ class DriveConnector(Connector):
                 name="drive_sheets_format_range",
                 description=(
                     "Apply formatting to a range in a spreadsheet: bold/italic, "
-                    "colors, number format, alignment, column width, frozen rows/"
-                    "columns, and merged cells. Every parameter is opt-in — its "
-                    "default means 'leave that aspect unchanged', so a call that "
-                    "only sets a background color never touches unrelated "
-                    "formatting already on the range. Requires user approval."
+                    "colors, number format, horizontal/vertical alignment, text "
+                    "wrap, column width, frozen rows/columns, and merged cells. "
+                    "Every parameter is opt-in — its default means 'leave that "
+                    "aspect unchanged', so a call that only sets a background "
+                    "color never touches unrelated formatting already on the "
+                    "range. Requires user approval."
                 ),
                 params=[
                     ToolParam("spreadsheet_id", "str"),
@@ -451,6 +454,14 @@ class DriveConnector(Connector):
                               description="Sheets number-format pattern, e.g. '0.00%', '$#,##0.00', 'yyyy-mm-dd'; omit to leave unchanged"),
                     ToolParam("horizontal_alignment", "str", required=False, default="",
                               description="'LEFT' / 'CENTER' / 'RIGHT'; omit to leave unchanged"),
+                    ToolParam("vertical_alignment", "str", required=False, default="",
+                              description="'TOP' / 'MIDDLE' / 'BOTTOM'; omit to leave unchanged"),
+                    ToolParam("wrap_strategy", "str", required=False, default="",
+                              description=(
+                                  "'OVERFLOW_CELL' (overflow into empty neighboring cells) / "
+                                  "'CLIP' (cut off at the cell boundary) / 'WRAP' (line break to "
+                                  "fit the cell); omit to leave unchanged"
+                              )),
                     ToolParam("freeze_rows", "int", required=False, default=-1,
                               description="Number of rows to freeze at the top (0 unfreezes); omit (-1) to leave unchanged"),
                     ToolParam("freeze_cols", "int", required=False, default=-1,
@@ -1275,6 +1286,8 @@ class DriveConnector(Connector):
         text_color: str = "",
         number_format: str = "",
         horizontal_alignment: str = "",
+        vertical_alignment: str = "",
+        wrap_strategy: str = "",
         freeze_rows: int = -1,
         freeze_cols: int = -1,
         column_width: int = -1,
@@ -1305,6 +1318,10 @@ class DriveConnector(Connector):
             applied.append(f"number_format={number_format}")
         if horizontal_alignment:
             applied.append(f"align={horizontal_alignment}")
+        if vertical_alignment:
+            applied.append(f"valign={vertical_alignment}")
+        if wrap_strategy:
+            applied.append(f"wrap={wrap_strategy}")
         if freeze_rows >= 0:
             applied.append(f"freeze_rows={freeze_rows}")
         if freeze_cols >= 0:
@@ -1337,7 +1354,8 @@ class DriveConnector(Connector):
         result = await self._fetch(
             self._drive.format_sheet_range, spreadsheet_id, sheet_id, range_a1,
             bold, italic, background_color, text_color, number_format,
-            horizontal_alignment, freeze_rows, freeze_cols, column_width, merge_type,
+            horizontal_alignment, vertical_alignment, wrap_strategy,
+            freeze_rows, freeze_cols, column_width, merge_type,
         )
         await self._note_own_write(spreadsheet_id)
         return result
