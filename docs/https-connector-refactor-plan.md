@@ -1,14 +1,25 @@
 # PrivacyFence as an HTTPS connector — architecture & functional refactoring plan
 
 **Status: design agreed (§15); the P0 spike is complete and its findings are recorded in §12. P1
-(web approval surface), P2 (MCP over HTTP alongside the bridge), P4b (the Desktop stdio shim, D11)
-and P3 (deferred approvals + concurrency) have landed. P2's implementation found one gap this
-document did not have an answer for — how Claude Desktop connects to `local` mode once the bridge
-is gone — decided as D11 and shipped as P4b ahead of P3, since neither depended on the other. P3
-retires `_popup_lock` per §6 and implements the deferred-approval protocol from §5; its own beta
-(§12: "P3 | beta, and it needs one") is what still has to confirm the re-call-rate and hold-window
-findings from P0's spike (§5.4) against real traffic on all four Claude surfaces, not just Claude
-Code.**
+(web approval surface), P2 (MCP over HTTP alongside the bridge), P3 (deferred approvals +
+concurrency) and P4 (settings on the web, §16) have landed. P3 retires `_popup_lock` per §6 and
+implements the deferred-approval protocol from §5; its own beta (§12: "P3 | beta, and it needs one")
+is what still has to confirm the re-call-rate and hold-window findings from P0's spike (§5.4) against
+real traffic on all four Claude surfaces, not just Claude Code. P4 folds §16's eight W-PRs into one
+landing: the settings surface (`/settings`, the allowlisted action dispatcher, the shared state-push
+channel) and the P1-compatible slice of [`approval-list-ui-ux.md`](approval-list-ui-ux.md) (the page
+shell, the return-to-list flow, notification tiers 0-1) — its own full multi-row list, grouping and
+hold-window clock stay P3's, per that document's §6.
+
+**P4b (the Desktop stdio shim, D11) shipped and has since been reverted; D11 is superseded by D12.**
+P2's implementation found a real gap — how Claude Desktop connects to `local` mode once the bridge is
+gone — which P4b closed by shipping PrivacyFence's own transport-only shim inside `PrivacyFence.mcpb`.
+That shim added a second Node package (`mcpb/shim/`) and its own contract test to maintain indefinitely
+for a problem P4c (§16.9) turns out to solve more simply: the `/settings` page P4 already built shows
+the `/mcp` URL and bearer token directly, which covers Claude Code and any other Streamable-HTTP-native
+client without a second install artifact at all. Desktop keeps using the original bridge-based
+`PrivacyFence.mcpb`, unchanged from before D11 — see D12 in §15 and the Migration section below for
+the full reasoning.**
 
 This document designs, and validates against the current code, the refactoring that turns
 PrivacyFence from a macOS-only, single-user, stdio-MCP-bridge desktop app into a service with an
@@ -210,10 +221,10 @@ reads as the deliberate one it is, rather than implying `local` will grow into i
                                               / Telegram, per-user credentials
 ```
 
-What disappears: `bridge/` entirely (replaced for Claude Desktop by a transport-only stdio shim
-an order of magnitude smaller — D11/§8.1), `ipc.py` / `ipc_server.py` as the Claude-facing transport,
-`approval_popup.py`, `approval_window.py`, `dialog_window.py`, `settings_window.py`, `menu_bar.py`
-(the last one optionally kept as a convenience tray on desktop).
+What disappears eventually, pending a real answer for Desktop (D11 tried one, reverted; see D12 in
+§15 — P5 is currently blocked, not scheduled): `bridge/` entirely, `ipc.py` / `ipc_server.py` as the
+Claude-facing transport, `approval_popup.py`, `approval_window.py`, `dialog_window.py`,
+`settings_window.py`, `menu_bar.py` (the last one optionally kept as a convenience tray on desktop).
 
 What is reused unchanged: `approval_window_html.py`, `settings_window_html.py`, `gate.py`'s policy
 core, `auto_accept.py`, `resource_grants.py`, `privacy_filter.py`, `pii_detector.py`,
@@ -554,10 +565,12 @@ advertised as read-only".
 The bridge does a fifth thing the list above misses, and it is the one `/mcp` cannot absorb: it is
 the *shape* Claude Desktop can install — a stdio server inside a `.mcpb`, wired up by double-click.
 Claude Code connects to `/mcp` natively (`--transport http --header`), so for it the bridge really
-does just vanish; Desktop has no equivalent today (§12's migration notes, D11). What replaces it
-there is a thin stdio-to-Streamable-HTTP shim shipped in the same bundle — transport only, no tool
-or manifest knowledge, so none of the mapping above is duplicated in it. P4b builds it; P5 deletes
-`bridge/` in favour of it.
+does just vanish; Desktop has no equivalent today (§12's migration notes, D11/D12). P4b tried a thin
+stdio-to-Streamable-HTTP shim shipped in the same bundle — transport only, no tool or manifest
+knowledge — and it worked, but was reverted (D12, §16.9): a second Node package and its own contract
+test, maintained indefinitely, for a problem P4c solves differently for every client *except*
+Desktop. Desktop's `.mcpb` still wraps the bridge, unchanged, and `bridge/` cannot go until this
+fifth thing has some other answer — see P5's row in §12's phase table.
 
 ### 8.2 Decided: use the official MCP Python SDK
 
@@ -929,12 +942,14 @@ not a rewrite.** That was the single biggest feasibility question and it comes b
 
 ## 12. Implementation plan
 
-Eleven numbered phases plus P4b, not seven. An earlier draft had a single "org mode" phase carrying
-principals, per-principal storage, OIDC, an OAuth 2.1 authorization server, per-user service
-authorization and rate limits at once — that is a programme, not a phase, and it could not have been
-implemented step by step. It is split below into P6–P9. P4b is lettered rather than numbered on
-purpose: it was added after P2 shipped (D11), and renumbering P5–P10 would silently invalidate every
-phase reference in this document, in `docs/`, and in merged PR history.
+Eleven numbered phases plus P4b and P4c, not seven. An earlier draft had a single "org mode" phase
+carrying principals, per-principal storage, OIDC, an OAuth 2.1 authorization server, per-user
+service authorization and rate limits at once — that is a programme, not a phase, and it could not
+have been implemented step by step. It is split below into P6–P9. P4b and P4c are lettered rather
+than numbered on purpose: each was added after P2 shipped, and renumbering P5–P10 would silently
+invalidate every phase reference in this document, in `docs/`, and in merged PR history. P4b (D11)
+shipped and was reverted; P4c (D12) is the phase actually live today — see the note at the top of
+this document, D11/D12 in §15, and §16.9.
 
 Two ordering changes fall out of the same review:
 
@@ -944,7 +959,10 @@ Two ordering changes fall out of the same review:
   is written once, on the transport it ships on.
 - **Retiring the bridge becomes its own phase** (P5), separated from adding the HTTP endpoint. The
   gap between P2 and P5 *is* the migration window: both transports work, so no installed
-  `PrivacyFence.mcpb` breaks on upgrade.
+  `PrivacyFence.mcpb` breaks on upgrade. **P5 is now open-ended rather than scheduled**: it depended
+  on P4b giving Desktop a zero-config `/mcp` path, P4b was reverted, and P4c does not attempt to
+  replace that (§16.9) — so the migration window this paragraph describes does not currently have an
+  end date. Revisit this once there's a real answer for Desktop, not before.
 
 ### The phases
 
@@ -955,8 +973,9 @@ Two ordering changes fall out of the same review:
 | **P2** | MCP over HTTP, **alongside** the bridge | P1 | L | Claude Code drives every tool over `/mcp`; the bridge still works unchanged |
 | **P3** | Deferred approvals + concurrency | P2 | L | Three approvals pending at once, each decidable in any order; `_popup_lock` gone; the stop-and-ask path P0 found (§5.4) has designed copy and a measured re-call rate from the beta |
 | **P4** | Settings on the web | P1 | M | Every `SettingsController` action reachable from a browser — detailed PR-by-PR plan in §16 |
-| **P4b** | Desktop stdio shim in the `.mcpb` (D11) | P2 | S | A fresh `PrivacyFence.mcpb` install reaches `/mcp` from Claude Desktop with no config file edited and no token copied; the shim contains no PrivacyFence protocol knowledge |
-| **P5** | Retire the bridge | P2, P4, **P4b in a stable release** | S | `bridge/`, `ipc.py`, `ipc_server.py` deleted; integration test re-pointed at `/mcp`; a `local`-mode Desktop user is on the P4b shim, not on a hand-edited config |
+| ~~**P4b**~~ | ~~Desktop stdio shim in the `.mcpb` (D11)~~ **Reverted — see D12** | P2 | S | Shipped, then reverted: `mcpb/shim/` deleted, `PrivacyFence.mcpb` is the bridge again. D11's problem (Desktop's zero-config path once the bridge retires) is open again — P4c below does not solve it, deliberately; see D12/§16.9. |
+| **P4c** | `/mcp` URL + token on `/settings` (D12) | P4 | S | Claude Code (or any other Streamable-HTTP-native MCP client) is registered by copying the URL and bearer token shown on the running daemon's own `/settings` page — no `~/.privacyfence` file-hunting, no second install artifact. Desktop is explicitly out of scope — detailed plan in §16.9 |
+| **P5** | Retire the bridge | P2, P4 | S | **Blocked pending a Desktop answer (see D12)** — `bridge/`, `ipc.py`, `ipc_server.py` can only go once something other than the (reverted) P4b shim gives a `local`-mode Desktop user a zero-config `/mcp` path; P4c is not that thing. Until then this phase does not proceed, and `bridge/` stays indefinitely, not just through a migration window. |
 | **P6** | Principals + per-user storage | P3, P5 | L | Two principals isolated in tests; local mode byte-identical to before |
 | **P7** | Org identity — OIDC, sessions, OAuth 2.1 AS | P6 | L | Claude adds the connector by DCR; audience separation test passes |
 | **P8** | Per-user service authorization | P7 | L | A remote user authorizes Google, Slack, Salesforce, Atlassian and Telegram from a phone |
@@ -1121,7 +1140,7 @@ conditional items in that checklist map onto these phases as follows, so nobody 
 |---|---|
 | `qa_fixture_recorder.py --check <connector>` | **No phase.** Nothing here touches `*_client.py` or `connectors/**`. If a phase finds itself editing one, that is a signal it has grown beyond its scope. |
 | `qa_popup_smoke.py` | P1 and P3 while the native popup still exists; **retired with it at P10**, replaced by the headless-Chromium smoke test in §13. |
-| `pytest tests/integration -v` (needs Node) | P2, **P4b** and P5 — all three change what is on the wire. The contract test is re-pointed from stdio to `/mcp` at P5 and stops needing Node there; P4b adds the smaller shim passthrough test that keeps one Node leg alive (§13). |
+| `pytest tests/integration -v` (needs Node) | P2 and (once unblocked, see P5's row in §12) P5 — both change what is on the wire. The contract test is re-pointed from stdio to `/mcp` at P5 and stops needing Node there. P4b briefly added a second contract test (`test_shim_mcp_contract.py`) for its own shim; both the shim and that test were reverted (D12) and do not apply to P4c. |
 | New module-level singletons get a `tests/conftest.py` reset | P1 (`web_approval_ui`), P3 (`approvals`), P6 (`principal`) — and P6 *removes* most of the existing ones. |
 | Every tool call resolves through `gated_call` and leaves an audit trail | P3 especially: the two-entry pending/release pair in §5.4 is the thing to assert. |
 
@@ -1145,24 +1164,25 @@ LaunchAgent-started daemon. Nothing about `~/.privacyfence` changes — the `loc
 untouched. What does change is how Claude reaches the daemon, and that is why P2 and P5 are separate:
 
 1. P2 ships the HTTP endpoint with the bridge still working. Nothing breaks on upgrade.
-2. The settings page gains a "Connect Claude" section showing the local URL and token, plus a notice
-   that the bridge is deprecated. That section is what a **Claude Code** user needs; Desktop needs
-   the shim in point 3, not a URL to copy.
-3. P4b re-points `PrivacyFence.mcpb` at `/mcp` through a thin stdio shim (D11, below). The user
-   installs the new `.mcpb` the way they installed the old one — double-click — and nothing else
-   about their setup changes. Until P5, `scripts/build_mcpb.sh`/`build_dmg.sh` also keep shipping a
-   second, separate extension straight from the unchanged `bridge/` —
-   `PrivacyFence (Legacy Bridge).mcpb`, a different `name` in its manifest so it installs alongside
-   the new one without conflict — so a user who hits a problem with `/mcp` has a one-click rollback
-   in the same DMG rather than needing to build the old bridge from source.
-4. P5 lands only after a full beta-then-stable cycle in which both transports shipped **and** the
-   P4b shim has had a stable release of its own, and its release notes are the second notice.
+2. P4c (§16.9) gives the `/settings` page a "Connect Claude" section showing the local `/mcp` URL and
+   bearer token. That section is what a **Claude Code** user (or any other Streamable-HTTP-native
+   client) needs — copy the URL and header, done, no `~/.privacyfence` file-hunting. **It is not a
+   Desktop answer.** `PrivacyFence.mcpb` keeps installing the bridge, unchanged, for every Desktop
+   user, indefinitely — see the D11/D12 history below for why a shim-based alternative was tried and
+   then reverted rather than kept as Desktop's own path forward.
+3. ~~P4b re-points `PrivacyFence.mcpb` at `/mcp` through a thin stdio shim (D11, below)~~ — **shipped,
+   then reverted.** See D12.
+4. P5 (retire the bridge) has no scheduled trigger right now. Its original condition — a stable P4b
+   release giving Desktop a zero-config `/mcp` path — no longer holds, and nothing has replaced it.
+   It stays blocked (§12's phase table) until something does; `bridge/` ships indefinitely until then,
+   not just through a migration window.
 
 **Gap found while implementing P2 — what replaces the bridge's zero-config Desktop experience in
-`local` mode after P5. Resolved: D11, implemented as P4b.** Today `PrivacyFence.mcpb` is what Claude
-Desktop auto-loads with no config file edited and no secret copied anywhere — the bridge discovers
-`ipc_token` itself, locally. `/mcp` has no built-in equivalent for Desktop, and none of the obvious
-routes to one works:
+`local` mode after P5.** ~~Resolved: D11, implemented as P4b.~~ **D11 was implemented as P4b, then
+reverted; the gap below is open again — see D12 for why, and for what P4c does instead of closing
+it.** Today `PrivacyFence.mcpb` is what Claude Desktop auto-loads with no config file edited and no
+secret copied anywhere — the bridge discovers `ipc_token` itself, locally. `/mcp` has no built-in
+equivalent for Desktop, and none of the obvious routes to one works:
 
 - Claude Desktop's own local `claude_desktop_config.json` does not reliably support a direct
   Streamable HTTP entry (`"type": "http"`/`"url"`) today — as of this writing there is an open
@@ -1241,6 +1261,33 @@ Connectors (that stays `org` mode's, by §2). It also does not front `/approvals
 it only ever talks to `/mcp`, so §10.3's audience separation is untouched by it, and a shim that
 grew a second endpoint would be the thing to reject in review.
 
+**D12: P4b is reverted; PrivacyFence goes back to shipping one `.mcpb` (the bridge), and does not
+replace D11's Desktop answer.** Everything above this paragraph describes what was actually built —
+`mcpb/shim/`, the daemon-side `mcp_url` discovery file, the dual-`.mcpb`-in-one-DMG rollback story —
+and it worked: a fresh install reached `/mcp` from Claude Desktop with no config edited and no token
+copied, exactly as D11 specified. The decision to revert is a maintenance-cost judgment, not a
+correctness one:
+
+- **A second Node package is a second thing to keep in sync with the daemon forever, for one
+  platform's zero-config install.** `mcpb/shim/` needed its own build (`build.mjs`), its own test
+  suite (five files), its own integration contract test
+  (`tests/integration/test_shim_mcp_contract.py`), and its own CI job steps — real, ongoing surface
+  for a proxy that (by design, §8.1) does almost nothing. `bridge/` already pays that cost and stays
+  regardless (P5 is blocked); running two Node packages through the same CI/build/release machinery
+  for the same platform's benefit was judged not worth it against P4c's alternative below.
+- **P4c reaches further for a smaller build.** A URL and a token shown on a page `/settings` already
+  serves (P4, no new surface at all) covers Claude Code today and any future MCP client that speaks
+  Streamable HTTP + bearer auth natively, with zero PrivacyFence-side code to maintain per client.
+  D11's shim only ever helped Desktop, specifically because of Desktop's own config-editing
+  limitations (still true, still unfixed upstream — nothing about *those* changed).
+- **This is not a claim that Desktop's problem went away.** It didn't. Reverting D11 without
+  replacing it means a `local`-mode Desktop user's zero-config path is `bridge/`, indefinitely, and
+  P5 (retire the bridge) has no path forward until that changes. That is a real, deliberately
+  accepted regression in the plan's own ambitions, not an oversight — recorded here so a future
+  reader doesn't have to reconstruct it from a deleted directory. Revisiting D11's approach (or a
+  different one — Desktop's own HTTP-config bug landing upstream would remove the whole question)
+  is fair game whenever P5 actually needs to move; nothing here forecloses it.
+
 **Rollback.** Each phase needs an off switch that does not require a downgrade:
 
 - P1: `init_approval_ui()` — the seam itself. A config key selects native or web.
@@ -1250,13 +1297,10 @@ grew a second endpoint would be the thing to reject in review.
   `local` deployment where the human is at the desktop anyway, so treat it as a **supported, tested
   configuration** with a documented default rather than a switch that exists only until P3 is stable.
   §5.4's "Claude may not re-call" is now a measured behavior, not a hypothetical.
-- P4b: the previous `.mcpb` is the off switch — it is a file, it still installs, and the bridge it
-  fronts is still running until P5. This is the reason D11's phase has to land *and reach stable*
-  before P5 and not with it: a shim that ships in the same release that deletes the bridge has no
-  rollback at all. Belt-and-braces on top of that: every DMG from P4b through P5 ships
-  `PrivacyFence (Legacy Bridge).mcpb` alongside the new `PrivacyFence.mcpb`, built straight from the
-  unchanged `bridge/` (`scripts/build_mcpb.sh`), so the rollback doesn't require a *previous*
-  release's DMG at all — it's one click in the *current* one.
+- ~~P4b: the previous `.mcpb` is the off switch~~ — moot: P4b itself was the rollback target, and
+  has been rolled back (D12). `PrivacyFence.mcpb` is the bridge again, unconditionally.
+- P4c: nothing to roll back — a read-only display of values that already exist (`web.mcp.enabled`'s
+  own off switch, from P2, still controls whether there's anything for the section to show).
 - P6–P9: `mode: local` is the off switch for everything org-shaped.
 - P10 is the one phase with no rollback — it deletes the fallback. That is why it is last.
 
@@ -1275,8 +1319,9 @@ here."
 | **P2** | **beta**, then stable | Dual-transport and reversible — the bridge still works, so a broken `/mcp` costs a user nothing. |
 | **P3** | **beta, and it needs one — more so after P0** | P0's early read came back negative on Claude Code (§5.4): the model stops and asks rather than re-calling. Only a real beta cohort, on all four surfaces and with iterated copy, settles what that costs in practice. Do not ship this straight to stable, and do not size the phase as if the loop were silent. |
 | P4 | stable with P1 | Same surface, same risk profile. |
-| **P4b** | **beta, then stable** | It changes what a `.mcpb` double-click installs, on the one surface (Desktop) with no fallback the user can drive themselves. Reversible while the bridge lives, which is the whole reason it ships before P5 rather than with it. |
-| P5 | **stable only** | A deletion should never be the thing a beta cohort is testing. Ship it once P2 **and P4b** each have a stable release behind them and the deprecation notice has been visible for a release cycle. |
+| ~~**P4b**~~ | ~~beta, then stable~~ **reverted (D12)** | Shipped a beta and worked, but the maintenance cost of a second Node package for one platform's install path wasn't judged worth it against P4c's simpler answer. See D12. |
+| P4c | stable with P4 | Read-only display of values `/settings` already computes; no new risk surface. |
+| P5 | **blocked, not scheduled** | No longer has a resolved Desktop path (D12) — releasing it is not a beta-vs-stable question until it has one. |
 | P6 | stable | No user-visible change by construction — local mode must be byte-identical. If it needs a beta, it is not done. |
 | **P7–P9** | **beta, on a separate build target** | Per D4, org mode is a different artifact. Its "beta" is a tagged server/container build for one pilot organization, not a pre-release on the desktop DMG channel. Do not mix the two cohorts. |
 | P10 | stable | Removes the fallback, so it goes out only after org mode has shipped for real. |
@@ -1285,7 +1330,7 @@ Version bumps follow `CLAUDE.md`: only when a branch is actually about to be rel
 commit. Most phase PRs carry no bump — a beta is tagged `vX.Y.Z-beta.N` at release time, not
 per-phase.
 
-Phases P1–P5, P4b included, are strictly additive to the existing security posture. P7 is where the
+Phases P1–P5, P4b/P4c included, are strictly additive to the existing security posture. P7 is where the
 trust boundary actually moves, and it should get its own security review recorded in
 `docs/security-and-compliance.md` rather than riding on this document.
 
@@ -1317,13 +1362,10 @@ not line-by-line coverage of every socket and TLS branch.
   bridge over real MCP-over-stdio using the `mcp` client. Its replacement drives the real HTTP MCP
   endpoint with the same client. The test's *purpose* — a wire-protocol change on one side without
   the other fails visibly — is preserved; only the transport changes. This also means the `mcp<2.0`
-  cap in `pyproject.toml` gets revisited as part of P2, and the test stops needing Node at P5.
-  P4b's shim (D11) gets its own, much smaller Node-side test — drive the shim's stdio transport
-  with the `mcp` client against a real `/mcp`, assert one `initialize` and one `tools/call` make
-  the round trip with the bearer header attached and the `mcp_url` file honoured. That is a
-  passthrough test, not a schema test: the shim knows no schemas, so there is nothing else to
-  assert, and it is why "the suite stops needing Node at P5" is true of the *contract* test but
-  not of `tests/integration` as a whole.
+  cap in `pyproject.toml` gets revisited as part of P2, and the test stops needing Node at P5 —
+  once P5 is actually unblocked (D12; it currently is not). P4b briefly added its own, much
+  smaller Node-side contract test for the shim (`test_shim_mcp_contract.py`); it was deleted along
+  with the shim when P4b was reverted, since there's nothing left for it to test.
 - **Browser**: a headless-Chromium smoke test rendering both documents and clicking through one
   approval, as the successor to `scripts/qa_popup_smoke.py` (which loses its subject when the native
   window goes away at P10). §11 is a manual version of exactly this.
@@ -1375,7 +1417,8 @@ front.
 | **D7** | Require step-up re-authentication before a *write* approval, and by what mechanism? | **Yes in `org` mode, scoped and configurable — via a WebAuthn platform authenticator** (Face ID / Touch ID / fingerprint / Hello), with IdP `acr_values` step-up as the alternative and OIDC re-auth as the no-passkey fallback. The mechanism is decided; whether the approval link opens somewhere that offers the platform authenticator is **still unverified** — P0 could not reach the real apps, and the ten-minute manual check is P9's entry condition. §10.6 |
 | **D9** | What replaces `id(writer)` as the unattended-session key? | **The Streamable HTTP session identifier**, not a token claim — an MCP session is the exact successor to a connection, whereas a claim would make "unattended" a property of a credential that outlives the run. §9.4 |
 | **D10** | Which HTTP stack does P1 bring in, given the MCP endpoint does not arrive until P2? | **starlette + uvicorn, from P1** — the same stack D2 commits to for P2. P1 has to stand up `web/server.py` and `routes_approvals.py` before any MCP code exists, and a stdlib asyncio server written at P1 would be thrown away at P2 — the waste §12 avoids by ordering P2 ahead of P3. This front-loads D2's single deviation from the stdlib-first rule by one phase rather than adding a second one. §3, §8.2 |
-| **D11** | After P5 deletes the bridge, how does Claude Desktop connect to `local` mode without a hand-edited config or a copied token? | **PrivacyFence ships its own thin stdio-to-Streamable-HTTP shim inside `PrivacyFence.mcpb`** — transport only, no `ToolSpec`/manifest knowledge, reading `mcp_url` and `mcp_token` from `~/.privacyfence` itself. It keeps the `.mcpb`'s zero-config install, which neither Desktop's own HTTP config entry (open upstream bug), Settings → Connectors (cloud-side, needs public HTTPS) nor `mcp-remote` (third party, hand-edited config, `--allow-http`) can. Built in P4b, stable before P5. §8.1, §12 |
+| **D11** | ~~After P5 deletes the bridge, how does Claude Desktop connect to `local` mode without a hand-edited config or a copied token?~~ **Reverted — see D12.** | ~~PrivacyFence ships its own thin stdio-to-Streamable-HTTP shim inside `PrivacyFence.mcpb`~~ — built in P4b, worked, then reverted. §8.1, §12, §16.9 |
+| **D12** | D11's shim is built and works — is it worth keeping as a second Node package indefinitely for one platform's zero-config install? | **No — revert P4b.** `PrivacyFence.mcpb` goes back to wrapping the bridge, unconditionally; `mcpb/shim/` and its tests are deleted. In its place, **P4c**: the `/settings` page (already built by P4) gets a "Connect Claude" section showing the `/mcp` URL and bearer token, covering Claude Code and any other Streamable-HTTP-native client with no new code to maintain per client. This is explicitly not a Desktop replacement — D11's problem is open again, and P5 (retire the bridge) is blocked until it has some other answer. §12, §16.9 |
 | **D8** | When are #55 and #121 acted on? | **Once this refactoring is complete, not before.** #55 then closes as won't-do pointing at this document; #121 is revisited then, together with a potential Linux version. Closing #55 earlier would leave mobile approval untracked while its replacement is still unbuilt. §14 |
 
 ---
@@ -1818,3 +1861,61 @@ Open questions worth answering before W3 lands:
 3. **Should the state stream be one channel with typed events or two endpoints?** One channel is
    simpler to authenticate and to reconnect; two keep a settings page from holding a subscription to
    approval data it never renders. §16.3 assumes one; P6's principals may force the split anyway.
+
+### 16.9 P4c: `/mcp` URL + token on `/settings` (D12, supersedes P4b)
+
+**Status: implemented.** P4b (D11) is reverted — see the note at the top of this document and D11/D12
+in §15. This section is what replaced it: not a second install artifact, but one more piece of the
+`/settings` page P4 already built.
+
+**Scope.** A "Connect Claude" card on the General page (same page the PII gate/update-check/org-config
+cards already live on — no new nav entry), reachable from both the native settings window and
+`/settings`, since both render `settings_window_html.build_html()`:
+
+- The `/mcp` URL (`http://<host>:<port>/mcp`) when `web.mcp.enabled` is on and the daemon has actually
+  bound it; otherwise a plain sentence saying `/mcp` is off and which config key turns it on.
+- The bearer token, masked by default (a settings page rendered in a browser is exactly the kind of
+  screen a screen-share or a meeting-room monitor can see — same reasoning §4.3 of
+  `approval-list-ui-ux.md` applies to notification bodies), with a click-to-reveal/click-to-copy
+  control. Never sent to the client pre-revealed in the initial snapshot's JSON — see the test
+  requirement below.
+- A ready-to-paste `claude mcp add --transport http privacyfence <url> --header "Authorization:
+  Bearer <token>"` command, built server-side from the two values above so there's nothing to
+  transcribe by hand.
+
+**Explicitly not in scope**, per D12's own reasoning: Claude Desktop. Nothing here tries to make a
+raw URL+token consumable by Desktop's stdio-only extension model — that is D11's problem, still open,
+and P4c does not claim otherwise. A phone/other-device Claude Code session reaching a `local`-mode
+daemon's loopback-only server also isn't in scope (D1 keeps `local` mode loopback-bound on purpose);
+this card is for the same machine, same posture as every other `/settings` action.
+
+**Where the values come from.** `WebServer` already computes `mcp_url`/`mcp_token` as live Python
+attributes the moment it's constructed (§16.3's `build_app`, `mcp_dispatcher`/`mcp_token` params) —
+the same process serving `/settings` has them in memory, so this needs no new discovery file the way
+D11's shim did (that file existed for an *out-of-process* Node consumer; P4c's consumer is the
+in-process settings route). `daemon_main._maybe_start_web_server` calls a new
+`SettingsController.set_mcp_connection_info(url=, token=)` right after constructing `WebServer`,
+passing `server.mcp_url`/`server.mcp_token` — regardless of `use_web_settings`, since both the native
+window and `/settings` render the same `build_html()` and both need the values live. `snapshot()`'s
+`general` state grows `mcp_enabled`/`mcp_url` (not a separate `connect_claude` key — this ended up
+sitting alongside the PII gate/update-check/org-config fields the General page already carries there,
+one dict, not a second one); the token itself is never in `general` at all, matching the Telegram-
+secrets pattern exactly. A dedicated `reveal_mcp_token()` action — allowlisted like every other
+`/api/settings/{action}`, but answering `{"mcp_token": ...}` rather than a fresh snapshot — is the only
+way the token leaves the process, and both bridges (the web page's JS, the native window's
+`_dispatch`) route that specific response to its own `window.__pfRevealMcpToken` callback instead of
+the generic `window.__pfRender`, which expects a full state shape and would otherwise wipe every other
+rendered section.
+
+**Test requirements**, mirroring §16.7's own discipline: the masked-by-default state is asserted (the
+token string does not appear in `build_html()`'s initial `window.__pfInitialState` in cleartext,
+matching the Telegram-secrets-never-echoed pattern §16.2.8 already established — this landed as the
+*stronger* guarantee floated above, not the CSS-only one: the token is fetched on demand via
+`reveal_mcp_token()` and is never in `window.__pfInitialState`'s JSON at all, revealed or not, so
+there's no weaker "hidden in the DOM" case to caveat); `/mcp` disabled renders the explanatory state,
+not a broken URL; the command string round-trips through a copy-button click in the browser smoke test
+(`qa_web_smoke.py`, §16.7's own "browser" row).
+
+**Rollback.** None needed — see §12's Rollback list. Turning `web.mcp.enabled` off (P2's own lever)
+already makes the card show its disabled state; turning `web.settings.enabled` off (P4's own lever)
+removes the whole page, card included.

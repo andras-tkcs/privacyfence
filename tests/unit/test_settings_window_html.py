@@ -39,6 +39,7 @@ def _make_state(**overrides):
             "update_check_enabled": True, "update_check_beta": False,
             "org_installed": True, "org_installed_date": "Jun 14, 2026",
             "org_button_label": "Install/Update Organization Config…", "version": "3.1.1",
+            "mcp_enabled": True, "mcp_url": "http://127.0.0.1:8765/mcp",
         },
         "connectors": [
             {"key": "gmail", "label": "Gmail", "icon": "gmail", "icon_data_uri": "data:image/png;base64,AAA",
@@ -106,10 +107,15 @@ class TestDocumentShell:
     def test_no_external_network_references(self):
         # Self-contained, offline document -- loaded via
         # loadHTMLString_baseURL_(html, None), so nothing may reference a
-        # CDN, external stylesheet, or remote script.
+        # CDN, external stylesheet, or remote script. Both checks are
+        # scoped to the template/CSS/JS portion before __pfInitialState --
+        # the embedded state itself legitimately carries URLs (about.repo_url,
+        # and since P4c, general.mcp_url, a same-machine http:// address, not
+        # a network reference the page's own code makes).
         html = build_html(_make_state())
-        assert "http://" not in html
-        assert "https://" not in html.split("window.__pfInitialState", 1)[0]
+        template = html.split("window.__pfInitialState", 1)[0]
+        assert "http://" not in template
+        assert "https://" not in template
 
 
 class TestStateEmbedding:
@@ -271,6 +277,54 @@ class TestAboutTemplate:
         html = build_html(_make_state())
         assert "'quit_app'" in html
         assert "'check_for_updates'" in html
+
+
+class TestConnectClaudeTemplate:
+    """The General page's Connect Claude card (P4c,
+    docs/https-connector-refactor-plan.md §16.9) -- superseding the reverted
+    P4b/D11 Desktop stdio shim for Claude Code and any other client that
+    already speaks Streamable HTTP natively. String-level checks only, same
+    reasoning as this module's own docstring."""
+
+    def test_reveal_action_wired(self):
+        html = build_html(_make_state())
+        assert "'reveal_mcp_token'" in html
+
+    def test_url_appears_in_the_template_when_mcp_enabled(self):
+        state = _make_state()
+        html = build_html(state)
+        assert state["general"]["mcp_url"] in html
+
+    def test_token_never_appears_anywhere_in_build_html_output(self):
+        # The stronger guarantee P4c settled on over CSS-only masking: the
+        # token isn't in the document at all until reveal_mcp_token() is
+        # explicitly called client-side -- there is no server-rendered
+        # value for this test to even try to assert the absence of beyond
+        # "the string doesn't appear", which is exactly the point: nothing
+        # in SettingsController.snapshot()'s general state carries it (see
+        # test_settings_controller.py's TestConnectClaude).
+        html = build_html(_make_state())
+        assert "mcp_token" not in _extract_initial_state(html).get("general", {})
+
+    def test_disabled_state_has_no_reveal_button_still_wired(self):
+        # reveal_mcp_token stays wired in the template regardless of
+        # mcp_enabled -- it's the "off" branch of renderConnectClaude that
+        # decides whether to show it, not the JS/CSS shipped to the page.
+        state = _make_state()
+        state["general"]["mcp_enabled"] = False
+        state["general"]["mcp_url"] = ""
+        html = build_html(state)
+        assert "'reveal_mcp_token'" in html
+        assert "web.mcp.enabled" in html
+
+    def test_reveal_callback_defined(self):
+        html = build_html(_make_state())
+        assert "window.__pfRevealMcpToken" in html
+
+    def test_copy_command_template_references_the_transport_and_header(self):
+        html = build_html(_make_state())
+        assert "claude mcp add --transport http privacyfence" in html
+        assert "Authorization: Bearer" in html
 
 
 class TestTelegramModalTemplate:
