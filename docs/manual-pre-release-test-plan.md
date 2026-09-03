@@ -148,6 +148,11 @@ it, not just from source.
       the LaunchAgent plist, load it.
 - [ ] From the menu bar: install/update the organization config bundle, authenticate at least one
       connector, and confirm `PrivacyFence.mcpb` installs into Claude Desktop from the mounted DMG.
+- [ ] Until P5 (see `docs/https-connector-refactor-plan.md` §12, D11): also install
+      `PrivacyFence (Legacy Bridge).mcpb` from the same mounted DMG, and confirm both show up as
+      separate MCP servers in Claude Desktop (Settings → Extensions) with no conflict/overwrite —
+      this is exactly the rollback path a real user hitting an `/mcp` problem would take, so it's
+      worth confirming for real, not just trusting the manifest `name`s differ.
 - [ ] Confirm `~/.privacyfence/` (not the repo folder) is where config/credentials/logs land for
       this bundled install — spot-check `~/.privacyfence/config/settings.yaml` exists.
 - [ ] Exercise one silent-gate call and one popup-gate call from a real Claude Desktop conversation

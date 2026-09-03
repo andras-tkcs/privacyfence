@@ -236,3 +236,8 @@ A new connector's test module should include, at minimum:
       or anything under `bridge/src/`: run `pytest tests/integration -v` locally (needs Node on
       PATH) and confirm it still passes — a change on one side of the wire protocol without the
       other only fails there, not in either side's own unit tests.
+- [ ] If this PR changes `web/routes_mcp.py`, `web/mcp_auth.py`, `web/server.py`'s `mcp_url`
+      discovery-file writing, or anything under `mcpb/shim/src/`: run `pytest tests/integration -v`
+      locally (needs Node on PATH) and confirm `test_shim_mcp_contract.py` still passes — same
+      reasoning as the bridge row above, one phase later (D11 in
+      `docs/https-connector-refactor-plan.md` §12).
