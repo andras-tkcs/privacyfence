@@ -138,6 +138,13 @@ _STREAM_JS = """
   // registration, and the permission pre-prompt alike; the live-connection
   // indicator above is unaffected (it isn't a notification).
   var NOTIFICATIONS_ENABLED = %(notifications_enabled)s;
+  // Exposed globally so the settings page's own notifications card
+  // (settings_window_html.py's renderNotificationsCard) can read the same
+  // config flag -- that module's JS is shared with the native settings
+  // window, which never loads this script at all, so it treats a missing
+  // flag as "on" (feature-detecting Notification support instead) rather
+  // than assuming this variable exists.
+  window.__pfNotificationsEnabled = NOTIFICATIONS_ENABLED;
 
   var dot = document.getElementById('pf-shell-live-dot');
   var label = document.getElementById('pf-shell-live-label');

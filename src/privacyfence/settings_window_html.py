@@ -454,10 +454,53 @@ _JS = r"""
   // General
   // -------------------------------------------------------------------- //
 
+  // Approval-notification permission (docs/approval-list-ui-ux.md §4.4) is
+  // browser state, not anything SettingsController tracks or this window's
+  // Python side could toggle -- Notification.permission lives per-origin in
+  // the browser itself, so this reads it live off `window` at render time
+  // rather than off `state`. Deliberately independent of window.
+  // __pfNotifPrompt's own one-shot toast (web_shell.py): that toast fires
+  // once, right after a first decision, and never again once shown; this
+  // card is the permanent, re-visitable home for the same action -- exactly
+  // what §4.4 calls for and the toast alone can't be ("a header toggle...
+  // if permission is denied, say so and link to the browser's own
+  // instructions"). Granting (or denying) here also means the toast simply
+  // won't fire later: its own guard is `Notification.permission ===
+  // 'default'`, which this card's own Enable click has already moved past.
+  //
+  // window.__pfNotificationsEnabled (set by web_shell.py's own script,
+  // which runs before this one's DOMContentLoaded-deferred first render --
+  // see that module's docstring) is undefined in the one place this
+  // function's shared JS also runs without that script at all: the native
+  // settings window (loadHTMLString_baseURL_(html, None), no origin at
+  // all). `Notification` is typically unsupported there too for the same
+  // reason, so the feature-detect below already hides this card on native
+  // in the common case; the config-disabled branch only ever applies to
+  // the web surface, where that flag is always set.
+  function renderNotificationsCard() {
+    var html = '<div class="pf-card"><div class="pf-card-row"><div>';
+    html += '<div class="pf-card-title">Approval Notifications</div>';
+    html += '<div class="pf-card-desc">A desktop notification when Claude needs your approval and this tab isn\'t focused -- from your browser, no server or push service involved.</div></div>';
+    if (typeof Notification === 'undefined') {
+      html += '<div class="pf-export-hint">Not supported in this window.</div>';
+    } else if (window.__pfNotificationsEnabled === false) {
+      html += '<div class="pf-export-hint">Turned off in configuration (web.notifications.enabled).</div>';
+    } else if (Notification.permission === 'granted') {
+      html += '<div class="pf-export-hint">Enabled</div>';
+    } else if (Notification.permission === 'denied') {
+      html += '<div class="pf-export-hint">Blocked -- allow notifications for this site in your browser\'s settings, then reload.</div>';
+    } else {
+      html += '<div class="pf-btn-primary" role="button" tabindex="0" aria-label="Enable notifications" data-notif-enable="1">Enable</div>';
+    }
+    html += '</div></div>';
+    return html;
+  }
+
   function renderGeneral(state) {
     var g = state.general;
     var html = '<div class="pf-page">';
     html += '<div class="pf-page-title">General</div>';
+    html += renderNotificationsCard();
 
     // §16.2.4: the web surface's replacement for _show_update_available_
     // alert's native rumps.alert() -- an in-page banner whose three
@@ -967,6 +1010,19 @@ _JS = r"""
 
     var repoEl = e.target.closest('[data-action="open_repo"]');
     if (repoEl) { post('open_repo', {}); return; }
+
+    // Client-only, like open_repo above -- Notification.requestPermission()
+    // is a browser API, never a message to Python (there is no server-side
+    // state to mutate; see renderNotificationsCard's own comment). Re-render
+    // once the browser's own dialog resolves so the card reflects the
+    // outcome (granted/denied) immediately rather than only on next visit.
+    var notifEl = e.target.closest('[data-notif-enable]');
+    if (notifEl) {
+      if (typeof Notification !== 'undefined' && Notification.requestPermission) {
+        Notification.requestPermission().then(function () { render(pyState); });
+      }
+      return;
+    }
 
     var actionEl = e.target.closest('[data-action]');
     if (actionEl) {
