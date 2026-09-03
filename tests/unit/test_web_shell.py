@@ -44,6 +44,13 @@ class TestWrap:
         html = web_shell.wrap('<div id="mine">x</div>', title="t", active="approvals")
         assert '<div id="mine">x</div>' in html
 
+    def test_favicon_is_the_bundled_shield_icon_as_a_data_uri(self):
+        # No extra unauthenticated route/asset file for the browser's
+        # automatic GET /favicon.ico -- same embedded-data-URI approach
+        # approval_icons.py already uses for the card-stack documents.
+        html = web_shell.wrap("", title="t", active="approvals")
+        assert '<link rel="icon" href="data:image/png;base64,' in html
+
 
 class TestNotifications:
     """W8, docs/approval-list-ui-ux.md §4: tiers 0-1 only."""

@@ -37,7 +37,18 @@ import json
 from html import escape as _html_escape
 from pathlib import Path
 
+from . import approval_icons
+
 _TOKENS_CSS = (Path(__file__).parent / "resources" / "tokens.css").read_text(encoding="utf-8")
+
+# Browser-tab favicon -- the same bundled shield mark approval_icons.py
+# already hands the native/web approval cards (resources/icon_32.png, the
+# size a favicon is actually rendered at), embedded as a data: URI so this
+# shared shell never needs its own unauthenticated route or asset file just
+# to satisfy the browser's automatic GET /favicon.ico.
+_FAVICON_DATA_URI = approval_icons.icon_data_uri(
+    str(Path(__file__).parent / "resources" / "icon_32.png")
+)
 
 _SHELL_CSS = """
 * { box-sizing: border-box; }
@@ -319,6 +330,7 @@ def wrap(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
+<link rel="icon" href="{_FAVICON_DATA_URI}">
 <title>{_html_escape(title)}</title>
 <style>{_TOKENS_CSS}{_SHELL_CSS}</style>
 </head>
