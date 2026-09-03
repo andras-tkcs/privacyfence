@@ -139,6 +139,23 @@ are made by the daemon against the tool's real `read_only`/gate metadata before 
 request is made; the annotation Claude sees is cosmetic UI hinting, not a security control, and
 should not be read as PrivacyFence treating writes as safe.
 
+**Note for reviewers evaluating the web settings surface (`/settings`, opt-in, `web.settings.enabled`
+— see [Web surfaces](TECHNICAL_REFERENCE.md#web-surfaces-approvals-settings) in the Technical
+Reference):** it is reachable only with the same local, per-launch `web_token` every other web route
+already requires (§8), and every mutating request additionally carries a CSRF double-submit token
+and an `Origin` check. Within that authenticated session, the set of actions a request can invoke is
+an **explicit allowlist**, not the native settings window's own `getattr(controller, action)` —
+an unrecognized action name is rejected before any lookup happens at all, and each allowed action's
+arguments are validated against its real parameter types (a malformed argument is a 400, not passed
+through). Nothing reachable from this surface — or from `/approvals` — ever shells out to a native
+picker, `open`, or any other subprocess on the host; the four actions that used to (an
+organization-config file picker, opening an exported audit log, an update-available alert, a repo
+link) are a multipart upload, a file download, an in-page banner, and a plain link instead. Quitting
+the daemon from a browser is behind its own explicit in-page confirmation and a config-level kill
+switch (`web.settings.allow_quit`). This posture — allowlist, CSRF/Origin, no host subprocess — is
+deliberately built now, in `local` mode, rather than deferred to the multi-user `org` mode a review
+of that later phase would otherwise have to retrofit onto a surface not designed for it.
+
 **Auto-accept configuration itself is human-gated, not just the tool calls it governs.** Claude can
 read the current `auto_accept_rules`/`auto_accept_grants` config (`privacyfence_list_auto_accept_rules`)
 and propose adding, updating, or removing an entry
@@ -266,6 +283,7 @@ oversight measure**, sitting in front of the AI system rather than being one:
 | Least privilege | Per-connector, per-operation gating (`auto`/`review`/`popup`); auto-accept rules can be scoped down to a single folder, spreadsheet tab, channel, or task list |
 | PII detection gate | Local regex heuristic (Hungarian/English/German) over `review` (read) dialog content only; a match requires an extra explicit confirmation before Allow once takes effect. Toggleable per user (menu bar / `pii_detection.enabled`) |
 | Transport between processes | Local 127.0.0.1 TCP loopback only, on an OS-assigned ephemeral port discovered via `~/.privacyfence/ipc_port`, authenticated by a per-launch random token (`~/.privacyfence/ipc_token`) required on every connection; the bridge carries no credentials and only relays |
+| Web approval/settings surface (opt-in) | Loopback-bound (`localhost`) embedded HTTP server; a per-launch random session token (`~/.privacyfence/web_token`) required on every request, CSRF double-submit + `Origin` check on every mutation, an explicit action allowlist (not `getattr`) behind `/settings`, and no code path reachable from an HTTP request ever runs a subprocess on the host |
 | Process isolation | Bridge (untrusted-facing, talks to Claude) and daemon (holds credentials) are separate processes; only the daemon can reach external APIs |
 | Secrets at rest | Local OS-level storage / local files under `credentials/`; never committed to source control (`.gitignore`'d), never transmitted off-device |
 | Auditability | Every decision logged with outcome (accepted/denied/auto_accepted), locally, in a human-readable format (JSONL + Excel) |

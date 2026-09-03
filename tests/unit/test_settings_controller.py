@@ -172,6 +172,99 @@ class TestOnChangeMarshaling:
         assert pushed == [threading.current_thread()]
 
 
+class TestCallOnMain:
+    """§16.2.1's dispatcher seam: call_on_main resolves to AppHelper when
+    present, else a registered set_main_dispatcher(), else runs inline --
+    the last case is what makes _run_async's on_done actually observable on
+    a machine with no pyobjc, instead of dying with AttributeError inside
+    the worker thread where nothing surfaces it (the exact bug this seam
+    fixes -- see this module's git history / docs/https-connector-refactor-
+    plan.md §16.2.1)."""
+
+    def test_appkit_present_dispatches_through_apphelper(self, monkeypatch):
+        recorded = []
+        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a: recorded.append((f, a))))
+        monkeypatch.setattr(sc, "_main_dispatch", lambda f, *a: (_ for _ in ()).throw(AssertionError("unused")))
+
+        calls = []
+        sc.call_on_main(lambda x: calls.append(x), "hi")
+
+        assert calls == []  # not run inline -- AppHelper "scheduled" it
+        assert len(recorded) == 1
+        func, args = recorded[0]
+        func(*args)
+        assert calls == ["hi"]
+
+    def test_no_apphelper_uses_registered_dispatcher(self, monkeypatch):
+        monkeypatch.setattr(sc, "AppHelper", None)
+        recorded = []
+        sc.set_main_dispatcher(lambda f, *a: recorded.append((f, a)))
+        try:
+            calls = []
+            sc.call_on_main(lambda x: calls.append(x), "hi")
+            assert calls == []
+            func, args = recorded[0]
+            func(*args)
+            assert calls == ["hi"]
+        finally:
+            sc.set_main_dispatcher(None)
+
+    def test_no_apphelper_no_dispatcher_runs_inline(self, monkeypatch):
+        # This is the case that used to raise AttributeError -- authenticate_
+        # connector's failure path (and every other _run_async caller) has
+        # to surface an error on a machine with no AppKit installed at all,
+        # not silently die on the worker thread.
+        monkeypatch.setattr(sc, "AppHelper", None)
+        sc.set_main_dispatcher(None)
+        calls = []
+        sc.call_on_main(lambda x: calls.append(x), "hi")
+        assert calls == ["hi"]
+
+    def test_run_async_on_done_runs_with_apphelper_absent(self, monkeypatch):
+        monkeypatch.setattr(sc, "AppHelper", None)
+        sc.set_main_dispatcher(None)
+        done_calls = []
+        boom = RuntimeError("auth failed")
+
+        def work():
+            raise boom
+
+        sc._run_async(work, lambda ok, result: done_calls.append((ok, result)))
+        assert wait_until(lambda: done_calls)
+        assert done_calls == [(False, boom)]
+
+
+class TestChangeListeners:
+    """§16.8's risk #2: two on_change consumers (the native window's single
+    on_change slot, plus web/state_stream.py's subscription) after this
+    phase -- both must fire from one _push_snapshot."""
+
+    def test_on_change_and_extra_listeners_both_fire(self, controller):
+        on_change_calls = []
+        listener_calls = []
+        controller.on_change = on_change_calls.append
+        controller.add_change_listener(listener_calls.append)
+
+        controller._push_snapshot()
+
+        assert len(on_change_calls) == 1
+        assert len(listener_calls) == 1
+        assert on_change_calls[0] == listener_calls[0]
+
+    def test_remove_change_listener_stops_delivery(self, controller):
+        listener_calls = []
+        fn = listener_calls.append
+        controller.add_change_listener(fn)
+        controller.remove_change_listener(fn)
+
+        controller._push_snapshot()
+
+        assert listener_calls == []
+
+    def test_remove_unknown_listener_is_a_no_op(self, controller):
+        controller.remove_change_listener(lambda state: None)  # never raises
+
+
 class TestConfigHelpers:
     def test_load_config_round_trips_yaml(self, controller, tmp_path):
         config_path = tmp_path / "other.yaml"
@@ -748,6 +841,88 @@ class TestAuthenticateAtlassian:
         assert captured["site_url"] == "https://a.atlassian.net"
 
 
+class TestPickResourceIndexWebMode:
+    """§16.2.2: the Atlassian picker generalized onto web_prompt.py when a
+    WebApprovalUI (not NativeApprovalUI) is the live ApprovalUI -- same
+    picker, same cancelled-falls-back-to-first-resource/options-are-URLs
+    contract, routed through the registry every approval card already
+    uses instead of dialog_window."""
+
+    def test_routes_through_the_web_registry_when_one_is_live(self, controller, monkeypatch):
+        from privacyfence import approval_ui, web_approval_ui
+
+        web_ui = web_approval_ui.WebApprovalUI()
+        approval_ui.init_approval_ui(web_ui)
+        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: f(*a, **k)))
+        monkeypatch.setattr(controller, "refresh_connectors", lambda: None)
+
+        # Assert on the options actually handed to the picker, not by
+        # scanning the rendered HTML for the URL substrings -- same
+        # structured-capture pattern the native-mode sibling test above
+        # uses (picker_calls[0]["options"]), and it sidesteps CodeQL's
+        # incomplete-URL-substring-sanitization heuristic, which pattern-
+        # matches "<url> in html_string" regardless of context; there's no
+        # sanitization here at all, just a rendered-content check, but the
+        # heuristic can't tell the difference.
+        choice_calls = []
+
+        def fake_build_choice_html(**kwargs):
+            choice_calls.append(kwargs)
+            return "<div>fake choice dialog</div>"
+
+        monkeypatch.setattr(sc.dialog_window_html, "build_choice_html", fake_build_choice_html)
+
+        captured = {}
+
+        def fake_authorize(**kwargs):
+            resources = [
+                {"url": "https://a.atlassian.net", "id": "a"},
+                {"url": "https://b.atlassian.net", "id": "b"},
+            ]
+            chosen = kwargs["pick_resource"](resources)
+            captured["site_url"] = chosen["url"]
+            return {"site_url": chosen["url"]}
+
+        monkeypatch.setattr(sc, "atlassian_authorize_interactive", fake_authorize)
+
+        controller._authenticate_atlassian({"atlassian": {"client_id": "ci"}})
+
+        assert wait_until(lambda: web_ui.deferred_registry.list_pending())
+        card = web_ui.deferred_registry.list_pending()[0]
+        assert card.kind == "choice"
+        assert choice_calls[0]["options"] == ["https://a.atlassian.net", "https://b.atlassian.net"]
+        web_ui.deferred_registry.answer(card.id, "1")
+
+        assert wait_until(lambda: "site_url" in captured)
+        assert captured["site_url"] == "https://b.atlassian.net"
+
+    def test_cancelled_choice_falls_back_to_the_first_resource(self, controller, monkeypatch):
+        from privacyfence import approval_ui, web_approval_ui
+
+        web_ui = web_approval_ui.WebApprovalUI()
+        approval_ui.init_approval_ui(web_ui)
+        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: f(*a, **k)))
+        monkeypatch.setattr(controller, "refresh_connectors", lambda: None)
+
+        captured = {}
+
+        def fake_authorize(**kwargs):
+            resources = [{"url": "https://a.atlassian.net", "id": "a"}, {"url": "https://b.atlassian.net", "id": "b"}]
+            captured["site_url"] = kwargs["pick_resource"](resources)["url"]
+            return {}
+
+        monkeypatch.setattr(sc, "atlassian_authorize_interactive", fake_authorize)
+
+        controller._authenticate_atlassian({"atlassian": {"client_id": "ci"}})
+
+        assert wait_until(lambda: web_ui.deferred_registry.list_pending())
+        card = web_ui.deferred_registry.list_pending()[0]
+        web_ui.deferred_registry.answer(card.id, "cancel")
+
+        assert wait_until(lambda: "site_url" in captured)
+        assert captured["site_url"] == "https://a.atlassian.net"
+
+
 class TestTelegramStartAuth:
     """telethon is mocked the same way test_telegram_client.py's own tests
     do -- MagicMock() with AsyncMock() for the awaited methods, rather than
@@ -1002,6 +1177,23 @@ class TestTelegramAuthSnapshotState:
 
         assert state["telegram_auth"] == {"step": "code", "error": "oops"}
 
+    def test_never_echoes_a_login_code_or_2fa_password(self, controller):
+        """§16.2.8: telegram_submit_code/telegram_submit_2fa carry a login
+        code and an account password over loopback HTTP -- the snapshot
+        this state feeds into every open settings page/window must never
+        carry either back out, pinned by a test rather than left as a
+        happy accident of _telegram_auth_state()'s current field list."""
+        for step_state in (
+            {"step": "phone", "error": ""},
+            {"step": "code", "phone": "+15551234567", "phone_code_hash": "secret-hash", "error": ""},
+            {"step": "password", "phone": "+15551234567", "phone_code_hash": "secret-hash", "error": ""},
+        ):
+            controller._telegram_auth = dict(step_state)
+            state = controller.snapshot()
+            assert set(state["telegram_auth"].keys()) == {"step", "error"}
+            serialized = json.dumps(state)
+            assert "+15551234567" not in serialized
+            assert "secret-hash" not in serialized
 
 
 class TestRuleRows:
@@ -1321,6 +1513,53 @@ class TestAuditLog:
         assert len(state["audit"]["recent"]) == 1
         assert state["audit"]["recent"][0]["tool"] == "Read Gmail message"
         assert state["audit"]["recent"][0]["decision"] == "auto_accepted"
+
+
+class TestConnectClaude:
+    """P4c (docs/https-connector-refactor-plan.md §16.9): the General page's
+    Connect Claude card, superseding the reverted P4b Desktop shim for
+    Claude Code and any other Streamable-HTTP-native client."""
+
+    def test_default_state_is_disabled_with_no_url(self, controller):
+        state = controller.snapshot()
+        assert state["general"]["mcp_enabled"] is False
+        assert state["general"]["mcp_url"] == ""
+
+    def test_set_connection_info_reflects_in_the_snapshot(self, controller):
+        controller.set_mcp_connection_info(url="http://localhost:8765/mcp", token="secret-token")
+
+        state = controller.snapshot()
+
+        assert state["general"]["mcp_enabled"] is True
+        assert state["general"]["mcp_url"] == "http://localhost:8765/mcp"
+
+    def test_token_never_appears_in_the_snapshot(self, controller):
+        # §16.9/__init__'s own comment: same "never echo a secret into the
+        # general snapshot" posture as Telegram's login code/password.
+        controller.set_mcp_connection_info(url="http://localhost:8765/mcp", token="super-secret-token")
+
+        state = controller.snapshot()
+
+        assert "super-secret-token" not in json.dumps(state)
+        assert "mcp_token" not in state["general"]
+
+    def test_reveal_mcp_token_returns_the_token(self, controller):
+        controller.set_mcp_connection_info(url="http://localhost:8765/mcp", token="super-secret-token")
+
+        result = controller.reveal_mcp_token()
+
+        assert result == {"mcp_token": "super-secret-token"}
+
+    def test_reveal_mcp_token_when_disabled_returns_empty_string(self, controller):
+        result = controller.reveal_mcp_token()
+        assert result == {"mcp_token": ""}
+
+    def test_reveal_mcp_token_result_is_not_a_full_snapshot(self, controller):
+        # Deliberately not shaped like snapshot() -- see the method's own
+        # docstring on why a caller must not feed this into __pfRender.
+        controller.set_mcp_connection_info(url="http://localhost:8765/mcp", token="tok")
+        result = controller.reveal_mcp_token()
+        assert set(result.keys()) == {"mcp_token"}
 
 
 class TestAbout:

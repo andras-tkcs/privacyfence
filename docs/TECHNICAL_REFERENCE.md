@@ -620,6 +620,65 @@ currently-granted folder(s) for read/write and a **Manage in Drive →** link th
 selection there — no checkboxes of its own; the one editable copy of these grants stays on the
 Drive page.
 
+### Web surfaces (`/approvals`, `/settings`)
+
+P4 (`docs/https-connector-refactor-plan.md` §16) puts the same settings UX above, and the approval
+card, on the web — opt-in, alongside the native windows, not a replacement for them yet (P10 is what
+eventually retires those). Two config keys under `web:` in `settings.yaml`:
+
+- `web.approval_ui: web` — P1's own lever, unchanged: approvals render at `/approvals` instead of a
+  native dialog.
+- `web.settings.enabled: true` — turns on `GET /settings` and its `POST /api/settings/{action}`
+  dispatcher, independent of the lever above (a deployment can mix native approvals with the web
+  settings page, or the reverse). `web.settings.allow_quit` (default `true`) gates whether the About
+  page's Quit button works from a browser at all — always behind an in-page confirmation either way.
+
+Both pages, when enabled, share one origin, one session (the same local `web_token` §10 of the
+refactor plan already describes), and one shared chrome (`web_shell.py`): a header with Approvals/
+Settings navigation and a live-connection indicator bound to `GET /api/state/stream` — one SSE
+channel carrying both a `settings` event (`SettingsController.snapshot()`, pushed the moment
+something changes it from anywhere — a rule edited over MCP, a background OAuth flow finishing) and
+an `approvals` event (the pending-approval list), so an open tab never needs a manual refresh.
+
+`/settings`'s own action dispatcher is an **explicit allowlist**, not the native window's
+`getattr(controller, action)` — an unlisted or misspelled action name is a 404 before any lookup
+happens at all, and every argument is validated against the controller method's own type
+annotations (a bad `idx` is a 400, not a 500). Four actions that don't fit "POST an action, get a
+snapshot back" get their own routes instead: uploading an organization config bundle (multipart,
+JSON/`version`-validated, written `0600`), downloading the current week's audit log export
+(`Content-Disposition: attachment`), an in-page "update available" banner (Download/Remind Me
+Later/Skip, replacing a native alert), and the repo link (a plain `<a href>`, opened client-side —
+never a `subprocess.run(["open", ...])` reachable from an HTTP request, which nothing under `web/`
+does at all, by design).
+
+The General page's **Connect Claude** card (P4c, `docs/https-connector-refactor-plan.md` §16.9 —
+supersedes the reverted P4b/D11 Desktop stdio shim, see the [`claude mcp add`](#connecting-claude)
+section above) shows the `/mcp` URL and a ready-to-paste `claude mcp add` command whenever
+`web.mcp.enabled` is on. The bearer token itself is never in the page's initial state — one more
+action, `reveal_mcp_token`, goes through the same allowlisted dispatcher as everything else but
+answers with a bare `{"mcp_token": ...}` rather than a fresh snapshot; both bridges (this page's JS
+and the native settings window's) route that specific response to its own `window.__pfRevealMcpToken`
+callback instead of the generic re-render, so revealing the token can't stomp on the rest of the
+rendered page.
+
+The `/approvals` list (`docs/approval-list-ui-ux.md`) shows every currently-pending card as its own
+row — connector icon, title, a relative timestamp, a **Deny** button right on the row, and a
+**Review →** link to the full card at `/approvals/{id}`. There is deliberately no **Allow** on the
+row: denying without reading the card can't leak anything, and putting an "Allow" button on a
+one-line summary is exactly the habituation failure the full card exists to prevent. Deciding a card
+navigates back to the list (not a dead "close this tab" page) with a toast saying what happened,
+including the 409 case where a rule created elsewhere already resolved it first.
+
+Desktop notifications (`web.notifications.enabled`, default `true`) are tier 0/1 only — a title-bar
+`(N)` badge and an `aria-live` announcement need no permission at all; `registration.showNotification
+()` (via `resources/sw.js`, a service worker with no `push` handler and no cache) fires while a tab
+is open but unfocused, after the browser's own permission prompt, itself only ever offered once,
+right after a person's first decision (never on page load). The notification body is always the bare
+pending count — never a connector, tool, or row title, several of which can carry real gated content
+(an event title, a contact name) — until a real per-field allowlist for the richer `standard`/
+`detailed` levels ships. Push notifications for a closed tab (tier 2) are `org`-mode work, not built
+yet.
+
 ### Name resolution
 
 Grant rows show the resource's real name, resolved via the same connector API calls used
@@ -1299,30 +1358,23 @@ privacyfence-app
 
 ## Connecting Claude
 
-The daemon and its MCP-facing pieces are built and shipped separately. As of D11
-([`docs/https-connector-refactor-plan.md`](https-connector-refactor-plan.md) §12), there are three
-ways Claude reaches the daemon; which one applies depends on the client and how far your install has
-migrated:
+The daemon and the bridge are built and shipped separately:
 
 - **PrivacyFenceApp.app** (built by `scripts/build_dmg.sh`) — the daemon: owns credentials,
-  connectors, the review gate, the audit log, the LaunchAgent, and (`web.mcp.enabled`, on by default
-  as of D11/P4b — see `settings.yaml.example`) the embedded `/mcp` Streamable HTTP endpoint. Install
-  this first via the DMG, in every case below.
-- **PrivacyFence.mcpb** (built by `scripts/build_mcpb.sh`, from `mcpb/shim/`) — a thin
-  stdio-to-Streamable-HTTP transport proxy for Claude Desktop, which still only speaks stdio to
-  local extensions. Install this into Claude Desktop.
-- **`/mcp` directly** — Claude Code (and any other MCP client with native Streamable HTTP + bearer
-  auth support) talks to the daemon's `/mcp` endpoint with no intermediate process at all.
+  connectors, the review gate, the audit log, the LaunchAgent, and (`web.mcp.enabled`, on by
+  default — see `settings.yaml.example`) the embedded `/mcp` Streamable HTTP endpoint. Install this
+  first via the DMG, in every case below.
+- **PrivacyFence.mcpb** (built by `scripts/build_mcpb.sh`, from `bridge/`) — just the bridge: a
+  small Node/TypeScript MCP server that talks to the daemon over a TCP loopback connection. Install
+  this into Claude Desktop.
 
-`bridge/`, the original Node/TypeScript stdio MCP server this replaced for Desktop, still exists and
-still works during the migration window (P2 through P5) — see the refactor plan for why retiring it
-is its own phase, separate from shipping the replacement. Until then, `scripts/build_mcpb.sh` builds
-**both** `PrivacyFence.mcpb` (the shim, above) and a second, separate extension —
-**`PrivacyFence (Legacy Bridge).mcpb`** — straight from `bridge/`, unchanged. Both ship in every DMG
-and install side by side with no conflict (their manifests use different `name`s — `privacyfence` vs
-`privacyfence-legacy-bridge` — so Claude Desktop registers them as two distinct MCP servers): the
-legacy one is there purely as a rollback that needs no `web.mcp.enabled`/`/mcp` setup at all, for
-anyone who hits a problem with the new one before P5 actually removes the bridge.
+> A prior draft of this document (P4b, `docs/https-connector-refactor-plan.md` §12's D11) shipped a
+> second, thinner `.mcpb` — a stdio-to-`/mcp` transport shim replacing the bridge for Desktop. That
+> phase has since been reverted: `PrivacyFence.mcpb` is the bridge again, unconditionally, and there
+> is exactly one Desktop extension. P4c (below, §16.9 of the refactor plan) is what replaces D11's
+> goal instead — not a second install artifact, but the daemon's own `/settings` page showing the
+> `/mcp` URL and token directly, for Claude Code and any other client that already speaks Streamable
+> HTTP natively.
 
 ### Option A: one-click extension (Claude Desktop)
 
@@ -1330,21 +1382,11 @@ anyone who hits a problem with the new one before P5 actually removes the bridge
 double-click it and Claude Desktop installs the MCP server for you, no
 `claude_desktop_config.json` editing.
 
-The daemon (PrivacyFenceApp.app) must already be installed and configured first, with
-`web.mcp.enabled` on (the shipped default, `config/settings.yaml`'s `web.mcp.enabled: true`) so
-`/mcp` is actually listening — the extension only contains the shim, bundled by esbuild into a
-single dependency-free `server/shim.js` with no
-node_modules/ and no Python runtime shipped at all (Claude Desktop supplies its own Node runtime —
-`server.type = "node"` in `mcpb/manifest.json.tmpl`), which is why it's ~300KB instead of the
-daemon's ~185MB. The shim discovers the daemon's `/mcp` URL and bearer token itself, from
-`~/.privacyfence/mcp_url` and `~/.privacyfence/mcp_token` (both written by the daemon once it binds)
-— nothing to copy into Claude Desktop by hand, same zero-config property the bridge had for the IPC
-socket.
-
-If `/mcp` isn't reachable for you yet (e.g. `web.mcp.enabled` can't be turned on in your
-environment), double-click **`PrivacyFence (Legacy Bridge).mcpb`** instead, from the same mounted
-DMG — same daemon, reached the original way, no `/mcp` required. You can have both installed at
-once; only one will actually be able to reach the daemon depending on whether `/mcp` is listening.
+The daemon (PrivacyFenceApp.app) must already be installed and configured first — the extension
+only contains the bridge, bundled by esbuild into a single dependency-free `server/bridge.js` with
+no node_modules/ and no Python runtime shipped at all (Claude Desktop supplies its own Node
+runtime — `server.type = "node"` in `mcpb/manifest.json.tmpl`), which is why it's ~300KB instead
+of the daemon's ~185MB.
 
 To build both artifacts yourself:
 
@@ -1354,16 +1396,18 @@ brew install create-dmg
 bash scripts/build_dmg.sh
 ```
 
-(Node + npm must also be on PATH — used to build `mcpb/shim/` and `bridge/`, and to run the
-`@anthropic-ai/mcpb` CLI via npx.) This runs `scripts/build_mcpb.sh` as part of assembling the DMG.
-To build just the extensions on their own (e.g. for a quick local test without a full DMG), run
-`bash scripts/build_mcpb.sh` directly — it produces `dist/PrivacyFence-<version>.mcpb` and
-`dist/PrivacyFence-legacy-bridge-<version>.mcpb`.
+(Node + npm must also be on PATH — used to build `bridge/` and to run the `@anthropic-ai/mcpb` CLI
+via npx.) This runs `scripts/build_mcpb.sh` as part of assembling the DMG. To build just the
+extension on its own (e.g. for a quick local test without a full DMG), run
+`bash scripts/build_mcpb.sh` directly — it produces `dist/PrivacyFence-<version>.mcpb`.
 
 ### Option B: `/mcp` directly (Claude Code, or other clients with native Streamable HTTP support)
 
 With `web.mcp.enabled` on (the shipped default) and the daemon running, register `/mcp` directly —
-no bridge, no shim, no extra process:
+no bridge, no extra process. The easiest way to get the exact URL and a ready-to-paste
+`Authorization` header is the running daemon's own `/settings` page (General → **Connect Claude**,
+P4c — needs `web.settings.enabled` too; see [Web surfaces](#web-surfaces-approvals-settings)), which
+shows both live and never requires finding `~/.privacyfence` yourself. By hand, the same values:
 
 ```bash
 claude mcp add --transport http privacyfence http://localhost:8765/mcp \
@@ -1373,20 +1417,16 @@ claude mcp add --transport http privacyfence http://localhost:8765/mcp \
 (Port and token: see the daemon's own startup log line, or `config/settings.yaml`'s `web.port` and
 `~/.privacyfence/mcp_token` directly.)
 
-### Option C: manual MCP config via the bridge (legacy, works through P5)
+### Option C: manual MCP config via the bridge
 
-Usually unnecessary now that the DMG ships `PrivacyFence (Legacy Bridge).mcpb` (Option A) as a
-one-click way to get the same thing — this is for hand-editing the config directly, e.g. against an
-unpacked `.mcpb` or a source checkout. Add the bridge to Claude's MCP config
-(`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, or the equivalent path
-for Claude Code / other MCP clients):
+Add the bridge to Claude's MCP config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, or the equivalent path for Claude Code / other MCP clients):
 
 ```json
 {
   "mcpServers": {
-    "privacyfence-legacy-bridge": {
+    "privacyfence": {
       "command": "node",
-      "args": ["/path/to/PrivacyFence (Legacy Bridge).mcpb/server/bridge.js"]
+      "args": ["/path/to/PrivacyFence.mcpb/server/bridge.js"]
     }
   }
 }
