@@ -528,12 +528,21 @@ because they are what makes the web surface usable day to day rather than demo-a
 |---|---|
 | §3's return-to-list flow | Pure shim change (`document.body.innerHTML = …` → navigate + toast). No registry needed. |
 | §2.5's page shell, live indicator, empty state | Renders 0 or 1 rows perfectly well; the list just never has two. |
-| §4 tier 0 + tier 1 | Needs the SSE stream, which is small even against a single slot. This alone delivers the notification the user asked for. |
+| §4 tier 0 + tier 1, at `minimal` only | Needs the SSE stream, which is small even against a single slot. This alone delivers the notification the user asked for, without needing §4.3's per-field allowlist below. |
+
+§4.3's `standard`/`detailed` levels are their own follow-up, scheduled at **P5** alongside that
+phase's bridge retirement (`https-connector-refactor-plan.md`'s own phase table has the rationale
+for the pairing) rather than left unscheduled: they need a real per-field content allowlist so a
+notification can name a connector/tool/row title without violating §4.3's no-gated-content
+invariant, which is more than the pre-P3 tier 0+1 landing above needs. Until P5, `web.notifications.
+detail` above `minimal` is a config no-op — the shipped body is always the bare count, regardless of
+the setting.
 
 Rough sizing, in the plan's own S/M/L terms: the list page and the return flow are **M** together;
-tiers 0/1 plus the service worker are **S**; tier 2 (VAPID, subscription store, manifest, iOS
-install flow) is a solid **M** on its own and should be scheduled with `org` mode (P7+), not bolted
-onto P3. Tier 3 is **S** and needs the P10 decision in §4.1 first.
+tiers 0/1 plus the service worker are **S**; `standard`/`detailed`'s per-field allowlist (P5, above)
+is its own **S** on top of that; tier 2 (VAPID, subscription store, manifest, iOS install flow) is a
+solid **M** on its own and should be scheduled with `org` mode (P7+), not bolted onto P3. Tier 3 is
+**S** and needs the P10 decision in §4.1 first.
 
 Config keys, following the plan's rollback-per-phase discipline:
 
