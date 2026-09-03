@@ -12,7 +12,7 @@ real accounts, none of which this script has.
 
     .venv/bin/python scripts/pre_release_check.py
 
-Run from the repo root (with `bridge/` node_modules already installed via
+Run from the repo root (with `mcpb/shim/` node_modules already installed via
 `npm install`), the same as CI. Exits non-zero if any check fails.
 """
 from __future__ import annotations
@@ -75,9 +75,9 @@ def main() -> int:
         ["python3", "-m", "pytest", "-v", "--cov=src/privacyfence", "--cov-report=term-missing"],
         cwd=REPO_ROOT,
     )
-    results["bridge npm test"] = run("bridge npm test", ["npm", "test"], cwd=REPO_ROOT / "bridge")
-    results["bridge typecheck"] = run(
-        "bridge typecheck", ["npm", "run", "typecheck"], cwd=REPO_ROOT / "bridge"
+    results["shim npm test"] = run("shim npm test", ["npm", "test"], cwd=REPO_ROOT / "mcpb" / "shim")
+    results["shim typecheck"] = run(
+        "shim typecheck", ["npm", "run", "typecheck"], cwd=REPO_ROOT / "mcpb" / "shim"
     )
 
     print("=== Pre-release check summary ===")

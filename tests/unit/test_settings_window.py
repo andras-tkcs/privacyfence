@@ -35,8 +35,8 @@ def _make_controller(tmp_path, monkeypatch):
     data_dir_path.mkdir()
     monkeypatch.setattr(sc, "data_dir", lambda: data_dir_path)
 
-    ipc_server = SimpleNamespace(set_connectors=lambda c: None, set_unattended_changed_listener=lambda cb: None)
-    return sc.SettingsController(str(config_path), connectors=[], ipc_server=ipc_server)
+    connector_host = SimpleNamespace(set_connectors=lambda c: None)
+    return sc.SettingsController(str(config_path), connectors=[], connector_host=connector_host)
 
 
 class TestBuildWindow:

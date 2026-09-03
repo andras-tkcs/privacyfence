@@ -175,40 +175,40 @@ The detailed tool-by-tool privacy matrix is maintained in [Technical Reference](
 
 ![PrivacyFence architecture](docs/images/architecture.svg)
 
-PrivacyFence is split into two processes:
+PrivacyFence is one persistent macOS daemon, **`privacyfence-app`**, which owns credentials,
+connector clients, policy evaluation, approval dialogs, PII detection, temporary approvals, and the
+audit log. It exposes a local, token-authenticated `/mcp` Streamable HTTP endpoint that Claude talks
+to directly (Claude Code) or through a thin stdio-to-HTTP shim `PrivacyFence.mcpb` installs
+(Claude Desktop, which has no built-in way to reach an HTTP MCP endpoint directly — see
+[the refactor plan](docs/https-connector-refactor-plan.md) §12, D11). The shim carries no service
+credentials and no tool-schema knowledge of its own; it only forwards bytes.
 
-- **`privacyfence-bridge`** is a small, ephemeral MCP server started by the AI client. It has no service credentials and forwards requests over a local, token-authenticated TCP loopback connection.
-- **`privacyfence-app`** is the persistent macOS daemon. It owns credentials, connector clients, policy evaluation, approval dialogs, PII detection, temporary approvals, and the audit log.
-
-The bridge is disposable. The daemon is the authoritative security and governance boundary.
-
-`PrivacyFence.mcpb` now installs a thin stdio-to-HTTP shim in place of the bridge, forwarding
-Claude Desktop's requests to the daemon's own embedded `/mcp` endpoint instead of the bridge's TCP
-socket. Until the bridge is retired, the DMG also ships a second extension,
-`PrivacyFence (Legacy Bridge).mcpb`, built straight from the unchanged bridge — a one-click rollback
-if `/mcp` isn't an option for you yet (see [the refactor plan](docs/https-connector-refactor-plan.md)
-for the migration).
+This replaced an earlier design where a small, ephemeral `privacyfence-bridge` Node process, started
+by the AI client, forwarded requests over a local TCP loopback socket instead of HTTP — retired once
+both transports had shipped for a full release cycle each (P5 of the refactor plan above).
 
 ```text
-AI assistant
-     │
-     │ MCP
-     ▼
-privacyfence-bridge
-     │
-     │ local TCP loopback (token-authenticated)
-     ▼
-privacyfence-app
-     │
-     ├── policy and auto-accept rules
-     ├── PII detection for reads
-     ├── human review gate
-     ├── temporary approvals
-     ├── audit log
-     └── enterprise connectors
+Claude Code          Claude Desktop
+     │                     │
+     │ MCP over HTTP       │ MCP over stdio
+     │                     ▼
+     │              stdio<->/mcp shim
+     │                     │
+     │  local, token-authenticated /mcp
+     ▼                     │
+     └──────────┬──────────┘
+                ▼
+         privacyfence-app
+                │
+                ├── policy and auto-accept rules
+                ├── PII detection for reads
+                ├── human review gate
+                ├── temporary approvals
+                ├── audit log
+                └── enterprise connectors
 ```
 
-See [Technical Reference](docs/TECHNICAL_REFERENCE.md) for the review model, connector matrix, rule catalogue, installation, configuration, IPC design, and MCP annotation rationale.
+See [Technical Reference](docs/TECHNICAL_REFERENCE.md) for the review model, connector matrix, rule catalogue, installation, configuration, `/mcp` design, and MCP annotation rationale.
 
 ---
 

@@ -147,12 +147,9 @@ it, not just from source.
       built DMG as a hand-test of the release candidate before it's published: `xattr -cr`, install
       the LaunchAgent plist, load it.
 - [ ] From the menu bar: install/update the organization config bundle, authenticate at least one
-      connector, and confirm `PrivacyFence.mcpb` installs into Claude Desktop from the mounted DMG.
-- [ ] Until P5 (see `docs/https-connector-refactor-plan.md` §12, D11): also install
-      `PrivacyFence (Legacy Bridge).mcpb` from the same mounted DMG, and confirm both show up as
-      separate MCP servers in Claude Desktop (Settings → Extensions) with no conflict/overwrite —
-      this is exactly the rollback path a real user hitting an `/mcp` problem would take, so it's
-      worth confirming for real, not just trusting the manifest `name`s differ.
+      connector, and confirm `PrivacyFence.mcpb` installs into Claude Desktop from the mounted DMG
+      with no config file edited and no token copied — the shim discovers `~/.privacyfence/mcp_url`
+      and `mcp_token` itself (D11, `docs/https-connector-refactor-plan.md` §12).
 - [ ] Confirm `~/.privacyfence/` (not the repo folder) is where config/credentials/logs land for
       this bundled install — spot-check `~/.privacyfence/config/settings.yaml` exists.
 - [ ] Exercise one silent-gate call and one popup-gate call from a real Claude Desktop conversation
@@ -160,7 +157,7 @@ it, not just from source.
       (`~/.privacyfence/audit/<current-week>.jsonl`) behave the same as they did from source in
       section 3 above.
 - [ ] Quit the bundled daemon (or at minimum don't leave it running alongside the source-mode
-      daemon on the same account — the IPC socket path collides) once this check is done.
+      daemon on the same account — the `/mcp` port collides) once this check is done.
 
 ## 5. Version bump and release
 
@@ -168,7 +165,7 @@ Only after sections 1-4 all pass:
 
 - [ ] Bump `pyproject.toml`'s `project.version` and `src/privacyfence/__init__.py`'s `__version__`
       together, in their own commit (`Bump to vX.Y.Z` or `Bump to vX.Y.Z: <short summary>`) — see
-      this repo's `CLAUDE.md`. Do not touch `bridge/package.json`'s version field.
+      this repo's `CLAUDE.md`. Do not touch `mcpb/shim/package.json`'s version field.
 - [ ] Attach the saved fixture-recorder report (section 1) and popup-smoke report (section 2) to
       the release PR description, the same convention as a normal PR's "## Local QA check" /
       "## Popup smoke check" headings (`docs/testing-policy.md` §2.1/§2.2).

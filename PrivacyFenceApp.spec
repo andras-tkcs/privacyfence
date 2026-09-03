@@ -7,9 +7,11 @@
 #     Contents/MacOS/PrivacyFenceApp       ← daemon (main app, opens menu bar)
 #     Contents/MacOS/privacyfence-app      ← symlink → PrivacyFenceApp (for daemon auto-start)
 #
-# The bridge (Claude's MCP entry point) is built separately — a Node/TypeScript
-# server, see bridge/ and scripts/build_mcpb.sh — and distributed as a
-# one-click Claude Desktop extension (.mcpb) instead of living inside this app.
+# Claude's MCP entry point is the daemon's own /mcp Streamable HTTP endpoint
+# (web/server.py); the stdio<->/mcp shim Claude Desktop actually spawns is
+# built separately — a small Node/TypeScript proxy, see mcpb/shim/ and
+# scripts/build_mcpb.sh — and distributed as a one-click Claude Desktop
+# extension (.mcpb) instead of living inside this app.
 #
 # Build:
 #   pip install pyinstaller

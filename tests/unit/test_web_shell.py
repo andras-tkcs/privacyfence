@@ -67,20 +67,60 @@ class TestNotifications:
         # of __pfNotifPrompt, not an invocation of it.
         assert "__pfNotifPrompt();" not in html
 
-    def test_notification_body_is_never_built_from_a_connector_or_tool_name(self):
-        # §4.3's hard invariant, enforced by construction here: the only
-        # string this script ever passes as a notification body is the
-        # bare pending count -- never rows[i].connector/tool/summary/
-        # tool_name, any of which can carry real gated content
-        # (approvals.PendingApproval.summary -- see gate.py's call sites).
+    def test_maybe_notify_never_reads_row_fields_directly(self):
+        # §4.3's hard invariant: the *only* thing allowed to decide what a
+        # notification says is notificationBody()'s own per-level
+        # allowlist (see the test class below) -- maybeNotify just calls
+        # it and hands the result to showNotification, never reaching into
+        # a row itself.
         html = web_shell.wrap("", title="t", active="approvals")
         start = html.index("function maybeNotify")
         end = html.index("function onApprovalsEvent")
         notify_fn_body = html[start:end]
         assert "showNotification" in notify_fn_body
-        for forbidden in (".connector", ".tool_name", ".summary", "rows[", "row."):
+        assert "notificationBody(count, rows)" in notify_fn_body
+        for forbidden in (".connector", ".tool_name", ".summary", "row."):
             assert forbidden not in notify_fn_body, forbidden
-        assert "var body = count === 1" in html
+
+    def test_notification_body_allowlist_by_detail_level(self):
+        # P5's per-field content allowlist (docs/approval-list-ui-ux.md
+        # §4.3): minimal (or a multi-approval grouped notification, which
+        # has no richer copy defined -- §4.2) never touches a row at all;
+        # `summary` -- the one field that can carry real gated content
+        # (approvals.PendingApproval.summary -- see gate.py's call sites)
+        # -- is read exactly once, and only inside the `detailed` branch.
+        html = web_shell.wrap("", title="t", active="approvals")
+        start = html.index("function notificationBody")
+        end = html.index("function maybeNotify")
+        fn = html[start:end]
+
+        early_return = fn.index("return countBody(count);")
+        row_ref = fn.index("var row = rows[0];")
+        assert early_return < row_ref, "minimal/grouped case must return before ever touching `row`"
+
+        # Both reads of row.summary (the guard's own condition, and the
+        # string it appends) live on the one line gated by the `detailed`
+        # check -- nowhere else in this function reads it.
+        assert fn.count("row.summary") == 2
+        detailed_guard = fn.index("NOTIFICATIONS_DETAIL === 'detailed'")
+        assert detailed_guard < fn.index("row.summary")
+
+        # standard's own fields are safe by construction (see module
+        # comment above _STREAM_JS): gate_kind names a category, never
+        # gated content; connector/tool_name are the same bare/curated
+        # strings approval_list_html.py's own row kicker already shows
+        # unescaped.
+        assert "row.connector" in fn
+        assert "row.tool_name" in fn
+        assert "row.gate_kind" in fn
+
+    def test_notifications_detail_defaults_to_minimal(self):
+        html = web_shell.wrap("", title="t", active="approvals")
+        assert 'NOTIFICATIONS_DETAIL = "minimal"' in html
+
+    def test_notifications_detail_is_threaded_through_as_a_json_string(self):
+        html = web_shell.wrap("", title="t", active="approvals", notifications_detail="detailed")
+        assert 'NOTIFICATIONS_DETAIL = "detailed"' in html
 
     def test_rate_limited_to_one_notification_per_five_seconds(self):
         html = web_shell.wrap("", title="t", active="approvals")

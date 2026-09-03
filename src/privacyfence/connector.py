@@ -3,7 +3,7 @@
 Adding a new service (Salesforce, Calendar, …) means:
   1. Create src/privacyfence/connectors/<name>.py implementing Connector.
   2. Register it in daemon_main.py.
-  3. No changes needed to the bridge or the IPC layer.
+  3. No changes needed to /mcp or web/mcp_dispatch.py.
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ class Connector(ABC):
     """Base class for every data-source connector.
 
     Subclasses live in privacyfence/connectors/ and are registered in daemon_main.
-    The bridge discovers them at startup via the IPC manifest call.
+    Claude discovers their tools at MCP session startup via /mcp's list_tools.
     """
 
     @property

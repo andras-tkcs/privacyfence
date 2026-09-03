@@ -99,7 +99,8 @@ echo "→ Running PyInstaller…"
 PRIVACYFENCE_ICNS="$ICNS_PATH" $PYINSTALLER --noconfirm --clean PrivacyFenceApp.spec
 
 # ── 4. Create privacyfence-app symlink inside the bundle ─────────────────────────
-# The LaunchAgent plist and bridge use this name; the main exe is "PrivacyFenceApp".
+# The LaunchAgent plist and mcpb/shim/'s own daemon auto-start (daemon.ts's
+# DEFAULT_APP_PATH) use this name; the main exe is "PrivacyFenceApp".
 MACOS_DIR="${BUNDLE}/Contents/MacOS"
 if [ ! -e "${MACOS_DIR}/privacyfence-app" ]; then
   echo "→ Creating privacyfence-app symlink…"
@@ -120,19 +121,16 @@ if [ -n "$SIGN_IDENTITY" ]; then
     "$BUNDLE"
 fi
 
-# ── 6. Build the Claude Desktop extensions (.mcpb) ────────────────────────────
-# Two of them until the bridge is retired (P5, see
+# ── 6. Build the Claude Desktop extension (.mcpb) ─────────────────────────────
+# One extension since P5 retired the bridge (see
 # docs/https-connector-refactor-plan.md §12 — D11): the /mcp shim
-# (PrivacyFence.mcpb, the one to use) and the legacy IPC-socket bridge
-# (PrivacyFence (Legacy Bridge).mcpb, a rollback that needs no /mcp setup).
-# See scripts/build_mcpb.sh's own header for why both, and why they don't
-# conflict with each other when installed side by side.
-echo "→ Building PrivacyFence's Claude Desktop extensions…"
+# (PrivacyFence.mcpb). Until P5 this step built a second, "Legacy Bridge"
+# .mcpb alongside it as a rollback that needed no /mcp setup -- that lever
+# isn't needed any more now that the bridge itself no longer exists.
+echo "→ Building PrivacyFence's Claude Desktop extension…"
 bash scripts/build_mcpb.sh
 MCPB_SHIM_PATH="dist/${PRODUCT_NAME}-${VERSION}.mcpb"
 MCPB_SHIM_DMG_NAME="${PRODUCT_NAME}.mcpb"   # stable name inside the DMG (no version)
-MCPB_BRIDGE_PATH="dist/${PRODUCT_NAME}-legacy-bridge-${VERSION}.mcpb"
-MCPB_BRIDGE_DMG_NAME="${PRODUCT_NAME} (Legacy Bridge).mcpb"   # stable name inside the DMG
 
 # ── 7. Package into DMG ───────────────────────────────────────────────────────
 echo "→ Building DMG…"
@@ -147,8 +145,7 @@ create-dmg \
   --icon "${APP_NAME}.app" 150 140 \
   --hide-extension "${APP_NAME}.app" \
   --app-drop-link 450 140 \
-  --add-file "${MCPB_SHIM_DMG_NAME}" "$MCPB_SHIM_PATH" 150 340 \
-  --add-file "${MCPB_BRIDGE_DMG_NAME}" "$MCPB_BRIDGE_PATH" 450 340 \
+  --add-file "${MCPB_SHIM_DMG_NAME}" "$MCPB_SHIM_PATH" 300 340 \
   --no-internet-enable \
   "$DMG_PATH" \
   "dist/${APP_NAME}.app"

@@ -1799,10 +1799,7 @@ def _run_settings_window_scenarios(
         return []
 
     pid = os.getpid()
-    fake_ipc_server = SimpleNamespace(
-        unattended_session_count=lambda: 0,
-        set_unattended_changed_listener=lambda callback: None,
-    )
+    fake_connector_host = SimpleNamespace(set_connectors=lambda conns: None)
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False, encoding="utf-8") as f:
         f.write(QA_SETTINGS_WINDOW_SETTINGS_YAML)
         config_path = f.name
@@ -1835,7 +1832,7 @@ def _run_settings_window_scenarios(
         menu_bar.PrivacyFenceMenuBar._on_update_check_timer = lambda self, _timer=None: None
         app = menu_bar.PrivacyFenceMenuBar(
             config_path, connectors=["gmail", "drive"],
-            ipc_server=fake_ipc_server, connector_objs=[],
+            connector_host=fake_connector_host, connector_objs=[],
         )
         # Mirrors rumps.App.run() (rumps/rumps.py) up to, but not including, its final
         # AppHelper.runEventLoop() call -- see this function's docstring for why that call is

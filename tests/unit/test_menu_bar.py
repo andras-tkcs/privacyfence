@@ -21,17 +21,13 @@ from privacyfence import menu_bar
 @pytest.fixture
 def app(tmp_path, monkeypatch):
     monkeypatch.setattr(menu_bar, "_find_icon", lambda: None)
-    # SettingsController.__init__ registers a rules-changed listener and
-    # (if given one) an unattended-changed listener on the ipc_server --
-    # neither must explode during construction.
-    ipc_server = SimpleNamespace(
-        set_connectors=lambda conns: None,
-        set_unattended_changed_listener=lambda callback: None,
-    )
+    # SettingsController.__init__ registers a rules-changed listener --
+    # must not explode during construction.
+    connector_host = SimpleNamespace(set_connectors=lambda conns: None)
     config_path = tmp_path / "settings.yaml"
     config_path.write_text("auto_accept_rules: {}\nconnectors: {}\n", encoding="utf-8")
 
-    instance = menu_bar.PrivacyFenceMenuBar(str(config_path), connectors=[], ipc_server=ipc_server)
+    instance = menu_bar.PrivacyFenceMenuBar(str(config_path), connectors=[], connector_host=connector_host)
     return instance
 
 
@@ -81,7 +77,7 @@ class TestConstruction:
         # intercepting the controller method rather than letting a real
         # network call happen.
         monkeypatch.setattr(menu_bar, "_find_icon", lambda: None)
-        ipc_server = SimpleNamespace(set_connectors=lambda c: None, set_unattended_changed_listener=lambda cb: None)
+        connector_host = SimpleNamespace(set_connectors=lambda c: None)
         config_path = tmp_path / "settings.yaml"
         config_path.write_text("auto_accept_rules: {}\nconnectors: {}\n", encoding="utf-8")
 
@@ -89,7 +85,7 @@ class TestConstruction:
         from privacyfence.settings_controller import SettingsController
         monkeypatch.setattr(SettingsController, "on_update_check_timer", lambda self: calls.append(1))
 
-        menu_bar.PrivacyFenceMenuBar(str(config_path), connectors=[], ipc_server=ipc_server)
+        menu_bar.PrivacyFenceMenuBar(str(config_path), connectors=[], connector_host=connector_host)
 
         assert calls == [1]
 

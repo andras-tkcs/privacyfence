@@ -1,26 +1,22 @@
-"""Connector-call dispatch for the ``/mcp`` endpoint -- the Streamable HTTP
-counterpart of ipc_server.py's ``IPCServer``.
+"""Connector-call dispatch for the ``/mcp`` endpoint -- dedupe/staleness
+logic, the meta-tools (check_policy/list_rules/propose_rule_change/
+begin-end-unattended-session), and manifest building, all scoped to one
+Streamable HTTP session.
 
-Deliberately a separate, self-contained implementation rather than a shared
-refactor of ``IPCServer`` (which has its own large, already-green test suite
-this phase has no reason to put at risk): §8.1 of
-docs/https-connector-refactor-plan.md describes this as "a translation of
-bridge/src/tools.ts's schema mapping into Python, not a redesign", and the
-same applies to the dispatch logic this module ports from
-``ipc_server.IPCServer``'s ``_call_connector``/``_check_policy``/
-``_list_rules``/``_propose_rule_change``/``_build_manifest``/
-begin-end-unattended-session -- same dedupe/staleness/gating rules, same
-audit entries, ported onto a session key that isn't ``id(writer)`` (there is
-no writer here) but plays the identical role: one value, stable for the
-life of one logical connection, that dedupe/unattended-session state is
-scoped to. routes_mcp.py supplies a fresh UUID per Streamable HTTP session
-(via the low-level Server's own per-session lifespan, see that module) as
-the session key.
-
-The duplication with ipc_server.py is temporary by construction: P5 deletes
-``ipc_server.py`` entirely once the bridge is retired
-(docs/https-connector-refactor-plan.md §12), at which point this module (or
-its P3 successor, ``approvals.py``) is the only one left.
+Originally written (P2) as a self-contained Python port of what was then
+``bridge/src/tools.ts``'s schema mapping and ``ipc_server.IPCServer``'s own
+``_call_connector``/``_check_policy``/``_list_rules``/
+``_propose_rule_change``/``_build_manifest``/begin-end-unattended-session --
+deliberately not a shared refactor of ``IPCServer`` at the time, so as not
+to put that module's own already-green test suite at risk mid-migration.
+P5 (docs/https-connector-refactor-plan.md §12) deleted the bridge and
+``ipc_server.py`` entirely once both had a stable release behind them, so
+this module (alongside its P3 collaborator, ``approvals.py``) is now simply
+the one connector-call dispatcher there is, not "the /mcp counterpart" of
+anything else. The session key this dispatch is scoped to is a fresh UUID
+per Streamable HTTP session (routes_mcp.py, via the low-level Server's own
+per-session lifespan) -- the same role ``id(writer)`` played for a bridge
+connection.
 """
 from __future__ import annotations
 
@@ -43,16 +39,13 @@ logger = logging.getLogger(__name__)
 
 class McpDispatcher:
     """Owns dedupe/unattended-session state for the ``/mcp`` endpoint and
-    dispatches every connector call and meta-tool through it -- see module
-    docstring for why this mirrors ``IPCServer`` rather than sharing code
-    with it.
+    dispatches every connector call and meta-tool through it.
 
     ``connectors_provider`` is called fresh on every dispatch rather than
     captured once, so a connector rebuild pushed live elsewhere (e.g.
-    ``SettingsController.refresh_connectors``, which today only calls
-    ``IPCServer.set_connectors``) is picked up here too as soon as both call
-    sites are updated to also push into this dispatcher -- see
-    daemon_main.py's wiring.
+    ``SettingsController.refresh_connectors``, which calls
+    ``ConnectorHost.set_connectors``) is picked up here too, with nothing
+    else needing a second push -- see daemon_main.py's wiring.
     """
 
     _DEDUPE_TTL_SECONDS = 30
@@ -356,7 +349,7 @@ class McpDispatcher:
     def end_session(self, session_key: Hashable) -> None:
         """Called once, when the MCP session this key identifies ends (see
         module docstring) -- whatever unattended-session state it carried
-        dies with it, exactly like a dropped bridge connection today."""
+        dies with it, the same way a dropped bridge connection used to."""
         had_unattended = session_key in self._unattended_sessions
         self._unattended_sessions.discard(session_key)
         if had_unattended:

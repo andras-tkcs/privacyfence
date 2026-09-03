@@ -12,7 +12,7 @@ For the product overview, governance model, screenshots, supported systems, and 
 - [Auto-accept rules](#auto-accept-rules)
 - [Always-allow suggestion candidates](#always-allow-suggestion-candidates)
 - [Always allow for writes](#always-allow-for-writes)
-- [Reading and proposing auto-accept changes from the bridge](#reading-and-proposing-auto-accept-changes-from-the-bridge)
+- [Reading and proposing auto-accept changes over MCP](#reading-and-proposing-auto-accept-changes-over-mcp)
 - [Scheduled / unattended Cowork tasks](#scheduled--unattended-cowork-tasks)
 - [Audit log](#audit-log)
 - [Security, privacy & compliance](#security-privacy--compliance)
@@ -25,10 +25,12 @@ For the product overview, governance model, screenshots, supported systems, and 
 
 ## System overview
 
-PrivacyFence uses a two-process architecture:
+PrivacyFence is one persistent daemon and authoritative control point:
 
-- **`privacyfence-bridge`** is the ephemeral MCP-facing process. It carries no connector credentials.
-- **`privacyfence-app`** is the persistent daemon and authoritative control point. It owns credentials, policies, connectors, approvals, PII detection, and audit logging.
+- **`privacyfence-app`** owns credentials, policies, connectors, approvals, PII detection, and audit
+  logging, and exposes a local, token-authenticated `/mcp` Streamable HTTP endpoint. Claude Code
+  talks to it directly; Claude Desktop reaches it through a thin, disposable stdio-to-HTTP shim
+  (`PrivacyFence.mcpb`) that carries no connector credentials of its own.
 
 ![PrivacyFence architecture](images/architecture.svg)
 
@@ -50,7 +52,7 @@ for either one. What differs between them is direction and button set (see below
 
 ### Two flows by direction
 
-> **Note on MCP annotations:** the bridge advertises *every*
+> **Note on MCP annotations:** `/mcp` advertises *every*
 > tool — reads and writes alike — to Claude as `readOnlyHint = true` /
 > `destructiveHint = false`. This is intentional. See
 > [Why every tool is advertised as read-only](#why-every-tool-is-advertised-as-read-only) below.
@@ -1073,11 +1075,11 @@ unaffected and their popups are visually unchanged (Deny / Allow once only).
 
 ---
 
-## Reading and proposing auto-accept changes from the bridge
+## Reading and proposing auto-accept changes over MCP
 
 `auto_accept_rules`/`auto_accept_grants` are readable/writable from the daemon side — the settings
 window's **Auto-accept Rules** page (`settings_controller.py` / `settings_window_html.py`) or the
-"Always allow" confirmation described above — and, additionally, from two bridge meta-tools, so
+"Always allow" confirmation described above — and, additionally, from two MCP meta-tools, so
 Claude can inspect and propose changes to this config directly:
 
 ### `privacyfence_list_auto_accept_rules` — read
@@ -1104,7 +1106,7 @@ privacyfence_propose_auto_accept_rule_change(target, operation, reason, ...) -> 
 ```
 
 `target` is `"rule"` (an `auto_accept_rules` entry) or `"grant"` (an `auto_accept_grants` entry);
-`operation` is `"add"`, `"update"`, or `"remove"`. This is the one write path a bridge connection
+`operation` is `"add"`, `"update"`, or `"remove"`. This is the one write path an `/mcp` connection
 has into `settings.yaml`, and there is no way to reach it without a human confirming: every call
 blocks on the same native confirmation dialog the "Always allow" button uses
 (`show_rule_confirmation_popup`) — even if an identical rule/grant already exists. A decline (or a
@@ -1124,13 +1126,15 @@ gated tool call already follows.
 
 Applying the change reuses the exact same persistence functions the settings window's editor and
 the "Always allow" flow already use (`auto_accept.add_auto_accept_rule`/`remove_auto_accept_rule`,
-`resource_grants.apply_grant_upsert`/`apply_grant_removal`), so a bridge-proposed change hot-reloads
+`resource_grants.apply_grant_upsert`/`apply_grant_removal`), so an MCP-proposed change hot-reloads
 the live evaluator the same way. When it actually changes something, it's recorded as one of four
 audit decisions — `rule_changed_via_bridge_proposal`, `rule_removed_via_bridge_proposal`,
-`grant_changed_via_bridge_proposal`, `grant_removed_via_bridge_proposal` — distinguishable from a
-UI-originated change. A confirmed proposal that turns out to be a no-op (e.g. removing a rule/grant
-value that was already gone) is `bridge_proposal_no_op` instead — distinct from both a real change
-and from a decline, which reuses the existing `rejected` decision rather than a new value.
+`grant_changed_via_bridge_proposal`, `grant_removed_via_bridge_proposal` (the literal decision
+strings predate `/mcp` and are unchanged since — this is historical audit-log data on disk, not
+something a doc pass renames) — distinguishable from a UI-originated change. A confirmed proposal
+that turns out to be a no-op (e.g. removing a rule/grant value that was already gone) is
+`bridge_proposal_no_op` instead — distinct from both a real change and from a decline, which reuses
+the existing `rejected` decision rather than a new value.
 
 Motivating example: a user's config can accumulate many individual `sheets.*` operations each
 hand-pinned to `approved_sandbox_folder` (see the callout under
@@ -1151,11 +1155,11 @@ answers the dialog. Two additions address this. Design rationale (why a `context
 rather than a connector-level change, why args-only rules are classified by hand rather than
 inferred, alternatives considered) lives in code comments at the relevant call sites —
 `gate.py`'s `unattended_scope`/`is_unattended`, `auto_accept.py`'s `ARGS_ONLY_RULES`/
-`DATA_DEPENDENT_RULES`, and `ipc_server.py`'s `_begin_unattended_session`.
+`DATA_DEPENDENT_RULES`, and `web/mcp_dispatch.py`'s `begin_unattended_session`.
 
 ### `privacyfence_check_policy` — preflight
 
-A bridge meta-tool (not backed by any connector) Claude can call before actually calling a gated
+An MCP meta-tool (not backed by any connector) Claude can call before actually calling a gated
 tool, to find out whether that specific call would need a human:
 
 ```
@@ -1191,7 +1195,7 @@ rule matches, and that can never be predicted before the read happens.
 ### Unattended sessions — fail fast instead of hang
 
 `privacyfence_begin_unattended_session(reason)` / `privacyfence_end_unattended_session(reason)`
-(also bridge meta-tools, each with a required `reason` — same self-reported, unverified, one
+(also MCP meta-tools, each with a required `reason` — same self-reported, unverified, one
 sentence contract as `privacyfence_check_policy`'s) let Claude mark the current connection as
 running a scheduled/unattended task, for as long as that connection stays open. `reason` is
 recorded on the resulting `unattended_session_started`/`unattended_session_ended` audit entry —
@@ -1218,18 +1222,20 @@ flag), not in `settings.yaml`:
 `privacyfence_begin_unattended_session` errors until an administrator opts in — a Claude session
 gaining the ability to switch its own connection into fail-fast mode is a deliberate
 per-organization choice, not a per-user setting, so it isn't exposed as a settings-window toggle.
-The unattended flag is connection-scoped (the bridge is one process per Cowork task) and clears
-automatically if the connection drops, so there's no persistent state to clean up.
+The unattended flag is scoped to one Streamable HTTP MCP session (a Cowork task's own connection to
+`/mcp` — `web/mcp_dispatch.py`'s `McpDispatcher`, keyed the same way a bridge connection used to be
+before P5 retired it) and clears automatically if the session ends, so there's no persistent state
+to clean up.
 
-The tray's own UI does not currently surface how many connections are in this state — the pre-#120
+The tray's own UI does not currently surface how many sessions are in this state — the pre-#120
 menu bar's top item showed a live count (e.g. "PrivacyFence is running — 1 unattended session
 active"), but the two-item tray issue #120 replaced it with (`menu_bar.py`) has no equivalent, and
 `SettingsController` doesn't surface the count anywhere in the settings window either as of this
-writing — `ipc_server.set_unattended_changed_listener` is still wired up
-(`SettingsController._on_unattended_changed`) but its only current effect is triggering a state
-re-render of whatever page happens to be open, not displaying the count itself. The underlying
-`IPCServer.unattended_session_count()` this would read from still exists and is accurate — only the
-display is currently missing.
+writing — `McpDispatcher.set_unattended_changed_listener` is still wired up
+(`SettingsController._on_unattended_changed`, via `SettingsController.wire_unattended_listener`)
+but its only current effect is triggering a state re-render of whatever page happens to be open,
+not displaying the count itself. The underlying `McpDispatcher.unattended_session_count()` this
+would read from still exists and is accurate — only the display is currently missing.
 
 ---
 
@@ -1245,7 +1251,7 @@ for pattern-spotting only). Both get their own row on the Summary sheet and thei
 the Decisions sheet.
 
 Six more relate to
-[reading/proposing auto-accept changes from the bridge](#reading-and-proposing-auto-accept-changes-from-the-bridge):
+[reading/proposing auto-accept changes over MCP](#reading-and-proposing-auto-accept-changes-over-mcp):
 `rules_listed` (a `privacyfence_list_auto_accept_rules` call — like `policy_check`, not a real
 decision, recorded because it discloses the full current rule set) and, once a
 `privacyfence_propose_auto_accept_rule_change` proposal is confirmed,
@@ -1308,10 +1314,8 @@ the only download you need:
 6. On the **Connectors** page, click **Authenticate…** for each connector you want — this takes
    effect immediately (the daemon's live connector list is hot-reloaded), no quit/reopen needed.
 7. Still in the mounted DMG, double-click **PrivacyFence.mcpb** — Claude Desktop installs the
-   MCP server for you (Settings → Extensions → Install Extension… happens automatically). The DMG
-   also carries **PrivacyFence (Legacy Bridge).mcpb** — install that one instead only if `/mcp`
-   isn't working for you (see [Connecting Claude](#connecting-claude) below); the two install side
-   by side without conflicting, so it's safe to have both.
+   MCP server for you (Settings → Extensions → Install Extension… happens automatically), with no
+   config file edited and no token copied — see [Connecting Claude](#connecting-claude) below.
 
 ### From source
 
@@ -1362,10 +1366,7 @@ privacyfence-app
 
 ## Connecting Claude
 
-The daemon and its MCP-facing pieces are built and shipped separately. As of D11
-([`docs/https-connector-refactor-plan.md`](https-connector-refactor-plan.md) §12), there are three
-ways Claude reaches the daemon; which one applies depends on the client and how far your install has
-migrated:
+The daemon and its MCP-facing pieces are built and shipped separately:
 
 - **PrivacyFenceApp.app** (built by `scripts/build_dmg.sh`) — the daemon: owns credentials,
   connectors, the review gate, the audit log, the LaunchAgent, and (`web.mcp.enabled`, on by default
@@ -1377,15 +1378,12 @@ migrated:
 - **`/mcp` directly** — Claude Code (and any other MCP client with native Streamable HTTP + bearer
   auth support) talks to the daemon's `/mcp` endpoint with no intermediate process at all.
 
-`bridge/`, the original Node/TypeScript stdio MCP server this replaced for Desktop, still exists and
-still works during the migration window (P2 through P5) — see the refactor plan for why retiring it
-is its own phase, separate from shipping the replacement. Until then, `scripts/build_mcpb.sh` builds
-**both** `PrivacyFence.mcpb` (the shim, above) and a second, separate extension —
-**`PrivacyFence (Legacy Bridge).mcpb`** — straight from `bridge/`, unchanged. Both ship in every DMG
-and install side by side with no conflict (their manifests use different `name`s — `privacyfence` vs
-`privacyfence-legacy-bridge` — so Claude Desktop registers them as two distinct MCP servers): the
-legacy one is there purely as a rollback that needs no `web.mcp.enabled`/`/mcp` setup at all, for
-anyone who hits a problem with the new one before P5 actually removes the bridge.
+Until P5 (see [`docs/https-connector-refactor-plan.md`](https-connector-refactor-plan.md) §12),
+`bridge/` — the original Node/TypeScript stdio MCP server this replaced for Desktop — existed
+alongside the shim as a migration-window rollback (`PrivacyFence (Legacy Bridge).mcpb`, a second
+extension built straight from `bridge/`, unchanged). P5 removed the bridge, its build step, and that
+second extension once both transports had shipped a stable release each; `PrivacyFence.mcpb` (the
+shim, above) is the only Desktop extension there is now.
 
 ### Option A: one-click extension (Claude Desktop)
 
@@ -1401,15 +1399,9 @@ node_modules/ and no Python runtime shipped at all (Claude Desktop supplies its 
 `server.type = "node"` in `mcpb/manifest.json.tmpl`), which is why it's ~300KB instead of the
 daemon's ~185MB. The shim discovers the daemon's `/mcp` URL and bearer token itself, from
 `~/.privacyfence/mcp_url` and `~/.privacyfence/mcp_token` (both written by the daemon once it binds)
-— nothing to copy into Claude Desktop by hand, same zero-config property the bridge had for the IPC
-socket.
+— nothing to copy into Claude Desktop by hand.
 
-If `/mcp` isn't reachable for you yet (e.g. `web.mcp.enabled` can't be turned on in your
-environment), double-click **`PrivacyFence (Legacy Bridge).mcpb`** instead, from the same mounted
-DMG — same daemon, reached the original way, no `/mcp` required. You can have both installed at
-once; only one will actually be able to reach the daemon depending on whether `/mcp` is listening.
-
-To build both artifacts yourself:
+To build it yourself:
 
 ```bash
 pip install pyinstaller
@@ -1417,16 +1409,15 @@ brew install create-dmg
 bash scripts/build_dmg.sh
 ```
 
-(Node + npm must also be on PATH — used to build `mcpb/shim/` and `bridge/`, and to run the
-`@anthropic-ai/mcpb` CLI via npx.) This runs `scripts/build_mcpb.sh` as part of assembling the DMG.
-To build just the extensions on their own (e.g. for a quick local test without a full DMG), run
-`bash scripts/build_mcpb.sh` directly — it produces `dist/PrivacyFence-<version>.mcpb` and
-`dist/PrivacyFence-legacy-bridge-<version>.mcpb`.
+(Node + npm must also be on PATH — used to build `mcpb/shim/` and to run the `@anthropic-ai/mcpb`
+CLI via npx.) This runs `scripts/build_mcpb.sh` as part of assembling the DMG. To build just the
+extension on its own (e.g. for a quick local test without a full DMG), run
+`bash scripts/build_mcpb.sh` directly — it produces `dist/PrivacyFence-<version>.mcpb`.
 
 ### Option B: `/mcp` directly (Claude Code, or other clients with native Streamable HTTP support)
 
 With `web.mcp.enabled` on (the shipped default) and the daemon running, register `/mcp` directly —
-no bridge, no shim, no extra process:
+no shim, no extra process:
 
 ```bash
 claude mcp add --transport http privacyfence http://localhost:8765/mcp \
@@ -1436,35 +1427,9 @@ claude mcp add --transport http privacyfence http://localhost:8765/mcp \
 (Port and token: see the daemon's own startup log line, or `config/settings.yaml`'s `web.port` and
 `~/.privacyfence/mcp_token` directly.)
 
-### Option C: manual MCP config via the bridge (legacy, works through P5)
-
-Usually unnecessary now that the DMG ships `PrivacyFence (Legacy Bridge).mcpb` (Option A) as a
-one-click way to get the same thing — this is for hand-editing the config directly, e.g. against an
-unpacked `.mcpb` or a source checkout. Add the bridge to Claude's MCP config
-(`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, or the equivalent path
-for Claude Code / other MCP clients):
-
-```json
-{
-  "mcpServers": {
-    "privacyfence-legacy-bridge": {
-      "command": "node",
-      "args": ["/path/to/PrivacyFence (Legacy Bridge).mcpb/server/bridge.js"]
-    }
-  }
-}
-```
-
-If running from source, build the bridge first (`cd bridge && npm install && npm run build`) and
-point `args` at `bridge/dist/bridge.js` in your checkout instead — or just run
-`./scripts/dev_start.sh`, which does this for you (see
-[`docs/dev-vs-live-setup.md`](dev-vs-live-setup.md)).
-
-For Claude Code, you can skip editing JSON by running:
-
-```bash
-claude mcp add privacyfence node /path/to/bridge/dist/bridge.js
-```
+If you're running the daemon from source rather than the DMG, `./scripts/dev_start.sh` does the
+equivalent registration for you (against a freshly-built dev shim, or `claude mcp add` directly if
+the `claude` CLI is on PATH) — see [`docs/dev-vs-live-setup.md`](dev-vs-live-setup.md).
 
 ---
 
@@ -1487,16 +1452,23 @@ See [`config/settings.yaml.example`](../src/privacyfence/resources/settings.yaml
 
 ## Architecture notes
 
-- The bridge is stateless and disposable — Claude can kill and restart it at any time without losing any state. All state (credentials, tokens, filters, queue) lives in the daemon.
-- IPC between the bridge and the daemon uses a newline-delimited JSON protocol over a 127.0.0.1 TCP loopback socket, on an OS-assigned ephemeral port discovered via `~/.privacyfence/ipc_port` and authenticated by a per-launch random token (`~/.privacyfence/ipc_token`) required as the first line of every connection (see `src/privacyfence/ipc.py`'s module docstring).
-- The daemon uses two threads: the main thread runs the rumps menu bar app (a hard macOS requirement for AppKit) and an IPC thread runs the asyncio event loop serving the bridge connection. The main approval window is native AppKit/WKWebView (see `approval_window.py`), shown from any thread via `performSelectorOnMainThread_withObject_waitUntilDone_`; the smaller secondary confirmation/list-picker dialogs (PII confirmation, rule confirmation, rule choice, the Atlassian multi-resource picker) are a second, much smaller AppKit+WKWebView host with the same bridge/blocking-wait pattern (see `dialog_window.py`/`dialog_window_html.py`) — `approval_popup.py` no longer shells out to `osascript` at all. `gate.py` reaches all of these through the pluggable `ApprovalUI` interface (`approval_ui.py`) rather than importing `approval_popup` directly — today's only implementation is `NativeApprovalUI`, but the seam exists so a future UI (e.g. mobile remote approval) can plug in without changing the policy loop.
+- Claude Desktop's stdio shim is stateless and disposable — Claude can kill and restart it at any
+  time without losing any state. All state (credentials, tokens, filters, queue) lives in the
+  daemon, which stays running independently.
+- `/mcp` is a local, loopback-bound (`localhost`) Streamable HTTP endpoint, authenticated by a
+  per-launch random bearer token (`~/.privacyfence/mcp_token`) required on every request; its URL
+  is discovered via `~/.privacyfence/mcp_url` (see `src/privacyfence/web/server.py`'s module
+  docstring). Claude Code talks to it directly; Claude Desktop's shim (`mcpb/shim/`) proxies it over
+  stdio, discovering the same `mcp_url`/`mcp_token` files itself, with no config file edited and no
+  token copied by hand.
+- The daemon uses two threads: the main thread runs the rumps menu bar app (a hard macOS requirement for AppKit) and a web-server thread runs uvicorn serving `/mcp` (every connector call now actually runs on this thread's own asyncio event loop). The main approval window is native AppKit/WKWebView (see `approval_window.py`), shown from any thread via `performSelectorOnMainThread_withObject_waitUntilDone_`; the smaller secondary confirmation/list-picker dialogs (PII confirmation, rule confirmation, rule choice, the Atlassian multi-resource picker) are a second, much smaller AppKit+WKWebView host with the same blocking-wait pattern (see `dialog_window.py`/`dialog_window_html.py`) — `approval_popup.py` no longer shells out to `osascript` at all. `gate.py` reaches all of these through the pluggable `ApprovalUI` interface (`approval_ui.py`) rather than importing `approval_popup` directly — today's only implementation is `NativeApprovalUI`, but the seam exists so a future UI (e.g. mobile remote approval) can plug in without changing the policy loop.
 - All tools are advertised to Claude with `readOnlyHint = true` — see below.
 - The approval window follows the system's light/dark appearance automatically — no config or menu bar toggle, it reads `NSApp`'s current appearance.
 - The daemon checks GitHub Releases once a day for a newer version (`update_checker.py`) and shows a one-time native alert dialog if one is found (`Download` / `Skip This Version` / `Remind Me Later`) — never downloads or installs anything automatically; there's no persistent menu item for it. On by default; toggle from the settings window's **General** page ("Check for Updates") or `update_check.enabled` in `settings.yaml`. See [security-and-compliance.md](security-and-compliance.md) for what this network call does and doesn't send.
 
 ### Why every tool is advertised as read-only
 
-The bridge annotates *every* registered tool — reads and writes alike — as
+`/mcp` annotates *every* registered tool — reads and writes alike — as
 `readOnlyHint = true`, `destructiveHint = false`, `idempotentHint = true`,
 regardless of the tool's real `read_only` flag.
 
