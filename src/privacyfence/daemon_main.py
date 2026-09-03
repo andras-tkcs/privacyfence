@@ -1,17 +1,24 @@
 """PrivacyFence daemon: persistent macOS app that owns the UI, credentials, and connectors.
 
 Started at login via LaunchAgent (com.privacyfence.app.plist), or automatically
-by the bridge on first use. Only one instance is allowed (enforced via a lock
-file). The bridge connects to this process over a 127.0.0.1 TCP loopback
-socket (see ipc.py's module docstring).
+by Claude Desktop's ``.mcpb`` shim on first use. Only one instance is allowed
+(enforced via a lock file). Claude reaches this process over the embedded
+``/mcp`` Streamable HTTP endpoint (see web/mcp_dispatch.py's module
+docstring) -- the original bridge/IPC-socket transport was retired at P5
+(docs/https-connector-refactor-plan.md §12); ``connector_host.py``'s
+``ConnectorHost`` is what's left of ``ipc_server.py``'s own role once the
+socket and its dispatch logic are gone.
 
 Threading model:
   - Main thread:   rumps menu bar app (macOS requirement for AppKit).
-  - IPC thread:    asyncio event loop serving the bridge socket connection.
-  - Cache warm:    short-lived background thread(s) started right after the IPC
-    thread is up, refreshing Slack/Telegram directory caches if they've gone
-    stale -- see _warm_connector_caches(). Kept off the main thread so a large
-    workspace/account doesn't delay the menu bar icon appearing.
+  - Web thread:    uvicorn serving the embedded HTTP server (web/server.py)
+    that hosts ``/mcp``, and (opt-in) the web approval/settings surfaces --
+    this is also the event loop every connector call now actually runs on.
+  - Cache warm:    short-lived background thread(s) started right after the
+    web server's event loop is known, refreshing Slack/Telegram directory
+    caches if they've gone stale -- see _warm_connector_caches(). Kept off
+    the main thread so a large workspace/account doesn't delay the menu bar
+    icon appearing.
   - Popups:        approval_popup.py shows native AppKit/WKWebView windows (any thread).
 
 Configuration is split into two files (see paths.py):
@@ -82,10 +89,10 @@ from .atlassian_oauth import authorize_interactive as atlassian_authorize_intera
 from .atlassian_oauth import load_token_file as load_atlassian_token
 from .calendar_client import CalendarClient, CalendarClientError
 from .confluence_client import ConfluenceClient, ConfluenceClientError
+from .connector_host import ConnectorHost
 from .contacts_client import ContactsClient, ContactsClientError
 from .drive_client import DriveClient, DriveClientError
 from .gmail_client import GmailClient, GmailClientError
-from .ipc_server import IPCServer
 from .jira_client import JiraClient, JiraClientError
 from .salesforce_client import SalesforceClient, SalesforceClientError
 from .salesforce_client import authorize_interactive as salesforce_authorize_interactive
@@ -242,7 +249,7 @@ def setup_logging(config: dict[str, Any]) -> None:
 
 def _maybe_start_web_server(
     config: dict[str, Any],
-    ipc_server: IPCServer,
+    connector_host: ConnectorHost,
     *,
     unattended_sessions_enabled: bool,
     controller: Any = None,
@@ -251,19 +258,24 @@ def _maybe_start_web_server(
     nor web.mcp.enabled nor web.settings.enabled opts in -- the rollback
     lever for each surface from docs/https-connector-refactor-plan.md §12
     ("P1: init_approval_ui() -- the seam itself. A config key selects
-    native or web." / "P2: the HTTP listener is off unless configured; the
-    bridge is untouched." / §16.6's ``web.settings.enabled``). Imports the
-    web/starlette/uvicorn/mcp stack lazily so a daemon that never opts into
-    any of the three doesn't pay for it at startup, the same "menu_bar
-    imported inside run_app(), not at module scope" posture this module
-    already takes for its own AppKit-only pieces.
+    native or web." / "P2: the HTTP listener is off unless configured" /
+    §16.6's ``web.settings.enabled``). Since P5 retired the bridge, turning
+    ``mcp.enabled`` off leaves this install with no way for Claude to reach
+    it at all -- ``web.mcp.enabled: true`` (settings.yaml.example's default
+    since D11/P4b) is no longer "additive alongside the bridge", it is the
+    only transport there is; the key survives as a deliberate full-stop
+    kill switch, not as a rollback to some other still-working path.
+    Imports the web/starlette/uvicorn/mcp stack lazily so a daemon that
+    never opts into any of the three doesn't pay for it at startup, the
+    same "menu_bar imported inside run_app(), not at module scope" posture
+    this module already takes for its own AppKit-only pieces.
 
-    ``ipc_server`` is already built and holds the real connector set by the
-    time this is called (see run_app's ordering) -- the MCP dispatcher polls
-    ``ipc_server.connectors`` live rather than taking its own snapshot, so a
-    connector rebuild pushed into the bridge (SettingsController.
-    refresh_connectors -> IPCServer.set_connectors) reaches the ``/mcp``
-    endpoint too, with nothing here needing a second push.
+    ``connector_host`` is already built and holds the real connector set by
+    the time this is called (see run_app's ordering) -- the MCP dispatcher
+    polls ``connector_host.connectors`` live rather than taking its own
+    snapshot, so a connector rebuild pushed by SettingsController.
+    refresh_connectors (-> ConnectorHost.set_connectors) reaches the
+    ``/mcp`` endpoint too, with nothing here needing a second push.
 
     ``controller``, when given, is the *same* SettingsController instance
     run_app() also hands to the native menu bar/settings window -- one
@@ -310,9 +322,17 @@ def _maybe_start_web_server(
     mcp_dispatcher = None
     if mcp_enabled:
         mcp_dispatcher = McpDispatcher(
-            lambda: ipc_server.connectors, unattended_sessions_enabled=unattended_sessions_enabled,
+            lambda: connector_host.connectors, unattended_sessions_enabled=unattended_sessions_enabled,
             registry=registry,
         )
+        if controller is not None:
+            # The direct successor of ipc_server.py's own constructor-time
+            # ``ipc_server.set_unattended_changed_listener(self._on_
+            # unattended_changed)`` wiring -- moved out here because, unlike
+            # the old always-on IPCServer, whether a dispatcher exists at
+            # all now depends on mcp_enabled, which SettingsController's own
+            # constructor has no visibility into.
+            controller.wire_unattended_listener(mcp_dispatcher)
 
     server = WebServer(
         web_ui,
@@ -321,6 +341,7 @@ def _maybe_start_web_server(
         controller=controller if use_web_settings else None,
         allow_quit=bool(settings_config.get("allow_quit", True)),
         notifications_enabled=bool(notifications_config.get("enabled", True)),
+        notifications_detail=str(notifications_config.get("detail", "minimal")),
     )
     server.start()
     # The pending-result URL gate.py hands back to Claude (§5.2 point 4) is
@@ -580,9 +601,11 @@ def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list
             )
             # Directory-cache warming happens the same way as Slack's now --
             # see _warm_connector_caches() in run_app() -- just scheduled on
-            # the IPC server's own event loop rather than awaited here,
-            # since that's the loop Telethon's client ends up bound to on
-            # its first connection (see telegram_client.py).
+            # the web server's own event loop rather than awaited here,
+            # since that's the loop every Telegram tool call now actually
+            # runs on (McpDispatcher.call(), on the ASGI app's own loop) and
+            # therefore the loop Telethon's client ends up bound to on its
+            # first connection (see telegram_client.py).
             logger.info("Telegram connector registered (chat cache will warm in the background)")
             connectors.append(TelegramConnector(tg_client))
         except (TelegramClientError, FileNotFoundError, Exception) as exc:
@@ -591,15 +614,15 @@ def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list
     return connectors
 
 
-def _warm_connector_caches(connectors: list, ipc_loop: asyncio.AbstractEventLoop) -> None:
+def _warm_connector_caches(connectors: list, web_loop: asyncio.AbstractEventLoop) -> None:
     """Kick off each connector's directory-cache freshness check (Slack's
     user/channel snapshots, Telegram's chat snapshot) in the background,
-    right after the IPC server is up (see run_app()). Both
+    right after the web server's event loop is known (see run_app()). Both
     ensure_directories_fresh() and ensure_chat_directory_fresh() are
     best-effort and never raise -- a failure here just means the cache
     stays stale until the next lazy lookup or the explicit
-    slack_refresh_*/telegram_refresh_chat_cache bridge tool, same as if
-    this warming never ran.
+    slack_refresh_*/telegram_refresh_chat_cache tool, same as if this
+    warming never ran.
 
     Deliberately not run inline in build_connectors(), and not awaited
     here either: a full weekly re-sync (users.list/conversations.list/
@@ -611,8 +634,10 @@ def _warm_connector_caches(connectors: list, ipc_loop: asyncio.AbstractEventLoop
     Slack's client is synchronous (blocking HTTP via slack_sdk), so it gets
     its own plain background thread. Telegram's is asyncio-native
     (Telethon) and its client binds to whichever event loop first connects
-    it -- that has to be ``ipc_loop``, the same loop every Telegram tool
-    call already runs on, not a throwaway loop of some other thread -- so
+    it -- that has to be ``web_loop`` (the ASGI app's own loop, captured by
+    web/server.py's WebServer -- see run_app()'s wait_until_ready() call),
+    the same loop every Telegram tool call now actually runs on
+    (McpDispatcher.call()), not a throwaway loop of some other thread -- so
     it's scheduled there via run_coroutine_threadsafe instead.
     """
     for connector in connectors:
@@ -624,7 +649,7 @@ def _warm_connector_caches(connectors: list, ipc_loop: asyncio.AbstractEventLoop
             ).start()
         elif isinstance(connector, TelegramConnector):
             future = asyncio.run_coroutine_threadsafe(
-                connector.client.ensure_chat_directory_fresh(), ipc_loop
+                connector.client.ensure_chat_directory_fresh(), web_loop
             )
             future.add_done_callback(_log_cache_warm_failure)
 
@@ -637,33 +662,6 @@ def _log_cache_warm_failure(future: "asyncio.Future[None]") -> None:
     exc = future.exception()
     if exc is not None:
         logger.warning("Background Telegram cache warm failed: %s", exc)
-
-
-# ---------------------------------------------------------------------------- #
-# IPC server thread
-# ---------------------------------------------------------------------------- #
-
-class IPCServerThread(threading.Thread):
-    """Runs the asyncio IPC server on a dedicated daemon thread."""
-
-    def __init__(self, server: IPCServer) -> None:
-        super().__init__(name="ipc-server", daemon=True)
-        self._server = server
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._ready = threading.Event()
-
-    def run(self) -> None:
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
-        try:
-            self._loop.run_until_complete(self._main())
-        except Exception as exc:
-            logger.error("IPC server thread crashed: %s", exc, exc_info=True)
-
-    async def _main(self) -> None:
-        await self._server.start()
-        self._ready.set()
-        await asyncio.get_running_loop().create_future()
 
 
 # ---------------------------------------------------------------------------- #
@@ -882,10 +880,10 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
     org_config = load_org_config()
     connectors = build_connectors(config, org_config)
     if not connectors:
-        logger.warning("No connectors could be initialized; daemon still starting for IPC.")
+        logger.warning("No connectors could be initialized; daemon still starting.")
 
     unattended_enabled = bool((org_config.get("unattended_sessions", {}) or {}).get("enabled", False))
-    ipc_server = IPCServer(connectors, unattended_sessions_enabled=unattended_enabled)
+    connector_host = ConnectorHost(connectors)
 
     # Built once, here, and handed to *both* the web settings surface
     # (_maybe_start_web_server, below) and the native menu bar/settings
@@ -899,32 +897,40 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
 
     connector_names = [c.name for c in connectors]
     settings_controller = SettingsController(
-        config_path=config_path, connectors=connector_names, ipc_server=ipc_server, connector_objs=connectors,
+        config_path=config_path, connectors=connector_names, connector_host=connector_host,
+        connector_objs=connectors,
     )
 
-    # Built after ipc_server so the MCP dispatcher (if web.mcp.enabled) can
-    # poll ipc_server.connectors for the live connector set -- see
+    # Built after connector_host so the MCP dispatcher (if web.mcp.enabled)
+    # can poll connector_host.connectors for the live connector set -- see
     # _maybe_start_web_server's own docstring.
-    _maybe_start_web_server(
-        config, ipc_server, unattended_sessions_enabled=unattended_enabled, controller=settings_controller,
+    server = _maybe_start_web_server(
+        config, connector_host, unattended_sessions_enabled=unattended_enabled, controller=settings_controller,
     )
 
-    ipc_thread = IPCServerThread(ipc_server)
-    ipc_thread.start()
-    ipc_thread._ready.wait(timeout=5)
-    logger.info("IPC server ready, starting menu bar")
+    # Every connector call now runs on the embedded web server's own ASGI
+    # event loop (McpDispatcher.call(), via /mcp) -- there is no separate
+    # IPC loop to wait on any more, so Telegram's cache warm (the one piece
+    # that needs a live loop, not just a thread -- see
+    # _warm_connector_caches' own docstring) waits for that loop to be
+    # captured instead. None when this daemon never starts the web server
+    # at all (every web.* surface opted out) -- in that configuration
+    # nothing can reach a connector regardless, so there is nothing to warm
+    # a cache for.
+    web_loop = server.wait_until_ready(timeout=5) if server is not None else None
+    logger.info("Startup complete, starting menu bar")
 
-    if ipc_thread._loop is not None:
-        _warm_connector_caches(connectors, ipc_thread._loop)
-    else:
-        logger.warning("IPC event loop not ready in time; skipping background cache warm")
+    if web_loop is not None:
+        _warm_connector_caches(connectors, web_loop)
+    elif server is not None:
+        logger.warning("Web server event loop not ready in time; skipping background cache warm")
 
     from .menu_bar import run_menu_bar
     try:
         run_menu_bar(
             config_path=config_path,
             connectors=connector_names,
-            ipc_server=ipc_server,
+            connector_host=connector_host,
             connector_objs=connectors,
             controller=settings_controller,
         )

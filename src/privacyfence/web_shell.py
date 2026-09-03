@@ -33,6 +33,7 @@ makes "one live indicator" true instead of aspirational.
 """
 from __future__ import annotations
 
+import json
 from html import escape as _html_escape
 from pathlib import Path
 
@@ -114,19 +115,22 @@ body {
 #   - tier 1: registration.showNotification() via resources/sw.js, fired
 #     only when the tab is not focused, rate-limited to one per 5s (§4.2),
 #     grouped into a single "N approvals pending" notification rather than
-#     one per row. **Content invariant (§4.3), enforced by construction
-#     here, not by a detail-level setting yet**: the body is always the
-#     bare count -- "N approval(s) pending" -- never a connector name, tool
-#     name, or the row's own title, all of which approvals.PendingApproval.
-#     summary (and therefore this SSE event's own payload) can carry real
-#     gated content in (an event title, a contact name, a document title --
-#     see gate.py's call sites). That is exactly what a `standard`/
-#     `detailed` notification level would need to show, and is deliberately
-#     not implemented yet: the count-only body below is a safe subset of
-#     `minimal` (§4.3's own table) that cannot leak anything at any
-#     setting, which is what ships until a real per-field allowlist for the
-#     richer levels is built -- scheduled at P5 alongside that phase's
-#     bridge retirement (https-connector-refactor-plan.md's phase table).
+#     one per row. **Content invariant (§4.3), enforced by construction,
+#     via notificationBody()'s own per-level field allowlist (P5)**: at
+#     `minimal`, or whenever more than one approval fired at once (there is
+#     no "several different named things" copy -- §4.2's own grouping
+#     case), the body is always the bare count -- "N approval(s) pending".
+#     `standard` adds exactly two fields off the single pending row's own
+#     summary dict -- connector and gate_kind (read/write direction), both
+#     safe by construction: gate_kind names a category, never gated
+#     content, and connector is the same bare connector key
+#     approval_list_html.py's own row kicker already capitalizes and shows
+#     unescaped, nothing this function invents access to. `detailed` adds
+#     one more field: the row's own `summary` -- the one field that
+#     genuinely can carry gated content (an event title, a contact name, a
+#     document title -- see approvals.PendingApproval's own docstring on
+#     it), which is exactly why it's the one gated behind the highest
+#     level rather than shown at `standard` or below.
 #   - the permission pre-prompt only ever fires from window.__pfNotifPrompt,
 #     called by approval_list_html.py's own script right after a decision
 #     is made (never on page load -- §4.4: "never on page load, a cold
@@ -139,6 +143,10 @@ _STREAM_JS = """
   // registration, and the permission pre-prompt alike; the live-connection
   // indicator above is unaffected (it isn't a notification).
   var NOTIFICATIONS_ENABLED = %(notifications_enabled)s;
+  // web.notifications.detail -- "minimal" | "standard" | "detailed" (P5,
+  // docs/approval-list-ui-ux.md §4.3). See notificationBody() below for
+  // what each level is allowed to read off a pending-approval row.
+  var NOTIFICATIONS_DETAIL = %(notifications_detail)s;
   // Exposed globally so the settings page's own notifications card
   // (settings_window_html.py's renderNotificationsCard) can read the same
   // config flag -- that module's JS is shared with the native settings
@@ -169,7 +177,33 @@ _STREAM_JS = """
     }
   }
 
-  function maybeNotify(count) {
+  function countBody(count) {
+    return count === 1 ? '1 approval pending' : count + ' approvals pending';
+  }
+
+  // The notification-detail allowlist (P5, docs/approval-list-ui-ux.md
+  // §4.3) -- see this file's own comment above _STREAM_JS for what each
+  // level is allowed to read off `row`. Only ever called with exactly the
+  // one row a count-increase-to-1 identifies unambiguously (see
+  // maybeNotify below); anything else falls back to the plain count, which
+  // is always safe at any level.
+  function notificationBody(count, rows) {
+    if (NOTIFICATIONS_DETAIL === 'minimal' || count !== 1 || !rows || rows.length !== 1) {
+      return countBody(count);
+    }
+    var row = rows[0];
+    var connector = row.connector
+      ? row.connector.charAt(0).toUpperCase() + row.connector.slice(1)
+      : '';
+    var direction = row.gate_kind === 'review' ? 'read' : row.gate_kind === 'popup' ? 'write' : '';
+    var head = [connector, row.tool_name || ''].filter(function (s) { return !!s; }).join(' — ');
+    if (direction) { head += ' · ' + direction; }
+    if (!head) { return countBody(count); }
+    if (NOTIFICATIONS_DETAIL === 'detailed' && row.summary) { head += '\\n' + row.summary; }
+    return head;
+  }
+
+  function maybeNotify(count, rows) {
     if (!NOTIFICATIONS_ENABLED) { return; }
     if (count === 0 || lastCount === null || count <= lastCount) { return; }
     if (typeof document.hasFocus === 'function' && document.hasFocus()) { return; }
@@ -178,7 +212,7 @@ _STREAM_JS = """
     lastNotifyAt = now;
     if (!('Notification' in window) || Notification.permission !== 'granted') { return; }
     if (!('serviceWorker' in navigator)) { return; }
-    var body = count === 1 ? '1 approval pending' : count + ' approvals pending';
+    var body = notificationBody(count, rows);
     navigator.serviceWorker.ready.then(function (reg) {
       reg.showNotification('PrivacyFence', { body: body, tag: 'pf-approvals', renotify: false });
     }).catch(function () {});
@@ -187,7 +221,7 @@ _STREAM_JS = """
   function onApprovalsEvent(rows) {
     var count = (rows || []).length;
     updateBadge(count);
-    maybeNotify(count);
+    maybeNotify(count, rows);
     lastCount = count;
   }
 
@@ -252,7 +286,10 @@ def _nav_html(active: str) -> str:
     return "".join(items)
 
 
-def wrap(body_html: str, *, title: str, active: str, notifications_enabled: bool = True) -> str:
+def wrap(
+    body_html: str, *, title: str, active: str,
+    notifications_enabled: bool = True, notifications_detail: str = "minimal",
+) -> str:
     """Full ``<!DOCTYPE html>`` document: tokens.css + the shell's own CSS,
     the header (brand, nav between Approvals/Settings, live indicator), and
     ``body_html`` dropped into ``<main>`` unescaped -- callers own their own
@@ -264,9 +301,15 @@ def wrap(body_html: str, *, title: str, active: str, notifications_enabled: bool
     example's ``web.notifications.enabled`` (default true) -- false turns
     off tiers 0 and 1 together (title badge, aria-live announcement,
     service worker registration, the permission pre-prompt), per that
-    config key's own comment.
+    config key's own comment. ``notifications_detail`` is that same config
+    block's ``detail`` (``"minimal"``/``"standard"``/``"detailed"``, P5 --
+    docs/approval-list-ui-ux.md §4.3) -- see _STREAM_JS's own
+    notificationBody() for exactly what each level is allowed to say.
     """
-    stream_js = _STREAM_JS % {"notifications_enabled": "true" if notifications_enabled else "false"}
+    stream_js = _STREAM_JS % {
+        "notifications_enabled": "true" if notifications_enabled else "false",
+        "notifications_detail": json.dumps(notifications_detail),
+    }
     return f"""<!DOCTYPE html>
 <html>
 <head>

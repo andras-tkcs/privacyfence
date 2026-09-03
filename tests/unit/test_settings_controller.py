@@ -78,14 +78,11 @@ def controller(tmp_path, monkeypatch):
     config_path = tmp_path / "settings.yaml"
     config_path.write_text("auto_accept_rules: {}\nconnectors: {}\n", encoding="utf-8")
 
-    ipc_calls = []
-    ipc_server = SimpleNamespace(
-        set_connectors=lambda conns: ipc_calls.append(conns),
-        set_unattended_changed_listener=lambda callback: None,
-    )
+    host_calls = []
+    connector_host = SimpleNamespace(set_connectors=lambda conns: host_calls.append(conns))
 
-    ctrl = sc.SettingsController(str(config_path), connectors=[], ipc_server=ipc_server)
-    ctrl._ipc_calls = ipc_calls
+    ctrl = sc.SettingsController(str(config_path), connectors=[], connector_host=connector_host)
+    ctrl._host_calls = host_calls
     return ctrl
 
 
@@ -139,10 +136,10 @@ class TestRunAsyncMarshaling:
 
 
 class TestOnChangeMarshaling:
-    """Rule changes from the IPC server's own thread (e.g. an "Always allow"
-    confirmation from the approval popup) must marshal onto the main thread
-    via AppHelper.callAfter before touching on_change (which may drive
-    AppKit/the webview)."""
+    """Rule changes from a background thread (e.g. the web server's own
+    asyncio thread, for an "Always allow" confirmation reached over /mcp)
+    must marshal onto the main thread via AppHelper.callAfter before
+    touching on_change (which may drive AppKit/the webview)."""
 
     def test_reload_from_background_thread_schedules_but_does_not_push_inline(self, controller, monkeypatch):
         recorded = []
@@ -154,11 +151,11 @@ class TestOnChangeMarshaling:
 
         bg_done = threading.Event()
 
-        def ipc_server_thread_body():
+        def background_thread_body():
             auto_accept.reload_rules({"gmail.read_message": [{"rule": "i_am_sender"}]})
             bg_done.set()
 
-        t = threading.Thread(target=ipc_server_thread_body)
+        t = threading.Thread(target=background_thread_body)
         t.start()
         t.join(timeout=2)
         assert bg_done.is_set()
@@ -592,7 +589,7 @@ class TestToggleConnector:
 
 
 class TestRefreshConnectors:
-    def test_updates_connectors_and_pushes_to_ipc_server_after_drain(self, controller, monkeypatch):
+    def test_updates_connectors_and_pushes_to_connector_host_after_drain(self, controller, monkeypatch):
         recorded = []
         monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
         monkeypatch.setattr(daemon_main, "build_connectors", lambda cfg, org: [SimpleNamespace(name="drive")])
@@ -604,7 +601,22 @@ class TestRefreshConnectors:
         func(*args, **kwargs)
 
         assert controller._connectors == ["drive"]
-        assert controller._ipc_calls == [[SimpleNamespace(name="drive")]]
+        assert controller._host_calls == [[SimpleNamespace(name="drive")]]
+
+
+class TestWireUnattendedListener:
+    """P5: unattended-session changes are wired from outside the
+    constructor now (by daemon_main.py, once it knows a McpDispatcher
+    actually exists), not unconditionally inside it -- see
+    SettingsController.__init__'s own docstring."""
+
+    def test_registers_on_change_with_the_given_dispatcher(self, controller):
+        registered = []
+        dispatcher = SimpleNamespace(set_unattended_changed_listener=lambda cb: registered.append(cb))
+
+        controller.wire_unattended_listener(dispatcher)
+
+        assert registered == [controller._on_unattended_changed]
 
 
 class TestAuthenticateDispatch:

@@ -36,7 +36,7 @@ from .settings_controller import SettingsController
 from .settings_window import SettingsWindowController
 
 if TYPE_CHECKING:
-    from .ipc_server import IPCServer
+    from .connector_host import ConnectorHost
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ class PrivacyFenceMenuBar(rumps.App):
         self,
         config_path: str,
         connectors: list[str],
-        ipc_server: "IPCServer",
+        connector_host: "ConnectorHost",
         connector_objs: list[Any] | None = None,
         controller: SettingsController | None = None,
     ) -> None:
@@ -75,7 +75,7 @@ class PrivacyFenceMenuBar(rumps.App):
         self.controller = controller if controller is not None else SettingsController(
             config_path=config_path,
             connectors=connectors,
-            ipc_server=ipc_server,
+            connector_host=connector_host,
             connector_objs=connector_objs,
         )
         # Lazily created on first "Settings…" click (see
@@ -115,14 +115,14 @@ class PrivacyFenceMenuBar(rumps.App):
 def run_menu_bar(
     config_path: str,
     connectors: list[str],
-    ipc_server: "IPCServer",
+    connector_host: "ConnectorHost",
     connector_objs: list[Any] | None = None,
     controller: SettingsController | None = None,
 ) -> None:
     app = PrivacyFenceMenuBar(
         config_path=config_path,
         connectors=connectors,
-        ipc_server=ipc_server,
+        connector_host=connector_host,
         connector_objs=connector_objs,
         controller=controller,
     )

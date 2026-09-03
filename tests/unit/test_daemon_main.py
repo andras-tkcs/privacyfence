@@ -1,8 +1,8 @@
 """Tests for daemon_main's connector-wiring and config-loading logic.
 
 build_connectors() is the function that turns (settings.yaml, org_config.json,
-per-user token files) into the live connector list the IPC server exposes to
-the bridge. Its contract, stated in the module docstring, is "graceful:
+per-user token files) into the live connector list the ConnectorHost exposes
+to /mcp. Its contract, stated in the module docstring, is "graceful:
 missing org config or auth -> connector skipped" -- a bug here means a
 connector silently vanishes (or, worse, gets wired up without the gating it's
 supposed to have). Every *Client class it touches is faked out at the
@@ -18,8 +18,8 @@ import os
 import sys
 import threading
 import time
-import uuid
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -715,21 +715,21 @@ class TestMaybeStartWebServer:
         return started
 
     @staticmethod
-    def _ipc_server():
-        from privacyfence.ipc_server import IPCServer
-        return IPCServer([])
+    def _connector_host():
+        from privacyfence.connector_host import ConnectorHost
+        return ConnectorHost([])
 
     def test_no_web_section_stays_native_and_starts_nothing(self, monkeypatch, tmp_path):
         from privacyfence.approval_ui import NativeApprovalUI, get_approval_ui
         self._no_bind(monkeypatch, tmp_path)
-        result = daemon_main._maybe_start_web_server({}, self._ipc_server(), unattended_sessions_enabled=False)
+        result = daemon_main._maybe_start_web_server({}, self._connector_host(), unattended_sessions_enabled=False)
         assert result is None
         assert isinstance(get_approval_ui(), NativeApprovalUI)
 
     def test_explicit_native_with_mcp_disabled_starts_nothing(self, monkeypatch, tmp_path):
         self._no_bind(monkeypatch, tmp_path)
         result = daemon_main._maybe_start_web_server(
-            {"web": {"approval_ui": "native"}}, self._ipc_server(), unattended_sessions_enabled=False,
+            {"web": {"approval_ui": "native"}}, self._connector_host(), unattended_sessions_enabled=False,
         )
         assert result is None
 
@@ -739,7 +739,7 @@ class TestMaybeStartWebServer:
         started = self._no_bind(monkeypatch, tmp_path)
 
         result = daemon_main._maybe_start_web_server(
-            {"web": {"approval_ui": "web", "port": 18765}}, self._ipc_server(),
+            {"web": {"approval_ui": "web", "port": 18765}}, self._connector_host(),
             unattended_sessions_enabled=False,
         )
 
@@ -754,7 +754,7 @@ class TestMaybeStartWebServer:
         from privacyfence.web.server import DEFAULT_PORT
         self._no_bind(monkeypatch, tmp_path)
         result = daemon_main._maybe_start_web_server(
-            {"web": {"approval_ui": "web"}}, self._ipc_server(), unattended_sessions_enabled=False,
+            {"web": {"approval_ui": "web"}}, self._connector_host(), unattended_sessions_enabled=False,
         )
         assert result.port == DEFAULT_PORT
 
@@ -763,7 +763,7 @@ class TestMaybeStartWebServer:
         started = self._no_bind(monkeypatch, tmp_path)
 
         result = daemon_main._maybe_start_web_server(
-            {"web": {"mcp": {"enabled": True}}}, self._ipc_server(), unattended_sessions_enabled=False,
+            {"web": {"mcp": {"enabled": True}}}, self._connector_host(), unattended_sessions_enabled=False,
         )
 
         assert result is not None
@@ -782,7 +782,7 @@ class TestMaybeStartWebServer:
         self._no_bind(monkeypatch, tmp_path)
 
         result = daemon_main._maybe_start_web_server(
-            {"web": {"approval_ui": "web", "port": 18765}}, self._ipc_server(),
+            {"web": {"approval_ui": "web", "port": 18765}}, self._connector_host(),
             unattended_sessions_enabled=False,
         )
 
@@ -794,7 +794,7 @@ class TestMaybeStartWebServer:
         self._no_bind(monkeypatch, tmp_path)
 
         result = daemon_main._maybe_start_web_server(
-            {"web": {"approval_ui": "web", "mcp": {"enabled": True}}}, self._ipc_server(),
+            {"web": {"approval_ui": "web", "mcp": {"enabled": True}}}, self._connector_host(),
             unattended_sessions_enabled=False,
         )
 
@@ -814,7 +814,7 @@ class TestMaybeStartWebServer:
                     },
                 },
             },
-            self._ipc_server(), unattended_sessions_enabled=False,
+            self._connector_host(), unattended_sessions_enabled=False,
         )
 
         registry = get_web_approval_ui().deferred_registry
@@ -823,19 +823,19 @@ class TestMaybeStartWebServer:
         assert registry.ledger_ttl == 30
         assert registry.max_pending == 3
 
-    def test_mcp_dispatcher_sees_the_ipc_servers_live_connector_set(self, monkeypatch, tmp_path):
+    def test_mcp_dispatcher_sees_the_connector_hosts_live_connector_set(self, monkeypatch, tmp_path):
         self._no_bind(monkeypatch, tmp_path)
-        ipc_server = self._ipc_server()
+        connector_host = self._connector_host()
 
         result = daemon_main._maybe_start_web_server(
-            {"web": {"mcp": {"enabled": True}}}, ipc_server, unattended_sessions_enabled=False,
+            {"web": {"mcp": {"enabled": True}}}, connector_host, unattended_sessions_enabled=False,
         )
 
         assert result.mcp_dispatcher.connectors == {}
         from privacyfence.connectors.gmail import GmailConnector  # any real Connector subclass
         fake_connector = object.__new__(GmailConnector)
-        ipc_server.set_connectors([fake_connector])
-        # No second push into the dispatcher -- it polls ipc_server.connectors.
+        connector_host.set_connectors([fake_connector])
+        # No second push into the dispatcher -- it polls connector_host.connectors.
         assert list(result.mcp_dispatcher.connectors) == [fake_connector.name]
 
     # ------------------------------------------------------------------ #
@@ -860,15 +860,15 @@ class TestMaybeStartWebServer:
         monkeypatch.setattr(sc, "data_dir", lambda: settings_dir)
         config_path = tmp_path / "settings.yaml"
         config_path.write_text("auto_accept_rules: {}\nconnectors: {}\n", encoding="utf-8")
-        ipc_server = self._ipc_server()
-        return sc.SettingsController(str(config_path), connectors=[], ipc_server=ipc_server)
+        connector_host = self._connector_host()
+        return sc.SettingsController(str(config_path), connectors=[], connector_host=connector_host)
 
     def test_settings_not_enabled_leaves_the_server_unbuilt_with_a_controller(self, monkeypatch, tmp_path):
         self._no_bind(monkeypatch, tmp_path)
         controller = self._controller(tmp_path, monkeypatch)
 
         result = daemon_main._maybe_start_web_server(
-            {}, self._ipc_server(), unattended_sessions_enabled=False, controller=controller,
+            {}, self._connector_host(), unattended_sessions_enabled=False, controller=controller,
         )
 
         assert result is None
@@ -877,7 +877,7 @@ class TestMaybeStartWebServer:
         self._no_bind(monkeypatch, tmp_path)
 
         result = daemon_main._maybe_start_web_server(
-            {"web": {"settings": {"enabled": True}}}, self._ipc_server(), unattended_sessions_enabled=False,
+            {"web": {"settings": {"enabled": True}}}, self._connector_host(), unattended_sessions_enabled=False,
         )
 
         assert result is None
@@ -887,7 +887,7 @@ class TestMaybeStartWebServer:
         controller = self._controller(tmp_path, monkeypatch)
 
         result = daemon_main._maybe_start_web_server(
-            {"web": {"settings": {"enabled": True}, "port": 18765}}, self._ipc_server(),
+            {"web": {"settings": {"enabled": True}, "port": 18765}}, self._connector_host(),
             unattended_sessions_enabled=False, controller=controller,
         )
 
@@ -899,7 +899,7 @@ class TestMaybeStartWebServer:
         controller = self._controller(tmp_path, monkeypatch)
 
         result = daemon_main._maybe_start_web_server(
-            {"web": {"settings": {"enabled": True, "allow_quit": False}}}, self._ipc_server(),
+            {"web": {"settings": {"enabled": True, "allow_quit": False}}}, self._connector_host(),
             unattended_sessions_enabled=False, controller=controller,
         )
 
@@ -909,12 +909,12 @@ class TestMaybeStartWebServer:
         self._no_bind(monkeypatch, tmp_path)
 
         default_result = daemon_main._maybe_start_web_server(
-            {"web": {"approval_ui": "web"}}, self._ipc_server(), unattended_sessions_enabled=False,
+            {"web": {"approval_ui": "web"}}, self._connector_host(), unattended_sessions_enabled=False,
         )
         assert default_result.notifications_enabled is True
 
         off_result = daemon_main._maybe_start_web_server(
-            {"web": {"approval_ui": "web", "notifications": {"enabled": False}}}, self._ipc_server(),
+            {"web": {"approval_ui": "web", "notifications": {"enabled": False}}}, self._connector_host(),
             unattended_sessions_enabled=False,
         )
         assert off_result.notifications_enabled is False
@@ -926,7 +926,7 @@ class TestMaybeStartWebServer:
         controller = self._controller(tmp_path, monkeypatch)
 
         result = daemon_main._maybe_start_web_server(
-            {"web": {"settings": {"enabled": True}}}, self._ipc_server(),
+            {"web": {"settings": {"enabled": True}}}, self._connector_host(),
             unattended_sessions_enabled=False, controller=controller,
         )
 
@@ -1138,76 +1138,21 @@ class TestTelegramSetupRunner:
 
 
 # ---------------------------------------------------------------------------- #
-# IPCServerThread
-# ---------------------------------------------------------------------------- #
-
-@pytest.fixture
-def short_socket_path():
-    """Per-test-unique TOKEN_FILE path -- named short_socket_path for
-    history (this used to be a Unix socket path)."""
-    directory = f"/tmp/pf-{uuid.uuid4().hex[:8]}"
-    os.makedirs(directory, exist_ok=True)
-    path = f"{directory}/ipc_token"
-    yield path
-    try:
-        os.unlink(path)
-    except FileNotFoundError:
-        pass
-    try:
-        os.rmdir(directory)
-    except OSError:
-        pass
-
-
-class TestIPCServerThread:
-    def test_starts_a_fresh_event_loop_and_becomes_ready(self, monkeypatch, short_socket_path):
-        from privacyfence import ipc_server as ipc_server_module
-        from privacyfence.ipc_server import IPCServer
-
-        monkeypatch.setattr(ipc_server_module, "TOKEN_FILE", short_socket_path)
-        monkeypatch.setattr(ipc_server_module, "PORT_FILE", short_socket_path.replace("ipc_token", "ipc_port"))
-        server = IPCServer([])
-        thread = daemon_main.IPCServerThread(server)
-
-        thread.start()
-        try:
-            assert thread._ready.wait(timeout=5)
-            assert thread._loop is not None
-            assert thread.is_alive()
-        finally:
-            thread._loop.call_soon_threadsafe(thread._loop.stop)
-            thread.join(timeout=5)
-
-    def test_crash_during_startup_is_logged_not_raised(self, caplog):
-        class FailingServer:
-            async def start(self):
-                raise RuntimeError("bind failed")
-
-        thread = daemon_main.IPCServerThread(FailingServer())
-        with caplog.at_level(logging.ERROR):
-            thread.start()
-            thread.join(timeout=5)
-
-        assert not thread.is_alive()
-        assert "IPC server thread crashed" in caplog.text
-
-
-# ---------------------------------------------------------------------------- #
 # _warm_connector_caches
 # ---------------------------------------------------------------------------- #
 
 class TestWarmConnectorCaches:
-    """_warm_connector_caches() is what run_app() calls right after the IPC
-    thread is ready -- Slack's client is synchronous, so it gets its own
-    background thread; Telegram's is asyncio-native and has to run on the
-    IPC server's own loop (see the function's docstring). Both are
-    fire-and-forget from the caller's point of view, so these tests poll
-    briefly for the background work to land rather than joining a handle
-    _warm_connector_caches doesn't expose."""
+    """_warm_connector_caches() is what run_app() calls right after the web
+    server's own ASGI event loop is known to be up -- Slack's client is
+    synchronous, so it gets its own background thread; Telegram's is
+    asyncio-native and has to run on that same loop (see the function's
+    docstring). Both are fire-and-forget from the caller's point of view,
+    so these tests poll briefly for the background work to land rather than
+    joining a handle _warm_connector_caches doesn't expose."""
 
     def _running_loop(self):
-        """A bare event loop on its own thread -- stands in for the IPC
-        server's loop without needing a real IPCServer/socket."""
+        """A bare event loop on its own thread -- stands in for the web
+        server's own loop without needing a real WebServer/socket."""
         loop = asyncio.new_event_loop()
         thread = threading.Thread(target=loop.run_forever, daemon=True)
         thread.start()
@@ -1235,7 +1180,7 @@ class TestWarmConnectorCaches:
         finally:
             self._stop(loop, thread)
 
-    def test_telegram_connector_warmed_on_the_given_ipc_loop(self):
+    def test_telegram_connector_warmed_on_the_given_web_loop(self):
         calls: list[threading.Thread] = []
 
         class FakeTelegramClient:
@@ -1289,24 +1234,20 @@ class TestWarmConnectorCaches:
 # run_app
 # ---------------------------------------------------------------------------- #
 
-class _FakeIPCServerThread:
-    instances: list["_FakeIPCServerThread"] = []
+class _FakeWebServer:
+    """Stand-in for whatever web/server.py's WebServer._maybe_start_web_
+    server() would return -- run_app() only ever calls wait_until_ready()
+    on it (see that function's own construction logic, covered separately
+    by TestMaybeStartWebServer). Distinct per instance so a test can assert
+    identity against the specific loop it hands back."""
+    instances: list["_FakeWebServer"] = []
 
-    def __init__(self, server):
-        self.server = server
-        self._ready = threading.Event()
-        self._ready.set()
-        # A harmless non-None placeholder -- real IPCServerThread sets this
-        # to its asyncio event loop, and run_app() only ever passes it
-        # through to _warm_connector_caches() (which is itself mocked out
-        # in most of these tests). Distinct per instance so a test can
-        # assert identity against the specific thread it inspects.
-        self._loop = SimpleNamespace()
-        self.started = False
+    def __init__(self, loop: Any) -> None:
+        self._loop = loop
         type(self).instances.append(self)
 
-    def start(self):
-        self.started = True
+    def wait_until_ready(self, timeout: float = 5.0) -> Any:
+        return self._loop
 
 
 @pytest.mark.skipif(
@@ -1325,7 +1266,23 @@ class TestRunApp:
     ...) run on the web/'s Linux CI leg (docs/testing-policy.md §1) without
     hand-marking each test individually."""
 
-    def _patch_common(self, monkeypatch, connectors=None):
+    def _patch_common(self, monkeypatch, connectors=None, *, web_server="__default__"):
+        """``web_server`` controls what the (mocked) _maybe_start_web_server
+        returns: the default builds a _FakeWebServer with a harmless
+        placeholder loop (the common case -- most of these tests don't care
+        about cache-warming specifically); ``None`` simulates every
+        web.* surface opting out (no server at all -- see
+        TestMaybeStartWebServer for the real short-circuit this stands in
+        for); any other value is used as the loop a real, given
+        _FakeWebServer.wait_until_ready() should return (itself ``None`` to
+        simulate a loop that never became ready in time).
+
+        Every call this phase's own run_app() makes into
+        _maybe_start_web_server is recorded on
+        ``self._web_server_calls`` -- what
+        TestUnattendedSessionsConfig below reads instead of the old
+        fake-IPCServer's own ``.unattended_sessions_enabled`` attribute.
+        """
         connectors = [] if connectors is None else connectors
         monkeypatch.setattr(daemon_main, "init_config_path", lambda path: None)
         monkeypatch.setattr(daemon_main, "reload_rules", lambda rules: None)
@@ -1333,24 +1290,18 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "init_audit_logger", lambda path: fake_audit_logger)
         monkeypatch.setattr(daemon_main, "load_org_config", lambda: {})
         monkeypatch.setattr(daemon_main, "build_connectors", lambda cfg, org: connectors)
-        monkeypatch.setattr(
-            daemon_main, "IPCServer",
-            lambda conns, **kw: SimpleNamespace(
-                connectors=conns, unattended_sessions_enabled=kw.get("unattended_sessions_enabled"),
-                # run_app() now constructs a SettingsController (this
-                # phase's own web-settings wiring) and hands it this same
-                # fake IPCServer -- SettingsController.__init__ always
-                # calls set_unattended_changed_listener on whatever
-                # ipc_server it's given, and refresh_connectors() (not
-                # reached during startup today, but cheap to support) calls
-                # set_connectors. Same no-op shape test_settings_controller.py's
-                # own ipc_server fixture already uses.
-                set_unattended_changed_listener=lambda callback: None,
-                set_connectors=lambda conns: None,
-            ),
-        )
-        _FakeIPCServerThread.instances = []
-        monkeypatch.setattr(daemon_main, "IPCServerThread", _FakeIPCServerThread)
+
+        _FakeWebServer.instances = []
+        self._web_server_calls: list[dict[str, Any]] = []
+
+        def fake_maybe_start_web_server(config, connector_host, **kwargs):
+            self._web_server_calls.append({"config": config, "connector_host": connector_host, **kwargs})
+            if web_server is None:
+                return None
+            loop = SimpleNamespace() if web_server == "__default__" else web_server
+            return _FakeWebServer(loop)
+
+        monkeypatch.setattr(daemon_main, "_maybe_start_web_server", fake_maybe_start_web_server)
         return fake_audit_logger
 
     def test_lock_already_held_returns_1_without_building_connectors(self, monkeypatch, capsys):
@@ -1380,15 +1331,18 @@ class TestRunApp:
         assert len(menu_bar_calls) == 1
         assert menu_bar_calls[0]["config_path"] == "config.yaml"
         assert menu_bar_calls[0]["connectors"] == ["gmail"]
-        assert menu_bar_calls[0]["ipc_server"] is _FakeIPCServerThread.instances[0].server
-        assert _FakeIPCServerThread.instances[0].started is True
+        # A real ConnectorHost now (see connector_host.py), not a stub --
+        # there's nothing left about it worth faking.
+        host = menu_bar_calls[0]["connector_host"]
+        assert host.connectors == {"gmail": connector}
         assert release_calls == [1]
 
-    def test_background_cache_warm_kicked_off_with_connectors_and_ipc_loop(self, monkeypatch):
+    def test_background_cache_warm_kicked_off_with_connectors_and_web_loop(self, monkeypatch):
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         connector = SimpleNamespace(name="slack")
-        self._patch_common(monkeypatch, connectors=[connector])
+        loop = SimpleNamespace()
+        self._patch_common(monkeypatch, connectors=[connector], web_server=loop)
         monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
         warm_calls = []
         monkeypatch.setattr(daemon_main, "_warm_connector_caches", lambda conns, loop: warm_calls.append((conns, loop)))
@@ -1397,21 +1351,16 @@ class TestRunApp:
 
         assert len(warm_calls) == 1
         assert warm_calls[0][0] == [connector]
-        assert warm_calls[0][1] is _FakeIPCServerThread.instances[0]._loop
+        assert warm_calls[0][1] is loop
 
-    def test_background_cache_warm_skipped_and_logged_if_ipc_loop_never_became_ready(self, monkeypatch, caplog):
+    def test_background_cache_warm_skipped_silently_when_no_web_server_at_all(self, monkeypatch, caplog):
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
-        self._patch_common(monkeypatch)
+        # Every web.* surface opted out -- _maybe_start_web_server returns
+        # None outright (see TestMaybeStartWebServer). Nothing can reach a
+        # connector regardless, so this is an expected, silent no-op.
+        self._patch_common(monkeypatch, web_server=None)
         monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
-        # Simulate the IPC thread's loop never getting assigned in time
-        # (see IPCServerThread.run()) -- run_app() must not crash on it.
-        original_init = _FakeIPCServerThread.__init__
-
-        def init_with_no_loop(self, server):
-            original_init(self, server)
-            self._loop = None
-        monkeypatch.setattr(_FakeIPCServerThread, "__init__", init_with_no_loop)
         warm_calls = []
         monkeypatch.setattr(daemon_main, "_warm_connector_caches", lambda conns, loop: warm_calls.append((conns, loop)))
 
@@ -1420,9 +1369,29 @@ class TestRunApp:
 
         assert result == 0
         assert warm_calls == []
+        assert "skipping background cache warm" not in caplog.text
+
+    def test_background_cache_warm_skipped_and_logged_if_web_loop_never_became_ready(self, monkeypatch, caplog):
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        self._patch_common(monkeypatch)
+        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
+        warm_calls = []
+        monkeypatch.setattr(daemon_main, "_warm_connector_caches", lambda conns, loop: warm_calls.append((conns, loop)))
+        # A server was built (some web.* surface is configured) but its
+        # loop never got captured before WebServer.wait_until_ready()'s own
+        # timeout -- distinct from "no server at all" above.
+        server = _FakeWebServer(loop=None)
+        monkeypatch.setattr(daemon_main, "_maybe_start_web_server", lambda *a, **kw: server)
+
+        with caplog.at_level(logging.WARNING):
+            result = daemon_main.run_app({}, "config.yaml")
+
+        assert result == 0
+        assert warm_calls == []
         assert "skipping background cache warm" in caplog.text
 
-    def test_no_connectors_built_still_starts_ipc_and_menu_bar(self, monkeypatch, caplog):
+    def test_no_connectors_built_still_starts_the_menu_bar(self, monkeypatch, caplog):
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         self._patch_common(monkeypatch, connectors=[])
@@ -1576,7 +1545,7 @@ class TestRunApp:
 
         daemon_main.run_app({}, "config.yaml")
 
-        assert _FakeIPCServerThread.instances[0].server.unattended_sessions_enabled is False
+        assert self._web_server_calls[0]["unattended_sessions_enabled"] is False
 
     def test_unattended_sessions_enabled_flag_passed_through_from_org_config(self, monkeypatch):
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
@@ -1587,7 +1556,7 @@ class TestRunApp:
 
         daemon_main.run_app({}, "config.yaml")
 
-        assert _FakeIPCServerThread.instances[0].server.unattended_sessions_enabled is True
+        assert self._web_server_calls[0]["unattended_sessions_enabled"] is True
 
     def test_unattended_sessions_enabled_in_settings_yaml_is_ignored(self, monkeypatch):
         """unattended_sessions.enabled lives in org_config.json, not settings.yaml -- a
@@ -1599,7 +1568,7 @@ class TestRunApp:
 
         daemon_main.run_app({"unattended_sessions": {"enabled": True}}, "config.yaml")
 
-        assert _FakeIPCServerThread.instances[0].server.unattended_sessions_enabled is False
+        assert self._web_server_calls[0]["unattended_sessions_enabled"] is False
 
     def test_exports_pending_audit_entries_on_startup(self, monkeypatch):
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)

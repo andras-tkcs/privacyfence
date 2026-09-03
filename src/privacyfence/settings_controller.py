@@ -641,10 +641,16 @@ class SettingsController:
     """Domain logic for the settings window. One instance, owned by
     menu_bar.py's PrivacyFenceMenuBar for the app's whole lifetime (unlike
     SettingsWindowController, which is created lazily on first "Open
-    PrivacyFence…" click) -- so ``set_rules_changed_listener``/
-    ``ipc_server.set_unattended_changed_listener`` are registered from
-    __init__ here exactly the way PrivacyFenceMenuBar.__init__ used to,
-    regardless of whether the window has ever been opened yet.
+    PrivacyFence…" click) -- so ``set_rules_changed_listener`` is
+    registered from __init__ here exactly the way PrivacyFenceMenuBar.
+    __init__ used to, regardless of whether the window has ever been opened
+    yet. ``wire_unattended_listener`` (below) is the equivalent wiring for
+    unattended-session changes, but is *not* done from __init__: since P5
+    retired the bridge, the only thing that can ever produce an unattended
+    session is web/mcp_dispatch.py's McpDispatcher, and whether one even
+    exists depends on web.mcp.enabled -- something this constructor has no
+    visibility into. daemon_main.py's own _maybe_start_web_server calls it
+    once a dispatcher is actually built.
 
     ``on_change``, set by settings_window.py once its window exists, is
     called with a fresh ``snapshot()`` whenever something changes the state
@@ -659,12 +665,12 @@ class SettingsController:
         self,
         config_path: str,
         connectors: list[str],
-        ipc_server: Any,
+        connector_host: Any,
         connector_objs: list[Any] | None = None,
     ) -> None:
         self._config_path = config_path
         self._connectors = connectors
-        self.ipc_server = ipc_server
+        self.connector_host = connector_host
         # name -> live Connector wrapper (exposes .client for resolving
         # grant resource names -- see resource_names.py). Populated at
         # startup from daemon_main.py's already-built connectors, refreshed
@@ -708,24 +714,32 @@ class SettingsController:
         self._change_listeners: list[Callable[[dict[str, Any]], None]] = []
 
         set_rules_changed_listener(self._on_rules_changed)
-        if self.ipc_server is not None:
-            self.ipc_server.set_unattended_changed_listener(self._on_unattended_changed)
+
+    def wire_unattended_listener(self, dispatcher: Any) -> None:
+        """Register this controller's push-on-change with ``dispatcher``
+        (web.mcp_dispatch.McpDispatcher) -- called by daemon_main.py's
+        _maybe_start_web_server once it knows a dispatcher actually exists
+        (web.mcp.enabled), the direct successor of what this constructor
+        used to do itself, unconditionally, with ipc_server.py's IPCServer
+        before P5 retired it."""
+        dispatcher.set_unattended_changed_listener(self._on_unattended_changed)
 
     # ------------------------------------------------------------------ #
     # Cross-thread change notifications
     # ------------------------------------------------------------------ #
 
     def _on_rules_changed(self) -> None:
-        """Fired by auto_accept.reload_rules(), possibly from the IPC
-        server's thread -- marshal the state push onto the main thread."""
+        """Fired by auto_accept.reload_rules(), possibly from the web
+        server's own asyncio thread -- marshal the state push onto the
+        main thread."""
         call_on_main(self._push_snapshot)
 
     def _on_unattended_changed(self) -> None:
-        """Fired by ipc_server.py, on its own asyncio thread. No page of
-        the current design surfaces the unattended-session count (the old
-        tray menu's top status line is gone) -- kept wired for a future
-        pass, same "plumbing survives, UI doesn't exist yet" posture as
-        _latest_update above."""
+        """Fired by web/mcp_dispatch.py's McpDispatcher, on its own asyncio
+        thread. No page of the current design surfaces the
+        unattended-session count (the old tray menu's top status line is
+        gone) -- kept wired for a future pass, same "plumbing survives, UI
+        doesn't exist yet" posture as _latest_update above."""
         call_on_main(self._push_snapshot)
 
     def add_change_listener(self, fn: Callable[[dict[str, Any]], None]) -> None:
@@ -984,9 +998,9 @@ class SettingsController:
 
     def refresh_connectors(self) -> dict[str, Any]:
         """Re-run connector construction (which re-checks auth/enabled state
-        for every service) and push the result live into the running IPC
-        server, so authenticating or toggling a connector takes effect
-        immediately instead of requiring a restart."""
+        for every service) and push the result live into the shared
+        ConnectorHost, so authenticating or toggling a connector takes
+        effect immediately instead of requiring a restart."""
 
         def work() -> list:
             from .daemon_main import build_connectors, load_org_config
@@ -998,8 +1012,8 @@ class SettingsController:
             if ok:
                 self._connectors = [c.name for c in result]
                 self._connector_objs = {c.name: c for c in result}
-                if self.ipc_server is not None:
-                    self.ipc_server.set_connectors(result)
+                if self.connector_host is not None:
+                    self.connector_host.set_connectors(result)
             self._push_snapshot()
 
         _run_async(work, done)

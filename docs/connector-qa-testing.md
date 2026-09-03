@@ -38,8 +38,8 @@ for what this method has already caught that no unit test did.
 - `privacyfence-app` (the daemon) running, with every connector you want to
   test already authenticated from the menu bar.
 - The `privacyfence` MCP server attached to a Claude Cowork/Desktop
-  conversation — `scripts/dev_start.sh` builds the bridge from this
-  checkout's `bridge/` and registers it for you.
+  conversation — `scripts/dev_start.sh` builds the stdio<->`/mcp` shim from
+  this checkout's `mcpb/shim/` and registers it for you.
 - **Claude Cowork's project/working folder (set in Cowork's UI — the folder
   picker for the conversation) must be this repo's root**, the same folder
   `dev_start.sh` was run from. This is what gives Claude filesystem access
@@ -1059,7 +1059,7 @@ organization config bundle edit, not a live daemon toggle or a per-user settings
 8. Set `unattended_sessions.enabled: true` in `org_config.json` (e.g. `python3
    scripts/build_org_bundle.py --merge --enable-unattended-sessions -o org/org_config.json`) and
    **restart the daemon** (not just an "Always allow" hot-reload — see the note above). Reconnect
-   the Cowork/Desktop session so its bridge process talks to the freshly restarted daemon.
+   the Cowork/Desktop session so its shim process talks to the freshly restarted daemon.
 9. `privacyfence_begin_unattended_session` again — expect `{"unattended": true}`, no popup. Check
    the PrivacyFence menu bar now: the top item should read "PrivacyFence is running — 1 unattended
    session active". **Pause here**: tell me you're about to call the next step's tool and that,

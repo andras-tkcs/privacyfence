@@ -66,6 +66,16 @@ def set_loop(loop: asyncio.AbstractEventLoop | None) -> None:
     _loop = loop
 
 
+def get_loop() -> asyncio.AbstractEventLoop | None:
+    """The ASGI app's own running event loop, once captured by
+    ``_state_stream_loop_lifespan`` -- ``None`` before startup or after
+    shutdown. daemon_main.py's cache-warming uses this (via web/server.py's
+    ``WebServer.wait_until_ready``) as the one loop every connector call
+    now actually runs on, the direct successor of the old IPC thread's own
+    loop for that same purpose."""
+    return _loop
+
+
 def call_soon_threadsafe(fn: Callable[..., None], *args: Any) -> None:
     """settings_controller.set_main_dispatcher()'s target once the web
     server is up -- see settings_controller.call_on_main's own docstring.

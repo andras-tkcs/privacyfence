@@ -29,39 +29,14 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[test]"
 
-      - name: Install bridge dependencies
-        run: npm ci
-        working-directory: bridge
-
-      # bridge/'s own suite (IPC framing, error propagation, tool dispatch —
-      # see docs/testing-policy.md) runs against bridge/src/*.ts directly via
-      # tsx, no build step needed. Node's built-in test runner already fails
-      # the step on the first failing test.
-      - name: Run bridge test suite
-        run: npm test
-        working-directory: bridge
-
-      - name: Type-check bridge
-        run: npm run typecheck
-        working-directory: bridge
-
-      # tests/integration/test_bridge_daemon_contract.py spawns the real
-      # built bridge.js against a real IPCServer, so the bridge needs to be
-      # built before pytest runs (the test builds it lazily on a cache miss
-      # too, but building here keeps that cost out of the timed test step
-      # and fails fast on a build error instead of a confusing test skip).
-      - name: Build bridge
-        run: npm run build
-        working-directory: bridge
-
       - name: Install shim dependencies
         run: npm ci
         working-directory: mcpb/shim
 
       # mcpb/shim/'s own suite (daemon discovery/launch, the stdio<->
       # Streamable HTTP proxy — see docs/https-connector-refactor-plan.md
-      # §12, D11) runs against mcpb/shim/src/*.ts directly via tsx, same as
-      # bridge/'s suite above.
+      # §12, D11) runs against mcpb/shim/src/*.ts directly via tsx. It's the
+      # only Node suite left in this repo since P5 retired the bridge.
       - name: Run shim test suite
         run: npm test
         working-directory: mcpb/shim
@@ -71,8 +46,10 @@ jobs:
         working-directory: mcpb/shim
 
       # tests/integration/test_shim_mcp_contract.py spawns the real built
-      # shim.js against a real /mcp endpoint -- same reasoning as the bridge
-      # build step above.
+      # shim.js against a real /mcp endpoint, so it needs to be built before
+      # pytest runs (the test builds it lazily on a cache miss too, but
+      # building here keeps that cost out of the timed test step and fails
+      # fast on a build error instead of a confusing test skip).
       - name: Build shim
         run: npm run build
         working-directory: mcpb/shim
@@ -117,8 +94,11 @@ jobs:
       # could catch -- see docs/testing-policy.md §1 for the reasoning and
       # the parallel case (test_settings_window.py) that *does* defer its
       # AppKit import far enough to skip cleanly here instead. tests/
-      # integration/ is excluded too -- it drives the real Node bridge/shim,
-      # out of scope for this job (covered on the macOS job instead).
+      # integration/ is excluded too -- most of it drives the real Node
+      # shim, out of scope for this job (covered on the macOS job instead);
+      # test_mcp_daemon_contract.py itself needs no Node and could run
+      # here, but stays grouped with the rest of the directory for
+      # simplicity rather than special-cased out of this ignore.
       - name: Run the platform-independent test subset
         run: >
           pytest tests/unit -v

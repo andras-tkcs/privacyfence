@@ -530,13 +530,12 @@ because they are what makes the web surface usable day to day rather than demo-a
 | §2.5's page shell, live indicator, empty state | Renders 0 or 1 rows perfectly well; the list just never has two. |
 | §4 tier 0 + tier 1, at `minimal` only | Needs the SSE stream, which is small even against a single slot. This alone delivers the notification the user asked for, without needing §4.3's per-field allowlist below. |
 
-§4.3's `standard`/`detailed` levels are their own follow-up, scheduled at **P5** alongside that
-phase's bridge retirement (`https-connector-refactor-plan.md`'s own phase table has the rationale
-for the pairing) rather than left unscheduled: they need a real per-field content allowlist so a
-notification can name a connector/tool/row title without violating §4.3's no-gated-content
-invariant, which is more than the pre-P3 tier 0+1 landing above needs. Until P5, `web.notifications.
-detail` above `minimal` is a config no-op — the shipped body is always the bare count, regardless of
-the setting.
+§4.3's `standard`/`detailed` levels shipped at **P5**, alongside that phase's bridge retirement
+(`https-connector-refactor-plan.md`'s own phase table has the rationale for the pairing): a real
+per-field content allowlist (`web_shell.py`'s `notificationBody()`) lets a notification name a
+connector/tool/direction, and — at `detailed` only — the row's own title, without violating
+§4.3's no-gated-content invariant. Before P5, `web.notifications.detail` above `minimal` was a
+config no-op — the shipped body was always the bare count, regardless of the setting.
 
 Rough sizing, in the plan's own S/M/L terms: the list page and the return flow are **M** together;
 tiers 0/1 plus the service worker are **S**; `standard`/`detailed`'s per-field allowlist (P5, above)

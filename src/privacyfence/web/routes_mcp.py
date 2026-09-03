@@ -1,15 +1,16 @@
-"""The Streamable HTTP MCP endpoint -- what replaces the bridge's four jobs
-(find/launch the daemon, fetch the manifest, register one MCP tool per
-``ToolSpec``, forward calls) for a client that talks to PrivacyFence
-directly instead of through ``privacyfence-bridge``
-(docs/https-connector-refactor-plan.md §8.1).
+"""The Streamable HTTP MCP endpoint -- what took over the original
+``privacyfence-bridge``'s four jobs (find/launch the daemon, fetch the
+manifest, register one MCP tool per ``ToolSpec``, forward calls) for a
+client that talks to PrivacyFence directly, no intermediate process
+required (docs/https-connector-refactor-plan.md §8.1). The bridge itself
+was retired at P5, once this transport had shipped a stable release.
 
 P2 scope only: this is a hosting change for the *transport*, not the
 approval protocol. A gated call reaching a connector here still blocks on
 whichever ``ApprovalUI`` ``approval_ui.init_approval_ui()`` currently
 resolves to (native or web, per ``web.approval_ui`` -- unchanged from P1),
-exactly like a call arriving over the bridge's IPC socket does today.
-Deferred approvals, concurrent pending approvals, and
+exactly like a call arriving over the bridge's IPC socket used to before P5
+retired it. Deferred approvals, concurrent pending approvals, and
 ``privacyfence_await_approval`` are P3's ``_popup_lock`` retirement, not
 this module's -- see docs/https-connector-refactor-plan.md §12's phase
 table ("P2 before P3" is deliberate: the deferred protocol is written once,

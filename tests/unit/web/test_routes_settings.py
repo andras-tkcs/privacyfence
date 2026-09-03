@@ -44,11 +44,8 @@ def controller(tmp_path, monkeypatch):
     config_path = tmp_path / "settings.yaml"
     config_path.write_text("auto_accept_rules: {}\nconnectors: {}\n", encoding="utf-8")
 
-    ipc_server = SimpleNamespace(
-        set_connectors=lambda conns: None,
-        set_unattended_changed_listener=lambda callback: None,
-    )
-    return sc.SettingsController(str(config_path), connectors=[], ipc_server=ipc_server)
+    connector_host = SimpleNamespace(set_connectors=lambda conns: None)
+    return sc.SettingsController(str(config_path), connectors=[], connector_host=connector_host)
 
 
 @pytest.fixture

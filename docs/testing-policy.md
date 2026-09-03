@@ -11,8 +11,6 @@ this document is about which ones run automatically versus which ones a human ha
 `.github/workflows/tests.yml` runs on every push to `main` and every pull request:
 
 ```bash
-npm test              # bridge/, Node's built-in test runner
-npm run typecheck     # bridge/, tsc --noEmit
 npm test              # mcpb/shim/, Node's built-in test runner
 npm run typecheck     # mcpb/shim/, tsc --noEmit
 pytest -v --cov=src/privacyfence --cov-report=term-missing
@@ -78,42 +76,36 @@ manual steps. It includes:
   covered by both the `test` and `test-linux` jobs below.
 - `tests/unit/web/test_mcp_dispatch.py`, `tests/unit/web/test_routes_mcp.py` — the `/mcp` endpoint's
   own coverage, added at P2: `McpDispatcher`'s dedupe/staleness/gating dispatch and meta-tools
-  (`test_mcp_dispatch.py`, ported test-for-test from the equivalent `IPCServer` coverage in
-  `test_ipc_server.py` below — see `mcp_dispatch.py`'s own module docstring for why this is a
-  separate implementation rather than a shared refactor) and the wire-protocol/auth layer on top of
-  it (`test_routes_mcp.py`), driven with the real official `mcp` Python client over an in-process
-  ASGI transport — no real socket, same posture as the approval routes above. `TestAudienceSeparation`
-  in `tests/unit/web/test_server.py` is the one required to fail loudly if the MCP bearer-token and
+  (`test_mcp_dispatch.py`) and the wire-protocol/auth layer on top of it (`test_routes_mcp.py`),
+  driven with the real official `mcp` Python client over an in-process ASGI transport — no real
+  socket, same posture as the approval routes above. `TestAudienceSeparation` in
+  `tests/unit/web/test_server.py` is the one required to fail loudly if the MCP bearer-token and
   approval-surface session-cookie middleware are ever reordered (§10.3 of the refactor plan).
   Platform-independent — covered by both the `test` and `test-linux` jobs below.
-- `bridge/test/*.test.ts` (`npm test`, run from `bridge/`) — the Node/TypeScript MCP bridge's own
-  suite: IPC framing, error propagation, and tool dispatch, run against `bridge/src/*.ts` directly
-  (no build step) via hand-written Node fakes of the daemon (`bridge/test/testDaemon.ts`).
-- `npm run typecheck` (`tsc --noEmit`, run from `bridge/`) — catches type errors across
-  `bridge/src/*.ts` that `npm test`'s runtime coverage wouldn't necessarily hit (an unreachable
-  branch, a type mismatch in an untested code path).
-- `tests/integration/test_bridge_daemon_contract.py` — spawns the real built `bridge/dist/bridge.js`
-  against a real `privacyfence.ipc_server.IPCServer` and drives it with the official `mcp` Python
-  client over real MCP-over-stdio, proving the two independently-maintained protocol
-  implementations above (bridge's own suite against Node fakes, `test_ipc_server.py` against a
-  hand-rolled Python client) actually agree with each other, not just with their own mocks. Skips
-  automatically if Node isn't on `PATH`; CI installs it, so this runs there. Uses the official `mcp`
-  Python client, a runtime dependency since P2 (`pyproject.toml`'s `[project.dependencies]` — see
-  `docs/https-connector-refactor-plan.md` §8.2/D2) rather than a test-only one; `test_routes_mcp.py`
-  above uses the same client against `/mcp` directly.
 - `mcpb/shim/test/*.test.ts` (`npm test`, run from `mcpb/shim/`) — the .mcpb shim's own suite (D11 in
-  `docs/https-connector-refactor-plan.md` §12): daemon discovery/launch (`daemon.test.ts`, the
-  `mcp_url`-file analogue of `bridge/test/daemon.test.ts`'s `ipc_port` coverage) and the stdio<->
-  Streamable HTTP message proxy (`proxy.test.ts`, `index.test.ts` — the latter against a real fake
-  `/mcp` server built on the official SDK's own server classes, not a hand-mocked transport).
-- `npm run typecheck` (`tsc --noEmit`, run from `mcpb/shim/`) — same reasoning as bridge/'s.
-- `tests/integration/test_shim_mcp_contract.py` — the shim's counterpart to
-  `test_bridge_daemon_contract.py`: spawns the real built `mcpb/shim/dist/shim.js` against a real
-  `privacyfence.web.server.WebServer` (with a real bound `/mcp` endpoint) and drives it with the
-  official `mcp` Python client over real MCP-over-stdio. A passthrough test, not a schema test — the
-  shim carries no tool-schema knowledge, so "one `initialize` and one `tools/call` round-trip, with
-  the bearer header attached and `mcp_url` honoured" is the whole of what there is to assert. Skips
-  automatically if Node isn't on `PATH`, same as the bridge's contract test.
+  `docs/https-connector-refactor-plan.md` §12): daemon discovery/launch (`daemon.test.ts`, against
+  `mcp_url` file discovery) and the stdio<->Streamable HTTP message proxy (`proxy.test.ts`,
+  `index.test.ts` — the latter against a real fake `/mcp` server built on the official SDK's own
+  server classes, not a hand-mocked transport). The only Node suite left in this repo since P5
+  retired the original bridge and its own `bridge/test/*.test.ts`.
+- `npm run typecheck` (`tsc --noEmit`, run from `mcpb/shim/`) — catches type errors across
+  `mcpb/shim/src/*.ts` that `npm test`'s runtime coverage wouldn't necessarily hit (an unreachable
+  branch, a type mismatch in an untested code path).
+- `tests/integration/test_mcp_daemon_contract.py` — spawns a real `privacyfence.web.server.WebServer`
+  bound to a real loopback socket and drives it with the official `mcp` Python client over a real
+  TCP connection (not the in-process ASGI transport `test_routes_mcp.py` above uses), so a
+  real-network-stack bug (uvicorn startup, real TCP binding, real HTTP framing) can't slip through
+  either. Needs no Node — since P5 there is no longer a second, independently-maintained protocol
+  implementation to cross-check against (both client and server here are the official `mcp` SDK).
+  Uses the official `mcp` Python client, a runtime dependency since P2 (`pyproject.toml`'s
+  `[project.dependencies]` — see `docs/https-connector-refactor-plan.md` §8.2/D2) rather than a
+  test-only one.
+- `tests/integration/test_shim_mcp_contract.py` — spawns the real built `mcpb/shim/dist/shim.js`
+  against that same real, socket-bound `WebServer` and drives *it* with the official `mcp` Python
+  client over real MCP-over-stdio. A passthrough test, not a schema test — the shim carries no
+  tool-schema knowledge, so "one `initialize` and one `tools/call` round-trip, with the bearer
+  header attached and `mcp_url` honoured" is the whole of what there is to assert. Skips
+  automatically if Node isn't on `PATH`; CI installs it, so this runs there.
 
 ## 2. Local-only checks — run manually before opening/updating a relevant PR, never in CI
 
@@ -248,9 +240,7 @@ full release-time checklist tying all three tiers together.
 
 | Check | Runs in CI? | When |
 |---|---|---|
-| `pytest` (full suite, incl. the bridge/daemon and shim/mcp contract tests) | Yes, every PR | Always — this is the merge gate |
-| `npm test` (bridge/'s own suite) | Yes, every PR | Always — this is the merge gate |
-| `npm run typecheck` (bridge/) | Yes, every PR | Always — this is the merge gate |
+| `pytest` (full suite, incl. the mcp/daemon and shim/mcp contract tests) | Yes, every PR | Always — this is the merge gate |
 | `npm test` (mcpb/shim/'s own suite) | Yes, every PR | Always — this is the merge gate |
 | `npm run typecheck` (mcpb/shim/) | Yes, every PR | Always — this is the merge gate |
 | `qa_fixture_recorder.py --check` | No | PR touches a `*_client.py`/`connectors/**` file |

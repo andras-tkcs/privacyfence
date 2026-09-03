@@ -150,6 +150,7 @@ def create_app(
     extra_routes: list[BaseRoute] | None = None,
     lifespan=None,
     notifications_enabled: bool = True,
+    notifications_detail: str = "minimal",
 ) -> Starlette:
     """Build the Starlette app serving the approval surface. ``token`` is
     the shared local-mode secret (see server.py) -- this function takes it
@@ -166,7 +167,9 @@ def create_app(
 
     ``notifications_enabled`` is settings.yaml.example's
     ``web.notifications.enabled`` (default true) -- see web_shell.wrap's
-    own docstring for what it turns off.
+    own docstring for what it turns off. ``notifications_detail`` is that
+    same config block's ``detail`` (minimal/standard/detailed, P5 --
+    docs/approval-list-ui-ux.md §4.3) -- also passed straight through.
     """
 
     def _authenticated(request: Request) -> bool:
@@ -191,7 +194,7 @@ def create_app(
         body = approval_list_html.build_list_html(rows, csrf=token)
         html = web_shell.wrap(
             body, title="PrivacyFence — Approvals", active="approvals",
-            notifications_enabled=notifications_enabled,
+            notifications_enabled=notifications_enabled, notifications_detail=notifications_detail,
         )
         response = HTMLResponse(html, headers={"Cache-Control": "no-store"})
         _set_session_cookie(response)

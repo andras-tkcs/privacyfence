@@ -189,6 +189,19 @@ class PendingApproval:
             "connector": self.connector,
             "tool": self.tool,
             "tool_name": self.tool_name,
+            # "review" (read) | "popup" (write) | "" for a bare confirm
+            # dialog -- safe to expose unconditionally (it names a category,
+            # never gated content) and is exactly the "direction" field
+            # web_shell.py's notification-detail allowlist needs (P5,
+            # docs/approval-list-ui-ux.md §4.3): never derived from
+            # ``summary``, which is the one field that can carry real gated
+            # content (see that field's own docstring below).
+            "gate_kind": self.gate_kind,
+            # The row's own title/content line -- can carry real gated data
+            # (an event title, a contact name, a document title -- see
+            # gate.py's call sites). Only ever shown by a consumer that's
+            # allowed to at its own detail level; web_shell.py's notification
+            # body never reads it below "detailed".
             "summary": self.summary,
             "created_at": _iso(self.created_at),
             "expires_at": _iso(self.expires_at),

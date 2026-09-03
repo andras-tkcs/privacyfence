@@ -367,7 +367,7 @@ itself propose adding/updating/removing an `auto_accept_rules` or `auto_accept_g
 their own.
 Every call still blocks on the same confirmation dialog Always allow uses
 (`show_rule_confirmation_popup`) — there's no way for a rule to land without a human confirming it.
-See [Reading and proposing auto-accept changes from the bridge](TECHNICAL_REFERENCE.md#reading-and-proposing-auto-accept-changes-from-the-bridge).
+See [Reading and proposing auto-accept changes over MCP](TECHNICAL_REFERENCE.md#reading-and-proposing-auto-accept-changes-over-mcp).
 
 **Auto-accept grants** (`auto_accept_grants` in `settings.yaml`, and the menu bar's **Manage
 Auto-accept Rules… → Trusted \*** submenus) — the resource-scoped alternative to a narrow

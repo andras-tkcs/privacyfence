@@ -85,8 +85,8 @@ def _build_server(tmp_dir: Path, port: int, token: str):
 
     config_path = tmp_dir / "settings.yaml"
     config_path.write_text("auto_accept_rules: {}\nconnectors: {}\n", encoding="utf-8")
-    ipc_server = SimpleNamespace(set_connectors=lambda c: None, set_unattended_changed_listener=lambda cb: None)
-    controller = sc.SettingsController(str(config_path), connectors=[], ipc_server=ipc_server)
+    connector_host = SimpleNamespace(set_connectors=lambda c: None)
+    controller = sc.SettingsController(str(config_path), connectors=[], connector_host=connector_host)
 
     web_ui = WebApprovalUI()
     server = WebServer(web_ui, host="127.0.0.1", port=port, token=token, controller=controller)

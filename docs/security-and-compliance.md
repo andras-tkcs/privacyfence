@@ -28,11 +28,11 @@ it reaches the AI or the external service.
 
 | Property | PrivacyFence |
 |---|---|
-| Where it runs | On the employee's own Mac, as a local daemon (`privacyfence-app`) plus an ephemeral MCP bridge process |
+| Where it runs | On the employee's own Mac, as a local daemon (`privacyfence-app`) reachable over its own embedded, local `/mcp` HTTP endpoint — directly (Claude Code) or via a thin stdio-to-HTTP shim Claude Desktop's `.mcpb` installs (no service credentials, no tool-schema knowledge of its own) |
 | Where data is processed | Locally, in-process, on that machine |
 | Where data is stored | Locally: OS credential storage / local token files, and a local audit log (`logs/audit/*.jsonl`, `*.xlsx`) |
 | Vendor-operated infrastructure | None. There is no multi-tenant service, no hosted database, and no PrivacyFence API that traffic passes through |
-| Network path for a tool call | `Claude → local MCP bridge → local 127.0.0.1 loopback connection (token-authenticated) → local daemon → the connector's own cloud API (Google, Slack, Salesforce, Atlassian, Telegram) directly` |
+| Network path for a tool call | `Claude → local, token-authenticated 127.0.0.1 /mcp HTTP endpoint (directly, or via the stdio shim for Desktop) → local daemon → the connector's own cloud API (Google, Slack, Salesforce, Atlassian, Telegram) directly` |
 | Telemetry / analytics / phone-home | No usage analytics or crash reporting. One narrow exception: a once-a-day unauthenticated `GET` to `api.github.com` checking for a newer release (`update_checker.py`) — no user, organization, or connector data is included or ever sent, only PrivacyFence's own version string is compared against the response locally. On by default; disable from the menu bar's "Check for Updates" > "Enabled" or `update_check.enabled: false` in `settings.yaml` |
 
 This is the architectural reason PrivacyFence can make a stronger data-residency claim than a
@@ -66,7 +66,7 @@ given team, they simply omit that block when building the bundle — the connect
 an option, regardless of what the employee or the AI requests. There is no user-side override and
 no way for Claude to request a connector into existence. This is enforced in
 [`scripts/build_org_bundle.py`](../scripts/build_org_bundle.py): each service's credentials are
-independent, additive sections, and the bridge only advertises tools for services present in the
+independent, additive sections, and `/mcp` only advertises tools for services present in the
 installed bundle.
 
 In short: **IT holds the actual access-granting authority.** The employee's role is limited to
@@ -130,7 +130,7 @@ arbitrary local file Claude never actually read, so it gets the same real scan a
 confirmation, extracting text from plain text, HTML, PDF, DOCX, PPTX, and XLSX content (no OCR on
 images).
 
-**Note for reviewers evaluating the MCP-level permission model:** the bridge advertises every tool
+**Note for reviewers evaluating the MCP-level permission model:** `/mcp` advertises every tool
 to Claude as `readOnlyHint = true`, including writes. This is documented and
 intentional (see [Why every tool is advertised as read-only](TECHNICAL_REFERENCE.md#why-every-tool-is-advertised-as-read-only))
 — it removes a redundant, non-configurable client-side prompt, because PrivacyFence's own gate,
@@ -160,9 +160,9 @@ of that later phase would otherwise have to retrofit onto a surface not designed
 read the current `auto_accept_rules`/`auto_accept_grants` config (`privacyfence_list_auto_accept_rules`)
 and propose adding, updating, or removing an entry
 (`privacyfence_propose_auto_accept_rule_change`) — see
-[Reading and proposing auto-accept changes from the bridge](TECHNICAL_REFERENCE.md#reading-and-proposing-auto-accept-changes-from-the-bridge).
+[Reading and proposing auto-accept changes over MCP](TECHNICAL_REFERENCE.md#reading-and-proposing-auto-accept-changes-over-mcp).
 Every proposed change still blocks on the same native confirmation dialog the "Always allow" button
-already uses; there is no code path from the bridge to `settings.yaml` that skips a human decision,
+already uses; there is no code path from `/mcp` to `settings.yaml` that skips a human decision,
 including when an identical entry already exists. This keeps the gate itself — not just what passes
 through it — under the same human-in-the-loop control described above.
 
@@ -282,9 +282,9 @@ oversight measure**, sitting in front of the AI system rather than being one:
 | Authentication to connected services | OAuth2 (or Telethon/MTProto for Telegram), per user, per connector — no shared service accounts |
 | Least privilege | Per-connector, per-operation gating (`auto`/`review`/`popup`); auto-accept rules can be scoped down to a single folder, spreadsheet tab, channel, or task list |
 | PII detection gate | Local regex heuristic (Hungarian/English/German) over `review` (read) dialog content only; a match requires an extra explicit confirmation before Allow once takes effect. Toggleable per user (menu bar / `pii_detection.enabled`) |
-| Transport between processes | Local 127.0.0.1 TCP loopback only, on an OS-assigned ephemeral port discovered via `~/.privacyfence/ipc_port`, authenticated by a per-launch random token (`~/.privacyfence/ipc_token`) required on every connection; the bridge carries no credentials and only relays |
+| Transport to Claude | Local 127.0.0.1-bound (`localhost`) `/mcp` Streamable HTTP endpoint, authenticated by a per-launch random bearer token (`~/.privacyfence/mcp_token`) required on every request; Claude Desktop's stdio shim carries no credentials of its own and only relays it |
 | Web approval/settings surface (opt-in) | Loopback-bound (`localhost`) embedded HTTP server; a per-launch random session token (`~/.privacyfence/web_token`) required on every request, CSRF double-submit + `Origin` check on every mutation, an explicit action allowlist (not `getattr`) behind `/settings`, and no code path reachable from an HTTP request ever runs a subprocess on the host |
-| Process isolation | Bridge (untrusted-facing, talks to Claude) and daemon (holds credentials) are separate processes; only the daemon can reach external APIs |
+| Process isolation | The Desktop-only shim (untrusted-facing, no credentials, no tool-schema knowledge) and the daemon (holds credentials) are separate processes; only the daemon can reach external APIs |
 | Secrets at rest | Local OS-level storage / local files under `credentials/`; never committed to source control (`.gitignore`'d), never transmitted off-device |
 | Auditability | Every decision logged with outcome (accepted/denied/auto_accepted), locally, in a human-readable format (JSONL + Excel) |
 | Code signing / notarization | Releases are code-signed with a Developer ID Application certificate and notarized by Apple; Gatekeeper accepts them with no manual steps (see [Technical Reference](TECHNICAL_REFERENCE.md#installation)). |

@@ -204,16 +204,25 @@ async def _combined_lifespan(managers: list) -> AsyncIterator[None]:
 
 
 @contextlib.asynccontextmanager
-async def _state_stream_loop_lifespan() -> AsyncIterator[None]:
+async def _state_stream_loop_lifespan(ready_event: threading.Event | None = None) -> AsyncIterator[None]:
     """Captures this ASGI app's own running event loop into
     web/state_stream.py's module-level ``_loop`` for the app's whole
     lifetime -- settings_controller.call_on_main's fallback dispatcher
     (§16.2.1) needs it to marshal a background-thread callback onto this
     loop rather than running inline. Cleared on shutdown so a stale loop
     reference from a previous server instance (e.g. across daemon restarts
-    in a single test process) is never mistaken for a live one."""
+    in a single test process) is never mistaken for a live one.
+
+    ``ready_event``, when given, is set right after the loop is captured --
+    WebServer's own ``wait_until_ready`` is what a synchronous caller on
+    another thread (daemon_main.py's run_app(), the direct successor of the
+    old IPCServerThread's own ``_ready`` Event) blocks on to learn this
+    loop, the one every connector call now actually runs on (P5,
+    docs/https-connector-refactor-plan.md §12)."""
     loop = asyncio.get_running_loop()
     _state_stream.set_loop(loop)
+    if ready_event is not None:
+        ready_event.set()
     try:
         yield
     finally:
@@ -231,6 +240,8 @@ def build_app(
     allow_quit: bool = True,
     state_stream: StateStream | None = None,
     notifications_enabled: bool = True,
+    notifications_detail: str = "minimal",
+    loop_ready: threading.Event | None = None,
 ) -> ASGIApp:
     """The approval routes, wrapped with the Host allowlist and security
     headers every real deployment needs -- routes_approvals.create_app()
@@ -268,11 +279,12 @@ def build_app(
     if controller is not None:
         extra_routes.extend(build_settings_routes(
             controller, token=token, allow_quit=allow_quit, notifications_enabled=notifications_enabled,
+            notifications_detail=notifications_detail,
         ))
 
     if state_stream is not None:
         extra_routes.append(_state_stream_route(state_stream, token=token))
-        lifespans.append(_state_stream_loop_lifespan())
+        lifespans.append(_state_stream_loop_lifespan(loop_ready))
         set_main_dispatcher(_state_stream.call_soon_threadsafe)
 
     lifespan = None
@@ -284,7 +296,7 @@ def build_app(
 
     app = create_approvals_app(
         web_ui, token=token, extra_routes=extra_routes, lifespan=lifespan,
-        notifications_enabled=notifications_enabled,
+        notifications_enabled=notifications_enabled, notifications_detail=notifications_detail,
     )
     wrapped: ASGIApp = _HostAllowlistMiddleware(app, allowed_hosts)
     return _SecurityHeadersMiddleware(wrapped)
@@ -309,6 +321,7 @@ class WebServer:
         controller: SettingsController | None = None,
         allow_quit: bool = True,
         notifications_enabled: bool = True,
+        notifications_detail: str = "minimal",
     ) -> None:
         self.host = host
         self.port = port
@@ -318,6 +331,7 @@ class WebServer:
         self.controller = controller
         self.allow_quit = allow_quit
         self.notifications_enabled = notifications_enabled
+        self.notifications_detail = notifications_detail
         # The state-push channel (§16.3) backs both /settings (async
         # outcomes reaching an open tab) and /approvals (P3's own list, via
         # the same "approvals" event) -- built whenever either surface is
@@ -331,6 +345,12 @@ class WebServer:
             )
             if controller is not None:
                 controller.add_change_listener(self.state_stream.push_settings)
+        # Set once this server's own ASGI event loop is captured (see
+        # _state_stream_loop_lifespan) -- wait_until_ready() below is what a
+        # synchronous caller on another thread (daemon_main.py's run_app(),
+        # the direct successor of the old IPCServerThread's own ``_ready``
+        # Event) blocks on to learn that loop.
+        self._loop_ready = threading.Event()
         wrapped = build_app(
             web_ui,
             token=self.token,
@@ -341,6 +361,8 @@ class WebServer:
             allow_quit=allow_quit,
             state_stream=self.state_stream,
             notifications_enabled=notifications_enabled,
+            notifications_detail=notifications_detail,
+            loop_ready=self._loop_ready,
         )
         config = uvicorn.Config(wrapped, host=host, port=port, log_level="warning")
         self._server = uvicorn.Server(config)
@@ -349,6 +371,22 @@ class WebServer:
     @property
     def base_url(self) -> str:
         return f"http://{self.host}:{self.port}"
+
+    def wait_until_ready(self, timeout: float = 5.0) -> asyncio.AbstractEventLoop | None:
+        """Blocks (from any thread) until this server's own ASGI event loop
+        has been captured, or ``timeout`` elapses -- the direct successor of
+        the old IPCServerThread's own ``_ready.wait(timeout=5)`` pattern,
+        for the same reason: daemon_main.py's cache-warming needs a real,
+        already-running loop to schedule Telegram's async warm on (see
+        daemon_main._warm_connector_caches), not just "the thread has
+        started". Returns ``None`` on a timeout, or if this server's own
+        state_stream was never built (nothing to wait for -- see __init__:
+        that only happens when ``web_ui`` is falsy, which no real caller
+        passes)."""
+        if self.state_stream is None:
+            return None
+        self._loop_ready.wait(timeout=timeout)
+        return _state_stream.get_loop()
 
     @property
     def mcp_url(self) -> str | None:
