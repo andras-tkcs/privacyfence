@@ -1009,13 +1009,15 @@ a read operation key too). A value-less rule like `always_allow` shows just "Add
 'always_allow' to 'gmail.create_draft'" — no "= None" — since `WriteRuleSuggestion.value_of` uses a
 `_NO_SUGGESTION` sentinel to tell "nothing to suggest" apart from "the value is legitimately None".
 
-`gate.py`'s popup branch computes `suggest_write_rule(operation_key, ctx)` before acquiring
-`_popup_lock`, wraps a non-`None` result into a single-entry `accept_all_choices` list (via
-`describe_rule_short()`, the same shape the review branch's multi-entry list uses) — the same
-`accept_all_choices` parameter `show_read_popup()` already uses to decide how many buttons to
-render — and handles a resulting `"accept_all"` decision (and its `chosen_index`) inside the same
-lock acquisition as the initial `should_auto_accept()` recheck, mirroring the review branch
-exactly. Every other write operation
+`gate.py`'s popup branch computes `suggest_write_rule(operation_key, ctx)` up front, wraps a
+non-`None` result into a single-entry `accept_all_choices` list (via `describe_rule_short()`, the
+same shape the review branch's multi-entry list uses) — the same `accept_all_choices` parameter
+`show_read_popup()` already uses to decide how many buttons to render — and handles a resulting
+`"accept_all"` decision (and its `chosen_index`) inside the same `_interact()` closure as the
+popup call itself (P3, docs/https-connector-refactor-plan.md §5-§6 — this used to be "the same
+`_popup_lock` acquisition"; the lock is gone, but the ordering guarantee it existed for — the rule
+confirmation and persistence happen as part of the one interaction, not deferred to some later
+observer — is unchanged), mirroring the review branch exactly. Every other write operation
 (roughly a dozen tools, e.g. `gmail_archive_message`, `slack_send_message`) gets `None` from
 `suggest_write_rule()` by construction — there's no fallback path, so they're structurally
 unaffected and their popups are visually unchanged (Deny / Allow once only).
@@ -1257,7 +1259,10 @@ the only download you need:
 6. On the **Connectors** page, click **Authenticate…** for each connector you want — this takes
    effect immediately (the daemon's live connector list is hot-reloaded), no quit/reopen needed.
 7. Still in the mounted DMG, double-click **PrivacyFence.mcpb** — Claude Desktop installs the
-   MCP server for you (Settings → Extensions → Install Extension… happens automatically).
+   MCP server for you (Settings → Extensions → Install Extension… happens automatically). The DMG
+   also carries **PrivacyFence (Legacy Bridge).mcpb** — install that one instead only if `/mcp`
+   isn't working for you (see [Connecting Claude](#connecting-claude) below); the two install side
+   by side without conflicting, so it's safe to have both.
 
 ### From source
 
@@ -1308,13 +1313,30 @@ privacyfence-app
 
 ## Connecting Claude
 
-The daemon and the bridge are built and shipped separately:
+The daemon and its MCP-facing pieces are built and shipped separately. As of D11
+([`docs/https-connector-refactor-plan.md`](https-connector-refactor-plan.md) §12), there are three
+ways Claude reaches the daemon; which one applies depends on the client and how far your install has
+migrated:
 
 - **PrivacyFenceApp.app** (built by `scripts/build_dmg.sh`) — the daemon: owns credentials,
-  connectors, the review gate, the audit log, and the LaunchAgent. Install this first via the DMG.
-- **PrivacyFence.mcpb** (built by `scripts/build_mcpb.sh`, from `bridge/`) — just the bridge: a
-  small Node/TypeScript MCP server that talks to the daemon over a TCP loopback connection. Install
-  this into Claude.
+  connectors, the review gate, the audit log, the LaunchAgent, and (`web.mcp.enabled`, on by default
+  as of D11/P4b — see `settings.yaml.example`) the embedded `/mcp` Streamable HTTP endpoint. Install
+  this first via the DMG, in every case below.
+- **PrivacyFence.mcpb** (built by `scripts/build_mcpb.sh`, from `mcpb/shim/`) — a thin
+  stdio-to-Streamable-HTTP transport proxy for Claude Desktop, which still only speaks stdio to
+  local extensions. Install this into Claude Desktop.
+- **`/mcp` directly** — Claude Code (and any other MCP client with native Streamable HTTP + bearer
+  auth support) talks to the daemon's `/mcp` endpoint with no intermediate process at all.
+
+`bridge/`, the original Node/TypeScript stdio MCP server this replaced for Desktop, still exists and
+still works during the migration window (P2 through P5) — see the refactor plan for why retiring it
+is its own phase, separate from shipping the replacement. Until then, `scripts/build_mcpb.sh` builds
+**both** `PrivacyFence.mcpb` (the shim, above) and a second, separate extension —
+**`PrivacyFence (Legacy Bridge).mcpb`** — straight from `bridge/`, unchanged. Both ship in every DMG
+and install side by side with no conflict (their manifests use different `name`s — `privacyfence` vs
+`privacyfence-legacy-bridge` — so Claude Desktop registers them as two distinct MCP servers): the
+legacy one is there purely as a rollback that needs no `web.mcp.enabled`/`/mcp` setup at all, for
+anyone who hits a problem with the new one before P5 actually removes the bridge.
 
 ### Option A: one-click extension (Claude Desktop)
 
@@ -1322,11 +1344,21 @@ The daemon and the bridge are built and shipped separately:
 double-click it and Claude Desktop installs the MCP server for you, no
 `claude_desktop_config.json` editing.
 
-The daemon (PrivacyFenceApp.app) must already be installed and configured first — the extension
-only contains the bridge, bundled by esbuild into a single dependency-free `server/bridge.js` with
-no node_modules/ and no Python runtime shipped at all (Claude Desktop supplies its own Node
-runtime — `server.type = "node"` in `mcpb/manifest.json.tmpl`), which is why it's ~300KB instead
-of the daemon's ~185MB.
+The daemon (PrivacyFenceApp.app) must already be installed and configured first, with
+`web.mcp.enabled` on (the shipped default, `config/settings.yaml`'s `web.mcp.enabled: true`) so
+`/mcp` is actually listening — the extension only contains the shim, bundled by esbuild into a
+single dependency-free `server/shim.js` with no
+node_modules/ and no Python runtime shipped at all (Claude Desktop supplies its own Node runtime —
+`server.type = "node"` in `mcpb/manifest.json.tmpl`), which is why it's ~300KB instead of the
+daemon's ~185MB. The shim discovers the daemon's `/mcp` URL and bearer token itself, from
+`~/.privacyfence/mcp_url` and `~/.privacyfence/mcp_token` (both written by the daemon once it binds)
+— nothing to copy into Claude Desktop by hand, same zero-config property the bridge had for the IPC
+socket.
+
+If `/mcp` isn't reachable for you yet (e.g. `web.mcp.enabled` can't be turned on in your
+environment), double-click **`PrivacyFence (Legacy Bridge).mcpb`** instead, from the same mounted
+DMG — same daemon, reached the original way, no `/mcp` required. You can have both installed at
+once; only one will actually be able to reach the daemon depending on whether `/mcp` is listening.
 
 To build both artifacts yourself:
 
@@ -1336,21 +1368,39 @@ brew install create-dmg
 bash scripts/build_dmg.sh
 ```
 
-(Node + npm must also be on PATH — used to build `bridge/` and to run the `@anthropic-ai/mcpb` CLI
-via npx.) This runs `scripts/build_mcpb.sh` as part of assembling the DMG. To build just the
-extension on its own (e.g. for a quick local test without a full DMG), run
-`bash scripts/build_mcpb.sh` directly — it produces `dist/PrivacyFence-<version>.mcpb`.
+(Node + npm must also be on PATH — used to build `mcpb/shim/` and `bridge/`, and to run the
+`@anthropic-ai/mcpb` CLI via npx.) This runs `scripts/build_mcpb.sh` as part of assembling the DMG.
+To build just the extensions on their own (e.g. for a quick local test without a full DMG), run
+`bash scripts/build_mcpb.sh` directly — it produces `dist/PrivacyFence-<version>.mcpb` and
+`dist/PrivacyFence-legacy-bridge-<version>.mcpb`.
 
-### Option B: manual MCP config (Claude Desktop, Claude Code, or other MCP clients)
+### Option B: `/mcp` directly (Claude Code, or other clients with native Streamable HTTP support)
 
-Add the bridge to Claude's MCP config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, or the equivalent path for Claude Code / other MCP clients):
+With `web.mcp.enabled` on (the shipped default) and the daemon running, register `/mcp` directly —
+no bridge, no shim, no extra process:
+
+```bash
+claude mcp add --transport http privacyfence http://localhost:8765/mcp \
+  --header "Authorization: Bearer $(cat ~/.privacyfence/mcp_token)"
+```
+
+(Port and token: see the daemon's own startup log line, or `config/settings.yaml`'s `web.port` and
+`~/.privacyfence/mcp_token` directly.)
+
+### Option C: manual MCP config via the bridge (legacy, works through P5)
+
+Usually unnecessary now that the DMG ships `PrivacyFence (Legacy Bridge).mcpb` (Option A) as a
+one-click way to get the same thing — this is for hand-editing the config directly, e.g. against an
+unpacked `.mcpb` or a source checkout. Add the bridge to Claude's MCP config
+(`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, or the equivalent path
+for Claude Code / other MCP clients):
 
 ```json
 {
   "mcpServers": {
-    "privacyfence": {
+    "privacyfence-legacy-bridge": {
       "command": "node",
-      "args": ["/path/to/PrivacyFence.mcpb/server/bridge.js"]
+      "args": ["/path/to/PrivacyFence (Legacy Bridge).mcpb/server/bridge.js"]
     }
   }
 }

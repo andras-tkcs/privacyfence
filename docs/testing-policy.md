@@ -13,12 +13,37 @@ this document is about which ones run automatically versus which ones a human ha
 ```bash
 npm test              # bridge/, Node's built-in test runner
 npm run typecheck     # bridge/, tsc --noEmit
+npm test              # mcpb/shim/, Node's built-in test runner
+npm run typecheck     # mcpb/shim/, tsc --noEmit
 pytest -v --cov=src/privacyfence --cov-report=term-missing
 ```
 
 on a `macos-latest` runner (this app depends on real AppKit/PyObjC behavior, so it can't run on
 Linux CI). A 100% pass rate is required to merge, for both suites; the coverage report is
-informational only — nothing gates on a specific percentage.
+informational only — nothing gates on a specific percentage. This `test` job is the one a PR needs
+to pass to merge.
+
+Starting at P1 (see [`https-connector-refactor-plan.md`](https-connector-refactor-plan.md) §12),
+`tests.yml` also runs a second, non-blocking `test-linux` job on `ubuntu-latest`:
+
+```bash
+pytest tests/unit -v \
+  --ignore=tests/unit/test_approval_popup.py --ignore=tests/unit/test_approval_window.py \
+  --ignore=tests/unit/test_dialog_window.py --ignore=tests/unit/test_menu_bar.py
+```
+
+Everything under `web/`, `web_approval_ui.py`, `card_builder.py`, and `approval_icons.py` is
+platform-independent — the first code in this repo that *can* run on Linux — and this job is what
+keeps that claim (and, eventually, P10's cross-platform one) honest rather than aspirational, rather
+than only ever exercising these modules on the same macOS runner as everything else. It does **not**
+replace the `test` job above: everything genuinely macOS-only (the four `--ignore`d modules, which
+import an AppKit-tainted module — `approval_popup.py`/`approval_window.py`/`dialog_window.py`/
+`menu_bar.py` — directly at module scope, so their absence here is a real `ImportError` rather than
+something a skip marker could catch) still only runs, and only needs to pass, on `macos-latest`.
+`test_settings_window.py` is the parallel case that *is* included here: it defers its own AppKit
+import inside each test function and carries a `sys.platform != "darwin"` `skipif` marker (see that
+file), so it collects cleanly on Linux and simply reports its tests skipped rather than erroring —
+the model to follow for any future macOS-only test module that should stay Linux-collectible.
 
 This tier is fully self-contained: no network calls to Gmail/Slack/Jira/etc., no credentials, no
 manual steps. It includes:
@@ -43,6 +68,24 @@ manual steps. It includes:
   the PII confirmation, rule confirmation, rule choice, and Atlassian multi-resource picker dialogs
   render through. Builds the real panel/webview and simulates the "pf" bridge message, never calls
   `runDialog_()`/`NSApplication.runModalForWindow_()` either.
+- `tests/unit/test_web_approval_ui.py`, `tests/unit/test_card_builder.py`,
+  `tests/unit/test_approval_icons.py`, `tests/unit/web/` — the web approval surface's own coverage,
+  added at P1: `WebApprovalUI`'s blocking contract (identical to `NativeApprovalUI`'s — see
+  `approval_ui.py`'s ABC), the pure gate-args-to-card-HTML translation, shared icon-asset loading, and
+  the approval routes themselves against an in-process ASGI test client (auth, CSRF, Host allowlist,
+  security headers, idempotent decisions — no real socket, see
+  [`https-connector-refactor-plan.md`](https-connector-refactor-plan.md) §13). Platform-independent —
+  covered by both the `test` and `test-linux` jobs below.
+- `tests/unit/web/test_mcp_dispatch.py`, `tests/unit/web/test_routes_mcp.py` — the `/mcp` endpoint's
+  own coverage, added at P2: `McpDispatcher`'s dedupe/staleness/gating dispatch and meta-tools
+  (`test_mcp_dispatch.py`, ported test-for-test from the equivalent `IPCServer` coverage in
+  `test_ipc_server.py` below — see `mcp_dispatch.py`'s own module docstring for why this is a
+  separate implementation rather than a shared refactor) and the wire-protocol/auth layer on top of
+  it (`test_routes_mcp.py`), driven with the real official `mcp` Python client over an in-process
+  ASGI transport — no real socket, same posture as the approval routes above. `TestAudienceSeparation`
+  in `tests/unit/web/test_server.py` is the one required to fail loudly if the MCP bearer-token and
+  approval-surface session-cookie middleware are ever reordered (§10.3 of the refactor plan).
+  Platform-independent — covered by both the `test` and `test-linux` jobs below.
 - `bridge/test/*.test.ts` (`npm test`, run from `bridge/`) — the Node/TypeScript MCP bridge's own
   suite: IPC framing, error propagation, and tool dispatch, run against `bridge/src/*.ts` directly
   (no build step) via hand-written Node fakes of the daemon (`bridge/test/testDaemon.ts`).
@@ -54,8 +97,23 @@ manual steps. It includes:
   client over real MCP-over-stdio, proving the two independently-maintained protocol
   implementations above (bridge's own suite against Node fakes, `test_ipc_server.py` against a
   hand-rolled Python client) actually agree with each other, not just with their own mocks. Skips
-  automatically if Node isn't on `PATH`; CI installs it, so this runs there. Needs the `mcp` package
-  (test-only, see `pyproject.toml`'s `[project.optional-dependencies].test`).
+  automatically if Node isn't on `PATH`; CI installs it, so this runs there. Uses the official `mcp`
+  Python client, a runtime dependency since P2 (`pyproject.toml`'s `[project.dependencies]` — see
+  `docs/https-connector-refactor-plan.md` §8.2/D2) rather than a test-only one; `test_routes_mcp.py`
+  above uses the same client against `/mcp` directly.
+- `mcpb/shim/test/*.test.ts` (`npm test`, run from `mcpb/shim/`) — the .mcpb shim's own suite (D11 in
+  `docs/https-connector-refactor-plan.md` §12): daemon discovery/launch (`daemon.test.ts`, the
+  `mcp_url`-file analogue of `bridge/test/daemon.test.ts`'s `ipc_port` coverage) and the stdio<->
+  Streamable HTTP message proxy (`proxy.test.ts`, `index.test.ts` — the latter against a real fake
+  `/mcp` server built on the official SDK's own server classes, not a hand-mocked transport).
+- `npm run typecheck` (`tsc --noEmit`, run from `mcpb/shim/`) — same reasoning as bridge/'s.
+- `tests/integration/test_shim_mcp_contract.py` — the shim's counterpart to
+  `test_bridge_daemon_contract.py`: spawns the real built `mcpb/shim/dist/shim.js` against a real
+  `privacyfence.web.server.WebServer` (with a real bound `/mcp` endpoint) and drives it with the
+  official `mcp` Python client over real MCP-over-stdio. A passthrough test, not a schema test — the
+  shim carries no tool-schema knowledge, so "one `initialize` and one `tools/call` round-trip, with
+  the bearer header attached and `mcp_url` honoured" is the whole of what there is to assert. Skips
+  automatically if Node isn't on `PATH`, same as the bridge's contract test.
 
 ## 2. Local-only checks — run manually before opening/updating a relevant PR, never in CI
 
@@ -156,9 +214,11 @@ full release-time checklist tying all three tiers together.
 
 | Check | Runs in CI? | When |
 |---|---|---|
-| `pytest` (full suite, incl. the bridge/daemon contract test) | Yes, every PR | Always — this is the merge gate |
+| `pytest` (full suite, incl. the bridge/daemon and shim/mcp contract tests) | Yes, every PR | Always — this is the merge gate |
 | `npm test` (bridge/'s own suite) | Yes, every PR | Always — this is the merge gate |
 | `npm run typecheck` (bridge/) | Yes, every PR | Always — this is the merge gate |
+| `npm test` (mcpb/shim/'s own suite) | Yes, every PR | Always — this is the merge gate |
+| `npm run typecheck` (mcpb/shim/) | Yes, every PR | Always — this is the merge gate |
 | `qa_fixture_recorder.py --check` | No | PR touches a `*_client.py`/`connectors/**` file |
 | `qa_popup_smoke.py` | No | PR touches `approval_window.py`'s modal-loop plumbing |
 | `connector-qa-testing.md`'s live Cowork pass | No | Before a release, or a broad gate/auto-accept change |

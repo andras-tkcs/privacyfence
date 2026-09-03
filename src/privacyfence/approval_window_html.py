@@ -733,19 +733,16 @@ def build_card_stack_html(
     left_column_content = header_html + pinned_joined + scrollable_joined
 
     if layout == WIDE:
-        # Fixed left column width (_WIDE_LEFT_COLUMN_WIDTH, see that
-        # constant's own comment) regardless of the overall window width --
-        # a fixed flex-basis. overflow-y:auto + min-height:0 here (not
-        # split across a pinned/scrollable pair) is what makes this one
-        # shared scroll region.
-        left_column = (
-            f'<div class="pf-scroll" style="flex:0 0 {_WIDE_LEFT_COLUMN_WIDTH}px;min-width:0;'
-            f'overflow-y:auto;min-height:0">{left_column_content}</div>'
-        )
-        right_pane_style = (
-            'flex:1;min-width:0;border-left:1px solid var(--color-divider);padding-left:24px'
-            ';overflow-y:auto;min-height:0'
-        )
+        # Fixed left column width (_WIDE_LEFT_COLUMN_WIDTH -- baked directly
+        # into styles.css's .pf-wide-left rule, see that rule's own comment
+        # for why it isn't templated from the Python constant here) regardless
+        # of the overall window width. .pf-wide-left/.pf-wide-right (not
+        # inline style="..." any more -- see styles.css) are what make each
+        # its own shared scroll region, and what the responsive @media block
+        # there overrides below the phone-viewport breakpoint (see module
+        # docstring and docs/https-connector-refactor-plan.md §7.3) -- an
+        # inline style can't carry a @media query at all.
+        left_column = f'<div class="pf-scroll pf-wide-left">{left_column_content}</div>'
         # The outer row is flex:1;min-height:0 (fills the real 100vh body
         # below temp_accept_text, if present -- see the returned document's
         # <body> below) so align-items:stretch (default, kept deliberately)
@@ -753,9 +750,9 @@ def build_card_stack_html(
         # height -- not "whichever child is naturally taller," as a
         # content-sized row would give them.
         body_html = (
-            '<div style="display:flex;gap:28px;flex:1;min-height:0">'
+            '<div class="pf-wide-row">'
             f'{left_column}'
-            f'<div class="pf-scroll" style="{right_pane_style}">'
+            '<div class="pf-scroll pf-wide-right">'
             f'<div class="card-kicker" style="margin-bottom:8px">{_html_escape(preview_kicker)}</div>'
             f'{preview_body_html}'
             '</div></div>'
@@ -764,11 +761,9 @@ def build_card_stack_html(
         # NARROW: no preview pane at all -- preview_kicker/preview_body_html
         # are simply not used. See module docstring. This whole block itself
         # is the flex:1;min-height:0 child of <body> below (same shared
-        # scroll-region treatment as WIDE's left column).
-        body_html = (
-            '<div class="pf-scroll" style="flex:1;min-height:0;overflow-y:auto">'
-            f'{left_column_content}</div>'
-        )
+        # scroll-region treatment as WIDE's left column, via styles.css's
+        # .pf-scroll-region -- see that rule's own comment).
+        body_html = f'<div class="pf-scroll pf-scroll-region">{left_column_content}</div>'
 
     if temp_accept_text:
         # flex:none -- a sibling of the row/column above inside <body>'s own
@@ -807,11 +802,24 @@ html {{ height: 100%; }}
    grows that region's own internal scrollbar instead of this one. */
 html, body {{ overflow-y: auto; }}
 body {{
-  box-sizing: border-box; width: {width}px; height: 100vh;
+  box-sizing: border-box; width: min({width}px, 100%); height: 100vh;
   padding-top: {BODY_PADDING_TOP}px; padding-right: 30px;
   padding-bottom: {BODY_PADDING_BOTTOM}px; padding-left: 24px;
   border-left: 6px solid {rail_color};
   display: flex; flex-direction: column;
+}}
+/* Below this width the document is assumed to be embedded somewhere that
+   isn't a fixed-height native window frame (a browser tab, an expandable
+   row in a phone-width list -- see docs/https-connector-refactor-plan.md
+   §7.3), so it scrolls like an ordinary page instead of clipping to a
+   viewport-height frame. Kept here rather than in styles.css's own
+   .pf-wide-row/.pf-wide-left/.pf-wide-right @media block (see that block's
+   comment) because it has to come *after* the unconditional `height: 100vh`
+   rule directly above for the cascade to actually override it -- same
+   specificity, later source wins, and styles.css is inserted before this
+   block in the document's one <style> tag. */
+@media (max-width: 700px) {{
+  body {{ height: auto; min-height: 100vh; }}
 }}
 </style>
 </head>

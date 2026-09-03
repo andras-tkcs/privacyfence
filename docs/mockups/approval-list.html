@@ -1,0 +1,755 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PrivacyFence Approval List</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<style>
+/* ------------------------------------------------------------------ *
+   Tokens lifted verbatim from src/privacyfence/resources/approval_window/
+   styles.css so this mockup cannot drift from the shipped card's palette.
+   Light on bare :root, dark redefined twice (media query guarded against an
+   explicit light choice, and the [data-theme] stamp) so the preview control
+   below wins in both directions.
+ * ------------------------------------------------------------------ */
+:root {
+  --color-bg: #f3f2f2;
+  --color-surface: #eae9e9;
+  --color-raised: #fbfafa;
+  --color-text: #201e1d;
+  --color-accent: #0088b0;
+  --color-accent-2: #d6006c;
+  --color-divider: color-mix(in srgb, #201e1d 16%, transparent);
+  --color-neutral-300: #d7d3d3;
+  --color-neutral-400: #bab6b6;
+  --color-neutral-500: #9b9797;
+  --color-neutral-600: #7d7979;
+  --color-neutral-700: #605d5d;
+  --color-neutral-800: #444141;
+  --color-accent-100: #e9f8ff;
+  --color-accent-200: #cbeeff;
+  --color-accent-700: #006786;
+  --color-accent-2-100: #fff1f4;
+  --color-accent-2-700: #aa0b56;
+  --color-danger: #d92d20;
+  --color-danger-tint: color-mix(in srgb, #d92d20 12%, transparent);
+  --color-ok: #1c7c54;
+
+  --font-body: "Source Serif 4", "Source Serif Pro", Georgia, serif;
+  --font-data: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  --space-1: 5px;
+  --space-2: 10px;
+  --space-3: 15px;
+  --space-4: 20px;
+  --radius-sm: 1px;
+  --radius-md: 2px;
+  --radius-lg: 4px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-bg: #201e1d;
+    --color-surface: #2d2b2b;
+    --color-raised: #383535;
+    --color-text: #f3f2f2;
+    --color-accent: #62c5ee;
+    --color-accent-2: #ff90b1;
+    --color-divider: color-mix(in srgb, #f3f2f2 16%, transparent);
+    --color-neutral-300: #605d5d;
+    --color-neutral-400: #7d7979;
+    --color-neutral-500: #9b9797;
+    --color-neutral-600: #bab6b6;
+    --color-neutral-700: #d7d3d3;
+    --color-neutral-800: #eae7e7;
+    --color-accent-100: #0a303e;
+    --color-accent-200: #004961;
+    --color-accent-700: #99e0ff;
+    --color-accent-2-100: #4b1528;
+    --color-accent-2-700: #ffc0d0;
+    --color-danger: #ff6b57;
+    --color-danger-tint: color-mix(in srgb, #ff6b57 16%, transparent);
+    --color-ok: #6fce9f;
+  }
+}
+:root[data-theme="dark"] {
+  --color-bg: #201e1d;
+  --color-surface: #2d2b2b;
+  --color-raised: #383535;
+  --color-text: #f3f2f2;
+  --color-accent: #62c5ee;
+  --color-accent-2: #ff90b1;
+  --color-divider: color-mix(in srgb, #f3f2f2 16%, transparent);
+  --color-neutral-300: #605d5d;
+  --color-neutral-400: #7d7979;
+  --color-neutral-500: #9b9797;
+  --color-neutral-600: #bab6b6;
+  --color-neutral-700: #d7d3d3;
+  --color-neutral-800: #eae7e7;
+  --color-accent-100: #0a303e;
+  --color-accent-200: #004961;
+  --color-accent-700: #99e0ff;
+  --color-accent-2-100: #4b1528;
+  --color-accent-2-700: #ffc0d0;
+  --color-danger: #ff6b57;
+  --color-danger-tint: color-mix(in srgb, #ff6b57 16%, transparent);
+  --color-ok: #6fce9f;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+
+.wrap { max-width: 1080px; margin: 0 auto; padding: 48px var(--space-4) 96px; }
+
+/* --- page furniture ------------------------------------------------ */
+.eyebrow {
+  font-family: var(--font-data);
+  font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--color-neutral-600);
+}
+.masthead { display: flex; flex-direction: column; gap: var(--space-2); margin-bottom: 40px; }
+.masthead h1 { margin: 0; font-size: 38px; font-weight: 600; line-height: 1.15; text-wrap: balance; }
+.masthead p { margin: 0; max-width: 62ch; color: var(--color-neutral-800); }
+.masthead .meta { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center; margin-top: var(--space-1); }
+
+.seg { display: inline-flex; border: 1px solid var(--color-divider); border-radius: var(--radius-lg); overflow: hidden; }
+.seg button {
+  font: inherit; font-size: 12px; font-family: var(--font-data);
+  background: transparent; color: var(--color-neutral-700);
+  border: 0; padding: 5px 11px; cursor: pointer;
+}
+.seg button + button { border-left: 1px solid var(--color-divider); }
+.seg button[aria-pressed="true"] { background: var(--color-accent); color: #fff; }
+
+section.block { margin-top: 64px; display: flex; flex-direction: column; gap: var(--space-3); }
+section.block > h2 { margin: 0; font-size: 24px; font-weight: 600; }
+section.block > .lede { margin: 0; max-width: 68ch; color: var(--color-neutral-800); }
+hr.rule { border: 0; border-top: 1px solid var(--color-divider); margin: 0; }
+
+.note {
+  border-left: 2px solid var(--color-accent);
+  padding: 2px 0 2px var(--space-3);
+  max-width: 68ch;
+  color: var(--color-neutral-800);
+  font-size: 15px;
+}
+.note strong { color: var(--color-text); font-weight: 600; }
+
+/* --- the mocked browser frame -------------------------------------- */
+.frames { display: flex; gap: var(--space-4); align-items: flex-start; flex-wrap: wrap; }
+.frame {
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg);
+  overflow: hidden;
+  flex: 1 1 560px; min-width: 0;
+}
+.frame.phone { flex: 0 0 375px; max-width: 100%; }
+.frame-bar {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: 7px var(--space-3);
+  border-bottom: 1px solid var(--color-divider);
+  background: var(--color-surface);
+  font-family: var(--font-data); font-size: 11px; color: var(--color-neutral-600);
+}
+.frame-bar .dots { display: flex; gap: 5px; }
+.frame-bar .dots i { width: 8px; height: 8px; border-radius: 50%; background: var(--color-neutral-400); display: block; }
+.frame-body { padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3); }
+.frame.phone .frame-body { padding: var(--space-3); }
+
+/* --- app header inside the frame ----------------------------------- */
+.app-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); }
+.app-head .brand { font-size: 19px; font-weight: 600; }
+.app-head .right { display: flex; align-items: center; gap: var(--space-3); font-size: 12px; font-family: var(--font-data); color: var(--color-neutral-600); }
+.live { display: inline-flex; align-items: center; gap: 6px; }
+.live i { width: 7px; height: 7px; border-radius: 50%; background: var(--color-ok); display: block; }
+.live.down i { background: var(--color-danger); }
+
+.app-sub {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
+  padding-bottom: var(--space-2); border-bottom: 1px solid var(--color-divider);
+  flex-wrap: wrap;
+}
+.app-sub .count { font-size: 15px; font-weight: 600; }
+.app-sub .tools { display: flex; align-items: center; gap: var(--space-2); }
+
+/* --- buttons (same shapes as .pf-btn in the shipped card) ----------- */
+.btn {
+  font: inherit; font-size: 13px; line-height: 1;
+  padding: 8px 14px; min-height: 34px;
+  border: 1px solid var(--color-divider); border-radius: var(--radius-md);
+  background: transparent; color: var(--color-text);
+  cursor: pointer; white-space: nowrap;
+}
+.btn:hover { background: color-mix(in srgb, var(--color-text) 6%, transparent); }
+.btn-primary { background: var(--color-accent); border-color: var(--color-accent); color: #fff; }
+.btn-primary:hover { background: var(--color-accent-700); border-color: var(--color-accent-700); }
+.btn-deny { color: var(--color-danger); border-color: color-mix(in srgb, var(--color-danger) 45%, transparent); }
+.btn-deny:hover { background: var(--color-danger-tint); }
+.btn-quiet { border-color: transparent; color: var(--color-neutral-700); padding-left: 6px; padding-right: 6px; }
+.btn-quiet:hover { color: var(--color-text); background: transparent; text-decoration: underline; }
+
+/* --- the row ------------------------------------------------------- */
+.rows { display: flex; flex-direction: column; gap: var(--space-2); }
+.group { border: 1px solid var(--color-divider); border-radius: var(--radius-lg); overflow: hidden; }
+.group-head {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: color-mix(in srgb, var(--color-text) 4%, transparent);
+  border-bottom: 1px solid var(--color-divider);
+  font-size: 13px;
+}
+.group-head .who { font-family: var(--font-data); font-size: 11px; color: var(--color-neutral-600); }
+.group .row { border: 0; border-radius: 0; }
+.group .row + .row { border-top: 1px solid var(--color-divider); }
+
+.row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  gap: var(--space-1) var(--space-3);
+  padding: var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-lg);
+  transition: opacity .28s ease, transform .28s ease;
+}
+.row.gone { opacity: 0; transform: translateY(-4px); pointer-events: none; }
+.row-icon {
+  grid-row: 1 / span 3;
+  width: 30px; height: 30px; border-radius: var(--radius-md);
+  display: grid; place-items: center;
+  background: var(--color-raised); border: 1px solid var(--color-divider);
+  font-family: var(--font-data); font-size: 11px; font-weight: 600; color: var(--color-neutral-700);
+}
+.row-title { font-size: 16px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-badges { display: flex; align-items: center; gap: 6px; justify-self: end; }
+.row-kicker {
+  grid-column: 2 / span 2;
+  font-family: var(--font-data); font-size: 11px; color: var(--color-neutral-600);
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+}
+.row-kicker .sep { color: var(--color-neutral-400); }
+.row-reason {
+  grid-column: 2 / span 2;
+  font-style: italic; font-size: 14px; color: var(--color-neutral-800);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  margin-top: 3px;
+}
+.row-foot {
+  grid-column: 2 / span 2;
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
+  margin-top: var(--space-2); flex-wrap: wrap;
+}
+.row-foot .seen { font-size: 13px; color: var(--color-neutral-700); }
+.row-foot .seen a { color: var(--color-accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+.row-actions { display: flex; gap: var(--space-2); }
+
+.badge {
+  font-family: var(--font-data); font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+  padding: 3px 6px; border-radius: var(--radius-sm);
+  border: 1px solid var(--color-divider); color: var(--color-neutral-700);
+  white-space: nowrap;
+}
+.badge.write { background: var(--color-accent-2-100); color: var(--color-accent-2-700); border-color: color-mix(in srgb, var(--color-accent-2) 35%, transparent); }
+.badge.read { background: var(--color-accent-100); color: var(--color-accent-700); border-color: color-mix(in srgb, var(--color-accent) 30%, transparent); }
+.badge.pii { background: transparent; color: var(--color-danger); border-color: color-mix(in srgb, var(--color-danger) 45%, transparent); }
+.badge.dupe { font-weight: 600; }
+
+.clock { font-family: var(--font-data); font-size: 12px; color: var(--color-neutral-700); font-variant-numeric: tabular-nums; }
+.clock.urgent { color: var(--color-danger); }
+
+.holdbar {
+  grid-column: 2 / span 2;
+  height: 2px; background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+  border-radius: 2px; overflow: hidden; margin-top: 8px;
+}
+.holdbar i { display: block; height: 100%; background: var(--color-accent); width: 80%; }
+@media (prefers-reduced-motion: no-preference) {
+  .holdbar i { animation: drain 30s linear infinite; }
+  @keyframes drain { from { width: 100%; } to { width: 0%; } }
+}
+
+/* --- decided list, empty state, toast ------------------------------ */
+.decided { display: flex; flex-direction: column; gap: 6px; padding-top: var(--space-2); border-top: 1px solid var(--color-divider); }
+.decided .head { display: flex; justify-content: space-between; align-items: baseline; }
+.decided .head span { font-size: 13px; font-weight: 600; }
+.decided .head a { font-size: 12px; font-family: var(--font-data); color: var(--color-accent); }
+.decided .item { display: flex; gap: var(--space-2); align-items: baseline; font-size: 13px; color: var(--color-neutral-800); }
+.decided .item .mark { font-family: var(--font-data); }
+.decided .item .mark.ok { color: var(--color-ok); }
+.decided .item .mark.no { color: var(--color-danger); }
+.decided .item .when { margin-left: auto; font-family: var(--font-data); font-size: 11px; color: var(--color-neutral-600); white-space: nowrap; }
+
+.empty { text-align: center; padding: 40px var(--space-4); color: var(--color-neutral-700); }
+.empty .big { font-size: 17px; color: var(--color-text); margin-bottom: 6px; }
+
+.toast {
+  display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-raised); border: 1px solid var(--color-divider);
+  border-left: 2px solid var(--color-ok);
+  border-radius: var(--radius-md); font-size: 14px;
+}
+.toast.hidden { display: none; }
+.toast .btn { margin-left: auto; }
+
+/* --- state catalogue ----------------------------------------------- */
+.states { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: var(--space-3); }
+.state-card { display: flex; flex-direction: column; gap: 6px; }
+.state-card .label { font-family: var(--font-data); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--color-neutral-600); }
+.state-card .why { font-size: 13px; color: var(--color-neutral-700); }
+.mini {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface); border: 1px solid var(--color-divider); border-radius: var(--radius-lg);
+  font-size: 14px;
+}
+.mini .grow { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mini.faded { opacity: .55; }
+
+/* --- notifications -------------------------------------------------- */
+.notifs { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--space-4); align-items: start; }
+.os-note {
+  background: var(--color-raised);
+  border: 1px solid var(--color-divider);
+  border-radius: 12px;
+  padding: 12px 14px;
+  display: grid; grid-template-columns: 28px 1fr; gap: 10px;
+  box-shadow: 0 6px 20px rgba(0,0,0,.10);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+.os-note .app-icon { width: 28px; height: 28px; border-radius: 6px; background: var(--color-accent); color: #fff; display: grid; place-items: center; font-size: 14px; }
+.os-note .n-stack { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.os-note .n-app { font-size: 11px; letter-spacing: .02em; color: var(--color-neutral-600); display: flex; justify-content: space-between; gap: 10px; }
+.os-note .n-title { font-size: 14px; font-weight: 600; line-height: 1.3; }
+.os-note .n-body { font-size: 13px; line-height: 1.35; color: var(--color-neutral-800); }
+.level-tag { font-family: var(--font-data); font-size: 11px; color: var(--color-neutral-600); margin-bottom: 6px; display: block; }
+.lock {
+  background: linear-gradient(160deg, #1b2b34, #35505c);
+  border-radius: 16px; padding: 18px 14px 22px; color: #fff;
+  display: flex; flex-direction: column; gap: 14px; align-items: center;
+}
+.lock .time { font-family: var(--font-body); font-size: 40px; font-weight: 600; line-height: 1; }
+.lock .date { font-size: 12px; opacity: .8; margin-top: -8px; }
+.lock .os-note { width: 100%; background: rgba(255,255,255,.16); border-color: rgba(255,255,255,.2); box-shadow: none; color: #fff; }
+.lock .os-note .n-app, .lock .os-note .n-body { color: rgba(255,255,255,.82); }
+
+/* --- tables --------------------------------------------------------- */
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; padding: 8px 12px 8px 0; border-bottom: 1px solid var(--color-divider); vertical-align: top; }
+th { font-family: var(--font-data); font-size: 11px; letter-spacing: .07em; text-transform: uppercase; color: var(--color-neutral-600); font-weight: 400; }
+td code, .mono { font-family: var(--font-data); font-size: 12.5px; }
+
+footer.foot { margin-top: 72px; padding-top: var(--space-4); border-top: 1px solid var(--color-divider); font-size: 13px; color: var(--color-neutral-600); }
+footer.foot a { color: var(--color-accent); }
+
+@media (max-width: 720px) {
+  .wrap { padding: 32px var(--space-3) 64px; }
+  .masthead h1 { font-size: 30px; }
+  .row { grid-template-columns: 30px minmax(0, 1fr); }
+  .row-badges { grid-column: 2; justify-self: start; }
+  .row-kicker, .row-reason, .row-foot, .holdbar { grid-column: 2; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="masthead">
+  <span class="eyebrow">PrivacyFence · design mockup · not shipped code</span>
+  <h1>The pending-approval list</h1>
+  <p>What the browser shows once several gated calls can be waiting at once — the human half of
+     §7.1 of the HTTPS connector refactor plan. Static mockup: no daemon behind it, the data is
+     invented, the palette and type are lifted from the shipped approval card so this cannot
+     drift from the real thing.</p>
+  <div class="meta">
+    <span class="eyebrow">Preview</span>
+    <div class="seg" role="group" aria-label="Theme preview">
+      <button type="button" data-theme-btn="system" aria-pressed="true">System</button>
+      <button type="button" data-theme-btn="light" aria-pressed="false">Light</button>
+      <button type="button" data-theme-btn="dark" aria-pressed="false">Dark</button>
+    </div>
+  </div>
+</header>
+
+<section class="block">
+  <h2>1 · The list, three approvals deep</h2>
+  <p class="lede">One horizontal box per pending approval. Connector icon, what is being asked,
+     the badges that decide how carefully you read, and two clocks. Deny is on the row; Allow
+     never is.</p>
+
+  <div class="frames">
+    <div class="frame">
+      <div class="frame-bar"><span class="dots"><i></i><i></i><i></i></span><span>127.0.0.1:8787/approvals</span></div>
+      <div class="frame-body">
+
+        <div class="app-head">
+          <span class="brand">PrivacyFence</span>
+          <span class="right">
+            <span class="live"><i></i> live</span>
+            <span>Notifications: on</span>
+            <span>Settings</span>
+          </span>
+        </div>
+
+        <div class="app-sub">
+          <span class="count">3 approvals pending</span>
+          <span class="tools">
+            <button type="button" class="btn btn-quiet" id="replay">Replay</button>
+            <button type="button" class="btn btn-deny">Deny all</button>
+          </span>
+        </div>
+
+        <div class="toast hidden" id="toast" role="status">
+          <span id="toast-text">Denied. Nothing was sent.</span>
+          <button type="button" class="btn btn-quiet" id="toast-x">Dismiss</button>
+        </div>
+
+        <div class="rows">
+
+          <div class="row" id="row-gmail">
+            <span class="row-icon" aria-hidden="true">GM</span>
+            <span class="row-title">Send email to alice@example.com</span>
+            <span class="row-badges">
+              <span class="badge write">Write</span>
+              <span class="badge pii">PII</span>
+              <span class="clock">0:24</span>
+            </span>
+            <span class="row-kicker">
+              <span>Gmail</span><span class="sep">·</span><span>gmail_send_message</span>
+              <span class="sep">·</span><span>Claude is still waiting — 24s</span>
+            </span>
+            <span class="holdbar" aria-hidden="true"><i></i></span>
+            <span class="row-reason">“Sending the Q3 summary you asked me to draft.”</span>
+            <span class="row-foot">
+              <span class="seen">Seen 3 times this week — <a href="#rules">always allow calls like this</a></span>
+              <span class="row-actions">
+                <button type="button" class="btn btn-deny" data-deny="row-gmail">Deny</button>
+                <button type="button" class="btn btn-primary">Review →</button>
+              </span>
+            </span>
+          </div>
+
+          <div class="group" id="group-1">
+            <div class="group-head">
+              <span><strong>Claude asked for 2 things</strong></span>
+              <span class="who">Claude Code · started 14:02</span>
+            </div>
+
+            <div class="row" id="row-drive">
+              <span class="row-icon" aria-hidden="true">DR</span>
+              <span class="row-title">Read “Q3 plan (final).docx”</span>
+              <span class="row-badges">
+                <span class="badge read">Read</span>
+                <span class="clock">12:41 left</span>
+              </span>
+              <span class="row-kicker">
+                <span>Drive</span><span class="sep">·</span><span>drive_read_file</span>
+                <span class="sep">·</span><span>Claude has moved on — decide anyway</span>
+              </span>
+              <span class="row-reason">“Checking what the Q3 plan says about headcount before I answer.”</span>
+              <span class="row-foot">
+                <span class="seen">Seen 1 time this week</span>
+                <span class="row-actions">
+                  <button type="button" class="btn btn-deny" data-deny="row-drive">Deny</button>
+                  <button type="button" class="btn btn-primary">Review →</button>
+                </span>
+              </span>
+            </div>
+
+            <div class="row" id="row-slack">
+              <span class="row-icon" aria-hidden="true">SL</span>
+              <span class="row-title">Post message in #product-eng</span>
+              <span class="row-badges">
+                <span class="badge write">Write</span>
+                <span class="badge dupe">×2</span>
+                <span class="clock urgent">0:47 left</span>
+              </span>
+              <span class="row-kicker">
+                <span>Slack</span><span class="sep">·</span><span>slack_send_message</span>
+                <span class="sep">·</span><span>Expires in 47s</span>
+              </span>
+              <span class="row-reason">“Letting the team know the plan doc moved.”</span>
+              <span class="row-foot">
+                <span class="seen">Identical call requested twice — one decision covers both</span>
+                <span class="row-actions">
+                  <button type="button" class="btn btn-deny" data-deny="row-slack">Deny</button>
+                  <button type="button" class="btn btn-primary">Review →</button>
+                </span>
+              </span>
+            </div>
+          </div>
+
+        </div>
+
+        <div class="decided">
+          <div class="head"><span>Recently decided</span><a href="#audit">View audit log</a></div>
+          <div class="item"><span class="mark ok">✓</span><span>Read Calendar “Thu 11:00 — 1:1”</span><span>approved · released</span><span class="when">2 min ago</span></div>
+          <div class="item"><span class="mark no">✗</span><span>Send Telegram message to Dad</span><span>denied</span><span class="when">8 min ago</span></div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="frame phone">
+      <div class="frame-bar"><span>375 × 812</span></div>
+      <div class="frame-body">
+        <div class="app-head">
+          <span class="brand">PrivacyFence</span>
+          <span class="right"><span class="live"><i></i> live</span></span>
+        </div>
+        <div class="app-sub"><span class="count">3 pending</span><span class="tools"><button type="button" class="btn btn-deny">Deny all</button></span></div>
+        <div class="rows">
+          <div class="row">
+            <span class="row-icon" aria-hidden="true">GM</span>
+            <span class="row-title">Send email to alice@…</span>
+            <span class="row-badges"><span class="badge write">Write</span><span class="badge pii">PII</span></span>
+            <span class="row-kicker"><span>Gmail</span><span class="sep">·</span><span>still waiting — 24s</span></span>
+            <span class="holdbar" aria-hidden="true"><i></i></span>
+            <span class="row-reason">“Sending the Q3 summary you asked me to draft.”</span>
+            <span class="row-foot">
+              <span class="row-actions">
+                <button type="button" class="btn btn-deny">Deny</button>
+                <button type="button" class="btn btn-primary">Review →</button>
+              </span>
+            </span>
+          </div>
+          <div class="row">
+            <span class="row-icon" aria-hidden="true">DR</span>
+            <span class="row-title">Read “Q3 plan (final).docx”</span>
+            <span class="row-badges"><span class="badge read">Read</span><span class="clock">12:41</span></span>
+            <span class="row-kicker"><span>Drive</span><span class="sep">·</span><span>Claude has moved on</span></span>
+            <span class="row-foot">
+              <span class="row-actions">
+                <button type="button" class="btn btn-deny">Deny</button>
+                <button type="button" class="btn btn-primary">Review →</button>
+              </span>
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p class="note"><strong>Deny is one tap from the row. Allow is never on the row.</strong>
+     Denying is fail-closed — the worst case is asking Claude again. Allowing releases data, so it
+     costs a look at the full card, with its preview, its disclosure rows and its PII banner.
+     The same reasoning rules out bulk approve at any list length; bulk <em>deny</em> is offered,
+     including a “deny everything and pause connectors for 15 minutes” panic action.</p>
+</section>
+
+<section class="block">
+  <h2>2 · Two clocks, seven states</h2>
+  <p class="lede">The hold window (30s) says whether Claude is still on the line. The TTL (15 min)
+     says when the approval dies. They mean different things and must not look alike.</p>
+
+  <div class="states">
+    <div class="state-card">
+      <span class="label">waiting · inside the hold window</span>
+      <div class="mini"><span class="grow">Claude is still waiting — 24s</span><span class="clock">0:24</span></div>
+      <span class="why">Deciding now costs nothing: the tool call is still blocked and Claude continues in the same turn.</span>
+    </div>
+    <div class="state-card">
+      <span class="label">pending · hold window elapsed</span>
+      <div class="mini"><span class="grow">Claude has moved on — decide anyway, then ask it to continue</span></div>
+      <span class="why">Not an error. The decision still works; the user just has to nudge Claude, because it will not re-call on its own.</span>
+    </div>
+    <div class="state-card">
+      <span class="label">expiring · under 60 seconds</span>
+      <div class="mini"><span class="grow">Expires in 47s</span><span class="clock urgent">0:47</span></div>
+      <span class="why">Countdown only appears under five minutes, danger colour under one.</span>
+    </div>
+    <div class="state-card">
+      <span class="label">expired</span>
+      <div class="mini faded"><span class="grow">Expired — Claude was told no</span></div>
+      <span class="why">Greys out, then removes itself after ten seconds. Fail-closed, and said out loud.</span>
+    </div>
+    <div class="state-card">
+      <span class="label">auto_accepted · a rule now covers it</span>
+      <div class="mini faded"><span class="grow">Auto-accepted by rule <em>Gmail reads</em></span></div>
+      <span class="why">Any rule created anywhere re-evaluates every pending approval. A row that vanishes must say why.</span>
+    </div>
+    <div class="state-card">
+      <span class="label">decided_elsewhere</span>
+      <div class="mini faded"><span class="grow">Approved on another device · 4s ago</span></div>
+      <span class="why">The tab stays open for hours. Every silent disappearance is a bug in trust.</span>
+    </div>
+    <div class="state-card">
+      <span class="label">released · Claude re-called and got the data</span>
+      <div class="mini"><span class="grow">✓ Read Drive “Q3 plan” — approved · released</span></div>
+      <span class="why">Closes the gap where the human has approved and, for a while, nothing appears to happen.</span>
+    </div>
+    <div class="state-card">
+      <span class="label">stream down</span>
+      <div class="mini faded"><span class="grow">Can't reach PrivacyFence — this list may be out of date.</span></div>
+      <span class="why">A page claiming “nothing pending” on a dead stream is worse than a page admitting it does not know.</span>
+    </div>
+  </div>
+</section>
+
+<section class="block">
+  <h2>3 · Notifications, and what they are allowed to say</h2>
+  <p class="lede">The tab is open and has been for hours. Tier 1 — a service-worker notification
+     fired from the approval stream — needs no push service, no VAPID keys, and nothing leaving
+     the machine. It is the whole answer for a desktop with the page open.</p>
+
+  <div class="notifs">
+    <div>
+      <span class="level-tag">detail: minimal — the org-mode default</span>
+      <div class="os-note">
+        <span class="app-icon" aria-hidden="true">◈</span>
+        <span class="n-stack">
+          <span class="n-app"><span>PrivacyFence</span><span>now</span></span>
+          <span class="n-title">1 approval pending</span>
+          <span class="n-body">Open PrivacyFence to review.</span>
+        </span>
+      </div>
+    </div>
+    <div>
+      <span class="level-tag">detail: standard — the local-mode default</span>
+      <div class="os-note">
+        <span class="app-icon" aria-hidden="true">◈</span>
+        <span class="n-stack">
+          <span class="n-app"><span>PrivacyFence</span><span>now</span></span>
+          <span class="n-title">Gmail — send email</span>
+          <span class="n-body">Write · PII detected · Claude is waiting</span>
+        </span>
+      </div>
+    </div>
+    <div>
+      <span class="level-tag">a burst, coalesced — never one buzz per row</span>
+      <div class="os-note">
+        <span class="app-icon" aria-hidden="true">◈</span>
+        <span class="n-stack">
+          <span class="n-app"><span>PrivacyFence</span><span>now</span></span>
+          <span class="n-title">3 approvals pending</span>
+          <span class="n-body">Gmail, Drive, Slack · one ask from Claude Code</span>
+        </span>
+      </div>
+    </div>
+    <div>
+      <span class="level-tag">phone, locked — org mode, Home Screen web app</span>
+      <div class="lock">
+        <span class="time">9:41</span>
+        <span class="date">Friday 28 August</span>
+        <div class="os-note">
+          <span class="app-icon" aria-hidden="true">◈</span>
+          <span class="n-stack">
+            <span class="n-app"><span>PRIVACYFENCE</span><span>now</span></span>
+            <span class="n-title">1 approval pending</span>
+            <span class="n-body">Tap to review.</span>
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p class="note"><strong>The notification body is a data-release surface.</strong> It shows up on a
+     lock screen, in a screen share, on a watch. So: no message body, no file content, no PII match
+     value, no recipient below the <span class="mono">detailed</span> level — and a
+     <em>push</em> payload carries no approval data at all. Push sends a content-free tickle; the
+     service worker then fetches the summary from the daemon and builds the text locally, so the
+     push service — Apple's, Google's, Mozilla's — learns the timing and nothing else.</p>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Tier</th><th>Works when</th><th>Mechanism</th><th>Depends on</th></tr></thead>
+      <tbody>
+        <tr><td>0 · in-page</td><td>tab open, no permission</td><td>title badge, favicon dot, <code>aria-live</code> announcement</td><td>nothing</td></tr>
+        <tr><td>1 · desktop</td><td>tab open, permission granted</td><td>stream event → <code>registration.showNotification()</code></td><td>nothing — no push service</td></tr>
+        <tr><td>2 · web push</td><td>tab closed, phone, device asleep</td><td>VAPID push → service worker</td><td>the browser's push service; HTTPS; on iOS, a Home Screen web app</td></tr>
+        <tr><td>3 · native</td><td>local mode, macOS, tab closed</td><td>menu-bar badge, local notification from the daemon</td><td>nothing</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="block" id="rules">
+  <h2>4 · After a decision, back to the list</h2>
+  <p class="lede">Today the decision POST replaces the whole document with “you can close this tab.”
+     Right for one card; wrong for a list someone keeps open all day.</p>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Step</th><th>What happens</th><th>Why</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td><code>history.replaceState</code> back to <code>/approvals</code></td><td>Back must not walk into a card that no longer exists.</td></tr>
+        <tr><td>2</td><td>scroll offset and open groups restored</td><td>On a phone this is the difference between “back to my list” and “find your place again”.</td></tr>
+        <tr><td>3</td><td>toast: “Approved. Claude will get the data on its next attempt.”</td><td>Only shown once the hold window elapsed — that is the case where the click was not the end of the story.</td></tr>
+        <tr><td>4</td><td>focus moves to the next row's Review button; the row is <em>not</em> auto-opened</td><td>Auto-advancing into the next card is how a person ends up clicking Allow on muscle memory.</td></tr>
+        <tr><td>5</td><td>a 409 becomes a toast, not an error: “Already decided elsewhere — auto-accepted by rule <em>Gmail reads</em>”</td><td>A rule created anywhere resolves pending approvals out from under an open card. Common, not exotic.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="note"><strong>The best version of this page is one nobody visits.</strong>
+     “Seen 3 times this week” is already computed for the card; on the row it becomes a link to the
+     matching <em>Always allow</em> candidate. Every idea that makes a long list more comfortable
+     should be weighed against making the list shorter instead.</p>
+</section>
+
+<footer class="foot">
+  Mockup for <span class="mono">docs/approval-list-ui-ux.md</span>, a side quest to
+  <span class="mono">docs/https-connector-refactor-plan.md</span> §7.1.
+  Static: no daemon, invented data, no decisions leave this page.
+</footer>
+
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var buttons = Array.prototype.slice.call(document.querySelectorAll("[data-theme-btn]"));
+  buttons.forEach(function (b) {
+    b.addEventListener("click", function () {
+      var mode = b.getAttribute("data-theme-btn");
+      if (mode === "system") { root.removeAttribute("data-theme"); }
+      else { root.setAttribute("data-theme", mode); }
+      buttons.forEach(function (o) { o.setAttribute("aria-pressed", String(o === b)); });
+    });
+  });
+
+  var toast = document.getElementById("toast");
+  var toastText = document.getElementById("toast-text");
+  var denied = [];
+
+  function showToast(text) {
+    toastText.textContent = text;
+    toast.classList.remove("hidden");
+  }
+
+  document.querySelectorAll("[data-deny]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var row = document.getElementById(btn.getAttribute("data-deny"));
+      if (!row || row.classList.contains("gone")) { return; }
+      row.classList.add("gone");
+      denied.push(row);
+      showToast("Denied. Nothing was sent.");
+      var next = document.querySelector(".row:not(.gone) .btn-primary");
+      if (next) { next.focus({ preventScroll: true }); }
+    });
+  });
+
+  document.getElementById("toast-x").addEventListener("click", function () {
+    toast.classList.add("hidden");
+  });
+
+  document.getElementById("replay").addEventListener("click", function () {
+    denied.forEach(function (row) { row.classList.remove("gone"); });
+    denied = [];
+    toast.classList.add("hidden");
+  });
+})();
+</script>
+</body>
+</html>

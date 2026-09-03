@@ -38,15 +38,6 @@ from privacyfence.audit_log import current_week, init_audit_logger
 from privacyfence.auto_accept import init_auto_accept_evaluator
 
 
-@pytest.fixture(autouse=True)
-def _fresh_popup_lock():
-    # See test_gate.py's identical fixture for why: gate._popup_lock is a
-    # module-level asyncio.Lock that must not survive across pytest-asyncio's
-    # per-test event loops once anything has actually contended for it.
-    gate._popup_lock = asyncio.Lock()
-    yield
-
-
 @pytest.fixture
 def audit_dir(tmp_path):
     init_audit_logger(str(tmp_path))
@@ -822,56 +813,16 @@ class TestAcceptAllPersistsARealRuleForWrites:
         assert entries[1]["decision"] == "auto_accepted"
         assert entries[1]["auto_accept_rule"] == "label_name_allowlist"
 
-    async def test_a_request_queued_behind_an_in_progress_accept_all_sees_the_new_rule(
-        self, monkeypatch, audit_dir, tmp_path
-    ):
-        """Lock-ordering: the accept-all confirmation and rule persistence
-        happen inside the same _popup_lock acquisition as the initial
-        should_auto_accept() recheck, so a second gated_call for the same
-        label -- merely queued behind the first while _popup_lock is held --
-        must see the rule the first call just created, not show its own
-        dialog. Mirrors test_gate.py::TestQueuedRequestReCheck's read-side
-        equivalent: both calls are simply gathered together with a
-        synchronous fake popup (no manual thread synchronization needed --
-        asyncio's own scheduling plus the lock is what serializes them), and
-        the assertion that matters is that the dialog only ever shows once.
-        """
-        config_path = tmp_path / "settings.yaml"
-        config_path.write_text("auto_accept_rules: {}\n", encoding="utf-8")
-        auto_accept.init_config_path(str(config_path))
-        init_auto_accept_evaluator({})
-
-        popup_calls = []
-
-        def fake_show_popup(*a, **k):
-            popup_calls.append(1)
-            return "accept_all", 0
-
-        monkeypatch.setattr(gate, "show_popup", fake_show_popup)
-        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
-
-        # Both calls add the same label to different messages -- the first
-        # (which acquires _popup_lock first under asyncio's scheduling) shows
-        # a real popup and creates a standing label_name_allowlist rule via
-        # Always allow; the second is queued behind the lock the whole time.
-        first, second = await asyncio.gather(
-            gate.gated_call(**make_kwargs(
-                connector="gmail", tool="gmail_add_label", gate="popup",
-                raw_data=SimpleNamespace(sender="alice@example.com"),
-                args={"message_id": "m1", "label_name": "Newsletters"},
-            )),
-            gate.gated_call(**make_kwargs(
-                connector="gmail", tool="gmail_add_label", gate="popup",
-                raw_data=SimpleNamespace(sender="bob@example.com"),
-                args={"message_id": "m2", "label_name": "Newsletters"},
-            )),
-        )
-
-        assert first is FILTERED
-        assert second is FILTERED
-        # The dialog must have been shown exactly once -- the second caller
-        # was auto-accepted by the in-lock re-check, not popped up again.
-        assert len(popup_calls) == 1
-        entries = read_audit_entries(audit_dir)
-        decisions = sorted(e["decision"] for e in entries)
-        assert decisions == ["accepted_via_accept_all", "auto_accepted"]
+    # test_a_request_queued_behind_an_in_progress_accept_all_sees_the_new_rule
+    # lived here through P2: two concurrent gated_call()s for *different*
+    # args (so not a coalescing case) racing to create the same rule via
+    # Always allow, serialized deterministically by _popup_lock so the
+    # second was guaranteed to see the first's freshly-created rule via the
+    # in-lock re-check rather than showing its own dialog. P3 removes
+    # _popup_lock entirely (docs/https-connector-refactor-plan.md §6) and
+    # with it the guaranteed ordering this test depended on -- two
+    # concurrent calls for genuinely different args now race independently,
+    # with no serialization point left to assert a fixed outcome against.
+    # test_gate.py's TestCoalescing covers the case P3 actually guarantees
+    # instead: two concurrent calls for the *same* args share one card and
+    # one decision.

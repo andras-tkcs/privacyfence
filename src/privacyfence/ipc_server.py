@@ -61,6 +61,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from .approvals import is_pending_result as _is_pending_approval_result
 from .audit_log import AuditEntry, current_week, get_audit_logger
 from .auto_accept import TOOL_TO_GATE, TOOL_TO_OPERATION, get_auto_accept_evaluator, get_current_config
 from .connector import Connector
@@ -124,6 +125,15 @@ class IPCServer:
         # _unattended_connections actually changes, so the menu bar's live
         # indicator can stay current without polling.
         self._unattended_changed_listener: Callable[[], None] | None = None
+
+    @property
+    def connectors(self) -> dict[str, Connector]:
+        """Read-only view of the live connector set -- web/mcp_dispatch.py's
+        ``McpDispatcher`` polls this (rather than holding its own copy) so
+        the single call to ``set_connectors`` below (SettingsController.
+        refresh_connectors) keeps both the bridge and the ``/mcp`` endpoint
+        in sync with no second push needed. See daemon_main.py's wiring."""
+        return self._connectors
 
     def set_connectors(self, connectors: list[Connector]) -> None:
         """Swap in a freshly built connector set (e.g. after the menu bar
@@ -358,6 +368,19 @@ class IPCServer:
             fut.exception()  # mark retrieved so an unwaited future doesn't log "never retrieved"
             raise
         fut.set_result(result)
+        if _is_pending_approval_result(result):
+            # P3 (docs/https-connector-refactor-plan.md §5): gate.py
+            # returned {"status": "approval_pending", ...} instead of real
+            # data or a raised denial -- Claude is expected to re-issue this
+            # exact call once a human decides, and that re-issue has to
+            # reach gate.gated_call() again so it can check the decision
+            # ledger, not be silently handed this same stale pending blob
+            # for up to _DEDUPE_TTL_SECONDS. Popped immediately, same as the
+            # CancelledError branch above, so the very next identical call
+            # starts fresh instead of being deduped against an answer that
+            # was only ever "still waiting" at the moment it was recorded.
+            self._inflight.pop(key, None)
+            return result
         if not self._is_read_only(connector, tool):
             # A write that raised didn't take effect (or at least isn't
             # known to have), so only a successful one invalidates cached

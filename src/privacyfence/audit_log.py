@@ -45,7 +45,23 @@ class AuditEntry:
                             # "unattended_session_started" | "unattended_session_ended" |
                             # "rule_changed_via_bridge_proposal" | "rule_removed_via_bridge_proposal" |
                             # "grant_changed_via_bridge_proposal" | "grant_removed_via_bridge_proposal" |
-                            # "bridge_proposal_no_op" | "error"
+                            # "bridge_proposal_no_op" | "error" |
+                            # "approval_pending" | "expired"
+                            # ("approval_pending": gate.py's deferred-approval protocol (P3,
+                            #  docs/https-connector-refactor-plan.md §5) -- a human didn't decide
+                            #  within the registry's hold window, so gated_call() returned a
+                            #  structured pending result to Claude instead of continuing to block.
+                            #  The eventual real decision -- approved/rejected/accepted_via_accept_all/
+                            #  auto_accepted -- gets its OWN entry, sharing this one's request_id, once
+                            #  something (a re-issued identical call, most often) actually releases on
+                            #  the strength of it; that entry's decided_at (below) is when the human
+                            #  actually clicked, which can be well before this entry's own timestamp
+                            #  if it took a while for anything to come back and collect the decision.)
+                            # ("expired": a pending approval nobody decided within its TTL (still
+                            #  "pending" the whole time -- fail-closed, never silently auto-approved),
+                            #  or one a human DID decide but that decision was never reclaimed by a
+                            #  re-issued call before the shorter decision-ledger TTL ran out. Either
+                            #  way: no data was ever released on this request_id's strength.)
                             # ("error": gate.py's gated_call exited without reaching a normal decision
                             #  branch -- a fallback so an unanticipated failure still leaves a trail)
                             # ("cancelled": the bridge told the daemon to give up on this request
@@ -113,6 +129,15 @@ class AuditEntry:
                               # Self-reported and unverified -- never treated as fact. Empty for
                               # the automatic session-end-on-disconnect path, which has no reason
                               # to attribute.
+    decided_at: str = ""     # ISO-8601 UTC timestamp of when a human actually decided, distinct from
+                              # this entry's own `timestamp` -- set only on a decision that came from
+                              # the deferred-approval decision ledger (approvals.py, P3): a real click
+                              # that happened separately from, and possibly well before, the
+                              # invocation now releasing (or expiring) on the strength of it. Empty
+                              # for every ordinary decided-inline entry, where the two timestamps
+                              # would be the same instant and a second field would say nothing new.
+                              # See gate.py's own module docstring and
+                              # docs/https-connector-refactor-plan.md §5.4.
 
 
 class AuditLogger:
@@ -193,6 +218,8 @@ class AuditLogger:
             "bridge_proposal_no_op": PatternFill("solid", fgColor="F1F3F5"),
             "error":                 PatternFill("solid", fgColor="FF6B6B"),
             "cancelled":             PatternFill("solid", fgColor="E9ECEF"),
+            "approval_pending":      PatternFill("solid", fgColor="E7F0FF"),
+            "expired":               PatternFill("solid", fgColor="FFD8A8"),
         }
 
         ws.append(HEADERS)

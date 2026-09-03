@@ -54,6 +54,29 @@ jobs:
         run: npm run build
         working-directory: bridge
 
+      - name: Install shim dependencies
+        run: npm ci
+        working-directory: mcpb/shim
+
+      # mcpb/shim/'s own suite (daemon discovery/launch, the stdio<->
+      # Streamable HTTP proxy — see docs/https-connector-refactor-plan.md
+      # §12, D11) runs against mcpb/shim/src/*.ts directly via tsx, same as
+      # bridge/'s suite above.
+      - name: Run shim test suite
+        run: npm test
+        working-directory: mcpb/shim
+
+      - name: Type-check shim
+        run: npm run typecheck
+        working-directory: mcpb/shim
+
+      # tests/integration/test_shim_mcp_contract.py spawns the real built
+      # shim.js against a real /mcp endpoint -- same reasoning as the bridge
+      # build step above.
+      - name: Build shim
+        run: npm run build
+        working-directory: mcpb/shim
+
       # Plain `pytest` already fails the step (non-zero exit) on the first
       # failing test — no extra flags needed to enforce a 100% pass rate.
       # pytest-timeout (configured in pyproject.toml) also fails any test
@@ -61,3 +84,45 @@ jobs:
       # coverage report here is informational only — nothing gates on it.
       - name: Run test suite (100% pass rate required)
         run: pytest -v --cov=src/privacyfence --cov-report=term-missing
+
+  test-linux:
+    # The platform-independent subset, starting at P1 (see
+    # docs/https-connector-refactor-plan.md §12 and
+    # docs/testing-policy.md §1): everything under web/, web_approval_ui.py,
+    # card_builder.py, and approval_icons.py has no AppKit/PyObjC dependency
+    # at all, and is what keeps P10's eventual cross-platform claim honest
+    # rather than aspirational. This does not replace the macOS job above --
+    # that one still covers the full suite, including everything genuinely
+    # macOS-only, and is what a PR needs to pass to merge.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      # rumps/pyobjc-framework-* carry a `sys_platform == 'darwin'` marker
+      # (pyproject.toml), so this installs everything else -- the AppKit-only
+      # dependencies are simply absent here, same as on any non-macOS
+      # PrivacyFence deployment.
+      - name: Install dependencies
+        run: pip install -e ".[test]"
+
+      # --ignore the handful of test modules that import an AppKit-tainted
+      # module (approval_popup.py, approval_window.py, dialog_window.py,
+      # menu_bar.py) directly at module scope, so their absence on this
+      # platform is a real ImportError rather than something a skip marker
+      # could catch -- see docs/testing-policy.md §1 for the reasoning and
+      # the parallel case (test_settings_window.py) that *does* defer its
+      # AppKit import far enough to skip cleanly here instead. tests/
+      # integration/ is excluded too -- it drives the real Node bridge/shim,
+      # out of scope for this job (covered on the macOS job instead).
+      - name: Run the platform-independent test subset
+        run: >
+          pytest tests/unit -v
+          --ignore=tests/unit/test_approval_popup.py
+          --ignore=tests/unit/test_approval_window.py
+          --ignore=tests/unit/test_dialog_window.py
+          --ignore=tests/unit/test_menu_bar.py
