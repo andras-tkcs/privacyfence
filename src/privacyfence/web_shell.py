@@ -147,16 +147,20 @@ _STREAM_JS = """
   // docs/approval-list-ui-ux.md §4.3). See notificationBody() below for
   // what each level is allowed to read off a pending-approval row.
   var NOTIFICATIONS_DETAIL = %(notifications_detail)s;
-  // Exposed globally so the settings page's own notifications card
-  // (settings_window_html.py's renderNotificationsCard) can read the same
-  // config flags -- that module's JS is shared with the native settings
-  // window, which never loads this script at all, so it treats a missing
-  // flag as "on" (feature-detecting Notification support instead) rather
-  // than assuming these variables exist; __pfNotificationsDetail missing
-  // is that same "no such config surface here" case, so the card omits
-  // the detail-level line entirely on native rather than guessing.
+  // __pfNotificationsEnabled is exposed globally so the settings page's own
+  // notifications card (settings_window_html.py's renderNotificationsCard)
+  // can read the same config flag -- that module's JS is shared with the
+  // native settings window, which never loads this script at all, so it
+  // treats a missing flag as "on" (feature-detecting Notification support
+  // instead) rather than assuming this variable exists. There is no
+  // equivalent __pfNotificationsDetail read anywhere else: the card's own
+  // detail-level control is a real, mutable setting
+  // (SettingsController.set_notifications_detail) sourced from that page's
+  // own `state.general.notifications_detail` on every render, not from
+  // this per-page-load constant -- NOTIFICATIONS_DETAIL below stays local
+  // to this closure, used only by notificationBody() to decide what an
+  // actual browser notification on *this* page is allowed to say.
   window.__pfNotificationsEnabled = NOTIFICATIONS_ENABLED;
-  window.__pfNotificationsDetail = NOTIFICATIONS_DETAIL;
 
   var dot = document.getElementById('pf-shell-live-dot');
   var label = document.getElementById('pf-shell-live-label');

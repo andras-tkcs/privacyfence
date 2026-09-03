@@ -248,6 +248,12 @@ ALL_CONNECTORS: list[str] = [
     "slack", "jira", "confluence", "salesforce", "telegram",
 ]
 
+# web.notifications.detail's own three values (settings.yaml.example,
+# docs/approval-list-ui-ux.md §4.3) -- see set_notifications_detail below
+# and web_shell.py's notificationBody() for what each level is allowed to
+# read off a pending-approval row.
+NOTIFICATIONS_DETAIL_LEVELS: tuple[str, ...] = ("minimal", "standard", "detailed")
+
 # Top-level groups shown in the Auto-accept Rules page specifically --
 # distinct from ALL_CONNECTORS because "sheets" and "docs" aren't connectors
 # (neither has a separate auth, org-config section, or entry in
@@ -825,6 +831,28 @@ class SettingsController:
         pii_cfg[category_key] = enabled
         self._save_config(cfg)
         set_pii_category_enabled(category_key, enabled)
+        return self.snapshot()
+
+    # ------------------------------------------------------------------ #
+    # Approval notifications (web.notifications -- see web_shell.py's
+    # notificationBody() for what each detail level is allowed to say)
+    # ------------------------------------------------------------------ #
+
+    def set_notifications_detail(self, level: str) -> dict[str, Any]:
+        """The Approval Notifications card's segmented control
+        (settings_window_html.py's renderNotificationsCard) -- same
+        validate/persist/return-snapshot shape as set_log_level below.
+        Unlike set_log_level there is nothing to hot-apply in *this*
+        process: the value only ever reaches a browser tab by being baked
+        into a page's own web_shell.wrap() call at request time (routes_
+        settings.py's settings_page reads it fresh off this same config on
+        every request, so the very next render -- including this action's
+        own response -- already reflects it)."""
+        if level not in NOTIFICATIONS_DETAIL_LEVELS:
+            return self.snapshot()
+        cfg = self._load_config()
+        cfg.setdefault("web", {}).setdefault("notifications", {})["detail"] = level
+        self._save_config(cfg)
         return self.snapshot()
 
     # ------------------------------------------------------------------ #
@@ -1608,6 +1636,7 @@ class SettingsController:
     def _general_state(self, cfg: dict[str, Any]) -> dict[str, Any]:
         pii_cfg = cfg.get("pii_detection", {}) or {}
         update_cfg = cfg.get("update_check", {}) or {}
+        notifications_cfg = (cfg.get("web", {}) or {}).get("notifications", {}) or {}
 
         org_path = org_dir() / "org_config.json"
         org_installed = org_path.exists()
@@ -1625,6 +1654,15 @@ class SettingsController:
             "pii_financial": pii_cfg.get("detect_financial_figures", True),
             "update_check_enabled": update_cfg.get("enabled", True),
             "update_check_beta": update_cfg.get("include_beta", False),
+            # The Approval Notifications card's segmented control -- see
+            # set_notifications_detail above. notifications_enabled mirrors
+            # the same config's enabled flag (already reaching the card a
+            # different way, via window.__pfNotificationsEnabled -- baked
+            # into web_shell.wrap() at request time -- but carried here too
+            # so the card's one render() call has everything it needs off
+            # `state` alone).
+            "notifications_enabled": notifications_cfg.get("enabled", True),
+            "notifications_detail": notifications_cfg.get("detail", "minimal"),
             # §16.2.4: the web General page's own update-available banner --
             # see skip_update/remind_later_update and _on_update_check_done
             # above for the actions it drives.

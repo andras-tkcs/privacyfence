@@ -468,38 +468,53 @@ _JS = r"""
   // won't fire later: its own guard is `Notification.permission ===
   // 'default'`, which this card's own Enable click has already moved past.
   //
-  // window.__pfNotificationsEnabled/__pfNotificationsDetail (set by
-  // web_shell.py's own script, which runs before this one's
-  // DOMContentLoaded-deferred first render -- see that module's docstring)
-  // are undefined in the one place this function's shared JS also runs
-  // without that script at all: the native settings window
-  // (loadHTMLString_baseURL_(html, None), no origin at all). `Notification`
-  // is typically unsupported there too for the same reason, so the
-  // feature-detect below already hides this card on native in the common
-  // case; the config-disabled branch and the detail-level line only ever
-  // apply to the web surface, where both flags are always set.
+  // window.__pfNotificationsEnabled (set by web_shell.py's own script,
+  // which runs before this one's DOMContentLoaded-deferred first render --
+  // see that module's docstring) is undefined in the one place this
+  // function's shared JS also runs without that script at all: the native
+  // settings window (loadHTMLString_baseURL_(html, None), no origin at
+  // all). `Notification` is typically unsupported there too for the same
+  // reason, so the feature-detect below already hides this card on native
+  // in the common case; the config-disabled branch only ever applies to
+  // the web surface, where that flag is always set.
   //
   // web.notifications.detail (settings.yaml.example, docs/
-  // approval-list-ui-ux.md §4.3) has no toggle/action of its own -- it's
-  // config-file-only, same posture as web.notifications.enabled -- so this
-  // card surfaces the effective level as read-only information (what a
-  // tier-1 notification is currently allowed to say) rather than an
-  // editable control.
+  // approval-list-ui-ux.md §4.3) -- unlike the enabled flag above, this one
+  // *is* a real control: set_notifications_detail persists straight to
+  // config (settings_controller.py) and the returned snapshot's own
+  // general.notifications_detail is what drives this segmented control's
+  // active option, so a click here needs no browser permission at all and
+  // no page reload to take -- the response to that one POST already
+  // carries the new state.general the shared render() dispatch re-renders
+  // from (see settings_window_html.py's own bridge protocol docstring).
   var NOTIFICATIONS_DETAIL_LABELS = {
-    minimal: 'Minimal -- just the pending count',
-    standard: 'Standard -- adds connector, tool, and read/write direction',
-    detailed: 'Detailed -- also adds the approval\'s own summary line',
+    minimal: 'Minimal', standard: 'Standard', detailed: 'Detailed',
+  };
+  var NOTIFICATIONS_DETAIL_DESCRIPTIONS = {
+    minimal: 'Just the pending count -- "1 approval pending".',
+    standard: 'Adds connector, tool, and read/write direction.',
+    detailed: 'Also adds the approval\'s own summary line -- the one level that can put gated content on a lock screen.',
   };
 
-  function renderNotificationsDetailHint() {
-    var detail = window.__pfNotificationsDetail;
-    if (typeof detail !== 'string') { return ''; }
-    var label = NOTIFICATIONS_DETAIL_LABELS[detail] || detail;
-    return '<div class="pf-export-hint">Detail level: ' + esc(label) + ' (web.notifications.detail)</div>';
+  function renderNotificationsDetailControl(state) {
+    // pf-audit-card-row/pf-audit-card-title -- the same stacked-row
+    // treatment renderAudit's own "Log level" segmented control uses below
+    // (a second row inside the same card, not a fresh pf-card-row, which
+    // has no bottom-margin-between-rows rule of its own).
+    var current = state.general.notifications_detail || 'minimal';
+    var html = '<div class="pf-audit-card-row"><div>';
+    html += '<div class="pf-audit-card-title">Detail level</div>';
+    html += '<div class="pf-card-desc">' + esc(NOTIFICATIONS_DETAIL_DESCRIPTIONS[current] || '') + '</div></div>';
+    html += segGroupHtml(['minimal', 'standard', 'detailed'].map(function (lvl) {
+      return { label: NOTIFICATIONS_DETAIL_LABELS[lvl], active: current === lvl, action: 'set_notifications_detail', payload: { level: lvl } };
+    }), 'Notification detail level');
+    html += '</div>';
+    return html;
   }
 
-  function renderNotificationsCard() {
-    var html = '<div class="pf-card"><div class="pf-card-row"><div>';
+  function renderNotificationsCard(state) {
+    var html = '<div class="pf-card pf-audit-card">';
+    html += '<div class="pf-audit-card-row"><div>';
     html += '<div class="pf-card-title">Approval Notifications</div>';
     html += '<div class="pf-card-desc">A desktop notification when Claude needs your approval and this tab isn\'t focused -- from your browser, no server or push service involved.</div></div>';
     if (typeof Notification === 'undefined') {
@@ -507,13 +522,21 @@ _JS = r"""
     } else if (window.__pfNotificationsEnabled === false) {
       html += '<div class="pf-export-hint">Turned off in configuration (web.notifications.enabled).</div>';
     } else if (Notification.permission === 'granted') {
-      html += '<div class="pf-export-hint">Enabled</div>' + renderNotificationsDetailHint();
+      html += '<div class="pf-export-hint">Enabled</div>';
     } else if (Notification.permission === 'denied') {
       html += '<div class="pf-export-hint">Blocked -- allow notifications for this site in your browser\'s settings, then reload.</div>';
     } else {
-      html += '<div class="pf-btn-primary" role="button" tabindex="0" aria-label="Enable notifications" data-notif-enable="1">Enable</div>' + renderNotificationsDetailHint();
+      html += '<div class="pf-btn-primary" role="button" tabindex="0" aria-label="Enable notifications" data-notif-enable="1">Enable</div>';
     }
-    html += '</div></div>';
+    html += '</div>';
+    // The detail-level control is independent of Notification.permission
+    // (it's a config value, not a browser grant) -- shown whenever this
+    // surface could act on it at all, i.e. whenever the card itself isn't
+    // hidden or config-disabled above.
+    if (typeof Notification !== 'undefined' && window.__pfNotificationsEnabled !== false) {
+      html += renderNotificationsDetailControl(state);
+    }
+    html += '</div>';
     return html;
   }
 
@@ -521,7 +544,7 @@ _JS = r"""
     var g = state.general;
     var html = '<div class="pf-page">';
     html += '<div class="pf-page-title">General</div>';
-    html += renderNotificationsCard();
+    html += renderNotificationsCard(state);
 
     // §16.2.4: the web surface's replacement for _show_update_available_
     // alert's native rumps.alert() -- an in-page banner whose three

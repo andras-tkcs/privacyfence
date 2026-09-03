@@ -394,6 +394,52 @@ class TestPiiDetection:
         assert cfg["pii_detection"].get("detect_financial_figures", True) is True
 
 
+class TestNotificationsDetail:
+    def test_persists_under_web_notifications_detail(self, controller):
+        controller.set_notifications_detail("detailed")
+
+        assert controller._load_config()["web"]["notifications"]["detail"] == "detailed"
+
+    def test_rejects_an_unknown_level(self, controller):
+        before = controller._load_config()
+
+        controller.set_notifications_detail("chatty")
+
+        assert controller._load_config() == before
+
+    def test_creates_the_web_notifications_block_if_absent(self, controller):
+        # The fixture's config has no `web:` key at all -- setdefault chain
+        # must create it rather than assuming toggle_settings_enabled or
+        # some other action already has.
+        assert "web" not in controller._load_config()
+
+        controller.set_notifications_detail("standard")
+
+        assert controller._load_config()["web"]["notifications"]["detail"] == "standard"
+
+    def test_does_not_disturb_an_existing_enabled_flag(self, controller):
+        cfg = controller._load_config()
+        cfg.setdefault("web", {}).setdefault("notifications", {})["enabled"] = False
+        controller._save_config(cfg)
+
+        controller.set_notifications_detail("minimal")
+
+        saved = controller._load_config()["web"]["notifications"]
+        assert saved == {"enabled": False, "detail": "minimal"}
+
+    def test_snapshot_general_reflects_the_current_level(self, controller):
+        controller.set_notifications_detail("detailed")
+
+        general = controller.snapshot()["general"]
+        assert general["notifications_detail"] == "detailed"
+        assert general["notifications_enabled"] is True
+
+    def test_snapshot_general_defaults_when_unconfigured(self, controller):
+        general = controller.snapshot()["general"]
+        assert general["notifications_detail"] == "minimal"
+        assert general["notifications_enabled"] is True
+
+
 class TestUpdateCheck:
     def test_toggle_enabled_flips_and_saves(self, controller):
         controller.toggle_update_check()

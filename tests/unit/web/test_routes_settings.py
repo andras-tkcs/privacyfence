@@ -77,11 +77,41 @@ class TestSettingsPage:
         assert r.headers.get("cache-control") == "no-store"
 
     def test_notifications_enabled_config_reaches_the_page(self, controller):
-        app = create_app(controller, token=TOKEN, notifications_enabled=False)
+        # settings_page reads this off the controller's own live snapshot
+        # (general.notifications_enabled), not the notifications_enabled=
+        # closure arg below -- that arg is only ever the daemon-startup
+        # default a snapshot's own general dict doesn't have yet, which
+        # never actually happens once a controller is wired (see
+        # test_notifications_detail_reflects_a_live_config_edit_without_
+        # restart below for why the two must agree). So this test edits
+        # the same config file the controller reads, the same way a real
+        # `web.notifications.enabled: false` in settings.yaml would.
+        cfg = controller._load_config()
+        cfg.setdefault("web", {}).setdefault("notifications", {})["enabled"] = False
+        controller._save_config(cfg)
+        app = create_app(controller, token=TOKEN, notifications_enabled=True)
         c = TestClient(app, base_url="http://localhost")
         c.cookies.set("pf_session", TOKEN)
         r = c.get("/settings")
         assert "NOTIFICATIONS_ENABLED = false" in r.text
+
+    def test_notifications_detail_reflects_a_live_config_edit_without_restart(self, controller):
+        # settings_page reads notifications_enabled/detail off this
+        # request's own fresh snapshot, not the notifications_detail=
+        # "minimal" default create_app was built with (server.py's
+        # daemon-startup value) -- so a set_notifications_detail() call in
+        # between two GETs must change what the *second* GET renders, with
+        # no server restart and no create_app() rebuild.
+        app = create_app(controller, token=TOKEN, notifications_detail="minimal")
+        c = TestClient(app, base_url="http://localhost")
+        c.cookies.set("pf_session", TOKEN)
+        before = c.get("/settings")
+        assert 'NOTIFICATIONS_DETAIL = "minimal"' in before.text
+
+        controller.set_notifications_detail("detailed")
+
+        after = c.get("/settings")
+        assert 'NOTIFICATIONS_DETAIL = "detailed"' in after.text
 
 
 class TestActionDispatch:
@@ -170,6 +200,22 @@ class TestActionDispatch:
             headers={"Content-Type": "application/json"},
         )
         assert r.status_code == 400
+
+    def test_set_notifications_detail_persists_and_returns_it_in_general(self, client):
+        _authed(client)
+        r = client.post("/api/settings/set_notifications_detail", json={"level": "detailed", "csrf": TOKEN})
+        assert r.status_code == 200
+        assert r.json()["general"]["notifications_detail"] == "detailed"
+
+    def test_set_notifications_detail_rejects_an_unknown_level(self, client, controller):
+        _authed(client)
+        client.post("/api/settings/set_notifications_detail", json={"level": "standard", "csrf": TOKEN})
+        r = client.post("/api/settings/set_notifications_detail", json={"level": "bogus", "csrf": TOKEN})
+        assert r.status_code == 200
+        # Same shape as set_log_level's own bad-value handling -- an
+        # invalid value is a silent no-op snapshot, not a 400 (the
+        # segmented control only ever sends its own three literals).
+        assert r.json()["general"]["notifications_detail"] == "standard"
 
 
 class TestConnectorAuthenticationEndToEnd:
