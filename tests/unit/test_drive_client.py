@@ -1736,6 +1736,107 @@ class TestGetSheetValues:
         with pytest.raises(DriveClientError, match="get_sheet_values"):
             client.get_sheet_values("sheet1", "A1:B2")
 
+    def test_defaults_to_formatted_value_render_option(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.values.return_value.get.return_value.execute.return_value = {
+            "values": [["$1.00"]]
+        }
+        client = make_client_with_sheets(sheets_service)
+
+        client.get_sheet_values("sheet1", "Sheet1!A1")
+
+        sheets_service.spreadsheets.return_value.values.return_value.get.assert_called_once_with(
+            spreadsheetId="sheet1", range="Sheet1!A1", valueRenderOption="FORMATTED_VALUE"
+        )
+
+    def test_formula_render_option_returns_formula_text(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.values.return_value.get.return_value.execute.return_value = {
+            "values": [["=A1+A2"]]
+        }
+        client = make_client_with_sheets(sheets_service)
+
+        values = client.get_sheet_values("sheet1", "Sheet1!A1", value_render_option="formula")
+
+        assert values == [["=A1+A2"]]
+        sheets_service.spreadsheets.return_value.values.return_value.get.assert_called_once_with(
+            spreadsheetId="sheet1", range="Sheet1!A1", valueRenderOption="FORMULA"
+        )
+
+    def test_rejects_invalid_render_option(self):
+        client = make_client_with_sheets(MagicMock())
+        with pytest.raises(DriveClientError, match="Invalid value_render_option"):
+            client.get_sheet_values("sheet1", "A1:B2", value_render_option="RAW")
+
+
+class TestGetSheetFormatting:
+    def test_requires_spreadsheet_id_and_range(self):
+        client = make_client_with_sheets(MagicMock())
+        with pytest.raises(DriveClientError, match="requires spreadsheet_id and range"):
+            client.get_sheet_formatting("", "A1:B2")
+        with pytest.raises(DriveClientError, match="requires spreadsheet_id and range"):
+            client.get_sheet_formatting("sheet1", "")
+
+    def test_summarizes_only_non_default_formatting(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.get.return_value.execute.return_value = {
+            "sheets": [{
+                "data": [{
+                    "rowData": [
+                        {"values": [
+                            {"userEnteredFormat": {
+                                "textFormat": {"bold": True, "foregroundColor": {"red": 1}},
+                                "backgroundColor": {"green": 1},
+                                "numberFormat": {"type": "NUMBER", "pattern": "0.00%"},
+                                "horizontalAlignment": "CENTER",
+                                "verticalAlignment": "MIDDLE",
+                                "wrapStrategy": "WRAP",
+                            }},
+                            {"userEnteredFormat": {}},
+                        ]},
+                    ]
+                }]
+            }]
+        }
+        client = make_client_with_sheets(sheets_service)
+
+        grid = client.get_sheet_formatting("sheet1", "Sheet1!A1:B1")
+
+        assert grid == [[
+            {
+                "bold": True,
+                "text_color": "#ff0000",
+                "background_color": "#00ff00",
+                "number_format": "0.00%",
+                "horizontal_alignment": "CENTER",
+                "vertical_alignment": "MIDDLE",
+                "wrap_strategy": "WRAP",
+            },
+            {},
+        ]]
+        sheets_service.spreadsheets.return_value.get.assert_called_once_with(
+            spreadsheetId="sheet1",
+            ranges=["Sheet1!A1:B1"],
+            fields=(
+                "sheets.data.rowData.values.userEnteredFormat"
+                "(textFormat(bold,italic,foregroundColor),backgroundColor,numberFormat,"
+                "horizontalAlignment,verticalAlignment,wrapStrategy)"
+            ),
+        )
+
+    def test_no_sheets_key_yields_empty_grid(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.get.return_value.execute.return_value = {}
+        client = make_client_with_sheets(sheets_service)
+        assert client.get_sheet_formatting("sheet1", "A1:B2") == []
+
+    def test_http_error_becomes_drive_client_error(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.get.return_value.execute.side_effect = http_error(404)
+        client = make_client_with_sheets(sheets_service)
+        with pytest.raises(DriveClientError, match="get_sheet_formatting"):
+            client.get_sheet_formatting("sheet1", "A1:B2")
+
 
 class TestWriteSheetValues:
     def test_requires_spreadsheet_id_and_range(self):
