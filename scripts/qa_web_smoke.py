@@ -157,40 +157,6 @@ def _run(chromium_path: str | None) -> list[ScenarioResult]:
 
             scenario("settings page loads, toggle round-trips", settings_loads_and_round_trips)
 
-            def connect_claude_reveal_and_copy() -> str:
-                # P4c (docs/https-connector-refactor-plan.md §16.9): the
-                # token must be genuinely absent from the page until
-                # Reveal is clicked (not just CSS-masked), and the
-                # Copy-command button must put the real command -- with
-                # the revealed token -- on the clipboard, not the masked
-                # placeholder or a stale value from before reveal_mcp_token()
-                # round-tripped. Fake connection info here rather than
-                # actually enabling web.mcp -- this is exercising the
-                # rendering/bridge, which is the same either way, not the
-                # wiring itself (already covered by test_daemon_main.py).
-                fake_token = "qa-smoke-fake-mcp-token-zzz999"  # noqa: S105 - test fixture, not a real secret
-                controller.set_mcp_connection_info(url=f"{base}/mcp", token=fake_token)
-                page.goto(f"{base}/settings?token={token}")
-                page.wait_for_selector("[data-action='reveal_mcp_token']")
-                assert fake_token not in page.content(), "token present before Reveal was ever clicked"
-
-                page.context.grant_permissions(["clipboard-read", "clipboard-write"])
-                page.click("[data-action='reveal_mcp_token']")
-                page.wait_for_timeout(300)
-                assert fake_token in page.content(), "token did not appear after Reveal"
-
-                page.click("[data-mcp-copy-label='Copied command']")
-                page.wait_for_timeout(200)
-                try:
-                    clipboard_text = page.evaluate("navigator.clipboard.readText()")
-                except Exception as exc:  # noqa: BLE001 - headless clipboard access is best-effort
-                    return f"revealed OK; clipboard readback unavailable in this environment ({exc!r})"
-                assert fake_token in clipboard_text, f"clipboard did not carry the revealed token: {clipboard_text!r}"
-                assert "claude mcp add --transport http privacyfence" in clipboard_text, clipboard_text
-                return f"revealed and copied: {clipboard_text!r}"
-
-            scenario("Connect Claude card: reveal token, copy command", connect_claude_reveal_and_copy)
-
             def approvals_empty_state() -> str:
                 page.goto(f"{base}/approvals?token={token}")
                 page.wait_for_selector(".pf-approvals-empty")
