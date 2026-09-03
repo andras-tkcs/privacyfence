@@ -122,6 +122,30 @@ _HEADING_PREFIXES = [
     ("# ", "HEADING_1"),
 ]
 
+# CommonMark thematic break: up to 3 leading spaces, then 3+ of the same
+# character among -, _, * with only whitespace between/after (e.g. `---`,
+# `___`, `* * *`). Rendered as an empty paragraph with a bottom border --
+# the Docs API has no native "insert horizontal rule" request (the Docs
+# UI's Insert > Horizontal line isn't exposed to batchUpdate), so a
+# bottom-bordered empty paragraph is the closest a document built through
+# this API can get to one. Previously unrecognized entirely: `---` on its
+# own line landed as the literal 3-character string, not a divider and not
+# an error either (see test_thematic_break_becomes_bordered_paragraph).
+_THEMATIC_BREAK_RE = _re.compile(
+    r"^ {0,3}(?:-[ \t]*){3,}$"
+    r"|^ {0,3}(?:_[ \t]*){3,}$"
+    r"|^ {0,3}(?:\*[ \t]*){3,}$"
+)
+
+# Sentinel para_style value (never a real Docs namedStyleType) marking a
+# thematic-break line for the bottom-border treatment above instead of the
+# updateParagraphStyle/namedStyleType path every heading uses.
+_DIVIDER_STYLE = "PRIVACYFENCE_DIVIDER"
+
+# Approximates the Docs UI's own horizontal-line color; there's no native
+# element to match exactly (see _THEMATIC_BREAK_RE above).
+_DIVIDER_BORDER_COLOR = "#cccccc"
+
 # Fixed highlight color for ==text== spans (Docs UI's default highlighter
 # yellow swatch) -- v1 has no per-span color argument, see design doc.
 _DEFAULT_HIGHLIGHT_COLOR = "#FFF59D"
@@ -171,34 +195,85 @@ class InlineRun(NamedTuple):
     url: str = ""
 
 
-def _parse_inline_runs(text: str) -> list[InlineRun]:
-    """Return a list of InlineRun from an inline Markdown string."""
+def _parse_inline_runs(
+    text: str,
+    *,
+    bold: bool = False,
+    italic: bool = False,
+    strikethrough: bool = False,
+    underline: bool = False,
+    highlight: bool = False,
+) -> list[InlineRun]:
+    """Return a list of InlineRun from an inline Markdown string.
+
+    bold/italic/*/underline/highlight nest with each other -- a matched
+    span's inner text is itself re-parsed for further inline syntax, with
+    the enclosing span's style(s) (the keyword-only params below) carried
+    down so they combine with whatever style the inner span applies. E.g.
+    ``==**Follow-up**==`` yields one run, text "Follow-up", both bold and
+    highlight True -- previously the outer ``==...==`` match swallowed the
+    inner ``**...**`` as literal, unparsed text (see regression test
+    ``test_highlight_wrapping_bold_nests_both_styles``). `code` spans and
+    link text are leaves and are inserted verbatim, not re-parsed --
+    matching CommonMark's treatment of code spans as literal text.
+    """
     runs: list[InlineRun] = []
     last = 0
+
+    def literal(s: str) -> InlineRun:
+        return InlineRun(
+            s, bold=bold, italic=italic, strikethrough=strikethrough,
+            underline=underline, highlight=highlight,
+        )
+
     for m in _INLINE_RE.finditer(text):
         if m.start() > last:
-            runs.append(InlineRun(text[last : m.start()]))
+            runs.append(literal(text[last : m.start()]))
         if m.group(1):  # bold+italic
-            runs.append(InlineRun(m.group(1), bold=True, italic=True))
+            runs.extend(_parse_inline_runs(
+                m.group(1), bold=True, italic=True,
+                strikethrough=strikethrough, underline=underline, highlight=highlight,
+            ))
         elif m.group(2):  # bold
-            runs.append(InlineRun(m.group(2), bold=True))
+            runs.extend(_parse_inline_runs(
+                m.group(2), bold=True, italic=italic,
+                strikethrough=strikethrough, underline=underline, highlight=highlight,
+            ))
         elif m.group(3):  # italic
-            runs.append(InlineRun(m.group(3), italic=True))
+            runs.extend(_parse_inline_runs(
+                m.group(3), bold=bold, italic=True,
+                strikethrough=strikethrough, underline=underline, highlight=highlight,
+            ))
         elif m.group(4):  # strikethrough
-            runs.append(InlineRun(m.group(4), strikethrough=True))
+            runs.extend(_parse_inline_runs(
+                m.group(4), bold=bold, italic=italic,
+                strikethrough=True, underline=underline, highlight=highlight,
+            ))
         elif m.group(5):  # underline
-            runs.append(InlineRun(m.group(5), underline=True))
+            runs.extend(_parse_inline_runs(
+                m.group(5), bold=bold, italic=italic,
+                strikethrough=strikethrough, underline=True, highlight=highlight,
+            ))
         elif m.group(6):  # highlight
-            runs.append(InlineRun(m.group(6), highlight=True))
-        elif m.group(7):  # code
-            runs.append(InlineRun(m.group(7), code=True))
-        elif m.group(8):  # link
+            runs.extend(_parse_inline_runs(
+                m.group(6), bold=bold, italic=italic,
+                strikethrough=strikethrough, underline=underline, highlight=True,
+            ))
+        elif m.group(7):  # code -- leaf, not re-parsed
+            runs.append(InlineRun(
+                m.group(7), bold=bold, italic=italic, strikethrough=strikethrough,
+                underline=underline, highlight=highlight, code=True,
+            ))
+        elif m.group(8):  # link -- leaf, not re-parsed
             link_text = m.group(8).replace("\\[", "[").replace("\\]", "]")
-            runs.append(InlineRun(link_text, url=m.group(9)))
+            runs.append(InlineRun(
+                link_text, bold=bold, italic=italic, strikethrough=strikethrough,
+                underline=underline, highlight=highlight, url=m.group(9),
+            ))
         last = m.end()
     if last < len(text):
-        runs.append(InlineRun(text[last:]))
-    return runs or [InlineRun("")]
+        runs.append(literal(text[last:]))
+    return runs or [literal("")]
 
 
 def _markdown_to_docs_requests(markdown: str, start_index: int = 1) -> list[dict]:
@@ -220,22 +295,26 @@ def _markdown_to_docs_requests(markdown: str, start_index: int = 1) -> list[dict
         para_style = "NORMAL_TEXT"
         list_preset = ""
         list_level = 0
-        for prefix, style in _HEADING_PREFIXES:
-            if line.startswith(prefix):
-                line = line[len(prefix):]
-                para_style = style
-                break
+        if _THEMATIC_BREAK_RE.match(line):
+            para_style = _DIVIDER_STYLE
+            line = ""
         else:
-            stripped = line.lstrip(" \t")
-            indent_width = len(line) - len(stripped)
-            if _re.match(r"^[-*+] ", stripped):
-                line = stripped[2:]
-                list_preset = "BULLET_DISC_CIRCLE_SQUARE"
-                list_level = min(indent_width // 2, _MAX_LIST_NESTING)
-            elif _re.match(r"^\d+\. ", stripped):
-                line = _re.sub(r"^\d+\. ", "", stripped)
-                list_preset = "NUMBERED_DECIMAL_ALPHA_ROMAN"
-                list_level = min(indent_width // 2, _MAX_LIST_NESTING)
+            for prefix, style in _HEADING_PREFIXES:
+                if line.startswith(prefix):
+                    line = line[len(prefix):]
+                    para_style = style
+                    break
+            else:
+                stripped = line.lstrip(" \t")
+                indent_width = len(line) - len(stripped)
+                if _re.match(r"^[-*+] ", stripped):
+                    line = stripped[2:]
+                    list_preset = "BULLET_DISC_CIRCLE_SQUARE"
+                    list_level = min(indent_width // 2, _MAX_LIST_NESTING)
+                elif _re.match(r"^\d+\. ", stripped):
+                    line = _re.sub(r"^\d+\. ", "", stripped)
+                    list_preset = "NUMBERED_DECIMAL_ALPHA_ROMAN"
+                    list_level = min(indent_width // 2, _MAX_LIST_NESTING)
         parsed.append((_parse_inline_runs(line), para_style, list_preset, list_level))
 
     # Build full plain text and record per-line doc positions. A list line's
@@ -256,7 +335,11 @@ def _markdown_to_docs_requests(markdown: str, start_index: int = 1) -> list[dict
         line_end = len(full_text) + start_index
         line_spans.append((line_start, line_end, para_style, runs, list_preset, text_start))
 
-    if not full_text.strip("\n\t"):
+    # A lone divider line has no text of its own -- it's still real content
+    # (a bordered paragraph), so the "nothing but blank lines" short-circuit
+    # below must not also swallow it.
+    has_divider = any(para_style == _DIVIDER_STYLE for _, para_style, _, _ in parsed)
+    if not full_text.strip("\n\t") and not has_divider:
         return []
 
     requests: list[dict] = [
@@ -276,7 +359,29 @@ def _markdown_to_docs_requests(markdown: str, start_index: int = 1) -> list[dict
         list_level = text_start - line_start
         line_start -= tabs_stripped_so_far
         line_end -= tabs_stripped_so_far
-        if para_style != "NORMAL_TEXT":
+        if para_style == _DIVIDER_STYLE:
+            requests.append(
+                {
+                    "updateParagraphStyle": {
+                        "range": {
+                            "startIndex": line_start,
+                            "endIndex": line_end,
+                        },
+                        "paragraphStyle": {
+                            "borderBottom": {
+                                "color": {
+                                    "color": {"rgbColor": _hex_to_rgb_dict(_DIVIDER_BORDER_COLOR)}
+                                },
+                                "width": {"magnitude": 1, "unit": "PT"},
+                                "padding": {"magnitude": 1, "unit": "PT"},
+                                "dashStyle": "SOLID",
+                            }
+                        },
+                        "fields": "borderBottom",
+                    }
+                }
+            )
+        elif para_style != "NORMAL_TEXT":
             requests.append(
                 {
                     "updateParagraphStyle": {
@@ -577,6 +682,40 @@ def _hex_to_rgb_dict(hex_color: str) -> dict:
     except ValueError as exc:
         raise DriveClientError(f"Invalid hex color {hex_color!r}: {exc}") from exc
     return {"red": r / 255, "green": g / 255, "blue": b / 255}
+
+
+def _rgb_dict_to_hex(color: dict) -> str:
+    """Convert a Sheets API Color dict (0..1 floats, missing channel = 0) to
+    '#rrggbb' -- the inverse of _hex_to_rgb_dict."""
+    r = round(color.get("red", 0) * 255)
+    g = round(color.get("green", 0) * 255)
+    b = round(color.get("blue", 0) * 255)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _cell_format_summary(fmt: dict) -> dict:
+    """Compact one cell's userEnteredFormat down to the aspects
+    format_sheet_range can set, omitting anything left at its default so an
+    unformatted cell summarizes to {}."""
+    out: dict = {}
+    text_style = fmt.get("textFormat", {})
+    if text_style.get("bold"):
+        out["bold"] = True
+    if text_style.get("italic"):
+        out["italic"] = True
+    if "foregroundColor" in text_style:
+        out["text_color"] = _rgb_dict_to_hex(text_style["foregroundColor"])
+    if "backgroundColor" in fmt:
+        out["background_color"] = _rgb_dict_to_hex(fmt["backgroundColor"])
+    if "numberFormat" in fmt:
+        out["number_format"] = fmt["numberFormat"].get("pattern", "")
+    if "horizontalAlignment" in fmt:
+        out["horizontal_alignment"] = fmt["horizontalAlignment"]
+    if "verticalAlignment" in fmt:
+        out["vertical_alignment"] = fmt["verticalAlignment"]
+    if "wrapStrategy" in fmt:
+        out["wrap_strategy"] = fmt["wrapStrategy"]
+    return out
 
 
 class DriveClientError(Exception):
@@ -1103,9 +1242,13 @@ class DriveClient:
 
         Supports: headings (# through ######), **bold**, *italic*,
         ***bold-italic***, ~~strikethrough~~, __underline__, `code`,
-        ==highlight==, [link](url) (escape a literal `[` or `]` in the link
-        text as `\\[`/`\\]`), unordered/numbered lists (nest a level by
-        indenting 2 spaces per level), GFM pipe tables, and plain paragraphs.
+        ==highlight== (these five nest freely with each other, e.g.
+        ==**bold and highlighted**==), [link](url) (escape a literal `[` or
+        `]` in the link text as `\\[`/`\\]`), unordered/numbered lists (nest
+        a level by indenting 2 spaces per level), GFM pipe tables, `---` /
+        `***` / `___` on their own line as a horizontal-rule divider
+        (rendered as a bottom-bordered empty paragraph -- the Docs API has
+        no native horizontal-rule element), and plain paragraphs.
         Clears existing document content before writing.
         Requires the ``drive`` or ``documents`` OAuth scope (already granted).
         """
@@ -1587,22 +1730,79 @@ class DriveClient:
         logger.info("list_sheets %s returned %d tab(s)", spreadsheet_id, len(sheets))
         return sheets
 
-    def get_sheet_values(self, spreadsheet_id: str, range_a1: str) -> list[list]:
-        """Read a range of cell values (A1 notation, e.g. 'Sheet1!A1:C10')."""
+    def get_sheet_values(
+        self, spreadsheet_id: str, range_a1: str, value_render_option: str = "FORMATTED_VALUE"
+    ) -> list[list]:
+        """Read a range of cell values (A1 notation, e.g. 'Sheet1!A1:C10').
+
+        ``value_render_option`` controls what each cell's value represents:
+          - FORMATTED_VALUE (default): the displayed string, e.g. "$1.00".
+          - UNFORMATTED_VALUE: the underlying value with no formatting applied,
+            e.g. 1 instead of "$1.00".
+          - FORMULA: the formula text itself, e.g. "=A1+A2", instead of its
+            computed result -- use this to read formulas rather than values.
+        """
         if not spreadsheet_id or not range_a1:
             raise DriveClientError("get_sheet_values requires spreadsheet_id and range")
+        render_option = (value_render_option or "FORMATTED_VALUE").strip().upper()
+        if render_option not in ("FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA"):
+            raise DriveClientError(
+                f"Invalid value_render_option {value_render_option!r}; use "
+                "FORMATTED_VALUE, UNFORMATTED_VALUE, or FORMULA"
+            )
         service = self._get_sheets_service()
         try:
             result = service.spreadsheets().values().get(
-                spreadsheetId=spreadsheet_id, range=range_a1
+                spreadsheetId=spreadsheet_id, range=range_a1, valueRenderOption=render_option
             ).execute()
         except HttpError as exc:
             raise DriveClientError(
                 f"get_sheet_values({spreadsheet_id}, {range_a1}) failed: {exc}"
             ) from exc
         values = result.get("values", [])
-        logger.info("get_sheet_values %s %s: %d row(s)", spreadsheet_id, range_a1, len(values))
+        logger.info(
+            "get_sheet_values %s %s (%s): %d row(s)",
+            spreadsheet_id, range_a1, render_option, len(values),
+        )
         return values
+
+    def get_sheet_formatting(self, spreadsheet_id: str, range_a1: str) -> list[list[dict]]:
+        """Read per-cell formatting for a range (A1 notation, sheet-name-
+        prefixed, e.g. 'Sheet1!A1:C10'), shaped as a 2D grid lined up with
+        get_sheet_values's own rows/columns for the same range.
+
+        Each cell is a dict covering the same aspects format_sheet_range can
+        set -- bold, italic, text_color, background_color, number_format,
+        horizontal_alignment, vertical_alignment, wrap_strategy -- as
+        '#rrggbb' hex for colors, present only when set (an empty dict means
+        no non-default formatting on that cell). Rows/trailing cells with no
+        formatting at all may be shorter than the sheet's full extent, same
+        as get_sheet_values.
+        """
+        if not spreadsheet_id or not range_a1:
+            raise DriveClientError("get_sheet_formatting requires spreadsheet_id and range")
+        service = self._get_sheets_service()
+        fields = (
+            "sheets.data.rowData.values.userEnteredFormat"
+            "(textFormat(bold,italic,foregroundColor),backgroundColor,numberFormat,"
+            "horizontalAlignment,verticalAlignment,wrapStrategy)"
+        )
+        try:
+            result = service.spreadsheets().get(
+                spreadsheetId=spreadsheet_id, ranges=[range_a1], fields=fields
+            ).execute()
+        except HttpError as exc:
+            raise DriveClientError(
+                f"get_sheet_formatting({spreadsheet_id}, {range_a1}) failed: {exc}"
+            ) from exc
+        sheets = result.get("sheets", [])
+        row_data = sheets[0].get("data", [{}])[0].get("rowData", []) if sheets else []
+        grid = [
+            [_cell_format_summary(cell.get("userEnteredFormat", {})) for cell in row.get("values", [])]
+            for row in row_data
+        ]
+        logger.info("get_sheet_formatting %s %s: %d row(s)", spreadsheet_id, range_a1, len(grid))
+        return grid
 
     def write_sheet_values(
         self, spreadsheet_id: str, range_a1: str, values: list[list], value_input_option: str = "USER_ENTERED"
@@ -1783,6 +1983,8 @@ class DriveClient:
         text_color: str = "",
         number_format: str = "",
         horizontal_alignment: str = "",
+        vertical_alignment: str = "",
+        wrap_strategy: str = "",
         freeze_rows: int = -1,
         freeze_cols: int = -1,
         column_width: int = -1,
@@ -1796,6 +1998,12 @@ class DriveClient:
 
         ``range_a1`` is plain A1 notation scoped to ``sheet_id`` (e.g. 'A1:C10',
         no sheet-name prefix - only fully-bounded ranges are supported).
+        ``horizontal_alignment`` is one of LEFT / CENTER / RIGHT.
+        ``vertical_alignment`` is one of TOP / MIDDLE / BOTTOM.
+        ``wrap_strategy`` is one of OVERFLOW_CELL (overflow into empty
+        neighboring cells) / CLIP (cut off at the cell boundary) / WRAP (line
+        break to fit the cell) - matches the Sheets UI's "Overflow"/"Clip"/
+        "Wrap" text-wrapping options.
         ``merge_type`` is one of KEEP / NONE (unmerge) / MERGE_ALL /
         MERGE_COLUMNS / MERGE_ROWS.
         """
@@ -1830,6 +2038,12 @@ class DriveClient:
         if horizontal_alignment:
             cell_format["horizontalAlignment"] = horizontal_alignment.upper()
             fields.append("userEnteredFormat.horizontalAlignment")
+        if vertical_alignment:
+            cell_format["verticalAlignment"] = vertical_alignment.upper()
+            fields.append("userEnteredFormat.verticalAlignment")
+        if wrap_strategy:
+            cell_format["wrapStrategy"] = wrap_strategy.upper()
+            fields.append("userEnteredFormat.wrapStrategy")
         if fields:
             requests.append({
                 "repeatCell": {

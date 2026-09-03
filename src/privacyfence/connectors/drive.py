@@ -225,12 +225,14 @@ class DriveConnector(Connector):
                     "Write Markdown content to a Google Doc with rich formatting: "
                     "headings (# through ######), **bold**, *italic*, "
                     "***bold-italic***, ~~strikethrough~~, __underline__, `code`, "
-                    "==highlight==, [link](url) (escape a literal '[' or ']' in "
-                    "the link text as '\\['/'\\]'), bullet/numbered lists (indent "
-                    "a sub-list 2 spaces per nesting level), and GFM pipe tables "
-                    "(a '| --- |' separator row under the header; ':---'/'---:'/"
-                    "':---:' for left/right/center column alignment). "
-                    "Clears the existing document content "
+                    "==highlight== (these five nest freely with each other, e.g. "
+                    "==**bold and highlighted**==), [link](url) (escape a literal "
+                    "'[' or ']' in the link text as '\\['/'\\]'), bullet/numbered "
+                    "lists (indent a sub-list 2 spaces per nesting level), GFM pipe "
+                    "tables (a '| --- |' separator row under the header; ':---'/"
+                    "'---:'/':---:' for left/right/center column alignment), and "
+                    "'---'/'***'/'___' on their own line as a horizontal-rule "
+                    "divider. Clears the existing document content "
                     "before writing — use drive_docs_edit_content or "
                     "drive_docs_format_content instead for a change that "
                     "shouldn't touch the rest of the document. "
@@ -357,12 +359,34 @@ class DriveConnector(Connector):
             ),
             ToolSpec(
                 name="drive_sheets_get_values",
-                description="Read a range of cell values from a spreadsheet. Requires user approval.",
+                description=(
+                    "Read a range of cells from a spreadsheet: display values by "
+                    "default, or the underlying values, or formulas instead of "
+                    "computed results, and optionally cell formatting alongside "
+                    "them. Requires user approval."
+                ),
                 params=[
                     ToolParam("spreadsheet_id", "str"),
                     ToolParam(
                         "range_a1", "str",
                         description="A1 notation range, e.g. 'Sheet1!A1:C10'",
+                    ),
+                    ToolParam(
+                        "value_render_option", "str", required=False, default="FORMATTED_VALUE",
+                        description=(
+                            "FORMATTED_VALUE (default): displayed strings, e.g. '$1.00'. "
+                            "UNFORMATTED_VALUE: the underlying value with no formatting, "
+                            "e.g. 1. FORMULA: the formula text itself, e.g. '=A1+A2', "
+                            "instead of its computed result -- use this to read formulas."
+                        ),
+                    ),
+                    ToolParam(
+                        "include_formatting", "bool", required=False, default=False,
+                        description=(
+                            "Also fetch per-cell formatting for the range (bold/italic/"
+                            "text color/background color/number format/horizontal/vertical "
+                            "alignment/text wrap -- the same aspects drive_sheets_format_range can set)."
+                        ),
                     ),
                     ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?"),
                 ],
@@ -423,11 +447,12 @@ class DriveConnector(Connector):
                 name="drive_sheets_format_range",
                 description=(
                     "Apply formatting to a range in a spreadsheet: bold/italic, "
-                    "colors, number format, alignment, column width, frozen rows/"
-                    "columns, and merged cells. Every parameter is opt-in — its "
-                    "default means 'leave that aspect unchanged', so a call that "
-                    "only sets a background color never touches unrelated "
-                    "formatting already on the range. Requires user approval."
+                    "colors, number format, horizontal/vertical alignment, text "
+                    "wrap, column width, frozen rows/columns, and merged cells. "
+                    "Every parameter is opt-in — its default means 'leave that "
+                    "aspect unchanged', so a call that only sets a background "
+                    "color never touches unrelated formatting already on the "
+                    "range. Requires user approval."
                 ),
                 params=[
                     ToolParam("spreadsheet_id", "str"),
@@ -451,6 +476,14 @@ class DriveConnector(Connector):
                               description="Sheets number-format pattern, e.g. '0.00%', '$#,##0.00', 'yyyy-mm-dd'; omit to leave unchanged"),
                     ToolParam("horizontal_alignment", "str", required=False, default="",
                               description="'LEFT' / 'CENTER' / 'RIGHT'; omit to leave unchanged"),
+                    ToolParam("vertical_alignment", "str", required=False, default="",
+                              description="'TOP' / 'MIDDLE' / 'BOTTOM'; omit to leave unchanged"),
+                    ToolParam("wrap_strategy", "str", required=False, default="",
+                              description=(
+                                  "'OVERFLOW_CELL' (overflow into empty neighboring cells) / "
+                                  "'CLIP' (cut off at the cell boundary) / 'WRAP' (line break to "
+                                  "fit the cell); omit to leave unchanged"
+                              )),
                     ToolParam("freeze_rows", "int", required=False, default=-1,
                               description="Number of rows to freeze at the top (0 unfreezes); omit (-1) to leave unchanged"),
                     ToolParam("freeze_cols", "int", required=False, default=-1,
@@ -702,12 +735,29 @@ class DriveConnector(Connector):
             args={"file_id": file_id},
         )
 
-    async def _sheets_get_values(self, spreadsheet_id: str, range_a1: str) -> Any:
+    async def _sheets_get_values(
+        self,
+        spreadsheet_id: str,
+        range_a1: str,
+        value_render_option: str = "FORMATTED_VALUE",
+        include_formatting: bool = False,
+    ) -> Any:
         drive_file = await self._fetch(self._drive.get_file_metadata, spreadsheet_id)
         name = getattr(drive_file, "name", spreadsheet_id)
         owners = getattr(drive_file, "owners", [])
-        raw_values = await self._fetch(self._drive.get_sheet_values, spreadsheet_id, range_a1)
+        raw_values = await self._fetch(
+            self._drive.get_sheet_values, spreadsheet_id, range_a1, value_render_option
+        )
+        formatting = (
+            await self._fetch(self._drive.get_sheet_formatting, spreadsheet_id, range_a1)
+            if include_formatting else None
+        )
         values = apply_list("drive_privacy", "file_content", raw_values)
+        # Formatting (colors/bold/number-format patterns, no free text) doesn't
+        # carry the same PII risk as cell content, so it rides along outside the
+        # privacy filter/PII scan rather than through apply_list.
+        render_label = "" if value_render_option == "FORMATTED_VALUE" else f" ({value_render_option.lower()})"
+        format_label = " + formatting" if include_formatting else ""
         # Spreadsheet/Owner are known via drive_get_file_metadata; Range is
         # Claude's own input to this very call (kept in §1 as identifying
         # context, not "new," since Claude already knows what it asked for
@@ -720,14 +770,15 @@ class DriveConnector(Connector):
         # table_only since details_text (kept for legacy/PII-scan) would
         # otherwise show the exact same values twice.
         table = _sheet_values_table(values)
+        filtered_data: Any = {"values": values, "formatting": formatting} if include_formatting else values
         return await gated_call(
             connector=self.name,
             tool="drive_sheets_get_values",
             tool_name="Read Sheet Values",
-            summary=f"Read {range_a1} from \"{name}\"",
+            summary=f"Read {range_a1} from \"{name}\"{render_label}{format_label}",
             sender=", ".join(owners) or "(unknown)",
-            raw_data={"file": drive_file, "values": raw_values},
-            filtered_data=values,
+            raw_data={"file": drive_file, "values": raw_values, "formatting": formatting},
+            filtered_data=filtered_data,
             gate="review",
             preview=preview,
             details_text=rows_preview,
@@ -740,7 +791,12 @@ class DriveConnector(Connector):
             ),
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
-            args={"spreadsheet_id": spreadsheet_id, "range_a1": range_a1},
+            args={
+                "spreadsheet_id": spreadsheet_id,
+                "range_a1": range_a1,
+                "value_render_option": value_render_option,
+                "include_formatting": include_formatting,
+            },
         )
 
     async def _download_file(
@@ -1275,6 +1331,8 @@ class DriveConnector(Connector):
         text_color: str = "",
         number_format: str = "",
         horizontal_alignment: str = "",
+        vertical_alignment: str = "",
+        wrap_strategy: str = "",
         freeze_rows: int = -1,
         freeze_cols: int = -1,
         column_width: int = -1,
@@ -1305,6 +1363,10 @@ class DriveConnector(Connector):
             applied.append(f"number_format={number_format}")
         if horizontal_alignment:
             applied.append(f"align={horizontal_alignment}")
+        if vertical_alignment:
+            applied.append(f"valign={vertical_alignment}")
+        if wrap_strategy:
+            applied.append(f"wrap={wrap_strategy}")
         if freeze_rows >= 0:
             applied.append(f"freeze_rows={freeze_rows}")
         if freeze_cols >= 0:
@@ -1337,7 +1399,8 @@ class DriveConnector(Connector):
         result = await self._fetch(
             self._drive.format_sheet_range, spreadsheet_id, sheet_id, range_a1,
             bold, italic, background_color, text_color, number_format,
-            horizontal_alignment, freeze_rows, freeze_cols, column_width, merge_type,
+            horizontal_alignment, vertical_alignment, wrap_strategy,
+            freeze_rows, freeze_cols, column_width, merge_type,
         )
         await self._note_own_write(spreadsheet_id)
         return result

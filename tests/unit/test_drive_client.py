@@ -591,6 +591,52 @@ class TestParseInlineRuns:
     def test_empty_string_yields_single_empty_run(self):
         assert _parse_inline_runs("") == [InlineRun("")]
 
+    # -- Nested inline styles (regression: previously the outer span's
+    # regex alternative swallowed the inner syntax as literal, unparsed
+    # text -- e.g. ==**Follow-up**== inserted the literal string
+    # "**Follow-up**" with only highlight applied, dropping bold entirely). --
+
+    def test_highlight_wrapping_bold_nests_both_styles(self):
+        assert _parse_inline_runs("==**Follow-up**==") == [
+            InlineRun("Follow-up", bold=True, highlight=True)
+        ]
+
+    def test_bold_wrapping_highlight_nests_both_styles(self):
+        assert _parse_inline_runs("**==Follow-up==**") == [
+            InlineRun("Follow-up", bold=True, highlight=True)
+        ]
+
+    def test_bold_wrapping_italic_nests_both_styles(self):
+        assert _parse_inline_runs("**bold *and italic* text**") == [
+            InlineRun("bold ", bold=True),
+            InlineRun("and italic", bold=True, italic=True),
+            InlineRun(" text", bold=True),
+        ]
+
+    def test_highlight_wrapping_underline_and_strikethrough(self):
+        assert _parse_inline_runs("==__a__ ~~b~~==") == [
+            InlineRun("a", underline=True, highlight=True),
+            InlineRun(" ", highlight=True),
+            InlineRun("b", strikethrough=True, highlight=True),
+        ]
+
+    def test_code_inside_highlight_is_a_leaf_not_reparsed(self):
+        # Code spans stay literal even when nested -- matches CommonMark's
+        # treatment of code spans as never containing further inline syntax.
+        assert _parse_inline_runs("==`**not bold**`==") == [
+            InlineRun("**not bold**", code=True, highlight=True)
+        ]
+
+    def test_non_overlapping_bold_and_highlight_are_unaffected(self):
+        # Two separate spans on the same line, not nested -- must keep
+        # working exactly as before.
+        runs = _parse_inline_runs("**bold** and ==flagged==")
+        assert runs == [
+            InlineRun("bold", bold=True),
+            InlineRun(" and "),
+            InlineRun("flagged", highlight=True),
+        ]
+
 
 class TestMarkdownToDocsRequests:
     def test_empty_markdown_yields_no_requests(self):
@@ -750,6 +796,56 @@ class TestMarkdownToDocsRequests:
     def test_plain_run_produces_no_style_request(self):
         requests = _markdown_to_docs_requests("plain text only")
         assert not any("updateTextStyle" in r for r in requests)
+
+    # -- Thematic-break dividers (regression: previously `---` on its own
+    # line had no recognized meaning at all and was inserted as the literal
+    # 3-character string, not a divider and not an error either). --
+
+    def test_thematic_break_becomes_bordered_paragraph(self):
+        requests = _markdown_to_docs_requests("---")
+        # No literal "-" text lands in the document.
+        assert requests[0]["insertText"]["text"] == "\n"
+        style_reqs = [r for r in requests if "updateParagraphStyle" in r]
+        assert len(style_reqs) == 1
+        style = style_reqs[0]["updateParagraphStyle"]
+        assert style["fields"] == "borderBottom"
+        assert style["paragraphStyle"]["borderBottom"]["dashStyle"] == "SOLID"
+        assert style["range"] == {"startIndex": 1, "endIndex": 2}
+
+    @pytest.mark.parametrize("marker", ["---", "***", "___", "- - -"])
+    def test_asterisk_and_underscore_variants_also_become_dividers(self, marker):
+        requests = _markdown_to_docs_requests(marker)
+        assert requests[0]["insertText"]["text"] == "\n"
+        assert any(
+            "updateParagraphStyle" in r and r["updateParagraphStyle"]["fields"] == "borderBottom"
+            for r in requests
+        )
+
+    def test_lone_divider_is_not_treated_as_blank_markdown(self):
+        # The "nothing but blank lines" short-circuit that makes
+        # _markdown_to_docs_requests("\n\n") == [] must not also eat a
+        # divider-only document, even though a divider line has no text.
+        assert _markdown_to_docs_requests("---") != []
+
+    def test_divider_between_paragraphs_does_not_disturb_their_text(self):
+        requests = _markdown_to_docs_requests("before\n---\nafter")
+        assert requests[0]["insertText"]["text"] == "before\n\nafter\n"
+        border_reqs = [
+            r for r in requests
+            if "updateParagraphStyle" in r and r["updateParagraphStyle"]["fields"] == "borderBottom"
+        ]
+        assert len(border_reqs) == 1
+        # "before\n" is 7 chars -> divider paragraph spans [8, 9).
+        assert border_reqs[0]["updateParagraphStyle"]["range"] == {"startIndex": 8, "endIndex": 9}
+
+    def test_double_asterisk_is_not_mistaken_for_a_divider(self):
+        # Two asterisks alone don't meet the 3-or-more thematic-break rule,
+        # so `**` (an otherwise-degenerate bold marker) is left alone.
+        requests = _markdown_to_docs_requests("**")
+        assert not any(
+            "updateParagraphStyle" in r and r["updateParagraphStyle"]["fields"] == "borderBottom"
+            for r in requests
+        )
         assert not any("updateParagraphStyle" in r for r in requests)
         assert not any("createParagraphBullets" in r for r in requests)
 
@@ -1640,6 +1736,107 @@ class TestGetSheetValues:
         with pytest.raises(DriveClientError, match="get_sheet_values"):
             client.get_sheet_values("sheet1", "A1:B2")
 
+    def test_defaults_to_formatted_value_render_option(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.values.return_value.get.return_value.execute.return_value = {
+            "values": [["$1.00"]]
+        }
+        client = make_client_with_sheets(sheets_service)
+
+        client.get_sheet_values("sheet1", "Sheet1!A1")
+
+        sheets_service.spreadsheets.return_value.values.return_value.get.assert_called_once_with(
+            spreadsheetId="sheet1", range="Sheet1!A1", valueRenderOption="FORMATTED_VALUE"
+        )
+
+    def test_formula_render_option_returns_formula_text(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.values.return_value.get.return_value.execute.return_value = {
+            "values": [["=A1+A2"]]
+        }
+        client = make_client_with_sheets(sheets_service)
+
+        values = client.get_sheet_values("sheet1", "Sheet1!A1", value_render_option="formula")
+
+        assert values == [["=A1+A2"]]
+        sheets_service.spreadsheets.return_value.values.return_value.get.assert_called_once_with(
+            spreadsheetId="sheet1", range="Sheet1!A1", valueRenderOption="FORMULA"
+        )
+
+    def test_rejects_invalid_render_option(self):
+        client = make_client_with_sheets(MagicMock())
+        with pytest.raises(DriveClientError, match="Invalid value_render_option"):
+            client.get_sheet_values("sheet1", "A1:B2", value_render_option="RAW")
+
+
+class TestGetSheetFormatting:
+    def test_requires_spreadsheet_id_and_range(self):
+        client = make_client_with_sheets(MagicMock())
+        with pytest.raises(DriveClientError, match="requires spreadsheet_id and range"):
+            client.get_sheet_formatting("", "A1:B2")
+        with pytest.raises(DriveClientError, match="requires spreadsheet_id and range"):
+            client.get_sheet_formatting("sheet1", "")
+
+    def test_summarizes_only_non_default_formatting(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.get.return_value.execute.return_value = {
+            "sheets": [{
+                "data": [{
+                    "rowData": [
+                        {"values": [
+                            {"userEnteredFormat": {
+                                "textFormat": {"bold": True, "foregroundColor": {"red": 1}},
+                                "backgroundColor": {"green": 1},
+                                "numberFormat": {"type": "NUMBER", "pattern": "0.00%"},
+                                "horizontalAlignment": "CENTER",
+                                "verticalAlignment": "MIDDLE",
+                                "wrapStrategy": "WRAP",
+                            }},
+                            {"userEnteredFormat": {}},
+                        ]},
+                    ]
+                }]
+            }]
+        }
+        client = make_client_with_sheets(sheets_service)
+
+        grid = client.get_sheet_formatting("sheet1", "Sheet1!A1:B1")
+
+        assert grid == [[
+            {
+                "bold": True,
+                "text_color": "#ff0000",
+                "background_color": "#00ff00",
+                "number_format": "0.00%",
+                "horizontal_alignment": "CENTER",
+                "vertical_alignment": "MIDDLE",
+                "wrap_strategy": "WRAP",
+            },
+            {},
+        ]]
+        sheets_service.spreadsheets.return_value.get.assert_called_once_with(
+            spreadsheetId="sheet1",
+            ranges=["Sheet1!A1:B1"],
+            fields=(
+                "sheets.data.rowData.values.userEnteredFormat"
+                "(textFormat(bold,italic,foregroundColor),backgroundColor,numberFormat,"
+                "horizontalAlignment,verticalAlignment,wrapStrategy)"
+            ),
+        )
+
+    def test_no_sheets_key_yields_empty_grid(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.get.return_value.execute.return_value = {}
+        client = make_client_with_sheets(sheets_service)
+        assert client.get_sheet_formatting("sheet1", "A1:B2") == []
+
+    def test_http_error_becomes_drive_client_error(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.get.return_value.execute.side_effect = http_error(404)
+        client = make_client_with_sheets(sheets_service)
+        with pytest.raises(DriveClientError, match="get_sheet_formatting"):
+            client.get_sheet_formatting("sheet1", "A1:B2")
+
 
 class TestWriteSheetValues:
     def test_requires_spreadsheet_id_and_range(self):
@@ -1808,6 +2005,51 @@ class TestFormatSheetRange:
         cell_format = requests[0]["repeatCell"]["cell"]["userEnteredFormat"]
         assert cell_format["numberFormat"] == {"type": "NUMBER", "pattern": "0.00%"}
         assert cell_format["horizontalAlignment"] == "CENTER"
+
+    def test_vertical_alignment_and_wrap_strategy(self):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_sheets(sheets_service)
+
+        client.format_sheet_range("sheet1", 0, "A1:B2", vertical_alignment="middle", wrap_strategy="wrap")
+
+        requests = sheets_service.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+        repeat_cell = requests[0]["repeatCell"]
+        cell_format = repeat_cell["cell"]["userEnteredFormat"]
+        assert cell_format["verticalAlignment"] == "MIDDLE"
+        assert cell_format["wrapStrategy"] == "WRAP"
+        assert "userEnteredFormat.verticalAlignment" in repeat_cell["fields"]
+        assert "userEnteredFormat.wrapStrategy" in repeat_cell["fields"]
+
+    @pytest.mark.parametrize(
+        "wrap_strategy,expected",
+        [("overflow_cell", "OVERFLOW_CELL"), ("clip", "CLIP"), ("wrap", "WRAP")],
+    )
+    def test_wrap_strategy_variants(self, wrap_strategy, expected):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_sheets(sheets_service)
+
+        client.format_sheet_range("sheet1", 0, "A1:B2", wrap_strategy=wrap_strategy)
+
+        requests = sheets_service.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+        cell_format = requests[0]["repeatCell"]["cell"]["userEnteredFormat"]
+        assert cell_format["wrapStrategy"] == expected
+
+    @pytest.mark.parametrize(
+        "vertical_alignment,expected",
+        [("top", "TOP"), ("middle", "MIDDLE"), ("bottom", "BOTTOM")],
+    )
+    def test_vertical_alignment_variants(self, vertical_alignment, expected):
+        sheets_service = MagicMock()
+        sheets_service.spreadsheets.return_value.batchUpdate.return_value.execute.return_value = {}
+        client = make_client_with_sheets(sheets_service)
+
+        client.format_sheet_range("sheet1", 0, "A1:B2", vertical_alignment=vertical_alignment)
+
+        requests = sheets_service.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+        cell_format = requests[0]["repeatCell"]["cell"]["userEnteredFormat"]
+        assert cell_format["verticalAlignment"] == expected
 
     def test_column_width_produces_update_dimension_request(self):
         sheets_service = MagicMock()

@@ -838,6 +838,156 @@ class TestMaybeStartWebServer:
         # No second push into the dispatcher -- it polls ipc_server.connectors.
         assert list(result.mcp_dispatcher.connectors) == [fake_connector.name]
 
+    # ------------------------------------------------------------------ #
+    # web.settings.enabled -- P4's own rollback lever (§16.6), independent
+    # of web.approval_ui: a deployment can run the web settings page with
+    # the native approval dialog, or the reverse.
+    # ------------------------------------------------------------------ #
+
+    def _controller(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        from privacyfence import resource_names, settings_controller as sc, update_checker
+
+        monkeypatch.setattr(resource_names, "_cache_file", lambda: tmp_path / "rn.json")
+        monkeypatch.setattr(update_checker, "_cache_file", lambda: tmp_path / "uc.json")
+        monkeypatch.setattr(sc, "check_for_update", lambda **kw: None)
+        org_dir_path = tmp_path / "org"
+        org_dir_path.mkdir()
+        monkeypatch.setattr(sc, "org_dir", lambda: org_dir_path)
+        settings_dir = tmp_path / "settings_data"
+        settings_dir.mkdir()
+        monkeypatch.setattr(sc, "data_dir", lambda: settings_dir)
+        config_path = tmp_path / "settings.yaml"
+        config_path.write_text("auto_accept_rules: {}\nconnectors: {}\n", encoding="utf-8")
+        ipc_server = self._ipc_server()
+        return sc.SettingsController(str(config_path), connectors=[], ipc_server=ipc_server)
+
+    def test_settings_not_enabled_leaves_the_server_unbuilt_with_a_controller(self, monkeypatch, tmp_path):
+        self._no_bind(monkeypatch, tmp_path)
+        controller = self._controller(tmp_path, monkeypatch)
+
+        result = daemon_main._maybe_start_web_server(
+            {}, self._ipc_server(), unattended_sessions_enabled=False, controller=controller,
+        )
+
+        assert result is None
+
+    def test_settings_enabled_without_a_controller_starts_nothing(self, monkeypatch, tmp_path):
+        self._no_bind(monkeypatch, tmp_path)
+
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"settings": {"enabled": True}}}, self._ipc_server(), unattended_sessions_enabled=False,
+        )
+
+        assert result is None
+
+    def test_settings_enabled_wires_the_controller_into_the_server(self, monkeypatch, tmp_path):
+        self._no_bind(monkeypatch, tmp_path)
+        controller = self._controller(tmp_path, monkeypatch)
+
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"settings": {"enabled": True}, "port": 18765}}, self._ipc_server(),
+            unattended_sessions_enabled=False, controller=controller,
+        )
+
+        assert result is not None
+        assert result.controller is controller
+
+    def test_allow_quit_defaults_true_and_is_configurable(self, monkeypatch, tmp_path):
+        self._no_bind(monkeypatch, tmp_path)
+        controller = self._controller(tmp_path, monkeypatch)
+
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"settings": {"enabled": True, "allow_quit": False}}}, self._ipc_server(),
+            unattended_sessions_enabled=False, controller=controller,
+        )
+
+        assert result.allow_quit is False
+
+    def test_notifications_enabled_defaults_true_and_is_configurable(self, monkeypatch, tmp_path):
+        self._no_bind(monkeypatch, tmp_path)
+
+        default_result = daemon_main._maybe_start_web_server(
+            {"web": {"approval_ui": "web"}}, self._ipc_server(), unattended_sessions_enabled=False,
+        )
+        assert default_result.notifications_enabled is True
+
+        off_result = daemon_main._maybe_start_web_server(
+            {"web": {"approval_ui": "web", "notifications": {"enabled": False}}}, self._ipc_server(),
+            unattended_sessions_enabled=False,
+        )
+        assert off_result.notifications_enabled is False
+
+    def test_settings_can_run_with_the_native_approval_ui(self, monkeypatch, tmp_path):
+        from privacyfence.approval_ui import NativeApprovalUI, get_approval_ui
+
+        self._no_bind(monkeypatch, tmp_path)
+        controller = self._controller(tmp_path, monkeypatch)
+
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"settings": {"enabled": True}}}, self._ipc_server(),
+            unattended_sessions_enabled=False, controller=controller,
+        )
+
+        assert result is not None
+        assert isinstance(get_approval_ui(), NativeApprovalUI)
+
+    # ------------------------------------------------------------------ #
+    # P4c (docs/https-connector-refactor-plan.md §16.9): the Connect
+    # Claude card's connection info, wired from the running WebServer into
+    # the (possibly native-hosted) SettingsController regardless of
+    # web.settings.enabled -- both hosts render the same document.
+    # ------------------------------------------------------------------ #
+
+    def test_mcp_enabled_wires_url_and_token_into_the_controller(self, monkeypatch, tmp_path):
+        self._no_bind(monkeypatch, tmp_path)
+        controller = self._controller(tmp_path, monkeypatch)
+
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"mcp": {"enabled": True}, "port": 18765}}, self._ipc_server(),
+            unattended_sessions_enabled=False, controller=controller,
+        )
+
+        assert controller._mcp_url == result.mcp_url == f"{result.base_url}/mcp"
+        assert controller._mcp_token == result.mcp_token
+
+    def test_mcp_disabled_leaves_the_controller_unset(self, monkeypatch, tmp_path):
+        self._no_bind(monkeypatch, tmp_path)
+        controller = self._controller(tmp_path, monkeypatch)
+
+        daemon_main._maybe_start_web_server(
+            {"web": {"settings": {"enabled": True}}}, self._ipc_server(),
+            unattended_sessions_enabled=False, controller=controller,
+        )
+
+        assert controller._mcp_url is None
+        assert controller._mcp_token is None
+
+    def test_wired_even_when_web_settings_itself_is_off(self, monkeypatch, tmp_path):
+        # The native settings window renders the same document -- the
+        # Connect Claude card must work there too, not only when
+        # web.settings.enabled is also on.
+        self._no_bind(monkeypatch, tmp_path)
+        controller = self._controller(tmp_path, monkeypatch)
+
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"mcp": {"enabled": True}}}, self._ipc_server(),
+            unattended_sessions_enabled=False, controller=controller,
+        )
+
+        assert result is not None
+        assert controller._mcp_url == result.mcp_url
+
+    def test_no_controller_at_all_does_not_raise(self, monkeypatch, tmp_path):
+        self._no_bind(monkeypatch, tmp_path)
+
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"mcp": {"enabled": True}}}, self._ipc_server(), unattended_sessions_enabled=False,
+        )
+
+        assert result is not None
+
 
 # ---------------------------------------------------------------------------- #
 # parse_args
@@ -1240,7 +1390,19 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "build_connectors", lambda cfg, org: connectors)
         monkeypatch.setattr(
             daemon_main, "IPCServer",
-            lambda conns, **kw: SimpleNamespace(connectors=conns, unattended_sessions_enabled=kw.get("unattended_sessions_enabled")),
+            lambda conns, **kw: SimpleNamespace(
+                connectors=conns, unattended_sessions_enabled=kw.get("unattended_sessions_enabled"),
+                # run_app() now constructs a SettingsController (this
+                # phase's own web-settings wiring) and hands it this same
+                # fake IPCServer -- SettingsController.__init__ always
+                # calls set_unattended_changed_listener on whatever
+                # ipc_server it's given, and refresh_connectors() (not
+                # reached during startup today, but cheap to support) calls
+                # set_connectors. Same no-op shape test_settings_controller.py's
+                # own ipc_server fixture already uses.
+                set_unattended_changed_listener=lambda callback: None,
+                set_connectors=lambda conns: None,
+            ),
         )
         _FakeIPCServerThread.instances = []
         monkeypatch.setattr(daemon_main, "IPCServerThread", _FakeIPCServerThread)

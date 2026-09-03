@@ -87,7 +87,7 @@ drifts, don't trust it blindly.
 | `drive_list_shared_drives` | auto | `id`, `name` per Shared Drive |
 | `drive_sheets_get_metadata` | auto | per-tab `id`, `title`, `index`, row/column count |
 | `drive_get_file_content` | review | **new:** extracted text content (metadata fields were already known for free if `drive_get_file_metadata` was called first) |
-| `drive_sheets_get_values` | review | **new:** cell values for the requested range |
+| `drive_sheets_get_values` | review | **new:** cell values for the requested range — display strings by default, or the raw underlying values, or formula text instead of computed results (`value_render_option`); optionally also a same-shaped per-cell formatting grid (`include_formatting`), which is **not** covered by `drive_privacy.file_content` (see below) |
 | `drive_download_file` | review | **new:** nothing content-wise — returns `path`/`name`/`size_bytes`, never bytes |
 
 `drive_get_file_content`'s reviewer-facing preview truncates the body to ~2,000 characters, but
@@ -284,7 +284,7 @@ site in the connector code, naming the literal key(s) in what Claude actually re
 | `drive_privacy.folder_structure` | `drive_list_folder` (auto) | the entire returned list, same shape as above |
 | `drive_privacy.file_metadata` | `drive_get_file_metadata` (auto) | every field except `id` — the whole record collapses to `{"id": ...}` when not `allow`; redact and block are identical here |
 | `drive_privacy.file_content` | `drive_get_file_content` | `content` |
-| `drive_privacy.file_content` | `drive_sheets_get_values` | the entire returned cell-values array (there's no separate "cell values" category — this reuses `file_content`) |
+| `drive_privacy.file_content` | `drive_sheets_get_values` | the entire returned cell-values array, whichever `value_render_option` it holds (there's no separate "cell values" category — this reuses `file_content`); the optional `formatting` grid (`include_formatting`) is structural/visual metadata, not text content, so it is **not** filtered by this category and is returned as-fetched regardless of policy — same treatment as `drive_sheets_get_metadata`'s auto tab list |
 | `slack_privacy.channel_list` | `slack_list_channels` (auto) | the entire returned list — every channel's `id`/`name`/`is_private`/`topic`/`purpose`/`member_count` together |
 | `slack_privacy.dm_list` | `slack_list_dms` (auto) | the entire returned list — every DM's `id`/`user_id`/`user_name` together |
 | `slack_privacy.group_chat_list` | `slack_list_group_chats` (auto) | the entire returned list — every group chat's `id`/`name`/`member_ids`/`member_names` together |

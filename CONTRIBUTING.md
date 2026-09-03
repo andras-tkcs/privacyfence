@@ -31,13 +31,8 @@ Use GitHub Issues for bug reports and feature requests. Include:
 ## Code Style
 
 - `src/privacyfence/` (the daemon): Python 3.11+, standard library preferred over new dependencies
-- `bridge/` (the MCP bridge, legacy — works through P5, see
-  [`docs/https-connector-refactor-plan.md`](docs/https-connector-refactor-plan.md)): TypeScript/Node,
-  kept as a separate language from the daemon so the `.mcpb` extension ships without a bundled Python
-  runtime
-- `mcpb/shim/` (the `.mcpb`'s current stdio-to-Streamable-HTTP transport proxy, D11 in the refactor
-  plan): TypeScript/Node, same reasoning as `bridge/` — carries no tool-schema knowledge, so it stays
-  small on purpose; see its own `src/index.ts` module docstring before adding anything to it
+- `bridge/` (the MCP bridge): TypeScript/Node, kept as a separate language from the daemon so the
+  `.mcpb` extension ships without a bundled Python runtime
 - No comments unless the *why* is non-obvious
 - Match the surrounding code's style
 
