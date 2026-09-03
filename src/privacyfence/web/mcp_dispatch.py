@@ -33,6 +33,7 @@ from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..auto_accept import TOOL_TO_GATE, TOOL_TO_OPERATION, get_auto_accept_evaluator, get_current_config
 from ..connector import Connector
 from ..gate import propose_rule_change, reason_scope, unattended_scope
+from ..principal import current_principal
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +70,7 @@ class McpDispatcher:
     ) -> None:
         self._connectors_provider = connectors_provider
         self._inflight: dict[str, tuple[Any, float]] = {}
-        self._last_write_at: dict[str, float] = {}
+        self._last_write_at: dict[tuple[str, str], float] = {}
         self._unattended_sessions_enabled = unattended_sessions_enabled
         self._unattended_sessions: set[Hashable] = set()
         self._unattended_changed_listener: Callable[[], None] | None = None
@@ -119,15 +120,25 @@ class McpDispatcher:
         if connector is None:
             raise ValueError(f"Unknown connector: {connector_name!r}")
 
+        # P7 (docs/https-connector-refactor-plan.md §9): principal_id folds
+        # into both the dedupe key and the last-write timestamp below.
+        # Without it, two different org-mode principals calling the same
+        # tool with the same arguments within _DEDUPE_TTL_SECONDS would
+        # share one cache entry -- the second caller getting handed the
+        # first caller's actual result, not a mere inefficiency but a
+        # cross-principal data leak. Harmless in local mode (there's only
+        # ever the one principal), but this dispatcher is shared process-
+        # wide, so it has to be correct once a second principal exists.
+        principal_id = current_principal().id
         now = time.time()
         self._prune_stale(now)
-        key = self._dedupe_key(connector_name, tool, args)
+        key = self._dedupe_key(principal_id, connector_name, tool, args)
         entry = self._inflight.get(key)
         if entry is not None:
             fut, recorded_at = entry
             still_fresh = (now - recorded_at) < self._DEDUPE_TTL_SECONDS
             read_is_stale = self._is_read_only(connector, tool) and (
-                recorded_at <= self._last_write_at.get(connector_name, 0.0)
+                recorded_at <= self._last_write_at.get((principal_id, connector_name), 0.0)
             )
             reusable = not fut.done() or (
                 still_fresh and tool not in self._DEDUPE_EXEMPT_TOOLS and not read_is_stale
@@ -163,7 +174,7 @@ class McpDispatcher:
             self._inflight.pop(key, None)
             return result
         if not self._is_read_only(connector, tool):
-            self._last_write_at[connector_name] = time.time()
+            self._last_write_at[(principal_id, connector_name)] = time.time()
         return result
 
     def _prune_stale(self, now: float) -> None:
@@ -175,8 +186,8 @@ class McpDispatcher:
             del self._inflight[key]
 
     @staticmethod
-    def _dedupe_key(connector_name: str, tool: str, args: dict) -> str:
-        return f"{connector_name}:{tool}:{json.dumps(args, sort_keys=True, default=str)}"
+    def _dedupe_key(principal_id: str, connector_name: str, tool: str, args: dict) -> str:
+        return f"{principal_id}:{connector_name}:{tool}:{json.dumps(args, sort_keys=True, default=str)}"
 
     @staticmethod
     def _is_read_only(connector: Connector, tool: str) -> bool:

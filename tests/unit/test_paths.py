@@ -70,6 +70,28 @@ class TestOrgDir:
         assert result.is_dir()
 
 
+class TestSafePrincipalId:
+    """P7, org_identity.py's principal_from_claims: an OIDC `sub` claim is
+    opaque per spec and may not be filesystem-safe."""
+
+    @pytest.mark.parametrize("safe_id", ["alice", "alice@example.com", "a1b2-c3_d4.e5"])
+    def test_already_safe_ids_pass_through_unchanged(self, safe_id):
+        assert paths.safe_principal_id(safe_id) == safe_id
+
+    @pytest.mark.parametrize("unsafe_id", ["cn=alice,dc=example,dc=com", "../etc", "a/b", ".."])
+    def test_unsafe_ids_are_hashed(self, unsafe_id):
+        result = paths.safe_principal_id(unsafe_id)
+        assert result != unsafe_id
+        assert result.startswith("idp-")
+        assert paths._is_safe_principal_id(result)
+
+    def test_hashing_is_deterministic(self):
+        assert paths.safe_principal_id("cn=alice") == paths.safe_principal_id("cn=alice")
+
+    def test_different_unsafe_ids_hash_differently(self):
+        assert paths.safe_principal_id("cn=alice") != paths.safe_principal_id("cn=bob")
+
+
 class TestUserDir:
     """P6, docs/https-connector-refactor-plan.md §9.2's storage layout."""
 

@@ -54,6 +54,17 @@ dependencies = [
     # outright. Bump the cap only alongside a rewrite of that test and a
     # check of web/routes_mcp.py's own server-side surface against 2.0.
     "mcp>=1.28,<2.0.0",
+    # Verifying the org IdP's ID token (P7, docs/https-connector-refactor-
+    # plan.md §9.4: PrivacyFence is its own minimal OAuth 2.1 authorization
+    # server, decision B in §15, authenticating the human against the org's
+    # IdP by OIDC behind the scenes) means checking a JWT signature against
+    # a JWKS endpoint -- the same "security-critical, spec-governed, don't
+    # hand-roll it" reasoning D2 already gave for the MCP SDK itself
+    # applies here. Already an undeclared transitive dependency of `mcp`
+    # itself (and of simple-salesforce) as of this writing, so this adds no
+    # new package to what's actually installed -- it just stops relying on
+    # that being true by accident.
+    "PyJWT>=2.8,<3.0",
 ]
 
 [project.scripts]

@@ -948,6 +948,134 @@ class TestMaybeStartWebServer:
 
 
 # ---------------------------------------------------------------------------- #
+# _maybe_start_web_server -- org mode (P7, docs/https-connector-refactor-
+# plan.md §4/§9.4). org_config.json's "mode" selects this branch; every
+# TestMaybeStartWebServer test above passes no org_config at all (or {}),
+# so mode always defaults to "local" there -- this class is additive.
+# ---------------------------------------------------------------------------- #
+
+class TestMaybeStartWebServerOrgMode:
+    def _no_bind(self, monkeypatch, tmp_path):
+        from privacyfence import paths
+        from privacyfence.web.server import WebServer
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+        started = {}
+        monkeypatch.setattr(WebServer, "start", lambda self: started.update(called=True))
+        monkeypatch.setattr(
+            "privacyfence.org_identity.discover_idp",
+            lambda issuer: {
+                "authorization_endpoint": "https://idp.example.com/authorize",
+                "token_endpoint": "https://idp.example.com/token", "jwks_uri": "https://idp.example.com/jwks",
+            },
+        )
+        return started
+
+    @staticmethod
+    def _connector_host():
+        from privacyfence.connector_host import ConnectorHost
+        return ConnectorHost([])
+
+    @staticmethod
+    def _org_config(**overrides):
+        base = {
+            "mode": "org",
+            "server": {"issuer_url": "https://pf.example.com", "bind_host": "0.0.0.0", "port": 8765},
+            "idp": {"issuer": "https://idp.example.com", "client_id": "cid", "client_secret": "sec"},
+        }
+        base.update(overrides)
+        return base
+
+    def test_mcp_disabled_starts_nothing_even_in_org_mode(self, monkeypatch, tmp_path):
+        self._no_bind(monkeypatch, tmp_path)
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"mcp": {"enabled": False}}}, self._connector_host(),
+            unattended_sessions_enabled=False, org_config=self._org_config(),
+        )
+        assert result is None
+
+    def test_org_mode_starts_a_server_with_mcp_enabled(self, monkeypatch, tmp_path):
+        started = self._no_bind(monkeypatch, tmp_path)
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"mcp": {"enabled": True}}}, self._connector_host(),
+            unattended_sessions_enabled=False, org_config=self._org_config(),
+        )
+        assert result is not None
+        assert started.get("called") is True
+        assert result.org is not None
+
+    def test_org_mode_uses_the_configured_bind_host_and_port(self, monkeypatch, tmp_path):
+        self._no_bind(monkeypatch, tmp_path)
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"mcp": {"enabled": True}}}, self._connector_host(),
+            unattended_sessions_enabled=False,
+            org_config=self._org_config(server={"issuer_url": "https://pf.example.com", "bind_host": "0.0.0.0", "port": 9999}),
+        )
+        assert result.host == "0.0.0.0"
+        assert result.port == 9999
+
+    def test_org_mode_base_url_is_the_issuer_url(self, monkeypatch, tmp_path):
+        self._no_bind(monkeypatch, tmp_path)
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"mcp": {"enabled": True}}}, self._connector_host(),
+            unattended_sessions_enabled=False, org_config=self._org_config(),
+        )
+        assert result.base_url == "https://pf.example.com"
+
+    def test_org_mode_installs_the_web_approval_ui_unconditionally(self, monkeypatch, tmp_path):
+        from privacyfence.approval_ui import get_approval_ui
+        from privacyfence.web_approval_ui import WebApprovalUI
+
+        self._no_bind(monkeypatch, tmp_path)
+        daemon_main._maybe_start_web_server(
+            {"web": {"mcp": {"enabled": True}}}, self._connector_host(),
+            unattended_sessions_enabled=False, org_config=self._org_config(),
+        )
+        assert isinstance(get_approval_ui(), WebApprovalUI)
+
+    def test_org_mode_registry_gets_the_real_base_url_once_started(self, monkeypatch, tmp_path):
+        from privacyfence.web_approval_ui import get_web_approval_ui
+
+        self._no_bind(monkeypatch, tmp_path)
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"mcp": {"enabled": True}}}, self._connector_host(),
+            unattended_sessions_enabled=False, org_config=self._org_config(),
+        )
+        registry = get_web_approval_ui().deferred_registry
+        assert registry.approval_url("abc") == f"{result.base_url}/approvals/abc"
+
+    def test_org_mode_without_idp_section_raises(self, monkeypatch, tmp_path):
+        self._no_bind(monkeypatch, tmp_path)
+        with pytest.raises(ValueError):
+            daemon_main._maybe_start_web_server(
+                {"web": {"mcp": {"enabled": True}}}, self._connector_host(),
+                unattended_sessions_enabled=False,
+                org_config={"mode": "org", "server": {"issuer_url": "https://pf.example.com"}},
+            )
+
+    def test_org_mode_without_server_section_raises(self, monkeypatch, tmp_path):
+        self._no_bind(monkeypatch, tmp_path)
+        with pytest.raises(ValueError):
+            daemon_main._maybe_start_web_server(
+                {"web": {"mcp": {"enabled": True}}}, self._connector_host(),
+                unattended_sessions_enabled=False,
+                org_config={"mode": "org", "idp": {"issuer": "https://idp.example.com", "client_id": "c"}},
+            )
+
+    def test_no_org_config_defaults_to_local_mode(self, monkeypatch, tmp_path):
+        # The critical byte-identical-to-before-this-phase guarantee:
+        # omitting org_config entirely (every pre-P7 call site, and every
+        # existing install's real invocation until it opts into "mode":
+        # "org") must behave exactly like local mode always did.
+        started = self._no_bind(monkeypatch, tmp_path)
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"approval_ui": "web"}}, self._connector_host(), unattended_sessions_enabled=False,
+        )
+        assert result is not None
+        assert result.org is None
+        assert started.get("called") is True
+
+
+# ---------------------------------------------------------------------------- #
 # parse_args
 # ---------------------------------------------------------------------------- #
 

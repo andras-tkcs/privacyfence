@@ -99,6 +99,68 @@ def build_parser() -> argparse.ArgumentParser:
     atlassian.add_argument("--atlassian-client-id")
     atlassian.add_argument("--atlassian-client-secret")
 
+    mode = parser.add_argument_group(
+        "Deployment mode (P7, docs/https-connector-refactor-plan.md §4/§9.4/§10.2)",
+    )
+    mode.add_argument(
+        "--mode", choices=["local", "org"], default=None,
+        help="Absent (the default) leaves \"mode\" out of the bundle entirely, which "
+             "PrivacyFence itself treats as \"local\" -- an existing install/bundle needs no "
+             "change to keep working exactly as it always has. Pass --mode org together with "
+             "the --server-* and --idp-* flags below to turn this into an org-mode bundle.",
+    )
+    mode.add_argument(
+        "--server-issuer-url", metavar="URL",
+        help="This daemon's own externally-reachable origin, e.g. https://pf.acme.example.com "
+             "-- required with --mode org. Used to build the fixed OAuth/OIDC redirect URIs "
+             "you register with your IdP below (<issuer-url>/oauth/idp/callback and "
+             "<issuer-url>/oauth/idp/login-callback).",
+    )
+    mode.add_argument(
+        "--server-bind-host", default="0.0.0.0",
+        help="Address the embedded server listens on (default: 0.0.0.0 -- every interface; "
+             "narrow this if the host has one you'd rather bind specifically).",
+    )
+    mode.add_argument("--server-port", type=int, default=8765, help="Default: 8765.")
+    mode.add_argument(
+        "--server-tls-cert", metavar="PATH",
+        help="TLS certificate file, terminated directly in the embedded server. Leave both "
+             "--server-tls-cert and --server-tls-key unset if a reverse proxy in front of this "
+             "daemon terminates TLS instead.",
+    )
+    mode.add_argument("--server-tls-key", metavar="PATH", help="TLS private key file (paired with --server-tls-cert).")
+    mode.add_argument(
+        "--server-trusted-proxy", action="append", default=[], metavar="IP", dest="server_trusted_proxies",
+        help="An X-Forwarded-For/X-Forwarded-Proto-trusted reverse proxy's own IP address -- "
+             "repeat for more than one. §10.2: honored only when at least one is given here, "
+             "never by default.",
+    )
+    mode.add_argument(
+        "--idp-issuer", metavar="URL",
+        help="Your organization's OIDC identity provider's issuer URL (its "
+             "/.well-known/openid-configuration document must be reachable at "
+             "<this>/.well-known/openid-configuration) -- required with --mode org.",
+    )
+    mode.add_argument(
+        "--idp-client-id", metavar="ID",
+        help="The client_id PrivacyFence is registered under with your IdP -- required with "
+             "--mode org. Register it with two redirect URIs: <server-issuer-url>/oauth/idp/"
+             "callback and <server-issuer-url>/oauth/idp/login-callback.",
+    )
+    mode.add_argument("--idp-client-secret", metavar="SECRET", help="Paired with --idp-client-id.")
+    mode.add_argument(
+        "--idp-admin-group-claim", metavar="CLAIM",
+        help="ID token claim (e.g. \"groups\") whose value names the human as an admin when it "
+             "contains one of --idp-admin-group-value. Omit to leave nobody an admin via this "
+             "mechanism (the fail-closed default).",
+    )
+    mode.add_argument(
+        "--idp-admin-group-value", action="append", default=[], metavar="VALUE", dest="idp_admin_group_values",
+        help="A value of --idp-admin-group-claim that marks the human as an admin -- repeat "
+             "for more than one (e.g. --idp-admin-group-value privacyfence-admins "
+             "--idp-admin-group-value it-admins).",
+    )
+
     unattended = parser.add_argument_group("Unattended / scheduled Cowork tasks")
     unattended_toggle = unattended.add_mutually_exclusive_group()
     unattended_toggle.add_argument(
@@ -160,10 +222,46 @@ def main(argv: list[str] | None = None) -> int:
     elif args.disable_unattended_sessions:
         bundle["unattended_sessions"] = {"enabled": False}
 
+    if args.mode == "org":
+        if not args.server_issuer_url:
+            raise SystemExit("--mode org requires --server-issuer-url.")
+        if not (args.idp_issuer and args.idp_client_id and args.idp_client_secret):
+            raise SystemExit("--mode org requires --idp-issuer, --idp-client-id and --idp-client-secret.")
+        bundle["mode"] = "org"
+        server: dict[str, Any] = {
+            "issuer_url": args.server_issuer_url,
+            "bind_host": args.server_bind_host,
+            "port": args.server_port,
+        }
+        if args.server_tls_cert or args.server_tls_key:
+            if not (args.server_tls_cert and args.server_tls_key):
+                raise SystemExit("--server-tls-cert and --server-tls-key must be given together.")
+            server["tls"] = {"cert_file": args.server_tls_cert, "key_file": args.server_tls_key}
+        if args.server_trusted_proxies:
+            server["trusted_proxies"] = args.server_trusted_proxies
+        bundle["server"] = server
+
+        idp: dict[str, Any] = {
+            "issuer": args.idp_issuer, "client_id": args.idp_client_id, "client_secret": args.idp_client_secret,
+        }
+        if args.idp_admin_group_claim:
+            idp["admin_group_claim"] = args.idp_admin_group_claim
+            idp["admin_group_values"] = args.idp_admin_group_values
+        bundle["idp"] = idp
+    elif args.mode == "local":
+        bundle["mode"] = "local"
+        bundle.pop("server", None)
+        bundle.pop("idp", None)
+    elif any([
+        args.server_issuer_url, args.idp_issuer, args.idp_client_id, args.idp_client_secret,
+        args.server_tls_cert, args.server_tls_key, args.server_trusted_proxies,
+    ]):
+        raise SystemExit("--server-*/--idp-* flags require --mode org.")
+
     services = [k for k in ("google", "slack", "salesforce", "atlassian") if k in bundle]
-    if not services and "unattended_sessions" not in bundle:
+    if not services and "unattended_sessions" not in bundle and "mode" not in bundle:
         raise SystemExit(
-            "No service or --enable/disable-unattended-sessions flags given — nothing to write."
+            "No service, --mode, or --enable/disable-unattended-sessions flags given — nothing to write."
         )
 
     out_path.write_text(json.dumps(bundle, indent=2) + "\n", encoding="utf-8")
@@ -174,7 +272,15 @@ def main(argv: list[str] | None = None) -> int:
     summary = ", ".join(services) or "none"
     if "unattended_sessions" in bundle:
         summary += f", unattended_sessions.enabled={bundle['unattended_sessions']['enabled']}"
+    if "mode" in bundle:
+        summary += f", mode={bundle['mode']}"
     print(f"Wrote {out_path} with: {summary}")
+    if bundle.get("mode") == "org":
+        print(
+            f"Org mode: register {args.server_issuer_url}/oauth/idp/callback and "
+            f"{args.server_issuer_url}/oauth/idp/login-callback as redirect URIs for client_id "
+            f"{args.idp_client_id!r} with your IdP, if you haven't already."
+        )
     print(
         'Distribute this file to your users. They install it via "Install/Update '
         'Organization Config…" in the PrivacyFence menu bar.'

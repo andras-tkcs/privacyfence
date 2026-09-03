@@ -24,6 +24,7 @@ from privacyfence.audit_log import current_week, init_audit_logger
 from privacyfence.auto_accept import init_auto_accept_evaluator
 from privacyfence.connector import Connector, ToolSpec
 from privacyfence.gate import is_unattended
+from privacyfence.principal import Principal, principal_scope
 from privacyfence.web.mcp_dispatch import McpDispatcher
 
 
@@ -152,6 +153,33 @@ class TestCall:
         await dispatcher.call("s1", "gmail", "gmail_write_tool", {"x": 1})
         assert len(connector.calls) == 1
 
+    async def test_dedupe_is_scoped_per_principal_not_shared_across_them(self):
+        # P7, docs/https-connector-refactor-plan.md §9: McpDispatcher is one
+        # shared instance for the whole process, so its dedupe cache has to
+        # key on the current principal too -- otherwise a second principal
+        # calling the exact same tool with the exact same arguments within
+        # the dedupe TTL would be handed the FIRST principal's actual
+        # result instead of getting its own call dispatched. Regression
+        # test for exactly that bug (caught by
+        # web/test_org_mcp_e2e.py's own end-to-end version of this).
+        connector = FakeConnector("gmail", result="depends-on-caller")
+        dispatcher = _dispatcher({"gmail": connector})
+        with principal_scope(Principal(id="alice")):
+            await dispatcher.call("s1", "gmail", "gmail_tool", {"x": 1})
+        with principal_scope(Principal(id="bob")):
+            await dispatcher.call("s1", "gmail", "gmail_tool", {"x": 1})
+        # Both principals' calls actually reached the connector -- neither
+        # was served the other's cached result.
+        assert len(connector.calls) == 2
+
+    async def test_dedupe_still_applies_within_the_same_principal(self):
+        connector = FakeConnector("gmail", result="r")
+        dispatcher = _dispatcher({"gmail": connector})
+        with principal_scope(Principal(id="alice")):
+            await dispatcher.call("s1", "gmail", "gmail_tool", {"x": 1})
+            await dispatcher.call("s1", "gmail", "gmail_tool", {"x": 1})
+        assert len(connector.calls) == 1
+
     async def test_a_pending_approval_result_is_never_cached_for_reuse(self):
         # P3 (docs/https-connector-refactor-plan.md §5.2 point 6): a gated
         # call that returned {"status": "approval_pending", ...} must be
@@ -194,6 +222,24 @@ class TestCall:
         await dispatcher.call("s1", "gmail", "gmail_write_tool", {"y": 1})
         await dispatcher.call("s1", "gmail", "gmail_tool", {"x": 1})
         assert len(connector.calls) == 3  # read, write, read again (not reused)
+
+    async def test_a_write_by_one_principal_does_not_stale_another_principals_cached_read(self):
+        # P7: the same staleness check above, but the write and the
+        # cached read belong to two different principals -- one user's
+        # write to their own connector account has nothing to say about
+        # whether another user's already-cached read of theirs is stale.
+        connector = FakeConnector("gmail", result="r")
+        dispatcher = _dispatcher({"gmail": connector})
+        with principal_scope(Principal(id="alice")):
+            await dispatcher.call("s1", "gmail", "gmail_tool", {"x": 1})
+        with principal_scope(Principal(id="bob")):
+            await dispatcher.call("s1", "gmail", "gmail_write_tool", {"y": 1})
+        with principal_scope(Principal(id="alice")):
+            await dispatcher.call("s1", "gmail", "gmail_tool", {"x": 1})
+        # alice's second read is a cache hit -- bob's write never touched
+        # her own staleness key. alice's read + bob's write = 2 calls
+        # reaching the connector, not 3.
+        assert len(connector.calls) == 2
 
     async def test_error_from_original_call_propagates_to_a_concurrent_deduped_retry(self):
         # Concurrent in-flight coalescing (both fired before either

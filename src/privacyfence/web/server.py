@@ -4,22 +4,42 @@ starting/stopping the ASGI app (uvicorn) on its own thread -- the same
 way" posture daemon_main.py's IPCServerThread already established for the
 bridge socket.
 
-**local mode only in P1** -- org mode's HTTPS/reverse-proxy/trusted-proxies
-handling (docs/https-connector-refactor-plan.md §10.2) is P6+ work, once
-principals exist at all. D1's decision already applies here: loopback HTTP,
-bound to ``localhost`` (not a bare ``127.0.0.1``/``0.0.0.0``) so
+**Local mode** (unchanged since P1): D1's decision applies -- loopback
+HTTP, bound to ``localhost`` (not a bare ``127.0.0.1``/``0.0.0.0``) so
 ``http://localhost`` stays a secure context for whatever this surface needs
-later (WebAuthn, P9) without anyone having to move the bind address then.
-
-Local-mode auth, in P1, is deliberately the simplest thing that's still a
-real control -- the same "possession of a local secret is the authority"
-posture ``~/.privacyfence/ipc_token`` already has for the bridge (see
-ipc.py's module docstring), not sessions/OIDC (§9.4 of the refactor plan,
-P4/P7+). A random token is generated once, written 0600 under
-paths.data_dir(), and required (as a session cookie once presented, or a
-``?token=`` query param the first time) by every route --
+(WebAuthn, P9) without anyone having to move the bind address. Auth is
+deliberately the simplest thing that's still a real control -- the same
+"possession of a local secret is the authority" posture
+``~/.privacyfence/ipc_token`` already has for the bridge (see ipc.py's
+module docstring), not sessions/OIDC. A random token is generated once,
+written 0600 under paths.data_dir(), and required (as a session cookie once
+presented, or a ``?token=`` query param the first time) by every route --
 web/routes_approvals.py's own docstring covers the CSRF double-submit this
 token also backs.
+
+**Org mode** (P7, docs/https-connector-refactor-plan.md §10.2): a
+configurable bind host/port, optional TLS termination, optional
+``X-Forwarded-*`` trust for a small explicit set of reverse-proxy
+addresses (never by default), and ``/mcp`` authenticated by
+``web/oauth_provider.py``'s real OAuth 2.1 authorization server instead of
+one shared secret. Passed to ``build_app``/``WebServer`` as one ``OrgAuth``
+bundle (see that class) rather than four separate parameters, so a caller
+either opts into the whole org-mode picture or none of it.
+
+**Deliberately not mounted in org mode, in this phase**: the local-mode
+approval/settings surface (``routes_approvals.create_app``'s ``/approvals``,
+``/settings`` and friends). That surface authenticates with one shared
+secret and lists *every* pending approval with no principal filtering --
+exposing it under org mode, where many principals share one daemon, would
+leak every principal's pending approvals (subject lines, message bodies,
+attachments) to whoever holds any valid token. A principal-aware org web
+surface is real, scoped follow-up work (see docs/https-connector-refactor-
+plan.md's own P7 section) building on this phase's ``OrgSessionStore``/
+``_PrincipalScopeMiddleware`` wiring -- not something this phase's own exit
+criterion ("Claude adds the connector by DCR; audience separation test
+passes") needs. Until it lands, a gated call in org mode still registers a
+pending approval in the registry (so ``privacyfence_await_approval`` sees
+it), but nothing yet renders or decides it over HTTP.
 """
 from __future__ import annotations
 
@@ -29,23 +49,31 @@ import logging
 import secrets
 import threading
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Callable
 
 import uvicorn
+from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse, Response, StreamingResponse
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from .. import paths
-from ..principal import LOCAL_PRINCIPAL, Principal, principal_scope
+from ..org_identity import IdpConfig
+from ..principal import ANONYMOUS_PRINCIPAL, LOCAL_PRINCIPAL, Principal, principal_scope
 from ..settings_controller import SettingsController, set_main_dispatcher
 from ..web_approval_ui import WebApprovalUI
+from . import org_session
+from . import routes_org_identity
 from . import state_stream as _state_stream
 from .mcp_auth import load_or_create_mcp_token
 from .mcp_dispatch import McpDispatcher
+from .oauth_provider import OrgOAuthProvider
+from .org_session import OrgSessionStore
 from .routes_approvals import create_app as create_approvals_app
-from .routes_mcp import MCP_PATH, mcp_lifespan, mount_mcp
+from .routes_mcp import MCP_PATH, mcp_lifespan, mount_mcp, mount_org_oauth, protected_resource_metadata_url
 from .routes_settings import build_routes as build_settings_routes
 from .session_auth import authenticated as _token_authenticated
 from .session_auth import unauthorized_html as _unauthorized_response
@@ -145,12 +173,45 @@ class _SecurityHeadersMiddleware:
         await self._app(scope, receive, send_with_headers)
 
 
+@dataclass(frozen=True)
+class OrgAuth:
+    """Everything build_app()/WebServer need to run org mode (P7) -- one
+    bundle instead of four separate parameters, so a caller either opts
+    into the whole org-mode picture (a real OAuth 2.1 AS, real sessions,
+    the IdP config both go through) or passes ``org=None`` and gets local
+    mode's own unchanged behavior. See this module's own docstring for
+    what org mode does and deliberately does not mount yet.
+    """
+
+    provider: OrgOAuthProvider
+    sessions: OrgSessionStore
+    idp: IdpConfig
+    issuer_url: str
+
+
 def _default_principal(_request: Request) -> Principal:
-    """Every browser surface's principal today, and the reason this phase is
-    byte-identical to before it: there is no logged-in multi-user session
-    yet to resolve a real one from -- that's P7's OIDC work. See this
-    module's own docstring's "local mode only in P1" note, still true here."""
+    """Local mode's own resolver: there is no logged-in multi-user session
+    to resolve a real one from -- possessing the shared token *is* the
+    identity, exactly as this module's own docstring describes."""
     return LOCAL_PRINCIPAL
+
+
+def _org_principal_resolver(sessions: OrgSessionStore) -> Callable[[Request], Principal]:
+    """Org mode's default resolver (P7): a valid ``pf_org_session`` cookie
+    (web/org_session.py) resolves to the human who signed in via
+    ``/login``; anything else -- no cookie, an unknown or expired one --
+    resolves to ``ANONYMOUS_PRINCIPAL``, never ``LOCAL_PRINCIPAL`` (see
+    that constant's own docstring for why conflating "not authenticated"
+    with "the local single-user principal" would be actively misleading in
+    a multi-user deployment). The route itself is what actually rejects an
+    unauthenticated request; this only decides what current_principal()
+    resolves to in the brief window before that check runs.
+    """
+
+    def resolve(request: Request) -> Principal:
+        return org_session.authenticated(request, sessions) or ANONYMOUS_PRINCIPAL
+
+    return resolve
 
 
 class _PrincipalScopeMiddleware:
@@ -160,16 +221,14 @@ class _PrincipalScopeMiddleware:
     is routes_mcp.py's handle_call_tool. Every per-principal registry
     downstream (auto_accept.py, audit_log.py, pii_detector.py,
     privacy_filter.py, resource_names.py) resolves against whatever
-    ``resolve`` returns for the rest of the request, including
-    /settings, /approvals and the state-push SSE stream.
+    ``resolve`` returns for the rest of the request.
 
-    ``resolve`` defaults to _default_principal (always LOCAL_PRINCIPAL) --
-    parameterized rather than hardcoded so a test can inject a resolver that
-    varies by request (e.g. a session cookie) to prove two principals stay
-    isolated all the way through the real HTTP routes, not just via
-    principal_scope() called directly. P7 replaces the default resolver
-    with one that reads an actual OIDC session; nothing else about this
-    class changes then.
+    ``resolve`` defaults to _default_principal (always LOCAL_PRINCIPAL) in
+    local mode, or _org_principal_resolver in org mode (P7) --
+    parameterized rather than hardcoded so a test can inject a resolver
+    that varies by request to prove two principals stay isolated all the
+    way through the real HTTP routes, not just via principal_scope()
+    called directly.
     """
 
     def __init__(self, app: ASGIApp, resolve: Callable[[Request], Principal]) -> None:
@@ -274,7 +333,7 @@ async def _state_stream_loop_lifespan(ready_event: threading.Event | None = None
 def build_app(
     web_ui: WebApprovalUI,
     *,
-    token: str,
+    token: str | None = None,
     allowed_hosts: frozenset[str] = frozenset({"localhost", "127.0.0.1"}),
     mcp_dispatcher: McpDispatcher | None = None,
     mcp_token: str | None = None,
@@ -285,25 +344,39 @@ def build_app(
     notifications_detail: str = "minimal",
     loop_ready: threading.Event | None = None,
     principal_resolver: Callable[[Request], Principal] | None = None,
+    org: OrgAuth | None = None,
 ) -> ASGIApp:
     """The approval routes, wrapped with the Host allowlist and security
     headers every real deployment needs -- routes_approvals.create_app()
     alone (no wrapping) is what tests reach for when they want to exercise
     the routes without also exercising this middleware stack.
 
-    ``principal_resolver`` (P6, §9.1) defaults to _default_principal
-    (always LOCAL_PRINCIPAL) -- pass a different one only to prove
-    per-principal isolation over real HTTP in a test; production callers
-    leave it unset until P7 gives this surface real per-user sessions to
-    resolve a principal from.
+    ``org`` (P7, §9.4) switches this into org mode: ``token``/
+    ``mcp_token``/``controller``/``state_stream`` are all ignored (org mode
+    doesn't mount the local-token-authenticated approval/settings surface
+    at all -- see this module's own docstring for why), ``/mcp`` is
+    authenticated by ``org.provider`` instead of a shared secret, and the
+    OAuth 2.1 authorization-server + browser-login routes are mounted
+    alongside it. Local mode (``org=None``, the default) is entirely
+    unchanged from before this phase.
+
+    ``principal_resolver`` defaults to _default_principal (local mode,
+    always LOCAL_PRINCIPAL) or _org_principal_resolver (org mode) --
+    pass an explicit one only to prove per-principal isolation over real
+    HTTP in a test.
 
     ``mcp_dispatcher`` (P2, docs/https-connector-refactor-plan.md §8) folds
-    the ``/mcp`` Streamable HTTP endpoint into this same app, on its own
-    ``mcp_token`` -- a secret independent of ``token`` (the approval
-    surface's own session/CSRF secret), which is what makes §10.3's
-    audience separation ("the MCP access token must never be accepted on
-    approval-decision endpoints, and the browser session cookie must never
-    be accepted on /mcp") hold structurally rather than by convention.
+    the ``/mcp`` Streamable HTTP endpoint into this same app. In local
+    mode it's authenticated by its own ``mcp_token`` -- a secret
+    independent of ``token`` (the approval surface's own session/CSRF
+    secret), which is what makes §10.3's audience separation ("the MCP
+    access token must never be accepted on approval-decision endpoints,
+    and the browser session cookie must never be accepted on /mcp") hold
+    structurally rather than by convention. In org mode the same
+    separation holds because ``org.provider``'s tokens and
+    ``org.sessions``' cookies are two entirely different stores with
+    nothing that compares one against the other (see
+    web/test_org_mcp_e2e.py's own audience-separation tests).
 
     ``controller`` (P4, §16) folds ``/settings`` and its ``/api/settings/*``
     actions into the same app, on the *same* ``token`` -- unlike MCP, the
@@ -316,6 +389,14 @@ def build_app(
     behavior, so every existing caller (including this module's own
     pre-P4 tests) is unaffected.
     """
+    if org is not None:
+        return _build_org_app(
+            org, mcp_dispatcher=mcp_dispatcher, allowed_hosts=allowed_hosts, principal_resolver=principal_resolver,
+        )
+
+    if not token:
+        raise ValueError("token is required in local mode (org=None)")
+
     extra_routes = []
     lifespans = []
     if mcp_dispatcher is not None:
@@ -352,6 +433,42 @@ def build_app(
     return _SecurityHeadersMiddleware(wrapped)
 
 
+def _build_org_app(
+    org: OrgAuth, *, mcp_dispatcher: McpDispatcher | None, allowed_hosts: frozenset[str],
+    principal_resolver: Callable[[Request], Principal] | None,
+) -> ASGIApp:
+    """org mode's own route set -- see build_app()'s and this module's own
+    docstrings for what's deliberately absent (the local-token approval/
+    settings surface)."""
+    extra_routes: list[Route] = []
+    lifespans = []
+    if mcp_dispatcher is not None:
+        mcp_route, session_manager = mount_mcp(
+            mcp_dispatcher, verifier=org.provider,
+            resource_metadata_url=protected_resource_metadata_url(org.issuer_url),
+        )
+        extra_routes.append(mcp_route)
+        lifespans.append(mcp_lifespan(session_manager))
+
+    extra_routes.extend(mount_org_oauth(org.provider, issuer_url=org.issuer_url))
+    extra_routes.extend(routes_org_identity.build_routes(
+        idp=org.idp, sessions=org.sessions, base_url=org.issuer_url,
+    ))
+
+    lifespan = None
+    if lifespans:
+        @contextlib.asynccontextmanager
+        async def lifespan(_app) -> AsyncIterator[None]:  # noqa: ANN001
+            async with _combined_lifespan(lifespans):
+                yield
+
+    app: ASGIApp = Starlette(routes=extra_routes, lifespan=lifespan)
+    resolver = principal_resolver or _org_principal_resolver(org.sessions)
+    scoped: ASGIApp = _PrincipalScopeMiddleware(app, resolver)
+    wrapped: ASGIApp = _HostAllowlistMiddleware(scoped, allowed_hosts)
+    return _SecurityHeadersMiddleware(wrapped)
+
+
 class WebServer:
     """Runs the embedded HTTP server on its own daemon thread -- started
     only when ``web.approval_ui: web`` is configured (daemon_main.py); see
@@ -373,12 +490,31 @@ class WebServer:
         notifications_enabled: bool = True,
         notifications_detail: str = "minimal",
         principal_resolver: Callable[[Request], Principal] | None = None,
+        org: OrgAuth | None = None,
+        ssl_certfile: str | None = None,
+        ssl_keyfile: str | None = None,
+        trusted_proxies: tuple[str, ...] = (),
     ) -> None:
+        """``org``, ``ssl_certfile``/``ssl_keyfile`` and ``trusted_proxies``
+        are org mode's own additions (P7, §10.2) -- every local-mode caller
+        (every one before this phase) leaves them unset and gets exactly
+        today's behavior. ``ssl_certfile``/``ssl_keyfile`` (both required
+        together, or neither) terminate TLS directly in uvicorn; leave both
+        unset when a reverse proxy in front of this daemon terminates TLS
+        instead. ``trusted_proxies`` is the explicit allowlist §10.2
+        requires before ``X-Forwarded-For``/``X-Forwarded-Proto`` are
+        honored at all -- empty (the default) means never, regardless of
+        mode.
+        """
         self.host = host
         self.port = port
-        self.token = token or load_or_create_token()
+        self.org = org
+        self.token = None if org is not None else (token or load_or_create_token())
         self.mcp_dispatcher = mcp_dispatcher
-        self.mcp_token = (mcp_token or load_or_create_mcp_token()) if mcp_dispatcher is not None else None
+        self.mcp_token = (
+            None if org is not None
+            else ((mcp_token or load_or_create_mcp_token()) if mcp_dispatcher is not None else None)
+        )
         self.controller = controller
         self.allow_quit = allow_quit
         self.notifications_enabled = notifications_enabled
@@ -388,9 +524,11 @@ class WebServer:
         # outcomes reaching an open tab) and /approvals (P3's own list, via
         # the same "approvals" event) -- built whenever either surface is
         # actually being served, not gated on mcp_dispatcher, which has
-        # nothing to do with either page.
+        # nothing to do with either page. Not built in org mode: neither
+        # surface is mounted there yet (see module docstring), and nothing
+        # in this class reads it in that case either.
         self.state_stream: StateStream | None = None
-        if controller is not None or web_ui is not None:
+        if org is None and (controller is not None or web_ui is not None):
             self.state_stream = StateStream(
                 settings_snapshot=(controller.snapshot if controller is not None else lambda: None),
                 list_pending=web_ui.deferred_registry.list_pending,
@@ -403,10 +541,17 @@ class WebServer:
         # the direct successor of the old IPCServerThread's own ``_ready``
         # Event) blocks on to learn that loop.
         self._loop_ready = threading.Event()
+        allowed_hosts = frozenset({host, "127.0.0.1", "[::1]"})
+        if org is not None:
+            from urllib.parse import urlparse
+
+            issuer_host = urlparse(org.issuer_url).hostname
+            if issuer_host:
+                allowed_hosts = allowed_hosts | {issuer_host}
         wrapped = build_app(
             web_ui,
             token=self.token,
-            allowed_hosts=frozenset({host, "127.0.0.1", "[::1]"}),
+            allowed_hosts=allowed_hosts,
             mcp_dispatcher=mcp_dispatcher,
             mcp_token=self.mcp_token,
             controller=controller,
@@ -416,13 +561,28 @@ class WebServer:
             notifications_detail=notifications_detail,
             loop_ready=self._loop_ready,
             principal_resolver=principal_resolver,
+            org=org,
         )
-        config = uvicorn.Config(wrapped, host=host, port=port, log_level="warning")
+        if trusted_proxies:
+            # §10.2: honored only when this explicit list is non-empty --
+            # never by default, in either mode.
+            wrapped = ProxyHeadersMiddleware(wrapped, trusted_hosts=list(trusted_proxies))
+        config = uvicorn.Config(
+            wrapped, host=host, port=port, log_level="warning",
+            ssl_certfile=ssl_certfile, ssl_keyfile=ssl_keyfile,
+        )
         self._server = uvicorn.Server(config)
         self._thread: threading.Thread | None = None
 
     @property
     def base_url(self) -> str:
+        # Org mode's issuer_url is the authoritative externally-reachable
+        # origin (it may differ from this process's own bind host/port
+        # entirely, e.g. behind a reverse proxy or load balancer) -- local
+        # mode has no such indirection, so it keeps computing this from
+        # what it's actually bound to.
+        if self.org is not None:
+            return self.org.issuer_url.rstrip("/")
         return f"http://{self.host}:{self.port}"
 
     def wait_until_ready(self, timeout: float = 5.0) -> asyncio.AbstractEventLoop | None:

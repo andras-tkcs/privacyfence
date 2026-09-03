@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from typing import Callable, Generic, TypeVar
 
 LOCAL_PRINCIPAL_ID = "local"
+ANONYMOUS_PRINCIPAL_ID = "anonymous"
 
 
 @dataclass(frozen=True)
@@ -39,14 +40,37 @@ class Principal:
     """An opaque, stable identity. ``id`` is the only field anything in this
     codebase keys storage or state on -- ``email``/``display_name`` are
     cosmetic (a label for a settings page or an audit entry), never a lookup
-    key, and are empty for the ``local`` principal, exactly as today."""
+    key, and are empty for the ``local`` principal, exactly as today.
+
+    ``is_admin`` (P7, docs/https-connector-refactor-plan.md §9.4: "Group/
+    claim mapping decides who is an admin ... versus a plain user") is
+    resolved once, at sign-in, from whatever the org's IdP claims say
+    (org_identity.py's ``principal_from_claims``) -- never recomputed
+    per-request, so a change to a user's group membership takes effect on
+    their next login, not mid-session. Always ``False`` for the local
+    principal and for ``ANONYMOUS_PRINCIPAL`` below; there is exactly one
+    user in local mode, so "admin" has never meant anything there."""
 
     id: str
     email: str = ""
     display_name: str = ""
+    is_admin: bool = False
 
 
 LOCAL_PRINCIPAL = Principal(id=LOCAL_PRINCIPAL_ID)
+
+# The principal an unauthenticated org-mode HTTP request is scoped to for
+# the (brief) window before its own route's auth check runs and rejects it
+# (P7, §9.1: principal_scope() is entered once per request, before any
+# route-specific logic, including the auth check itself -- see
+# web/server.py's _PrincipalScopeMiddleware). Deliberately not
+# LOCAL_PRINCIPAL: an org deployment conflating "not yet authenticated"
+# with "the local single-user principal" would be actively misleading if a
+# future route ever forgot to auth-gate before touching per-principal
+# state. Nothing should ever read or write state under this principal;
+# it exists so current_principal() always resolves to *something* well-
+# defined rather than raising or falling through to another user's data.
+ANONYMOUS_PRINCIPAL = Principal(id=ANONYMOUS_PRINCIPAL_ID)
 
 # Default is LOCAL_PRINCIPAL, not None: every call site written before this
 # phase runs with no principal_scope() around it at all (daemon_main.py's
@@ -158,6 +182,8 @@ class PrincipalRegistry(Generic[T]):
 
 
 __all__ = [
+    "ANONYMOUS_PRINCIPAL",
+    "ANONYMOUS_PRINCIPAL_ID",
     "LOCAL_PRINCIPAL",
     "LOCAL_PRINCIPAL_ID",
     "Principal",

@@ -109,6 +109,14 @@ class TestAuth:
         async with _connected_session(_dispatcher()):
             pass  # ClientSession.initialize() succeeding is the assertion.
 
+    def test_build_mcp_asgi_app_requires_a_token_or_a_verifier(self):
+        # P7: build_mcp_asgi_app grew an alternative to `token` (`verifier`,
+        # for web/oauth_provider.py's OrgOAuthProvider) -- calling it with
+        # neither is a caller bug, not a runtime condition to silently
+        # tolerate.
+        with pytest.raises(ValueError):
+            build_mcp_asgi_app(_dispatcher())
+
 
 # --------------------------------------------------------------------------- #
 # Tool listing

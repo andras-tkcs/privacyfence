@@ -34,9 +34,15 @@ from typing import Any
 from mcp import types
 from mcp.server.auth.middleware.auth_context import AuthContextMiddleware, get_access_token
 from mcp.server.auth.middleware.bearer_auth import BearerAuthBackend, RequireAuthMiddleware
+from mcp.server.auth.provider import TokenVerifier
+from mcp.server.auth.routes import build_resource_metadata_url, create_auth_routes, create_protected_resource_routes
+from mcp.server.auth.settings import ClientRegistrationOptions, RevocationOptions
 from mcp.server.lowlevel.server import Server as MCPServer
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+from pydantic import AnyHttpUrl
 from starlette.middleware.authentication import AuthenticationMiddleware
+from starlette.requests import Request
+from starlette.responses import PlainTextResponse, RedirectResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp
 
@@ -46,6 +52,7 @@ from ..principal import principal_scope
 from . import mcp_tools
 from .mcp_auth import StaticTokenVerifier, principal_from_access_token
 from .mcp_dispatch import McpDispatcher
+from .oauth_provider import IDP_CALLBACK_PATH, OrgOAuthProvider
 
 logger = logging.getLogger(__name__)
 
@@ -195,32 +202,106 @@ class _StreamableHTTPASGIApp:
         await self._session_manager.handle_request(scope, receive, send)
 
 
-def build_mcp_asgi_app(dispatcher: McpDispatcher, *, token: str) -> tuple[ASGIApp, StreamableHTTPSessionManager]:
-    """Builds the ``/mcp`` endpoint app -- bearer-token authenticated
-    (mcp_auth.py), audience-separated from the approval surface's session
-    cookie (§10.3; see mcp_auth.py's own docstring). Returns the app
-    alongside its session manager so server.py can fold ``mcp_lifespan``
-    into the combined app's own lifespan.
+def build_mcp_asgi_app(
+    dispatcher: McpDispatcher, *, token: str | None = None, verifier: TokenVerifier | None = None,
+    resource_metadata_url: AnyHttpUrl | None = None,
+) -> tuple[ASGIApp, StreamableHTTPSessionManager]:
+    """Builds the ``/mcp`` endpoint app -- bearer-token authenticated,
+    audience-separated from the approval surface's session cookie (§10.3).
+    Returns the app alongside its session manager so server.py can fold
+    ``mcp_lifespan`` into the combined app's own lifespan.
+
+    ``verifier`` is the seam P7 plugs org mode into: pass
+    ``web/oauth_provider.py``'s ``OrgOAuthProvider`` (which satisfies
+    ``TokenVerifier`` via its own ``verify_token``) instead of building
+    ``StaticTokenVerifier(token)`` for local mode's single shared secret --
+    exactly one of ``token``/``verifier`` should be given.
+    ``resource_metadata_url`` (RFC 9728, org mode only) is threaded into a
+    401 response's ``WWW-Authenticate`` header so a client that gets one
+    knows where to discover this server's authorization server; local
+    mode has no such document to point to, so it stays ``None`` there.
     """
     server = build_mcp_server(dispatcher)
     session_manager = StreamableHTTPSessionManager(app=server, json_response=False, stateless=False)
 
-    verifier = StaticTokenVerifier(token)
-    protected = RequireAuthMiddleware(_StreamableHTTPASGIApp(session_manager), required_scopes=[])
+    if verifier is None:
+        if token is None:
+            raise ValueError("build_mcp_asgi_app needs either token or verifier")
+        verifier = StaticTokenVerifier(token)
+    protected = RequireAuthMiddleware(
+        _StreamableHTTPASGIApp(session_manager), required_scopes=[], resource_metadata_url=resource_metadata_url,
+    )
     authenticated = AuthContextMiddleware(protected)
     app: ASGIApp = AuthenticationMiddleware(authenticated, backend=BearerAuthBackend(verifier))
     return app, session_manager
 
 
-def mount_mcp(dispatcher: McpDispatcher, *, token: str) -> tuple[Route, StreamableHTTPSessionManager]:
+def mount_mcp(
+    dispatcher: McpDispatcher, *, token: str | None = None, verifier: TokenVerifier | None = None,
+    resource_metadata_url: AnyHttpUrl | None = None,
+) -> tuple[Route, StreamableHTTPSessionManager]:
     """The ``/mcp`` route -- an exact-path ``Route`` with no ``methods``
     restriction (matches GET/POST/DELETE alike, exactly like the official
     SDK's own FastMCP wiring does for the same endpoint), not a ``Mount``:
     Streamable HTTP clients address this one path directly, with no
     sub-path routing underneath it.
     """
-    app, session_manager = build_mcp_asgi_app(dispatcher, token=token)
+    app, session_manager = build_mcp_asgi_app(
+        dispatcher, token=token, verifier=verifier, resource_metadata_url=resource_metadata_url,
+    )
     return Route(MCP_PATH, endpoint=app), session_manager
+
+
+def mount_org_oauth(provider: OrgOAuthProvider, *, issuer_url: str) -> list[Route]:
+    """Org mode's OAuth 2.1 authorization-server + resource-metadata
+    surface (P7, docs/https-connector-refactor-plan.md §9.4): the SDK's own
+    ``create_auth_routes`` builds ``/.well-known/oauth-authorization-
+    server``, ``/authorize``, ``/token``, ``/register`` (DCR) and
+    ``/revoke`` against ``provider`` -- see that function's own module for
+    why none of that protocol machinery is hand-rolled here (same D2
+    reasoning as the MCP SDK itself). ``create_protected_resource_routes``
+    builds the RFC 9728 ``/.well-known/oauth-protected-resource/mcp``
+    document pointing at this same issuer. The one route the SDK has no
+    opinion on -- ``provider``'s own IdP-facing callback -- is added
+    alongside them; see ``OrgOAuthProvider.handle_idp_callback``'s own
+    docstring for what it does.
+    """
+    issuer = AnyHttpUrl(issuer_url)
+    resource_url = AnyHttpUrl(f"{issuer_url.rstrip('/')}{MCP_PATH}")
+    routes = create_auth_routes(
+        provider, issuer_url=issuer,
+        client_registration_options=ClientRegistrationOptions(enabled=True),
+        revocation_options=RevocationOptions(enabled=True),
+    )
+    routes.extend(create_protected_resource_routes(
+        resource_url=resource_url, authorization_servers=[issuer], resource_name="PrivacyFence",
+    ))
+
+    async def idp_callback(request: Request) -> Response:
+        idp_error = request.query_params.get("error")
+        if idp_error:
+            logger.info("MCP client authorization declined by IdP: %s", idp_error)
+            return PlainTextResponse("Authorization was not completed.", status_code=400)
+        state = request.query_params.get("state", "")
+        code = request.query_params.get("code", "")
+        if not state or not code:
+            return PlainTextResponse("Invalid IdP callback.", status_code=400)
+        try:
+            redirect_url = await provider.handle_idp_callback(state=state, code=code)
+        except Exception as exc:  # noqa: BLE001 -- any failure here ends the same way: authorization didn't complete
+            logger.warning("MCP client authorization failed: %s", exc)
+            return PlainTextResponse("Authorization failed. Please try again.", status_code=400)
+        return RedirectResponse(redirect_url, status_code=302, headers={"Cache-Control": "no-store"})
+
+    routes.append(Route(IDP_CALLBACK_PATH, idp_callback))
+    return routes
+
+
+def protected_resource_metadata_url(issuer_url: str) -> AnyHttpUrl:
+    """The URL ``build_mcp_asgi_app``'s ``resource_metadata_url`` needs --
+    factored out so server.py doesn't have to import ``mcp.server.auth.
+    routes`` itself just to compute it."""
+    return build_resource_metadata_url(AnyHttpUrl(f"{issuer_url.rstrip('/')}{MCP_PATH}"))
 
 
 __all__ = [

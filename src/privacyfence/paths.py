@@ -5,6 +5,7 @@ In a bundled .app: data lives in ~/.privacyfence/ so it survives app updates.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import sys
 from pathlib import Path
@@ -28,6 +29,19 @@ _SAFE_PRINCIPAL_ID = re.compile(r"^[A-Za-z0-9._@-]{1,200}$")
 
 def _is_safe_principal_id(principal_id: str) -> bool:
     return principal_id not in (".", "..") and bool(_SAFE_PRINCIPAL_ID.match(principal_id))
+
+
+def safe_principal_id(raw: str) -> str:
+    """``raw`` unchanged if it's already filesystem-safe, otherwise a
+    stable hash of it (P7: an OIDC ``sub`` claim is opaque per spec and may
+    contain characters ``_is_safe_principal_id`` rejects -- hashing keeps
+    org_identity.py's ``principal_from_claims`` always able to produce a
+    ``Principal`` rather than letting a login fail on an oddly-formatted
+    but legitimate subject). Deterministic, so the same IdP subject always
+    maps to the same storage directory across logins."""
+    if _is_safe_principal_id(raw):
+        return raw
+    return "idp-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
 def is_bundled() -> bool:
