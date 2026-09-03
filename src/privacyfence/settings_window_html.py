@@ -468,15 +468,36 @@ _JS = r"""
   // won't fire later: its own guard is `Notification.permission ===
   // 'default'`, which this card's own Enable click has already moved past.
   //
-  // window.__pfNotificationsEnabled (set by web_shell.py's own script,
-  // which runs before this one's DOMContentLoaded-deferred first render --
-  // see that module's docstring) is undefined in the one place this
-  // function's shared JS also runs without that script at all: the native
-  // settings window (loadHTMLString_baseURL_(html, None), no origin at
-  // all). `Notification` is typically unsupported there too for the same
-  // reason, so the feature-detect below already hides this card on native
-  // in the common case; the config-disabled branch only ever applies to
-  // the web surface, where that flag is always set.
+  // window.__pfNotificationsEnabled/__pfNotificationsDetail (set by
+  // web_shell.py's own script, which runs before this one's
+  // DOMContentLoaded-deferred first render -- see that module's docstring)
+  // are undefined in the one place this function's shared JS also runs
+  // without that script at all: the native settings window
+  // (loadHTMLString_baseURL_(html, None), no origin at all). `Notification`
+  // is typically unsupported there too for the same reason, so the
+  // feature-detect below already hides this card on native in the common
+  // case; the config-disabled branch and the detail-level line only ever
+  // apply to the web surface, where both flags are always set.
+  //
+  // web.notifications.detail (settings.yaml.example, docs/
+  // approval-list-ui-ux.md §4.3) has no toggle/action of its own -- it's
+  // config-file-only, same posture as web.notifications.enabled -- so this
+  // card surfaces the effective level as read-only information (what a
+  // tier-1 notification is currently allowed to say) rather than an
+  // editable control.
+  var NOTIFICATIONS_DETAIL_LABELS = {
+    minimal: 'Minimal -- just the pending count',
+    standard: 'Standard -- adds connector, tool, and read/write direction',
+    detailed: 'Detailed -- also adds the approval\'s own summary line',
+  };
+
+  function renderNotificationsDetailHint() {
+    var detail = window.__pfNotificationsDetail;
+    if (typeof detail !== 'string') { return ''; }
+    var label = NOTIFICATIONS_DETAIL_LABELS[detail] || detail;
+    return '<div class="pf-export-hint">Detail level: ' + esc(label) + ' (web.notifications.detail)</div>';
+  }
+
   function renderNotificationsCard() {
     var html = '<div class="pf-card"><div class="pf-card-row"><div>';
     html += '<div class="pf-card-title">Approval Notifications</div>';
@@ -486,11 +507,11 @@ _JS = r"""
     } else if (window.__pfNotificationsEnabled === false) {
       html += '<div class="pf-export-hint">Turned off in configuration (web.notifications.enabled).</div>';
     } else if (Notification.permission === 'granted') {
-      html += '<div class="pf-export-hint">Enabled</div>';
+      html += '<div class="pf-export-hint">Enabled</div>' + renderNotificationsDetailHint();
     } else if (Notification.permission === 'denied') {
       html += '<div class="pf-export-hint">Blocked -- allow notifications for this site in your browser\'s settings, then reload.</div>';
     } else {
-      html += '<div class="pf-btn-primary" role="button" tabindex="0" aria-label="Enable notifications" data-notif-enable="1">Enable</div>';
+      html += '<div class="pf-btn-primary" role="button" tabindex="0" aria-label="Enable notifications" data-notif-enable="1">Enable</div>' + renderNotificationsDetailHint();
     }
     html += '</div></div>';
     return html;

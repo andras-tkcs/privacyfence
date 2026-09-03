@@ -149,11 +149,14 @@ _STREAM_JS = """
   var NOTIFICATIONS_DETAIL = %(notifications_detail)s;
   // Exposed globally so the settings page's own notifications card
   // (settings_window_html.py's renderNotificationsCard) can read the same
-  // config flag -- that module's JS is shared with the native settings
+  // config flags -- that module's JS is shared with the native settings
   // window, which never loads this script at all, so it treats a missing
   // flag as "on" (feature-detecting Notification support instead) rather
-  // than assuming this variable exists.
+  // than assuming these variables exist; __pfNotificationsDetail missing
+  // is that same "no such config surface here" case, so the card omits
+  // the detail-level line entirely on native rather than guessing.
   window.__pfNotificationsEnabled = NOTIFICATIONS_ENABLED;
+  window.__pfNotificationsDetail = NOTIFICATIONS_DETAIL;
 
   var dot = document.getElementById('pf-shell-live-dot');
   var label = document.getElementById('pf-shell-live-label');
