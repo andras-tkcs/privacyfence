@@ -144,33 +144,6 @@ class TestActionDispatch:
         connectors = r.json()["connectors"]
         assert any("icon_data_uri" in c for c in connectors)
 
-    def test_reveal_mcp_token_returns_the_bare_token_not_a_snapshot(self, client, controller):
-        # P4c (docs/https-connector-refactor-plan.md §16.9): unlike every
-        # other allowlisted action, this one's result is deliberately not a
-        # fresh snapshot() -- see reveal_mcp_token()'s own docstring and the
-        # bridge shim's special-casing of it (routes_settings.py).
-        controller.set_mcp_connection_info(url="http://localhost:8765/mcp", token="super-secret-token")
-        _authed(client)
-        r = client.post("/api/settings/reveal_mcp_token", json={"csrf": TOKEN})
-        assert r.status_code == 200
-        assert r.json() == {"mcp_token": "super-secret-token"}
-
-    def test_reveal_mcp_token_still_requires_csrf(self, client, controller):
-        controller.set_mcp_connection_info(url="http://localhost:8765/mcp", token="super-secret-token")
-        r = client.post("/api/settings/reveal_mcp_token", json={})
-        assert r.status_code == 401
-
-    def test_the_token_never_appears_in_the_settings_page_or_snapshot(self, client, controller):
-        # The stronger guarantee P4c settled on: the token isn't merely
-        # CSS-masked in the DOM, it's absent from the server's response
-        # entirely until reveal_mcp_token() is explicitly called.
-        controller.set_mcp_connection_info(url="http://localhost:8765/mcp", token="super-secret-token")
-        _authed(client)
-        r = client.get("/settings")
-        assert "super-secret-token" not in r.text
-        r = client.post("/api/settings/toggle_pii_detection", json={"csrf": TOKEN})
-        assert "super-secret-token" not in r.text
-
     def test_missing_csrf_is_401(self, client):
         _authed(client)
         r = client.post("/api/settings/toggle_pii_detection", json={})

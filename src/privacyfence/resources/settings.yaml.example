@@ -247,16 +247,14 @@ web:
     # unchanged either way -- this is additive, not a replacement, until P5
     # retires it. Loopback-only and bearer-token-gated regardless (§10 of
     # the refactor plan), same trust posture as the bridge's own IPC socket
-    # had. On by default (P4c, §16.9) so a fresh install's /settings ->
-    # General page has something live to show in its own "Connect Claude"
-    # section (the URL + token to paste into `claude mcp add`) without
-    # first having to find and edit this file. Flip to false to go back to
-    # bridge-only, or if you'd rather this daemon never bind a second
-    # listener at all -- the Connect Claude section says so plainly when
-    # it's off, rather than showing a URL that isn't actually listening.
-    # PrivacyFence.mcpb (the Claude Desktop extension) is unaffected either
-    # way -- it always talks to the bridge, not /mcp; see §12's D11 history
-    # for why an earlier phase (P4b, since reverted) tried the reverse.
+    # had. On by default as of D11/P4b: PrivacyFence.mcpb now installs a
+    # thin stdio shim for Claude Desktop that only speaks /mcp, so a fresh
+    # install needs this on for that extension's zero-config promise ("no
+    # config file edited") to actually hold -- see §12's P4b exit
+    # criterion. Flip to false to go back to bridge-only, or if you'd
+    # rather this daemon never bind a second listener at all. Once enabled,
+    # point a Streamable HTTP MCP client at http://localhost:<port>/mcp
+    # with `Authorization: Bearer <the token in ~/.privacyfence/mcp_token>`.
     enabled: true
   settings:
     # Serve /settings and its POST /api/settings/{action} dispatcher (see

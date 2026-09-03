@@ -323,16 +323,6 @@ def _maybe_start_web_server(
         notifications_enabled=bool(notifications_config.get("enabled", True)),
     )
     server.start()
-    if controller is not None:
-        # P4c (docs/https-connector-refactor-plan.md §16.9): the Connect
-        # Claude card, on both the native settings window and /settings --
-        # both render the same settings_window_html.build_html(), so this
-        # runs regardless of use_web_settings, not only when the web
-        # surface itself is on. None/None (server.mcp_url/mcp_token) when
-        # web.mcp.enabled is off -- the card renders its own "not
-        # available" state for that, same as controller itself already
-        # does for every other disabled surface.
-        controller.set_mcp_connection_info(url=server.mcp_url, token=server.mcp_token)
     # The pending-result URL gate.py hands back to Claude (§5.2 point 4) is
     # only meaningful once the server is actually listening -- set here,
     # not at registry construction, and left unset (None) if this daemon

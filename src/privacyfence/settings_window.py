@@ -248,17 +248,6 @@ class SettingsWindowController(NSObject):
         except TypeError as exc:
             logger.warning("Bad payload for settings bridge action %s: %s", action, exc)
             return
-        if action == "reveal_mcp_token":
-            # P4c (docs/https-connector-refactor-plan.md §16.9): the result
-            # is a bare {"mcp_token": ...}, not a snapshot -- routed to its
-            # own JS callback, mirroring routes_settings.py's web bridge
-            # shim, rather than _push_state()/__pfRender(), which expects a
-            # full state shape and would otherwise wipe every other
-            # rendered section.
-            if isinstance(result, dict) and self._webview is not None:
-                js = f"window.__pfRevealMcpToken && window.__pfRevealMcpToken({json.dumps(result)});"
-                self._webview.evaluateJavaScript_completionHandler_(js, None)
-            return
         if isinstance(result, dict):
             self._push_state(result)
 
