@@ -250,11 +250,11 @@ layout and optional sections (AI-visibility checklist, PII banner, etc.), see
 | `drive_list_folder` | read | auto | — | — |
 | `drive_list_shared_drives` | read | auto | — | — |
 | `drive_create_blank_file` | write | auto | — | — |
-| `drive_get_file_content` | read | review | file name, owner, size, modified date | First ~500 chars of content |
+| `drive_get_file_content` | read | review | file name, owner, size, modified date | First ~500 chars of content (a Google Doc renders as Markdown — headings, bold/italic/strikethrough/underline/code/link/highlight, horizontal-rule dividers, nested lists, real GFM tables; a non-default highlight/text color also adds `highlights`/`text_colors`) |
 | `drive_download_file` | read | review | file name, owner, size, save path | File name, owner, size, modified date, save path |
 | `drive_write_file_content` | write | popup | — | File name, owner, new content (plain text) |
 | `drive_upload_file` | write | popup | — | File name, size, destination folder |
-| `drive_write_doc_content` | write | popup | — | File name, owner, Markdown preview (headings, bold/italic/strikethrough/underline/code, ==highlight==, links, nested lists, tables rendered as rich formatting in the Google Doc) |
+| `drive_write_doc_content` | write | popup | — | File name, owner, Markdown preview (headings, bold/italic/strikethrough/underline/code, ==highlight== (styles nest, e.g. bold+highlight together), links, nested lists, a `---`/`***`/`___` horizontal-rule divider, tables rendered as rich formatting in the Google Doc) |
 | `drive_docs_edit_content` | write | popup | — | File name, owner; find/replace text goes in the details pane, not the preview |
 | `drive_docs_format_content` | write | popup | — | File name, owner, formatting summary; the located text goes in the details pane |
 | `drive_move_file` | write | popup | — | File name, from folder → to folder |
@@ -287,9 +287,13 @@ values grid. Formatting doesn't carry the same PII risk as cell text, so it isn'
 privacy filter/PII scan the way values are.
 
 `drive_docs_edit_content` and `drive_docs_format_content` locate existing text in a Google Doc by
-exact match against its plain text (the same representation `drive_get_file_content` returns) —
-`find_text` must match exactly one location unless `replace_all` is set, so an ambiguous match
-raises rather than guessing which occurrence was meant. Unlike `drive_write_doc_content`, they
+exact match against its **plain, unformatted** text — `find_text` must match exactly one location
+unless `replace_all` is set, so an ambiguous match raises rather than guessing which occurrence was
+meant. This is *not* the same representation `drive_get_file_content` returns for a Google Doc —
+that one renders Markdown (`**bold**`, `# Heading`, etc.), so `find_text` for these two tools must
+be a substring of the doc's real words, with any Markdown formatting markers
+`drive_get_file_content` added stripped back out first (e.g. search for `bold text`, not
+`**bold text**`). Unlike `drive_write_doc_content`, they
 touch only the matched span, not the whole document. `drive_sheets_insert_dimensions`/
 `drive_sheets_delete_dimensions` insert or remove whole rows/columns (not just cell content) in a
 tab, shifting everything after the insertion/deletion point; there is no undo path through
