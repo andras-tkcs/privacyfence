@@ -64,8 +64,15 @@ class PrivacyFenceMenuBar(rumps.App):
         connectors: list[str],
         ipc_server: "IPCServer",
         connector_objs: list[Any] | None = None,
+        controller: SettingsController | None = None,
     ) -> None:
-        self.controller = SettingsController(
+        # daemon_main.run_app() now builds this once and hands it to both
+        # this class and the web settings surface, when the latter is
+        # enabled (docs/https-connector-refactor-plan.md §16.8's risk #2) --
+        # constructing a fresh one here too is kept as the fallback for
+        # every native-only caller (including this class's own tests),
+        # unchanged from before that wiring existed.
+        self.controller = controller if controller is not None else SettingsController(
             config_path=config_path,
             connectors=connectors,
             ipc_server=ipc_server,
@@ -110,11 +117,13 @@ def run_menu_bar(
     connectors: list[str],
     ipc_server: "IPCServer",
     connector_objs: list[Any] | None = None,
+    controller: SettingsController | None = None,
 ) -> None:
     app = PrivacyFenceMenuBar(
         config_path=config_path,
         connectors=connectors,
         ipc_server=ipc_server,
         connector_objs=connector_objs,
+        controller=controller,
     )
     app.run()

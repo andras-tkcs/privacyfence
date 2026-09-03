@@ -13,8 +13,6 @@ this document is about which ones run automatically versus which ones a human ha
 ```bash
 npm test              # bridge/, Node's built-in test runner
 npm run typecheck     # bridge/, tsc --noEmit
-npm test              # mcpb/shim/, Node's built-in test runner
-npm run typecheck     # mcpb/shim/, tsc --noEmit
 pytest -v --cov=src/privacyfence --cov-report=term-missing
 ```
 
@@ -101,27 +99,15 @@ manual steps. It includes:
   Python client, a runtime dependency since P2 (`pyproject.toml`'s `[project.dependencies]` — see
   `docs/https-connector-refactor-plan.md` §8.2/D2) rather than a test-only one; `test_routes_mcp.py`
   above uses the same client against `/mcp` directly.
-- `mcpb/shim/test/*.test.ts` (`npm test`, run from `mcpb/shim/`) — the .mcpb shim's own suite (D11 in
-  `docs/https-connector-refactor-plan.md` §12): daemon discovery/launch (`daemon.test.ts`, the
-  `mcp_url`-file analogue of `bridge/test/daemon.test.ts`'s `ipc_port` coverage) and the stdio<->
-  Streamable HTTP message proxy (`proxy.test.ts`, `index.test.ts` — the latter against a real fake
-  `/mcp` server built on the official SDK's own server classes, not a hand-mocked transport).
-- `npm run typecheck` (`tsc --noEmit`, run from `mcpb/shim/`) — same reasoning as bridge/'s.
-- `tests/integration/test_shim_mcp_contract.py` — the shim's counterpart to
-  `test_bridge_daemon_contract.py`: spawns the real built `mcpb/shim/dist/shim.js` against a real
-  `privacyfence.web.server.WebServer` (with a real bound `/mcp` endpoint) and drives it with the
-  official `mcp` Python client over real MCP-over-stdio. A passthrough test, not a schema test — the
-  shim carries no tool-schema knowledge, so "one `initialize` and one `tools/call` round-trip, with
-  the bearer header attached and `mcp_url` honoured" is the whole of what there is to assert. Skips
-  automatically if Node isn't on `PATH`, same as the bridge's contract test.
 
 ## 2. Local-only checks — run manually before opening/updating a relevant PR, never in CI
 
-Two scripts exist specifically because some failure classes can't be caught by a fully-mocked,
-fully-offline suite. Both are excluded from CI on purpose — one needs real, authenticated
-third-party accounts; the other needs a real screen and a real click — and both print the same
-kind of small, deterministic Markdown report meant to be pasted into the PR description so a
-reviewer doesn't have to re-run anything or have access to the same accounts/hardware themselves.
+Three scripts exist specifically because some failure classes can't be caught by a fully-mocked,
+fully-offline suite. All three are excluded from CI on purpose — one needs real, authenticated
+third-party accounts; another needs a real screen and a real click; the third needs a real browser —
+and all three print the same kind of small, deterministic Markdown report meant to be pasted into
+the PR description so a reviewer doesn't have to re-run anything or have access to the same
+accounts/hardware themselves.
 
 ### 2.1 `qa_fixture_recorder.py --check` / `--record`
 
@@ -198,6 +184,40 @@ scenario here; see `qa_popup_smoke.py`'s own module docstring). Same venv requir
 Paste the printed report into the PR description under a `## Popup smoke check` heading, same
 convention as §2.1.
 
+### 2.3 `qa_web_smoke.py`
+
+`tests/unit/web/`, `test_web_shell.py`, and `test_approval_list_html.py` cover the web surfaces'
+(`/settings`, `/approvals`) HTML/JSON construction and route behavior — CSRF, the settings action
+allowlist, argument validation — on every PR, entirely against Starlette's in-process `TestClient`.
+That deliberately leaves one thing untested: a **real browser** actually parsing and running the JS
+those routes emit. A script tag referencing a DOM element or another script's global defined *later*
+in the document silently no-ops instead of raising in a real browser — this script's own "card
+decide → return-to-list toast" scenario is a regression test for exactly that bug (approval_list_
+html.py's toast/notification-prompt code read `#pf-shell-toast`, defined by web_shell.py *after* it
+in document order, before that element existed — found by running this script during P4's own
+development, not by any unit test). It also confirms the CSP (web/server.py's `_CSP`) actually
+permits what a page needs — e.g. that `worker-src 'self'` really does let `resources/sw.js` register,
+not just that the header string contains the right token.
+
+**Never run in CI.** It needs `playwright` (`pip install playwright` — not a project dependency,
+install it locally) and a Chromium binary, and drives a real embedded HTTP server + real browser
+end to end, which is slower and flakier than the route-level suite that already runs on every PR.
+
+**When to run this**: whenever `web_shell.py`, `approval_list_html.py`, the JS-emitting functions in
+`web/routes_approvals.py`/`web/routes_settings.py`, `resources/sw.js`, or `web/server.py`'s CSP
+changes. Not for a `settings_controller.py`/`settings_window_html.py` change with no web-shell/CSP
+involvement — those are covered by `test_settings_window_html.py`'s construction-only assertions,
+same reasoning `qa_popup_smoke.py`'s own docstring gives for the native window.
+
+```bash
+.venv/bin/pip install playwright
+.venv/bin/python scripts/qa_web_smoke.py
+```
+
+If Playwright's own bundled Chromium isn't installed, pass `--chromium-path` at a Chromium/Chrome
+binary already on disk instead of downloading one. Paste the printed report into the PR description
+under a `## Web smoke check` heading, same convention as §2.1/§2.2.
+
 ## 3. Full manual QA pass — before a release, not per-PR
 
 [`connector-qa-testing.md`](connector-qa-testing.md) drives every tool through a live Claude
@@ -214,13 +234,12 @@ full release-time checklist tying all three tiers together.
 
 | Check | Runs in CI? | When |
 |---|---|---|
-| `pytest` (full suite, incl. the bridge/daemon and shim/mcp contract tests) | Yes, every PR | Always — this is the merge gate |
+| `pytest` (full suite, incl. the bridge/daemon contract test) | Yes, every PR | Always — this is the merge gate |
 | `npm test` (bridge/'s own suite) | Yes, every PR | Always — this is the merge gate |
 | `npm run typecheck` (bridge/) | Yes, every PR | Always — this is the merge gate |
-| `npm test` (mcpb/shim/'s own suite) | Yes, every PR | Always — this is the merge gate |
-| `npm run typecheck` (mcpb/shim/) | Yes, every PR | Always — this is the merge gate |
 | `qa_fixture_recorder.py --check` | No | PR touches a `*_client.py`/`connectors/**` file |
 | `qa_popup_smoke.py` | No | PR touches `approval_window.py`'s modal-loop plumbing |
+| `qa_web_smoke.py` | No | PR touches `web_shell.py`, `approval_list_html.py`, web routes' JS, `resources/sw.js`, or the CSP |
 | `connector-qa-testing.md`'s live Cowork pass | No | Before a release, or a broad gate/auto-accept change |
 
 None of the "No" rows require a credential, secret, or macOS Accessibility permission to ever be

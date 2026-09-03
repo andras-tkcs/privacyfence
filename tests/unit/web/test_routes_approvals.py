@@ -116,7 +116,7 @@ class TestAuthentication:
 class TestListApprovals:
     def test_nothing_pending(self, client):
         r = client.get(f"/approvals?token={TOKEN}")
-        assert "No approvals are currently pending" in r.text
+        assert "Nothing is waiting" in r.text
 
     def test_one_pending_card_links_to_it(self, client, web_ui):
         t, card, box = _pending_card(web_ui)
@@ -128,6 +128,28 @@ class TestListApprovals:
     def test_response_is_never_cached(self, client):
         r = client.get(f"/approvals?token={TOKEN}")
         assert r.headers.get("cache-control") == "no-store"
+
+    def test_wrapped_in_the_shared_shell(self, client):
+        r = client.get(f"/approvals?token={TOKEN}")
+        assert "pf-shell-nav" in r.text
+        assert 'class="pf-shell-nav-item active" href="/approvals"' in r.text
+
+    def test_notifications_enabled_config_reaches_the_page(self, web_ui):
+        from privacyfence.web.routes_approvals import create_app
+
+        app = create_app(web_ui, token=TOKEN, notifications_enabled=False)
+        c = TestClient(app, base_url="http://localhost")
+        r = c.get(f"/approvals?token={TOKEN}")
+        assert "NOTIFICATIONS_ENABLED = false" in r.text
+
+    def test_pending_card_row_has_a_deny_button_and_review_link(self, client, web_ui):
+        t, card, box = _pending_card(web_ui)
+        r = client.get(f"/approvals?token={TOKEN}")
+        assert f'data-deny="{card.id}"' in r.text
+        assert f'href="/approvals/{card.id}"' in r.text
+        assert ">Allow<" not in r.text
+        web_ui.resolve(card.id, "deny")
+        t.join(timeout=2)
 
     def test_two_pending_cards_both_link(self, client, web_ui):
         # P3: several approvals can be pending at once (§6's retirement of
@@ -142,6 +164,28 @@ class TestListApprovals:
         web_ui.resolve(card2.id, "deny")
         t1.join(timeout=2)
         t2.join(timeout=2)
+
+
+class TestServiceWorker:
+    """W8 (tier 0/1 notifications, docs/approval-list-ui-ux.md §4): served
+    at the origin root with no auth required, so registration never fails
+    on a session that hasn't authenticated yet."""
+
+    def test_served_with_no_auth_required(self, client):
+        r = client.get("/sw.js")
+        assert r.status_code == 200
+
+    def test_correct_content_type_and_scope_header(self, client):
+        r = client.get("/sw.js")
+        assert "javascript" in r.headers.get("content-type", "")
+        assert r.headers.get("service-worker-allowed") == "/"
+
+    def test_no_push_handler(self, client):
+        # This phase is tier 0/1 only -- no `push` event handler (that's
+        # tier 2, VAPID, org mode/P7+).
+        r = client.get("/sw.js")
+        assert "addEventListener(\"push\"" not in r.text
+        assert "addEventListener('push'" not in r.text
 
 
 class TestApprovalsStream:
@@ -180,6 +224,31 @@ class TestShowApproval:
         t, card, box = _pending_card(web_ui)
         r = client.get(f"/approvals/{card.id}")
         assert r.status_code == 401
+        web_ui.resolve(card.id, "deny")
+        t.join(timeout=2)
+
+    def test_no_longer_pending_page_links_back_to_the_list(self, client):
+        r = client.get(f"/approvals/does-not-exist?token={TOKEN}")
+        assert 'href="/approvals"' in r.text
+
+    def test_shim_navigates_back_to_the_list_on_success_not_innerhtml(self, client, web_ui):
+        # §3 of docs/approval-list-ui-ux.md: a decision navigates back to
+        # /approvals via location.replace (so the back button can't walk
+        # into a dead card) with a toast stashed in sessionStorage, instead
+        # of rewriting the document body in place.
+        t, card, box = _pending_card(web_ui)
+        r = client.get(f"/approvals/{card.id}?token={TOKEN}")
+        assert "location.replace('/approvals')" in r.text
+        assert "sessionStorage.setItem('pf_toast'" in r.text
+        assert "document.body.innerHTML = r.ok" not in r.text
+        web_ui.resolve(card.id, "deny")
+        t.join(timeout=2)
+
+    def test_shim_handles_the_409_already_decided_case(self, client, web_ui):
+        t, card, box = _pending_card(web_ui)
+        r = client.get(f"/approvals/{card.id}?token={TOKEN}")
+        assert "r.status === 409" in r.text
+        assert "Already decided elsewhere" in r.text
         web_ui.resolve(card.id, "deny")
         t.join(timeout=2)
 

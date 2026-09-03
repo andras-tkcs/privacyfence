@@ -120,19 +120,11 @@ if [ -n "$SIGN_IDENTITY" ]; then
     "$BUNDLE"
 fi
 
-# ── 6. Build the Claude Desktop extensions (.mcpb) ────────────────────────────
-# Two of them until the bridge is retired (P5, see
-# docs/https-connector-refactor-plan.md §12 — D11): the /mcp shim
-# (PrivacyFence.mcpb, the one to use) and the legacy IPC-socket bridge
-# (PrivacyFence (Legacy Bridge).mcpb, a rollback that needs no /mcp setup).
-# See scripts/build_mcpb.sh's own header for why both, and why they don't
-# conflict with each other when installed side by side.
-echo "→ Building PrivacyFence's Claude Desktop extensions…"
+# ── 6. Build the bridge .mcpb (Claude Desktop extension) ─────────────────────
+echo "→ Building PrivacyFence.mcpb…"
 bash scripts/build_mcpb.sh
-MCPB_SHIM_PATH="dist/${PRODUCT_NAME}-${VERSION}.mcpb"
-MCPB_SHIM_DMG_NAME="${PRODUCT_NAME}.mcpb"   # stable name inside the DMG (no version)
-MCPB_BRIDGE_PATH="dist/${PRODUCT_NAME}-legacy-bridge-${VERSION}.mcpb"
-MCPB_BRIDGE_DMG_NAME="${PRODUCT_NAME} (Legacy Bridge).mcpb"   # stable name inside the DMG
+MCPB_PATH="dist/${PRODUCT_NAME}-${VERSION}.mcpb"
+MCPB_DMG_NAME="${PRODUCT_NAME}.mcpb"   # stable name inside the DMG (no version)
 
 # ── 7. Package into DMG ───────────────────────────────────────────────────────
 echo "→ Building DMG…"
@@ -147,8 +139,7 @@ create-dmg \
   --icon "${APP_NAME}.app" 150 140 \
   --hide-extension "${APP_NAME}.app" \
   --app-drop-link 450 140 \
-  --add-file "${MCPB_SHIM_DMG_NAME}" "$MCPB_SHIM_PATH" 150 340 \
-  --add-file "${MCPB_BRIDGE_DMG_NAME}" "$MCPB_BRIDGE_PATH" 450 340 \
+  --add-file "${MCPB_DMG_NAME}" "$MCPB_PATH" 300 340 \
   --no-internet-enable \
   "$DMG_PATH" \
   "dist/${APP_NAME}.app"
