@@ -589,6 +589,35 @@ Registration supported, and support in Claude web, Desktop, iOS and Android on P
 Enterprise plans. The exact protocol revision Claude negotiates should be re-confirmed against
 Anthropic's connector documentation at implementation time rather than pinned from this document.
 
+**The tool-call timeout — partially measured post-P0, on the stdio transport only.** §12's findings
+table left this open ("the tool-call timeout Claude's client actually enforces ... decides how far
+the hold window can be raised in P3"). A throwaway spike answered part of it, same shape as P0's
+question 2: a real MCP stdio server with one tool, `spike_slow_echo(delay_seconds)`, that sleeps for
+the requested duration and then returns, called from a local, interactive Claude Code CLI session
+(headless `-p` mode) at 20, 40, 60, 90, 120, 180, 200, 220, 240, 260, 280 and 300 seconds.
+
+Every one of those calls, including the 300-second (5-minute) one, returned normally — content
+delivered, no client-side error, no timeout. (The first pass through this sweep misread the 300 s
+run as a failure; that was a bug in the spike's own pass/fail grep, which matched the substring
+"timeout" inside the model's own sentence — "no timeout or error" — not an actual failure. The
+run's own transcript, read directly, shows a clean five-minute round trip.) So this establishes a
+**lower bound, not the ceiling**: Claude Code's client tolerated at least a 300 s wait on one tool
+call without giving up. It does not say where the real ceiling is, and it tested the wrong transport
+for what P2 actually ships — a local stdio server, not the Streamable HTTP `/mcp` connector a remote
+Claude surface talks to. Whether Streamable HTTP has the same tolerance, a different one, or an
+intermediate proxy timeout of its own (Cloudflare-style edge timeouts on long-held HTTP connections
+are a plausible source of exactly this kind of ceiling) is still unconfirmed — that requires a real
+publicly-reachable `/mcp` endpoint added as an actual remote connector, which this spike did not
+attempt.
+
+**What this changes for D3 (§15).** It does not move the 30 s hold-window default — no case has been
+made for a specific higher number, only that at least one client (Claude Code, stdio) has headroom
+well past it. What it does do is remove the risk that raising the hold window toward, say, 90 s (the
+figure `approval-list-ui-ux.md` §6 used as an illustrative example) would itself be unsafe against a
+short client-side ceiling — 300 s of confirmed headroom on stdio covers that comfortably. The
+Streamable HTTP figure is still the one P3's beta needs before treating a materially higher hold
+window as more than speculative.
+
 ---
 
 ## 9. Identity, authentication, and multi-user state
@@ -1115,8 +1144,10 @@ device emulation, either is fine) that Chromium-only testing can't fully replace
 **Still open going into P1**, in the order they are needed:
 
 1. The WebAuthn link-open check (§10.6) — cheap, needs a human with real apps, blocks scheduling P9.
-2. The tool-call timeout Claude's client actually enforces (§8.3) — establish it in **P2**; it decides
-   how far the hold window can be raised in P3.
+2. The tool-call timeout Claude's client actually enforces (§8.3) — **partially measured** post-P0: on
+   the stdio transport, Claude Code tolerated at least a 300 s wait with no timeout, which is a lower
+   bound, not the ceiling. The Streamable HTTP figure — the transport `/mcp` actually uses — is still
+   unmeasured and is what decides how far the hold window can be raised in P3.
 3. Re-call behavior on Claude Desktop, web and mobile — **P3**'s beta, alongside the Claude Code
    number P0 already has.
 4. Housekeeping: the throwaway `spike/p0-recall-experiment` branch is still on the remote and should
@@ -1378,7 +1409,7 @@ front.
 |---|---|---|
 | **D1** | `local` mode: loopback HTTP, or real HTTPS with a self-signed certificate? | **Loopback HTTP**, served on `localhost` rather than `127.0.0.1` so WebAuthn stays available (D7). A self-signed certificate would be rejected by MCP clients and risks training people through TLS warnings. TLS opt-in remains. §10.2 |
 | **D2** | MCP server: official `mcp` SDK + starlette/uvicorn, or hand-rolled Streamable HTTP on asyncio? | **The official SDK**, accepting the deviation from the stdlib-first rule. Spec conformance with Claude's client is the acceptance criterion, and it moves. §8.2 |
-| **D3** | Hold window and ledger TTL. | **Hold 30 s, pending TTL 15 min, ledger TTL 5 min, single-use for writes.** All configurable; these defaults are what P3's beta measures against. §5.2 |
+| **D3** | Hold window and ledger TTL. | **Hold 30 s, pending TTL 15 min, ledger TTL 5 min, single-use for writes.** All configurable; these defaults are what P3's beta measures against. §5.2. Defaults unchanged by §8.3's post-P0 stdio measurement — that finding only clears headroom for raising the hold window later, on the still-unmeasured Streamable HTTP transport, not a reason to raise it now. |
 | **D4** | Is `org` mode the same artifact as the desktop app? | **Same codebase, separate build target.** The desktop app must not ship an inbound-facing server it never binds. |
 | **D5** | `org` MCP auth: own authorization server, or delegate to the org IdP? | **Own authorization server**, with IdP delegation as a supported configuration. It is what makes the browser session and the MCP token provably one identity. §9.4 |
 | **D6** | Keep the native macOS popup after P10, or delete it? | **Delete it.** Two approval surfaces means two places for a security fix to land, and the `ApprovalUI` seam lets it come back if that proves wrong. |
