@@ -127,9 +127,17 @@ _JS = """
     fetch('/api/approvals/' + encodeURIComponent(id) + '/decide', {
       method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({result: 'deny', csrf: %(csrf)s}),
-    }).then(function () {
+    }).then(function (r) {
       var row = document.querySelector('[data-approval-id="' + id + '"]');
       if (row) { row.remove(); }
+      // §4.4's "offer it after the first successful decision" isn't only
+      // the card page's own decision (whose own return-to-list flow
+      // triggers this same prompt via the DOMContentLoaded handler below)
+      // -- row-level Deny is a first-class decision path (§2.2's whole
+      // point: denying needs no card) and never goes through that flow at
+      // all, so without this, a workflow that only ever denies from the
+      // list would never trigger the notification permission pre-prompt.
+      if (r.ok && window.__pfNotifPrompt) { window.__pfNotifPrompt(); }
     });
   }
 
