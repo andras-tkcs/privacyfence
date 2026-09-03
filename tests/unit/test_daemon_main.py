@@ -111,6 +111,19 @@ class TestResolvePath:
         monkeypatch.setattr(daemon_main, "PROJECT_ROOT", "/tmp/pf-root")
         assert daemon_main._resolve_path("credentials/x.json") == "/tmp/pf-root/credentials/x.json"
 
+    def test_relative_path_for_a_non_local_principal_uses_its_own_storage_root(self, monkeypatch, tmp_path):
+        # P6, docs/https-connector-refactor-plan.md §9.2 -- the branch
+        # connector_registry.py's ConnectorRegistry.get() relies on;
+        # PROJECT_ROOT (the local-principal path above) must stay
+        # untouched by this.
+        from privacyfence import paths
+        from privacyfence.principal import Principal, principal_scope
+
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+        with principal_scope(Principal(id="alice")):
+            result = daemon_main._resolve_path("credentials/x.json")
+        assert result == str(tmp_path / "users" / "alice" / "credentials" / "x.json")
+
 
 class TestGoogleClientConfig:
     def test_empty_when_no_google_section(self):

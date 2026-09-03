@@ -143,8 +143,13 @@ class TestDiskPersistence:
 
 
 class TestGetResolverSingleton:
-    def test_returns_the_same_instance_across_calls(self, monkeypatch):
-        monkeypatch.setattr(rn, "_INSTANCE", None)
+    def test_returns_the_same_instance_across_calls(self):
+        # Reset via the per-principal registry (P6) rather than a bare
+        # module global -- see tests/conftest.py's own autouse reset, which
+        # already does this between tests; this test just makes the
+        # "same instance for the same (here: default/local) principal"
+        # guarantee explicit.
+        rn._REGISTRY.reset()
         first = rn.get_resolver()
         second = rn.get_resolver()
         assert first is second

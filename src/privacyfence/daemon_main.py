@@ -60,7 +60,8 @@ from typing import Any
 
 import yaml
 
-from .paths import data_dir, org_dir
+from .paths import data_dir, org_dir, user_dir
+from .principal import LOCAL_PRINCIPAL_ID, current_principal
 from .app_credentials import telegram_app_credentials
 from .approval_ui import init_approval_ui
 from .audit_log import init_audit_logger
@@ -161,9 +162,20 @@ def _release_instance_lock() -> None:
 # ---------------------------------------------------------------------------- #
 
 def _resolve_path(path: str) -> str:
+    """Relative to ``PROJECT_ROOT`` for the local principal -- exactly as
+    before this phase, including for the tests that monkeypatch
+    ``PROJECT_ROOT`` directly to sandbox where a test run reads/writes --
+    or to that *other* principal's own storage root (P6, docs/
+    https-connector-refactor-plan.md §9.2) when this runs inside a
+    ``principal_scope()`` block for someone else (only
+    connector_registry.py's ``ConnectorRegistry.get()`` does that today).
+    """
     if os.path.isabs(path):
         return path
-    return os.path.join(PROJECT_ROOT, path)
+    principal = current_principal()
+    if principal.id == LOCAL_PRINCIPAL_ID:
+        return os.path.join(PROJECT_ROOT, path)
+    return str(user_dir(principal) / path)
 
 
 def _bootstrap_config(resolved: str) -> None:
@@ -384,6 +396,16 @@ def _google_client_config(org_config: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------- #
 
 def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list:
+    """Builds every enabled, currently-authenticated connector for the
+    *current principal* (P6, docs/https-connector-refactor-plan.md §9.2):
+    every credential/cache path below resolves through ``_resolve_path()``/
+    ``user_dir()``, which is the local principal's own storage root (i.e.
+    unchanged from before this phase) unless this is called from inside a
+    ``principal_scope()`` block for someone else -- see
+    connector_registry.py's ``ConnectorRegistry``, which is what actually
+    does that once a second principal's connectors are buildable at all
+    (P8). ``run_app()`` below still calls this directly, once, for the local
+    principal only -- that's what keeps local mode byte-identical."""
     connectors: list[Any] = []
     connectors_cfg: dict[str, dict] = config.get("connectors", {}) or {}
 
@@ -502,8 +524,8 @@ def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list
             token = load_slack_token(_resolve_path(TOKEN_FILES["slack"]))
             client = SlackClient(
                 user_token=token.get("access_token", ""),
-                user_cache_file=str(data_dir() / "slack_user_cache.json"),
-                channel_cache_file=str(data_dir() / "slack_channel_cache.json"),
+                user_cache_file=str(user_dir() / "slack_user_cache.json"),
+                channel_cache_file=str(user_dir() / "slack_channel_cache.json"),
             )
             workspace = client.check_connection()
             # Directory-cache warming (if stale) happens after the whole
@@ -597,7 +619,7 @@ def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list
                 api_id=api_id,
                 api_hash=api_hash,
                 session_file=session_file,
-                chat_cache_file=str(data_dir() / "telegram_chat_cache.json"),
+                chat_cache_file=str(user_dir() / "telegram_chat_cache.json"),
             )
             # Directory-cache warming happens the same way as Slack's now --
             # see _warm_connector_caches() in run_app() -- just scheduled on

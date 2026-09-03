@@ -32,7 +32,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from mcp import types
-from mcp.server.auth.middleware.auth_context import AuthContextMiddleware
+from mcp.server.auth.middleware.auth_context import AuthContextMiddleware, get_access_token
 from mcp.server.auth.middleware.bearer_auth import BearerAuthBackend, RequireAuthMiddleware
 from mcp.server.lowlevel.server import Server as MCPServer
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
@@ -42,8 +42,9 @@ from starlette.types import ASGIApp
 
 from .. import __version__ as PRIVACYFENCE_VERSION
 from ..connector import Connector
+from ..principal import principal_scope
 from . import mcp_tools
-from .mcp_auth import StaticTokenVerifier
+from .mcp_auth import StaticTokenVerifier, principal_from_access_token
 from .mcp_dispatch import McpDispatcher
 
 logger = logging.getLogger(__name__)
@@ -102,16 +103,26 @@ def build_mcp_server(dispatcher: McpDispatcher) -> MCPServer:
     @server.call_tool()
     async def handle_call_tool(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
         session_key = _session_key(server)
-        try:
-            if name in mcp_tools.META_TOOL_NAMES:
-                result = await _dispatch_meta_tool(dispatcher, session_key, name, arguments)
-            else:
-                result = await _dispatch_connector_tool(dispatcher, session_key, name, arguments)
-        except Exception as exc:  # noqa: BLE001 -- surfaced to the client as a tool error, not a
-            # transport-level failure, exactly like ipc_server.py's own
-            # `{"id": ..., "error": str(exc)}` response to a "call" request.
-            logger.info("Tool call %s failed: %s", name, exc)
-            return mcp_tools.error_result(str(exc))
+        # Entered once per tool call, in the one place this surface
+        # dispatches one (P6, docs/https-connector-refactor-plan.md §9.1) --
+        # every per-principal registry downstream (auto_accept.py,
+        # audit_log.py, pii_detector.py, privacy_filter.py,
+        # resource_names.py) resolves against whatever this sets for the
+        # rest of the call, including everything gate.py's gated_call()
+        # does. Always LOCAL_PRINCIPAL today -- see
+        # mcp_auth.principal_from_access_token's own docstring for why.
+        principal = principal_from_access_token(get_access_token())
+        with principal_scope(principal):
+            try:
+                if name in mcp_tools.META_TOOL_NAMES:
+                    result = await _dispatch_meta_tool(dispatcher, session_key, name, arguments)
+                else:
+                    result = await _dispatch_connector_tool(dispatcher, session_key, name, arguments)
+            except Exception as exc:  # noqa: BLE001 -- surfaced to the client as a tool error, not a
+                # transport-level failure, exactly like ipc_server.py's own
+                # `{"id": ..., "error": str(exc)}` response to a "call" request.
+                logger.info("Tool call %s failed: %s", name, exc)
+                return mcp_tools.error_result(str(exc))
         return mcp_tools.to_call_tool_result(result)
 
     return server

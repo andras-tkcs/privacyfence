@@ -37,6 +37,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from .principal import PrincipalRegistry
+
 logger = logging.getLogger(__name__)
 
 _VALID_POLICIES = ("allow", "redact", "block")
@@ -44,21 +46,24 @@ _BLOCK_MARKER = "[BLOCKED BY PRIVACY FILTER]"
 
 # Keyed by group name ("privacy", "drive_privacy", "slack_privacy",
 # "contacts_privacy", "tasks_privacy", "confluence_privacy"), each value
-# {"default_policy": str, "categories": {category: policy}}. Populated once at
-# daemon startup by init_privacy_filter(); empty dict for any group not yet
-# initialized resolves every category to "allow" (fail open on missing config,
-# same posture pii_detector.py takes when disabled -- this module only ever
-# narrows what already ships, it never adds a new default-block surface a
-# pre-existing install didn't have).
-_GROUPS: dict[str, dict[str, Any]] = {}
+# {"default_policy": str, "categories": {category: policy}}. Populated once
+# per principal, at daemon startup (local mode) or on first use (any other
+# principal -- see PrincipalRegistry.get()), by init_privacy_filter(); empty
+# dict for any group not yet initialized resolves every category to "allow"
+# (fail open on missing config, same posture pii_detector.py takes when
+# disabled -- this module only ever narrows what already ships, it never
+# adds a new default-block surface a pre-existing install didn't have). One
+# dict per principal (P6, docs/https-connector-refactor-plan.md §9.2), not
+# one per process -- each user's own privacy policy, isolated the same way
+# their auto-accept rules already are.
+_REGISTRY: PrincipalRegistry[dict[str, dict[str, Any]]] = PrincipalRegistry(dict)
 
 
 def init_privacy_filter(config: dict[str, Any]) -> None:
     """Parse ``privacy``/``drive_privacy``/``slack_privacy``/``contacts_privacy``/
     ``tasks_privacy``/``confluence_privacy`` out of the loaded settings.yaml dict.
     Call once at daemon startup, same pattern as pii_detector.init_pii_detection()."""
-    global _GROUPS
-    _GROUPS = {
+    groups = {
         "privacy": _parse_group(config.get("privacy")),
         "drive_privacy": _parse_group(config.get("drive_privacy")),
         "slack_privacy": _parse_group(config.get("slack_privacy")),
@@ -66,6 +71,7 @@ def init_privacy_filter(config: dict[str, Any]) -> None:
         "tasks_privacy": _parse_group(config.get("tasks_privacy")),
         "confluence_privacy": _parse_group(config.get("confluence_privacy")),
     }
+    _REGISTRY.set(groups)
 
 
 def _parse_group(raw: Any) -> dict[str, Any]:
@@ -94,7 +100,7 @@ def category_policy(group: str, category: str) -> str:
     same lookup apply_text/apply_list use internally, exposed so the "AI will
     receive" review-UI checklist can render the real policy instead of
     re-deriving it."""
-    g = _GROUPS.get(group, {"default_policy": "allow", "categories": {}})
+    g = _REGISTRY.get().get(group, {"default_policy": "allow", "categories": {}})
     return g["categories"].get(category, g["default_policy"])
 
 

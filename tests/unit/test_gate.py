@@ -1235,7 +1235,7 @@ class TestWriteContentFlags:
         # point, which already respects the menu-bar enable/disable toggle
         # -- no separate toggle needed for this signal.
         from privacyfence import pii_detector
-        monkeypatch.setattr(pii_detector, "_enabled", False)
+        pii_detector._REGISTRY.get().enabled = False
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
         captured = {}
 

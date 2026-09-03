@@ -29,6 +29,7 @@ import logging
 import secrets
 import threading
 from collections.abc import AsyncIterator
+from typing import Callable
 
 import uvicorn
 from starlette.requests import Request
@@ -37,6 +38,7 @@ from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .. import paths
+from ..principal import LOCAL_PRINCIPAL, Principal, principal_scope
 from ..settings_controller import SettingsController, set_main_dispatcher
 from ..web_approval_ui import WebApprovalUI
 from . import state_stream as _state_stream
@@ -143,6 +145,46 @@ class _SecurityHeadersMiddleware:
         await self._app(scope, receive, send_with_headers)
 
 
+def _default_principal(_request: Request) -> Principal:
+    """Every browser surface's principal today, and the reason this phase is
+    byte-identical to before it: there is no logged-in multi-user session
+    yet to resolve a real one from -- that's P7's OIDC work. See this
+    module's own docstring's "local mode only in P1" note, still true here."""
+    return LOCAL_PRINCIPAL
+
+
+class _PrincipalScopeMiddleware:
+    """The browser surface's principal_scope() entry point (P6, docs/
+    https-connector-refactor-plan.md §9.1: "entered once per HTTP request,
+    in exactly one place per surface") -- the MCP endpoint's own entry point
+    is routes_mcp.py's handle_call_tool. Every per-principal registry
+    downstream (auto_accept.py, audit_log.py, pii_detector.py,
+    privacy_filter.py, resource_names.py) resolves against whatever
+    ``resolve`` returns for the rest of the request, including
+    /settings, /approvals and the state-push SSE stream.
+
+    ``resolve`` defaults to _default_principal (always LOCAL_PRINCIPAL) --
+    parameterized rather than hardcoded so a test can inject a resolver that
+    varies by request (e.g. a session cookie) to prove two principals stay
+    isolated all the way through the real HTTP routes, not just via
+    principal_scope() called directly. P7 replaces the default resolver
+    with one that reads an actual OIDC session; nothing else about this
+    class changes then.
+    """
+
+    def __init__(self, app: ASGIApp, resolve: Callable[[Request], Principal]) -> None:
+        self._app = app
+        self._resolve = resolve
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+        principal = self._resolve(Request(scope))
+        with principal_scope(principal):
+            await self._app(scope, receive, send)
+
+
 class _HostAllowlistMiddleware:
     """DNS-rebinding defense (docs/https-connector-refactor-plan.md §10.5,
     §9.4): reject any request whose Host header isn't in the configured
@@ -242,11 +284,18 @@ def build_app(
     notifications_enabled: bool = True,
     notifications_detail: str = "minimal",
     loop_ready: threading.Event | None = None,
+    principal_resolver: Callable[[Request], Principal] | None = None,
 ) -> ASGIApp:
     """The approval routes, wrapped with the Host allowlist and security
     headers every real deployment needs -- routes_approvals.create_app()
     alone (no wrapping) is what tests reach for when they want to exercise
     the routes without also exercising this middleware stack.
+
+    ``principal_resolver`` (P6, §9.1) defaults to _default_principal
+    (always LOCAL_PRINCIPAL) -- pass a different one only to prove
+    per-principal isolation over real HTTP in a test; production callers
+    leave it unset until P7 gives this surface real per-user sessions to
+    resolve a principal from.
 
     ``mcp_dispatcher`` (P2, docs/https-connector-refactor-plan.md §8) folds
     the ``/mcp`` Streamable HTTP endpoint into this same app, on its own
@@ -298,7 +347,8 @@ def build_app(
         web_ui, token=token, extra_routes=extra_routes, lifespan=lifespan,
         notifications_enabled=notifications_enabled, notifications_detail=notifications_detail,
     )
-    wrapped: ASGIApp = _HostAllowlistMiddleware(app, allowed_hosts)
+    scoped: ASGIApp = _PrincipalScopeMiddleware(app, principal_resolver or _default_principal)
+    wrapped: ASGIApp = _HostAllowlistMiddleware(scoped, allowed_hosts)
     return _SecurityHeadersMiddleware(wrapped)
 
 
@@ -322,6 +372,7 @@ class WebServer:
         allow_quit: bool = True,
         notifications_enabled: bool = True,
         notifications_detail: str = "minimal",
+        principal_resolver: Callable[[Request], Principal] | None = None,
     ) -> None:
         self.host = host
         self.port = port
@@ -332,6 +383,7 @@ class WebServer:
         self.allow_quit = allow_quit
         self.notifications_enabled = notifications_enabled
         self.notifications_detail = notifications_detail
+        self.principal_resolver = principal_resolver
         # The state-push channel (§16.3) backs both /settings (async
         # outcomes reaching an open tab) and /approvals (P3's own list, via
         # the same "approvals" event) -- built whenever either surface is
@@ -363,6 +415,7 @@ class WebServer:
             notifications_enabled=notifications_enabled,
             notifications_detail=notifications_detail,
             loop_ready=self._loop_ready,
+            principal_resolver=principal_resolver,
         )
         config = uvicorn.Config(wrapped, host=host, port=port, log_level="warning")
         self._server = uvicorn.Server(config)

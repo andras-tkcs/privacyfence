@@ -2,17 +2,29 @@
 
 **Status: design agreed (§15); the P0 spike is complete and its findings are recorded in §12. P1
 (web approval surface), P2 (MCP over HTTP alongside the bridge), P4b (the Desktop stdio shim, D11),
-P3 (deferred approvals + concurrency) and P4 (settings on the web, §16) have landed. P2's
-implementation found one gap this document did not have an answer for — how Claude Desktop connects
-to `local` mode once the bridge is gone — decided as D11 and shipped as P4b ahead of P3, since
-neither depended on the other. P3 retires `_popup_lock` per §6 and implements the deferred-approval
-protocol from §5; its own beta (§12: "P3 | beta, and it needs one") is what still has to confirm the
-re-call-rate and hold-window findings from P0's spike (§5.4) against real traffic on all four Claude
-surfaces, not just Claude Code. P4 folds §16's eight W-PRs into one landing: the settings surface
-(`/settings`, the allowlisted action dispatcher, the shared state-push channel) and the P1-compatible
-slice of [`approval-list-ui-ux.md`](approval-list-ui-ux.md) (the page shell, the return-to-list flow,
+P3 (deferred approvals + concurrency), P4 (settings on the web, §16), P5 (retiring the bridge) and P6
+(principals + per-user storage, §9) have landed. P2's implementation found one gap this document did
+not have an answer for — how Claude Desktop connects to `local` mode once the bridge is gone —
+decided as D11 and shipped as P4b ahead of P3, since neither depended on the other. P3 retires
+`_popup_lock` per §6 and implements the deferred-approval protocol from §5; its own beta (§12: "P3 |
+beta, and it needs one") is what still has to confirm the re-call-rate and hold-window findings from
+P0's spike (§5.4) against real traffic on all four Claude surfaces, not just Claude Code. P4 folds
+§16's eight W-PRs into one landing: the settings surface (`/settings`, the allowlisted action
+dispatcher, the shared state-push channel) and the P1-compatible slice of
+[`approval-list-ui-ux.md`](approval-list-ui-ux.md) (the page shell, the return-to-list flow,
 notification tiers 0-1) — its own full multi-row list, grouping and hold-window clock stay P3's, per
-that document's §6.**
+that document's §6. P5 deletes `bridge/`, `ipc.py` and `ipc_server.py` now that `/mcp` and P4b's shim
+have each shipped a stable release. P6 lands §9's `Principal`/`principal_scope` primitives and turns
+every per-user global from §1.5's table (except `approval_ui`, which stays a true singleton on
+purpose — see principal.py's own docstring) into a per-principal registry behind its existing
+accessor name, plus a bounded, lazily-built `ConnectorRegistry` (§9.2's "the main memory-scaling
+question") — `principal_scope` is entered once per request on both surfaces (`web/routes_mcp.py`,
+`web/server.py`'s `_PrincipalScopeMiddleware`), always resolving to `LOCAL_PRINCIPAL` today, since no
+surface has real per-user identity until P7's OIDC/OAuth 2.1 authorization server exists. Exit
+criterion met exactly as specified: two principals are isolated in tests
+(`tests/unit/test_p6_principal_isolation.py`, `test_principal.py`, `test_connector_registry.py`) and
+local mode is unaffected — no code path daemon_main.py's own single-principal boot sequence exercises
+resolves any differently than before this phase.**
 
 This document designs, and validates against the current code, the refactoring that turns
 PrivacyFence from a macOS-only, single-user, stdio-MCP-bridge desktop app into a service with an

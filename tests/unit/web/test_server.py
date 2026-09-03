@@ -7,9 +7,18 @@ test_routes_approvals.py instead).
 """
 from __future__ import annotations
 
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 from starlette.testclient import TestClient
 
-from privacyfence.web.server import DEFAULT_PORT, WebServer, build_app, load_or_create_token
+from privacyfence.principal import LOCAL_PRINCIPAL_ID, Principal, current_principal
+from privacyfence.web.server import (
+    DEFAULT_PORT,
+    WebServer,
+    _PrincipalScopeMiddleware,
+    build_app,
+    load_or_create_token,
+)
 from privacyfence.web_approval_ui import WebApprovalUI
 
 TOKEN = "test-token-0123456789"
@@ -31,6 +40,59 @@ class TestHostAllowlist:
     def test_port_suffix_on_the_host_header_is_ignored_for_matching(self):
         r = self._client().get(f"/approvals?token={TOKEN}", headers={"Host": "localhost:9999"})
         assert r.status_code == 200
+
+
+class TestPrincipalScopeMiddleware:
+    """P6, docs/https-connector-refactor-plan.md §9.1: "entered once per
+    HTTP request, in exactly one place" for the browser surface -- proves
+    the ASGI wiring actually scopes a real request (and only that request),
+    not just that principal_scope() itself works (that's test_principal.py's
+    job)."""
+
+    async def _whoami_app(self, scope, receive, send) -> None:
+        request = Request(scope, receive)
+        response = JSONResponse({"principal_id": current_principal().id})
+        await response(scope, receive, send)
+
+    def test_default_resolver_scopes_the_request_to_local_principal(self):
+        app = _PrincipalScopeMiddleware(self._whoami_app, lambda request: current_principal())
+        # current_principal() outside any request is LOCAL_PRINCIPAL -- the
+        # resolver above just round-trips whatever's ambient, so this proves
+        # the middleware calls it and enters the scope, not merely that it
+        # exists.
+        client = TestClient(app)
+        r = client.get("/")
+        assert r.json() == {"principal_id": LOCAL_PRINCIPAL_ID}
+
+    def test_a_custom_resolver_is_honored_and_scopes_only_that_request(self):
+        app = _PrincipalScopeMiddleware(self._whoami_app, lambda request: Principal(id="alice"))
+        client = TestClient(app)
+
+        r = client.get("/")
+
+        assert r.json() == {"principal_id": "alice"}
+        # And the scope doesn't leak past the request that opened it.
+        assert current_principal().id == LOCAL_PRINCIPAL_ID
+
+    def test_build_app_wires_a_custom_principal_resolver_through_over_real_http(self):
+        # Exercises build_app()'s own principal_resolver parameter (not the
+        # middleware in isolation, which the two tests above already cover)
+        # against a plain, non-streaming route -- what's being checked is
+        # only that build_app actually threads the parameter through to
+        # _PrincipalScopeMiddleware, i.e. the resolver gets consulted at all.
+        seen = []
+
+        def resolver(request):
+            seen.append(1)
+            return Principal(id="alice")
+
+        app = build_app(WebApprovalUI(), token=TOKEN, principal_resolver=resolver)
+        client = TestClient(app, base_url="http://localhost")
+
+        r = client.get(f"/approvals?token={TOKEN}")
+
+        assert r.status_code == 200
+        assert seen  # the custom resolver was actually consulted
 
 
 class TestSecurityHeaders:

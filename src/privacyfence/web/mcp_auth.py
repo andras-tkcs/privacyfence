@@ -29,6 +29,7 @@ import secrets
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 
 from .. import paths
+from ..principal import LOCAL_PRINCIPAL, Principal
 
 MCP_TOKEN_FILE_NAME = "mcp_token"
 
@@ -59,3 +60,21 @@ class StaticTokenVerifier(TokenVerifier):
         if not token or not hmac.compare_digest(token, self._token):
             return None
         return AccessToken(token=token, client_id="local", scopes=[])
+
+
+def principal_from_access_token(token: AccessToken | None) -> Principal:
+    """The ``/mcp`` endpoint's principal_scope() entry point (P6, docs/
+    https-connector-refactor-plan.md §9.1: "entered once per HTTP request,
+    in exactly one place per surface") -- routes_mcp.py calls this once per
+    tool call, wrapping dispatch in ``principal_scope(...)`` around it.
+
+    Today ``StaticTokenVerifier`` above only ever mints ``client_id="local"``
+    (see its own docstring), so this always resolves to ``LOCAL_PRINCIPAL``
+    -- there is no real per-user identity until P7's OAuth 2.1 authorization
+    server exists to hand out a token whose ``client_id`` means something
+    else. This function is the one place that has to change when it does;
+    nothing downstream of principal_scope() does.
+    """
+    if token is None or token.client_id == LOCAL_PRINCIPAL.id:
+        return LOCAL_PRINCIPAL
+    return Principal(id=token.client_id)

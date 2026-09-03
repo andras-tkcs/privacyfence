@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from privacyfence import paths
+from privacyfence.principal import Principal, principal_scope
 
 
 class TestIsBundled:
@@ -67,6 +68,49 @@ class TestOrgDir:
 
         assert result == tmp_path / "org"
         assert result.is_dir()
+
+
+class TestUserDir:
+    """P6, docs/https-connector-refactor-plan.md §9.2's storage layout."""
+
+    def test_local_principal_is_data_dir_itself(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+        assert paths.user_dir(Principal(id="local")) == tmp_path
+        # Not a users/local/ subdirectory -- an existing single-user install
+        # needs no migration.
+        assert not (tmp_path / "users").exists()
+
+    def test_defaults_to_current_principal(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+        with principal_scope(Principal(id="local")):
+            assert paths.user_dir() == tmp_path
+
+    def test_other_principal_gets_a_users_subdirectory_and_it_is_created(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+        result = paths.user_dir(Principal(id="alice@example.com"))
+
+        assert result == tmp_path / "users" / "alice@example.com"
+        assert result.is_dir()
+
+    def test_two_principals_get_different_directories(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+        alice = paths.user_dir(Principal(id="alice"))
+        bob = paths.user_dir(Principal(id="bob"))
+
+        assert alice != bob
+        assert alice == tmp_path / "users" / "alice"
+        assert bob == tmp_path / "users" / "bob"
+
+    @pytest.mark.parametrize("bad_id", ["../etc", "a/b", "..", ".", ""])
+    def test_rejects_unsafe_principal_ids(self, monkeypatch, tmp_path, bad_id):
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+        with pytest.raises(ValueError):
+            paths.user_dir(Principal(id=bad_id))
 
 
 class TestBundleMacosDir:
