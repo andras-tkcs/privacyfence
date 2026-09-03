@@ -232,6 +232,31 @@ If Playwright's own bundled Chromium isn't installed, pass `--chromium-path` at 
 binary already on disk instead of downloading one. Paste the printed report into the PR description
 under a `## Web smoke check` heading, same convention as §2.1/§2.2.
 
+### 2.4 `webauthn_link_open_check.py`
+
+Not a per-PR check like §2.1-2.3 — this one is a per-release-phase environment check, run before
+scheduling **P9** (step-up auth), not before merging any particular PR. It answers the question
+[`https-connector-refactor-plan.md`](https-connector-refactor-plan.md) §10.6 leaves open: does a
+platform-authenticator biometric prompt actually appear when the approval link is opened from
+*inside a real Claude conversation* on Desktop/iOS/Android, not just in an ordinary browser?
+
+**Never run in CI.** It needs a human with real Claude Desktop/iOS/Android apps to tap a link and
+watch their own screen, and a public HTTPS URL with a real hostname (a tunnel in front of it) — see
+[`webauthn-link-open-check.md`](webauthn-link-open-check.md) for the full setup and procedure,
+including a from-scratch Ubuntu VM guide.
+
+**When to run this**: before P9 is scheduled (§10.6/§12 name it a blocking entry condition), and
+again any time Claude's own apps take a major update afterward — the thing being tested is
+Claude-app behavior, not anything in this repo, so it can silently go stale.
+
+```bash
+python3 -m venv .venv-webauthn-check && source .venv-webauthn-check/bin/activate
+pip install "webauthn>=2.0,<3.0"
+python3 scripts/webauthn_link_open_check.py
+```
+
+Paste its printed report into whatever tracks P9's entry conditions, same convention as §2.1-2.3.
+
 ## 3. Full manual QA pass — before a release, not per-PR
 
 [`connector-qa-testing.md`](connector-qa-testing.md) drives every tool through a live Claude
@@ -256,6 +281,7 @@ full release-time checklist tying all three tiers together.
 | `qa_fixture_recorder.py --check` | No | PR touches a `*_client.py`/`connectors/**` file |
 | `qa_popup_smoke.py` | No | PR touches `approval_window.py`'s modal-loop plumbing |
 | `qa_web_smoke.py` | No | PR touches `web_shell.py`, `approval_list_html.py`, web routes' JS, `resources/sw.js`, or the CSP |
+| `webauthn_link_open_check.py` | No | Before scheduling P9, and after any major Claude app update thereafter |
 | `connector-qa-testing.md`'s live Cowork pass | No | Before a release, or a broad gate/auto-accept change |
 
 None of the "No" rows require a credential, secret, or macOS Accessibility permission to ever be

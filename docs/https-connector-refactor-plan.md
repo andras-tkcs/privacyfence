@@ -843,7 +843,11 @@ Five things to know before choosing:
   the real apps: host a minimal WebAuthn test page (e.g. `webauthn.io`), post the link into a real
   Claude conversation on Desktop, iOS and Android, tap it, and see whether the biometric prompt
   appears.** Roughly ten minutes, and it is an entry condition for P9 — do it before P9 is scheduled,
-  not during it. Until then D7 is a decided mechanism with an unverified delivery path.
+  not during it. Until then D7 is a decided mechanism with an unverified delivery path. The test page
+  and the step-by-step procedure (including a from-scratch Ubuntu VM setup) are now
+  `scripts/webauthn_link_open_check.py` and
+  [`docs/webauthn-link-open-check.md`](webauthn-link-open-check.md) — see
+  [`testing-policy.md` §2.4](testing-policy.md#24-webauthn_link_open_checkpy).
 - **Synced passkeys weaken "this device".** iCloud Keychain and Google Password Manager sync passkeys
   across a user's devices. Require `platform` attachment, and check the BE/BS flags in
   `authenticatorData` if "the credential lives only on this phone" is a property the deployment
