@@ -11,18 +11,31 @@ from __future__ import annotations
 
 import pytest
 
-from privacyfence import approval_ui
 from privacyfence.approval_ui import ApprovalUI, NativeApprovalUI, get_approval_ui, init_approval_ui
 
 # approval_ui._INSTANCE is reset by tests/conftest.py's autouse _reset_singletons
 # fixture, same as auto_accept/audit_log's own singletons.
 
+# approval_popup (transitively AppKit/WKWebView, via approval_window.py/
+# dialog_window.py) is imported lazily inside NativeApprovalUI's own methods,
+# not at approval_ui.py's module scope -- see that module's own docstring for
+# why. TestNativeApprovalUIDelegation below exercises that real delegation,
+# so it needs the actual privacyfence.approval_popup module importable
+# (macOS/PyObjC only, same as test_approval_popup.py) -- unlike the rest of
+# this file (TestSingletonAccessors), which stays platform-independent, so
+# only that one class is skipped here rather than the whole module.
+try:
+    from privacyfence import approval_popup
+except ImportError:  # pragma: no cover - exercised only where pyobjc is absent
+    approval_popup = None
 
+
+@pytest.mark.skipif(approval_popup is None, reason="requires PyObjC/AppKit (approval_popup.py)")
 class TestNativeApprovalUIDelegation:
     def test_show_popup_forwards_args_and_returns_result(self, monkeypatch):
         captured = {}
         monkeypatch.setattr(
-            approval_ui.approval_popup, "show_popup",
+            approval_popup, "show_popup",
             lambda *a, **kw: captured.update(args=a, kwargs=kw) or ("accept", None),
         )
 
@@ -35,7 +48,7 @@ class TestNativeApprovalUIDelegation:
     def test_show_read_popup_forwards_args_and_returns_result(self, monkeypatch):
         captured = {}
         monkeypatch.setattr(
-            approval_ui.approval_popup, "show_read_popup",
+            approval_popup, "show_read_popup",
             lambda *a, **kw: captured.update(args=a, kwargs=kw) or ("accept_all", 0),
         )
 
@@ -54,7 +67,7 @@ class TestNativeApprovalUIDelegation:
             captured["categories"] = categories
             return True
 
-        monkeypatch.setattr(approval_ui.approval_popup, "show_pii_confirmation_popup", fake)
+        monkeypatch.setattr(approval_popup, "show_pii_confirmation_popup", fake)
 
         assert NativeApprovalUI().show_pii_confirmation_popup(["Phone number"]) is True
         assert captured["categories"] == ["Phone number"]
@@ -66,7 +79,7 @@ class TestNativeApprovalUIDelegation:
             captured["description"] = description
             return False
 
-        monkeypatch.setattr(approval_ui.approval_popup, "show_rule_confirmation_popup", fake)
+        monkeypatch.setattr(approval_popup, "show_rule_confirmation_popup", fake)
 
         assert NativeApprovalUI().show_rule_confirmation_popup("some rule") is False
         assert captured["description"] == "some rule"
@@ -103,3 +116,36 @@ class TestSingletonAccessors:
     def test_abstract_class_cannot_be_instantiated_directly(self):
         with pytest.raises(TypeError):
             ApprovalUI()  # type: ignore[abstract]
+
+
+class TestDeferredRegistry:
+    """P3's addition to the ABC (docs/https-connector-refactor-plan.md §5):
+    a backend opts into gate.py's deferred/hold-window protocol purely by
+    exposing a registry here -- NativeApprovalUI (and any other backend
+    that doesn't override this) stays on the pre-P3 always-blocking
+    behavior by default."""
+
+    def test_native_approval_ui_has_no_deferred_registry(self):
+        assert NativeApprovalUI().deferred_registry is None
+
+    def test_a_backend_that_overrides_it_is_honored(self):
+        sentinel = object()
+
+        class FakeApprovalUI(ApprovalUI):
+            def show_popup(self, *a, **kw):
+                raise NotImplementedError
+
+            def show_read_popup(self, *a, **kw):
+                raise NotImplementedError
+
+            def show_pii_confirmation_popup(self, categories):
+                raise NotImplementedError
+
+            def show_rule_confirmation_popup(self, description):
+                raise NotImplementedError
+
+            @property
+            def deferred_registry(self):
+                return sentinel
+
+        assert FakeApprovalUI().deferred_registry is sentinel

@@ -1,12 +1,48 @@
-"""Shared gating helper: auto-accept check -> native popup -> audit log.
+"""Shared gating helper: auto-accept check -> popup -> audit log.
 
-Every gated call resolves synchronously inside gated_call(): the data is
-fetched, an auto-accept rule may skip the popup entirely, otherwise a popup
-shown through the pluggable ApprovalUI seam (approval_ui.py -- today always
-NativeApprovalUI, a native macOS dialog via approval_popup.py) blocks until
-the user decides. There is no pending-approval handshake — gated_call()
-either returns the data or raises in the same call that fetched it, so
-Claude never holds a tool that can release gated data on its own.
+Every gated call resolves inside gated_call(): the data is fetched, an
+auto-accept rule may skip the popup entirely, otherwise a popup shown
+through the pluggable ApprovalUI seam (approval_ui.py) asks a human. Two
+postures, chosen per call by whether the active ApprovalUI exposes a
+``deferred_registry`` (approval_ui.py's own docstring):
+
+- **No registry** (NativeApprovalUI, today's macOS dialogs, and any future
+  ApprovalUI that has nowhere to send a human a reviewable link): unchanged
+  from before P3. gated_call() blocks until the popup returns; there is no
+  pending-approval handshake, so Claude never holds a tool that can release
+  gated data on its own.
+- **A registry** (WebApprovalUI): gated_call() still resolves inline,
+  identically, *if a human decides within ``registry.hold_window`` seconds*
+  (default 30s -- D3). If not, it returns a structured
+  ``{"status": "approval_pending", "approval_id", "url", ...}`` result
+  instead of continuing to block, per
+  docs/https-connector-refactor-plan.md §5. The human interaction keeps
+  running in the background; when it concludes, the outcome lands in
+  approvals.py's decision ledger, keyed by ``(connector, tool,
+  canonical(args))``. Claude re-issuing the identical tool call finds that
+  ledger entry (``_resolve_decision``'s consume_ledger() check, below,
+  which every call -- deferred or not -- makes first) and releases the data
+  without a second prompt. There is still no tool that takes an
+  ``approval_id`` and returns content: the only path to data is the
+  original gated call, replayed with identical arguments, exactly as before
+  -- see approvals.py's own module docstring for the full protocol and why
+  the security invariant survives it unchanged.
+
+``_popup_lock`` (this module's own, pre-P3: one dialog serialized at a
+time, and the "was this already covered by a rule created while queued?"
+re-check that ran under it) is gone. Job 1 -- one screen, one dialog -- is
+simply obsolete for the web surface, whose whole point is several
+approvals pending at once (docs/https-connector-refactor-plan.md §6);
+native dialogs keep exactly the same "one on screen at a time" property
+they always had, just enforced now by approval_window.py's own, separate
+``_popup_lock`` (a plain ``threading.Lock`` wrapping
+``show_native_approval`` end to end) rather than by this module serializing
+calls into it. Job 2 survives as an explicit re-check at the top of each
+gate's interaction (see each branch's own ``_interact`` closure), for
+whichever request happens to still be mid-interaction when a rule changes,
+plus the rules-changed re-evaluation broadcast
+(approvals.PendingApprovalRegistry.reevaluate_all(), subscribed below) for
+anything that's already moved into the pending/registry state.
 
   gate="review"  (read tools)
     Popup offers Deny / Allow once / and — for every plausible auto-accept
@@ -125,11 +161,13 @@ from typing import Any
 
 from .approval_ui import get_approval_ui
 from .approval_window_html import NARROW, WIDE
+from .approvals import PendingApproval, PendingApprovalRegistry, canonical_key
 from .audit_log import APPROVED_LIKE_DECISIONS, AuditEntry, current_week, get_audit_logger
 from .auto_accept import (
     TOOL_TO_OPERATION,
     ReviewContext,
     add_auto_accept_rule,
+    add_rules_changed_listener,
     describe_rule,
     describe_rule_change,
     describe_rule_short,
@@ -232,21 +270,29 @@ _TOOL_LAYOUT: dict[str, str] = {
     "apps_script_get_execution_log": WIDE,
 }
 
-_popup_lock = asyncio.Lock()  # only one native dialog on screen at a time
-
-# Every native dialog this module shows (the approval popup itself, the PII
+# Every dialog this module shows (the approval popup itself, the PII
 # confirmation, the "Always allow" rule confirmation) runs on this dedicated
-# single-thread executor rather than asyncio.to_thread's default pool. That
-# default pool (min(32, cpu_count + 4) workers) is shared with every
-# connector's own blocking I/O (asyncio.to_thread wraps every *_client.py
-# call the same way -- see connectors/slack.py's _fetch for one example).
-# A handful of slow calls -- Slack's rate-limit retry sleeping out a
-# Retry-After window is the one this was written for -- can occupy every
-# worker in that shared pool, and _popup_lock already serializes dialogs to
-# one at a time regardless, so nothing is lost by giving that one dialog
-# thread a lane connector I/O can never fill. See
+# executor rather than asyncio.to_thread's default pool. That default pool
+# (min(32, cpu_count + 4) workers) is shared with every connector's own
+# blocking I/O (asyncio.to_thread wraps every *_client.py call the same way
+# -- see connectors/slack.py's _fetch for one example). A handful of slow
+# calls -- Slack's rate-limit retry sleeping out a Retry-After window is the
+# one this was written for -- can occupy every worker in that shared pool,
+# so giving popups their own dedicated lane connector I/O can never fill
+# still matters regardless of worker count. See
 # docs/slack-performance-review.md's R6.
-_popup_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pf-popup")
+#
+# max_workers used to be 1, because gate.py's own _popup_lock (removed at
+# P3 -- see module docstring) already serialized every dialog to one at a
+# time, so a second worker would have sat idle. It's several now because
+# that's no longer true for the web surface: several approvals showing at
+# once is P3's whole point (docs/https-connector-refactor-plan.md §6, "New
+# coalescing case" / "Job 1... obsolete"). Native dialogs are unaffected --
+# approval_window.py keeps its own _popup_lock (a plain threading.Lock,
+# always separate from this one) wrapping show_native_approval end to end,
+# so AppKit windows stay serialized to one on screen at a time regardless
+# of how many workers sit idle here waiting for it.
+_popup_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="pf-popup")
 
 
 async def _run_in_popup_executor(func, *args, **kwargs) -> Any:
@@ -259,6 +305,164 @@ async def _run_in_popup_executor(func, *args, **kwargs) -> Any:
     """
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(_popup_executor, functools.partial(func, *args, **kwargs))
+
+
+def _deferred_registry() -> PendingApprovalRegistry | None:
+    """The active ApprovalUI's deferred registry, if it has one -- see
+    approval_ui.py's ``deferred_registry`` docstring and this module's own.
+    Re-resolved on every call, same reasoning as show_read_popup/show_popup
+    above: a later init_approval_ui() swap takes effect immediately.
+
+    Also (re-)registers _on_rules_changed (below) with auto_accept.py on
+    every call, rather than once at import time: add_rules_changed_listener
+    is idempotent (a no-op if already registered), and tests/conftest.py's
+    per-test reset clears auto_accept._rules_changed_listeners between
+    tests -- a one-time import-time registration would silently stop firing
+    after the first test that resets it. Cheap enough (a membership check
+    against a short list) to just always do.
+    """
+    add_rules_changed_listener(_on_rules_changed)
+    return get_approval_ui().deferred_registry
+
+
+# Sentinel returned by _resolve_decision() when a call couldn't be decided
+# within the registry's hold window -- distinguishes "genuinely still
+# pending" from every real decision string ("accept"/"deny"/"accept_all"/
+# "auto_accepted"), none of which this object could ever equal.
+_PENDING = object()
+
+
+async def _resolve_decision(
+    *,
+    registry: PendingApprovalRegistry | None,
+    dedupe_key: str,
+    connector: str,
+    tool: str,
+    gate_kind: str,
+    request_id: str,
+    summary: str,
+    tool_name: str,
+    operation_key: str,
+    ctx: ReviewContext,
+    pii_forces_confirmation: list[str],
+    pii_detected: bool,
+    pii_categories: list[str],
+    claude_reason: str,
+    interact: Any,
+) -> tuple[Any, str, float | None]:
+    """Shared plumbing for the review/popup gate branches: get a decision
+    for this call, either by running ``interact`` (see each branch's own
+    definition of it) directly, or -- when ``registry`` is not None --
+    checking the decision ledger first, then registering (or coalescing
+    onto) a pending approval and waiting up to ``registry.hold_window``.
+
+    Returns ``(decision, rule_name, decided_at)``. ``decision`` is one of
+    "accept"/"deny"/"accept_all"/"auto_accepted", or the module-level
+    ``_PENDING`` sentinel -- in which case ``rule_name`` is instead the
+    ``PendingApproval`` the caller should build a pending result from (see
+    each branch's own handling immediately after calling this).
+    ``decided_at`` is None unless this decision came from the registry
+    (either a ledger hit, or a live wait that resolved) -- the "no
+    registry" / legacy path never had a separate decide-then-release split
+    to time, so there is nothing new to report for it.
+    """
+    if registry is None:
+        decision, rule_name = await interact(None)
+        return decision, rule_name, None
+
+    ledger_hit = registry.consume_ledger(dedupe_key)
+    if ledger_hit is not None:
+        decision, rule_name, decided_at = ledger_hit
+        return decision, rule_name, decided_at
+
+    approval, created = registry.register_or_coalesce(
+        dedupe_key=dedupe_key, connector=connector, tool=tool, gate_kind=gate_kind,
+        request_id=request_id, summary=summary, tool_name=tool_name,
+        operation_key=operation_key, review_ctx=ctx, pii_forces_confirmation=bool(pii_forces_confirmation),
+        pii_detected=pii_detected, pii_categories=pii_categories, claude_reason=claude_reason,
+    )
+    if created:
+        asyncio.ensure_future(_drive_interaction(registry, approval, interact))
+
+    decided = await registry.wait_async(approval, registry.hold_window)
+    if not decided:
+        return _PENDING, approval, None
+    return approval.final_decision, approval.final_rule_name, approval.decided_at
+
+
+async def _drive_interaction(registry: PendingApprovalRegistry, approval: PendingApproval, interact: Any) -> None:
+    """Runs ``interact`` to completion in the background and finalizes
+    ``approval`` with the result -- started once, by whichever call to
+    _resolve_decision() actually created ``approval`` (a coalesced caller
+    just awaits the same approval; it never starts a second one of these).
+    Keeps running -- and this function keeps its promise to eventually call
+    finalize() -- even after the original gated_call() invocation has long
+    since returned an "approval_pending" result to Claude; that's the whole
+    point (docs/https-connector-refactor-plan.md §5.2 point 4-5)."""
+    try:
+        decision, rule_name = await interact(approval)
+    except Exception:
+        logger.exception("Approval interaction for %s failed -- resolving as denied", approval.id)
+        decision, rule_name = "deny", ""
+    registry.finalize(approval.id, decision, rule_name)
+
+
+def _pending_result(registry: PendingApprovalRegistry, approval: PendingApproval) -> dict[str, Any]:
+    """The structured result gated_call() returns to Claude instead of
+    blocking further -- docs/https-connector-refactor-plan.md §5.2 point 4."""
+    return {
+        "status": "approval_pending",
+        "approval_id": approval.id,
+        "url": registry.approval_url(approval.id),
+        "expires_at": datetime.fromtimestamp(approval.expires_at, tz=timezone.utc).isoformat(),
+        "message": "This step needs your approval. Open the link above to review and decide.",
+    }
+
+
+def _pop_registry_expirations(registry: PendingApprovalRegistry | None) -> None:
+    """Opportunistic TTL sweep -- called at the top of every gated_call()
+    that has a registry, mirroring mcp_dispatch.McpDispatcher's own
+    _prune_stale pattern rather than running on a background timer. Every
+    approval this finds is audited as "expired": one still un-answered past
+    its pending TTL (§10.5: "No decision = pending, then expired =
+    denied"), or one whose human decision was never reclaimed by a
+    re-issued call before the ledger TTL ran out (approvals.py's own
+    docstring on why "expired" covers that case too)."""
+    if registry is None:
+        return
+    for approval in registry.pop_expired_events():
+        _audit(
+            created_at=approval.created_at, request_id=approval.request_id, connector=approval.connector,
+            tool=approval.tool, tool_name=approval.tool_name, summary=approval.summary, sender="",
+            decision="expired", auto_accept_rule="", pii_detected=approval.pii_detected,
+            pii_categories=approval.pii_categories, claude_reason=approval.claude_reason,
+        )
+    for approval in registry.pop_expired_ledger_events():
+        _audit(
+            created_at=approval.created_at, request_id=approval.request_id, connector=approval.connector,
+            tool=approval.tool, tool_name=approval.tool_name, summary=approval.summary, sender="",
+            decision="expired", auto_accept_rule=approval.final_rule_name, pii_detected=approval.pii_detected,
+            pii_categories=approval.pii_categories, claude_reason=approval.claude_reason,
+        )
+
+
+def _on_rules_changed() -> None:
+    """Subscribed to auto_accept.add_rules_changed_listener() at import
+    time (below) -- the live half of §6's "Job 2": any already-pending (not
+    yet answered) approval that a rule/grant change now covers is resolved
+    as auto_accepted immediately, without waiting for a human to open it,
+    exactly like the description in approvals.PendingApprovalRegistry.
+    reevaluate_all()'s own docstring. A no-op registry-less install (native
+    only) never has anything to reevaluate."""
+    registry = _deferred_registry()
+    if registry is None:
+        return
+    for approval in registry.reevaluate_all(get_auto_accept_evaluator().should_auto_accept):
+        logger.info(
+            "Pending approval %s auto-accepted after a rule changed: %s/%s rule=%r",
+            approval.id, approval.connector, approval.tool, approval.final_rule_name,
+        )
+
 
 # Set by ipc_server.py around a single dispatched request, for the duration
 # of that request only, when the request came in on a connection that
@@ -533,6 +737,17 @@ async def gated_call(
     audit_logger = get_audit_logger()
     seen_count = await asyncio.to_thread(audit_logger.recent_matches, connector, tool, summary)
 
+    # The deferred-protocol registry, if the active ApprovalUI has one (see
+    # this module's own docstring) -- None for a plain native-only install,
+    # exactly like every gated_call() before P3. dedupe_key mirrors ipc_
+    # server.py's/mcp_dispatch.py's own retry-dedupe key shape (already
+    # retry-stable -- see approvals.canonical_key's docstring); computed
+    # unconditionally, cheaply, since both branches below need it whether or
+    # not a registry is active.
+    registry = _deferred_registry()
+    dedupe_key = canonical_key(connector, tool, args)
+    _pop_registry_expirations(registry)
+
     # Every exit from this function -- including one triggered by an
     # exception nobody anticipated below (a native popup call raising, a
     # rule-file write failing) -- must leave exactly one audit entry behind.
@@ -543,7 +758,7 @@ async def gated_call(
     # one; the `finally` block below only steps in if none of them did.
     audited = False
 
-    def audit(*, decision: str, auto_accept_rule: str, pii_detected: bool) -> None:
+    def audit(*, decision: str, auto_accept_rule: str, pii_detected: bool, decided_at: float | None = None) -> None:
         nonlocal audited
         audited = True
         _audit(
@@ -552,7 +767,7 @@ async def gated_call(
             decision=decision, auto_accept_rule=auto_accept_rule, pii_detected=pii_detected,
             pii_categories=audit_pii_categories,
             pii_match_details=_pii_match_details_for_audit(audit_pii_matches, decision),
-            claude_reason=claude_reason,
+            claude_reason=claude_reason, decided_at=decided_at,
         )
 
     try:
@@ -577,81 +792,108 @@ async def gated_call(
             # FAMILIES, at most 1 for every other operation.
             choices = suggest_rule_choices(operation_key, ctx)
             accept_all_choices = [(rule_name, describe_rule_short(rule_name)) for rule_name, _value in choices]
-            # Everything interactive for this item — including the PII
-            # confirmation, the "Always allow" confirmation, and persisting
-            # the resulting rule — stays inside one continuous lock
-            # acquisition. Releasing and re-acquiring the lock between
-            # popups would open a window where a request queued behind this
-            # one slips through with the pre-rule rule set and pops up its
-            # own dialog for something the user just approved.
-            async with _popup_lock:
-                # Re-check: while this call was queued behind another popup, that
-                # popup's "Always allow" may have just created a rule that now
-                # covers this item too. An unreviewed PII match still overrides it
-                # either way -- pii_forces_confirmation, not pii_categories itself,
-                # since pii_already_reviewed's own carve-out (see module docstring)
-                # is unaffected by anything decided while queued.
-                auto_ok, matched_rule = evaluator.should_auto_accept(operation_key, ctx)
-                if auto_ok and not pii_forces_confirmation:
-                    audit(
-                        decision="auto_accepted", auto_accept_rule=matched_rule,
-                        pii_detected=bool(pii_categories),
-                    )
-                    logger.info("Auto-accepted while queued: %s/%s rule=%r", connector, tool, matched_rule)
-                    return filtered_data
 
-                if is_unattended():
-                    # No rule matched, or one did but the PII gate still
-                    # routed this to a human (see module docstring) -- either
-                    # way, nobody's here to answer a popup. Fail this one
-                    # step now instead of hanging on _popup_lock forever and
-                    # blocking every other approval behind it.
-                    _deny_unattended(audit, connector, tool, pii_categories=pii_forces_confirmation)
+            # Re-check up front: by the time we actually get here, a rule may
+            # already cover this item -- created by another concurrently-
+            # running approval's own "Always allow" (no more _popup_lock to
+            # serialize this against; see module docstring's "Job 2" note).
+            # An unreviewed PII match still overrides it either way --
+            # pii_forces_confirmation, not pii_categories itself, since
+            # pii_already_reviewed's own carve-out (see module docstring) is
+            # unaffected by anything decided in the meantime.
+            auto_ok, matched_rule = evaluator.should_auto_accept(operation_key, ctx)
+            if auto_ok and not pii_forces_confirmation:
+                audit(decision="auto_accepted", auto_accept_rule=matched_rule, pii_detected=bool(pii_categories))
+                logger.info("Auto-accepted: %s/%s rule=%r", connector, tool, matched_rule)
+                return filtered_data
 
-                decision, chosen_index = await _run_in_popup_executor(
+            if is_unattended():
+                # No rule matched, or one did but the PII gate still routed
+                # this to a human (see module docstring) -- either way,
+                # nobody's here to answer a popup. Fail this one step now,
+                # synchronously, before any deferred-protocol registration:
+                # an unattended session must never receive a pending result
+                # either (docs/https-connector-refactor-plan.md §5.4).
+                _deny_unattended(audit, connector, tool, pii_categories=pii_forces_confirmation)
+
+            async def _interact(approval: PendingApproval | None) -> tuple[str, str]:
+                """The human interaction itself: show the card, force the PII
+                confirmation if flagged, and -- if "Always allow" is clicked
+                and confirmed -- create the rule right here (not deferred to
+                whatever later observes the outcome, so a rule this creates
+                covers other pending approvals immediately, per reevaluate_
+                all()). Returns (decision, rule_name) -- rule_name is "" for
+                a plain accept/deny, else the rule this call just created.
+                Runs either awaited directly (registry is None, or the human
+                decides within the hold window) or as a background task
+                (approvals._drive_interaction) that outlives this specific
+                gated_call() invocation -- see _resolve_decision.
+                """
+                extra = {"approval": approval} if approval is not None else {}
+                d, ci = await _run_in_popup_executor(
                     show_read_popup, popup_title, preview or {}, details, accept_all_choices,
                     pii_forces_confirmation, visibility, claude_reason, seen_count, content_kind, pdf_bytes,
                     connector, preview_bytes, preview_mime_type, new_info=new_info,
                     preview_tables=preview_tables, preview_blocks=preview_blocks,
-                    table_only=table_only, layout=layout,
+                    table_only=table_only, layout=layout, **extra,
                 )
-
-                if decision in ("accept", "accept_all") and pii_forces_confirmation:
-                    decision = await _confirm_pii_or_deny(decision, pii_forces_confirmation)
-
-                if decision == "accept_all":
+                if d in ("accept", "accept_all") and pii_forces_confirmation:
+                    d = await _confirm_pii_or_deny(d, pii_forces_confirmation)
+                if d == "accept_all":
                     # Which candidate was clicked -- see approval_window.py's
                     # bridge docstring. Bounds-checked rather than trusted:
-                    # chosen_index comes back from the popup's own JS bridge,
-                    # so an out-of-range or missing index (shouldn't happen
-                    # against the real button row, but not a contract this
-                    # module needs to trust blindly) degrades to "cancelled"
+                    # ci comes back from the popup's own JS bridge, so an
+                    # out-of-range or missing index (shouldn't happen against
+                    # the real button row, but not a contract this module
+                    # needs to trust blindly) degrades to a plain accept
                     # rather than raising.
-                    chosen = (
-                        choices[chosen_index]
-                        if chosen_index is not None and 0 <= chosen_index < len(choices)
-                        else None
-                    )
+                    chosen = choices[ci] if ci is not None and 0 <= ci < len(choices) else None
                     if chosen is not None:
                         description = describe_rule(*chosen)
                         confirmed = await _run_in_popup_executor(show_rule_confirmation_popup, description)
-                        rule_name, value = chosen
+                        rn, value = chosen
                         if confirmed:
-                            add_auto_accept_rule(operation_key, rule_name, value)
-                            audit(
-                                decision="accepted_via_accept_all", auto_accept_rule=rule_name,
-                                pii_detected=bool(pii_categories),
-                            )
-                            logger.info("Always allow: created rule %r for %s", rule_name, operation_key)
-                            return filtered_data
+                            add_auto_accept_rule(operation_key, rn, value)
+                            return "accept_all", rn
                     # Cancelled rule creation — this item is still accepted, just once.
-                    decision = "accept"
+                    d = "accept"
+                return d, ""
+
+            decision, rule_name, decided_at = await _resolve_decision(
+                registry=registry, dedupe_key=dedupe_key, connector=connector, tool=tool, gate_kind="review",
+                request_id=request_id, summary=summary, tool_name=tool_name, operation_key=operation_key, ctx=ctx,
+                pii_forces_confirmation=pii_forces_confirmation, pii_detected=bool(pii_categories),
+                pii_categories=audit_pii_categories, claude_reason=claude_reason, interact=_interact,
+            )
+            if decision is _PENDING:
+                pending_approval = rule_name  # see _resolve_decision's own docstring
+                audit(decision="approval_pending", auto_accept_rule="", pii_detected=bool(pii_categories))
+                return _pending_result(registry, pending_approval)
+
+            if decision == "auto_accepted":
+                audit(
+                    decision="auto_accepted", auto_accept_rule=rule_name, pii_detected=bool(pii_categories),
+                    decided_at=decided_at,
+                )
+                logger.info(
+                    "Pending approval auto-accepted after a rule changed: %s/%s rule=%r",
+                    connector, tool, rule_name,
+                )
+                return filtered_data
 
             if decision == "deny":
-                audit(decision="rejected", auto_accept_rule="", pii_detected=bool(pii_categories))
+                audit(decision="rejected", auto_accept_rule="", pii_detected=bool(pii_categories), decided_at=decided_at)
                 raise RuntimeError("Request denied by user")
 
-            audit(decision="approved", auto_accept_rule="", pii_detected=bool(pii_categories))
+            if decision == "accept_all":
+                audit(
+                    decision="accepted_via_accept_all", auto_accept_rule=rule_name,
+                    pii_detected=bool(pii_categories), decided_at=decided_at,
+                )
+                logger.info("Always allow: created rule %r for %s", rule_name, operation_key)
+                return filtered_data
+
+            audit(decision="approved", auto_accept_rule="", pii_detected=bool(pii_categories), decided_at=decided_at)
             return filtered_data
 
         else:
@@ -670,23 +912,23 @@ async def gated_call(
             # below reads identically to it.
             choices = [suggestion] if suggestion is not None else []
             accept_all_choices = [(suggestion[0], describe_rule_short(suggestion[0]))] if suggestion else []
-            # Same "everything interactive stays inside one lock acquisition"
-            # reasoning as the review branch above -- the accept-all
-            # confirmation and rule persistence must not happen after
-            # releasing/re-acquiring _popup_lock, or a request queued behind
-            # this one could slip through with the pre-rule rule set.
-            async with _popup_lock:
-                # Same race as above: a rule may have been created while queued.
-                auto_ok, matched_rule = evaluator.should_auto_accept(operation_key, ctx)
-                if auto_ok and not upload_pii_categories:
-                    audit(decision="auto_accepted", auto_accept_rule=matched_rule, pii_detected=False)
-                    logger.info("Auto-accepted while queued: %s/%s rule=%r", connector, tool, matched_rule)
-                    return filtered_data
 
-                if is_unattended():
-                    _deny_unattended(audit, connector, tool, pii_categories=upload_pii_categories)
+            # Same race as the review branch above: a rule may already cover
+            # this by the time we get here.
+            auto_ok, matched_rule = evaluator.should_auto_accept(operation_key, ctx)
+            if auto_ok and not upload_pii_categories:
+                audit(decision="auto_accepted", auto_accept_rule=matched_rule, pii_detected=False)
+                logger.info("Auto-accepted: %s/%s rule=%r", connector, tool, matched_rule)
+                return filtered_data
 
-                decision, chosen_index = await _run_in_popup_executor(
+            if is_unattended():
+                _deny_unattended(audit, connector, tool, pii_categories=upload_pii_categories)
+
+            async def _interact(approval: PendingApproval | None) -> tuple[str, str]:
+                """Write-gate counterpart to the review branch's own
+                _interact -- see that one's docstring."""
+                extra = {"approval": approval} if approval is not None else {}
+                d, ci = await _run_in_popup_executor(
                     show_popup, popup_title, preview or {}, details, file_key is not None,
                     claude_reason, write_content_flags, seen_count, connector,
                     accept_all_choices, preview_bytes, preview_mime_type,
@@ -696,13 +938,11 @@ async def gated_call(
                     # show_popup's own docstring) -- upload_pii_categories is only
                     # ever non-empty for drive_upload_file's real PII match, the one write
                     # call that forces the same second confirmation the read side gets.
-                    upload_forced=bool(upload_pii_categories),
+                    upload_forced=bool(upload_pii_categories), **extra,
                 )
-
-                if decision in ("accept", "accept_all") and upload_pii_categories:
-                    decision = await _confirm_pii_or_deny(decision, upload_pii_categories)
-
-                if decision == "accept_all":
+                if d in ("accept", "accept_all") and upload_pii_categories:
+                    d = await _confirm_pii_or_deny(d, upload_pii_categories)
+                if d == "accept_all":
                     # See the review branch's matching comment above --
                     # bounds-checked against the popup's own JS bridge
                     # rather than trusted; shouldn't happen against the real
@@ -710,15 +950,11 @@ async def gated_call(
                     # accept_all_choices was non-empty), but degrades to a
                     # plain accept rather than falling through to "denied"
                     # below if it somehow does.
-                    chosen = (
-                        choices[chosen_index]
-                        if chosen_index is not None and 0 <= chosen_index < len(choices)
-                        else None
-                    )
+                    chosen = choices[ci] if ci is not None and 0 <= ci < len(choices) else None
                     if chosen is None:
-                        decision = "accept"
+                        d = "accept"
                     else:
-                        rule_name, value = chosen
+                        rn, value = chosen
                         # describe_rule_change(), not describe_rule() -- these
                         # five rule names are shared with a read operation key
                         # too (e.g. jira.read_issue), and describe_rule()'s
@@ -727,18 +963,39 @@ async def gated_call(
                         # mislabel a write's own confirmation.
                         # describe_rule_change() names operation_key explicitly
                         # and reads correctly regardless of direction.
-                        description = describe_rule_change("add", operation_key, rule_name, value)
+                        description = describe_rule_change("add", operation_key, rn, value)
                         confirmed = await _run_in_popup_executor(show_rule_confirmation_popup, description)
                         if confirmed:
-                            add_auto_accept_rule(operation_key, rule_name, value)
-                            audit(
-                                decision="accepted_via_accept_all", auto_accept_rule=rule_name,
-                                pii_detected=bool(upload_pii_categories),
-                            )
-                            logger.info("Always allow: created rule %r for %s", rule_name, operation_key)
-                            return filtered_data
+                            add_auto_accept_rule(operation_key, rn, value)
+                            return "accept_all", rn
                         # Cancelled rule creation — this item is still accepted, just once.
-                        decision = "accept"
+                        d = "accept"
+                return d, ""
+
+            decision, rule_name, decided_at = await _resolve_decision(
+                registry=registry, dedupe_key=dedupe_key, connector=connector, tool=tool, gate_kind="popup",
+                request_id=request_id, summary=summary, tool_name=tool_name, operation_key=operation_key, ctx=ctx,
+                pii_forces_confirmation=upload_pii_categories, pii_detected=bool(upload_pii_categories),
+                pii_categories=audit_pii_categories, claude_reason=claude_reason, interact=_interact,
+            )
+            if decision is _PENDING:
+                pending_approval = rule_name  # see _resolve_decision's own docstring
+                audit(decision="approval_pending", auto_accept_rule="", pii_detected=bool(upload_pii_categories))
+                return _pending_result(registry, pending_approval)
+
+            if decision == "auto_accepted":
+                audit(
+                    decision="auto_accepted", auto_accept_rule=rule_name, pii_detected=False, decided_at=decided_at,
+                )
+                return filtered_data
+
+            if decision == "accept_all":
+                audit(
+                    decision="accepted_via_accept_all", auto_accept_rule=rule_name,
+                    pii_detected=bool(upload_pii_categories), decided_at=decided_at,
+                )
+                logger.info("Always allow: created rule %r for %s", rule_name, operation_key)
+                return filtered_data
 
             if decision == "accept":
                 if file_key is not None:
@@ -750,17 +1007,23 @@ async def gated_call(
                     evaluator.register_temp_accept(operation_key, file_key)
                     audit(
                         decision="accepted_via_temp_session", auto_accept_rule="session_temp_accept",
-                        pii_detected=bool(upload_pii_categories),
+                        pii_detected=bool(upload_pii_categories), decided_at=decided_at,
                     )
                     logger.info(
                         "Allow once (also armed 5 min grace window): op=%s file=%s (%s, %s)",
                         operation_key, file_key, connector, tool,
                     )
                 else:
-                    audit(decision="approved", auto_accept_rule="", pii_detected=bool(upload_pii_categories))
+                    audit(
+                        decision="approved", auto_accept_rule="", pii_detected=bool(upload_pii_categories),
+                        decided_at=decided_at,
+                    )
                 return filtered_data
 
-            audit(decision="rejected", auto_accept_rule="", pii_detected=bool(upload_pii_categories))
+            audit(
+                decision="rejected", auto_accept_rule="", pii_detected=bool(upload_pii_categories),
+                decided_at=decided_at,
+            )
             raise RuntimeError("Request denied by user")
     except asyncio.CancelledError:
         # The bridge asked the daemon to give up on this request (see
@@ -854,8 +1117,7 @@ async def propose_rule_change(
             "can't be confirmed without a human present."
         )
 
-    async with _popup_lock:
-        confirmed = await _run_in_popup_executor(show_rule_confirmation_popup, description)
+    confirmed = await _run_in_popup_executor(show_rule_confirmation_popup, description)
 
     if not confirmed:
         _audit(
@@ -980,7 +1242,7 @@ def _default_details(raw_data: Any) -> str:
 
 def _audit(
     *, created_at, request_id, connector, tool, tool_name, summary, sender, decision, auto_accept_rule,
-    pii_detected=False, pii_categories=None, pii_match_details="", claude_reason="",
+    pii_detected=False, pii_categories=None, pii_match_details="", claude_reason="", decided_at=None,
 ) -> None:
     try:
         get_audit_logger().record(AuditEntry(
@@ -999,6 +1261,17 @@ def _audit(
             pii_categories=pii_categories or [],
             pii_match_details=pii_match_details,
             claude_reason=claude_reason,
+            # Set only when this decision came from the deferred-approval
+            # ledger (a real human click that happened separately from --
+            # and possibly long after -- the invocation now releasing on the
+            # strength of it) or a live rules-changed auto-resolution while
+            # genuinely pending. Empty for the ordinary decided-inline case,
+            # where "when the human decided" and "when this entry was
+            # written" are the same instant and a second timestamp would say
+            # nothing new. See docs/https-connector-refactor-plan.md §5.4.
+            decided_at=(
+                datetime.fromtimestamp(decided_at, tz=timezone.utc).isoformat() if decided_at else ""
+            ),
         ))
     except Exception as exc:
         logger.warning("Audit log write failed: %s", exc)

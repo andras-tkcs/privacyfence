@@ -323,6 +323,56 @@ img { display: block; max-width: 100%; }
   background-clip: padding-box;
 }
 
+/* WIDE's two-column split and NARROW's single scroll region -- classes now
+   (approval_window_html.py used to render these as inline style="..." on
+   each element), specifically so the @media block below can override them.
+   An inline style can't carry a @media query at all, and this document no
+   longer only ever renders inside a fixed-size native window frame: the web
+   approval UI (see docs/https-connector-refactor-plan.md §7.3) can host the
+   same document in an ordinary browser tab, at a phone viewport, or inline
+   in an expandable list row. 420px is approval_window_html.py's own
+   _WIDE_LEFT_COLUMN_WIDTH -- keep the two in sync if that constant ever
+   changes; it's baked in here rather than templated per-document so the
+   @media override below can sit right next to the rule it overrides instead
+   of racing it on source order across two separate <style> blocks. */
+.pf-wide-row { display: flex; gap: 28px; flex: 1; min-height: 0; }
+.pf-wide-left { flex: 0 0 420px; min-width: 0; overflow-y: auto; min-height: 0; }
+.pf-wide-right {
+  flex: 1; min-width: 0; border-left: 1px solid var(--color-divider);
+  padding-left: 24px; overflow-y: auto; min-height: 0;
+}
+.pf-scroll-region { flex: 1; min-height: 0; overflow-y: auto; }
+
+@media (max-width: 700px) {
+  /* Below this width the document is assumed to be embedded somewhere that
+     isn't a fixed-height native window frame, so it scrolls like an
+     ordinary page instead of clipping to a viewport-height frame -- see
+     approval_window_html.py's build_card_stack_html for the matching
+     `body { height: auto; min-height: 100vh }` override (kept in that
+     function's own per-document <style> block rather than here, since it
+     has to come *after* that function's own unconditional `height: 100vh`
+     rule for the cascade to actually override it).
+
+     flex-direction: column alone is not enough here -- two traps found
+     while building this (see docs/https-connector-refactor-plan.md §7.3):
+     .pf-wide-left's flex: 0 0 420px sets a *height* once the parent's main
+     axis is vertical, not a width, so it has to drop to flex: none/height:
+     auto explicitly; and leaving both panes at flex: 1; min-height: 0;
+     overflow-y: auto (correct for two independently-scrolling regions
+     inside a real 100vh window) makes them fight over a height neither
+     needs once body itself has stopped being 100vh, silently clipping
+     content into an invisible nested scroll region instead of just
+     stacking and growing. */
+  .pf-wide-row { flex-direction: column; }
+  .pf-wide-left, .pf-wide-right, .pf-scroll-region {
+    flex: none; height: auto; overflow: visible;
+  }
+  .pf-wide-right {
+    border-left: none; padding-left: 0;
+    border-top: 1px solid var(--color-divider); padding-top: 16px; margin-top: 16px;
+  }
+}
+
 /* — action button row — (Deny/Allow once/Always allow) — these three now
    render as part of this document's own content instead of native
    NSButtons in a fixed band below the webview (see approval_window.py's

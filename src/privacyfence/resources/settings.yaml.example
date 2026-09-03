@@ -222,3 +222,37 @@ logging:
   level: INFO
   # Log file path. Relative paths are resolved against the project root.
   file: logs/privacyfence.log
+
+web:
+  # Which ApprovalUI shows the approval popup -- "native" (today's macOS
+  # AppKit/WKWebView dialog, unchanged) or "web" (the same card, served
+  # over local HTTP and opened in a browser instead -- see
+  # docs/https-connector-refactor-plan.md's P1). This is the rollback lever
+  # for the whole web approval surface: flipping it back to "native" turns
+  # the embedded HTTP server off entirely and returns to today's behavior,
+  # no downgrade needed. Default "native" -- the web surface ships opt-in.
+  approval_ui: native
+  # Port the embedded HTTP server listens on -- shared by the approval
+  # surface above and the /mcp endpoint below, one server either way. Always
+  # bound to localhost only in this (local) mode -- see web/server.py's
+  # module docstring.
+  port: 8765
+  mcp:
+    # Turns on the /mcp Streamable HTTP endpoint (see
+    # docs/https-connector-refactor-plan.md's P2) -- Claude talks to
+    # PrivacyFence directly over HTTP instead of through the
+    # privacyfence-bridge Node process. Independent of approval_ui above:
+    # a gated call reaching a connector over /mcp still shows whichever
+    # popup (native or web) approval_ui selects. The bridge keeps working
+    # unchanged either way -- this is additive, not a replacement, until P5
+    # retires it. Loopback-only and bearer-token-gated regardless (§10 of
+    # the refactor plan), same trust posture as the bridge's own IPC socket
+    # had. On by default as of D11/P4b: PrivacyFence.mcpb now installs a
+    # thin stdio shim for Claude Desktop that only speaks /mcp, so a fresh
+    # install needs this on for that extension's zero-config promise ("no
+    # config file edited") to actually hold -- see §12's P4b exit
+    # criterion. Flip to false to go back to bridge-only, or if you'd
+    # rather this daemon never bind a second listener at all. Once enabled,
+    # point a Streamable HTTP MCP client at http://localhost:<port>/mcp
+    # with `Authorization: Bearer <the token in ~/.privacyfence/mcp_token>`.
+    enabled: true

@@ -1,0 +1,25 @@
+{
+  "manifest_version": "0.3",
+  "name": "privacyfence-legacy-bridge",
+  "version": "__VERSION__",
+  "description": "PrivacyFence, connected via the legacy IPC-socket bridge instead of /mcp. Kept as a rollback option alongside PrivacyFence.mcpb until the bridge is retired (P5, see docs/https-connector-refactor-plan.md) -- install this one only if the regular PrivacyFence.mcpb (the /mcp shim) doesn't work for you, e.g. web.mcp.enabled can't be turned on yet.",
+  "long_description": "This is the same PrivacyFence connector as PrivacyFence.mcpb, reached through the original privacyfence-bridge (a small Node MCP server forwarding requests to the daemon over a local, token-authenticated TCP loopback connection) instead of the newer /mcp Streamable HTTP endpoint. The two extensions install side by side without conflicting -- Claude Desktop keys them by name ('privacyfence' for the /mcp shim, 'privacyfence-legacy-bridge' for this one) -- so you can install this one to keep working exactly as before while you sort out /mcp, then remove it later.\n\nRequires the PrivacyFenceApp.app daemon to already be installed and configured (download the DMG and run the OAuth setup for each connector you want) -- this extension only registers the bridge that lets Claude talk to it. See https://github.com/andras-tkcs/privacyfence for setup instructions.",
+  "author": {
+    "name": "Andras Takacs",
+    "email": "privacyfence@tkcs.name"
+  },
+  "icon": "icon.png",
+  "server": {
+    "type": "node",
+    "entry_point": "server/bridge.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/bridge.js"]
+    }
+  },
+  "compatibility": {
+    "runtimes": {
+      "node": ">=20.0.0"
+    }
+  }
+}

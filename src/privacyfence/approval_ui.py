@@ -13,13 +13,23 @@ behavior change on macOS.
 A future implementation (e.g. routing approval requests to a phone for
 issue #55's mobile remote approval, or a Windows-native dialog for #121)
 only needs to implement this interface and call init_approval_ui() with an
-instance of it -- gate.py's own call sites never change.
+instance of it -- gate.py's own call sites never change. web_approval_ui.py
+is the first one: this module (and therefore gate.py, which imports
+get_approval_ui from here) must stay importable without PyObjC so the web
+approval surface can run -- and be unit-tested -- on a platform with no
+AppKit at all. See docs/https-connector-refactor-plan.md's P1.
+
+approval_popup (AppKit/WKWebView, transitively) is therefore imported
+lazily, guarded the same way settings_controller.py's own rumps/
+dialog_window/AppHelper imports are (see that module's docstring) --
+NativeApprovalUI is still the default (get_approval_ui()'s fallback below),
+so nothing changes on macOS; a platform with no PyObjC just can't construct
+one, which only matters if nothing ever calls init_approval_ui() with a
+different implementation first.
 """
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-
-from . import approval_popup
 
 
 class ApprovalUI(ABC):
@@ -93,21 +103,44 @@ class ApprovalUI(ABC):
         is clicked. See approval_popup.show_rule_confirmation_popup's
         docstring."""
 
+    @property
+    def deferred_registry(self):  # -> approvals.PendingApprovalRegistry | None
+        """A ``PendingApprovalRegistry`` (approvals.py) this backend is
+        registered with, if it supports the deferred/hold-window protocol
+        (docs/https-connector-refactor-plan.md §5) -- ``None`` (the
+        default) means this backend only ever blocks until a human decides,
+        exactly like every ApprovalUI did before P3. That's
+        NativeApprovalUI's posture below: there is nowhere to send a human
+        a reviewable link for a dialog already on their own screen, so
+        deferring would only turn a wait into an error, not a convenience.
+        gate.py checks this property, not the concrete class, to decide
+        whether to apply the deferred protocol -- see that module's
+        docstring."""
+        return None
+
 
 class NativeApprovalUI(ApprovalUI):
-    """Today's (and so far only) implementation: native macOS AppKit/WKWebView
-    dialogs, via approval_popup.py. Pure delegation -- no logic of its own."""
+    """Today's (and so far only) macOS implementation: native AppKit/
+    WKWebView dialogs, via approval_popup.py. Pure delegation -- no logic of
+    its own. approval_popup is imported lazily inside each method (not at
+    module scope -- see this module's own docstring) so constructing this
+    class is the first point that actually needs PyObjC to be installed,
+    not merely importing this module."""
 
     def show_popup(self, *args, **kwargs) -> str:
+        from . import approval_popup
         return approval_popup.show_popup(*args, **kwargs)
 
     def show_read_popup(self, *args, **kwargs) -> str:
+        from . import approval_popup
         return approval_popup.show_read_popup(*args, **kwargs)
 
     def show_pii_confirmation_popup(self, categories: list[str]) -> bool:
+        from . import approval_popup
         return approval_popup.show_pii_confirmation_popup(categories)
 
     def show_rule_confirmation_popup(self, description: str) -> bool:
+        from . import approval_popup
         return approval_popup.show_rule_confirmation_popup(description)
 
 
