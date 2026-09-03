@@ -1390,7 +1390,19 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "build_connectors", lambda cfg, org: connectors)
         monkeypatch.setattr(
             daemon_main, "IPCServer",
-            lambda conns, **kw: SimpleNamespace(connectors=conns, unattended_sessions_enabled=kw.get("unattended_sessions_enabled")),
+            lambda conns, **kw: SimpleNamespace(
+                connectors=conns, unattended_sessions_enabled=kw.get("unattended_sessions_enabled"),
+                # run_app() now constructs a SettingsController (this
+                # phase's own web-settings wiring) and hands it this same
+                # fake IPCServer -- SettingsController.__init__ always
+                # calls set_unattended_changed_listener on whatever
+                # ipc_server it's given, and refresh_connectors() (not
+                # reached during startup today, but cheap to support) calls
+                # set_connectors. Same no-op shape test_settings_controller.py's
+                # own ipc_server fixture already uses.
+                set_unattended_changed_listener=lambda callback: None,
+                set_connectors=lambda conns: None,
+            ),
         )
         _FakeIPCServerThread.instances = []
         monkeypatch.setattr(daemon_main, "IPCServerThread", _FakeIPCServerThread)
