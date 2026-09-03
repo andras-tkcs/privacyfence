@@ -46,6 +46,13 @@ _GOOGLE_DOC_EXPORTS = {
     "application/vnd.google-apps.presentation": "text/plain",
 }
 
+# get_file_content special-cases this one mime type to read the Docs API's
+# structured documents().get() and render Markdown instead of using the
+# plain-text export above (see _docs_structure_to_markdown) -- it stays in
+# _GOOGLE_DOC_EXPORTS too since download_file still exports Docs as a
+# plain-text .txt file unchanged; only get_file_content's read path changed.
+_GOOGLE_DOC_MIME_TYPE = "application/vnd.google-apps.document"
+
 # Metadata fields requested from the Drive API for a single file.
 # driveId is populated for files that live inside a Shared Drive. thumbnailLink
 # is a short-lived, Google-signed URL to a small preview image Drive already
@@ -636,6 +643,376 @@ def _find_text_matches(plain_text: str, find_text: str) -> list[tuple[int, int]]
 
 
 # ------------------------------------------------------------------ #
+# Google Docs API structure -> Markdown (read side)
+# ------------------------------------------------------------------ #
+# Headings, inline styles (bold/italic/strikethrough/underline/code/link/
+# highlight), horizontal-rule dividers, lists (including nesting), and real
+# GFM table grids all render as the same Markdown dialect
+# _markdown_to_docs_requests/_parse_inline_runs/_THEMATIC_BREAK_RE/
+# _extract_tables parse on the write side, so a document read this way
+# round-trips back through write_doc_rich_content/edit_doc_content
+# unchanged (highlight only up to its one fixed default color -- see
+# _docs_run_color_notes for the exact-color sidecar Markdown itself can't
+# carry). Known, deliberate gaps: a custom numbered-list start value isn't
+# preserved (every line reads back "1. ", since Docs auto-numbers by list
+# position and the write side's own regex accepts any digit), a soft line
+# break (Shift+Enter) reads as a plain space rather than a distinct
+# construct, and a <br>-joined multi-paragraph table cell round-trips as
+# literal "<br>" text rather than a real line break.
+
+_HEADING_STYLE_TO_PREFIX = {style: prefix for prefix, style in _HEADING_PREFIXES}
+
+
+def _docs_text_run_to_markdown(text_run: dict, *, suppress_bold: bool = False) -> str:
+    """Render one Docs API textRun (its literal content plus textStyle) as
+    Markdown, wrapped in the delimiter nesting order _parse_inline_runs
+    reads back to the same flags: a link or `code` span innermost (mutually
+    exclusive -- see below), then bold/italic, then underline, then
+    strikethrough, then highlight outermost.
+
+    ``suppress_bold`` drops the bold wrap even when ``textStyle.bold`` is
+    set -- used only for a GFM table's header row:
+    write_doc_rich_content always bolds row 0 on write
+    (``_insert_table_at_placeholder``), so reading that same bold back as
+    literal ``**...**`` would double it up on the next write. GFM's own
+    header row already renders visually bold with no markers needed, so
+    this is a lossless round trip, not a real loss -- a header cell with
+    *additional*, deliberately-chosen styling (italic, a link, ...) still
+    keeps everything except bold.
+
+    The paragraph's own trailing "\\n" (only ever present on a paragraph's
+    *last* run) is stripped before wrapping and never re-added here --
+    wrapping it along with real text would leave a raw newline inside a
+    delimited span, e.g. "**bold text\\n**", which corrupts every line
+    boundary downstream of it. The caller (_docs_content_elements_to_
+    markdown) is what turns one rendered paragraph into its own line.
+
+    A soft line break (Shift+Enter) is a literal U+000B inside a run's
+    content, not a new paragraph -- rendered as a plain space for now
+    (safe: never corrupts a delimiter the way re-emitting it as "\\n"
+    would), a known, deliberate loss with no representation in this dialect.
+
+    Highlight is rendered as a bare ==...== regardless of the run's actual
+    color (matching the write side's own single fixed default,
+    _DEFAULT_HIGHLIGHT_COLOR) -- Markdown as this parser defines it has
+    exactly one highlight color, so that's the most this function alone
+    can losslessly represent. The exact hex, when it differs from the
+    default, is reported separately -- see _docs_run_color_notes -- rather
+    than invented as new inline syntax here, which would break round-trip
+    parsing for every other caller of the write side's own Markdown
+    dialect.
+    """
+    content = text_run.get("content", "").replace("\x0b", " ").rstrip("\n")
+    if not content:
+        return ""
+    style = text_run.get("textStyle", {})
+    url = style.get("link", {}).get("url", "")
+    is_code = style.get("weightedFontFamily", {}).get("fontFamily") == _CODE_FONT_FAMILY
+    if url:
+        # Link text is opaque on the write side too (_parse_inline_runs
+        # never reparses it), so this is exactly reversible. A run that is
+        # simultaneously link *and* code-styled has no representation in
+        # this dialect -- a code span isn't link-capable here, matching
+        # how the parser never recurses into link text -- so it renders as
+        # a plain link, dropping the monospace styling; keeping the link
+        # is the more useful of the two, and a hyperlinked code span is
+        # rare enough in practice not to warrant new syntax for it.
+        content = f"[{content}]({url})"
+    elif is_code:
+        content = f"`{content}`"
+    bold = bool(style.get("bold")) and not suppress_bold
+    italic = bool(style.get("italic"))
+    if bold and italic:
+        content = f"***{content}***"
+    elif bold:
+        content = f"**{content}**"
+    elif italic:
+        content = f"*{content}*"
+    if style.get("underline"):
+        content = f"__{content}__"
+    if style.get("strikethrough"):
+        content = f"~~{content}~~"
+    if style.get("backgroundColor"):
+        content = f"=={content}=="
+    return content
+
+
+def _docs_run_color_notes(text_run: dict) -> tuple[str, str]:
+    """Return (highlight_hex, text_color_hex) for one textRun, each "" when
+    absent -- the color sidecar, read alongside (but independently of)
+    _docs_text_run_to_markdown.
+
+    highlight_hex is also "" when the run's highlight color exactly matches
+    _DEFAULT_HIGHLIGHT_COLOR -- the plain ==...== that function already
+    emits represents that case losslessly on its own, so it needs no
+    sidecar entry. text_color has no Markdown syntax at all (the write
+    side's own dialect can only set it via drive_docs_format_content, never
+    through Markdown), so every text color is reported, default or not.
+    """
+    content = text_run.get("content", "").replace("\x0b", " ").rstrip("\n")
+    if not content:
+        return "", ""
+    style = text_run.get("textStyle", {})
+    highlight_hex = ""
+    bg_rgb = style.get("backgroundColor", {}).get("color", {}).get("rgbColor")
+    if bg_rgb is not None:
+        hex_color = _rgb_dict_to_hex(bg_rgb)
+        if hex_color.lower() != _DEFAULT_HIGHLIGHT_COLOR.lower():
+            highlight_hex = hex_color
+    text_color_hex = ""
+    fg_rgb = style.get("foregroundColor", {}).get("color", {}).get("rgbColor")
+    if fg_rgb is not None:
+        text_color_hex = _rgb_dict_to_hex(fg_rgb)
+    return highlight_hex, text_color_hex
+
+
+def _docs_content_elements_color_sidecar(
+    content_elements: list[dict], highlights: list[dict], text_colors: list[dict]
+) -> None:
+    """Walk a Docs API list of structural elements -- mirrors
+    _docs_content_elements_to_markdown's traversal (top-level body content,
+    or recursing into a table cell's own content) -- appending every run's
+    non-default highlight/text color to highlights/text_colors in place.
+    See _docs_run_color_notes.
+    """
+    for element in content_elements:
+        paragraph = element.get("paragraph")
+        if paragraph is not None:
+            for para_element in paragraph.get("elements", []):
+                text_run = para_element.get("textRun")
+                if text_run is None:
+                    continue
+                highlight_hex, text_color_hex = _docs_run_color_notes(text_run)
+                if not highlight_hex and not text_color_hex:
+                    continue
+                content = text_run.get("content", "").replace("\x0b", " ").rstrip("\n")
+                if highlight_hex:
+                    highlights.append({"text": content, "hex": highlight_hex})
+                if text_color_hex:
+                    text_colors.append({"text": content, "hex": text_color_hex})
+            continue
+        table = element.get("table")
+        if table is not None:
+            for row in table.get("tableRows", []):
+                for cell in row.get("tableCells", []):
+                    _docs_content_elements_color_sidecar(
+                        cell.get("content", []), highlights, text_colors
+                    )
+            continue
+
+
+def _docs_structure_color_sidecar(doc: dict) -> tuple[list[dict], list[dict]]:
+    """Return (highlights, text_colors) for a Docs API ``documents().get()``
+    response -- each a list of ``{"text": ..., "hex": "#rrggbb"}``, for
+    every run whose exact color the plain Markdown from
+    _docs_structure_to_markdown can't represent on its own.
+    """
+    highlights: list[dict] = []
+    text_colors: list[dict] = []
+    _docs_content_elements_color_sidecar(
+        doc.get("body", {}).get("content", []), highlights, text_colors
+    )
+    return highlights, text_colors
+
+
+_ORDERED_LIST_GLYPH_TYPES = {
+    "DECIMAL", "ZERO_DECIMAL", "UPPER_ALPHA", "ALPHA", "UPPER_ROMAN", "ROMAN",
+}
+
+
+def _docs_list_nesting_is_ordered(doc_lists: dict, list_id: str, nesting_level: int) -> bool:
+    """Whether one nesting level of one list (from the document's top-level
+    ``lists`` map) is numbered rather than bulleted -- the Docs API records
+    this once per level via each ``NestingLevel``'s ``glyphType``
+    (``DECIMAL``, ``UPPER_ROMAN``, ...) for a numbered level, versus a
+    ``glyphSymbol`` (a literal bullet character) for an unordered one. An
+    unrecognized or missing ``list_id``/level defaults to unordered -- the
+    same visual default the Docs UI itself uses for a plain bulleted list,
+    and the write side's own ``BULLET_DISC_CIRCLE_SQUARE`` default preset.
+    """
+    nesting_levels = doc_lists.get(list_id, {}).get("listProperties", {}).get("nestingLevels", [])
+    if nesting_level >= len(nesting_levels):
+        return False
+    return nesting_levels[nesting_level].get("glyphType", "") in _ORDERED_LIST_GLYPH_TYPES
+
+
+def _docs_paragraph_is_divider(paragraph: dict) -> bool:
+    """Whether a paragraph is a horizontal-rule divider, read back as a bare
+    ``---`` line. Two cases, both real:
+
+    - A ``horizontalRule`` paragraph element -- present when a human
+      inserted one through the Docs UI's own Insert > Horizontal line. This
+      is a genuine structural element the API can read even though it has
+      no way to *write* one (see the next case).
+    - An empty paragraph with ``paragraphStyle.borderBottom`` set -- what
+      ``write_doc_rich_content`` actually produces for a `---`/`***`/`___`
+      line, since the Docs API has no native "insert horizontal rule"
+      request (_THEMATIC_BREAK_RE's own comment explains why). Checked only
+      when the paragraph is otherwise empty, so a real paragraph of prose
+      that happens to carry a bottom border for some unrelated reason keeps
+      its text instead of silently losing it.
+    """
+    para_elements = paragraph.get("elements", [])
+    if any("horizontalRule" in pe for pe in para_elements):
+        return True
+    if not paragraph.get("paragraphStyle", {}).get("borderBottom"):
+        return False
+    text = "".join(pe["textRun"].get("content", "") for pe in para_elements if "textRun" in pe)
+    return not text.strip("\n")
+
+
+def _docs_content_elements_to_markdown(
+    content_elements: list[dict], doc_lists: dict | None = None, *, suppress_bold: bool = False
+) -> str:
+    """Render a Docs API list of structural elements -- either
+    ``doc["body"]["content"]`` itself, or one table cell's own
+    ``["content"]`` -- as Markdown. Shared by both so a table cell's text
+    gets the same heading/inline-style/list treatment as top-level document
+    content (see _docs_structure_to_markdown). ``doc_lists`` is the whole
+    document's top-level ``lists`` map (needed to resolve a list paragraph's
+    ordered/unordered glyph type, per-list rather than per-paragraph) --
+    defaults to ``None`` (treated as ``{}``) for a caller with no list
+    content to worry about, which resolves every list paragraph as
+    unordered (see _docs_list_nesting_is_ordered's own default).
+    ``suppress_bold`` is passed straight through to every
+    _docs_text_run_to_markdown call -- see that function's own docstring;
+    used only when rendering a GFM table's header-row cells, never set by
+    the top-level document walk.
+    """
+    doc_lists = doc_lists or {}
+    lines: list[str] = []
+    for element in content_elements:
+        paragraph = element.get("paragraph")
+        if paragraph is not None:
+            para_elements = paragraph.get("elements", [])
+            if _docs_paragraph_is_divider(paragraph):
+                # Exact reverse of the write side's _THEMATIC_BREAK_RE
+                # handling: a divider paragraph carries no text of its own
+                # worth rendering, so this is unambiguous -- render the bare
+                # divider line rather than falling through to heading_prefix
+                # (a divider paragraph never carries a namedStyleType worth
+                # applying either) or being skipped as "no text" the way
+                # other non-text elements below still are. See
+                # _docs_paragraph_is_divider's own docstring for the two
+                # real Docs API shapes this recognizes.
+                lines.append("---")
+                continue
+            line = "".join(
+                _docs_text_run_to_markdown(para_element["textRun"], suppress_bold=suppress_bold)
+                for para_element in para_elements
+                # Non-text paragraph elements (inlineObjectElement/images,
+                # a footnote reference, ...) have no text to render in
+                # this phase -- see the module comment above.
+                if "textRun" in para_element
+            )
+            bullet = paragraph.get("bullet")
+            if bullet is not None:
+                # Exact reverse of the write side's 2-spaces-per-nesting-
+                # level convention (_MAX_LIST_NESTING) -- a list paragraph
+                # never legitimately carries a namedStyleType either, so
+                # this takes priority over heading_prefix below the same
+                # way the horizontal-rule check above takes priority over
+                # both. The literal digit in a numbered marker doesn't
+                # matter -- _markdown_to_docs_requests' own numbered-list
+                # regex (`^\d+\. `) accepts any digit(s), and Docs
+                # auto-numbers by list position, not by what's typed -- so
+                # "1. " for every line is exactly as correct as counting.
+                nesting_level = bullet.get("nestingLevel", 0)
+                list_id = bullet.get("listId", "")
+                marker = "1. " if _docs_list_nesting_is_ordered(doc_lists, list_id, nesting_level) else "- "
+                lines.append(("  " * nesting_level) + marker + line)
+                continue
+            heading_prefix = _HEADING_STYLE_TO_PREFIX.get(
+                paragraph.get("paragraphStyle", {}).get("namedStyleType", ""), ""
+            )
+            lines.append(heading_prefix + line)
+            continue
+        table = element.get("table")
+        if table is not None:
+            lines.append(_docs_table_to_markdown(table, doc_lists))
+            continue
+        # tableOfContents, sectionBreak, and anything else Docs can put in
+        # body.content has no Markdown-dialect representation yet and no
+        # plain-text-export precedent worth preserving either -- skipped.
+    return "\n".join(lines)
+
+
+_ALIGNMENT_TO_SEPARATOR = {"START": "---", "CENTER": ":---:", "END": "---:"}
+
+
+def _docs_table_column_alignment(table: dict, col_index: int) -> str:
+    """Read one column's alignment ("START"/"CENTER"/"END") from its header
+    (row 0) cell's first paragraph -- the reverse of
+    _table_column_alignments. Defaults to "START" (GFM's own default, a
+    plain "---" separator cell) for a missing row/column, an unaligned
+    paragraph, or anything CommonMark can't express (e.g. JUSTIFIED).
+    _insert_table_at_placeholder applies one alignment per column
+    uniformly across every row when writing, so the header row's own
+    alignment is representative of the whole column.
+    """
+    rows = table.get("tableRows", [])
+    if not rows:
+        return "START"
+    cells = rows[0].get("tableCells", [])
+    if col_index >= len(cells):
+        return "START"
+    for element in cells[col_index].get("content", []):
+        paragraph = element.get("paragraph")
+        if paragraph is None:
+            continue
+        alignment = paragraph.get("paragraphStyle", {}).get("alignment", "START")
+        return alignment if alignment in _ALIGNMENT_TO_SEPARATOR else "START"
+    return "START"
+
+
+def _docs_table_to_markdown(table: dict, doc_lists: dict) -> str:
+    """Render a Docs API table element as a GFM pipe table -- the read-side
+    mirror of _extract_tables/_insert_table_at_placeholder.
+
+    Each cell's own content renders through _docs_content_elements_to_
+    markdown recursively (so headings, inline styles, and even nested
+    lists/tables inside a cell still work), with two cell-specific
+    adjustments neither prose paragraphs nor list items need:
+
+    - Multiple paragraphs in one cell join with ``<br>`` -- GFM has no
+      other way to represent an embedded newline inside a table cell.
+    - A literal ``|`` is escaped as ``\\|``, the same direction
+      _split_table_row's own unescape (``.replace("\\|", "|")``) expects.
+
+    Row 0 (the header) renders with every run's bold suppressed --
+    write_doc_rich_content always bolds row 0 on write
+    (_insert_table_at_placeholder), so reading that same bold back as
+    literal ``**...**`` would double it up on the next write; see
+    _docs_text_run_to_markdown's own docstring.
+    """
+    rows: list[list[str]] = []
+    for r, row in enumerate(table.get("tableRows", [])):
+        cells = []
+        for cell in row.get("tableCells", []):
+            rendered = _docs_content_elements_to_markdown(
+                cell.get("content", []), doc_lists, suppress_bold=(r == 0)
+            )
+            cells.append("<br>".join(line.replace("|", "\\|") for line in rendered.split("\n")))
+        rows.append(cells)
+    if not rows:
+        return ""
+    n_cols = len(rows[0])
+    separator = [_ALIGNMENT_TO_SEPARATOR[_docs_table_column_alignment(table, c)] for c in range(n_cols)]
+    lines = ["| " + " | ".join(rows[0]) + " |", "| " + " | ".join(separator) + " |"]
+    lines.extend("| " + " | ".join(row) + " |" for row in rows[1:])
+    return "\n".join(lines)
+
+
+def _docs_structure_to_markdown(doc: dict) -> str:
+    """Render a Docs API ``documents().get()`` response as Markdown -- the
+    read-side mirror of _markdown_to_docs_requests.
+    """
+    return _docs_content_elements_to_markdown(
+        doc.get("body", {}).get("content", []), doc.get("lists", {})
+    )
+
+
+# ------------------------------------------------------------------ #
 # Sheets API helpers
 # ------------------------------------------------------------------ #
 
@@ -752,12 +1129,22 @@ class DriveFileContent:
     ``content_text`` carries exported text for Google Docs/Sheets/Slides and
     decoded text for text-like binaries. ``content_bytes`` carries raw bytes for
     other binary files. Exactly one of them is normally populated.
+
+    ``highlights``/``text_colors`` are the color sidecar -- populated only
+    for a Google Doc, and only when there's something to say: a highlight
+    whose exact color isn't the tool's own default (the plain ``==...==``
+    Markdown already represents that case losslessly), or any text color at
+    all (Markdown has no syntax for that whatsoever, so every text color is
+    reported). Each entry is ``{"text": <run's own text>, "hex": "#rrggbb"}``.
+    Empty for every other file type.
     """
 
     file: DriveFile
     content_text: str = ""
     content_bytes: bytes = b""
     truncated: bool = False
+    highlights: list[dict] = field(default_factory=list)
+    text_colors: list[dict] = field(default_factory=list)
 
 
 class DriveClient:
@@ -943,10 +1330,23 @@ class DriveClient:
     ) -> DriveFileContent:
         """Fetch a file's content, capped at ``max_bytes``.
 
-        Google Workspace documents are exported as text (Docs/Slides as
-        text/plain, Sheets as CSV). Other files are downloaded as raw bytes. If
-        the content exceeds ``max_bytes`` it is truncated and ``truncated`` is
-        set to True.
+        A Google Doc is fetched through the Docs API's structured
+        ``documents().get()`` (the same call the ``docs_*`` write tools
+        already use) and rendered to Markdown -- headings, inline styles
+        (bold/italic/strikethrough/underline/code/link/highlight),
+        horizontal-rule dividers, lists (including nesting), and GFM pipe
+        tables (a real grid, with column alignment) all round-trip through
+        the same dialect ``_markdown_to_docs_requests``/
+        ``_parse_inline_runs``/``_extract_tables`` parse on the write side.
+        A non-default highlight/text color also populates
+        ``highlights``/``text_colors`` (Markdown alone can't carry an exact
+        color). Slides are still exported as plain text and Sheets as CSV.
+        Other files are downloaded as raw bytes. If the
+        content exceeds ``max_bytes`` it is truncated and ``truncated``
+        is set to True -- for a Doc, truncation lands on the last complete
+        line at or before the cap rather than an arbitrary byte offset, so a
+        truncated result never lands mid-delimiter and stays safe to feed
+        back into ``edit_doc_content``.
         """
         if not file_id:
             raise DriveClientError("get_file_content requires a non-empty file_id")
@@ -954,8 +1354,18 @@ class DriveClient:
             max_bytes = 102400
 
         metadata = self.get_file_metadata(file_id)
-        service = self._get_service()
 
+        if metadata.mime_type == _GOOGLE_DOC_MIME_TYPE:
+            content = self._get_doc_content_as_markdown(file_id, metadata, max_bytes)
+            logger.info(
+                "get_file_content %s: %d bytes (truncated=%s, text=True, format=markdown)",
+                file_id,
+                len(content.content_text.encode("utf-8")),
+                content.truncated,
+            )
+            return content
+
+        service = self._get_service()
         export_mime = _GOOGLE_DOC_EXPORTS.get(metadata.mime_type)
         try:
             if export_mime is not None:
@@ -993,6 +1403,56 @@ class DriveClient:
             is_text,
         )
         return content
+
+    def _get_doc_content_as_markdown(
+        self, file_id: str, metadata: DriveFile, max_bytes: int
+    ) -> DriveFileContent:
+        """Fetch a Google Doc's structure and render it to Markdown, then
+        truncate at a line boundary rather than an arbitrary byte offset --
+        a byte-exact cut isn't safe here the way it is for the plain byte
+        stream every other branch of ``get_file_content`` truncates: it
+        could land mid-delimiter (e.g. right after an opening ** with no
+        closing pair), corrupting every subsequent parse of the truncated
+        Markdown.
+
+        Unlike the streaming byte download the other branches use, the Docs
+        API always returns the whole document in one response -- there's no
+        way to stop fetching partway through and still have a parseable
+        structure, so a very large Doc costs one full fetch here regardless
+        of ``max_bytes``. Accepted tradeoff; no fix proposed for it.
+        """
+        docs_service = self._get_docs_service()
+        try:
+            doc = docs_service.documents().get(documentId=file_id).execute()
+        except HttpError as exc:
+            raise DriveClientError(
+                f"get_file_content({file_id}) failed: {exc}"
+            ) from exc
+
+        markdown = _docs_structure_to_markdown(doc)
+        highlights, text_colors = _docs_structure_color_sidecar(doc)
+        data = markdown.encode("utf-8")
+        truncated = len(data) > max_bytes
+        if truncated:
+            cut = data[:max_bytes]
+            last_newline = cut.rfind(b"\n")
+            if last_newline > 0:
+                cut = cut[:last_newline]
+            markdown = cut.decode("utf-8", errors="replace")
+            # A sidecar entry for text that fell outside the truncated
+            # Markdown would misleadingly describe content the caller can
+            # no longer see -- keep only entries whose text still appears
+            # in the truncated result.
+            highlights = [h for h in highlights if h["text"] in markdown]
+            text_colors = [c for c in text_colors if c["text"] in markdown]
+
+        return DriveFileContent(
+            file=metadata,
+            content_text=markdown,
+            truncated=truncated,
+            highlights=highlights,
+            text_colors=text_colors,
+        )
 
     def download_file(
         self, file_id: str, destination_dir: str = ""
@@ -1426,11 +1886,15 @@ class DriveClient:
         ``find_text`` in a Google Doc with newly rendered Markdown, touching
         only the matched span(s) rather than the whole document.
 
-        ``find_text`` is matched against the document's plain text (the same
-        representation ``get_file_content``'s Docs export returns) and must
-        match exactly once unless ``replace_all`` is set — an ambiguous match
-        raises rather than guessing which occurrence was meant, the same
-        contract a unique-match text editor enforces.
+        ``find_text`` is matched against the document's plain, unformatted
+        text (``_docs_plain_text_with_index_map``'s raw textRun
+        concatenation) -- *not* the Markdown ``get_file_content`` now
+        renders for a Doc; a caller piping that Markdown straight into
+        ``find_text`` needs to strip any formatting markers back out first.
+        Must match exactly once unless ``replace_all`` is set — an ambiguous
+        match raises rather than
+        guessing which occurrence was meant, the same contract a
+        unique-match text editor enforces.
 
         Supports the same Markdown as ``write_doc_rich_content``, including
         GFM pipe tables: each occurrence's tables are written the same

@@ -154,7 +154,18 @@ class DriveConnector(Connector):
             ToolSpec(
                 name="drive_get_file_content",
                 description=(
-                    "Fetch the content of a Drive file by id. Requires user approval."
+                    "Fetch the content of a Drive file by id. A Google Doc comes back as "
+                    "Markdown (headings, **bold**, *italic*, ~~strikethrough~~, __underline__, "
+                    "`code`, [link](url), ==highlight==, a '---' horizontal-rule divider, "
+                    "bullet/numbered lists including nesting (2-space indent per level), and GFM "
+                    "pipe tables (real grid, with column alignment) — the same syntax "
+                    "drive_write_doc_content accepts, so the result round-trips straight back "
+                    "into it or drive_docs_edit_content. ==highlight== always renders the tool's "
+                    "own default color; when a run's exact highlight or text color differs from "
+                    "that, the result also includes 'highlights'/'text_colors' — each a list of "
+                    "{text, hex} — since Markdown alone can't carry an exact color (text color "
+                    "has no Markdown syntax at all). Sheets/Slides and other files are "
+                    "unaffected. Requires user approval."
                 ),
                 params=[ToolParam("file_id", "str"), ToolParam("reason", "str", required=True, description="One sentence: why are you calling this tool right now?")],
                 read_only=True,
@@ -252,13 +263,16 @@ class DriveConnector(Connector):
                     "Replace one occurrence of existing text in a Google Doc "
                     "with new Markdown, without touching the rest of the "
                     "document. find_text must match exactly one location in "
-                    "the document's plain text (as read by "
-                    "drive_get_file_content) — include enough surrounding "
-                    "context to make it unique, the same way a unique-match "
-                    "text editor requires; set replace_all=true to replace "
-                    "every occurrence instead. replace_markdown supports the "
-                    "same Markdown syntax as drive_write_doc_content, "
-                    "including GFM pipe tables. "
+                    "the document's plain, unformatted text — the words as "
+                    "typed, with no Markdown syntax in them at all (this is "
+                    "*not* the same as drive_get_file_content's output for a "
+                    "Doc, which now renders formatting as Markdown; strip any "
+                    "'**'/'#'/etc. markers back out of find_text first) — "
+                    "include enough surrounding context to make it unique, "
+                    "the same way a unique-match text editor requires; set "
+                    "replace_all=true to replace every occurrence instead. "
+                    "replace_markdown supports the same Markdown syntax as "
+                    "drive_write_doc_content, including GFM pipe tables. "
                     "Requires user approval."
                 ),
                 params=[
@@ -712,6 +726,21 @@ class DriveConnector(Connector):
             "Modified": modified_display or "(unknown)",
         }
         filtered = {"file_id": file_id, "content": text}
+        # Color sidecar -- Google-Doc-only, and only present when there's
+        # something a plain ==highlight== marker can't already say on its
+        # own: an exact color that isn't the tool's own default, or any
+        # text color at all (Markdown has no syntax for that whatsoever).
+        # Each entry's own text already appeared, unfiltered, in raw_text
+        # above -- so it needs the same privacy filter applied here that
+        # `text` itself got, not a free pass just because it's traveling in
+        # a different field.
+        for sidecar_key in ("highlights", "text_colors"):
+            entries = getattr(content, sidecar_key, None) or []
+            if entries:
+                filtered[sidecar_key] = [
+                    {"text": apply_text("drive_privacy", "file_content", entry["text"]), "hex": entry["hex"]}
+                    for entry in entries
+                ]
         return await gated_call(
             connector=self.name,
             tool="drive_get_file_content",
