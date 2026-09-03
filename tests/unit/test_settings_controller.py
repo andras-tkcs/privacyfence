@@ -856,6 +856,22 @@ class TestPickResourceIndexWebMode:
         monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: f(*a, **k)))
         monkeypatch.setattr(controller, "refresh_connectors", lambda: None)
 
+        # Assert on the options actually handed to the picker, not by
+        # scanning the rendered HTML for the URL substrings -- same
+        # structured-capture pattern the native-mode sibling test above
+        # uses (picker_calls[0]["options"]), and it sidesteps CodeQL's
+        # incomplete-URL-substring-sanitization heuristic, which pattern-
+        # matches "<url> in html_string" regardless of context; there's no
+        # sanitization here at all, just a rendered-content check, but the
+        # heuristic can't tell the difference.
+        choice_calls = []
+
+        def fake_build_choice_html(**kwargs):
+            choice_calls.append(kwargs)
+            return "<div>fake choice dialog</div>"
+
+        monkeypatch.setattr(sc.dialog_window_html, "build_choice_html", fake_build_choice_html)
+
         captured = {}
 
         def fake_authorize(**kwargs):
@@ -874,8 +890,7 @@ class TestPickResourceIndexWebMode:
         assert wait_until(lambda: web_ui.deferred_registry.list_pending())
         card = web_ui.deferred_registry.list_pending()[0]
         assert card.kind == "choice"
-        assert "https://a.atlassian.net" in card.html
-        assert "https://b.atlassian.net" in card.html
+        assert choice_calls[0]["options"] == ["https://a.atlassian.net", "https://b.atlassian.net"]
         web_ui.deferred_registry.answer(card.id, "1")
 
         assert wait_until(lambda: "site_url" in captured)
