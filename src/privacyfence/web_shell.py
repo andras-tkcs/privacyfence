@@ -125,7 +125,8 @@ body {
 #     not implemented yet: the count-only body below is a safe subset of
 #     `minimal` (§4.3's own table) that cannot leak anything at any
 #     setting, which is what ships until a real per-field allowlist for the
-#     richer levels is built.
+#     richer levels is built -- scheduled at P5 alongside that phase's
+#     bridge retirement (https-connector-refactor-plan.md's phase table).
 #   - the permission pre-prompt only ever fires from window.__pfNotifPrompt,
 #     called by approval_list_html.py's own script right after a decision
 #     is made (never on page load -- §4.4: "never on page load, a cold

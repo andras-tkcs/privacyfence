@@ -960,7 +960,7 @@ Two ordering changes fall out of the same review:
 | **P3** | Deferred approvals + concurrency | P2 | L | Three approvals pending at once, each decidable in any order; `_popup_lock` gone; the stop-and-ask path P0 found (§5.4) has designed copy and a measured re-call rate from the beta |
 | **P4** | Settings on the web | P1 | M | Every `SettingsController` action reachable from a browser — detailed PR-by-PR plan in §16 |
 | **P4b** | Desktop stdio shim in the `.mcpb` (D11) | P2 | S | A fresh `PrivacyFence.mcpb` install reaches `/mcp` from Claude Desktop with no config file edited and no token copied; the shim contains no PrivacyFence protocol knowledge |
-| **P5** | Retire the bridge | P2, P4, **P4b in a stable release** | S | `bridge/`, `ipc.py`, `ipc_server.py` deleted; integration test re-pointed at `/mcp`; a `local`-mode Desktop user is on the P4b shim, not on a hand-edited config |
+| **P5** | Retire the bridge; notification detail levels | P2, P4, **P4b in a stable release** | M | `bridge/`, `ipc.py`, `ipc_server.py` deleted; integration test re-pointed at `/mcp`; a `local`-mode Desktop user is on the P4b shim, not on a hand-edited config. **Plus:** `web.notifications.detail: standard`/`detailed` (docs/approval-list-ui-ux.md §4.3) ship for real, behind the per-field content allowlist that lets them name a connector/tool/row title without violating §4.3's no-gated-content invariant — until then `detail` stays a config no-op, per that section's own note |
 | **P6** | Principals + per-user storage | P3, P5 | L | Two principals isolated in tests; local mode byte-identical to before |
 | **P7** | Org identity — OIDC, sessions, OAuth 2.1 AS | P6 | L | Claude adds the connector by DCR; audience separation test passes |
 | **P8** | Per-user service authorization | P7 | L | A remote user authorizes Google, Slack, Salesforce, Atlassian and Telegram from a phone |
@@ -969,6 +969,12 @@ Two ordering changes fall out of the same review:
 
 Sizes are relative, not calendar estimates: S is a few days' work, M a week or two, L several weeks.
 P2, P3, P6, P7 and P8 are the substantial ones; together they are most of the project.
+
+P5 carries an unrelated second piece of scope (notification detail levels) rather than getting its
+own phase, which is why it moved from S to M above: the bridge-retirement half is genuinely
+finished by the time P4/P4b land (this phase is mostly deletion), leaving room in the same PR window
+for the other piece docs/approval-list-ui-ux.md §6 left unscheduled — a leftover from that
+document's own P3 write-up, not something either phase's exit criterion otherwise needs.
 
 ### P0 had to answer four questions, not three
 
