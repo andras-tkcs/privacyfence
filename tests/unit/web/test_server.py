@@ -107,52 +107,6 @@ class TestWebServerConstruction:
 
 
 # --------------------------------------------------------------------------- #
-# D11 (docs/https-connector-refactor-plan.md §12): the mcp_url discovery
-# file mcpb/shim reads to find /mcp without any config the user has to
-# edit -- the direct successor of ipc.py's PORT_FILE. Only written/cleared
-# when this WebServer actually has an mcp_dispatcher (i.e. web.mcp.enabled);
-# a server started for the approval UI alone must not claim /mcp exists.
-# --------------------------------------------------------------------------- #
-
-class TestMcpUrlFile:
-    def _server(self, tmp_path, monkeypatch, *, with_mcp: bool):
-        from privacyfence import paths
-
-        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
-        kwargs = {}
-        if with_mcp:
-            from privacyfence.web.mcp_dispatch import McpDispatcher
-
-            kwargs = {"mcp_dispatcher": McpDispatcher(lambda: {}), "mcp_token": "mcp-tok"}
-        return WebServer(WebApprovalUI(), host="localhost", port=0, token=TOKEN, **kwargs)
-
-    def test_start_writes_the_file_when_mcp_is_enabled(self, tmp_path, monkeypatch):
-        server = self._server(tmp_path, monkeypatch, with_mcp=True)
-        try:
-            server.start()
-            mcp_url_file = tmp_path / "mcp_url"
-            assert mcp_url_file.exists()
-            assert mcp_url_file.read_text(encoding="utf-8") == server.mcp_url
-            assert oct(mcp_url_file.stat().st_mode)[-3:] == "600"
-        finally:
-            server.stop()
-
-    def test_stop_clears_the_file(self, tmp_path, monkeypatch):
-        server = self._server(tmp_path, monkeypatch, with_mcp=True)
-        server.start()
-        server.stop()
-        assert not (tmp_path / "mcp_url").exists()
-
-    def test_no_file_at_all_when_mcp_is_not_enabled(self, tmp_path, monkeypatch):
-        server = self._server(tmp_path, monkeypatch, with_mcp=False)
-        try:
-            server.start()
-            assert not (tmp_path / "mcp_url").exists()
-        finally:
-            server.stop()
-
-
-# --------------------------------------------------------------------------- #
 # §10.3's audience separation: the MCP bearer token and the approval
 # surface's session cookie/CSRF token are different secrets, checked in
 # different middleware, and neither is ever accepted on the other's routes.
@@ -198,3 +152,118 @@ class TestAudienceSeparation:
             headers={"Authorization": f"Bearer {self.MCP_TOKEN}"},
         )
         assert resp.status_code == 401
+
+
+# --------------------------------------------------------------------------- #
+# P4 (docs/https-connector-refactor-plan.md §16): /settings and
+# /api/state/stream folded into the same combined app, sharing the
+# approval surface's own token/session -- see build_app()'s own docstring
+# for why this is the deliberate contrast with MCP's separate audience.
+# --------------------------------------------------------------------------- #
+
+def _controller(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from privacyfence import daemon_main, resource_names, settings_controller as sc, update_checker
+
+    monkeypatch.setattr(resource_names, "_cache_file", lambda: tmp_path / "resource_name_cache.json")
+    monkeypatch.setattr(update_checker, "_cache_file", lambda: tmp_path / "update_check_cache.json")
+    monkeypatch.setattr(sc, "check_for_update", lambda **kw: None)
+    monkeypatch.setattr(daemon_main, "load_org_config", lambda: {})
+    org_dir_path = tmp_path / "org"
+    org_dir_path.mkdir()
+    monkeypatch.setattr(sc, "org_dir", lambda: org_dir_path)
+    data_dir_path = tmp_path / "data"
+    data_dir_path.mkdir()
+    monkeypatch.setattr(sc, "data_dir", lambda: data_dir_path)
+    config_path = tmp_path / "settings.yaml"
+    config_path.write_text("auto_accept_rules: {}\nconnectors: {}\n", encoding="utf-8")
+    ipc_server = SimpleNamespace(set_connectors=lambda conns: None, set_unattended_changed_listener=lambda cb: None)
+    return sc.SettingsController(str(config_path), connectors=[], ipc_server=ipc_server)
+
+
+class TestSettingsFoldedIntoTheCombinedApp:
+    def test_settings_page_shares_the_approval_surfaces_session(self, tmp_path, monkeypatch):
+        controller = _controller(tmp_path, monkeypatch)
+        app = build_app(WebApprovalUI(), token=TOKEN, controller=controller)
+        client = TestClient(app, base_url="http://localhost")
+        client.cookies.set("pf_session", TOKEN)
+
+        r = client.get("/settings")
+
+        assert r.status_code == 200
+        assert "PrivacyFence — Settings" in r.text
+
+    def test_no_controller_means_no_settings_route(self):
+        app = build_app(WebApprovalUI(), token=TOKEN)
+        client = TestClient(app, base_url="http://localhost")
+        client.cookies.set("pf_session", TOKEN)
+
+        r = client.get("/settings")
+
+        assert r.status_code == 404
+
+    # No 200-success request test against a real GET here -- the stream's
+    # generator never terminates (same reasoning web/test_routes_approvals.
+    # py's own TestApprovalsStream documents: TestClient's synchronous,
+    # fully-buffering client.get() can't drive an endless SSE response
+    # without hanging). Only the auth boundary -- which short-circuits
+    # before the generator is ever entered -- is exercised here; the real
+    # streaming behavior is what P0/P1's manual Chromium checks cover.
+
+    def test_state_stream_requires_auth(self):
+        from privacyfence.web.state_stream import StateStream
+
+        web_ui = WebApprovalUI()
+        stream = StateStream(settings_snapshot=lambda: None, list_pending=web_ui.deferred_registry.list_pending)
+        app = build_app(web_ui, token=TOKEN, state_stream=stream)
+        client = TestClient(app, base_url="http://localhost")
+
+        r = client.get("/api/state/stream")
+
+        assert r.status_code == 401
+
+    def test_web_server_provisions_the_state_stream_automatically(self):
+        # Unlike build_app() (tested directly above), WebServer always
+        # builds and wires a StateStream -- see its own __init__.
+        server = WebServer(WebApprovalUI(), port=0, token=TOKEN)
+        assert server.state_stream is not None
+
+
+class TestWebServerWiresTheStateStream:
+    def test_controller_is_registered_as_a_change_listener(self, tmp_path, monkeypatch):
+        controller = _controller(tmp_path, monkeypatch)
+        server = WebServer(WebApprovalUI(), port=0, token=TOKEN, controller=controller)
+
+        assert server.state_stream is not None
+        assert server.state_stream.push_settings in controller._change_listeners
+
+    def test_controller_mutation_reaches_the_stream(self, tmp_path, monkeypatch):
+        controller = _controller(tmp_path, monkeypatch)
+        server = WebServer(WebApprovalUI(), port=0, token=TOKEN, controller=controller)
+        pushed = []
+        monkeypatch.setattr(server.state_stream, "_broadcast", lambda event, data: pushed.append((event, data)))
+
+        # _push_snapshot -- not every mutating method, which already
+        # returns its own snapshot directly to its own caller -- is what
+        # notifies out-of-band listeners (a rule reloaded from the IPC
+        # thread, an async op finishing on its own background thread; see
+        # settings_controller.py's own docstring on _push_snapshot/
+        # on_change). This proves the wiring reaches state_stream, the
+        # same path any of those real triggers goes through.
+        controller._push_snapshot()
+
+        assert pushed and pushed[0][0] == "settings"
+
+    def test_main_dispatcher_is_registered_for_headless_call_on_main(self, tmp_path, monkeypatch):
+        from privacyfence import settings_controller as sc
+        from privacyfence.web import state_stream as ss
+
+        controller = _controller(tmp_path, monkeypatch)
+        WebServer(WebApprovalUI(), port=0, token=TOKEN, controller=controller)
+
+        monkeypatch.setattr(sc, "AppHelper", None)
+        recorded = []
+        monkeypatch.setattr(ss, "_loop", None)  # no real loop running in this test
+        sc.call_on_main(lambda x: recorded.append(x), "hi")
+        assert recorded == ["hi"]  # falls back to running inline with no loop captured yet

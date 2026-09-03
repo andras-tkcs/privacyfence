@@ -225,6 +225,33 @@ class TestDispatch:
 
         assert run_calls == [["open", sw.REPO_URL]]
 
+    def test_reveal_mcp_token_routes_to_its_own_js_callback_not_pfrender(self, tmp_path, monkeypatch):
+        # P4c (docs/https-connector-refactor-plan.md §16.9): the result is
+        # a bare {"mcp_token": ...}, not a snapshot, so it must never reach
+        # _push_state()/window.__pfRender() -- that would wipe every other
+        # rendered section of the page.
+        from privacyfence.settings_window import SettingsWindowController
+
+        controller = _make_controller(tmp_path, monkeypatch)
+        controller.set_mcp_connection_info(url="http://localhost:8765/mcp", token="super-secret-token")
+        wc = SettingsWindowController.alloc().init()
+        wc.configure(controller)
+        wc.build_window()
+        pushed = []
+        monkeypatch.setattr(wc, "_push_state", lambda state: pushed.append(state))
+        captured = {}
+        wc._webview = Mock()
+        wc._webview.evaluateJavaScript_completionHandler_.side_effect = (
+            lambda js, cb: captured.setdefault("js", js)
+        )
+
+        wc._dispatch("reveal_mcp_token", {})
+
+        assert pushed == []
+        assert "window.__pfRevealMcpToken" in captured["js"]
+        assert "super-secret-token" in captured["js"]
+        assert "window.__pfRender" not in captured["js"]
+
     def test_unknown_action_is_logged_and_ignored(self, tmp_path, monkeypatch):
         from privacyfence.settings_window import SettingsWindowController
 

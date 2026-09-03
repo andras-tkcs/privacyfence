@@ -241,17 +241,22 @@ def setup_logging(config: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------- #
 
 def _maybe_start_web_server(
-    config: dict[str, Any], ipc_server: IPCServer, *, unattended_sessions_enabled: bool,
+    config: dict[str, Any],
+    ipc_server: IPCServer,
+    *,
+    unattended_sessions_enabled: bool,
+    controller: Any = None,
 ) -> Any:
     """Returns the started WebServer, or None when neither web.approval_ui
-    nor web.mcp.enabled opts in -- the rollback lever for each surface from
-    docs/https-connector-refactor-plan.md §12 ("P1: init_approval_ui() --
-    the seam itself. A config key selects native or web." / "P2: the HTTP
-    listener is off unless configured; the bridge is untouched."). Imports
-    the web/starlette/uvicorn/mcp stack lazily so a daemon that never opts
-    into either doesn't pay for it at startup, the same "menu_bar imported
-    inside run_app(), not at module scope" posture this module already
-    takes for its own AppKit-only pieces.
+    nor web.mcp.enabled nor web.settings.enabled opts in -- the rollback
+    lever for each surface from docs/https-connector-refactor-plan.md §12
+    ("P1: init_approval_ui() -- the seam itself. A config key selects
+    native or web." / "P2: the HTTP listener is off unless configured; the
+    bridge is untouched." / §16.6's ``web.settings.enabled``). Imports the
+    web/starlette/uvicorn/mcp stack lazily so a daemon that never opts into
+    any of the three doesn't pay for it at startup, the same "menu_bar
+    imported inside run_app(), not at module scope" posture this module
+    already takes for its own AppKit-only pieces.
 
     ``ipc_server`` is already built and holds the real connector set by the
     time this is called (see run_app's ordering) -- the MCP dispatcher polls
@@ -259,12 +264,23 @@ def _maybe_start_web_server(
     connector rebuild pushed into the bridge (SettingsController.
     refresh_connectors -> IPCServer.set_connectors) reaches the ``/mcp``
     endpoint too, with nothing here needing a second push.
+
+    ``controller``, when given, is the *same* SettingsController instance
+    run_app() also hands to the native menu bar/settings window -- one
+    controller, two ``on_change`` consumers (§16.8's risk #2), so a rule
+    changed from one surface reaches the other with no separate plumbing.
+    Independent of ``use_web_approval_ui``/``mcp_enabled``: a deployment can
+    run the web settings page with the *native* approval dialog, or the
+    reverse (§16.6).
     """
     web_config = config.get("web", {}) or {}
     mcp_config = web_config.get("mcp", {}) or {}
+    settings_config = web_config.get("settings", {}) or {}
+    notifications_config = web_config.get("notifications", {}) or {}
     use_web_approval_ui = web_config.get("approval_ui", "native") == "web"
     mcp_enabled = bool(mcp_config.get("enabled", False))
-    if not use_web_approval_ui and not mcp_enabled:
+    use_web_settings = bool(settings_config.get("enabled", False)) and controller is not None
+    if not use_web_approval_ui and not mcp_enabled and not use_web_settings:
         return None
 
     from .approvals import PendingApprovalRegistry
@@ -298,8 +314,25 @@ def _maybe_start_web_server(
             registry=registry,
         )
 
-    server = WebServer(web_ui, port=int(web_config.get("port", DEFAULT_PORT)), mcp_dispatcher=mcp_dispatcher)
+    server = WebServer(
+        web_ui,
+        port=int(web_config.get("port", DEFAULT_PORT)),
+        mcp_dispatcher=mcp_dispatcher,
+        controller=controller if use_web_settings else None,
+        allow_quit=bool(settings_config.get("allow_quit", True)),
+        notifications_enabled=bool(notifications_config.get("enabled", True)),
+    )
     server.start()
+    if controller is not None:
+        # P4c (docs/https-connector-refactor-plan.md §16.9): the Connect
+        # Claude card, on both the native settings window and /settings --
+        # both render the same settings_window_html.build_html(), so this
+        # runs regardless of use_web_settings, not only when the web
+        # surface itself is on. None/None (server.mcp_url/mcp_token) when
+        # web.mcp.enabled is off -- the card renders its own "not
+        # available" state for that, same as controller itself already
+        # does for every other disabled surface.
+        controller.set_mcp_connection_info(url=server.mcp_url, token=server.mcp_token)
     # The pending-result URL gate.py hands back to Claude (§5.2 point 4) is
     # only meaningful once the server is actually listening -- set here,
     # not at registry construction, and left unset (None) if this daemon
@@ -309,6 +342,11 @@ def _maybe_start_web_server(
     if use_web_approval_ui:
         logger.info(
             "Web approval UI active -- approvals open at %s/approvals?token=%s",
+            server.base_url, server.token,
+        )
+    if use_web_settings:
+        logger.info(
+            "Web settings active -- open at %s/settings?token=%s",
             server.base_url, server.token,
         )
     if server.mcp_url:
@@ -859,10 +897,27 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
     unattended_enabled = bool((org_config.get("unattended_sessions", {}) or {}).get("enabled", False))
     ipc_server = IPCServer(connectors, unattended_sessions_enabled=unattended_enabled)
 
+    # Built once, here, and handed to *both* the web settings surface
+    # (_maybe_start_web_server, below) and the native menu bar/settings
+    # window (run_menu_bar, further down) -- one SettingsController
+    # instance either way (§16.8's risk #2: "two on_change consumers"),
+    # rather than each surface building its own and drifting out of sync
+    # with the other's in-memory state (_busy_connectors, _telegram_auth,
+    # the update-check cache). PrivacyFenceMenuBar.__init__ builds its own
+    # only when none is passed in (native-only installs, unchanged).
+    from .settings_controller import SettingsController
+
+    connector_names = [c.name for c in connectors]
+    settings_controller = SettingsController(
+        config_path=config_path, connectors=connector_names, ipc_server=ipc_server, connector_objs=connectors,
+    )
+
     # Built after ipc_server so the MCP dispatcher (if web.mcp.enabled) can
     # poll ipc_server.connectors for the live connector set -- see
     # _maybe_start_web_server's own docstring.
-    _maybe_start_web_server(config, ipc_server, unattended_sessions_enabled=unattended_enabled)
+    _maybe_start_web_server(
+        config, ipc_server, unattended_sessions_enabled=unattended_enabled, controller=settings_controller,
+    )
 
     ipc_thread = IPCServerThread(ipc_server)
     ipc_thread.start()
@@ -875,13 +930,13 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
         logger.warning("IPC event loop not ready in time; skipping background cache warm")
 
     from .menu_bar import run_menu_bar
-    connector_names = [c.name for c in connectors]
     try:
         run_menu_bar(
             config_path=config_path,
             connectors=connector_names,
             ipc_server=ipc_server,
             connector_objs=connectors,
+            controller=settings_controller,
         )
     except KeyboardInterrupt:
         logger.info("Interrupted; shutting down")

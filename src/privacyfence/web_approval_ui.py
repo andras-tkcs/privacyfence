@@ -17,9 +17,9 @@ several can now be pending, decided in any order, at once.
 """
 from __future__ import annotations
 
-from . import dialog_window_html
+from . import dialog_window_html, web_prompt
 from .approval_ui import ApprovalUI
-from .approvals import CARD_RESULTS, PendingApproval, PendingApprovalRegistry
+from .approvals import PendingApproval, PendingApprovalRegistry
 from .card_builder import build_card_html
 
 
@@ -168,21 +168,13 @@ class WebApprovalUI(ApprovalUI):
         # A caller with no pre-registered approval (any direct call that
         # bypasses gate.py's own deferred-protocol registration, including
         # every pre-P3 test in this repo) gets a confirm-shaped registration
-        # instead: it has no dedupe_key to coalesce or ledger on, which is
-        # the correct degraded behavior here -- there's no gated-call
-        # context to attach one to.
-        card = approval if approval is not None else self._registry.register_confirm()
-        card.kind = "card"
-        self._registry.set_html(card.id, html)
-        card.event.wait()
-        result = card.result if card.result in CARD_RESULTS else "deny"
-        return result, card.chosen_index_result
+        # instead (see web_prompt.block_on_card): it has no dedupe_key to
+        # coalesce or ledger on, which is the correct degraded behavior
+        # here -- there's no gated-call context to attach one to.
+        return web_prompt.block_on_card(self._registry, html, approval)
 
     def _run_confirm(self, html: str) -> bool:
-        card = self._registry.register_confirm()
-        self._registry.set_html(card.id, html)
-        card.event.wait()
-        return card.result == "confirm"
+        return web_prompt.block_on_confirm(self._registry, html)
 
 
 _INSTANCE: WebApprovalUI | None = None
