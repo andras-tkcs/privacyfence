@@ -122,6 +122,14 @@ class TestNotifications:
         html = web_shell.wrap("", title="t", active="approvals", notifications_detail="detailed")
         assert 'NOTIFICATIONS_DETAIL = "detailed"' in html
 
+    def test_notifications_detail_exposed_globally_like_enabled(self):
+        # settings_window_html.py's renderNotificationsCard reads both off
+        # `window` -- see that module's own comment on why (shared JS with
+        # the native settings window, which never loads this script).
+        html = web_shell.wrap("", title="t", active="approvals")
+        assert "window.__pfNotificationsEnabled = NOTIFICATIONS_ENABLED;" in html
+        assert "window.__pfNotificationsDetail = NOTIFICATIONS_DETAIL;" in html
+
     def test_rate_limited_to_one_notification_per_five_seconds(self):
         html = web_shell.wrap("", title="t", active="approvals")
         assert "5000" in html

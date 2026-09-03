@@ -309,3 +309,55 @@ class TestTelegramModalTemplate:
         html = build_html(state)
         embedded = _extract_initial_state(html)
         assert embedded["telegram_auth"] == {"step": "code", "error": "bad code"}
+
+
+class TestNotificationsCard:
+    """renderNotificationsCard's own docstring-adjacent comment: web.
+    notifications.detail (settings.yaml.example, docs/approval-list-ui-ux.md
+    §4.3) is config-file-only, same as web.notifications.enabled, so the
+    card surfaces the effective level as read-only text off
+    window.__pfNotificationsDetail rather than an editable control --
+    string-level checks only, same reasoning as this module's own
+    docstring."""
+
+    def test_card_reads_the_shared_detail_flag(self):
+        html = build_html(_make_state())
+        assert "window.__pfNotificationsDetail" in html
+
+    def test_detail_hint_shown_alongside_granted_and_enable_states(self):
+        html = build_html(_make_state())
+        start = html.index("function renderNotificationsCard")
+        end = html.index("function renderGeneral")
+        fn = html[start:end]
+        assert "renderNotificationsDetailHint()" in fn
+        # Wired into both the already-granted branch and the not-yet-asked
+        # (Enable button) branch -- not the unsupported/disabled/denied
+        # ones, where a detail level is moot.
+        granted_line = fn[fn.index("permission === 'granted'"):fn.index("permission === 'denied'")]
+        assert "renderNotificationsDetailHint()" in granted_line
+        enable_line = fn[fn.index("data-notif-enable"):]
+        assert "renderNotificationsDetailHint()" in enable_line
+
+    def test_detail_hint_omitted_when_flag_is_missing(self):
+        # The native settings window never loads web_shell.py's script, so
+        # window.__pfNotificationsDetail is undefined there -- the hint
+        # function must treat that as "no such config surface" rather than
+        # rendering "undefined" or throwing.
+        html = build_html(_make_state())
+        start = html.index("function renderNotificationsDetailHint")
+        end = html.index("function renderNotificationsCard")
+        fn = html[start:end]
+        assert "typeof detail !== 'string'" in fn
+        assert "return '';" in fn
+
+    def test_each_detail_level_has_developer_authored_copy(self):
+        html = build_html(_make_state())
+        start = html.index("NOTIFICATIONS_DETAIL_LABELS")
+        end = html.index("function renderNotificationsDetailHint")
+        labels = html[start:end]
+        for level in ("minimal", "standard", "detailed"):
+            assert level + ":" in labels
+
+    def test_hint_names_the_config_key(self):
+        html = build_html(_make_state())
+        assert "web.notifications.detail" in html
