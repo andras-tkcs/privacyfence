@@ -39,6 +39,7 @@ def _make_state(**overrides):
             "update_check_enabled": True, "update_check_beta": False,
             "org_installed": True, "org_installed_date": "Jun 14, 2026",
             "org_button_label": "Install/Update Organization Config…", "version": "3.1.1",
+            "notifications_enabled": True, "notifications_detail": "standard",
         },
         "connectors": [
             {"key": "gmail", "label": "Gmail", "icon": "gmail", "icon_data_uri": "data:image/png;base64,AAA",
@@ -312,52 +313,75 @@ class TestTelegramModalTemplate:
 
 
 class TestNotificationsCard:
-    """renderNotificationsCard's own docstring-adjacent comment: web.
-    notifications.detail (settings.yaml.example, docs/approval-list-ui-ux.md
-    §4.3) is config-file-only, same as web.notifications.enabled, so the
-    card surfaces the effective level as read-only text off
-    window.__pfNotificationsDetail rather than an editable control --
+    """renderNotificationsCard's own comment: web.notifications.detail
+    (settings.yaml.example, docs/approval-list-ui-ux.md §4.3) is a real,
+    mutable setting -- set_notifications_detail persists it and the card's
+    segmented control (segGroupHtml, the same primitive the Audit page's
+    Log level row and the Privacy Filter's policy rows already use) is
+    sourced from state.general.notifications_detail, not a static hint --
     string-level checks only, same reasoning as this module's own
     docstring."""
 
-    def test_card_reads_the_shared_detail_flag(self):
+    def test_control_wired_to_set_notifications_detail(self):
         html = build_html(_make_state())
-        assert "window.__pfNotificationsDetail" in html
+        start = html.index("function renderNotificationsDetailControl")
+        end = html.index("function renderNotificationsCard")
+        fn = html[start:end]
+        assert "segGroupHtml(" in fn
+        assert "'set_notifications_detail'" in fn
+        for level in ("minimal", "standard", "detailed"):
+            assert "'" + level + "'" in fn
 
-    def test_detail_hint_shown_alongside_granted_and_enable_states(self):
+    def test_control_shown_alongside_granted_and_enable_states(self):
         html = build_html(_make_state())
         start = html.index("function renderNotificationsCard")
         end = html.index("function renderGeneral")
         fn = html[start:end]
-        assert "renderNotificationsDetailHint()" in fn
-        # Wired into both the already-granted branch and the not-yet-asked
-        # (Enable button) branch -- not the unsupported/disabled/denied
-        # ones, where a detail level is moot.
-        granted_line = fn[fn.index("permission === 'granted'"):fn.index("permission === 'denied'")]
-        assert "renderNotificationsDetailHint()" in granted_line
-        enable_line = fn[fn.index("data-notif-enable"):]
-        assert "renderNotificationsDetailHint()" in enable_line
+        assert "renderNotificationsDetailControl(state)" in fn
 
-    def test_detail_hint_omitted_when_flag_is_missing(self):
-        # The native settings window never loads web_shell.py's script, so
-        # window.__pfNotificationsDetail is undefined there -- the hint
-        # function must treat that as "no such config surface" rather than
-        # rendering "undefined" or throwing.
+    def test_control_omitted_when_disabled_in_configuration(self):
+        # Mirrors "Turned off in configuration" -- picking a detail level
+        # is moot when web.notifications.enabled is false, so the guard
+        # around renderNotificationsDetailControl's own call site must
+        # check __pfNotificationsEnabled, not just Notification support.
         html = build_html(_make_state())
-        start = html.index("function renderNotificationsDetailHint")
+        start = html.index("function renderNotificationsCard")
+        end = html.index("function renderGeneral")
+        fn = html[start:end]
+        assert "__pfNotificationsEnabled !== false" in fn
+
+    def test_active_option_is_driven_by_state_not_a_window_flag(self):
+        html = build_html(_make_state())
+        start = html.index("function renderNotificationsDetailControl")
         end = html.index("function renderNotificationsCard")
         fn = html[start:end]
-        assert "typeof detail !== 'string'" in fn
-        assert "return '';" in fn
+        assert "state.general.notifications_detail" in fn
+        assert "window.__pfNotificationsDetail" not in fn
 
     def test_each_detail_level_has_developer_authored_copy(self):
         html = build_html(_make_state())
-        start = html.index("NOTIFICATIONS_DETAIL_LABELS")
-        end = html.index("function renderNotificationsDetailHint")
-        labels = html[start:end]
+        start = html.index("NOTIFICATIONS_DETAIL_DESCRIPTIONS")
+        end = html.index("function renderNotificationsDetailControl")
+        descriptions = html[start:end]
         for level in ("minimal", "standard", "detailed"):
-            assert level + ":" in labels
+            assert level + ":" in descriptions
 
-    def test_hint_names_the_config_key(self):
-        html = build_html(_make_state())
-        assert "web.notifications.detail" in html
+    def test_state_embeds_the_current_detail_level_for_client_render_to_read(self):
+        # build_html() never executes render() (this module's own docstring:
+        # no JS engine here) -- so what this level can assert is that
+        # state.general.notifications_detail, the field
+        # renderNotificationsDetailControl reads (see the test above),
+        # actually reaches the page byte-for-byte via __pfInitialState.
+        # segGroupHtml's active-option/aria-checked wiring itself was
+        # exercised under Node during development, same as the telegram
+        # modal's own step transitions (see this class's own docstring).
+        state = _make_state(general={
+            "pii_enabled": True, "pii_ip": True, "pii_financial": False,
+            "update_check_enabled": True, "update_check_beta": False,
+            "org_installed": True, "org_installed_date": "Jun 14, 2026",
+            "org_button_label": "x", "version": "3.1.1",
+            "notifications_enabled": True, "notifications_detail": "detailed",
+        })
+        html = build_html(state)
+        embedded = _extract_initial_state(html)
+        assert embedded["general"]["notifications_detail"] == "detailed"

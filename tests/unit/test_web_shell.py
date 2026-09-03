@@ -129,13 +129,18 @@ class TestNotifications:
         html = web_shell.wrap("", title="t", active="approvals", notifications_detail="detailed")
         assert 'NOTIFICATIONS_DETAIL = "detailed"' in html
 
-    def test_notifications_detail_exposed_globally_like_enabled(self):
-        # settings_window_html.py's renderNotificationsCard reads both off
+    def test_notifications_enabled_exposed_globally_for_the_settings_card(self):
+        # settings_window_html.py's renderNotificationsCard reads this off
         # `window` -- see that module's own comment on why (shared JS with
         # the native settings window, which never loads this script).
+        # NOTIFICATIONS_DETAIL has no equivalent global: the card's own
+        # detail-level control is sourced from state.general.
+        # notifications_detail (a real, mutable setting -- see
+        # SettingsController.set_notifications_detail) instead of this
+        # per-page-load constant, which stays local to notificationBody().
         html = web_shell.wrap("", title="t", active="approvals")
         assert "window.__pfNotificationsEnabled = NOTIFICATIONS_ENABLED;" in html
-        assert "window.__pfNotificationsDetail = NOTIFICATIONS_DETAIL;" in html
+        assert "window.__pfNotificationsDetail" not in html
 
     def test_rate_limited_to_one_notification_per_five_seconds(self):
         html = web_shell.wrap("", title="t", active="approvals")

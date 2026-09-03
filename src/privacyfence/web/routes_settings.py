@@ -79,7 +79,7 @@ _ALLOWED_ACTIONS: frozenset[str] = frozenset({
     "update_rule_row", "add_rule_row", "remove_rule_row",
     "toggle_grant_capability", "add_grant_row", "update_grant_row", "remove_grant_row",
     "set_default_policy", "set_category_policy", "toggle_calendar_free_busy",
-    "set_log_level",
+    "set_log_level", "set_notifications_detail",
 })
 
 
@@ -238,9 +238,17 @@ def build_routes(
         state = _snapshot(controller)
         body = settings_window_html.build_html(state)
         body += _settings_bridge_shim(csrf=token, repo_url=REPO_URL)
+        # Read off this request's own fresh snapshot, not the notifications_
+        # enabled/detail closure args above -- those are only the daemon-
+        # startup defaults (server.py's own initial config read), and the
+        # Approval Notifications card's segmented control
+        # (set_notifications_detail) needs an edit to reach the very next
+        # render of this same page without restarting the daemon.
+        general = state.get("general", {})
         html = web_shell.wrap(
             body, title="PrivacyFence — Settings", active="settings",
-            notifications_enabled=notifications_enabled, notifications_detail=notifications_detail,
+            notifications_enabled=general.get("notifications_enabled", notifications_enabled),
+            notifications_detail=general.get("notifications_detail", notifications_detail),
         )
         response = HTMLResponse(html, headers={"Cache-Control": "no-store"})
         _set_session_cookie_on(response, token)
