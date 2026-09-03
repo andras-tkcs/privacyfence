@@ -15,6 +15,9 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import paths
+from .principal import LOCAL_PRINCIPAL_ID, PrincipalRegistry, current_principal
+
 logger = logging.getLogger(__name__)
 
 # Decisions where the AI actually received the data or the write went
@@ -371,22 +374,32 @@ def _previous_week(week: str) -> str:
     return f"{iso[0]}-W{iso[1]:02d}"
 
 
-_INSTANCE: AuditLogger | None = None
-_LOCK = threading.Lock()
+def _fallback_log_dir() -> str:
+    """Used only if get_audit_logger() is ever called before daemon_main.py's
+    run_app() has called init_audit_logger() -- which shouldn't happen in
+    practice, but this is the same last-resort fallback the original bare
+    ``_INSTANCE`` singleton had, just principal-aware now (P6, docs/
+    https-connector-refactor-plan.md §9.2): the local principal keeps the
+    exact original hardcoded path, so an install that somehow only ever hit
+    this fallback stays byte-identical; any other principal falls back to
+    its own storage root instead of writing into the local principal's
+    directory."""
+    principal = current_principal()
+    if principal.id == LOCAL_PRINCIPAL_ID:
+        return os.path.join(os.path.expanduser("~"), ".privacyfence", "audit")
+    return str(paths.user_dir(principal) / "logs" / "audit")
+
+
+# PrincipalRegistry.get() already serializes construction per principal
+# (see that class's own docstring on why it needs to be thread-safe), so
+# the double-checked-locking dance the original bare singleton needed here
+# is now the registry's job, not this module's.
+_REGISTRY: PrincipalRegistry[AuditLogger] = PrincipalRegistry(lambda: AuditLogger(_fallback_log_dir()))
 
 
 def get_audit_logger() -> AuditLogger:
-    global _INSTANCE
-    if _INSTANCE is None:
-        with _LOCK:
-            if _INSTANCE is None:
-                fallback = os.path.join(os.path.expanduser("~"), ".privacyfence", "audit")
-                _INSTANCE = AuditLogger(fallback)
-    return _INSTANCE
+    return _REGISTRY.get()
 
 
 def init_audit_logger(log_dir: str) -> AuditLogger:
-    global _INSTANCE
-    with _LOCK:
-        _INSTANCE = AuditLogger(log_dir)
-    return _INSTANCE
+    return _REGISTRY.set(AuditLogger(log_dir))

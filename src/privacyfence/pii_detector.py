@@ -51,6 +51,8 @@ import re
 from dataclasses import dataclass
 from typing import Callable
 
+from .principal import PrincipalRegistry
+
 logger = logging.getLogger(__name__)
 
 
@@ -230,8 +232,9 @@ def _iter_raw_matches(text: str):
     below decide what each one carries (position-only vs. the matched text
     itself) rather than this generator committing to a shape either of them
     would have to unpack."""
+    disabled_categories = _REGISTRY.get().disabled_categories
     for p in _PATTERNS:
-        if p.category in _disabled_categories:
+        if p.category in disabled_categories:
             continue
         for m in p.pattern.finditer(text):
             if p.validator is not None and not p.validator(m.group(0)):
@@ -256,20 +259,6 @@ def detect_categories(text: str) -> list[str]:
 # Enabled/disabled toggle (menu-bar configurable, hot-reloadable)
 # ---------------------------------------------------------------------------- #
 
-_enabled = True
-_changed_listener: Callable[[], None] | None = None
-
-# Opt-in, off by default: whether gate.py's audit log should also capture
-# the matched text (redacted for value-bearing categories -- see
-# describe_match_for_audit() below) behind pii_categories, for a deliberate
-# PII-refinement trial period. See init_pii_detection()'s own docstring and
-# audit_log.py's pii_match_details field for the full contract. Config-only
-# (pii_detection.audit_match_details in settings.yaml) -- deliberately not
-# exposed as a menu-bar/settings-window toggle the way the enabled switch
-# and the two optional categories are, since it's meant to be turned on for
-# a bounded trial window, not left as an everyday user-facing option.
-_audit_match_details_enabled = False
-
 # Individually-toggleable categories, keyed by the settings.yaml field name.
 # Unlike the other categories (national IDs, TAJ/tax numbers, ...), IP
 # addresses and currency figures show up constantly in ordinary business
@@ -281,15 +270,42 @@ _OPTIONAL_CATEGORIES: dict[str, str] = {
     "detect_ip_addresses": "IP address",
     "detect_financial_figures": "Financial figures (currency amounts)",
 }
-_disabled_categories: set[str] = set()
+
+
+class _PiiState:
+    """Everything below used to be four bare module globals (_enabled,
+    _changed_listener, _audit_match_details_enabled, _disabled_categories)
+    -- one PII-detection posture per *process*. P6 (docs/
+    https-connector-refactor-plan.md §9.2) makes it one per *principal*
+    instead: each user's own PII settings, isolated the same way their
+    auto-accept rules already are."""
+
+    def __init__(self) -> None:
+        self.enabled = True
+        self.changed_listener: Callable[[], None] | None = None
+        # Opt-in, off by default: whether gate.py's audit log should also
+        # capture the matched text (redacted for value-bearing categories --
+        # see describe_match_for_audit() below) behind pii_categories, for a
+        # deliberate PII-refinement trial period. See init_pii_detection()'s
+        # own docstring and audit_log.py's pii_match_details field for the
+        # full contract. Config-only (pii_detection.audit_match_details in
+        # settings.yaml) -- deliberately not exposed as a menu-bar/
+        # settings-window toggle the way the enabled switch and the two
+        # optional categories are, since it's meant to be turned on for a
+        # bounded trial window, not left as an everyday user-facing option.
+        self.audit_match_details_enabled = False
+        self.disabled_categories: set[str] = set()
+
+
+_REGISTRY: PrincipalRegistry[_PiiState] = PrincipalRegistry(_PiiState)
 
 
 def is_pii_detection_enabled() -> bool:
-    return _enabled
+    return _REGISTRY.get().enabled
 
 
 def is_pii_audit_match_details_enabled() -> bool:
-    return _audit_match_details_enabled
+    return _REGISTRY.get().audit_match_details_enabled
 
 
 def init_pii_detection(
@@ -299,54 +315,54 @@ def init_pii_detection(
     """Set the initial enabled state at daemon startup.
 
     ``audit_match_details`` is the PII-refinement trial switch (see
-    ``_audit_match_details_enabled``'s own comment above) -- off by default,
-    read from ``pii_detection.audit_match_details`` in settings.yaml. Unlike
-    ``enabled``/the two optional categories, there's no hot-toggle setter for
-    it: it's meant to be set once for a bounded trial window via a daemon
-    restart, not flipped live from the menu bar.
+    ``_PiiState.audit_match_details_enabled``'s own comment) -- off by
+    default, read from ``pii_detection.audit_match_details`` in
+    settings.yaml. Unlike ``enabled``/the two optional categories, there's no
+    hot-toggle setter for it: it's meant to be set once for a bounded trial
+    window via a daemon restart, not flipped live from the menu bar.
     """
-    global _enabled, _audit_match_details_enabled
-    _enabled = enabled
-    _audit_match_details_enabled = audit_match_details
-    _disabled_categories.clear()
+    state = _REGISTRY.get()
+    state.enabled = enabled
+    state.audit_match_details_enabled = audit_match_details
+    state.disabled_categories.clear()
     if not detect_ip_addresses:
-        _disabled_categories.add(_OPTIONAL_CATEGORIES["detect_ip_addresses"])
+        state.disabled_categories.add(_OPTIONAL_CATEGORIES["detect_ip_addresses"])
     if not detect_financial_figures:
-        _disabled_categories.add(_OPTIONAL_CATEGORIES["detect_financial_figures"])
+        state.disabled_categories.add(_OPTIONAL_CATEGORIES["detect_financial_figures"])
 
 
 def set_pii_detection_enabled(enabled: bool) -> None:
     """Hot-toggle from the menu bar; fires the changed listener like
     auto_accept.reload_rules() does for its own menu rebuild."""
-    global _enabled
-    _enabled = enabled
+    state = _REGISTRY.get()
+    state.enabled = enabled
     logger.info("PII detection gate %s", "enabled" if enabled else "disabled")
-    if _changed_listener is not None:
-        _changed_listener()
+    if state.changed_listener is not None:
+        state.changed_listener()
 
 
 def set_pii_category_enabled(category_key: str, enabled: bool) -> None:
     """Hot-toggle one optional category (``category_key`` is a key of
     ``_OPTIONAL_CATEGORIES``, e.g. "detect_ip_addresses") from the menu bar."""
     category = _OPTIONAL_CATEGORIES[category_key]
+    state = _REGISTRY.get()
     if enabled:
-        _disabled_categories.discard(category)
+        state.disabled_categories.discard(category)
     else:
-        _disabled_categories.add(category)
+        state.disabled_categories.add(category)
     logger.info("PII category %r %s", category, "enabled" if enabled else "disabled")
-    if _changed_listener is not None:
-        _changed_listener()
+    if state.changed_listener is not None:
+        state.changed_listener()
 
 
 def set_pii_detection_changed_listener(callback: Callable[[], None] | None) -> None:
-    global _changed_listener
-    _changed_listener = callback
+    _REGISTRY.get().changed_listener = callback
 
 
 def detect_pii_categories(text: str) -> list[str]:
     """The one entry point gate.py calls: empty list when disabled or no
     match, otherwise the categories found in ``text``."""
-    if not _enabled:
+    if not _REGISTRY.get().enabled:
         return []
     return detect_categories(text)
 
@@ -415,7 +431,7 @@ def scan_pii_for_audit(text: str) -> list[PIIAuditMatch]:
     themselves -- unlike detect_pii_categories(), callers of *this* function
     should also gate it behind is_pii_audit_match_details_enabled() first,
     since scanning here is only ever worth doing when that capture is on."""
-    if not _enabled or not text:
+    if not _REGISTRY.get().enabled or not text:
         return []
     return [PIIAuditMatch(category=c, text=m.group(0)) for c, m in _iter_raw_matches(text)]
 

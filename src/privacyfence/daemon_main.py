@@ -36,7 +36,15 @@ Configuration is split into two files (see paths.py):
     admin-scoped Google Cloud project — see room_directory_client.py and
     docs/google-cloud-setup.md. It's plain data, not a credential, and is
     handed straight to CalendarConnector; the Calendar OAuth client itself
-    never carries Workspace-admin directory scope.
+    never carries Workspace-admin directory scope. ``mode``/``server``/
+    ``idp`` (P7, docs/https-connector-refactor-plan.md §4/§9.4/§10.2)
+    switch this daemon into org mode — a real OAuth 2.1 authorization
+    server on ``/mcp`` instead of the local shared-secret token, human
+    identity resolved via the org's own OIDC IdP. Absent (every install
+    before this phase, and every one that hasn't opted in) means local
+    mode, byte-identical to before. See org_mode.py and org_identity.py
+    for the schema, or build a bundle with ``scripts/build_org_bundle.py
+    --mode org ...``.
   - ``config/settings.yaml``   — per-user settings: privacy policy,
     connectors{enabled}, auto_accept_rules,
     pii_detection{enabled, detect_ip_addresses, detect_financial_figures,
@@ -60,7 +68,9 @@ from typing import Any
 
 import yaml
 
-from .paths import data_dir, org_dir
+from . import org_mode
+from .paths import data_dir, org_dir, user_dir
+from .principal import LOCAL_PRINCIPAL_ID, current_principal
 from .app_credentials import telegram_app_credentials
 from .approval_ui import init_approval_ui
 from .audit_log import init_audit_logger
@@ -161,9 +171,20 @@ def _release_instance_lock() -> None:
 # ---------------------------------------------------------------------------- #
 
 def _resolve_path(path: str) -> str:
+    """Relative to ``PROJECT_ROOT`` for the local principal -- exactly as
+    before this phase, including for the tests that monkeypatch
+    ``PROJECT_ROOT`` directly to sandbox where a test run reads/writes --
+    or to that *other* principal's own storage root (P6, docs/
+    https-connector-refactor-plan.md §9.2) when this runs inside a
+    ``principal_scope()`` block for someone else (only
+    connector_registry.py's ``ConnectorRegistry.get()`` does that today).
+    """
     if os.path.isabs(path):
         return path
-    return os.path.join(PROJECT_ROOT, path)
+    principal = current_principal()
+    if principal.id == LOCAL_PRINCIPAL_ID:
+        return os.path.join(PROJECT_ROOT, path)
+    return str(user_dir(principal) / path)
 
 
 def _bootstrap_config(resolved: str) -> None:
@@ -253,6 +274,7 @@ def _maybe_start_web_server(
     *,
     unattended_sessions_enabled: bool,
     controller: Any = None,
+    org_config: dict[str, Any] | None = None,
 ) -> Any:
     """Returns the started WebServer, or None when neither web.approval_ui
     nor web.mcp.enabled nor web.settings.enabled opts in -- the rollback
@@ -275,7 +297,14 @@ def _maybe_start_web_server(
     polls ``connector_host.connectors`` live rather than taking its own
     snapshot, so a connector rebuild pushed by SettingsController.
     refresh_connectors (-> ConnectorHost.set_connectors) reaches the
-    ``/mcp`` endpoint too, with nothing here needing a second push.
+    ``/mcp`` endpoint too, with nothing here needing a second push. Note
+    that this connector set is the *local* principal's own (org mode's
+    real per-user connectors are P8's job, per docs/https-connector-
+    refactor-plan.md's own phase dependency chart -- P7 delivers identity,
+    P8 the per-user service authorization that makes a second principal's
+    connectors buildable at all); every principal authenticated via org
+    mode's OAuth 2.1 AS dispatches against this same shared connector set
+    until then.
 
     ``controller``, when given, is the *same* SettingsController instance
     run_app() also hands to the native menu bar/settings window -- one
@@ -284,13 +313,31 @@ def _maybe_start_web_server(
     Independent of ``use_web_approval_ui``/``mcp_enabled``: a deployment can
     run the web settings page with the *native* approval dialog, or the
     reverse (§16.6).
+
+    ``org_config`` (P7, §4) is where ``"mode"`` lives -- ``org`` switches
+    this into web/server.py's own org-mode wiring (a real OAuth 2.1
+    authorization server on ``/mcp``, no local-token approval/settings
+    surface at all -- see that module's own docstring for why). Defaults
+    to ``{}`` (local mode, byte-identical to before this phase) when
+    omitted, which no real caller does -- run_app() always passes the
+    result of ``load_org_config()``.
     """
     web_config = config.get("web", {}) or {}
     mcp_config = web_config.get("mcp", {}) or {}
     settings_config = web_config.get("settings", {}) or {}
     notifications_config = web_config.get("notifications", {}) or {}
-    use_web_approval_ui = web_config.get("approval_ui", "native") == "web"
+    org_config = org_config or {}
+    mode = org_mode.resolve_mode(org_config)
     mcp_enabled = bool(mcp_config.get("enabled", False))
+
+    if mode == "org":
+        if not mcp_enabled:
+            return None
+        return _start_org_web_server(
+            web_config, org_config, connector_host, unattended_sessions_enabled=unattended_sessions_enabled,
+        )
+
+    use_web_approval_ui = web_config.get("approval_ui", "native") == "web"
     use_web_settings = bool(settings_config.get("enabled", False)) and controller is not None
     if not use_web_approval_ui and not mcp_enabled and not use_web_settings:
         return None
@@ -370,6 +417,73 @@ def _maybe_start_web_server(
     return server
 
 
+def _start_org_web_server(
+    web_config: dict[str, Any], org_config: dict[str, Any], connector_host: ConnectorHost,
+    *, unattended_sessions_enabled: bool,
+) -> Any:
+    """org mode's own boot path (P7, docs/https-connector-refactor-plan.md
+    §9.4, §10.2) -- a real OAuth 2.1 authorization server on ``/mcp``
+    instead of the local shared-secret ``StaticTokenVerifier``, no local-
+    token approval/settings surface mounted at all (see web/server.py's
+    own module docstring for why). Raises ``ValueError`` (surfaced as a
+    startup failure, the same posture a missing/invalid settings.yaml
+    already has) if org_config.json is missing the ``idp``/``server``
+    sections org mode requires -- there is no silent partial-org-mode
+    fallback."""
+    from .approvals import PendingApprovalRegistry
+    from .org_identity import IdpConfig
+    from .web.mcp_dispatch import McpDispatcher
+    from .web.oauth_provider import OrgOAuthProvider
+    from .web.org_session import OrgSessionStore
+    from .web.server import OrgAuth, WebServer
+    from .web_approval_ui import init_web_approval_ui
+
+    server_config = org_mode.ServerConfig.from_org_config(org_config)
+    idp = IdpConfig.from_org_config(org_config)
+    if idp is None:
+        raise ValueError(
+            "org mode (org_config.json \"mode\": \"org\") requires an \"idp\" section "
+            "(issuer, client_id, client_secret)"
+        )
+
+    approvals_config = web_config.get("approvals", {}) or {}
+    registry = PendingApprovalRegistry(
+        hold_window=float(approvals_config.get("hold_window_seconds", 30.0)),
+        pending_ttl=float(approvals_config.get("pending_ttl_seconds", 15 * 60.0)),
+        ledger_ttl=float(approvals_config.get("ledger_ttl_seconds", 5 * 60.0)),
+        max_pending=int(approvals_config.get("max_pending", 50)),
+    )
+    web_ui = init_web_approval_ui(registry=registry)
+    # Org mode has no native popup to choose instead -- there is no GUI on
+    # a server -- so WebApprovalUI is unconditionally the ApprovalUI here,
+    # not gated on web.approval_ui the way local mode's own choice is.
+    init_approval_ui(web_ui)
+
+    provider = OrgOAuthProvider(idp, idp_callback_url=f"{server_config.issuer_url.rstrip('/')}/oauth/idp/callback")
+    sessions = OrgSessionStore()
+    mcp_dispatcher = McpDispatcher(
+        lambda: connector_host.connectors, unattended_sessions_enabled=unattended_sessions_enabled,
+        registry=registry,
+    )
+
+    server = WebServer(
+        web_ui,
+        host=server_config.bind_host, port=server_config.port,
+        mcp_dispatcher=mcp_dispatcher,
+        org=OrgAuth(provider=provider, sessions=sessions, idp=idp, issuer_url=server_config.issuer_url),
+        ssl_certfile=server_config.cert_file or None,
+        ssl_keyfile=server_config.key_file or None,
+        trusted_proxies=server_config.trusted_proxies,
+    )
+    server.start()
+    registry.set_base_url(server.base_url)
+    logger.info(
+        "Org mode active -- MCP-over-HTTP at %s (OAuth 2.1, DCR at %s/register), IdP %s",
+        server.mcp_url, server.base_url, idp.issuer,
+    )
+    return server
+
+
 def _google_client_config(org_config: dict[str, Any]) -> dict[str, Any]:
     """Wrap the bundle's flat Google app fields back into the "installed" shape
     that ``InstalledAppFlow.from_client_config`` expects."""
@@ -384,6 +498,16 @@ def _google_client_config(org_config: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------- #
 
 def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list:
+    """Builds every enabled, currently-authenticated connector for the
+    *current principal* (P6, docs/https-connector-refactor-plan.md §9.2):
+    every credential/cache path below resolves through ``_resolve_path()``/
+    ``user_dir()``, which is the local principal's own storage root (i.e.
+    unchanged from before this phase) unless this is called from inside a
+    ``principal_scope()`` block for someone else -- see
+    connector_registry.py's ``ConnectorRegistry``, which is what actually
+    does that once a second principal's connectors are buildable at all
+    (P8). ``run_app()`` below still calls this directly, once, for the local
+    principal only -- that's what keeps local mode byte-identical."""
     connectors: list[Any] = []
     connectors_cfg: dict[str, dict] = config.get("connectors", {}) or {}
 
@@ -502,8 +626,8 @@ def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list
             token = load_slack_token(_resolve_path(TOKEN_FILES["slack"]))
             client = SlackClient(
                 user_token=token.get("access_token", ""),
-                user_cache_file=str(data_dir() / "slack_user_cache.json"),
-                channel_cache_file=str(data_dir() / "slack_channel_cache.json"),
+                user_cache_file=str(user_dir() / "slack_user_cache.json"),
+                channel_cache_file=str(user_dir() / "slack_channel_cache.json"),
             )
             workspace = client.check_connection()
             # Directory-cache warming (if stale) happens after the whole
@@ -597,7 +721,7 @@ def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list
                 api_id=api_id,
                 api_hash=api_hash,
                 session_file=session_file,
-                chat_cache_file=str(data_dir() / "telegram_chat_cache.json"),
+                chat_cache_file=str(user_dir() / "telegram_chat_cache.json"),
             )
             # Directory-cache warming happens the same way as Slack's now --
             # see _warm_connector_caches() in run_app() -- just scheduled on
@@ -906,6 +1030,7 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
     # _maybe_start_web_server's own docstring.
     server = _maybe_start_web_server(
         config, connector_host, unattended_sessions_enabled=unattended_enabled, controller=settings_controller,
+        org_config=org_config,
     )
 
     # Every connector call now runs on the embedded web server's own ASGI

@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from privacyfence import paths
+from privacyfence.principal import Principal, principal_scope
 
 
 class TestIsBundled:
@@ -67,6 +68,71 @@ class TestOrgDir:
 
         assert result == tmp_path / "org"
         assert result.is_dir()
+
+
+class TestSafePrincipalId:
+    """P7, org_identity.py's principal_from_claims: an OIDC `sub` claim is
+    opaque per spec and may not be filesystem-safe."""
+
+    @pytest.mark.parametrize("safe_id", ["alice", "alice@example.com", "a1b2-c3_d4.e5"])
+    def test_already_safe_ids_pass_through_unchanged(self, safe_id):
+        assert paths.safe_principal_id(safe_id) == safe_id
+
+    @pytest.mark.parametrize("unsafe_id", ["cn=alice,dc=example,dc=com", "../etc", "a/b", ".."])
+    def test_unsafe_ids_are_hashed(self, unsafe_id):
+        result = paths.safe_principal_id(unsafe_id)
+        assert result != unsafe_id
+        assert result.startswith("idp-")
+        assert paths._is_safe_principal_id(result)
+
+    def test_hashing_is_deterministic(self):
+        assert paths.safe_principal_id("cn=alice") == paths.safe_principal_id("cn=alice")
+
+    def test_different_unsafe_ids_hash_differently(self):
+        assert paths.safe_principal_id("cn=alice") != paths.safe_principal_id("cn=bob")
+
+
+class TestUserDir:
+    """P6, docs/https-connector-refactor-plan.md §9.2's storage layout."""
+
+    def test_local_principal_is_data_dir_itself(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+        assert paths.user_dir(Principal(id="local")) == tmp_path
+        # Not a users/local/ subdirectory -- an existing single-user install
+        # needs no migration.
+        assert not (tmp_path / "users").exists()
+
+    def test_defaults_to_current_principal(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+        with principal_scope(Principal(id="local")):
+            assert paths.user_dir() == tmp_path
+
+    def test_other_principal_gets_a_users_subdirectory_and_it_is_created(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+        result = paths.user_dir(Principal(id="alice@example.com"))
+
+        assert result == tmp_path / "users" / "alice@example.com"
+        assert result.is_dir()
+
+    def test_two_principals_get_different_directories(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+        alice = paths.user_dir(Principal(id="alice"))
+        bob = paths.user_dir(Principal(id="bob"))
+
+        assert alice != bob
+        assert alice == tmp_path / "users" / "alice"
+        assert bob == tmp_path / "users" / "bob"
+
+    @pytest.mark.parametrize("bad_id", ["../etc", "a/b", "..", ".", ""])
+    def test_rejects_unsafe_principal_ids(self, monkeypatch, tmp_path, bad_id):
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+        with pytest.raises(ValueError):
+            paths.user_dir(Principal(id=bad_id))
 
 
 class TestBundleMacosDir:

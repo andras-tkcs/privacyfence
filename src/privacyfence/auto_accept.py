@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 import yaml
 
+from .principal import PrincipalRegistry
 from .resource_grants import (
     DRIVE_FOLDER_READ_TARGETS,
     DRIVE_SANDBOX_WRITE_TARGETS,
@@ -1470,15 +1471,42 @@ def migrate_telegram_search_operation_key(cfg: dict[str, Any]) -> tuple[dict[str
 
 
 # ── Rule persistence (used by the "Always allow" popup button) ──────────────
+#
+# Everything below used to be five bare module globals (_config_path,
+# _write_lock, _INSTANCE, _rules_changed_listeners, _rules_changed_listener)
+# -- one AutoAcceptEvaluator, one settings.yaml path, one write lock and one
+# set of hot-reload listeners per *process*. P6 (docs/
+# https-connector-refactor-plan.md §9.2) makes each of those per *principal*
+# instead, bundled into _AutoAcceptState so the registry has exactly one
+# thing to key on. Every accessor function below keeps its exact name and
+# signature -- callers (gate.py, settings_controller.py, daemon_main.py)
+# don't change at all; they just now transparently see the current
+# principal's own rules, path, lock and listeners instead of the process's
+# only copy.
 
-_config_path: str | None = None
-_write_lock = threading.Lock()
+
+class _AutoAcceptState:
+    def __init__(self) -> None:
+        self.instance: AutoAcceptEvaluator | None = None
+        self.config_path: str | None = None
+        self.write_lock = threading.Lock()
+        # A list, not a single slot -- P1 through P2 only ever had one
+        # subscriber (the menu bar, via set_rules_changed_listener below),
+        # but P3 adds a second: approvals.PendingApprovalRegistry's own
+        # re-evaluation broadcast (gate.py subscribes it via
+        # add_rules_changed_listener), which must not clobber whatever the
+        # menu bar already registered, and vice versa.
+        self.rules_changed_listeners: list[Callable[[], None]] = []
+        self.rules_changed_listener: Callable[[], None] | None = None  # see
+        # set_rules_changed_listener's docstring
+
+
+_REGISTRY: PrincipalRegistry[_AutoAcceptState] = PrincipalRegistry(_AutoAcceptState)
 
 
 def init_config_path(path: str) -> None:
     """Register the on-disk config path so add_auto_accept_rule() can persist."""
-    global _config_path
-    _config_path = path
+    _REGISTRY.get().config_path = path
 
 
 def add_auto_accept_rule(operation_key: str, rule_name: str, value: Any) -> None:
@@ -1488,10 +1516,11 @@ def add_auto_accept_rule(operation_key: str, rule_name: str, value: Any) -> None
     this operation, so confirming the same "Always allow" suggestion more
     than once doesn't pile up duplicate entries.
     """
-    if _config_path is None:
+    state = _REGISTRY.get()
+    if state.config_path is None:
         raise RuntimeError("auto_accept config path not initialized")
-    with _write_lock:
-        with open(_config_path, encoding="utf-8") as f:
+    with state.write_lock:
+        with open(state.config_path, encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
         rules = cfg.setdefault("auto_accept_rules", {}).setdefault(operation_key, [])
         new_rule: dict[str, Any] = {"rule": rule_name}
@@ -1500,7 +1529,7 @@ def add_auto_accept_rule(operation_key: str, rule_name: str, value: Any) -> None
         if new_rule in rules:
             return
         rules.append(new_rule)
-        with open(_config_path, "w", encoding="utf-8") as f:
+        with open(state.config_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(cfg, f, default_flow_style=False, allow_unicode=True)
         reload_rules(build_effective_rules(cfg))
 
@@ -1514,10 +1543,11 @@ def remove_auto_accept_rule(operation_key: str, rule_name: str, value: Any = Non
     regardless of its value. Returns True if anything was removed; only
     persists to disk and hot-reloads the evaluator when it does.
     """
-    if _config_path is None:
+    state = _REGISTRY.get()
+    if state.config_path is None:
         raise RuntimeError("auto_accept config path not initialized")
-    with _write_lock:
-        with open(_config_path, encoding="utf-8") as f:
+    with state.write_lock:
+        with open(state.config_path, encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
         rules = cfg.get("auto_accept_rules", {}).get(operation_key, [])
         if value is None:
@@ -1531,7 +1561,7 @@ def remove_auto_accept_rule(operation_key: str, rule_name: str, value: Any = Non
             cfg["auto_accept_rules"][operation_key] = remaining
         else:
             cfg.get("auto_accept_rules", {}).pop(operation_key, None)
-        with open(_config_path, "w", encoding="utf-8") as f:
+        with open(state.config_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(cfg, f, default_flow_style=False, allow_unicode=True)
         reload_rules(build_effective_rules(cfg))
         return True
@@ -1546,10 +1576,11 @@ def get_current_config() -> dict[str, Any]:
     shape, the same one add_auto_accept_rule/remove_auto_accept_rule and the
     menu bar's rule editor operate on.
     """
-    if _config_path is None:
+    state = _REGISTRY.get()
+    if state.config_path is None:
         raise RuntimeError("auto_accept config path not initialized")
-    with _write_lock:
-        with open(_config_path, encoding="utf-8") as f:
+    with state.write_lock:
+        with open(state.config_path, encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
     return {
         "auto_accept_rules": cfg.get("auto_accept_rules") or {},
@@ -1571,39 +1602,30 @@ def mutate_grants(mutator: Callable[[dict[str, Any]], bool]) -> bool:
     parsed config (not just the grants section) since resource_grants'
     helpers operate on it via cfg.setdefault("auto_accept_grants", {}).
     """
-    if _config_path is None:
+    state = _REGISTRY.get()
+    if state.config_path is None:
         raise RuntimeError("auto_accept config path not initialized")
-    with _write_lock:
-        with open(_config_path, encoding="utf-8") as f:
+    with state.write_lock:
+        with open(state.config_path, encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
         changed = mutator(cfg)
         if changed:
-            with open(_config_path, "w", encoding="utf-8") as f:
+            with open(state.config_path, "w", encoding="utf-8") as f:
                 yaml.safe_dump(cfg, f, default_flow_style=False, allow_unicode=True)
             reload_rules(build_effective_rules(cfg))
         return changed
 
 
-_INSTANCE: AutoAcceptEvaluator | None = None
-# A list, not a single slot -- P1 through P2 only ever had one subscriber
-# (the menu bar, via set_rules_changed_listener below), but P3 adds a
-# second: approvals.PendingApprovalRegistry's own re-evaluation broadcast
-# (gate.py subscribes it via add_rules_changed_listener), which must not
-# clobber whatever the menu bar already registered, and vice versa.
-_rules_changed_listeners: list[Callable[[], None]] = []
-_rules_changed_listener: Callable[[], None] | None = None  # see set_rules_changed_listener's docstring
-
-
 def get_auto_accept_evaluator() -> AutoAcceptEvaluator:
-    global _INSTANCE
-    if _INSTANCE is None:
-        _INSTANCE = AutoAcceptEvaluator({})
-    return _INSTANCE
+    state = _REGISTRY.get()
+    if state.instance is None:
+        state.instance = AutoAcceptEvaluator({})
+    return state.instance
 
 def init_auto_accept_evaluator(rules_config: dict) -> AutoAcceptEvaluator:
-    global _INSTANCE
-    _INSTANCE = AutoAcceptEvaluator(rules_config)
-    return _INSTANCE
+    state = _REGISTRY.get()
+    state.instance = AutoAcceptEvaluator(rules_config)
+    return state.instance
 
 
 def set_rules_changed_listener(callback: Callable[[], None] | None) -> None:
@@ -1619,10 +1641,10 @@ def set_rules_changed_listener(callback: Callable[[], None] | None) -> None:
     which runs on the IPC server's own thread rather than the menu bar's
     main thread.
     """
-    global _rules_changed_listener
-    if _rules_changed_listener is not None:
-        remove_rules_changed_listener(_rules_changed_listener)
-    _rules_changed_listener = callback
+    state = _REGISTRY.get()
+    if state.rules_changed_listener is not None:
+        remove_rules_changed_listener(state.rules_changed_listener)
+    state.rules_changed_listener = callback
     if callback is not None:
         add_rules_changed_listener(callback)
 
@@ -1634,22 +1656,24 @@ def add_rules_changed_listener(callback: Callable[[], None]) -> None:
     re-evaluation broadcast (P3) is one such subscriber; more than one can
     coexist (e.g. the menu bar and the web approval registry, both active
     in the same process)."""
-    if callback not in _rules_changed_listeners:
-        _rules_changed_listeners.append(callback)
+    listeners = _REGISTRY.get().rules_changed_listeners
+    if callback not in listeners:
+        listeners.append(callback)
 
 
 def remove_rules_changed_listener(callback: Callable[[], None]) -> None:
-    if callback in _rules_changed_listeners:
-        _rules_changed_listeners.remove(callback)
+    listeners = _REGISTRY.get().rules_changed_listeners
+    if callback in listeners:
+        listeners.remove(callback)
 
 
 def reload_rules(rules_config: dict) -> None:
     """Hot-reload rules into the live evaluator without restarting the daemon."""
-    global _INSTANCE
-    if _INSTANCE is None:
-        _INSTANCE = AutoAcceptEvaluator(rules_config)
+    state = _REGISTRY.get()
+    if state.instance is None:
+        state.instance = AutoAcceptEvaluator(rules_config)
     else:
-        _INSTANCE._rules = rules_config or {}
-    logger.info("Auto-accept rules reloaded live (%d operations)", len(_INSTANCE._rules))
-    for listener in list(_rules_changed_listeners):
+        state.instance._rules = rules_config or {}
+    logger.info("Auto-accept rules reloaded live (%d operations)", len(state.instance._rules))
+    for listener in list(state.rules_changed_listeners):
         listener()

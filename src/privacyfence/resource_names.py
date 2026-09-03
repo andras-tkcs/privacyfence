@@ -32,7 +32,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .paths import data_dir
+from .paths import user_dir
+from .principal import PrincipalRegistry
 from .resource_grants import GrantResourceType
 
 logger = logging.getLogger(__name__)
@@ -41,7 +42,13 @@ CACHE_TTL_SECONDS = 15 * 60
 
 
 def _cache_file() -> Path:
-    return data_dir() / "resource_name_cache.json"
+    # Per-principal (P6, docs/https-connector-refactor-plan.md §9.2): a
+    # grant resource id only resolves to a name through *that* principal's
+    # own connectors (a Drive folder id means nothing in another user's
+    # Drive), so the cache has to be per-principal too, not just the
+    # resolver instance holding it. user_dir() is data_dir() itself for the
+    # local principal, so this is the exact same path as before this phase.
+    return user_dir() / "resource_name_cache.json"
 
 
 def _cache_key(rt: GrantResourceType, resource_id: str) -> str:
@@ -120,11 +127,8 @@ class ResourceNameResolver:
             return self._disk.get(key)
 
 
-_INSTANCE: ResourceNameResolver | None = None
+_REGISTRY: PrincipalRegistry[ResourceNameResolver] = PrincipalRegistry(ResourceNameResolver)
 
 
 def get_resolver() -> ResourceNameResolver:
-    global _INSTANCE
-    if _INSTANCE is None:
-        _INSTANCE = ResourceNameResolver()
-    return _INSTANCE
+    return _REGISTRY.get()

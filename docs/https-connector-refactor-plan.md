@@ -2,17 +2,79 @@
 
 **Status: design agreed (§15); the P0 spike is complete and its findings are recorded in §12. P1
 (web approval surface), P2 (MCP over HTTP alongside the bridge), P4b (the Desktop stdio shim, D11),
-P3 (deferred approvals + concurrency) and P4 (settings on the web, §16) have landed. P2's
-implementation found one gap this document did not have an answer for — how Claude Desktop connects
-to `local` mode once the bridge is gone — decided as D11 and shipped as P4b ahead of P3, since
-neither depended on the other. P3 retires `_popup_lock` per §6 and implements the deferred-approval
-protocol from §5; its own beta (§12: "P3 | beta, and it needs one") is what still has to confirm the
-re-call-rate and hold-window findings from P0's spike (§5.4) against real traffic on all four Claude
-surfaces, not just Claude Code. P4 folds §16's eight W-PRs into one landing: the settings surface
-(`/settings`, the allowlisted action dispatcher, the shared state-push channel) and the P1-compatible
-slice of [`approval-list-ui-ux.md`](approval-list-ui-ux.md) (the page shell, the return-to-list flow,
+P3 (deferred approvals + concurrency), P4 (settings on the web, §16), P5 (retiring the bridge) and P6
+(principals + per-user storage, §9) have landed. P2's implementation found one gap this document did
+not have an answer for — how Claude Desktop connects to `local` mode once the bridge is gone —
+decided as D11 and shipped as P4b ahead of P3, since neither depended on the other. P3 retires
+`_popup_lock` per §6 and implements the deferred-approval protocol from §5; its own beta (§12: "P3 |
+beta, and it needs one") is what still has to confirm the re-call-rate and hold-window findings from
+P0's spike (§5.4) against real traffic on all four Claude surfaces, not just Claude Code. P4 folds
+§16's eight W-PRs into one landing: the settings surface (`/settings`, the allowlisted action
+dispatcher, the shared state-push channel) and the P1-compatible slice of
+[`approval-list-ui-ux.md`](approval-list-ui-ux.md) (the page shell, the return-to-list flow,
 notification tiers 0-1) — its own full multi-row list, grouping and hold-window clock stay P3's, per
-that document's §6.**
+that document's §6. P5 deletes `bridge/`, `ipc.py` and `ipc_server.py` now that `/mcp` and P4b's shim
+have each shipped a stable release. P6 lands §9's `Principal`/`principal_scope` primitives and turns
+every per-user global from §1.5's table (except `approval_ui`, which stays a true singleton on
+purpose — see principal.py's own docstring) into a per-principal registry behind its existing
+accessor name, plus a bounded, lazily-built `ConnectorRegistry` (§9.2's "the main memory-scaling
+question") — `principal_scope` is entered once per request on both surfaces (`web/routes_mcp.py`,
+`web/server.py`'s `_PrincipalScopeMiddleware`), always resolving to `LOCAL_PRINCIPAL` today, since no
+surface has real per-user identity until P7's OIDC/OAuth 2.1 authorization server exists. Exit
+criterion met exactly as specified: two principals are isolated in tests
+(`tests/unit/test_p6_principal_isolation.py`, `test_principal.py`, `test_connector_registry.py`) and
+local mode is unaffected — no code path daemon_main.py's own single-principal boot sequence exercises
+resolves any differently than before this phase.
+
+**P7 (org identity — OIDC, sessions, OAuth 2.1 AS) has landed.** `org_config.json` gains a `mode:
+local|org` toggle (`org_mode.py`; absent means local, byte-identical, no migration) plus `server`
+(bind host/port/issuer URL/TLS/`trusted_proxies`, §10.2) and `idp` (issuer/client_id/client_secret/
+admin-group-claim, §9.4) sections — `scripts/build_org_bundle.py --mode org ...` builds one.
+`web/oauth_provider.py`'s `OrgOAuthProvider` implements the MCP SDK's own
+`OAuthAuthorizationServerProvider` protocol (decision B, §15: PrivacyFence is its own minimal AS,
+authenticating the human against the org IdP by OIDC behind the scenes) — `mcp.server.auth.routes.
+create_auth_routes` builds `/authorize`/`/token`/`/register` (DCR)/`/revoke`/the AS metadata document
+against it (same D2 reasoning as the MCP SDK itself: don't hand-roll a security-critical, spec-
+governed protocol), `create_protected_resource_routes` builds the RFC 9728 resource-metadata document,
+and the one route the SDK has no opinion on — the AS's own callback from the IdP — is
+`OrgOAuthProvider.handle_idp_callback`, wired in alongside them (`routes_mcp.mount_org_oauth`).
+`org_identity.py` is the shared OIDC relying-party core (discovery, PKCE, ID token verification via
+PyJWT/JWKS, claims → `Principal` incl. the admin-group mapping) both that flow and a browser's own
+`/login` (`web/routes_org_identity.py`, backed by `web/org_session.py`'s `OrgSessionStore`) go through
+— the same function either way, which is what makes §9.4's "the browser session and the MCP token are
+then provably the same identity" true by construction. `web/mcp_auth.py`'s
+`principal_from_access_token` (P6's own seam) now reads a token's `subject`/`claims` when present,
+resolving org callers to their real signed-in `Principal` instead of always `LOCAL_PRINCIPAL`.
+
+Exit criterion met exactly as specified — `tests/unit/web/test_org_mcp_e2e.py` drives DCR, `/authorize`
+(IdP leg faked), `/token`, and a real tool call over `/mcp` end to end with the official `mcp` client,
+and proves two different humans authorizing the same Claude client resolve to two different, isolated
+principals; the same file's audience-separation tests prove an org-mode MCP access token is rejected
+as a browser session cookie and vice versa (§10.3), alongside local mode's own pre-existing test. P7
+also found and fixed a real cross-principal bug P6 left latent: `web/mcp_dispatch.py`'s retry-dedupe
+cache keyed only on `(connector, tool, args)`, so two different principals calling the same tool with
+the same arguments within the dedupe window would have shared one cached result — invisible until a
+second real principal could ever reach `/mcp` at all, which P7 is what makes possible; the key now
+folds in the current principal (regression-tested in both `test_mcp_dispatch.py` and the end-to-end
+file above).
+
+**Deliberately out of scope for P7, and left for a follow-up**: `/approvals` and `/settings`
+(`routes_approvals.py`/`routes_settings.py`) are not mounted in org mode at all (`web/server.py`'s own
+module docstring explains why: that surface authenticates with one shared secret and lists every
+pending approval with no principal filtering, so exposing it under org mode as-is would leak every
+principal's pending approvals — subject lines, message bodies, attachments — to whoever holds any
+valid token). A gated call in org mode still registers a pending approval in the registry (so
+`privacyfence_await_approval` sees it and reports it pending), but nothing yet renders or decides it
+over HTTP in org mode — a human can authenticate via `/login` (real, working, tested) but has nowhere
+yet to go approve something. Making `/approvals`/`/settings` org-mode-aware needs generalizing their
+CSRF model, which today is "the one shared token doubles as the session cookie value and the
+per-page CSRF token" throughout both files — real, scoped work building on this phase's
+`OrgSessionStore`/`_PrincipalScopeMiddleware` wiring, not something P7's own exit criterion (about the
+MCP surface specifically) needs. Also out of scope, per the phase dependency chart itself (P8 depends
+on P7, not the reverse): actual per-user *connectors* — every principal authenticated via org mode's
+AS still dispatches tool calls against the single, centrally-configured connector set `build_connectors`
+already builds for the local principal; per-user Google/Slack/Salesforce/Atlassian/Telegram
+authorization is P8's own job.**
 
 This document designs, and validates against the current code, the refactoring that turns
 PrivacyFence from a macOS-only, single-user, stdio-MCP-bridge desktop app into a service with an
