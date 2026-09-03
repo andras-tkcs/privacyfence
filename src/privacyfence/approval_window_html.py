@@ -803,6 +803,15 @@ html {{ height: 100%; }}
 html, body {{ overflow-y: auto; }}
 body {{
   box-sizing: border-box; width: min({width}px, 100%); height: 100vh;
+  /* margin: 0 auto centers the pane when it's narrower than its container --
+     a no-op in the native WKWebView (the window frame is already sized to
+     match `width` exactly, see approval_window.py, so there's no slack to
+     center within) but the fix for the web approval UI's browser tab
+     (web_approval_ui.py/web_prompt.py serve this same document there),
+     which is wider than {width}px far more often than not: without this,
+     the pane sat flush against the left edge instead of in the middle of
+     the tab. */
+  margin: 0 auto;
   padding-top: {BODY_PADDING_TOP}px; padding-right: 30px;
   padding-bottom: {BODY_PADDING_BOTTOM}px; padding-left: 24px;
   border-left: 6px solid {rail_color};
