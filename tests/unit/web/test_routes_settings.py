@@ -219,6 +219,17 @@ class TestConnectorAuthenticationEndToEnd:
             release.wait(timeout=2)
             return {"access_token": "tok"}
 
+        # _authenticate_slack's background thread marshals its `done`
+        # callback back via call_on_main, which prefers a real AppKit run
+        # loop (AppHelper.callAfter) whenever pyobjc is importable -- true
+        # on this repo's own macOS CI runner, not just on a real Mac with
+        # the native window actually open. Nothing here ever pumps that
+        # run loop, so the real callAfter would never actually deliver
+        # `done` and this test would hang until wait_until's own timeout.
+        # Same fake-callAfter-runs-inline pattern test_settings_controller.py's
+        # own TestPickResourceIndexWebMode/TestAuthenticateAtlassian use for
+        # exactly this reason.
+        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: f(*a, **k)))
         monkeypatch.setattr(daemon_main, "load_org_config", lambda: {"slack": {"client_id": "cid"}})
         monkeypatch.setattr(sc, "slack_authorize_interactive", fake_authorize)
         monkeypatch.setattr(controller, "refresh_connectors", lambda: controller._push_snapshot())
