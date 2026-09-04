@@ -47,6 +47,14 @@ jobs:
           security create-keychain -p "" build.keychain
           security default-keychain -s build.keychain
           security unlock-keychain -p "" build.keychain
+          # Disable the keychain's idle-lock timeout (default 5 minutes).
+          # Without this, the keychain locks itself partway through the
+          # PyInstaller + mcpb build (which takes well over 5 minutes),
+          # and the later `xcrun notarytool submit` step -- which reads the
+          # stored notarization credentials from this keychain -- fails
+          # with "keychainLocked". `set-keychain-settings` with no -t/-l
+          # flags means "no timeout, don't lock on sleep".
+          security set-keychain-settings build.keychain
           security import certificate.p12 -k build.keychain \
             -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s \
@@ -73,6 +81,14 @@ jobs:
             --key-id "$APPLE_API_KEY_ID" \
             --issuer "$APPLE_API_ISSUER_ID"
           rm apple_api_key.p8
+
+      # Defensive re-unlock immediately before the long build step (PyInstaller
+      # + mcpb, ~10 minutes) that ends with `xcrun notarytool submit` reading
+      # credentials from this keychain. `set-keychain-settings` above should
+      # already prevent an idle-timeout lock, but re-unlocking here is cheap
+      # insurance against other lock triggers (e.g. a runner sleep/wake event).
+      - name: Unlock keychain before build
+        run: security unlock-keychain -p "" build.keychain
 
       - name: Build .app and DMG
         env:
