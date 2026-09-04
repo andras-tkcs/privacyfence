@@ -1,0 +1,85 @@
+name: Publish to PyPI
+
+# Same trigger as build.yml (see CLAUDE.md's "Releasing" section) -- one tag
+# push does everything: builds and signs the DMG (build.yml) *and* builds
+# and publishes the sdist/wheel (this workflow), with no separate step.
+#
+# Publishing itself uses PyPI's OIDC "Trusted Publisher" flow
+# (pypa/gh-action-pypi-publish), not a stored API token: GitHub mints a
+# short-lived OIDC token for the job (permissions: id-token: write below),
+# and PyPI/TestPyPI trade it for a one-shot upload credential themselves.
+# There is no long-lived secret anywhere for this workflow to leak. Before
+# this workflow can publish for the first time, a maintainer has to
+# register it as a Trusted Publisher on both test.pypi.org and pypi.org --
+# see CLAUDE.md.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:   # rerun by hand, e.g. after a failed publish -- point it
+                        # at a tagged commit, or the build carries a local
+                        # version segment (+g<sha>) that both indexes reject
+
+jobs:
+  build:
+    runs-on: ubuntu-latest   # pure Python sdist/wheel -- no macOS-only step needed
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history + tags -- setuptools_scm needs them (see CLAUDE.md)
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Build sdist and wheel
+        run: |
+          pip install --upgrade pip build
+          python -m build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pypi-dist
+          path: dist/
+
+  # Always published first -- rehearses the real upload (same files, same
+  # metadata) against TestPyPI before anything reaches the real index.
+  publish-testpypi:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: testpypi   # must match the Environment name on TestPyPI's
+                             # Trusted Publisher entry, if one was set there
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pypi-dist
+          path: dist/
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true   # lets a rerun after a partial failure succeed
+                                 # without erroring on files TestPyPI already has
+
+  # Gated behind the TestPyPI job above, and behind the "pypi" GitHub
+  # Environment's own protection rules if any are configured (e.g. a
+  # required reviewer) -- see CLAUDE.md for setting that up.
+  publish-pypi:
+    needs: publish-testpypi
+    runs-on: ubuntu-latest
+    environment: pypi   # must match the Environment name on PyPI's own
+                         # Trusted Publisher entry, if one was set there
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pypi-dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
