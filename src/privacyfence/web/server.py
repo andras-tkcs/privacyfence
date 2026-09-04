@@ -49,7 +49,7 @@ import logging
 import secrets
 import threading
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 import uvicorn
@@ -61,11 +61,13 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from .. import paths
+from ..connector_registry import ConnectorRegistry
 from ..org_identity import IdpConfig
 from ..principal import ANONYMOUS_PRINCIPAL, LOCAL_PRINCIPAL, Principal, principal_scope
 from ..settings_controller import SettingsController, set_main_dispatcher
 from ..web_approval_ui import WebApprovalUI
 from . import org_session
+from . import routes_connect
 from . import routes_org_identity
 from . import state_stream as _state_stream
 from .mcp_auth import load_or_create_mcp_token
@@ -187,6 +189,17 @@ class OrgAuth:
     sessions: OrgSessionStore
     idp: IdpConfig
     issuer_url: str
+    # P8 (docs/https-connector-refactor-plan.md §9.3): per-user service
+    # authorization (Google/Slack/Salesforce/Atlassian/Telegram) and the
+    # /connect page that drives it. Both default to None/{} so every
+    # existing caller of OrgAuth (this module's own tests included) keeps
+    # constructing one without them -- _build_org_app below simply doesn't
+    # mount web/routes_connect.py's routes when connector_registry is
+    # absent, the same "additive, opt-in" posture every other new surface
+    # in this codebase takes. daemon_main.py's real _start_org_web_server
+    # always supplies both.
+    connector_registry: ConnectorRegistry | None = None
+    org_config: dict = field(default_factory=dict)
 
 
 def _default_principal(_request: Request) -> Principal:
@@ -451,8 +464,22 @@ def _build_org_app(
         lifespans.append(mcp_lifespan(session_manager))
 
     extra_routes.extend(mount_org_oauth(org.provider, issuer_url=org.issuer_url))
+    # P8 (docs/https-connector-refactor-plan.md §9.3): only mounted once a
+    # real ConnectorRegistry exists to evict on a successful authorization
+    # -- see OrgAuth's own docstring. daemon_main.py's real org-mode boot
+    # path always supplies one; a hand-built OrgAuth in a test that only
+    # cares about the OAuth-AS/session-login surface can omit it and get
+    # exactly P7's own route set, with /connect and /oauth/start|callback
+    # left out (see test_server_org_mode.py's TestConnectSurfaceOrgMode).
+    default_next_path = routes_org_identity.DEFAULT_NEXT_PATH
+    if org.connector_registry is not None:
+        extra_routes.extend(routes_connect.build_routes(
+            sessions=org.sessions, connector_registry=org.connector_registry,
+            org_config=org.org_config, issuer_url=org.issuer_url,
+        ))
+        default_next_path = "/connect"
     extra_routes.extend(routes_org_identity.build_routes(
-        idp=org.idp, sessions=org.sessions, base_url=org.issuer_url,
+        idp=org.idp, sessions=org.sessions, base_url=org.issuer_url, default_next_path=default_next_path,
     ))
 
     lifespan = None

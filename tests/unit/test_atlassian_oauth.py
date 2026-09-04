@@ -202,6 +202,75 @@ class TestAuthorizeInteractiveExchange:
 
 
 # ---------------------------------------------------------------------------- #
+# build_authorize_url / exchange_code / resolve_resource_and_save -- called
+# directly (not through run_browser_oauth) by web/routes_connect.py's
+# org-mode server-redirect flow (P8, docs/https-connector-refactor-plan.md
+# §9.3).
+# ---------------------------------------------------------------------------- #
+
+class TestHoistedFunctions:
+    def test_build_authorize_url_direct_call(self):
+        url = atlassian_oauth_module.build_authorize_url(
+            "ci", "https://pf.example.com/oauth/callback/jira", "state-1", "challenge-1",
+        )
+        assert url.startswith(f"{atlassian_oauth_module.AUTHORIZE_URL}?")
+        assert "client_id=ci" in url
+        assert "redirect_uri=https%3A%2F%2Fpf.example.com%2Foauth%2Fcallback%2Fjira" in url
+        assert "code_challenge=challenge-1" in url
+        assert "state=state-1" in url
+
+    def test_exchange_code_returns_the_raw_token_response_only(self, monkeypatch):
+        monkeypatch.setattr(
+            atlassian_oauth_module.requests, "post",
+            lambda *a, **kw: fake_response({"access_token": "at-1", "refresh_token": "rt-1"}),
+        )
+        response = atlassian_oauth_module.exchange_code("ci", "cs", "code", "https://pf.example.com/cb", "verifier")
+        assert response == {"access_token": "at-1", "refresh_token": "rt-1"}
+
+    def test_exchange_code_missing_access_token_raises(self, monkeypatch):
+        monkeypatch.setattr(atlassian_oauth_module.requests, "post", lambda *a, **kw: fake_response({}))
+        with pytest.raises(AtlassianOAuthError, match="did not return an access token"):
+            atlassian_oauth_module.exchange_code("ci", "cs", "code", "https://pf.example.com/cb", "verifier")
+
+    def test_resolve_resource_and_save_single_site_needs_no_picker(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            atlassian_oauth_module, "_fetch_accessible_resources",
+            lambda token: [{"id": "cloud1", "url": "https://x.atlassian.net"}],
+        )
+        monkeypatch.setattr(atlassian_oauth_module, "_fetch_account_email", lambda token, cloud_id: "me@x.com")
+
+        record = atlassian_oauth_module.resolve_resource_and_save(str(tmp_path / "token.json"), "at-1", "rt-1")
+
+        assert record["cloud_id"] == "cloud1"
+        assert record["site_url"] == "https://x.atlassian.net"
+        assert load_token_file(str(tmp_path / "token.json")) == record
+
+    def test_resolve_resource_and_save_multi_site_uses_pick_resource(self, monkeypatch, tmp_path):
+        resources = [
+            {"id": "cloud1", "url": "https://a.atlassian.net"},
+            {"id": "cloud2", "url": "https://b.atlassian.net"},
+        ]
+        monkeypatch.setattr(atlassian_oauth_module, "_fetch_accessible_resources", lambda token: resources)
+        monkeypatch.setattr(atlassian_oauth_module, "_fetch_account_email", lambda token, cloud_id: "")
+
+        record = atlassian_oauth_module.resolve_resource_and_save(
+            str(tmp_path / "token.json"), "at-1", "rt-1", pick_resource=lambda rs: rs[0],
+        )
+
+        assert record["cloud_id"] == "cloud1"  # web/routes_connect.py's own "first resource" simplification
+
+    def test_resolve_resource_and_save_multi_site_without_picker_raises(self, monkeypatch, tmp_path):
+        resources = [
+            {"id": "cloud1", "url": "https://a.atlassian.net"},
+            {"id": "cloud2", "url": "https://b.atlassian.net"},
+        ]
+        monkeypatch.setattr(atlassian_oauth_module, "_fetch_accessible_resources", lambda token: resources)
+
+        with pytest.raises(AtlassianOAuthError, match="Multiple Atlassian sites"):
+            atlassian_oauth_module.resolve_resource_and_save(str(tmp_path / "token.json"), "at-1", "rt-1")
+
+
+# ---------------------------------------------------------------------------- #
 # authorize_interactive: end-to-end token record assembly
 # ---------------------------------------------------------------------------- #
 

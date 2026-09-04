@@ -2,8 +2,9 @@
 
 **Status: design agreed (§15); the P0 spike is complete and its findings are recorded in §12. P1
 (web approval surface), P2 (MCP over HTTP alongside the bridge), P4b (the Desktop stdio shim, D11),
-P3 (deferred approvals + concurrency), P4 (settings on the web, §16), P5 (retiring the bridge) and P6
-(principals + per-user storage, §9) have landed. P2's implementation found one gap this document did
+P3 (deferred approvals + concurrency), P4 (settings on the web, §16), P5 (retiring the bridge), P6
+(principals + per-user storage, §9), P7 (org identity — OIDC, sessions, OAuth 2.1 AS) and P8 (per-user
+service authorization, §9.3) have landed. P2's implementation found one gap this document did
 not have an answer for — how Claude Desktop connects to `local` mode once the bridge is gone —
 decided as D11 and shipped as P4b ahead of P3, since neither depended on the other. P3 retires
 `_popup_lock` per §6 and implements the deferred-approval protocol from §5; its own beta (§12: "P3 |
@@ -70,11 +71,70 @@ yet to go approve something. Making `/approvals`/`/settings` org-mode-aware need
 CSRF model, which today is "the one shared token doubles as the session cookie value and the
 per-page CSRF token" throughout both files — real, scoped work building on this phase's
 `OrgSessionStore`/`_PrincipalScopeMiddleware` wiring, not something P7's own exit criterion (about the
-MCP surface specifically) needs. Also out of scope, per the phase dependency chart itself (P8 depends
-on P7, not the reverse): actual per-user *connectors* — every principal authenticated via org mode's
-AS still dispatches tool calls against the single, centrally-configured connector set `build_connectors`
-already builds for the local principal; per-user Google/Slack/Salesforce/Atlassian/Telegram
-authorization is P8's own job.**
+MCP surface specifically) needs, and **still not done by P8 either** — P8's own new surface
+(`/connect`) is a small, purpose-built page with its own session-cookie-based CSRF model
+(`org_session.check_csrf`/`check_origin`), not a port of `/settings`' ~30-action surface into org mode.
+
+**P8 (per-user service authorization) has landed.** Before this phase, every principal authenticated
+via org mode's OAuth 2.1 AS dispatched tool calls against the single, centrally-configured connector
+set `build_connectors` builds for the local principal (`daemon_main.py`'s own `_start_org_web_server`
+literally closed over `connector_host.connectors`, the local principal's own live set, for every org
+caller) — `connector_registry.py`'s `ConnectorRegistry` existed since P6 but was never wired into a
+real request path (its own docstring said so explicitly). P8 wires it in: `_start_org_web_server` now
+builds one `ConnectorRegistry` per daemon (factory: reload that principal's own
+`config/settings.yaml` — resolved per-principal via `paths.user_dir()`/`_resolve_path()`, same seam
+P6 built — then `build_connectors(cfg, org_config)`) and the `/mcp` dispatcher's
+`connectors_provider` becomes `lambda: registry.get(current_principal()).connectors` instead of the
+shared `connector_host`. `web/routes_connect.py` is the new surface that makes a second principal's
+connectors buildable at all: `GET /connect` (a signed-in principal's own small connections page,
+*not* a port of `routes_settings.py`'s ~30-action surface — see the note above) and the §9.3 server-
+side redirect pair, `GET /oauth/start/{service}`/`GET /oauth/callback/{service}`, for
+`gmail`/`drive`/`calendar`/`contacts`/`tasks` (five separate Google grants, matching local mode's own
+per-connector granularity — see `settings_controller.py`'s `GOOGLE_CONNECTORS`), `slack`,
+`salesforce`, and `jira`/`confluence` (one shared Atlassian grant). Telegram's phone/code/2FA flow
+needed no redirect URI at all (MTProto has no such concept) — `telegram_auth.py` extracts the three
+telethon coroutines (`send_code`/`sign_in`/`sign_in_2fa`) out of `settings_controller.py`'s own
+work-closures so both local mode (via `asyncio.run()` on a background thread, unchanged) and org
+mode (awaited directly on the ASGI loop, via a small principal-keyed `_TelegramAuthStore`) share the
+same implementation.
+
+Each of `slack_client.py`/`salesforce_client.py`/`atlassian_oauth.py`'s `authorize_interactive` had
+its `build_authorize_url`/`exchange` closures hoisted to public, module-level functions — exactly the
+"next cheaper step" `oauth_loopback.py`'s own docstring already named — so `web/routes_connect.py`
+can call the same request-building/code-exchange logic directly instead of going through
+`run_browser_oauth`'s local-listener flow; `authorize_interactive` itself is unchanged in behavior
+(every pre-existing test for all three modules passes unmodified) and `local` mode's loopback flow is
+untouched. Google gets its own new module, `google_oauth.py`, using
+`google_auth_oauthlib.flow.Flow` with an explicit `redirect_uri` in place of `InstalledAppFlow`'s
+loopback listener — exactly the module docstring's own anticipated shape — additive alongside
+`GmailClient`/etc.'s existing `InstalledAppFlow`-based `authorize_interactive`, which local mode keeps
+using unchanged. `Flow` owns its own PKCE material; Slack/Salesforce/Atlassian's PKCE (where used)
+comes from `org_identity.generate_pkce_pair()`, the same helper P7's own IdP login flow already uses.
+
+**The load-bearing subtlety this phase had to get right**: `pf_org_session`'s `SameSite=Strict`
+cookie (§9.4) is *not* sent on the cross-site-initiated top-level navigation that lands back on
+`GET /oauth/callback/{service}` after a real redirect from Google/Slack/Salesforce/Atlassian — a
+naive implementation reading `current_principal()`/the session cookie there would pass every
+in-process test (`httpx`'s `TestClient` does not enforce `SameSite`) and fail against every real
+browser. The callback route therefore never reads the session cookie at all; it resolves the
+principal entirely from the single-use `state` value a `_PendingAuthStore` recorded at
+`/oauth/start/{service}` time, where the cookie *is* present (a same-site navigation the user's own
+click made) — `test_routes_connect.py`'s own happy-path test drives the callback with no cookie
+present on that request at all, specifically to prove this. Atlassian's multi-site accounts are
+handled with one deliberate simplification versus local mode: the first accessible site is used
+automatically rather than blocking on a picker inside a one-shot HTTP callback (local mode's own
+`pick_resource` has nowhere to block there) — documented in `web/routes_connect.py`'s own module
+docstring rather than silently diverging.
+
+Exit criterion met exactly as specified — `tests/unit/web/test_routes_connect.py` drives
+`/oauth/start/{service}` → `/oauth/callback/{service}` end to end for Google/Slack/Salesforce/
+Atlassian with each provider's real request-building/exchange logic (only the actual HTTP call
+mocked), proves a token lands under that principal's own `users/<id>/credentials/` and nowhere else,
+and proves the `state` value is single-use; `test_daemon_main.py`'s
+`TestOrgModeConnectorRegistry.test_two_principals_get_independent_connector_sets` proves two
+principals authenticated this way get two independently-built connector sets over the real
+`ConnectorRegistry` wiring, not the old shared set. `local` mode is unaffected — no existing
+`authorize_interactive`/`build_connectors`/telegram-auth call site or test changed behavior.
 
 This document designs, and validates against the current code, the refactoring that turns
 PrivacyFence from a macOS-only, single-user, stdio-MCP-bridge desktop app into a service with an

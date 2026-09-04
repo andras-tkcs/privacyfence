@@ -1076,6 +1076,92 @@ class TestMaybeStartWebServerOrgMode:
 
 
 # ---------------------------------------------------------------------------- #
+# _start_org_web_server -- per-principal ConnectorRegistry wiring (P8, docs/
+# https-connector-refactor-plan.md §9.3). connector_registry.py's own
+# ConnectorRegistry existed since P6 but was never plugged into org mode's
+# actual /mcp dispatch until now -- see that module's own docstring.
+# ---------------------------------------------------------------------------- #
+
+class TestOrgModeConnectorRegistry:
+    # Deliberately not a subclass of TestMaybeStartWebServerOrgMode -- pytest
+    # would collect and re-run every inherited test method a second time
+    # under this class's own name too. Same three helpers, copied instead.
+    _no_bind = TestMaybeStartWebServerOrgMode._no_bind
+    _connector_host = staticmethod(TestMaybeStartWebServerOrgMode._connector_host)
+    _org_config = staticmethod(TestMaybeStartWebServerOrgMode._org_config)
+
+    def test_org_auth_carries_a_real_connector_registry(self, monkeypatch, tmp_path):
+        self._no_bind(monkeypatch, tmp_path)
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"mcp": {"enabled": True}}}, self._connector_host(),
+            unattended_sessions_enabled=False, org_config=self._org_config(),
+        )
+        from privacyfence.connector_registry import ConnectorRegistry
+        assert isinstance(result.org.connector_registry, ConnectorRegistry)
+
+    def test_org_auth_carries_the_org_config_bundle(self, monkeypatch, tmp_path):
+        self._no_bind(monkeypatch, tmp_path)
+        org_config = self._org_config()
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"mcp": {"enabled": True}}}, self._connector_host(),
+            unattended_sessions_enabled=False, org_config=org_config,
+        )
+        assert result.org.org_config == org_config
+
+    def test_registry_builds_a_principals_own_connectors_from_their_own_settings(self, monkeypatch, tmp_path):
+        # The real end-to-end plumbing the exit criterion needs: once a
+        # principal has a token file under their own users/<id>/credentials/
+        # (what web/routes_connect.py's callback route writes), the very
+        # next /mcp call for that principal must see a connector built from
+        # it -- not the local principal's own set, and not nothing.
+        self._no_bind(monkeypatch, tmp_path)
+        org_config = self._org_config(slack={"client_id": "cid", "client_secret": "sec"})
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"mcp": {"enabled": True}}}, self._connector_host(),
+            unattended_sessions_enabled=False, org_config=org_config,
+        )
+        from privacyfence.principal import Principal
+        from privacyfence.slack_client import SlackClient
+
+        alice = Principal(id="alice")
+        alice_dir = tmp_path / "users" / "alice"
+        (alice_dir / "credentials").mkdir(parents=True)
+        (alice_dir / "credentials" / "slack_token.json").write_text('{"access_token": "xoxp-alice"}')
+        # build_connectors' own Slack branch calls check_connection() on a
+        # real SlackClient -- stub it so this test exercises the registry's
+        # own per-principal wiring, not slack_sdk's HTTP layer.
+        monkeypatch.setattr(SlackClient, "check_connection", lambda self: "alice-workspace")
+
+        host = result.org.connector_registry.get(alice)
+
+        assert "slack" in host.connectors
+        assert (alice_dir / "config" / "settings.yaml").exists()  # bootstrapped on first use, per-principal
+
+    def test_two_principals_get_independent_connector_sets(self, monkeypatch, tmp_path):
+        self._no_bind(monkeypatch, tmp_path)
+        org_config = self._org_config(slack={"client_id": "cid", "client_secret": "sec"})
+        result = daemon_main._maybe_start_web_server(
+            {"web": {"mcp": {"enabled": True}}}, self._connector_host(),
+            unattended_sessions_enabled=False, org_config=org_config,
+        )
+        from privacyfence.principal import Principal
+        from privacyfence.slack_client import SlackClient
+
+        monkeypatch.setattr(SlackClient, "check_connection", lambda self: "workspace")
+        alice, bob = Principal(id="alice"), Principal(id="bob")
+        for pid in ("alice", "bob"):
+            creds = tmp_path / "users" / pid / "credentials"
+            creds.mkdir(parents=True)
+        (tmp_path / "users" / "alice" / "credentials" / "slack_token.json").write_text('{"access_token": "xoxp-a"}')
+
+        alice_host = result.org.connector_registry.get(alice)
+        bob_host = result.org.connector_registry.get(bob)
+
+        assert "slack" in alice_host.connectors
+        assert "slack" not in bob_host.connectors
+
+
+# ---------------------------------------------------------------------------- #
 # parse_args
 # ---------------------------------------------------------------------------- #
 
