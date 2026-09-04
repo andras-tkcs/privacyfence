@@ -9,6 +9,7 @@ from __future__ import annotations
 from starlette.testclient import TestClient
 
 from privacyfence import org_identity as oi
+from privacyfence.connector_registry import ConnectorRegistry
 from privacyfence.web.mcp_dispatch import McpDispatcher
 from privacyfence.web.oauth_provider import OrgOAuthProvider
 from privacyfence.web.org_session import OrgSessionStore
@@ -90,6 +91,54 @@ class TestBuildAppOrgMode:
         assert client.get("/approvals").status_code == 404
         assert client.get("/settings").status_code == 404
         assert client.get("/api/state/stream").status_code == 404
+
+
+class TestConnectSurfaceOrgMode:
+    """P8 (docs/https-connector-refactor-plan.md §9.3): /connect and the
+    /oauth/start|callback/{service} routes are mounted only once a real
+    ConnectorRegistry is supplied on OrgAuth -- see that class's own
+    docstring. A hand-built OrgAuth without one (every test above this
+    class) keeps getting exactly P7's own route set."""
+
+    def test_connect_is_not_mounted_without_a_connector_registry(self, tmp_path, monkeypatch):
+        org = _org_auth(tmp_path, monkeypatch)
+        app = build_app(WebApprovalUI(), org=org, allowed_hosts=frozenset({"pf.example.com"}))
+        client = TestClient(app, base_url=ISSUER)
+        assert client.get("/connect").status_code == 404
+        assert client.get("/oauth/start/slack").status_code == 404
+
+    def test_connect_is_mounted_with_a_connector_registry(self, tmp_path, monkeypatch):
+        org = _org_auth(tmp_path, monkeypatch)
+        registry = ConnectorRegistry(factory=lambda principal: [])
+        org_with_registry = org.__class__(
+            provider=org.provider, sessions=org.sessions, idp=org.idp, issuer_url=org.issuer_url,
+            connector_registry=registry, org_config={},
+        )
+        app = build_app(WebApprovalUI(), org=org_with_registry, allowed_hosts=frozenset({"pf.example.com"}))
+        client = TestClient(app, base_url=ISSUER, follow_redirects=False)
+        r = client.get("/connect")
+        assert r.status_code == 302
+        assert r.headers["location"] == "/login?next=/connect"
+
+    def test_login_with_no_next_lands_on_connect_once_mounted(self, tmp_path, monkeypatch):
+        org = _org_auth(tmp_path, monkeypatch)
+        registry = ConnectorRegistry(factory=lambda principal: [])
+        org_with_registry = org.__class__(
+            provider=org.provider, sessions=org.sessions, idp=org.idp, issuer_url=org.issuer_url,
+            connector_registry=registry, org_config={},
+        )
+        app = build_app(WebApprovalUI(), org=org_with_registry, allowed_hosts=frozenset({"pf.example.com"}))
+        client = TestClient(app, base_url=ISSUER, follow_redirects=False)
+        r = client.get("/login")
+        assert r.status_code == 302
+        assert r.headers["location"].startswith("https://idp.example.com/authorize?")
+        # Can't drive the whole IdP round trip from here without duplicating
+        # test_routes_org_identity.py's own fixtures -- that file's
+        # TestLogin already proves default_next_path reaches the callback's
+        # redirect; this just proves server.py actually wires "/connect" in
+        # as that default once P8's registry is present (see test_routes_
+        # org_identity.py::TestLogin for the equivalent no-registry case,
+        # which keeps the original "/approvals" default).
 
 
 class TestWebServerOrgMode:

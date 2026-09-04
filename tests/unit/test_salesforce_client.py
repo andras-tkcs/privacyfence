@@ -34,6 +34,8 @@ from privacyfence.salesforce_client import (
     _validate_object_type_name,
     _validate_salesforce_id,
     authorize_interactive,
+    build_authorize_url,
+    exchange_code,
     load_token_file,
 )
 
@@ -185,6 +187,48 @@ class TestAuthorizeInteractive:
         assert "code_challenge_method=S256" in url
         assert "state=state-xyz" in url
         assert "scope=api+refresh_token" in url
+
+
+# ---------------------------------------------------------------------------- #
+# build_authorize_url / exchange_code -- the hoisted functions authorize_
+# interactive itself now delegates to (P8, docs/https-connector-refactor-
+# plan.md §9.3), called directly here rather than through run_browser_oauth's
+# local listener -- this is the shape web/routes_connect.py's org-mode
+# server-redirect flow calls them in.
+# ---------------------------------------------------------------------------- #
+
+class TestBuildAuthorizeUrlAndExchangeCode:
+    def test_build_authorize_url_matches_authorize_interactives_own_shape(self):
+        url = build_authorize_url("my-client-id", "https://pf.example.com/oauth/callback/salesforce", "state-xyz", "challenge-xyz")
+        assert url.startswith("https://login.salesforce.com/services/oauth2/authorize?")
+        assert "client_id=my-client-id" in url
+        assert "redirect_uri=https%3A%2F%2Fpf.example.com%2Foauth%2Fcallback%2Fsalesforce" in url
+        assert "code_challenge=challenge-xyz" in url
+        assert "state=state-xyz" in url
+
+    def test_build_authorize_url_honors_a_custom_login_url(self):
+        url = build_authorize_url("cid", "https://pf.example.com/cb", "s", "c", login_url="https://test.salesforce.com/")
+        assert url.startswith("https://test.salesforce.com/services/oauth2/authorize?")
+
+    def test_exchange_code_returns_the_normalized_record_without_saving(self, monkeypatch, tmp_path):
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"access_token": "tok", "refresh_token": "rt", "instance_url": "https://my.salesforce.com"}
+        monkeypatch.setattr("requests.post", lambda *a, **kw: response)
+
+        record = exchange_code("cid", "csec", "auth-code", "https://pf.example.com/cb", "verifier-abc")
+
+        assert record == {"access_token": "tok", "refresh_token": "rt", "instance_url": "https://my.salesforce.com"}
+        assert not (tmp_path / "token.json").exists()  # exchange_code never touches disk
+
+    def test_exchange_code_missing_access_token_raises(self, monkeypatch):
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"instance_url": "https://my.salesforce.com"}
+        monkeypatch.setattr("requests.post", lambda *a, **kw: response)
+
+        with pytest.raises(SalesforceClientError, match="did not return a usable token"):
+            exchange_code("cid", "csec", "code", "https://pf.example.com/cb", "verifier")
 
 
 # ---------------------------------------------------------------------------- #

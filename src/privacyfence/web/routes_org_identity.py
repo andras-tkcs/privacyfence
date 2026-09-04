@@ -95,11 +95,11 @@ class _LoginAttemptStore:
                 del self._attempts[s]
 
 
-def _safe_next_path(raw: str | None) -> str:
+def _safe_next_path(raw: str | None, *, default: str = DEFAULT_NEXT_PATH) -> str:
     """Open-redirect defense: ``next`` must be a same-origin relative path
-    (a leading ``/`` that isn't a scheme-relative ``//host/...``), or the
-    default is used instead. Never trusts ``raw`` far enough to redirect
-    to it verbatim.
+    (a leading ``/`` that isn't a scheme-relative ``//host/...``), or
+    ``default`` is used instead. Never trusts ``raw`` far enough to
+    redirect to it verbatim.
 
     Checked on a backslash-normalized copy, not the raw string: browsers
     treat a leading backslash the same as a forward slash when resolving a
@@ -110,25 +110,36 @@ def _safe_next_path(raw: str | None) -> str:
     redirect off-site, before it ever gets there.
     """
     if not raw or not raw.startswith("/"):
-        return DEFAULT_NEXT_PATH
+        return default
     if raw.replace("\\", "/").startswith("//"):
-        return DEFAULT_NEXT_PATH
+        return default
     return raw
 
 
 def build_routes(
     *, idp: IdpConfig, sessions: org_session.OrgSessionStore, base_url: str,
+    default_next_path: str = DEFAULT_NEXT_PATH,
 ) -> list[Route]:
     """``base_url`` is this daemon's own externally-reachable origin (org
     mode's configured issuer/server URL) -- the redirect_uri PrivacyFence
     presents to the IdP has to be this fixed, pre-registered value, never
     derived from a request's own (spoofable) Host header.
+
+    ``default_next_path`` (P8, docs/https-connector-refactor-plan.md §9.3)
+    is where a sign-in with no explicit ``?next=`` lands -- ``DEFAULT_
+    NEXT_PATH`` ("/approvals") was never reachable in org mode to begin
+    with (``/approvals`` isn't mounted there at all, see web/server.py's
+    own module docstring), a gap only visible once something org mode
+    *does* mount is around to redirect to. ``web/server.py``'s
+    ``_build_org_app`` passes ``"/connect"`` (P8's own new per-principal
+    connections page) here; every other/older caller keeps the original
+    default unchanged.
     """
     attempts = _LoginAttemptStore()
     redirect_uri = f"{base_url.rstrip('/')}{LOGIN_CALLBACK_PATH}"
 
     async def login(request: Request) -> Response:
-        next_path = _safe_next_path(request.query_params.get("next"))
+        next_path = _safe_next_path(request.query_params.get("next"), default=default_next_path)
         state, attempt, code_challenge = attempts.create(next_path=next_path)
         url = org_identity.build_authorization_url(
             idp, redirect_uri=redirect_uri, state=state, code_challenge=code_challenge, nonce=attempt.nonce,

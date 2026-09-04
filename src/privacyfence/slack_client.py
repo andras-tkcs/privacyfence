@@ -159,6 +159,73 @@ class SlackDirectoryUnavailable(SlackClientError):
 
 
 
+def build_authorize_url(
+    client_id: str, redirect_uri: str, state: str, user_scopes: list[str] | None = None,
+) -> str:
+    """Slack's OAuth v2 authorize URL -- factored out of ``authorize_interactive``
+    (P8, docs/https-connector-refactor-plan.md §9.3) so ``web/routes_
+    connections.py``'s org-mode server-redirect flow can build the same URL
+    without going through ``oauth_loopback.run_browser_oauth``'s local
+    listener. ``state`` is a CSRF token the caller generates and later
+    verifies on the callback -- Slack's OAuth v2 has no PKCE support, so
+    there is no ``code_challenge`` parameter here (unlike Salesforce/
+    Atlassian below)."""
+    scopes = ",".join(user_scopes or DEFAULT_USER_SCOPES)
+    params = {
+        "client_id": client_id,
+        "user_scope": scopes,
+        "redirect_uri": redirect_uri,
+        "state": state,
+    }
+    return "https://slack.com/oauth/v2/authorize?" + urlencode(params)
+
+
+def exchange_code(client_id: str, client_secret: str, code: str, redirect_uri: str) -> dict[str, Any]:
+    """Exchanges an authorization code for a Slack user token and returns
+    the normalized token record -- *not* yet saved to disk (see
+    ``save_token_record`` below). Shared by ``authorize_interactive``'s
+    local-mode loopback flow and org mode's server-redirect flow (P8);
+    raises ``SlackClientError`` on any failure, same as before this split.
+    """
+    client = WebClient()
+    try:
+        response = client.oauth_v2_access(
+            client_id=client_id,
+            client_secret=client_secret,
+            code=code,
+            redirect_uri=redirect_uri,
+        )
+    except SlackApiError as exc:
+        raise SlackClientError(
+            f"Slack OAuth exchange failed: {SlackClient._describe_error(exc)}"
+        ) from exc
+    if not response.get("ok", False):
+        raise SlackClientError(f"Slack OAuth exchange failed: {response.get('error')}")
+
+    authed_user = response.get("authed_user") or {}
+    access_token = authed_user.get("access_token", "")
+    if not access_token:
+        raise SlackClientError(f"Slack OAuth did not return a user access token: {response.data}")
+
+    return {
+        "access_token": access_token,
+        "user_id": authed_user.get("id", ""),
+        "team_id": (response.get("team") or {}).get("id", ""),
+        "team_name": (response.get("team") or {}).get("name", ""),
+        "email": _fetch_account_email(access_token, authed_user.get("id", "")),
+    }
+
+
+def save_token_record(token_file: str, token_record: dict[str, Any]) -> None:
+    os.makedirs(os.path.dirname(os.path.abspath(token_file)), exist_ok=True)
+    with open(token_file, "w", encoding="utf-8") as fh:
+        json.dump(token_record, fh)
+    try:
+        os.chmod(token_file, 0o600)
+    except OSError:  # pragma: no cover - best effort on non-POSIX
+        logger.debug("Could not chmod Slack token file (non-fatal)")
+
+
 def authorize_interactive(
     client_id: str,
     client_secret: str,
@@ -172,60 +239,19 @@ def authorize_interactive(
     (the Slack app IT registered). Returns the saved token record; raises
     ``SlackClientError`` on failure.
     """
-    scopes = ",".join(user_scopes or DEFAULT_USER_SCOPES)
 
-    def build_authorize_url(redirect_uri: str, state: str, code_challenge: str) -> str:
-        params = {
-            "client_id": client_id,
-            "user_scope": scopes,
-            "redirect_uri": redirect_uri,
-            "state": state,
-        }
-        return "https://slack.com/oauth/v2/authorize?" + urlencode(params)
+    def _build(redirect_uri: str, state: str, code_challenge: str) -> str:
+        return build_authorize_url(client_id, redirect_uri, state, user_scopes)
 
-    def exchange(code: str, redirect_uri: str, code_verifier: str) -> dict[str, Any]:
-        client = WebClient()
-        try:
-            response = client.oauth_v2_access(
-                client_id=client_id,
-                client_secret=client_secret,
-                code=code,
-                redirect_uri=redirect_uri,
-            )
-        except SlackApiError as exc:
-            raise SlackClientError(
-                f"Slack OAuth exchange failed: {SlackClient._describe_error(exc)}"
-            ) from exc
-        if not response.get("ok", False):
-            raise SlackClientError(f"Slack OAuth exchange failed: {response.get('error')}")
-        return response.data
+    def _exchange(code: str, redirect_uri: str, code_verifier: str) -> dict[str, Any]:
+        return exchange_code(client_id, client_secret, code, redirect_uri)
 
     try:
-        response = run_browser_oauth(
-            build_authorize_url, exchange, port=port, path=SLACK_REDIRECT_PATH
-        )
+        token_record = run_browser_oauth(_build, _exchange, port=port, path=SLACK_REDIRECT_PATH)
     except OAuthLoopbackError as exc:
         raise SlackClientError(f"Slack sign-in failed: {exc}") from exc
 
-    authed_user = response.get("authed_user") or {}
-    access_token = authed_user.get("access_token", "")
-    if not access_token:
-        raise SlackClientError(f"Slack OAuth did not return a user access token: {response}")
-
-    token_record = {
-        "access_token": access_token,
-        "user_id": authed_user.get("id", ""),
-        "team_id": (response.get("team") or {}).get("id", ""),
-        "team_name": (response.get("team") or {}).get("name", ""),
-        "email": _fetch_account_email(access_token, authed_user.get("id", "")),
-    }
-    os.makedirs(os.path.dirname(os.path.abspath(token_file)), exist_ok=True)
-    with open(token_file, "w", encoding="utf-8") as fh:
-        json.dump(token_record, fh)
-    try:
-        os.chmod(token_file, 0o600)
-    except OSError:  # pragma: no cover - best effort on non-POSIX
-        logger.debug("Could not chmod Slack token file (non-fatal)")
+    save_token_record(token_file, token_record)
     logger.info("Slack OAuth complete for team %r", token_record["team_name"])
     return token_record
 

@@ -17,6 +17,7 @@ built against it from here on gets per-principal scoping for free.
 """
 from __future__ import annotations
 
+import hmac
 import secrets
 import threading
 import time
@@ -118,12 +119,42 @@ def clear_session_cookie(response: Response) -> None:
     response.delete_cookie(SESSION_COOKIE, path="/")
 
 
+def check_csrf(request: Request, csrf: str | None) -> bool:
+    """Double-submit check for org-mode mutations (P8, docs/https-connector-
+    refactor-plan.md §9.3), mirroring web/session_auth.py's own
+    ``check_csrf`` exactly -- but against ``pf_org_session`` instead of
+    local mode's ``pf_session``. The session id itself doubles as the CSRF
+    token here for the same reason it does in local mode: it's server-set,
+    HttpOnly (page JS can never read it out of the cookie jar), and only
+    reachable by a page this server itself rendered baking the same value
+    in -- and unlike local mode's *shared* token, each org session already
+    has its own unguessable id (``OrgSessionStore.create()``), so no
+    separate per-session CSRF value needs to be minted and tracked."""
+    cookie = request.cookies.get(SESSION_COOKIE, "")
+    if not cookie or not csrf:
+        return False
+    return hmac.compare_digest(cookie, csrf)
+
+
+def check_origin(request: Request) -> bool:
+    """Defense in depth on top of the double-submit token above -- see
+    web/session_auth.py's identical function for the full rationale.
+    ``None`` (no Origin header at all) is accepted; only a *mismatched*
+    Origin is rejected."""
+    origin = request.headers.get("origin")
+    if origin is None:
+        return True
+    return origin == f"{request.url.scheme}://{request.url.netloc}"
+
+
 __all__ = [
     "DEFAULT_IDLE_TIMEOUT_SECONDS",
     "SESSION_COOKIE",
     "OrgSession",
     "OrgSessionStore",
     "authenticated",
+    "check_csrf",
+    "check_origin",
     "clear_session_cookie",
     "set_session_cookie",
 ]

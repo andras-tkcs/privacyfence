@@ -11,14 +11,25 @@ when idle, since "N users x up to 12 authenticated API clients" is, per that
 same section, "the main memory-scaling question."
 
 ``ConnectorRegistry`` is that: a lazy, bounded, principal-keyed cache of
-``ConnectorHost`` instances. It is deliberately **not** wired into
-daemon_main.py's own single-process boot sequence in this phase -- that
-still builds exactly one ``ConnectorHost`` for the local principal directly,
-unchanged, which is what keeps local mode byte-identical (this phase's own
-exit criterion). This class is the seam a later phase's real per-request
-serving plugs into once there's a second principal whose connectors can
-actually be built: P7 supplies the identity, P8 the per-user service
-authorization that makes a second principal's connectors buildable at all.
+``ConnectorHost`` instances. P6 built it but deliberately did **not** wire it
+into daemon_main.py's own single-process boot sequence -- that still built
+exactly one ``ConnectorHost`` for the local principal directly, unchanged,
+which is what kept local mode byte-identical (P6's own exit criterion). This
+class was the seam a later phase's real per-request serving would plug into
+once there's a second principal whose connectors can actually be built: P7
+supplied the identity, P8 (docs/https-connector-refactor-plan.md §9.3) the
+per-user service authorization that makes a second principal's connectors
+buildable at all.
+
+**P8 wires this in.** ``daemon_main.py``'s ``_start_org_web_server`` now
+builds one ``ConnectorRegistry`` per daemon and the ``/mcp`` dispatcher's
+``connectors_provider`` becomes ``lambda: registry.get(current_principal()).
+connectors`` -- ``local`` mode's own single ``ConnectorHost``, built once at
+startup for the local principal, is completely unaffected (this class is
+still never touched on that path). ``web/routes_connect.py``'s OAuth
+callback route calls ``evict(principal.id)`` right after writing a new
+service token, so the very next call for that principal rebuilds its
+connector set instead of waiting out ``idle_evict_seconds``.
 
 ``factory`` is meant to be exactly the shape
 ``daemon_main.build_connectors(config, org_config)`` already has --
