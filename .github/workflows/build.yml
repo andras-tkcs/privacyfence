@@ -93,9 +93,22 @@ jobs:
       # prerelease -- update_checker.py's beta update channel reads exactly
       # this flag off the releases list, so an unmarked tag would be
       # invisible to it.
-      - name: Attach DMG to release
+      #
+      # Alongside the DMG, also attach the two org config build scripts
+      # (scripts/build_org_bundle.py and scripts/sync_room_directory.py) as
+      # their own downloadable assets. They're stdlib-only / a checked-out
+      # copy is not what IT admins are expected to go find -- unlike the
+      # rest of scripts/, these two are themselves a release output, run by
+      # org admins (not contributors) to produce/update the org_config.json
+      # bundle distributed to end users -- see their own docstrings and
+      # docs/google-cloud-setup.md, docs/slack-setup.md,
+      # docs/salesforce-setup.md, docs/atlassian-setup.md.
+      - name: Attach release assets
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/PrivacyFence-*.dmg
+          files: |
+            dist/PrivacyFence-*.dmg
+            scripts/build_org_bundle.py
+            scripts/sync_room_directory.py
           prerelease: ${{ contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
