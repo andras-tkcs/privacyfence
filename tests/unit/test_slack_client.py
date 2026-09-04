@@ -242,6 +242,48 @@ class TestAuthorizeInteractive:
 
 
 # ---------------------------------------------------------------------------- #
+# build_authorize_url / exchange_code / save_token_record -- called directly
+# (not through run_browser_oauth) by web/routes_connect.py's org-mode
+# server-redirect flow (P8, docs/https-connector-refactor-plan.md §9.3).
+# ---------------------------------------------------------------------------- #
+
+class TestHoistedFunctions:
+    def test_build_authorize_url_direct_call(self):
+        from privacyfence.slack_client import build_authorize_url
+
+        url = build_authorize_url("cid", "https://pf.example.com/oauth/callback/slack", "state-1")
+        assert url.startswith("https://slack.com/oauth/v2/authorize?")
+        assert "client_id=cid" in url
+        assert "redirect_uri=https%3A%2F%2Fpf.example.com%2Foauth%2Fcallback%2Fslack" in url
+        assert "state=state-1" in url
+
+    def test_exchange_code_returns_the_normalized_record(self, monkeypatch):
+        from privacyfence.slack_client import exchange_code
+
+        mock_client = MagicMock()
+        mock_client.oauth_v2_access.return_value = _FakeSlackResponse({
+            "ok": True, "authed_user": {"id": "U1", "access_token": "xoxp-abc"}, "team": {"id": "T1", "name": "Acme"},
+        })
+        mock_client.users_info.return_value = {"user": {"profile": {"email": "me@acme.com"}}}
+        monkeypatch.setattr("privacyfence.slack_client.WebClient", MagicMock(return_value=mock_client))
+
+        record = exchange_code("cid", "csecret", "auth-code", "https://pf.example.com/cb")
+
+        assert record == {
+            "access_token": "xoxp-abc", "user_id": "U1", "team_id": "T1", "team_name": "Acme", "email": "me@acme.com",
+        }
+
+    def test_save_token_record_writes_with_restricted_permissions(self, tmp_path):
+        from privacyfence.slack_client import save_token_record
+
+        token_file = tmp_path / "nested" / "token.json"
+        save_token_record(str(token_file), {"access_token": "xoxp-abc"})
+
+        assert json.loads(token_file.read_text()) == {"access_token": "xoxp-abc"}
+        assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
+
+
+# ---------------------------------------------------------------------------- #
 # _clamp
 # ---------------------------------------------------------------------------- #
 

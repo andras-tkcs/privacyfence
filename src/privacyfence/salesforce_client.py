@@ -92,6 +92,73 @@ def _escape_sosl_term(term: str) -> str:
     return escaped
 
 
+def build_authorize_url(
+    consumer_key: str, redirect_uri: str, state: str, code_challenge: str,
+    login_url: str = DEFAULT_LOGIN_URL,
+) -> str:
+    """Salesforce's OAuth 2.0 Web Server flow authorize URL -- factored out
+    of ``authorize_interactive`` (P8, docs/https-connector-refactor-plan.md
+    §9.3) so ``web/routes_connect.py``'s org-mode server-redirect flow can
+    build the same URL without going through ``oauth_loopback.
+    run_browser_oauth``'s local listener."""
+    login_url = (login_url or DEFAULT_LOGIN_URL).rstrip("/")
+    params = {
+        "response_type": "code",
+        "client_id": consumer_key,
+        "redirect_uri": redirect_uri,
+        "state": state,
+        "scope": DEFAULT_SCOPES,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+    }
+    return f"{login_url}/services/oauth2/authorize?" + urlencode(params)
+
+
+def exchange_code(
+    consumer_key: str, consumer_secret: str, code: str, redirect_uri: str, code_verifier: str,
+    login_url: str = DEFAULT_LOGIN_URL,
+) -> dict[str, Any]:
+    """Exchanges an authorization code for a Salesforce token and returns
+    the normalized token record -- *not* yet saved to disk (see
+    ``save_token_file`` below). Shared by ``authorize_interactive``'s
+    local-mode loopback flow and org mode's server-redirect flow (P8);
+    raises ``SalesforceClientError`` on any failure, same as before this
+    split."""
+    login_url = (login_url or DEFAULT_LOGIN_URL).rstrip("/")
+    try:
+        resp = requests.post(
+            f"{login_url}/services/oauth2/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "client_id": consumer_key,
+                "client_secret": consumer_secret,
+                "redirect_uri": redirect_uri,
+                "code_verifier": code_verifier,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        raise SalesforceClientError(f"Salesforce OAuth exchange failed: {exc}") from exc
+    response = resp.json()
+
+    access_token = response.get("access_token", "")
+    instance_url = response.get("instance_url", "")
+    if not access_token or not instance_url:
+        raise SalesforceClientError(f"Salesforce OAuth did not return a usable token: {response}")
+
+    return {
+        "access_token": access_token,
+        "refresh_token": response.get("refresh_token", ""),
+        "instance_url": instance_url,
+    }
+
+
+def save_token_file(token_file: str, token_record: dict[str, Any]) -> None:
+    _save_token_file(token_file, token_record)
+
+
 def authorize_interactive(
     consumer_key: str,
     consumer_secret: str,
@@ -105,62 +172,22 @@ def authorize_interactive(
     organization config bundle (the Connected App IT registered). Returns the
     saved token record; raises ``SalesforceClientError`` on failure.
     """
-    login_url = (login_url or DEFAULT_LOGIN_URL).rstrip("/")
 
-    def build_authorize_url(redirect_uri: str, state: str, code_challenge: str) -> str:
-        params = {
-            "response_type": "code",
-            "client_id": consumer_key,
-            "redirect_uri": redirect_uri,
-            "state": state,
-            "scope": DEFAULT_SCOPES,
-            "code_challenge": code_challenge,
-            "code_challenge_method": "S256",
-        }
-        return f"{login_url}/services/oauth2/authorize?" + urlencode(params)
+    def _build(redirect_uri: str, state: str, code_challenge: str) -> str:
+        return build_authorize_url(consumer_key, redirect_uri, state, code_challenge, login_url)
 
-    def exchange(code: str, redirect_uri: str, code_verifier: str) -> dict[str, Any]:
-        try:
-            resp = requests.post(
-                f"{login_url}/services/oauth2/token",
-                data={
-                    "grant_type": "authorization_code",
-                    "code": code,
-                    "client_id": consumer_key,
-                    "client_secret": consumer_secret,
-                    "redirect_uri": redirect_uri,
-                    "code_verifier": code_verifier,
-                },
-                timeout=30,
-            )
-            resp.raise_for_status()
-        except requests.RequestException as exc:
-            raise SalesforceClientError(f"Salesforce OAuth exchange failed: {exc}") from exc
-        return resp.json()
+    def _exchange(code: str, redirect_uri: str, code_verifier: str) -> dict[str, Any]:
+        return exchange_code(consumer_key, consumer_secret, code, redirect_uri, code_verifier, login_url)
 
     try:
-        response = run_browser_oauth(
-            build_authorize_url,
-            exchange,
-            port=port,
-            path=SALESFORCE_REDIRECT_PATH,
-            redirect_host="localhost",
+        token_record = run_browser_oauth(
+            _build, _exchange, port=port, path=SALESFORCE_REDIRECT_PATH, redirect_host="localhost",
         )
     except OAuthLoopbackError as exc:
         raise SalesforceClientError(f"Salesforce sign-in failed: {exc}") from exc
 
-    access_token = response.get("access_token", "")
-    instance_url = response.get("instance_url", "")
-    if not access_token or not instance_url:
-        raise SalesforceClientError(f"Salesforce OAuth did not return a usable token: {response}")
-
-    token_record = {
-        "access_token": access_token,
-        "refresh_token": response.get("refresh_token", ""),
-        "instance_url": instance_url,
-    }
     _save_token_file(token_file, token_record)
-    logger.info("Salesforce OAuth complete for instance %s", instance_url)
+    logger.info("Salesforce OAuth complete for instance %s", token_record["instance_url"])
     return token_record
 
 

@@ -68,68 +68,70 @@ def is_unauthorized(exc: Exception) -> bool:
     return response is not None and getattr(response, "status_code", None) == 401
 
 
-def authorize_interactive(
-    client_id: str,
-    client_secret: str,
-    token_file: str,
-    scopes: list[str] | None = None,
-    port: int = ATLASSIAN_OAUTH_PORT,
-    pick_resource: Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """Run Atlassian's OAuth 2.0 (3LO) browser flow and persist the token.
-
-    ``client_id``/``client_secret`` come from the organization config bundle.
-    ``pick_resource`` is called with the list of Atlassian sites this account
-    can access when there is more than one; it must return the chosen entry.
-    Returns the saved token record; raises ``AtlassianOAuthError`` on failure.
-    """
+def build_authorize_url(
+    client_id: str, redirect_uri: str, state: str, code_challenge: str, scopes: list[str] | None = None,
+) -> str:
+    """Atlassian's OAuth 2.0 (3LO) authorize URL -- factored out of
+    ``authorize_interactive`` (P8, docs/https-connector-refactor-plan.md
+    §9.3) so ``web/routes_connect.py``'s org-mode server-redirect flow can
+    build the same URL without going through ``oauth_loopback.
+    run_browser_oauth``'s local listener."""
     scope_str = " ".join(scopes or DEFAULT_SCOPES)
+    params = {
+        "audience": "api.atlassian.com",
+        "client_id": client_id,
+        "scope": scope_str,
+        "redirect_uri": redirect_uri,
+        "state": state,
+        "response_type": "code",
+        "prompt": "consent",
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+    }
+    return f"{AUTHORIZE_URL}?" + urlencode(params)
 
-    def build_authorize_url(redirect_uri: str, state: str, code_challenge: str) -> str:
-        params = {
-            "audience": "api.atlassian.com",
-            "client_id": client_id,
-            "scope": scope_str,
-            "redirect_uri": redirect_uri,
-            "state": state,
-            "response_type": "code",
-            "prompt": "consent",
-            "code_challenge": code_challenge,
-            "code_challenge_method": "S256",
-        }
-        return f"{AUTHORIZE_URL}?" + urlencode(params)
 
-    def exchange(code: str, redirect_uri: str, code_verifier: str) -> dict[str, Any]:
-        try:
-            resp = requests.post(
-                TOKEN_URL,
-                json={
-                    "grant_type": "authorization_code",
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "code": code,
-                    "redirect_uri": redirect_uri,
-                    "code_verifier": code_verifier,
-                },
-                timeout=30,
-            )
-            resp.raise_for_status()
-        except requests.RequestException as exc:
-            raise AtlassianOAuthError(f"Atlassian OAuth exchange failed: {exc}") from exc
-        return resp.json()
-
+def exchange_code(client_id: str, client_secret: str, code: str, redirect_uri: str, code_verifier: str) -> dict[str, Any]:
+    """Exchanges an authorization code for an Atlassian token. Returns the
+    raw token response (``access_token``/``refresh_token``), *before* the
+    accessible-resources lookup and site selection ``authorize_interactive``
+    does next -- kept separate so org mode's callback route (P8) can insert
+    its own resource-choice page between exchange and persisting the token,
+    the same way a multi-site account already needs a ``pick_resource``
+    callback here."""
     try:
-        response = run_browser_oauth(
-            build_authorize_url, exchange, port=port, path=ATLASSIAN_REDIRECT_PATH
+        resp = requests.post(
+            TOKEN_URL,
+            json={
+                "grant_type": "authorization_code",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "code": code,
+                "redirect_uri": redirect_uri,
+                "code_verifier": code_verifier,
+            },
+            timeout=30,
         )
-    except OAuthLoopbackError as exc:
-        raise AtlassianOAuthError(f"Atlassian sign-in failed: {exc}") from exc
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        raise AtlassianOAuthError(f"Atlassian OAuth exchange failed: {exc}") from exc
+    response = resp.json()
 
     access_token = response.get("access_token", "")
-    refresh_token = response.get("refresh_token", "")
     if not access_token:
         raise AtlassianOAuthError(f"Atlassian OAuth did not return an access token: {response}")
+    return response
 
+
+def resolve_resource_and_save(
+    token_file: str, access_token: str, refresh_token: str,
+    pick_resource: Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """The rest of ``authorize_interactive``'s own tail: list accessible
+    sites, choose one (directly if there's only one, via ``pick_resource``
+    otherwise), and persist the token record. Split out from
+    ``authorize_interactive`` for the same reason as ``exchange_code``
+    above."""
     resources = _fetch_accessible_resources(access_token)
     if not resources:
         raise AtlassianOAuthError("No accessible Atlassian sites were returned for this account.")
@@ -154,6 +156,38 @@ def authorize_interactive(
     save_token_file(token_file, token_record)
     logger.info("Atlassian OAuth complete for site %s", token_record["site_url"])
     return token_record
+
+
+def authorize_interactive(
+    client_id: str,
+    client_secret: str,
+    token_file: str,
+    scopes: list[str] | None = None,
+    port: int = ATLASSIAN_OAUTH_PORT,
+    pick_resource: Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Run Atlassian's OAuth 2.0 (3LO) browser flow and persist the token.
+
+    ``client_id``/``client_secret`` come from the organization config bundle.
+    ``pick_resource`` is called with the list of Atlassian sites this account
+    can access when there is more than one; it must return the chosen entry.
+    Returns the saved token record; raises ``AtlassianOAuthError`` on failure.
+    """
+
+    def _build(redirect_uri: str, state: str, code_challenge: str) -> str:
+        return build_authorize_url(client_id, redirect_uri, state, code_challenge, scopes)
+
+    def _exchange(code: str, redirect_uri: str, code_verifier: str) -> dict[str, Any]:
+        return exchange_code(client_id, client_secret, code, redirect_uri, code_verifier)
+
+    try:
+        response = run_browser_oauth(_build, _exchange, port=port, path=ATLASSIAN_REDIRECT_PATH)
+    except OAuthLoopbackError as exc:
+        raise AtlassianOAuthError(f"Atlassian sign-in failed: {exc}") from exc
+
+    return resolve_resource_and_save(
+        token_file, response["access_token"], response.get("refresh_token", ""), pick_resource,
+    )
 
 
 def refresh(client_id: str, client_secret: str, refresh_token: str) -> dict[str, Any]:

@@ -429,9 +429,20 @@ def _start_org_web_server(
     startup failure, the same posture a missing/invalid settings.yaml
     already has) if org_config.json is missing the ``idp``/``server``
     sections org mode requires -- there is no silent partial-org-mode
-    fallback."""
+    fallback.
+
+    ``connector_host`` (the local principal's own connector set, built once
+    at startup by run_app()) is accepted for signature parity with local
+    mode's own call but is otherwise unused here as of P8: every org
+    principal's connectors now come from ``ConnectorRegistry`` below,
+    built lazily per principal instead of shared off the local principal's
+    set (docs/https-connector-refactor-plan.md §9.3 -- see connector_
+    registry.py's own docstring for why this was left unwired until now).
+    """
     from .approvals import PendingApprovalRegistry
+    from .connector_registry import ConnectorRegistry
     from .org_identity import IdpConfig
+    from .principal import Principal, current_principal
     from .web.mcp_dispatch import McpDispatcher
     from .web.oauth_provider import OrgOAuthProvider
     from .web.org_session import OrgSessionStore
@@ -447,36 +458,57 @@ def _start_org_web_server(
         )
 
     approvals_config = web_config.get("approvals", {}) or {}
-    registry = PendingApprovalRegistry(
+    approval_registry = PendingApprovalRegistry(
         hold_window=float(approvals_config.get("hold_window_seconds", 30.0)),
         pending_ttl=float(approvals_config.get("pending_ttl_seconds", 15 * 60.0)),
         ledger_ttl=float(approvals_config.get("ledger_ttl_seconds", 5 * 60.0)),
         max_pending=int(approvals_config.get("max_pending", 50)),
     )
-    web_ui = init_web_approval_ui(registry=registry)
+    web_ui = init_web_approval_ui(registry=approval_registry)
     # Org mode has no native popup to choose instead -- there is no GUI on
     # a server -- so WebApprovalUI is unconditionally the ApprovalUI here,
     # not gated on web.approval_ui the way local mode's own choice is.
     init_approval_ui(web_ui)
 
+    def _connectors_for_principal(_principal: Principal) -> list:
+        # Loaded fresh per principal, under the principal_scope
+        # ConnectorRegistry.get() already enters before calling this --
+        # the *relative* path is what makes _resolve_path() (and
+        # load_config's own bootstrap-a-default-on-first-use behavior)
+        # resolve against that principal's own users/<id>/config/
+        # settings.yaml rather than the local principal's, per §9.2's
+        # storage layout. Re-reading load_org_config() here (rather than
+        # closing over the org_config this function was called with)
+        # would also be defensible, but it's already loaded once by
+        # run_app() and passed down consistently everywhere else in this
+        # module, so this stays consistent with that.
+        cfg = load_config("config/settings.yaml")
+        return build_connectors(cfg, org_config)
+
+    connector_registry = ConnectorRegistry(factory=_connectors_for_principal)
+
     provider = OrgOAuthProvider(idp, idp_callback_url=f"{server_config.issuer_url.rstrip('/')}/oauth/idp/callback")
     sessions = OrgSessionStore()
     mcp_dispatcher = McpDispatcher(
-        lambda: connector_host.connectors, unattended_sessions_enabled=unattended_sessions_enabled,
-        registry=registry,
+        lambda: connector_registry.get(current_principal()).connectors,
+        unattended_sessions_enabled=unattended_sessions_enabled,
+        registry=approval_registry,
     )
 
     server = WebServer(
         web_ui,
         host=server_config.bind_host, port=server_config.port,
         mcp_dispatcher=mcp_dispatcher,
-        org=OrgAuth(provider=provider, sessions=sessions, idp=idp, issuer_url=server_config.issuer_url),
+        org=OrgAuth(
+            provider=provider, sessions=sessions, idp=idp, issuer_url=server_config.issuer_url,
+            connector_registry=connector_registry, org_config=org_config,
+        ),
         ssl_certfile=server_config.cert_file or None,
         ssl_keyfile=server_config.key_file or None,
         trusted_proxies=server_config.trusted_proxies,
     )
     server.start()
-    registry.set_base_url(server.base_url)
+    approval_registry.set_base_url(server.base_url)
     logger.info(
         "Org mode active -- MCP-over-HTTP at %s (OAuth 2.1, DCR at %s/register), IdP %s",
         server.mcp_url, server.base_url, idp.issuer,

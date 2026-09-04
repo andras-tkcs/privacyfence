@@ -67,6 +67,7 @@ from .resource_grants import (
     set_grant_entries,
 )
 from .resource_names import get_resolver
+from . import telegram_auth
 from .tasks_client import TasksClient
 from .update_checker import (
     REPO_RELEASES_URL_FALLBACK,
@@ -1238,18 +1239,7 @@ class SettingsController:
         def work() -> str:
             import asyncio
 
-            from telethon import TelegramClient
-
-            async def _send_code() -> str:
-                client = TelegramClient(session_file, api_id, api_hash)
-                await client.connect()
-                try:
-                    result = await client.send_code_request(phone)
-                    return result.phone_code_hash
-                finally:
-                    await client.disconnect()
-
-            return asyncio.run(_send_code())
+            return asyncio.run(telegram_auth.send_code(phone, session_file, api_id, api_hash))
 
         def done(ok: bool, result: Any) -> None:
             self._busy_connectors.discard("telegram")
@@ -1283,23 +1273,7 @@ class SettingsController:
         def work() -> str:
             import asyncio
 
-            from telethon import TelegramClient
-            from telethon.errors import SessionPasswordNeededError
-
-            async def _sign_in() -> str:
-                client = TelegramClient(session_file, api_id, api_hash)
-                await client.connect()
-                try:
-                    try:
-                        await client.sign_in(phone, code, phone_code_hash=phone_code_hash)
-                    except SessionPasswordNeededError:
-                        return "__needs_2fa__"
-                    me = await client.get_me()
-                    return f"{me.first_name or ''} {me.last_name or ''}".strip()
-                finally:
-                    await client.disconnect()
-
-            return asyncio.run(_sign_in())
+            return asyncio.run(telegram_auth.sign_in(phone, code, phone_code_hash, session_file, api_id, api_hash))
 
         def done(ok: bool, result: Any) -> None:
             self._busy_connectors.discard("telegram")
@@ -1308,7 +1282,7 @@ class SettingsController:
                     self._telegram_auth["error"] = str(result)
                 self._push_snapshot()
                 return
-            if result == "__needs_2fa__":
+            if result == telegram_auth.NEEDS_2FA:
                 if self._telegram_auth is not None:
                     self._telegram_auth["step"] = "password"
                     self._telegram_auth["error"] = ""
@@ -1340,19 +1314,7 @@ class SettingsController:
         def work() -> str:
             import asyncio
 
-            from telethon import TelegramClient
-
-            async def _sign_in_2fa() -> str:
-                client = TelegramClient(session_file, api_id, api_hash)
-                await client.connect()
-                try:
-                    await client.sign_in(password=password)
-                    me = await client.get_me()
-                    return f"{me.first_name or ''} {me.last_name or ''}".strip()
-                finally:
-                    await client.disconnect()
-
-            return asyncio.run(_sign_in_2fa())
+            return asyncio.run(telegram_auth.sign_in_2fa(password, session_file, api_id, api_hash))
 
         def done(ok: bool, result: Any) -> None:
             self._busy_connectors.discard("telegram")

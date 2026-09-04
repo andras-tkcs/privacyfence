@@ -16,19 +16,27 @@ whatever device the person clicking "Authenticate…" is holding. In ``local`` m
 that's the same machine by construction (this is the whole assumption `local`
 mode makes -- see docs/https-connector-refactor-plan.md §4), so it works as-is;
 it stops being true the moment a browser tab reaches a `local`-mode daemon from
-a different device (a phone tunneled to a laptop, say), and it is exactly the
-assumption P8's server-side redirect endpoints (§9.3) replace. Until then, the
-web settings page says so in its own copy next to a connector's Authenticate
-button (settings_window_html.py's `renderConnectors`) rather than leaving it
-implicit -- a cheap, honest statement of a real limitation beats a silent one.
-An even cheaper next step P8 can build on: return ``authorize_url`` to the
-caller and let *the page* open it (a same-machine `window.open`, or a QR code/
-link a phone can follow) instead of this module calling `webbrowser.open()`
-itself -- not done here because every current caller (Slack/Salesforce/
-Atlassian's `_authenticate_*` in settings_controller.py) is a single
-synchronous call this function owns start-to-finish; splitting "get the URL"
-from "wait for the callback" is a real API change for a benefit only `local`
-mode-with-a-different-device even wants.
+a different device (a phone tunneled to a laptop, say). ``local`` mode's web
+settings page says so in its own copy next to a connector's Authenticate button
+(settings_window_html.py's `renderConnectors`) rather than leaving it implicit
+-- a cheap, honest statement of a real limitation beats a silent one.
+
+P8 (docs/https-connector-refactor-plan.md §9.3) built the "next step" this
+docstring used to describe here: ``org`` mode doesn't use this module's
+loopback listener at all. ``web/routes_connect.py``'s ``GET /oauth/start/
+{service}``/``GET /oauth/callback/{service}`` build the same authorize
+URL/exchange the code server-side, against a real public redirect_uri
+(``{issuer_url}/oauth/callback/{service}``), with the browser doing the
+provider round trip instead of a loopback port on this machine. That's
+exactly why ``build_authorize_url``/``exchange_code`` were hoisted out of
+each of slack_client.py/salesforce_client.py/atlassian_oauth.py's own
+``authorize_interactive`` into public, module-level functions (P8): this
+module's ``run_browser_oauth`` is still what drives them in ``local`` mode
+(unchanged, byte-identical), but ``org`` mode calls the same functions
+directly and drives the provider round trip over real HTTP redirects
+instead. Google's equivalent split lives in the new ``google_oauth.py``
+module rather than here, since it never went through this module's loopback
+flow to begin with (``InstalledAppFlow`` manages its own).
 """
 
 from __future__ import annotations

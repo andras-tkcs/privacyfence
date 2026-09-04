@@ -101,6 +101,45 @@ class TestAuthenticated:
         assert os_.authenticated(_request_with_cookie("forged-session-id"), store) is None
 
 
+class TestCsrfAndOrigin:
+    def test_matching_cookie_and_csrf_value_passes(self):
+        request = _request_with_cookie("sess-abc")
+        assert os_.check_csrf(request, "sess-abc") is True
+
+    def test_mismatched_csrf_value_fails(self):
+        request = _request_with_cookie("sess-abc")
+        assert os_.check_csrf(request, "sess-different") is False
+
+    def test_missing_cookie_fails_even_with_a_csrf_value(self):
+        request = _request_with_cookie(None)
+        assert os_.check_csrf(request, "sess-abc") is False
+
+    def test_missing_csrf_value_fails_even_with_a_cookie(self):
+        request = _request_with_cookie("sess-abc")
+        assert os_.check_csrf(request, None) is False
+        assert os_.check_csrf(request, "") is False
+
+    def test_no_origin_header_is_accepted(self):
+        scope = {"type": "http", "headers": [], "method": "POST", "path": "/"}
+        assert os_.check_origin(Request(scope)) is True
+
+    def test_matching_origin_is_accepted(self):
+        scope = {
+            "type": "http", "method": "POST", "path": "/",
+            "headers": [(b"host", b"pf.example.com"), (b"origin", b"https://pf.example.com")],
+            "scheme": "https", "server": ("pf.example.com", 443),
+        }
+        assert os_.check_origin(Request(scope)) is True
+
+    def test_mismatched_origin_is_rejected(self):
+        scope = {
+            "type": "http", "method": "POST", "path": "/",
+            "headers": [(b"host", b"pf.example.com"), (b"origin", b"https://evil.example.com")],
+            "scheme": "https", "server": ("pf.example.com", 443),
+        }
+        assert os_.check_origin(Request(scope)) is False
+
+
 class TestSessionCookieHelpers:
     def test_set_session_cookie_is_secure_httponly_samesite_strict(self):
         response = Response()
