@@ -55,7 +55,13 @@ pytestmark = [
     # npm install/build (only on the first run per session -- see
     # built_shim_entry) can be slow on a cold cache; the suite's global 30s
     # pytest-timeout is tuned for pure-Python socket tests, not this.
-    pytest.mark.timeout(120),
+    #
+    # This must stay above built_shim_entry's own subprocess timeouts (180s
+    # install + 60s build = 240s): a slow-but-succeeding install needs room
+    # to finish, and a genuinely stuck one should hit the fixture's own
+    # subprocess.TimeoutExpired -> pytest.skip(...) path instead of being
+    # killed here first (which surfaces as a hard failure, not a skip).
+    pytest.mark.timeout(260),
 ]
 
 
