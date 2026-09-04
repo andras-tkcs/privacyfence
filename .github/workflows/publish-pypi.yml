@@ -19,6 +19,14 @@ on:
                         # at a tagged commit, or the build carries a local
                         # version segment (+g<sha>) that both indexes reject
 
+# Restrictive default for GITHUB_TOKEN, per CodeQL's actions/missing-workflow-
+# permissions check -- only `build` actually inherits this (it checks out the
+# repo); the two publish jobs below declare their own narrower job-level
+# `permissions:` (id-token: write only, no contents access at all), which
+# replaces this default for them rather than adding to it.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest   # pure Python sdist/wheel -- no macOS-only step needed
