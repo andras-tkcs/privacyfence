@@ -7,10 +7,9 @@ user, behind [Caddy](https://caddyserver.com/) for TLS, with **Google** as both 
 provider and (optionally) the Gmail/Drive/Calendar/Contacts/Tasks connector.
 
 This documents `org` mode as implemented through P8 ("per-user service authorization") of
-[`https-connector-refactor-plan.md`](https-connector-refactor-plan.md) — currently on branch
-`claude/https-refactoring-p8-upmn4z`, not yet merged to `main`. See §4 (operating modes), §9
-(identity, authentication, multi-user state) and §10 (security analysis) of that document for the
-design this guide is a concrete instance of.
+[`https-connector-refactor-plan.md`](https-connector-refactor-plan.md), now on `main`. See §4
+(operating modes), §9 (identity, authentication, multi-user state) and §10 (security analysis) of
+that document for the design this guide is a concrete instance of.
 
 > **This cannot be run end to end yet.** As of P8, `daemon_main.py`'s `run_app()` still
 > unconditionally ends with `from .menu_bar import run_menu_bar`, and `menu_bar.py` does a bare
@@ -155,17 +154,19 @@ Then install PrivacyFence itself as the `privacyfence` user, into its own isolat
 in [Step 7](#7-run-privacyfence-as-a-service) points at):
 
 ```bash
-# Once org mode has shipped in a tagged release (see CLAUDE.md's "Releasing" section):
+# Once org mode has shipped in a tagged release (see CLAUDE.md's "Releasing" section) --
+# check `git tag` upstream against docs/https-connector-refactor-plan.md's own status line
+# ("P8 ... have landed") to see whether the latest tag is past that point yet:
 sudo -u privacyfence -H bash -c 'pipx install privacyfence --python python3.11'
 
-# Until then — org mode (P7/P8) is only on the unreleased branch above, so install straight
-# from it instead of PyPI:
+# Until then -- org mode is on main but no tag past it has been cut yet, so install
+# straight from main instead of PyPI:
 sudo -u privacyfence -H bash -c \
-  'pipx install "git+https://github.com/andras-tkcs/privacyfence.git@claude/https-refactoring-p8-upmn4z" --python python3.11'
+  'pipx install "git+https://github.com/andras-tkcs/privacyfence.git@main" --python python3.11'
 ```
 
-Switch to the plain `pipx install privacyfence` form (and re-run it to upgrade) once that branch has
-merged and a version has been tagged — nothing else in this guide changes.
+Switch to the plain `pipx install privacyfence` form (and re-run it to upgrade) once a version has
+been tagged past org mode landing — nothing else in this guide changes.
 
 Verify:
 
@@ -271,8 +272,7 @@ bundle is copied over.
 
 ```bash
 git clone https://github.com/andras-tkcs/privacyfence
-cd privacyfence
-git checkout claude/https-refactoring-p8-upmn4z   # until this merges to main
+cd privacyfence   # main already carries org mode's --mode/--server-*/--idp-* flags
 
 python3 scripts/build_org_bundle.py \
   --mode org \
