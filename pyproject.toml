@@ -87,6 +87,14 @@ privacyfence = [
 [project.optional-dependencies]
 dev = [
     "pyinstaller>=6.0",
+    # sdist/wheel build + local upload, for rehearsing a release by hand --
+    # see the "Publishing to PyPI" section of CLAUDE.md. CI
+    # (.github/workflows/publish-pypi.yml) installs `build` itself and
+    # never needs twine: it uploads via pypa/gh-action-pypi-publish's OIDC
+    # trusted-publishing flow, not a stored token, so nothing here signs
+    # in as CI.
+    "build>=1.2",
+    "twine>=5.0",
 ]
 test = [
     "pytest>=8.0",

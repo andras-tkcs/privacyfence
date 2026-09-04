@@ -27,12 +27,14 @@ git tag v4.0.0a13          # pre-release: a=alpha, b=beta, rc=release-candidate 
 git push origin <tag>
 ```
 
-That tag push is what `.github/workflows/build.yml` triggers on (`on: push: tags: ['v*']`) — it
-builds and signs the DMG and attaches it to a GitHub Release, marked prerelease iff the tag contains
-`a`, `b`, or `rc` (`update_checker.py`'s beta channel reads exactly that flag). Nothing else
-anywhere needs editing or committing first. Between tags, `__version__` is a `setuptools_scm`-
-synthesized dev version (`<next-version>.dev<n>+g<sha>`, e.g. `4.0.1.dev3+gabc1234`) — see
-`update_checker.py`'s module docstring for exactly how that's compared against real release tags.
+That tag push is what `.github/workflows/build.yml` **and** `.github/workflows/publish-pypi.yml`
+both trigger on (`on: push: tags: ['v*']`) — the former builds and signs the DMG and attaches it to
+a GitHub Release, marked prerelease iff the tag contains `a`, `b`, or `rc` (`update_checker.py`'s
+beta channel reads exactly that flag); the latter builds the sdist/wheel from the same tag and
+publishes them to PyPI. Nothing else anywhere needs editing or committing first. Between tags,
+`__version__` is a `setuptools_scm`-synthesized dev version (`<next-version>.dev<n>+g<sha>`, e.g.
+`4.0.1.dev3+gabc1234`) — see `update_checker.py`'s module docstring for exactly how that's compared
+against real release tags.
 
 A checkout needs its full tag history for this to resolve correctly — a shallow clone (or a tarball
 with no `.git/` at all) falls back to `[tool.setuptools_scm]`'s `fallback_version`, a placeholder
@@ -50,6 +52,42 @@ the original bridge it replaced (retired at P5, see `docs/https-connector-refact
 there's nothing here for the real version to be injected into at build time. `scripts/
 build_mcpb.sh` reads the real version only to stamp the `.mcpb` manifest itself
 (`mcpb/manifest.json.tmpl`'s `__VERSION__`), not anything inside the bundled `shim.js`.
+
+### Publishing to PyPI
+
+`publish-pypi.yml` builds the sdist/wheel and publishes to **TestPyPI first, then PyPI**, gated in
+that order (`publish-pypi` job's `needs: publish-testpypi`) — a broken publish never reaches the
+real index. It authenticates with neither project via a stored API token: both use PyPI's OIDC
+**Trusted Publisher** mechanism (`pypa/gh-action-pypi-publish`, `permissions: id-token: write`),
+so GitHub mints a short-lived token for the job and PyPI/TestPyPI trade it for a one-shot upload
+credential themselves. There is no long-lived secret in this repo for either index.
+
+Before the workflow can publish for the first time, register it as a Trusted Publisher on **both**
+services — the project need not already exist there; both accept a "pending" publisher for a name
+that isn't claimed yet, and claim it on the first successful publish. Do this once per service:
+
+1. Sign in and go to `test.pypi.org/manage/account/publishing/` (repeat later, separately, on
+   `pypi.org/manage/account/publishing/` — the two are unrelated accounts/registrations even if you
+   use the same login for both).
+2. Add a pending publisher with:
+   - **PyPI Project Name**: `privacyfence`
+   - **Owner**: `andras-tkcs`
+   - **Repository name**: `privacyfence`
+   - **Workflow name**: `publish-pypi.yml`
+   - **Environment name**: `testpypi` (on TestPyPI) / `pypi` (on PyPI) — matches the `environment:`
+     each job in `publish-pypi.yml` declares. Scoping the publisher to an environment means the
+     minted OIDC token is only ever valid for that job, not any other job in this repo.
+
+Optionally, also create matching GitHub Environments (repo **Settings → Environments**) named
+`testpypi` and `pypi`. This isn't required for the OIDC exchange itself, but it's where you'd add a
+**required reviewer** on the `pypi` environment if you want a manual go/no-go checkpoint between the
+TestPyPI publish succeeding and the real PyPI publish running — the "test first" step the workflow
+already enforces via job ordering, made into an explicit approval gate rather than just a rerun-only
+safety net.
+
+`workflow_dispatch` exists for rerunning by hand (e.g. after a transient failure) — point it at a
+tagged commit. Run from an untagged commit and `setuptools_scm` produces a dev version with a local
+segment (`+g<sha>`), which both indexes reject as an upload.
 
 ## Branching & PRs
 

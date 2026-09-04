@@ -1362,6 +1362,16 @@ Start the daemon:
 privacyfence-app
 ```
 
+### Linux
+
+PrivacyFence is not yet a working Linux daemon — `run_app()` always ends by opening the native
+macOS menu bar, so `privacyfence-app` crashes right after startup on any other platform (or in `org`
+mode on macOS, for the same reason). `privacyfence.service` (repo root) is a systemd `--user` unit
+ready for when that's fixed — see its own header comment for the exact blocker, the tracking issue,
+and install steps. Two pieces of the Linux/PyPI packaging story are already in place ahead of that:
+publishing to PyPI (CLAUDE.md's "Publishing to PyPI") and `~/.privacyfence` path resolution for a
+real `pip install privacyfence` (`paths.py`'s `_is_installed_package()`).
+
 ---
 
 ## Connecting Claude
