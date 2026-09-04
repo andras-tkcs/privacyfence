@@ -40,15 +40,16 @@ The sections below preserve the complete tool-level and implementation-level beh
 
 ## Review model
 
-Every tool call passes through one of three gate values. `review` and `popup` are both native
-macOS popups PrivacyFence shows itself — there is no separate Claude Cowork-side approval step
-for either one. What differs between them is direction and button set (see below).
+Every tool call passes through one of three gate values. `review` and `popup` are both popups
+PrivacyFence shows itself, on its own embedded web approval page — there is no separate Claude
+Cowork-side approval step for either one. What differs between them is direction and button set
+(see below).
 
 | Gate | Behaviour |
 |------|-----------|
 | `auto` | Passed through immediately, logged as `auto_accepted` |
-| `review` | Native popup approval — read direction (tool → Claude) |
-| `popup` | Native popup approval — write direction (Claude → tool) |
+| `review` | Popup approval — read direction (tool → Claude) |
+| `popup` | Popup approval — write direction (Claude → tool) |
 
 ### Two flows by direction
 
@@ -57,13 +58,13 @@ for either one. What differs between them is direction and button set (see below
 > `destructiveHint = false`. This is intentional. See
 > [Why every tool is advertised as read-only](#why-every-tool-is-advertised-as-read-only) below.
 
-Both flows below open the same kind of native popup — a summary box plus a scrollable pane with
+Both flows below open the same kind of popup — a summary box plus a scrollable pane with
 the full content. The only differences are the button set and, on the read side, the PII scan
 layered on top.
 
 **Tool → Claude (reads) — gate `review`**
 
-PrivacyFence opens a native popup with a summary box and a scrollable pane showing the full
+PrivacyFence opens a popup with a summary box and a scrollable pane showing the full
 content (e.g. the email body) up front, offering:
 
 - **Allow once** — data is returned to Claude
@@ -74,8 +75,8 @@ content (e.g. the email body) up front, offering:
 
 **Claude → Tool (writes / actions) — gate `popup`**
 
-Claude already describes the action it is about to take in the chat. PrivacyFence opens a native
-popup showing the full action details with **Allow once** or **Deny** — auto-accepting a write
+Claude already describes the action it is about to take in the chat. PrivacyFence opens a popup
+showing the full action details with **Allow once** or **Deny** — auto-accepting a write
 silently is a materially bigger blast radius than auto-accepting a read, so most write popups have
 no **Always allow** at all. 35 tools across 29 operation keys are a narrow, deliberate exception —
 each proposing a rule scoped to the one folder/label/calendar/project/space/task-list the call just
@@ -141,7 +142,7 @@ When something is flagged on a `review` (read) call:
 
 `drive_upload_file`'s exception only extends the **second** part of that — the forced "Are you
 sure?" confirmation, and `pii_detected` in the audit log. Its own first popup is never tinted red:
-`approval_window.py`'s red-banner rendering is wired to the review-gate's `pii_categories` only, and
+`approval_window_html.py`'s red-banner rendering is wired to the review-gate's `pii_categories` only, and
 the popup-gate window never receives a value for it regardless of tool, so a flagged upload's first
 dialog looks like any other (at most the ordinary amber content-flag banner, if `write_content_flags`
 separately matched) — the confirmation dialog is the only visible sign anything was flagged.
@@ -191,7 +192,7 @@ manual revocation needed. Same lifetime and cross-chat sharing as
 [`created_this_session`](#auto-accept-rules) below: it lives in memory only, tied to the daemon
 process, and is forgotten on restart.
 
-**Toggle:** enable or disable the whole gate from the settings window's **General** page (**PII
+**Toggle:** enable or disable the whole gate from PrivacyFence Settings' **General** page (**PII
 Detection Gate**), or set `pii_detection.enabled: true|false` directly in `config/settings.yaml`.
 Enabled by default.
 
@@ -351,8 +352,8 @@ per-item Slack call — without them, resolving every message author/channel in 
 result costs one `users.info` and one `conversations.info` call per unique sender/channel, every time.
 Both snapshots refresh automatically about once a week — checked once the IPC server comes up on every
 daemon restart (so a snapshot that went stale while the app was closed is caught then, not on whatever
-tool call happens to run first), in the background so the refresh can't delay the menu bar icon
-appearing, and, in between restarts, lazily on first use once seven days have passed. These two tools
+tool call happens to run first), in the background so the refresh can't delay startup completing,
+and, in between restarts, lazily on first use once seven days have passed. These two tools
 exist purely for the exception: someone new (a hire, a channel) needs to resolve correctly *before* the
 next automatic refresh. Neither tool reads any message content; both are auto-approved.
 `slack_refresh_channel_cache` specifically bounds each call to a fixed number of `conversations.list`
@@ -438,8 +439,8 @@ search under this connector's OAuth scope.
 already primed by a recent `telegram_list_chats` call (in particular, any chat surfaced only via
 `telegram_search_messages`, or after a daemon restart) shows up unresolved. The snapshot refreshes
 automatically about once a week — same as Slack's directory caches, checked once the IPC server comes
-up on every daemon restart, in the background so a large account's re-sync can't delay the menu bar
-icon appearing — and, in between restarts, lazily on first use once seven days have passed. This does
+up on every daemon restart, in the background so a large account's re-sync can't delay startup
+completing — and, in between restarts, lazily on first use once seven days have passed. This does
 mean a daemon restart now connects to Telegram eagerly rather than waiting for the first Telegram tool
 call, an accepted tradeoff now that the connection happens off the startup critical path. Reads no
 message content; auto-approved.
@@ -549,7 +550,7 @@ Trusting a specific resource — a Drive folder, a Google Tasks list, a Slack ch
 project, ... — is configured **once per resource**, under `auto_accept_grants` in
 `config/settings.yaml`, rather than by adding the same ID to every operation key that resource
 happens to touch (see [Auto-accept rules](#auto-accept-rules) below for the older, still-supported
-per-operation form). This is also what the settings window's **Auto-accept Rules → \<Connector\> →
+per-operation form). This is also what PrivacyFence Settings' **Auto-accept Rules → \<Connector\> →
 Trusted \<Resource\>** sections read and write — editing the YAML directly and editing from that
 window are equivalent.
 
@@ -577,7 +578,7 @@ auto_accept_grants:
 Each grant entry is keyed by `id` (or `key` for Jira/Confluence, which already address resources
 that way) plus a small set of capability booleans. A freshly added grant starts with every
 capability `false` — adding a resource does nothing until a capability is explicitly turned on,
-from the settings window or by hand. `name` is a cosmetic cache of the resource's last-resolved
+from PrivacyFence Settings or by hand. `name` is a cosmetic cache of the resource's last-resolved
 display name; the evaluator never reads it, only `id`/`key` and the capability booleans decide what
 auto-accepts.
 
@@ -604,9 +605,9 @@ underlying checks differ (a destination-folder arg for uploads; the file's curre
 not the move's destination, for moves — see [Auto-accept rules](#auto-accept-rules) below), but take
 the same plain folder-id-list value the grant already compiles.
 
-### Settings window UX
+### Settings page UX
 
-On the settings window's **Auto-accept Rules** page, selecting a connector shows each resource type
+On the settings page's **Auto-accept Rules** page, selecting a connector shows each resource type
 above as its own **Trusted \<Resource\>** section: every currently-granted resource is its own row,
 with a **Name** field and a **Resource ID** field (plain text inputs, committed on blur/Enter —
 pasting a Drive/Sheets URL into a Drive folder's ID field extracts the ID automatically; every other
@@ -614,9 +615,10 @@ connector's ID field takes the raw ID/key as typed), one toggle (rendered as a c
 and its own **✕ Remove**. Once an ID is entered and the connector is authenticated, its display name
 is resolved in the background and shown in the Name field (see [Name resolution](#name-resolution)
 below). Adding one is a single **+ Add \<resource\>…** action that appends a blank row to fill in by
-hand — an earlier menu-bar version of this page had a native "pick from a list of everything visible
-to this connector" picker for connectors with a cheap listing call; this pass's settings window
-dropped that in favor of the same manual Name/Resource-ID entry for every connector.
+hand — an earlier, pre-#120 native menu-bar version of this page had a native "pick from a list of
+everything visible to this connector" picker for connectors with a cheap listing call; that pass
+dropped it in favor of the same manual Name/Resource-ID entry for every connector, and it stayed
+dropped through the move to the web (P4/P10).
 
 Every existing rule under `auto_accept_rules` that isn't a resource grant (domain trust, label
 matching, file-type allowlists, and similar — see [Auto-accept rules](#auto-accept-rules)) lives on
@@ -625,47 +627,48 @@ the rule names that operation actually supports (`RULES_BY_OPERATION` in setting
 committed immediately on selection rather than requiring the rule name to be typed by hand; `value`
 stays a plain text field, committed on blur/Enter. A list-valued rule's `value` field takes a
 comma-separated list directly (e.g. `domain1.com, domain2.com`) in one field, rather than an earlier
-menu-bar version's one-value-at-a-time **+ Add value…** / **✕ Remove** treatment.
+native menu-bar version's one-value-at-a-time **+ Add value…** / **✕ Remove** treatment.
 
-**Sheets** and **Docs** get their own top-level sidebar pages in this window (neither is a real
-connector — both ride on Drive's OAuth grant, see [Auto-accept rules](#auto-accept-rules)'s Drive
-section), but the `folders`/`sandbox_folders` grants above are Drive-page-only sections — a folder
-trusted there silently also covers `sheets.read_values` and every `sheets.*`/`docs.*` write. So
-each of those two pages opens with a read-only **Governed by Drive** section summarizing the
-currently-granted folder(s) for read/write and a **Manage in Drive →** link that jumps the sidebar
-selection there — no checkboxes of its own; the one editable copy of these grants stays on the
-Drive page.
+**Sheets** and **Docs** get their own top-level sidebar pages (neither is a real connector — both
+ride on Drive's OAuth grant, see [Auto-accept rules](#auto-accept-rules)'s Drive section), but the
+`folders`/`sandbox_folders` grants above are Drive-page-only sections — a folder trusted there
+silently also covers `sheets.read_values` and every `sheets.*`/`docs.*` write. So each of those two
+pages opens with a read-only **Governed by Drive** section summarizing the currently-granted
+folder(s) for read/write and a **Manage in Drive →** link that jumps the sidebar selection there —
+no checkboxes of its own; the one editable copy of these grants stays on the Drive page.
 
 ### Web surfaces (`/approvals`, `/settings`)
 
-P4 (`docs/https-connector-refactor-plan.md` §16) puts the same settings UX above, and the approval
-card, on the web — opt-in, alongside the native windows, not a replacement for them yet (P10 is what
-eventually retires those). Two config keys under `web:` in `settings.yaml`:
+Every approval card and the settings page above are served over the embedded web server
+(`web/server.py`) — through P9 (P1/P4, `docs/https-connector-refactor-plan.md` §16) this ran
+alongside a native macOS menu bar/approval dialogs/settings window; P10 deleted that native UI
+layer entirely (§12, decision D6: "two approval surfaces means two places for a security fix to
+land"), so the web surface is now the only one, on every platform this daemon runs on. Two config
+keys under `web:` in `settings.yaml`:
 
-- `web.approval_ui: web` — P1's own lever, unchanged: approvals render at `/approvals` instead of a
-  native dialog.
-- `web.settings.enabled: true` — turns on `GET /settings` and its `POST /api/settings/{action}`
-  dispatcher, independent of the lever above (a deployment can mix native approvals with the web
-  settings page, or the reverse). `web.settings.allow_quit` (default `true`) gates whether the About
-  page's Quit button works from a browser at all — always behind an in-page confirmation either way.
+- `web.mcp.enabled: true` (default) — turns on the `/mcp` Streamable HTTP endpoint Claude talks to.
+- `web.settings.enabled: true` (default since P10) — turns on `GET /settings` and its
+  `POST /api/settings/{action}` dispatcher. `web.settings.allow_quit` (default `true`) gates whether
+  the About page's Quit button works from a browser at all — always behind an in-page confirmation
+  either way. The approval surface itself (`/approvals`) has no such switch — P10 is the phase with
+  no rollback, since it deleted the fallback.
 
-Both pages, when enabled, share one origin, one session (the same local `web_token` §10 of the
-refactor plan already describes), and one shared chrome (`web_shell.py`): a header with Approvals/
-Settings navigation and a live-connection indicator bound to `GET /api/state/stream` — one SSE
-channel carrying both a `settings` event (`SettingsController.snapshot()`, pushed the moment
-something changes it from anywhere — a rule edited over MCP, a background OAuth flow finishing) and
-an `approvals` event (the pending-approval list), so an open tab never needs a manual refresh.
+Both pages share one origin, one session (the same local `web_token` §10 of the refactor plan
+already describes), and one shared chrome (`web_shell.py`): a header with Approvals/Settings
+navigation and a live-connection indicator bound to `GET /api/state/stream` — one SSE channel
+carrying both a `settings` event (`SettingsController.snapshot()`, pushed the moment something
+changes it from anywhere — a rule edited over MCP, a background OAuth flow finishing) and an
+`approvals` event (the pending-approval list), so an open tab never needs a manual refresh.
 
-`/settings`'s own action dispatcher is an **explicit allowlist**, not the native window's
-`getattr(controller, action)` — an unlisted or misspelled action name is a 404 before any lookup
-happens at all, and every argument is validated against the controller method's own type
-annotations (a bad `idx` is a 400, not a 500). Four actions that don't fit "POST an action, get a
-snapshot back" get their own routes instead: uploading an organization config bundle (multipart,
-JSON/`version`-validated, written `0600`), downloading the current week's audit log export
-(`Content-Disposition: attachment`), an in-page "update available" banner (Download/Remind Me
-Later/Skip, replacing a native alert), and the repo link (a plain `<a href>`, opened client-side —
-never a `subprocess.run(["open", ...])` reachable from an HTTP request, which nothing under `web/`
-does at all, by design).
+`/settings`'s own action dispatcher is an **explicit allowlist** — an unlisted or misspelled action
+name is a 404 before any lookup happens at all, and every argument is validated against the
+controller method's own type annotations (a bad `idx` is a 400, not a 500). Four actions that don't
+fit "POST an action, get a snapshot back" get their own routes instead: uploading an organization
+config bundle (multipart, JSON/`version`-validated, written `0600`), downloading the current week's
+audit log export (`Content-Disposition: attachment`), an in-page "update available" banner
+(Download/Remind Me Later/Skip), and the repo link (a plain `<a href>`, opened client-side — never a
+`subprocess.run(["open", ...])` reachable from an HTTP request, which nothing under `web/` does at
+all, by design).
 
 The `/approvals` list (`docs/approval-list-ui-ux.md`) shows every currently-pending card as its own
 row — connector icon, title, a relative timestamp, a **Deny** button right on the row, and a
@@ -710,7 +713,7 @@ i.e. the same rule value repeated identically across *every* operation key that 
 logged at `INFO` level. A **partial** match (the value present on some but not all of a
 capability's operation keys) is deliberately left alone rather than migrated, since folding it in
 would silently widen auto-accept to operation keys never explicitly configured — those stay under
-`auto_accept_rules`, visible and removable from the connector's page in the settings window, but no
+`auto_accept_rules`, visible and removable from the connector's page in PrivacyFence Settings, but no
 longer offered as something "+ Add rule…" creates fresh (steering new configuration toward the
 grants model without breaking what's already there).
 
@@ -777,7 +780,7 @@ destination folder ID is in the allowlist).
 > **`approved_folder`, `approved_sandbox_folder`, `parent_folder_allowlist`, and
 > `move_within_approved_folders` are all grant-managed** — see
 > [Auto-accept grants](#auto-accept-grants) → `drive.folders` / `drive.sandbox_folders`. Add the
-> folder there once (from the settings window's **Trusted Folders** / **Sandbox Folders** sections
+> folder there once (from PrivacyFence Settings' **Trusted Folders** / **Sandbox Folders** sections
 > under **Auto-accept Rules → Drive**, or by hand under `auto_accept_grants`) and it applies across
 > every operation key below automatically, instead of needing the same folder ID added to each one
 > separately — including
@@ -1108,7 +1111,7 @@ privacyfence_propose_auto_accept_rule_change(target, operation, reason, ...) -> 
 `target` is `"rule"` (an `auto_accept_rules` entry) or `"grant"` (an `auto_accept_grants` entry);
 `operation` is `"add"`, `"update"`, or `"remove"`. This is the one write path an `/mcp` connection
 has into `settings.yaml`, and there is no way to reach it without a human confirming: every call
-blocks on the same native confirmation dialog the "Always allow" button uses
+blocks on the same confirmation dialog the "Always allow" button uses
 (`show_rule_confirmation_popup`) — even if an identical rule/grant already exists. A decline (or a
 call from a connection in an [unattended session](#scheduled--unattended-cowork-tasks)) makes the
 call throw rather than return a false-y result, the same "deny == exception" contract every other
@@ -1124,7 +1127,7 @@ gated tool call already follows.
   `"write"`, to `true`/`false`; see the capability tables under
   [Auto-accept grants](#auto-accept-grants) for which keys apply to which resource type).
 
-Applying the change reuses the exact same persistence functions the settings window's editor and
+Applying the change reuses the exact same persistence functions the settings page's editor and
 the "Always allow" flow already use (`auto_accept.add_auto_accept_rule`/`remove_auto_accept_rule`,
 `resource_grants.apply_grant_upsert`/`apply_grant_removal`), so an MCP-proposed change hot-reloads
 the live evaluator the same way. When it actually changes something, it's recorded as one of four
@@ -1141,14 +1144,14 @@ hand-pinned to `approved_sandbox_folder` (see the callout under
 [Auto-accept rules](#auto-accept-rules)) when what's actually wanted is one
 `auto_accept_grants.drive.sandbox_folders` grant. With these two tools, Claude can list the current
 rules, identify the duplicates, and propose removing them and adding the equivalent grant instead —
-each step still confirmed by a human, same as if they'd done it by hand in the settings window.
+each step still confirmed by a human, same as if they'd done it by hand in the settings page.
 
 ---
 
 ## Scheduled / unattended Cowork tasks
 
 A scheduled Claude Cowork Routine can run with nobody at the keyboard. If it calls a `review`- or
-`popup`-gated tool that no auto-accept rule covers, the normal behavior — open a native popup and
+`popup`-gated tool that no auto-accept rule covers, the normal behavior — open a popup and
 wait — means the task hangs indefinitely, and since every popup shares one lock, it also blocks
 every other approval (including an unrelated interactive one) behind it until someone finds and
 answers the dialog. Two additions address this. Design rationale (why a `contextvars`-scoped flag
@@ -1209,7 +1212,7 @@ changes the failure mode for calls that would otherwise open an unanswered dialo
 every other approval behind it.
 
 **Off by default.** Set in the organization config bundle (`org_config.json`, installed via
-"Install/Update Organization Config…" on the settings window's **General** page — see
+"Install/Update Organization Config…" on PrivacyFence Settings' **General** page — see
 [scripts/build_org_bundle.py](../scripts/build_org_bundle.py)'s `--enable-unattended-sessions`
 flag), not in `settings.yaml`:
 
@@ -1221,17 +1224,18 @@ flag), not in `settings.yaml`:
 
 `privacyfence_begin_unattended_session` errors until an administrator opts in — a Claude session
 gaining the ability to switch its own connection into fail-fast mode is a deliberate
-per-organization choice, not a per-user setting, so it isn't exposed as a settings-window toggle.
+per-organization choice, not a per-user setting, so it isn't exposed as a settings-page toggle.
 The unattended flag is scoped to one Streamable HTTP MCP session (a Cowork task's own connection to
 `/mcp` — `web/mcp_dispatch.py`'s `McpDispatcher`, keyed the same way a bridge connection used to be
 before P5 retired it) and clears automatically if the session ends, so there's no persistent state
 to clean up.
 
-The tray's own UI does not currently surface how many sessions are in this state — the pre-#120
-menu bar's top item showed a live count (e.g. "PrivacyFence is running — 1 unattended session
-active"), but the two-item tray issue #120 replaced it with (`menu_bar.py`) has no equivalent, and
-`SettingsController` doesn't surface the count anywhere in the settings window either as of this
-writing — `McpDispatcher.set_unattended_changed_listener` is still wired up
+The web settings page does not currently surface how many sessions are in this state — a pre-#120
+native menu bar item briefly showed a live count (e.g. "PrivacyFence is running — 1 unattended
+session active"), but no surface since (the two-item tray issue #120 replaced it with, and now the
+web settings page after P10 deleted that tray entirely) has an equivalent —
+`SettingsController` doesn't surface the count anywhere as of this writing —
+`McpDispatcher.set_unattended_changed_listener` is still wired up
 (`SettingsController._on_unattended_changed`, via `SettingsController.wire_unattended_listener`)
 but its only current effect is triggering a state re-render of whatever page happens to be open,
 not displaying the count itself. The underlying `McpDispatcher.unattended_session_count()` this
@@ -1286,11 +1290,13 @@ PrivacyFence splits configuration into two steps done by two different people:
    into the bundle from a *second*, admin-scoped Google Cloud project via
    `scripts/sync_room_directory.py` — see "Room directory sync" in
    [google-cloud-setup.md](google-cloud-setup.md).
-2. **Every user, from the settings window (tray icon → "Settings…"):** install the bundle
-   IT sent you from the **General** page, then click **Authenticate…** on each connector you want
-   from the **Connectors** page. Almost everywhere this opens your browser to sign in — Telegram is
-   the only connector that instead asks for your phone number and a verification code via its own
-   in-window sign-in flow, since MTProto has no browser-OAuth equivalent.
+2. **Every user, from PrivacyFence Settings** (the embedded web page — `web.settings.enabled: true`
+   by default, see `settings.yaml.example`): install the bundle IT sent you from the **General**
+   page, then click **Authenticate…** on each connector you want from the **Connectors** page.
+   Almost everywhere this opens your browser to sign in — Telegram is the only connector that
+   instead asks for your phone number and a verification code via its own in-page sign-in flow,
+   since MTProto has no browser-OAuth equivalent. The daemon logs the exact URL (including the
+   session token) on startup — `Web settings active -- open at http://localhost:8765/settings?token=...`.
 
 > See [google-cloud-setup.md](google-cloud-setup.md), [slack-setup.md](slack-setup.md), [salesforce-setup.md](salesforce-setup.md), [atlassian-setup.md](atlassian-setup.md), and [telegram-setup.md](telegram-setup.md) for the full walkthroughs.
 
@@ -1302,14 +1308,16 @@ the only download you need:
 1. Download the latest `PrivacyFence-<version>.dmg` from the [Releases](../../../releases) page.
 2. Open the DMG, drag **PrivacyFenceApp.app** to `/Applications`.
 3. Launch it. Releases are code-signed and notarized by Apple, so Gatekeeper lets it open
-   normally — no quarantine warning, no manual `xattr` step. The menu bar icon appears
-   immediately; there's no setup wizard to walk through.
+   normally — no quarantine warning, no manual `xattr` step. The daemon starts immediately in the
+   background (no Dock icon, no menu bar item); there's no setup wizard to walk through.
 4. To start PrivacyFence automatically at login, install the LaunchAgent once:
    ```bash
    cp com.privacyfence.app.plist ~/Library/LaunchAgents/
    launchctl load ~/Library/LaunchAgents/com.privacyfence.app.plist
    ```
-5. From the tray icon, click **Settings…**, then on the **General** page click
+5. Open PrivacyFence Settings — the daemon logs the exact URL (with its session token) to
+   `~/.privacyfence/logs/privacyfence.log` on startup, e.g.
+   `http://localhost:8765/settings?token=...` — then on the **General** page click
    **Install/Update Organization Config…** and select the bundle your IT team sent you.
 6. On the **Connectors** page, click **Authenticate…** for each connector you want — this takes
    effect immediately (the daemon's live connector list is hot-reloaded), no quit/reopen needed.
@@ -1335,8 +1343,8 @@ cp src/privacyfence/resources/settings.yaml.example config/settings.yaml
 ```
 
 Build (or obtain from IT) an organization config bundle, then authorize each connector you want —
-either from the settings window (tray icon → "Settings…" → **Connectors**) once
-`privacyfence-app` is running, or headlessly from the CLI. Running
+either from PrivacyFence Settings' **Connectors** page once `privacyfence-app` is running (the
+daemon logs the URL on startup), or headlessly from the CLI. Running
 from source (unbundled) keeps all of this — config, `org/`, `credentials/`, logs — inside the repo
 folder itself; only a PyInstaller-bundled `.app` uses `~/.privacyfence` instead (see
 [dev-vs-live-setup.md](dev-vs-live-setup.md)):
@@ -1364,13 +1372,17 @@ privacyfence-app
 
 ### Linux
 
-PrivacyFence is not yet a working Linux daemon — `run_app()` always ends by opening the native
-macOS menu bar, so `privacyfence-app` crashes right after startup on any other platform (or in `org`
-mode on macOS, for the same reason). `privacyfence.service` (repo root) is a systemd `--user` unit
-ready for when that's fixed — see its own header comment for the exact blocker, the tracking issue,
-and install steps. Two pieces of the Linux/PyPI packaging story are already in place ahead of that:
-publishing to PyPI (CLAUDE.md's "Publishing to PyPI") and `~/.privacyfence` path resolution for a
-real `pip install privacyfence` (`paths.py`'s `_is_installed_package()`).
+Through P9, PrivacyFence was not a working Linux daemon at all — `run_app()` always ended by
+opening the native macOS menu bar, so `privacyfence-app` crashed right after startup on any other
+platform. P10 (`docs/https-connector-refactor-plan.md` §12, decision D6) deleted that native UI
+layer entirely, so the daemon now starts and runs headlessly on any platform Python and its
+dependencies support — nothing left in `src/privacyfence/` imports a macOS-specific module.
+`privacyfence.service` (repo root) is a systemd `--user` unit for this; see its own header comment
+for the current status (the core blocker is fixed, but a real Linux install is still unverified end
+to end — packaging, autostart, and CI for it are the remaining work, per #121 in the issue tracker).
+Two pieces of the Linux/PyPI packaging story are already in place: publishing to PyPI (CLAUDE.md's
+"Publishing to PyPI") and `~/.privacyfence` path resolution for a real `pip install privacyfence`
+(`paths.py`'s `_is_installed_package()`).
 
 ---
 
@@ -1388,8 +1400,7 @@ The daemon and its MCP-facing pieces are built and shipped separately:
 - **`/mcp` directly** — Claude Code (and any other MCP client with native Streamable HTTP + bearer
   auth support) talks to the daemon's `/mcp` endpoint with no intermediate process at all.
 
-Until P5 (see [`docs/https-connector-refactor-plan.md`](https-connector-refactor-plan.md) §12),
-`bridge/` — the original Node/TypeScript stdio MCP server this replaced for Desktop — existed
+Until P5, `bridge/` — the original Node/TypeScript stdio MCP server this replaced for Desktop — existed
 alongside the shim as a migration-window rollback (`PrivacyFence (Legacy Bridge).mcpb`, a second
 extension built straight from `bridge/`, unchanged). P5 removed the bridge, its build step, and that
 second extension once both transports had shipped a stable release each; `PrivacyFence.mcpb` (the
@@ -1471,10 +1482,33 @@ See [`config/settings.yaml.example`](../src/privacyfence/resources/settings.yaml
   docstring). Claude Code talks to it directly; Claude Desktop's shim (`mcpb/shim/`) proxies it over
   stdio, discovering the same `mcp_url`/`mcp_token` files itself, with no config file edited and no
   token copied by hand.
-- The daemon uses two threads: the main thread runs the rumps menu bar app (a hard macOS requirement for AppKit) and a web-server thread runs uvicorn serving `/mcp` (every connector call now actually runs on this thread's own asyncio event loop). The main approval window is native AppKit/WKWebView (see `approval_window.py`), shown from any thread via `performSelectorOnMainThread_withObject_waitUntilDone_`; the smaller secondary confirmation/list-picker dialogs (PII confirmation, rule confirmation, rule choice, the Atlassian multi-resource picker) are a second, much smaller AppKit+WKWebView host with the same blocking-wait pattern (see `dialog_window.py`/`dialog_window_html.py`) — `approval_popup.py` no longer shells out to `osascript` at all. `gate.py` reaches all of these through the pluggable `ApprovalUI` interface (`approval_ui.py`) rather than importing `approval_popup` directly — today's only implementation is `NativeApprovalUI`, but the seam exists so a future UI (e.g. mobile remote approval) can plug in without changing the policy loop.
+- The daemon uses two threads: the main thread waits on a plain `threading.Event` until shutdown is
+  requested (PrivacyFence Settings' "Quit PrivacyFence" action, or SIGINT/Ctrl-C — see
+  `daemon_main.py`'s `_wait_for_shutdown`), and a web-server thread runs uvicorn serving `/mcp` and
+  every web page (every connector call now actually runs on this thread's own asyncio event loop).
+  Through P9 this looked different: the main thread ran a native `rumps` menu bar app (a hard macOS
+  requirement for AppKit), the main approval window was native AppKit/WKWebView
+  (`approval_window.py`, shown from any thread via
+  `performSelectorOnMainThread_withObject_waitUntilDone_`), and smaller secondary confirmation/
+  list-picker dialogs (PII confirmation, rule confirmation, rule choice, the Atlassian multi-resource
+  picker) ran through a second, smaller AppKit+WKWebView host (`dialog_window.py`). P10
+  (`docs/https-connector-refactor-plan.md` §12, decision D6) deleted all of that, along with
+  `menu_bar.py`/`settings_window.py`/`approval_popup.py` — the pure HTML those hosts rendered
+  (`approval_window_html.py`/`dialog_window_html.py`/`settings_window_html.py`) is unchanged and now
+  serves the same content over the web instead, through `WebApprovalUI` (`web_approval_ui.py`).
+  `gate.py` still reaches the active approval surface through the pluggable `ApprovalUI` interface
+  (`approval_ui.py`) rather than importing `WebApprovalUI` directly — it's the only implementation
+  now, but the seam stays so a future one (e.g. mobile remote approval, or a Windows-native dialog
+  for #121) can plug in without changing the policy loop.
 - All tools are advertised to Claude with `readOnlyHint = true` — see below.
-- The approval window follows the system's light/dark appearance automatically — no config or menu bar toggle, it reads `NSApp`'s current appearance.
-- The daemon checks GitHub Releases once a day for a newer version (`update_checker.py`) and shows a one-time native alert dialog if one is found (`Download` / `Skip This Version` / `Remind Me Later`) — never downloads or installs anything automatically; there's no persistent menu item for it. On by default; toggle from the settings window's **General** page ("Check for Updates") or `update_check.enabled` in `settings.yaml`. See [security-and-compliance.md](security-and-compliance.md) for what this network call does and doesn't send.
+- The approval card follows the browser/OS's light/dark appearance automatically — no config toggle,
+  it's plain CSS `prefers-color-scheme`.
+- The daemon checks GitHub Releases once a day for a newer version (`update_checker.py`) and shows an
+  in-page banner on PrivacyFence Settings' **General** page if one is found (`Download` / `Skip This
+  Version` / `Remind Me Later`) — never downloads or installs anything automatically. On by default;
+  toggle from that same page ("Check for Updates") or `update_check.enabled` in `settings.yaml`. See
+  [security-and-compliance.md](security-and-compliance.md) for what this network call does and
+  doesn't send.
 
 ### Why every tool is advertised as read-only
 

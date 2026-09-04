@@ -10,12 +10,14 @@ sensitivity badges, PDF body rendering, etc.) that table doesn't cover. Neither 
 that table says what Claude *already knew* before a given call, from prior auto-approved calls —
 for that cut, see [`claude-knowledge-boundary.md`](claude-knowledge-boundary.md). Source of truth
 for everything below: [`gate.py`](../src/privacyfence/gate.py),
-[`approval_popup.py`](../src/privacyfence/approval_popup.py),
-[`approval_window.py`](../src/privacyfence/approval_window.py),
+[`web_approval_ui.py`](../src/privacyfence/web_approval_ui.py),
 [`approval_window_html.py`](../src/privacyfence/approval_window_html.py),
-[`dialog_window.py`](../src/privacyfence/dialog_window.py),
 [`dialog_window_html.py`](../src/privacyfence/dialog_window_html.py) — re-derive from there if
-this drifts, don't trust it blindly.
+this drifts, don't trust it blindly. Through P9 the card content below was also rendered inside a
+native macOS AppKit window (`approval_window.py`/`dialog_window.py`, backed by
+`approval_popup.py`); P10 (`docs/https-connector-refactor-plan.md` §12, decision D6) deleted that
+host, so `WebApprovalUI` (`web_approval_ui.py`) is what calls into the `*_html.py` builders below
+now — the content itself is unchanged, since those two modules never depended on AppKit at all.
 
 ## The four dialogs
 
@@ -23,30 +25,30 @@ Every gated tool call resolves through exactly one of these:
 
 | Dialog | Built by | Used for | Buttons |
 |---|---|---|---|
-| **Review-gate window** | `approval_popup.show_read_popup` | `gate="review"` tools — reads | Deny, Allow once, *Always allow* (conditional) |
-| **Popup-gate window** | `approval_popup.show_popup` | `gate="popup"` tools — writes | Deny, Allow once, *Always allow* (conditional — WG-2/WG-3 below, 35 tools; see row 9 below), *temp-accept disclosure caption shown above the buttons for WG-3 instead — conditional, see row 8 below; no separate button for that* |
-| **PII confirmation** | `approval_popup.show_pii_confirmation_popup` | second-step check after Allow/Always-allow on a review-gate call whose content matched the PII detector | Cancel (default), Proceed |
-| **Rule confirmation** | `approval_popup.show_rule_confirmation_popup` | second-step check after clicking Always allow | Cancel (default), Confirm |
+| **Review-gate card** | `WebApprovalUI.show_read_popup` | `gate="review"` tools — reads | Deny, Allow once, *Always allow* (conditional) |
+| **Popup-gate card** | `WebApprovalUI.show_popup` | `gate="popup"` tools — writes | Deny, Allow once, *Always allow* (conditional — WG-2/WG-3 below, 35 tools; see row 9 below), *temp-accept disclosure caption shown above the buttons for WG-3 instead — conditional, see row 8 below; no separate button for that* |
+| **PII confirmation** | `WebApprovalUI.show_pii_confirmation_popup` | second-step check after Allow/Always-allow on a review-gate call whose content matched the PII detector | Cancel (default), Proceed |
+| **Rule confirmation** | `WebApprovalUI.show_rule_confirmation_popup` | second-step check after clicking Always allow | Cancel (default), Confirm |
 
-The first two are the real estate this doc is about — a custom AppKit window
-(`approval_window.py`) with one WKWebView (`approval_window_html.build_card_stack_html`) filling
-the *entire* content area, Deny/Allow once/Always allow included — these three render as part of
-that same HTML document (`approval_window_html.py`'s `_button_row_html`/`_JS`), not native
-NSButtons in a fixed band below it. The last two are a much smaller AppKit+WKWebView window of
-their own (`dialog_window.py`/`dialog_window_html.build_confirmation_html`, ported from the old
-`osascript display dialog` prompts these used to be in issue #145): one line of text, two buttons,
-no preview/details sections at all, so there's nothing to group — see their docstrings in
-`approval_popup.py` for exact wording. `dialog_window.py` also hosts a third, still smaller shape
-(`build_choice_html`) not listed in the table above: the N-option list picker behind
-`approval_popup.show_rule_choice_popup` and `settings_controller._osascript_pick`'s old Atlassian
-multi-resource picker — no preview/details either, and no dialog of its own row in "the four
-dialogs" table since it isn't a gate outcome, just a chooser.
+The first two are the real estate this doc is about — one self-contained HTML document
+(`approval_window_html.build_card_stack_html`) filling the *entire* card, Deny/Allow once/Always
+allow included — these three render as part of that same document
+(`approval_window_html.py`'s `_button_row_html`/`_JS`). Through P9 this was hosted inside a custom
+AppKit window with one WKWebView; the document itself didn't change when P10 moved it to a browser
+tab instead. The last two are a much smaller document of their own
+(`dialog_window_html.build_confirmation_html`, ported from the old `osascript display dialog`
+prompts these used to be in issue #145): one line of text, two buttons, no preview/details sections
+at all, so there's nothing to group — see `web_approval_ui.py`'s methods for exact wording.
+`dialog_window_html.py` also hosts a third, still smaller shape (`build_choice_html`) not listed in
+the table above: the N-option list picker behind `settings_controller._pick_resource_index`'s
+Atlassian multi-resource picker — no preview/details either, and no dialog of its own row in "the
+four dialogs" table since it isn't a gate outcome, just a chooser.
 
-## Anatomy of the main window, top to bottom
+## Anatomy of the main card, top to bottom
 
-Both the review-gate and popup-gate windows are the *same* `ApprovalWindowController`, built from
-the same section order (`approval_window.py`'s `_build_content_view`); what differs is which
-optional sections a given call populates. In display order:
+Both the review-gate and popup-gate cards are built from the same section order
+(`approval_window_html.build_card_stack_html`); what differs is which optional sections a given
+call populates. In display order:
 
 | # | Section | Appears when | Review-gate only? | Popup-gate only? | Per-tool opt-in, or automatic? |
 |---|---|---|---|---|---|
@@ -56,7 +58,7 @@ optional sections a given call populates. In display order:
 | 4 | §2 "Claude says" reason card | `claude_reason` non-empty | no | no | **Automatic** — every gated tool's schema requires a `reason` param; self-reported, never verified |
 | 5 | §3 disclosure card ("What will be provided to Claude") | `new_info` and/or `visibility` non-empty | **yes** | – | Per-tool — built from `new_info` (real per-tool values) first, then `visibility`-derived policy sentences appended if also set (`_disclosure_rows()`). Never present for a write — `show_popup` never sets either |
 | 6 | §4 PII/content-flag risk card | PII detector flagged the scanned content | – | – | **Automatic** — `gate.py` runs `detect_pii_categories()` on every call's content (review-gate: `pii_categories`, forces a second confirmation; popup-gate: `write_content_flags`, informational only — see Cross-cutting below) |
-| 7 | Right-hand preview pane (WIDE layout only; reading-time estimate) | `layout == "wide"` for this tool | no | no | Per-tool, fixed — see `_TOOL_LAYOUT` in `gate.py`/`scripts/qa_popup_smoke.py`. NARROW-layout tools have no preview pane at all |
+| 7 | Right-hand preview pane (WIDE layout only; reading-time estimate) | `layout == "wide"` for this tool | no | no | Per-tool, fixed — see `_TOOL_LAYOUT` in `gate.py`. NARROW-layout tools have no preview pane at all |
 | 8 | Temp-accept disclosure caption (plain text, not a control) | `temp_accept_eligible` | – | **yes** | **Automatic** — `gate.py` sets it from `auto_accept.temp_accept_key()` resolving for the six WG-3 tools below. Not offered as a button: clicking Allow once on one of these silently also arms the 5-minute same-file grace window this caption describes — see WG-3 below |
 | 9 | Buttons | always | – | – | One Always-allow button per matching candidate, offered when `auto_accept.suggest_rule_choices()` (review-gate) or `auto_accept.suggest_write_rule()` (popup-gate, WG-2/WG-3 — see [Always allow for writes](TECHNICAL_REFERENCE.md#always-allow-for-writes)) finds one for this item. The temp-accept caption (row 8) and Always-allow button(s) are independent and can both appear at once (WG-3). Every operation gets 0 or 1 button except the four `auto_accept.SUGGESTION_FAMILIES` read operations (Drive reads, `calendar_get_event_details`, `jira_get_issue`, Confluence reads), which can render 2+ — see [Multiple matching candidates](always-allow-rules-reference.md#multiple-matching-candidates). Each button's own label names the specific rule it would create (e.g. "Always allow — this folder"), not a plain unspecific "Always allow" — see `gate.py`'s `accept_all_choices`/`auto_accept.describe_rule_short()`; empty for the one unconditional rule (`always_allow`, e.g. `gmail_create_draft`) with no category to name |
 
@@ -83,7 +85,7 @@ Row 7's right pane defaults to plain escaped text. Three things override that:
 ## View groups — review-gate (read) tools
 
 Every review-gate tool renders through one of two dialog shapes, distinguished only by whether the
-right pane holds a native PDF embed:
+right pane holds an inline PDF embed:
 
 ### RG-1 — Review popup
 
@@ -126,7 +128,7 @@ in the dialog" — see [`claude-knowledge-boundary.md`](claude-knowledge-boundar
 | `slack_search_messages` | Query | Message text, Usernames |
 | `gmail_get_message` | From, Date, Subject | Message body, Attachments |
 
-### RG-2 — Review popup with native PDF body
+### RG-2 — Review popup with inline PDF body
 
 One tool: **`drive_get_file_content`**. Preview: File, Owner, Size, Modified. Checklist: File
 metadata, Document content. Right pane is plain text (first ~2000 chars) *unless* the file is an
@@ -266,7 +268,7 @@ skips the grace window entirely in favor of a standing rule, same confirmation f
 - **§4's read-tinted card (red) vs. write-tinted card (amber)**: both come from the same local
   detector (`pii_detector.py`'s `detect_pii_categories()`), but scan opposite directions and carry
   opposite weight. The read-tinted styling itself is still strictly review-gate only:
-  `show_popup`/`approval_window.py`'s controller never receives a `pii_categories` value on the
+  `show_popup`/`card_builder.py`'s translation never receives a `pii_categories` value on the
   popup-gate path, only `write_content_flags` (the amber styling), regardless of tool. What *is*
   shared with one write tool is the underlying **gate behavior** the red tint is a visual cue for,
   not the card's rendering: on Allow/Always-allow, the review-gate's `pii_categories` forces a
@@ -275,7 +277,7 @@ skips the grace window entirely in favor of a standing rule, same confirmation f
   (`gate.py`'s `upload_pii_categories`) triggers that same second dialog and audit-log
   `pii_detected` field. Its first popup's card *does* look different for this one tool: `gate.py`
   passes `upload_forced=True` (derived from `upload_pii_categories` being non-empty) through to
-  `show_popup`/`show_native_approval`, which renders the "write-forced" card variant — an interim
+  `show_popup`/`card_builder.build_card_html`, which renders the "write-forced" card variant — an interim
   placeholder reusing the read-gate's own red-tinted styling, since no distinct design exists yet
   for this narrow case (see `approval_window_html.py`'s `_risk_section_html` docstring). Every
   other popup-gate tool's amber card stays purely informational end to end: no second dialog, the

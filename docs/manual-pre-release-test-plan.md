@@ -21,7 +21,7 @@ Do these in order — each step's prerequisites are satisfied by the one before 
       `tests/fixtures/qa_environment.yaml.example` and work through `docs/qa-environment-setup.md`
       if this is the first release on a fresh environment, or if any fixture named in that file was
       renamed or deleted since the last release).
-- [ ] Confirm every connector you're about to test is authenticated from the PrivacyFence menu bar.
+- [ ] Confirm every connector you're about to test is authenticated from PrivacyFence Settings.
 
 ## 1. Fixture recording / refresh check
 
@@ -52,60 +52,43 @@ what they returned whenever they were last recorded.
       fixture diff sitting uncommitted.
 - [ ] Save the full report (`--report-file`) and keep it for the release PR description.
 
-## 2. QA popup smoke test
+## 2. QA web smoke test
 
-Goal: visually confirm the real approval-window modal loop still works end to end — a real click
-on a real on-screen button actually resolves the popup — which construction-only unit tests
-(`tests/unit/test_approval_window.py`) don't cover.
+Goal: confirm the real embedded web approval/settings surface still works end to end in a real
+browser — a real click on a real on-screen button actually resolves the card and returns to the
+list — which construction-only unit tests (`test_approval_window_html.py`, `tests/unit/web/`) don't
+cover. Through P9 this section drove the native macOS popup's modal loop instead
+(`qa_popup_smoke.py`); P10 deleted that surface, so this is now the whole of tier 2 — see
+`docs/testing-policy.md` §2.2.
 
-You don't need to run all 108 scenarios before every release (that's specifically for
-`approval_window.py` modal-loop changes, per `docs/testing-policy.md` §2.2) — running one narrow
-and one wide representative scenario is enough to confirm the mechanism itself still works:
-
-- [ ] Run one review-gate (read) example, watching the window as it appears (raise
-      `--pause-seconds` so you actually have time to look):
+- [ ] Run the full, automated smoke suite (needs `playwright`; installs its own headless Chromium if
+      none is found):
       ```bash
-      .venv/bin/python scripts/qa_popup_smoke.py --scenario "gmail_get_thread" --pause-seconds 3
+      .venv/bin/pip install playwright
+      .venv/bin/python scripts/qa_web_smoke.py --report-file /tmp/web_smoke_full.md
       ```
-      Confirm: the popup actually appears on screen, shows the From/Subject/thread preview, and
-      the script reports `passed` after "Allow once" is clicked programmatically.
-- [ ] Run one popup-gate (write) example with the temp-accept caption:
-      ```bash
-      .venv/bin/python scripts/qa_popup_smoke.py --scenario "drive_sheets_write_range" --pause-seconds 3
-      ```
-      Confirm: the popup appears, shows the temp-accept disclosure caption above the buttons, and
-      the script reports `passed`.
-- [ ] Run one settings-window scenario (a separate mechanism — a real click on the real status-bar
-      icon, then a real click into the webview settings window):
-      ```bash
-      .venv/bin/python scripts/qa_popup_smoke.py --scenario "Settings window · status item" --pause-seconds 3
-      ```
-      Confirm: the status-bar item opens and the settings window appears.
-- [ ] If `approval_window.py`'s modal-loop plumbing changed since the last release (not just popup
-      *content*, which PR review already covers), run the full suite instead of the three
-      spot-checks above:
-      ```bash
-      .venv/bin/python scripts/qa_popup_smoke.py --report-file /tmp/popup_smoke_full.md
-      ```
-      and confirm the final line reads `108/108 scenarios passed` (97 tool-approval RG-/WG-
-      scenarios, 4 `dialog_window.py` confirmation/rule-choice scenarios, and 7 settings-window
-      scenarios).
-- [ ] Requires macOS and Accessibility permission granted to your terminal/IDE — grant it once from
-      System Settings → Privacy & Security → Accessibility if you haven't already.
-- [ ] Repeat one of the two scenarios above with your Mac in dark mode (System Settings →
-      Appearance → Dark), and again in light mode if you started in dark — confirm every card,
-      the risk/PII banners, and the button row all render with readable contrast in both, since
-      this isn't covered by any automated test.
+      Confirm the final line reads `5/5 scenarios passed` — settings page load/toggle round-trip,
+      the approvals list's empty state, a pending row plus Deny-from-row, a card decide returning to
+      the list with its toast (the regression this scenario exists for: a script-order bug that only
+      a real browser catches), and the service worker registering under the page's real CSP.
+- [ ] Open the real daemon's `/approvals` and `/settings` pages in a real desktop browser (not the
+      headless one the script above drives) with at least one gated call pending, once in light mode
+      and once in dark mode (your OS/browser's own appearance toggle) — confirm every card, the
+      risk/PII banners, and the button row all render with readable contrast in both, since that's a
+      visual judgment no automated test makes.
+- [ ] Open the same two pages at a phone-width viewport (browser dev tools' device toolbar, ~375px,
+      or a real phone on the same network) — confirm the WIDE card's two-column layout collapses to
+      stacked sections with no horizontal scrolling (docs/https-connector-refactor-plan.md §7.3).
 
 ## 3. "QA prompt" manual test — representative live connector pass
 
-Goal: exercise real approval popups end to end (silent auto-accept / native popup / Deny / Always
+Goal: exercise real approval popups end to end (silent auto-accept / popup / Deny / Always
 allow) against real accounts through an actual Claude Cowork/Desktop session — the one thing that
 proves the gate, the popup UI, and the audit log agree with each other, not just with themselves.
 
 This plan does not replace running the full prompt in
 [`connector-qa-testing.md`](connector-qa-testing.md) — do that in full before any release that
-touched `gate.py`, `auto_accept.py`, `resource_grants.py`, or the menu bar's auto-accept UI broadly
+touched `gate.py`, `auto_accept.py`, `resource_grants.py`, or the web approval UI broadly
 (per `docs/testing-policy.md` §3). For a release that didn't touch that logic, the shortened
 version below (two connectors, one of each approval path) is the minimum bar — don't skip it
 entirely.
@@ -122,7 +105,7 @@ entirely.
       > call `gmail_add_label` on the first message with a fresh test label — tell me first,
       > because I'm going to click **Always allow**; confirm it proposes a `label_name_allowlist`
       > rule scoped to that exact label, not a broader one. Afterward, remove that rule again from
-      > **Manage Auto-accept Rules… → Gmail → Filters** so it doesn't linger.
+      > PrivacyFence Settings' **Auto-accept Rules → Gmail** page so it doesn't linger.
 - [ ] **Slack — the auto-accept contrast.** Paste into the conversation:
       > Call `slack_get_channel_history` on `<approved channel from qa_environment.yaml>` — expect
       > silent, no prompt, since it's on the allowlist. Then call it again on a channel that isn't
@@ -146,7 +129,7 @@ it, not just from source.
 - [ ] On your live macOS account (`docs/dev-vs-live-setup.md`'s Account 2), install the freshly
       built DMG as a hand-test of the release candidate before it's published: `xattr -cr`, install
       the LaunchAgent plist, load it.
-- [ ] From the menu bar: install/update the organization config bundle, authenticate at least one
+- [ ] From PrivacyFence Settings: install/update the organization config bundle, authenticate at least one
       connector, and confirm `PrivacyFence.mcpb` installs into Claude Desktop from the mounted DMG
       with no config file edited and no token copied — the shim discovers `~/.privacyfence/mcp_url`
       and `mcp_token` itself (D11, `docs/https-connector-refactor-plan.md` §12).

@@ -1,7 +1,7 @@
 """Shared Atlassian OAuth 2.0 (3LO) helper for Jira + Confluence.
 
 One Atlassian OAuth app (organization-level config, installed via the
-"Install/Update Organization Config…" menu bar action) covers both products —
+"Install/Update Organization Config…" action in PrivacyFence Settings) covers both products —
 a single browser consent grants access to whichever Atlassian site the user
 picks, and the resulting token is shared by jira_client.py and
 confluence_client.py (``credentials/atlassian_token.json``).
@@ -214,7 +214,7 @@ def load_token_file(token_file: str) -> dict[str, Any]:
     if not os.path.exists(token_file):
         raise AtlassianOAuthError(
             f"No Atlassian token found at '{token_file}'. Use Authenticate… in "
-            "the PrivacyFence menu bar to sign in."
+            "PrivacyFence Settings to sign in."
         )
     with open(token_file, encoding="utf-8") as fh:
         return json.load(fh)

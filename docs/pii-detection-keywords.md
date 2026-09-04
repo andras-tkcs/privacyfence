@@ -58,7 +58,7 @@ These run regardless of language, since they match a structural format rather th
 ## Individually optional categories
 
 **IP address** and **Financial figures (currency amounts)** can each be turned off on their own,
-independent of the gate as a whole, via the **PII Detection Gate** submenu in the menu bar or
+independent of the gate as a whole, via the **PII Detection Gate** section of PrivacyFence Settings or
 `pii_detection.detect_ip_addresses` / `detect_financial_figures` in `config/settings.yaml` (both
 `true` by default). Unlike the other categories in this doc, these two show up constantly in
 ordinary business correspondence — server logs, invoices, budgets — without being personal data

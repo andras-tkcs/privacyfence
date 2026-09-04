@@ -21,8 +21,8 @@ IPC socket, which used to be a genuinely OS-assigned ephemeral port
 (discovered via a now-retired `ipc_port` file, see P5 in
 `docs/https-connector-refactor-plan.md`) precisely so two accounts' daemons
 could never collide. `/mcp` has no such protection: if both accounts run the
-web server (`web.mcp.enabled`, `web.approval_ui: web`, or
-`web.settings.enabled`) at the same time, the second one to start fails to
+web server (which is always running in local mode since P10 — see
+`web.mcp.enabled`/`web.settings.enabled`) at the same time, the second one to start fails to
 bind. Give one account a different `web.port` in its `config/settings.yaml`
 if you ever need both running concurrently — routine on a single dev/live
 pair where only Account 1 (below) actually talks to Claude day to day, but
@@ -91,7 +91,8 @@ normally — no manual `xattr` step (see
 only needed for a locally-built, not-yet-signed-the-same-way DMG (see
 [manual-pre-release-test-plan.md](manual-pre-release-test-plan.md)).
 
-Then from the menu bar: install the real org config bundle,
+Then from PrivacyFence Settings (`web.settings.enabled: true` by default —
+see `config/settings.yaml.example`): install the real org config bundle,
 **Authenticate…** each real connector, and double-click `PrivacyFence.mcpb`
 from the mounted DMG to install the extension into Claude Desktop.
 

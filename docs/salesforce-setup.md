@@ -2,7 +2,7 @@
 
 PrivacyFence connects to Salesforce via OAuth 2.0 (the Web Server Flow), through a **Connected App**. No username, password, or security token is ever entered into PrivacyFence — users sign in through Salesforce's own login page in their browser.
 
-The Connected App is organization-level config: **one IT admin creates it once**, packages the consumer key/secret into PrivacyFence's organization config bundle, and distributes it. Individual users just click **Authenticate…** in the menu bar.
+The Connected App is organization-level config: **one IT admin creates it once**, packages the consumer key/secret into PrivacyFence's organization config bundle, and distributes it. Individual users just click **Authenticate…** in PrivacyFence Settings.
 
 ---
 
@@ -52,7 +52,7 @@ Use `--salesforce-login-url https://test.salesforce.com` if your users authentic
 
 ## For users
 
-1. Get `org_config.json` from your IT team and install it via **Organization Config…** in the PrivacyFence menu bar (if you haven't already for another service — if a config is already installed, click **Update…** in the status prompt).
+1. Get `org_config.json` from your IT team and install it via **Organization Config…** in PrivacyFence Settings (if you haven't already for another service — if a config is already installed, click **Update…** in the status prompt).
 2. **Connectors → Salesforce → Authenticate…**. Your browser opens to Salesforce's login page — sign in and click **Allow**.
 3. Quit and reopen PrivacyFence to activate the connector.
 
@@ -78,4 +78,4 @@ Salesforce enforces a daily API call limit per org. Reduce query frequency or sw
 If your org authenticates against a sandbox, make sure the bundle was built with `--salesforce-login-url https://test.salesforce.com` (IT admin) — the sign-in flow is otherwise identical.
 
 **Token expired mid-session**
-PrivacyFence retries once with a refreshed token automatically. If it still fails, click **Reconnect…** in the menu bar to sign in again.
+PrivacyFence retries once with a refreshed token automatically. If it still fails, click **Reconnect…** in PrivacyFence Settings to sign in again.

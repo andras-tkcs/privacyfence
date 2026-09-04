@@ -46,7 +46,7 @@ logic. Its per-connector manifest lives in `tests/fixtures/qa_environment.yaml` 
 it from [`qa_environment.yaml.example`](../tests/fixtures/qa_environment.yaml.example) first); every
 "For the recorder" step below says which field(s) to fill in there.
 
-Every grant below can also be added from the menu bar — **Manage Auto-accept Rules… → \<Connector\> →
+Every grant below can also be added from PrivacyFence Settings — **Auto-accept Rules → \<Connector\> →
 Trusted \<Resource\> → + Add…** — instead of editing YAML by hand; both are equivalent, and the older
 per-operation form under `auto_accept_rules` (e.g. `approved_folder`, `approved_channel`) still
 works too. Only the YAML form is shown below. See [Auto-accept
@@ -56,7 +56,7 @@ grants](TECHNICAL_REFERENCE.md#auto-accept-grants) for the full reference.
 
 ## Prerequisites
 
-- [ ] Authenticate every connector you want to test, from the PrivacyFence menu bar
+- [ ] Authenticate every connector you want to test, from PrivacyFence Settings
   - [ ] Gmail, Drive, Calendar, Contacts, Tasks, Apps Script — [`google-cloud-setup.md`](google-cloud-setup.md)
   - [ ] Slack — [`slack-setup.md`](slack-setup.md)
   - [ ] Jira & Confluence — [`atlassian-setup.md`](atlassian-setup.md)
@@ -220,7 +220,7 @@ should target the PFQA calendar instead.
         3. `.venv/bin/python scripts/sync_room_directory.py --admin-client-secret
            <second-project's client_secret.json> --org-config <QA org_config.json>`, signed in with
            an account that holds Directory Reader / admin rights.
-        4. Reinstall the refreshed `org_config.json` via **Organization Config…** in the menu bar,
+        4. Reinstall the refreshed `org_config.json` via **Organization Config…** in PrivacyFence Settings,
            then quit and reopen PrivacyFence to pick up the new `rooms` list.
 - [ ] (Optional) Trust the PFQA calendar as a resource-scoped grant — covers
       `calendar.read_event_details` (`read`) and `calendar.create_modify_event`/
@@ -362,7 +362,7 @@ instead, neither of which is the default:
       necessity, used only for its existence: the contrast case for "not approved, should still
       prompt" and for `telegram_search_messages` to have something to find
 
-Whether a native approval popup actually appeared for `telegram_get_messages` /
+Whether an approval popup actually appeared for `telegram_get_messages` /
 `telegram_search_messages` can be ambiguous from the tool result alone — cross-reference the audit
 log's `decision` field for these calls.
 
@@ -476,7 +476,7 @@ Every connector above has recorder support (`scripts/qa_fixture_recorder.py`'s `
 
 ## 11. PII Detection Gate
 
-- [ ] Confirm **PII Detection Gate** is enabled in the menu bar (default on — equivalently,
+- [ ] Confirm **PII Detection Gate** is enabled in PrivacyFence Settings (default on — equivalently,
       `pii_detection.enabled` is `true` or absent in `settings.yaml`)
 
 No fixture to create here — `connector-qa-testing.md`'s Phase 2 (steps 17–20) creates and tears down

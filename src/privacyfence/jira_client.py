@@ -128,7 +128,7 @@ class JiraClient:
 
         if not access_token or not cloud_id:
             raise JiraClientError(
-                "Jira is not authenticated. Use Authenticate… in the PrivacyFence menu bar."
+                "Jira is not authenticated. Use Authenticate… in PrivacyFence Settings."
             )
 
         api_url = f"https://api.atlassian.com/ex/jira/{cloud_id}"

@@ -16,32 +16,19 @@ npm run typecheck     # mcpb/shim/, tsc --noEmit
 pytest -v --cov=src/privacyfence --cov-report=term-missing
 ```
 
-on a `macos-latest` runner (this app depends on real AppKit/PyObjC behavior, so it can't run on
-Linux CI). A 100% pass rate is required to merge, for both suites; the coverage report is
-informational only — nothing gates on a specific percentage. This `test` job is the one a PR needs
-to pass to merge.
+on an `ubuntu-latest` runner. A 100% pass rate is required to merge, for both suites; the coverage
+report is informational only — nothing gates on a specific percentage. This `test` job is the one a
+PR needs to pass to merge.
 
-Starting at P1 (see [`https-connector-refactor-plan.md`](https-connector-refactor-plan.md) §12),
-`tests.yml` also runs a second, non-blocking `test-linux` job on `ubuntu-latest`:
-
-```bash
-pytest tests/unit -v \
-  --ignore=tests/unit/test_approval_popup.py --ignore=tests/unit/test_approval_window.py \
-  --ignore=tests/unit/test_dialog_window.py --ignore=tests/unit/test_menu_bar.py
-```
-
-Everything under `web/`, `web_approval_ui.py`, `card_builder.py`, and `approval_icons.py` is
-platform-independent — the first code in this repo that *can* run on Linux — and this job is what
-keeps that claim (and, eventually, P10's cross-platform one) honest rather than aspirational, rather
-than only ever exercising these modules on the same macOS runner as everything else. It does **not**
-replace the `test` job above: everything genuinely macOS-only (the four `--ignore`d modules, which
-import an AppKit-tainted module — `approval_popup.py`/`approval_window.py`/`dialog_window.py`/
-`menu_bar.py` — directly at module scope, so their absence here is a real `ImportError` rather than
-something a skip marker could catch) still only runs, and only needs to pass, on `macos-latest`.
-`test_settings_window.py` is the parallel case that *is* included here: it defers its own AppKit
-import inside each test function and carries a `sys.platform != "darwin"` `skipif` marker (see that
-file), so it collects cleanly on Linux and simply reports its tests skipped rather than erroring —
-the model to follow for any future macOS-only test module that should stay Linux-collectible.
+Through P9 this ran on `macos-latest` instead, and a second, non-blocking `test-linux` job carried
+the platform-independent subset (everything under `web/`, `web_approval_ui.py`, `card_builder.py`,
+and `approval_icons.py`) on `ubuntu-latest`, `--ignore`-ing the handful of test modules that imported
+an AppKit-tainted module (`approval_popup.py`/`approval_window.py`/`dialog_window.py`/`menu_bar.py`)
+directly at module scope. P10 (see `https-connector-refactor-plan.md` §12, decision D6, the design
+document that shipped this and was removed from `docs/` once fully implemented) deleted all
+of that — the native menu bar/approval dialogs/settings window — so nothing in this repo depends on
+real AppKit/PyObjC behavior any more, the whole suite is platform-independent, and the two-job split
+collapsed back into one.
 
 This tier is fully self-contained: no network calls to Gmail/Slack/Jira/etc., no credentials, no
 manual steps. It includes:
@@ -57,23 +44,19 @@ manual steps. It includes:
   (`scripts/qa_fixture_recorder.py`), exercised against mocked/offline API responses. This is
   different from actually running the recorder: these tests prove the recorder's own logic
   (redaction, capture mechanisms, the tag guardrail) is correct without touching any real account.
-- `tests/unit/test_approval_window.py` — builds the real AppKit view tree for every popup shape and
-  asserts on its content (buttons, PII tint/banner, summary rows, details text), without ever
-  calling the real modal loop (`runApproval_()`/`NSApplication.runModalForWindow_()`). See
-  [§2.2](#22-qa_popup_smokepy) for the one thing this construction-only coverage doesn't reach.
-- `tests/unit/test_dialog_window.py` — the same construction-only tier as `test_approval_window.py`
-  above, for the smaller confirmation/list-picker host (`dialog_window.py`/`dialog_window_html.py`)
-  the PII confirmation, rule confirmation, rule choice, and Atlassian multi-resource picker dialogs
-  render through. Builds the real panel/webview and simulates the "pf" bridge message, never calls
-  `runDialog_()`/`NSApplication.runModalForWindow_()` either.
+- `tests/unit/test_approval_window_html.py`, `tests/unit/test_dialog_window_html.py` — construction-
+  only coverage for the pure HTML builders behind every card/confirmation dialog (content, buttons,
+  PII tint/banner, summary rows, details text). Through P9 these were rendered inside a real native
+  AppKit view tree too (`test_approval_window.py`/`test_dialog_window.py`, covering the modal-loop
+  host around the same HTML); P10 deleted that host, so this construction-only tier is now the whole
+  of it.
 - `tests/unit/test_web_approval_ui.py`, `tests/unit/test_card_builder.py`,
   `tests/unit/test_approval_icons.py`, `tests/unit/web/` — the web approval surface's own coverage,
-  added at P1: `WebApprovalUI`'s blocking contract (identical to `NativeApprovalUI`'s — see
-  `approval_ui.py`'s ABC), the pure gate-args-to-card-HTML translation, shared icon-asset loading, and
-  the approval routes themselves against an in-process ASGI test client (auth, CSRF, Host allowlist,
-  security headers, idempotent decisions — no real socket, see
-  [`https-connector-refactor-plan.md`](https-connector-refactor-plan.md) §13). Platform-independent —
-  covered by both the `test` and `test-linux` jobs below.
+  added at P1: `WebApprovalUI`'s blocking contract (the sole `ApprovalUI` implementation since P10 —
+  see `approval_ui.py`'s ABC), the pure gate-args-to-card-HTML translation, shared icon-asset loading,
+  and the approval routes themselves against an in-process ASGI test client (auth, CSRF, Host
+  allowlist, security headers, idempotent decisions — no real socket, see
+  `https-connector-refactor-plan.md` §13).
 - `tests/unit/web/test_mcp_dispatch.py`, `tests/unit/web/test_routes_mcp.py` — the `/mcp` endpoint's
   own coverage, added at P2: `McpDispatcher`'s dedupe/staleness/gating dispatch and meta-tools
   (`test_mcp_dispatch.py`) and the wire-protocol/auth layer on top of it (`test_routes_mcp.py`),
@@ -81,7 +64,6 @@ manual steps. It includes:
   socket, same posture as the approval routes above. `TestAudienceSeparation` in
   `tests/unit/web/test_server.py` is the one required to fail loudly if the MCP bearer-token and
   approval-surface session-cookie middleware are ever reordered (§10.3 of the refactor plan).
-  Platform-independent — covered by both the `test` and `test-linux` jobs below.
 - `mcpb/shim/test/*.test.ts` (`npm test`, run from `mcpb/shim/`) — the .mcpb shim's own suite (D11 in
   `docs/https-connector-refactor-plan.md` §12): daemon discovery/launch (`daemon.test.ts`, against
   `mcp_url` file discovery) and the stdio<->Streamable HTTP message proxy (`proxy.test.ts`,
@@ -111,9 +93,17 @@ manual steps. It includes:
 
 Two scripts exist specifically because some failure classes can't be caught by a fully-mocked,
 fully-offline suite. Both are excluded from CI on purpose — one needs real, authenticated
-third-party accounts; the other needs a real screen and a real click — and both print the same
-kind of small, deterministic Markdown report meant to be pasted into the PR description so a
-reviewer doesn't have to re-run anything or have access to the same accounts/hardware themselves.
+third-party accounts; the other needs a real browser — and both print the same kind of small,
+deterministic Markdown report meant to be pasted into the PR description so a reviewer doesn't have
+to re-run anything or have access to the same accounts/hardware themselves.
+
+Through P9 a third script, `qa_popup_smoke.py`, covered the one thing `test_approval_window.py`/
+`test_dialog_window.py`'s construction-only tests couldn't reach: whether the real native modal loop
+actually blocked and a real click actually reached it. P10 (`https-connector-refactor-plan.md` §12,
+D6) deleted the native popup itself along with that script — there is no modal loop left to smoke-
+test. `qa_web_smoke.py` below is this tier's own (Chromium-driven, not AppKit-driven) equivalent for
+the web approval surface that replaced it, and already existed before this phase; nothing new was
+needed to fill the gap.
 
 ### 2.1 `qa_fixture_recorder.py --check` / `--record`
 
@@ -160,37 +150,7 @@ project's own venv (a bare system `python3` won't have the third-party clients t
 - Paste the printed report (or the file from `--report-file <path>`) into the PR description under
   a `## Local QA check` heading.
 
-### 2.2 `qa_popup_smoke.py`
-
-`test_approval_window.py`/`test_dialog_window.py` cover popup *content* construction on every PR,
-but deliberately leave one thing untested: whether the real modal loop actually blocks and a real
-click actually reaches it (e.g. a modal loop wired to the wrong window, or a button whose
-target/action never fires) — exactly the class of failure construction-only tests can't catch.
-
-**Never run in CI.** It requires macOS, real AppKit, and Accessibility permission granted to
-whatever process runs it (it drives a real click via `System Events`), and pops real, visible
-windows on-screen for a couple of seconds each — run it locally, not headless.
-
-**When to run this**: whenever `approval_window.py`'s or `dialog_window.py`'s modal-loop plumbing
-changes (not every popup content change — those are covered by `test_approval_window.py`/
-`test_dialog_window.py` on every PR). `dialog_window.py`'s own modal loop (`runDialog_`/
-`NSApplication.runModalForWindow_`, the confirmation/list-picker host — see `test_dialog_window.py`'s
-own module docstring) has the identical construction-only gap `approval_window.py` does, covered by
-this same script's "Dialog window" scenario group (four scenarios: both terminal outcomes of the
-PII-confirmation and rule-confirmation shapes, driven through the real `approval_popup.py`
-functions rather than a direct `dialog_window` call — the third shape, the rule-choice list picker,
-lost its only auto-accept caller to issue #151's multi-button "Always allow" redesign and has no
-scenario here; see `qa_popup_smoke.py`'s own module docstring). Same venv requirement as
-§2.1 — this needs the same pyobjc/AppKit packages the app depends on:
-
-```bash
-.venv/bin/python scripts/qa_popup_smoke.py
-```
-
-Paste the printed report into the PR description under a `## Popup smoke check` heading, same
-convention as §2.1.
-
-### 2.3 `qa_web_smoke.py`
+### 2.2 `qa_web_smoke.py`
 
 `tests/unit/web/`, `test_web_shell.py`, and `test_approval_list_html.py` cover the web surfaces'
 (`/settings`, `/approvals`) HTML/JSON construction and route behavior — CSRF, the settings action
@@ -212,8 +172,7 @@ end to end, which is slower and flakier than the route-level suite that already 
 **When to run this**: whenever `web_shell.py`, `approval_list_html.py`, the JS-emitting functions in
 `web/routes_approvals.py`/`web/routes_settings.py`, `resources/sw.js`, or `web/server.py`'s CSP
 changes. Not for a `settings_controller.py`/`settings_window_html.py` change with no web-shell/CSP
-involvement — those are covered by `test_settings_window_html.py`'s construction-only assertions,
-same reasoning `qa_popup_smoke.py`'s own docstring gives for the native window.
+involvement — those are covered by `test_settings_window_html.py`'s construction-only assertions.
 
 ```bash
 .venv/bin/pip install playwright
@@ -222,7 +181,7 @@ same reasoning `qa_popup_smoke.py`'s own docstring gives for the native window.
 
 If Playwright's own bundled Chromium isn't installed, pass `--chromium-path` at a Chromium/Chrome
 binary already on disk instead of downloading one. Paste the printed report into the PR description
-under a `## Web smoke check` heading, same convention as §2.1/§2.2.
+under a `## Web smoke check` heading, same convention as §2.1.
 
 ## 3. Full manual QA pass — before a release, not per-PR
 
@@ -230,7 +189,7 @@ under a `## Web smoke check` heading, same convention as §2.1/§2.2.
 Cowork/Desktop session connected to the real `privacyfence` daemon, against real accounts, watching
 what actually prompts. This is the only thing that exercises the gate, the popup UI, and the audit
 log end to end — none of tiers 1 or 2 do. Run it before a release, or after any change to
-`gate.py`/`auto_accept.py`/`resource_grants.py`/menu-bar auto-accept UI broadly, not on every PR.
+`gate.py`/`auto_accept.py`/`resource_grants.py`/the web approval UI broadly, not on every PR.
 
 Before a release specifically, run tiers 1 and 2 across every connector too, not just the ones a
 recent PR touched — see [manual-pre-release-test-plan.md](manual-pre-release-test-plan.md) for the
@@ -244,10 +203,9 @@ full release-time checklist tying all three tiers together.
 | `npm test` (mcpb/shim/'s own suite) | Yes, every PR | Always — this is the merge gate |
 | `npm run typecheck` (mcpb/shim/) | Yes, every PR | Always — this is the merge gate |
 | `qa_fixture_recorder.py --check` | No | PR touches a `*_client.py`/`connectors/**` file |
-| `qa_popup_smoke.py` | No | PR touches `approval_window.py`'s modal-loop plumbing |
 | `qa_web_smoke.py` | No | PR touches `web_shell.py`, `approval_list_html.py`, web routes' JS, `resources/sw.js`, or the CSP |
 | `connector-qa-testing.md`'s live Cowork pass | No | Before a release, or a broad gate/auto-accept change |
 
-None of the "No" rows require a credential, secret, or macOS Accessibility permission to ever be
-granted to GitHub Actions or any other cloud CI — they exist specifically because that's not
-something this project is willing to do, not as a stopgap until it is.
+None of the "No" rows require a credential or secret to ever be granted to GitHub Actions or any
+other cloud CI — they exist specifically because that's not something this project is willing to do,
+not as a stopgap until it is.

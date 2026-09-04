@@ -4,32 +4,31 @@
 # package gets onto PyPI in the first place).
 #
 # ================================================================
-# NOT YET FUNCTIONAL. Do not enable this unit — the daemon will crash
-# immediately after startup:
+# The specific blocker this comment used to describe -- `daemon_main.
+# run_app()` unconditionally ending with `from .menu_bar import
+# run_menu_bar; run_menu_bar(...)`, and `menu_bar.py` doing a bare `import
+# rumps` (macOS AppKit) at module scope with no platform guard -- is fixed
+# as of P10 (docs/https-connector-refactor-plan.md §12, decision D6):
+# menu_bar.py and the rest of the native AppKit UI layer are deleted
+# outright, not merely guarded, and run_app() now ends by blocking on a
+# plain threading.Event (see that module's own `_wait_for_shutdown`).
+# `rumps`/`pyobjc-framework-*` are optional extras now (pyproject.toml's
+# `macos-native` group) that this install path never pulls in.
 #
-#   `daemon_main.run_app()` unconditionally ends with
-#   `from .menu_bar import run_menu_bar; run_menu_bar(...)`, and
-#   `menu_bar.py` does a bare `import rumps` (macOS AppKit) at module
-#   scope, with no platform guard anywhere. There is currently no way to
-#   run the daemon headlessly on any platform — not on Linux, and not even
-#   in `org` (server) mode on macOS.
-#
-#   docs/https-connector-refactor-plan.md's D4 already calls for this: org
-#   mode is meant to be "same codebase, separate build target" — a real
-#   headless entrypoint, scheduled for P7-P9 ("beta, on a separate build
-#   target"). That work hasn't landed yet; only the `privacyfence-app`
-#   console script exists, and it always ends at run_menu_bar().
-#
-#   This unit is committed ahead of that so the rest of the Linux packaging
-#   story (PyPI publish, ~/.privacyfence path resolution for a real pip
-#   install — see paths.py's _is_installed_package()) doesn't block on it,
-#   and so the install steps below are ready the moment a headless
-#   entrypoint exists. Revisit once P7-P9's separate build target ships;
-#   see #121 in the issue tracker for the umbrella Linux/Windows tracking
-#   issue this belongs to.
+# UNVERIFIED ON A REAL LINUX INSTALL, still. Nothing in src/privacyfence/
+# imports a platform-specific module any more (grep for `sys.platform`/
+# `darwin` turns up nothing outside this comment and its own history), and
+# the daemon starts and runs headlessly in this repo's own Linux CI leg
+# (`.github/workflows/tests.yml`) as of P10 -- but that only exercises the
+# unit test suite, not this systemd unit, a real `pipx install privacyfence`,
+# or a live connector's OAuth flow (`webbrowser.open()`-based, which is
+# cross-platform, but genuinely untested end to end on Linux). Treat this
+# unit as ready to try, not yet a supported install path -- see #121 in the
+# issue tracker for the umbrella Linux/Windows tracking issue, revisited
+# per D8 (§15) now that this refactoring is complete.
 # ================================================================
 #
-# Install (once the blocker above is resolved):
+# Install:
 #   mkdir -p ~/.config/systemd/user
 #   cp privacyfence.service ~/.config/systemd/user/
 #   systemctl --user daemon-reload

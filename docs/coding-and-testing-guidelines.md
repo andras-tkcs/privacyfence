@@ -148,9 +148,10 @@ This is the one area where "looks like a style rule" is actually a security inva
   docstring for why the shim needs its own contract test even though it carries no protocol
   knowledge of its own. The shim test skips automatically if Node isn't on PATH, so
   `pytest tests/unit` stays Node-free.
-- CI (`.github/workflows/`) requires a 100% pass rate on macOS (this app depends on real
-  AppKit/PyObjC/osascript behavior) — coverage is reported but not gated. Write tests as if any
-  failure blocks the merge, because it does.
+- CI (`.github/workflows/`) requires a 100% pass rate — coverage is reported but not gated. Write
+  tests as if any failure blocks the merge, because it does. Through P9 this ran on macOS
+  specifically (real AppKit/PyObjC/osascript behavior); P10 deleted the native UI layer that
+  required, so the suite is platform-independent now (see `testing-policy.md` §1).
 
 ### 2.2 Module & class organization
 
@@ -180,12 +181,13 @@ This is the one area where "looks like a style rule" is actually a security inva
   (e.g. `asyncio.Lock`) needs its own `autouse` per-test reset if tests exercise real contention on
   it — see `_fresh_popup_lock` in `test_gate.py` and the comment explaining why.
 
-### 2.4 Faking the gate and native UI
+### 2.4 Faking the gate and the approval UI
 
-- Never let a test spawn a real native dialog (an AppKit window, or the odd remaining `osascript`
-  subprocess elsewhere in the codebase). Stub `show_popup` / `show_read_popup` /
+- Never let a test spawn a real interactive dialog. Stub `show_popup` / `show_read_popup` /
   `show_rule_confirmation_popup` via `monkeypatch.setattr` on the module under test, not by mocking
-  at the `approval_popup` import site of every caller.
+  at `WebApprovalUI`'s own import site of every caller. (Through P9 this also meant never spawning a
+  real native AppKit window or `osascript` subprocess; P10 deleted that surface, see
+  `approval_ui.py`'s module docstring.)
 - Connector tests stub `gated_call` itself (`gated_call_spy` pattern in
   `test_gmail_connector.py`) to capture exactly what a tool sends into the gate — `preview`,
   `details_text`, `raw_data`, `filtered_data`, `args`, `gate` — and assert on those kwargs, rather
@@ -232,9 +234,6 @@ A new connector's test module should include, at minimum:
       run `scripts/qa_fixture_recorder.py --check <connector>` locally against a real account per
       [`qa-environment-setup.md`](qa-environment-setup.md), and paste its report into the PR
       description — see [`testing-policy.md` §2.1](testing-policy.md#21-qa_fixture_recorderpy---check----record).
-- [ ] If this PR touches `approval_window.py`'s or `dialog_window.py`'s modal-loop plumbing: run
-      `scripts/qa_popup_smoke.py` locally and paste its report into the PR description — see
-      [`testing-policy.md` §2.2](testing-policy.md#22-qa_popup_smokepy).
 - [ ] If this PR changes `web/mcp_dispatch.py`, `web/routes_mcp.py`, `connector.py`'s
       `ToolSpec`/`ToolParam` shapes, or `web/server.py`'s socket-binding/lifecycle: run
       `pytest tests/integration -v` locally and confirm `test_mcp_daemon_contract.py` still passes

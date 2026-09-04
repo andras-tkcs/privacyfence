@@ -15,7 +15,6 @@ import asyncio
 import json
 import logging
 import os
-import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -29,6 +28,15 @@ from privacyfence import daemon_main
 from privacyfence.connectors.slack import SlackConnector
 from privacyfence.connectors.telegram import TelegramConnector
 from privacyfence.paths import data_dir
+
+
+def wait_until(predicate, timeout=2.0, interval=0.005) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return predicate()
 
 
 def fake_client_class(*, result=None, connection_error: Exception | None = None,
@@ -705,11 +713,14 @@ class TestSetupLogging:
 
 
 # ---------------------------------------------------------------------------- #
-# _maybe_start_web_server -- the P1/P2 rollback levers (see
-# docs/https-connector-refactor-plan.md §12): config/settings.yaml's
-# web.approval_ui selects native (default, untouched) or web; web.mcp.enabled
-# independently turns the /mcp endpoint on. Either one alone starts the one
-# embedded server.
+# _maybe_start_web_server -- since P10 (see docs/https-connector-refactor-
+# plan.md §12, D6) the web approval UI is unconditionally installed and the
+# embedded server unconditionally started in local mode -- there is no
+# native alternative left to select, and no config key that turns the
+# server off entirely (§12: "P10 is the one phase with no rollback"). web.
+# mcp.enabled/web.settings.enabled remain independent levers for those two
+# surfaces specifically; either can be on or off without affecting whether
+# the server itself (and /approvals) runs.
 # ---------------------------------------------------------------------------- #
 
 class TestMaybeStartWebServer:
@@ -732,19 +743,17 @@ class TestMaybeStartWebServer:
         from privacyfence.connector_host import ConnectorHost
         return ConnectorHost([])
 
-    def test_no_web_section_stays_native_and_starts_nothing(self, monkeypatch, tmp_path):
-        from privacyfence.approval_ui import NativeApprovalUI, get_approval_ui
-        self._no_bind(monkeypatch, tmp_path)
-        result = daemon_main._maybe_start_web_server({}, self._connector_host(), unattended_sessions_enabled=False)
-        assert result is None
-        assert isinstance(get_approval_ui(), NativeApprovalUI)
+    def test_bare_config_still_installs_the_web_approval_ui_and_starts_a_server(self, monkeypatch, tmp_path):
+        from privacyfence.web_approval_ui import WebApprovalUI, get_web_approval_ui
+        from privacyfence.approval_ui import get_approval_ui
+        started = self._no_bind(monkeypatch, tmp_path)
 
-    def test_explicit_native_with_mcp_disabled_starts_nothing(self, monkeypatch, tmp_path):
-        self._no_bind(monkeypatch, tmp_path)
-        result = daemon_main._maybe_start_web_server(
-            {"web": {"approval_ui": "native"}}, self._connector_host(), unattended_sessions_enabled=False,
-        )
-        assert result is None
+        result = daemon_main._maybe_start_web_server({}, self._connector_host(), unattended_sessions_enabled=False)
+
+        assert result is not None
+        assert started.get("called") is True
+        assert get_approval_ui() is get_web_approval_ui()
+        assert isinstance(get_approval_ui(), WebApprovalUI)
 
     def test_web_mode_installs_the_web_approval_ui_and_starts_a_server(self, monkeypatch, tmp_path):
         from privacyfence.web_approval_ui import WebApprovalUI, get_web_approval_ui
@@ -752,7 +761,7 @@ class TestMaybeStartWebServer:
         started = self._no_bind(monkeypatch, tmp_path)
 
         result = daemon_main._maybe_start_web_server(
-            {"web": {"approval_ui": "web", "port": 18765}}, self._connector_host(),
+            {"web": {"port": 18765}}, self._connector_host(),
             unattended_sessions_enabled=False,
         )
 
@@ -767,12 +776,11 @@ class TestMaybeStartWebServer:
         from privacyfence.web.server import DEFAULT_PORT
         self._no_bind(monkeypatch, tmp_path)
         result = daemon_main._maybe_start_web_server(
-            {"web": {"approval_ui": "web"}}, self._connector_host(), unattended_sessions_enabled=False,
+            {}, self._connector_host(), unattended_sessions_enabled=False,
         )
         assert result.port == DEFAULT_PORT
 
-    def test_mcp_enabled_alone_starts_a_server_without_touching_the_approval_ui(self, monkeypatch, tmp_path):
-        from privacyfence.approval_ui import NativeApprovalUI, get_approval_ui
+    def test_mcp_enabled_starts_a_server_with_mcp_mounted(self, monkeypatch, tmp_path):
         started = self._no_bind(monkeypatch, tmp_path)
 
         result = daemon_main._maybe_start_web_server(
@@ -782,9 +790,6 @@ class TestMaybeStartWebServer:
         assert result is not None
         assert started.get("called") is True
         assert result.mcp_url == f"{result.base_url}/mcp"
-        # web.approval_ui wasn't "web" -- the popup stays native even though
-        # the embedded server is now running for /mcp's sake.
-        assert isinstance(get_approval_ui(), NativeApprovalUI)
 
     def test_web_mode_registry_gets_the_real_base_url_once_started(self, monkeypatch, tmp_path):
         # P3: gate.py's pending-result URL (docs/https-connector-refactor-
@@ -795,7 +800,7 @@ class TestMaybeStartWebServer:
         self._no_bind(monkeypatch, tmp_path)
 
         result = daemon_main._maybe_start_web_server(
-            {"web": {"approval_ui": "web", "port": 18765}}, self._connector_host(),
+            {"web": {"port": 18765}}, self._connector_host(),
             unattended_sessions_enabled=False,
         )
 
@@ -807,7 +812,7 @@ class TestMaybeStartWebServer:
         self._no_bind(monkeypatch, tmp_path)
 
         result = daemon_main._maybe_start_web_server(
-            {"web": {"approval_ui": "web", "mcp": {"enabled": True}}}, self._connector_host(),
+            {"web": {"mcp": {"enabled": True}}}, self._connector_host(),
             unattended_sessions_enabled=False,
         )
 
@@ -820,7 +825,6 @@ class TestMaybeStartWebServer:
         daemon_main._maybe_start_web_server(
             {
                 "web": {
-                    "approval_ui": "web",
                     "approvals": {
                         "hold_window_seconds": 5, "pending_ttl_seconds": 60,
                         "ledger_ttl_seconds": 30, "max_pending": 3,
@@ -853,8 +857,7 @@ class TestMaybeStartWebServer:
 
     # ------------------------------------------------------------------ #
     # web.settings.enabled -- P4's own rollback lever (§16.6), independent
-    # of web.approval_ui: a deployment can run the web settings page with
-    # the native approval dialog, or the reverse.
+    # of the approval surface (which, since P10, is always on).
     # ------------------------------------------------------------------ #
 
     def _controller(self, tmp_path, monkeypatch):
@@ -876,7 +879,7 @@ class TestMaybeStartWebServer:
         connector_host = self._connector_host()
         return sc.SettingsController(str(config_path), connectors=[], connector_host=connector_host)
 
-    def test_settings_not_enabled_leaves_the_server_unbuilt_with_a_controller(self, monkeypatch, tmp_path):
+    def test_settings_not_enabled_still_starts_the_server_but_leaves_it_unwired(self, monkeypatch, tmp_path):
         self._no_bind(monkeypatch, tmp_path)
         controller = self._controller(tmp_path, monkeypatch)
 
@@ -884,16 +887,18 @@ class TestMaybeStartWebServer:
             {}, self._connector_host(), unattended_sessions_enabled=False, controller=controller,
         )
 
-        assert result is None
+        assert result is not None
+        assert result.controller is None
 
-    def test_settings_enabled_without_a_controller_starts_nothing(self, monkeypatch, tmp_path):
+    def test_settings_enabled_without_a_controller_leaves_it_unwired(self, monkeypatch, tmp_path):
         self._no_bind(monkeypatch, tmp_path)
 
         result = daemon_main._maybe_start_web_server(
             {"web": {"settings": {"enabled": True}}}, self._connector_host(), unattended_sessions_enabled=False,
         )
 
-        assert result is None
+        assert result is not None
+        assert result.controller is None
 
     def test_settings_enabled_wires_the_controller_into_the_server(self, monkeypatch, tmp_path):
         self._no_bind(monkeypatch, tmp_path)
@@ -922,29 +927,15 @@ class TestMaybeStartWebServer:
         self._no_bind(monkeypatch, tmp_path)
 
         default_result = daemon_main._maybe_start_web_server(
-            {"web": {"approval_ui": "web"}}, self._connector_host(), unattended_sessions_enabled=False,
+            {}, self._connector_host(), unattended_sessions_enabled=False,
         )
         assert default_result.notifications_enabled is True
 
         off_result = daemon_main._maybe_start_web_server(
-            {"web": {"approval_ui": "web", "notifications": {"enabled": False}}}, self._connector_host(),
+            {"web": {"notifications": {"enabled": False}}}, self._connector_host(),
             unattended_sessions_enabled=False,
         )
         assert off_result.notifications_enabled is False
-
-    def test_settings_can_run_with_the_native_approval_ui(self, monkeypatch, tmp_path):
-        from privacyfence.approval_ui import NativeApprovalUI, get_approval_ui
-
-        self._no_bind(monkeypatch, tmp_path)
-        controller = self._controller(tmp_path, monkeypatch)
-
-        result = daemon_main._maybe_start_web_server(
-            {"web": {"settings": {"enabled": True}}}, self._connector_host(),
-            unattended_sessions_enabled=False, controller=controller,
-        )
-
-        assert result is not None
-        assert isinstance(get_approval_ui(), NativeApprovalUI)
 
 
 # ---------------------------------------------------------------------------- #
@@ -1477,32 +1468,31 @@ class _FakeWebServer:
         return self._loop
 
 
-@pytest.mark.skipif(
-    sys.platform != "darwin",
-    reason="run_app() reaches menu_bar.run_menu_bar (rumps/AppKit), macOS-only -- "
-    "same posture as test_settings_window.py's own skipif",
-)
 class TestRunApp:
-    """Every test here reaches the real (monkeypatched) run_menu_bar, which
-    means importing privacyfence.menu_bar -- rumps/AppKit, so this whole
-    class is macOS-only, including test_lock_already_held_returns_1_without_
-    building_connectors even though that one specific path returns before
-    ever reaching menu_bar: keeping the skip at class granularity is what
-    lets this file's other, genuinely platform-independent classes
-    (TestBuildConnectors*, TestSetupLogging, TestMaybeStartWebApprovalUi,
-    ...) run on the web/'s Linux CI leg (docs/testing-policy.md §1) without
-    hand-marking each test individually."""
+    """Through P9 run_app() ended by blocking inside menu_bar.run_menu_bar()
+    -- rumps/AppKit, macOS-only, and every test here had to be skipped
+    elsewhere. P10 deleted that host (§12, D6): run_app() now ends by
+    blocking on _wait_for_shutdown() (a plain threading.Event), so this
+    whole class is platform-independent and runs on the web/'s Linux CI leg
+    like every other class in this file."""
 
     def _patch_common(self, monkeypatch, connectors=None, *, web_server="__default__"):
         """``web_server`` controls what the (mocked) _maybe_start_web_server
         returns: the default builds a _FakeWebServer with a harmless
         placeholder loop (the common case -- most of these tests don't care
-        about cache-warming specifically); ``None`` simulates every
-        web.* surface opting out (no server at all -- see
-        TestMaybeStartWebServer for the real short-circuit this stands in
-        for); any other value is used as the loop a real, given
+        about cache-warming specifically); ``None`` simulates the org-mode
+        "no server built" case (see TestMaybeStartWebServerOrgMode for the
+        real short-circuit this stands in for -- local mode always builds
+        one since P10); any other value is used as the loop a real, given
         _FakeWebServer.wait_until_ready() should return (itself ``None`` to
         simulate a loop that never became ready in time).
+
+        Also stubs _wait_for_shutdown() to return immediately (the direct
+        successor of stubbing menu_bar.run_menu_bar() to a no-op pre-P10)
+        and _run_update_check_timer() to a no-op (real SettingsController
+        instances aren't otherwise configured with a mocked check_for_update
+        in this class -- see test_settings_controller.py's own controller
+        fixture for that -- so the real timer thread must not run here).
 
         Every call this phase's own run_app() makes into
         _maybe_start_web_server is recorded on
@@ -1517,6 +1507,8 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "init_audit_logger", lambda path: fake_audit_logger)
         monkeypatch.setattr(daemon_main, "load_org_config", lambda: {})
         monkeypatch.setattr(daemon_main, "build_connectors", lambda cfg, org: connectors)
+        monkeypatch.setattr(daemon_main, "_wait_for_shutdown", lambda: None)
+        monkeypatch.setattr(daemon_main, "_run_update_check_timer", lambda controller: None)
 
         _FakeWebServer.instances = []
         self._web_server_calls: list[dict[str, Any]] = []
@@ -1542,27 +1534,39 @@ class TestRunApp:
         assert build_calls == []
         assert "already running" in capsys.readouterr().err
 
-    def test_successful_startup_runs_menu_bar_and_releases_lock(self, monkeypatch):
+    def test_successful_startup_waits_for_shutdown_and_releases_lock(self, monkeypatch):
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         release_calls = []
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: release_calls.append(1))
         connector = SimpleNamespace(name="gmail")
         self._patch_common(monkeypatch, connectors=[connector])
 
-        menu_bar_calls = []
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: menu_bar_calls.append(kw))
+        wait_calls = []
+        monkeypatch.setattr(daemon_main, "_wait_for_shutdown", lambda: wait_calls.append(1))
 
         result = daemon_main.run_app({}, "config.yaml")
 
         assert result == 0
-        assert len(menu_bar_calls) == 1
-        assert menu_bar_calls[0]["config_path"] == "config.yaml"
-        assert menu_bar_calls[0]["connectors"] == ["gmail"]
-        # A real ConnectorHost now (see connector_host.py), not a stub --
-        # there's nothing left about it worth faking.
-        host = menu_bar_calls[0]["connector_host"]
-        assert host.connectors == {"gmail": connector}
+        assert wait_calls == [1]
         assert release_calls == [1]
+        # The connector_host built for _maybe_start_web_server is a real
+        # ConnectorHost (see connector_host.py), not a stub.
+        host = self._web_server_calls[0]["connector_host"]
+        assert host.connectors == {"gmail": connector}
+
+    def test_update_check_timer_thread_started_with_the_real_controller(self, monkeypatch):
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        self._patch_common(monkeypatch)
+
+        timer_calls = []
+        monkeypatch.setattr(daemon_main, "_run_update_check_timer", lambda controller: timer_calls.append(controller))
+
+        daemon_main.run_app({}, "config.yaml")
+
+        assert wait_until(lambda: timer_calls)
+        from privacyfence.settings_controller import SettingsController
+        assert isinstance(timer_calls[0], SettingsController)
 
     def test_background_cache_warm_kicked_off_with_connectors_and_web_loop(self, monkeypatch):
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
@@ -1570,7 +1574,6 @@ class TestRunApp:
         connector = SimpleNamespace(name="slack")
         loop = SimpleNamespace()
         self._patch_common(monkeypatch, connectors=[connector], web_server=loop)
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
         warm_calls = []
         monkeypatch.setattr(daemon_main, "_warm_connector_caches", lambda conns, loop: warm_calls.append((conns, loop)))
 
@@ -1583,11 +1586,11 @@ class TestRunApp:
     def test_background_cache_warm_skipped_silently_when_no_web_server_at_all(self, monkeypatch, caplog):
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
-        # Every web.* surface opted out -- _maybe_start_web_server returns
-        # None outright (see TestMaybeStartWebServer). Nothing can reach a
-        # connector regardless, so this is an expected, silent no-op.
+        # Simulates org mode's own "mcp.enabled off" short circuit (see
+        # TestMaybeStartWebServerOrgMode) -- local mode always builds a
+        # server since P10, but run_app() itself doesn't care which mode
+        # produced None here.
         self._patch_common(monkeypatch, web_server=None)
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
         warm_calls = []
         monkeypatch.setattr(daemon_main, "_warm_connector_caches", lambda conns, loop: warm_calls.append((conns, loop)))
 
@@ -1602,12 +1605,11 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         self._patch_common(monkeypatch)
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
         warm_calls = []
         monkeypatch.setattr(daemon_main, "_warm_connector_caches", lambda conns, loop: warm_calls.append((conns, loop)))
-        # A server was built (some web.* surface is configured) but its
-        # loop never got captured before WebServer.wait_until_ready()'s own
-        # timeout -- distinct from "no server at all" above.
+        # A server was built but its loop never got captured before
+        # WebServer.wait_until_ready()'s own timeout -- distinct from "no
+        # server at all" above.
         server = _FakeWebServer(loop=None)
         monkeypatch.setattr(daemon_main, "_maybe_start_web_server", lambda *a, **kw: server)
 
@@ -1618,18 +1620,16 @@ class TestRunApp:
         assert warm_calls == []
         assert "skipping background cache warm" in caplog.text
 
-    def test_no_connectors_built_still_starts_the_menu_bar(self, monkeypatch, caplog):
+    def test_no_connectors_built_still_completes_startup(self, monkeypatch, caplog):
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         self._patch_common(monkeypatch, connectors=[])
-        menu_bar_calls = []
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: menu_bar_calls.append(kw))
 
         with caplog.at_level(logging.WARNING):
             result = daemon_main.run_app({}, "config.yaml")
 
         assert result == 0
-        assert menu_bar_calls[0]["connectors"] == []
+        assert self._web_server_calls[0]["connector_host"].connectors == {}
         assert "No connectors could be initialized" in caplog.text
 
     def test_inconsistent_drive_privacy_categories_log_a_warning(self, monkeypatch, caplog):
@@ -1639,7 +1639,6 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         self._patch_common(monkeypatch, connectors=[])
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
         config = {"drive_privacy": {"categories": {"file_list": "allow", "file_metadata": "block"}}}
 
         with caplog.at_level(logging.WARNING):
@@ -1653,7 +1652,6 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         self._patch_common(monkeypatch, connectors=[])
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
         config = {"drive_privacy": {"categories": {"file_list": "allow", "file_metadata": "allow"}}}
 
         with caplog.at_level(logging.WARNING):
@@ -1667,9 +1665,9 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: release_calls.append(1))
         self._patch_common(monkeypatch)
 
-        def raise_interrupt(**kw):
+        def raise_interrupt():
             raise KeyboardInterrupt()
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", raise_interrupt)
+        monkeypatch.setattr(daemon_main, "_wait_for_shutdown", raise_interrupt)
 
         with caplog.at_level(logging.INFO):
             result = daemon_main.run_app({}, "config.yaml")
@@ -1684,11 +1682,11 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: release_calls.append(1))
         self._patch_common(monkeypatch)
 
-        def raise_other(**kw):
-            raise RuntimeError("menu bar crashed")
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", raise_other)
+        def raise_other():
+            raise RuntimeError("shutdown wait crashed")
+        monkeypatch.setattr(daemon_main, "_wait_for_shutdown", raise_other)
 
-        with pytest.raises(RuntimeError, match="menu bar crashed"):
+        with pytest.raises(RuntimeError, match="shutdown wait crashed"):
             daemon_main.run_app({}, "config.yaml")
 
         assert release_calls == [1]
@@ -1703,7 +1701,6 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         self._patch_common(monkeypatch)
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
         reloaded = []
         monkeypatch.setattr(daemon_main, "reload_rules", lambda rules: reloaded.append(rules))
 
@@ -1743,7 +1740,6 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         self._patch_common(monkeypatch)
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
 
         config = {"rule_suggestion_priority": {"drive_read": ["approved_folder", "i_am_owner"]}}
         with caplog.at_level(logging.INFO):
@@ -1756,7 +1752,6 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         self._patch_common(monkeypatch)
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
 
         with caplog.at_level(logging.INFO):
             result = daemon_main.run_app({}, str(tmp_path / "settings.yaml"))
@@ -1768,7 +1763,6 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         self._patch_common(monkeypatch)
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
 
         daemon_main.run_app({}, "config.yaml")
 
@@ -1779,7 +1773,6 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         self._patch_common(monkeypatch)
         monkeypatch.setattr(daemon_main, "load_org_config", lambda: {"unattended_sessions": {"enabled": True}})
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
 
         daemon_main.run_app({}, "config.yaml")
 
@@ -1791,7 +1784,6 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         self._patch_common(monkeypatch)
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
 
         daemon_main.run_app({"unattended_sessions": {"enabled": True}}, "config.yaml")
 
@@ -1801,7 +1793,6 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         fake_audit_logger = self._patch_common(monkeypatch)
-        monkeypatch.setattr("privacyfence.menu_bar.run_menu_bar", lambda **kw: None)
 
         daemon_main.run_app({}, "config.yaml")
 

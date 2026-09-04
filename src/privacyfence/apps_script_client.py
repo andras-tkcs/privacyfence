@@ -119,14 +119,14 @@ class AppsScriptClient:
         """Run the interactive OAuth flow and persist the token.
 
         ``client_config`` comes from the organization config bundle (installed
-        via the menu bar) -- the same Google OAuth client Drive/Gmail/etc.
+        via PrivacyFence Settings) -- the same Google OAuth client Drive/Gmail/etc.
         already use, just with this connector's own scopes and its own
         cached token file.
         """
         if not self._client_config:
             raise AppsScriptClientError(
                 "No Google organization config installed. Install/Update "
-                "Organization Config from the PrivacyFence menu bar first."
+                "Organization Config from PrivacyFence Settings first."
             )
         logger.info("Starting Apps Script interactive OAuth flow")
         flow = InstalledAppFlow.from_client_config(self._client_config, SCOPES)

@@ -236,16 +236,12 @@ class TestConnectorAuthenticationEndToEnd:
             return {"access_token": "tok"}
 
         # _authenticate_slack's background thread marshals its `done`
-        # callback back via call_on_main, which prefers a real AppKit run
-        # loop (AppHelper.callAfter) whenever pyobjc is importable -- true
-        # on this repo's own macOS CI runner, not just on a real Mac with
-        # the native window actually open. Nothing here ever pumps that
-        # run loop, so the real callAfter would never actually deliver
-        # `done` and this test would hang until wait_until's own timeout.
-        # Same fake-callAfter-runs-inline pattern test_settings_controller.py's
-        # own TestPickResourceIndexWebMode/TestAuthenticateAtlassian use for
-        # exactly this reason.
-        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: f(*a, **k)))
+        # callback back via call_on_main, which resolves to whatever
+        # dispatcher set_main_dispatcher() registered -- the ``client``
+        # fixture's real WebServer/TestClient lifespan already registers
+        # state_stream.call_soon_threadsafe onto a live ASGI event loop
+        # (see web/server.py's _state_stream_loop_lifespan), so `done`
+        # actually gets delivered without needing a fake dispatcher here.
         monkeypatch.setattr(daemon_main, "load_org_config", lambda: {"slack": {"client_id": "cid"}})
         monkeypatch.setattr(sc, "slack_authorize_interactive", fake_authorize)
         monkeypatch.setattr(controller, "refresh_connectors", lambda: controller._push_snapshot())
@@ -363,7 +359,7 @@ class TestAuditLogDownload:
 class TestQuitApp:
     def test_unconfirmed_is_rejected(self, client, monkeypatch):
         called = []
-        monkeypatch.setattr(sc, "rumps", SimpleNamespace(quit_application=lambda: called.append(True)))
+        monkeypatch.setattr(daemon_main, "request_shutdown", lambda: called.append(True))
         _authed(client)
         r = client.post("/api/settings/quit_app", json={"csrf": TOKEN})
         assert r.status_code == 400
@@ -371,7 +367,7 @@ class TestQuitApp:
 
     def test_confirmed_calls_quit(self, client, monkeypatch):
         called = []
-        monkeypatch.setattr(sc, "rumps", SimpleNamespace(quit_application=lambda: called.append(True)))
+        monkeypatch.setattr(daemon_main, "request_shutdown", lambda: called.append(True))
         _authed(client)
         r = client.post("/api/settings/quit_app", json={"csrf": TOKEN, "confirmed": True})
         assert r.status_code == 200
@@ -380,7 +376,7 @@ class TestQuitApp:
     def test_disabled_by_allow_quit_config(self, controller, monkeypatch):
         from privacyfence.web.routes_settings import create_app as _create_app
         called = []
-        monkeypatch.setattr(sc, "rumps", SimpleNamespace(quit_application=lambda: called.append(True)))
+        monkeypatch.setattr(daemon_main, "request_shutdown", lambda: called.append(True))
         app = _create_app(controller, token=TOKEN, allow_quit=False)
         client = TestClient(app, base_url="http://localhost")
         _authed(client)

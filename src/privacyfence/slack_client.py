@@ -5,9 +5,9 @@ what the authenticated user sees — all channels, DMs, and private groups they
 are a member of — without requiring a bot to be invited anywhere.
 
 The token is obtained via Slack's OAuth v2 browser flow (see
-``authorize_interactive`` below), driven from the PrivacyFence menu bar. The
+``authorize_interactive`` below), driven from PrivacyFence Settings. The
 Slack app itself (client id/secret) is organization-level config installed via
-the "Install/Update Organization Config…" menu bar action — a user only ever
+the "Install/Update Organization Config…" action in PrivacyFence Settings — a user only ever
 sees a browser consent screen, never a token to copy/paste.
 
 Required user token scopes (see ``DEFAULT_USER_SCOPES``):
@@ -295,7 +295,7 @@ def load_token_file(token_file: str) -> dict[str, Any]:
     if not os.path.exists(token_file):
         raise SlackClientError(
             f"No Slack token found at '{token_file}'. Use Authenticate… in the "
-            "PrivacyFence menu bar to sign in."
+            "PrivacyFence Settings to sign in."
         )
     with open(token_file, encoding="utf-8") as fh:
         return json.load(fh)
@@ -412,7 +412,7 @@ class SlackClient:
         if not user_token:
             raise SlackClientError(
                 "No Slack user token available. Use Authenticate… in the "
-                "PrivacyFence menu bar to sign in."
+                "PrivacyFence Settings to sign in."
             )
         self._client = WebClient(token=user_token)
         # WebClient's own default retry handlers cover connection errors only

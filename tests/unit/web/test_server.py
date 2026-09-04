@@ -370,7 +370,6 @@ class TestWebServerWiresTheStateStream:
         controller = _controller(tmp_path, monkeypatch)
         WebServer(WebApprovalUI(), port=0, token=TOKEN, controller=controller)
 
-        monkeypatch.setattr(sc, "AppHelper", None)
         recorded = []
         monkeypatch.setattr(ss, "_loop", None)  # no real loop running in this test
         sc.call_on_main(lambda x: recorded.append(x), "hi")

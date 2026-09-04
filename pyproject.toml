@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "privacyfence"
 dynamic = ["version"]
-description = "macOS menu bar privacy proxy between Claude (MCP) and your personal data"
+description = "Privacy proxy between Claude (MCP) and your personal data, with an embedded web approval/settings UI"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
@@ -22,17 +22,6 @@ dependencies = [
     "simple-salesforce>=1.12.0",
     "requests>=2.31.0",
     "certifi>=2024.2.2",
-    # macOS-only: the native menu bar / AppKit approval and settings
-    # windows. Guarded (try/except ImportError) everywhere they're
-    # imported -- see settings_controller.py's and approval_ui.py's own
-    # module docstrings -- specifically so the rest of this package,
-    # including the new web/ approval surface (P1, see
-    # docs/https-connector-refactor-plan.md), stays importable and
-    # testable on a non-macOS platform with these simply absent.
-    "rumps>=0.4.0; sys_platform == 'darwin'",
-    "pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'",
-    "pyobjc-framework-WebKit>=10.0; sys_platform == 'darwin'",
-    "pyobjc-framework-Quartz>=10.0; sys_platform == 'darwin'",
     "openpyxl>=3.1",
     "pypdf>=5.0",
     # Embedded HTTP(S) server for the web approval surface (D10 in
@@ -92,6 +81,20 @@ privacyfence = [
 ]
 
 [project.optional-dependencies]
+# P10 (docs/https-connector-refactor-plan.md §12, decision D6) deleted the
+# native menu bar / AppKit approval and settings windows -- nothing in
+# src/privacyfence/ imports any of these three any more. Kept as an
+# optional extra, not dropped outright, purely because D6's own reasoning
+# for deleting the native UI ("the ApprovalUI seam lets it come back if
+# that proves wrong") means a future native implementation (e.g. a
+# Windows-native dialog for #121) would want them back -- installing this
+# extra is not required for anything this package does today.
+macos-native = [
+    "rumps>=0.4.0; sys_platform == 'darwin'",
+    "pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'",
+    "pyobjc-framework-WebKit>=10.0; sys_platform == 'darwin'",
+    "pyobjc-framework-Quartz>=10.0; sys_platform == 'darwin'",
+]
 dev = [
     "pyinstaller>=6.0",
     # sdist/wheel build + local upload, for rehearsing a release by hand --

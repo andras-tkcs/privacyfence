@@ -6,11 +6,13 @@ through the pluggable ApprovalUI seam (approval_ui.py) asks a human. Two
 postures, chosen per call by whether the active ApprovalUI exposes a
 ``deferred_registry`` (approval_ui.py's own docstring):
 
-- **No registry** (NativeApprovalUI, today's macOS dialogs, and any future
-  ApprovalUI that has nowhere to send a human a reviewable link): unchanged
-  from before P3. gated_call() blocks until the popup returns; there is no
-  pending-approval handshake, so Claude never holds a tool that can release
-  gated data on its own.
+- **No registry** (any ApprovalUI that has nowhere to send a human a
+  reviewable link -- WebApprovalUI, the only implementation since P10
+  retired NativeApprovalUI/approval_popup.py, always has one, so this path
+  is dormant today but the seam still generalizes to it -- see
+  approval_ui.py's own docstring): unchanged from before P3. gated_call()
+  blocks until the popup returns; there is no pending-approval handshake,
+  so Claude never holds a tool that can release gated data on its own.
 - **A registry** (WebApprovalUI): gated_call() still resolves inline,
   identically, *if a human decides within ``registry.hold_window`` seconds*
   (default 30s -- D3). If not, it returns a structured
@@ -32,12 +34,11 @@ postures, chosen per call by whether the active ApprovalUI exposes a
 time, and the "was this already covered by a rule created while queued?"
 re-check that ran under it) is gone. Job 1 -- one screen, one dialog -- is
 simply obsolete for the web surface, whose whole point is several
-approvals pending at once (docs/https-connector-refactor-plan.md §6);
-native dialogs keep exactly the same "one on screen at a time" property
-they always had, just enforced now by approval_window.py's own, separate
-``_popup_lock`` (a plain ``threading.Lock`` wrapping
-``show_native_approval`` end to end) rather than by this module serializing
-calls into it. Job 2 survives as an explicit re-check at the top of each
+approvals pending at once (docs/https-connector-refactor-plan.md §6); the
+native approval surface that used to keep its own, separate serialization
+lock was retired at P10 (§12, D6), so there is no longer a second dialog
+host to reconcile this module's own concurrency model against. Job 2
+survives as an explicit re-check at the top of each
 gate's interaction (see each branch's own ``_interact`` closure), for
 whichever request happens to still be mid-interaction when a rule changes,
 plus the rules-changed re-evaluation broadcast
@@ -69,7 +70,7 @@ anything that's already moved into the pending/registry state.
       (never written to settings.yaml, gone on daemon restart). Clicking
       Allow once on one of these operations arms this grace window
       automatically -- the popup discloses it with a plain caption
-      (approval_window.py's temp_accept_eligible), not a separate control.
+      (approval_window_html.py's temp_accept_eligible), not a separate control.
     - A separate, small set of operations that already have a
       resource-identity-scoped auto-accept rule (see
       auto_accept.WRITE_RULE_SUGGESTIONS -- one Gmail label, one calendar,
@@ -193,8 +194,8 @@ logger = logging.getLogger(__name__)
 # Thin delegations to the pluggable ApprovalUI seam (approval_ui.py), kept as
 # plain module-level functions -- rather than called as get_approval_ui().
 # show_read_popup(...) inline at each call site below -- so this module
-# still calls a bare name for each dialog, same as when it imported these
-# straight from approval_popup.py. That's what lets every gate.py test
+# still calls a bare name for each dialog, same as before this seam existed.
+# That's what lets every gate.py test
 # monkeypatch e.g. gate.show_read_popup directly without knowing anything
 # about ApprovalUI. get_approval_ui() is re-resolved on every call rather
 # than bound once at import time, so a later init_approval_ui() swap (a
@@ -287,11 +288,7 @@ _TOOL_LAYOUT: dict[str, str] = {
 # time, so a second worker would have sat idle. It's several now because
 # that's no longer true for the web surface: several approvals showing at
 # once is P3's whole point (docs/https-connector-refactor-plan.md §6, "New
-# coalescing case" / "Job 1... obsolete"). Native dialogs are unaffected --
-# approval_window.py keeps its own _popup_lock (a plain threading.Lock,
-# always separate from this one) wrapping show_native_approval end to end,
-# so AppKit windows stay serialized to one on screen at a time regardless
-# of how many workers sit idle here waiting for it.
+# coalescing case" / "Job 1... obsolete").
 _popup_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="pf-popup")
 
 
@@ -452,8 +449,9 @@ def _on_rules_changed() -> None:
     yet answered) approval that a rule/grant change now covers is resolved
     as auto_accepted immediately, without waiting for a human to open it,
     exactly like the description in approvals.PendingApprovalRegistry.
-    reevaluate_all()'s own docstring. A no-op registry-less install (native
-    only) never has anything to reevaluate."""
+    reevaluate_all()'s own docstring. A no-op for a registry-less
+    ApprovalUI (see approval_ui.py's deferred_registry docstring) -- there
+    is never anything to reevaluate."""
     registry = _deferred_registry()
     if registry is None:
         return
@@ -558,7 +556,7 @@ async def gated_call(
         # Claude") -- real (label, value) pairs a connector builds directly, e.g.
         # calendar_get_event_details's Attendees/Location/Description. Read-only
         # (gate="review") calls only, same reasoning as visibility below. Only consulted by
-        # approval_window.py's layout="narrow"/"wide" rendering (falls back to a
+        # approval_window_html.py's layout="narrow"/"wide" rendering (falls back to a
         # visibility-derived summary when empty).
     preview_tables: list[dict] | None = None,  # WIDE right-pane preview, as
         # structured table(s) instead of a plain-text dump -- each dict is
@@ -592,18 +590,19 @@ async def gated_call(
         # since the human is looking at content Claude itself just drafted, not something read
         # from an external source and potentially filtered on the way in.
     content_kind: str = "generic",  # "generic" | "email" -- accepted but currently unused
-        # by approval_window.py's rendering (see approval_popup.show_read_popup's docstring);
+        # by approval_window_html.py's rendering (see web_approval_ui.WebApprovalUI.show_read_popup's docstring);
         # threaded through from gmail.py. Read-only (gate="review") calls only, same
         # reasoning as visibility above -- a write is Claude's own drafted content, not
         # something this pane needs a per-surface reading affordance for.
-    pdf_bytes: bytes = b"",  # Raw PDF bytes for a native PDFView embed, instead of the
+    pdf_bytes: bytes = b"",  # Raw PDF bytes for an inline <embed> data URI (see
+        # approval_window_html.py's build_preview_body_html), instead of the
         # "[binary content...]" placeholder text.
         # Read-only (gate="review") calls only. The caller (drive.py's _get_file_content) must
         # only ever pass this when category_policy(..., "file_content") == "allow" for the same
         # item -- exactly the one case where details_text/filtered_data's own content already
         # flows through unredacted -- so the human reviewer is never shown a rendered PDF that's
         # richer than what "AI will receive" already discloses Claude gets for this same call.
-    preview_bytes: bytes = b"",  # Raw image bytes for a native NSImageView embed, instead of the
+    preview_bytes: bytes = b"",  # Raw image bytes for an inline <img> data URI, instead of the
         # "[binary content...]" placeholder text or a plain metadata-only popup.
         # Unlike pdf_bytes, carries no AI-visibility parity constraint: only ever set by
         # download/upload-shaped tools (gmail_download_attachment, drive_download_file,
@@ -613,7 +612,7 @@ async def gated_call(
         # Valid on both gate="review" and gate="popup" calls (unlike pdf_bytes/content_kind/
         # visibility, which are read-only).
     preview_mime_type: str = "",  # MIME type for preview_bytes, e.g. "image/png" -- used to decide
-        # whether approval_window.py can render it as an image at all before attempting to.
+        # whether approval_window_html.py can render it as an image at all before attempting to.
     upload_pii_scan_text: str | None = None,  # content-only text for a REAL PII scan on the popup
         # (write) direction -- unlike write_content_flags below, a match here forces the same
         # second "Are you sure?" confirmation the review-gate's pii_scan_text does. Only ever set
@@ -636,7 +635,7 @@ async def gated_call(
     # Set by ipc_server.py._call_connector() via reason_scope(), from the
     # mandatory "reason" param every gated ToolSpec now declares -- see
     # gate.py's reason_scope docstring. Self-reported, never verified;
-    # rendered as such (see approval_window.py's "Claude says" block).
+    # rendered as such (see approval_window_html.py's "Claude says" block).
     claude_reason = current_reason()
 
     ctx = ReviewContext(
@@ -649,7 +648,7 @@ async def gated_call(
     )
     details = details_text or _default_details(raw_data)
     # No "PrivacyFence — " prefix here -- the "PrivacyFence" kicker line
-    # directly above this title in approval_window.py already says that;
+    # directly above this title in approval_window_html.py already says that;
     # repeating it in the title itself would be redundant.
     popup_title = tool_name
     # NARROW/WIDE card-stack shape, keyed by tool name -- see _TOOL_LAYOUT's
@@ -738,7 +737,7 @@ async def gated_call(
     seen_count = await asyncio.to_thread(audit_logger.recent_matches, connector, tool, summary)
 
     # The deferred-protocol registry, if the active ApprovalUI has one (see
-    # this module's own docstring) -- None for a plain native-only install,
+    # this module's own docstring) -- None for a registry-less ApprovalUI,
     # exactly like every gated_call() before P3. dedupe_key mirrors ipc_
     # server.py's/mcp_dispatch.py's own retry-dedupe key shape (already
     # retry-stable -- see approvals.canonical_key's docstring); computed
@@ -749,7 +748,7 @@ async def gated_call(
     _pop_registry_expirations(registry)
 
     # Every exit from this function -- including one triggered by an
-    # exception nobody anticipated below (a native popup call raising, a
+    # exception nobody anticipated below (a popup call raising, a
     # rule-file write failing) -- must leave exactly one audit entry behind.
     # Without that guarantee, a call that visibly ran and got a real decision
     # from the user can still leave "no matching entry" in the log: a true
@@ -840,7 +839,7 @@ async def gated_call(
                 if d in ("accept", "accept_all") and pii_forces_confirmation:
                     d = await _confirm_pii_or_deny(d, pii_forces_confirmation)
                 if d == "accept_all":
-                    # Which candidate was clicked -- see approval_window.py's
+                    # Which candidate was clicked -- see approval_window_html.py's
                     # bridge docstring. Bounds-checked rather than trusted:
                     # ci comes back from the popup's own JS bridge, so an
                     # out-of-range or missing index (shouldn't happen against
@@ -897,7 +896,7 @@ async def gated_call(
             return filtered_data
 
         else:
-            # ── Popup gate: block and show native approval dialog for a write ───
+            # ── Popup gate: block and show the approval dialog for a write ───
             # No real PII scan here in general -- see module docstring: this
             # gate covers content Claude itself generated for an outbound
             # write, not personal data flowing in from an external source.
@@ -1030,8 +1029,8 @@ async def gated_call(
         # ipc.py's "cancel" method) -- an expected, named outcome, not a
         # bug, so it gets its own decision rather than falling through to
         # the generic "error" fallback below. If this fires while still
-        # waiting on a native popup, the dialog itself can't be closed this
-        # way and stays on screen (see ipc.py's own docstring) -- this
+        # waiting on a popup, the dialog itself can't be closed this
+        # way and stays open (see ipc.py's own docstring) -- this
         # entry is still the accurate record of what Claude received:
         # nothing, because nothing was waiting anymore by the time (if
         # ever) a human answered it.

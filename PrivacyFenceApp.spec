@@ -4,7 +4,10 @@
 #
 # Produces:
 #   dist/PrivacyFenceApp.app/
-#     Contents/MacOS/PrivacyFenceApp       ← daemon (main app, opens menu bar)
+#     Contents/MacOS/PrivacyFenceApp       ← daemon (main app; headless background
+#                                             process, reachable only over its own
+#                                             embedded web approval/settings UI --
+#                                             P10 retired the native menu bar/dialogs)
 #     Contents/MacOS/privacyfence-app      ← symlink → PrivacyFenceApp (for daemon auto-start)
 #
 # Claude's MCP entry point is the daemon's own /mcp Streamable HTTP endpoint
@@ -158,7 +161,7 @@ app = BUNDLE(
         "CFBundleDisplayName": "PrivacyFence",
         "CFBundleShortVersionString": VERSION,
         "CFBundleVersion": "1",
-        "LSUIElement": True,          # menu bar app — no Dock icon
+        "LSUIElement": True,          # headless background daemon — no Dock icon, no menu bar item
         "NSHighResolutionCapable": True,
         "LSMinimumSystemVersion": "13.0",
         # Allow outbound network connections for OAuth + API calls

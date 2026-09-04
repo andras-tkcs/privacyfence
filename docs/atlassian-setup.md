@@ -4,7 +4,7 @@ PrivacyFence connects to **Jira Cloud** and **Confluence Cloud** via Atlassian's
 
 > **Cloud only.** PrivacyFence supports Atlassian Cloud (`.atlassian.net` domains) only, not Jira/Confluence Data Center or Server.
 
-The OAuth app is organization-level config: **one IT admin creates it once**, packages the client id/secret into PrivacyFence's organization config bundle, and distributes it. Individual users just click **Authenticate…** in the menu bar — no API tokens to generate or paste.
+The OAuth app is organization-level config: **one IT admin creates it once**, packages the client id/secret into PrivacyFence's organization config bundle, and distributes it. Individual users just click **Authenticate…** in PrivacyFence Settings — no API tokens to generate or paste.
 
 ---
 
@@ -37,7 +37,7 @@ Classic and granular are independent scope namespaces per product, so mixing cla
 
 You won't find `offline_access` (needed so PrivacyFence can refresh the token without asking users to sign in again) anywhere in the Permissions picker — it isn't tied to a product API, so the console never lists it as a checkbox. PrivacyFence's code adds it directly to the `scope` parameter of the authorization request, so there's nothing to configure here for it.
 
-> **Changing scopes on an app your team already uses?** Everyone needs to click **Reconnect…** on Jira or Confluence in the PrivacyFence menu bar afterward — existing tokens keep whatever scopes they were issued with until re-authenticated.
+> **Changing scopes on an app your team already uses?** Everyone needs to click **Reconnect…** on Jira or Confluence in PrivacyFence Settings afterward — existing tokens keep whatever scopes they were issued with until re-authenticated.
 
 ### 4. Get the client id and secret
 
@@ -58,7 +58,7 @@ Distribute the resulting `org_config.json` to your users.
 
 ## For users
 
-1. Get `org_config.json` from your IT team and install it via **Organization Config…** in the PrivacyFence menu bar (if you haven't already for another service — if a config is already installed, click **Update…** in the status prompt).
+1. Get `org_config.json` from your IT team and install it via **Organization Config…** in PrivacyFence Settings (if you haven't already for another service — if a config is already installed, click **Update…** in the status prompt).
 2. **Connectors → Jira → Authenticate…** (or **Confluence** — either one triggers the same sign-in and activates both). Your browser opens to Atlassian's consent screen — sign in and click **Accept**.
 3. If your account has access to more than one Atlassian site, PrivacyFence asks you to pick one.
 4. Quit and reopen PrivacyFence to activate the connectors.
@@ -86,7 +86,7 @@ Either the `read:attachment:confluence` scope wasn't added to the OAuth app yet 
 Your Atlassian account does not have access to that project or space. Check your Jira/Confluence permissions in the Atlassian admin console.
 
 **Wrong Atlassian site connected**
-Click **Reconnect…** on Jira or Confluence in the PrivacyFence menu bar to sign in again and pick a different site.
+Click **Reconnect…** on Jira or Confluence in PrivacyFence Settings to sign in again and pick a different site.
 
 **Token expired mid-session**
-PrivacyFence refreshes the token automatically in the background. If it still fails, click **Reconnect…** in the menu bar.
+PrivacyFence refreshes the token automatically in the background. If it still fails, click **Reconnect…** in PrivacyFence Settings.

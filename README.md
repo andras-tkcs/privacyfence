@@ -107,9 +107,9 @@ Write operations show exactly which object will change and what values will be w
 
 ### Local administration
 
-<img src="docs/images/screenshots/menubar.png" alt="PrivacyFence macOS menu bar controls" width="216">
+<img src="docs/images/screenshots/settings-connectors.png" alt="PrivacyFence Settings, Connectors page, showing connector status, org-config requirements, and per-connector authenticate/enable controls" width="700">
 
-The menu bar provides access to:
+An embedded, local-only web page (PrivacyFence Settings) provides access to:
 
 - PII detection
 - Organization configuration
@@ -117,9 +117,9 @@ The menu bar provides access to:
 - Connector authentication and status
 - The local audit log
 
-Auto-accept rules and trusted-resource grants are managed from a single searchable window, organized by connector:
+Auto-accept rules and trusted-resource grants are managed from a single searchable page, organized by connector:
 
-<img src="docs/images/screenshots/menubar-auto-accept-rules.png" alt="PrivacyFence Auto-accept Rules window, showing a sidebar of connectors and a searchable list of that connector's grants and rules" width="415">
+<img src="docs/images/screenshots/settings-auto-accept-rules.png" alt="PrivacyFence Settings, Auto-accept Rules page, showing a sidebar of connectors and a searchable list of that connector's grants and rules" width="700">
 
 ---
 
@@ -179,13 +179,12 @@ PrivacyFence is one persistent macOS daemon, **`privacyfence-app`**, which owns 
 connector clients, policy evaluation, approval dialogs, PII detection, temporary approvals, and the
 audit log. It exposes a local, token-authenticated `/mcp` Streamable HTTP endpoint that Claude talks
 to directly (Claude Code) or through a thin stdio-to-HTTP shim `PrivacyFence.mcpb` installs
-(Claude Desktop, which has no built-in way to reach an HTTP MCP endpoint directly — see
-[the refactor plan](docs/https-connector-refactor-plan.md) §12, D11). The shim carries no service
-credentials and no tool-schema knowledge of its own; it only forwards bytes.
+(Claude Desktop, which has no built-in way to reach an HTTP MCP endpoint directly). The shim carries
+no service credentials and no tool-schema knowledge of its own; it only forwards bytes.
 
 This replaced an earlier design where a small, ephemeral `privacyfence-bridge` Node process, started
 by the AI client, forwarded requests over a local TCP loopback socket instead of HTTP — retired once
-both transports had shipped for a full release cycle each (P5 of the refactor plan above).
+both transports had shipped for a full release cycle each.
 
 ```text
 Claude Code          Claude Desktop
