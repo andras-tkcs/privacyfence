@@ -23,17 +23,19 @@
 
 import os
 import sys
-import tomllib
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 
 SRC = str(Path("src").resolve())
 sys.path.insert(0, SRC)
 
-# Single source of truth per CLAUDE.md's version-bump policy -- read, never
-# hardcoded here, so this file never becomes a third place that needs bumping.
-with open("pyproject.toml", "rb") as _f:
-    VERSION = tomllib.load(_f)["project"]["version"]
+# Version comes from the git tag via setuptools_scm now, not a hardcoded
+# string here (see this repo's CLAUDE.md "Releasing" section) -- read back
+# through the *installed* privacyfence package's own metadata (build_dmg.sh
+# and CI both `pip install -e .` before running PyInstaller), the same way
+# src/privacyfence/__init__.py itself resolves __version__ at runtime.
+VERSION = _pkg_version("privacyfence")
 
 # Use .icns built by build_dmg.sh; fall back to PNG (will error on macOS, but
 # lets you run pyinstaller directly for quick dev iteration on Linux/CI).
@@ -47,6 +49,13 @@ datas = [
     # google-auth needs its transport files
     *collect_data_files("google"),
     *collect_data_files("googleapiclient"),
+    # PyInstaller doesn't bundle a package's own .dist-info by default --
+    # without this, src/privacyfence/__init__.py's
+    # importlib.metadata.version("privacyfence") call would raise
+    # PackageNotFoundError at runtime *inside the frozen app* (it worked fine
+    # a moment ago in this very spec file, above, only because that ran
+    # unfrozen against the build machine's installed package).
+    *copy_metadata("privacyfence"),
 ]
 
 # ── hidden imports ────────────────────────────────────────────────────────────

@@ -6,30 +6,50 @@ process (forking, issues, license) see [`CONTRIBUTING.md`](CONTRIBUTING.md). Thi
 parts of the workflow that live only in git history, not in a doc — release mechanics and branch
 hygiene.
 
-## Version bumps
+## Releasing
 
-The version string lives in exactly two places, always bumped together in their own commit with no
-other changes:
+There is no version string in the source tree and no version-bump commit. `pyproject.toml` declares
+`dynamic = ["version"]`; the real version is derived from git tags by `setuptools_scm`
+(`[tool.setuptools_scm]` in `pyproject.toml`), and `src/privacyfence/__init__.py` reads it back at
+import time via `importlib.metadata.version("privacyfence")`. This replaced the old two-file
+hand-bumped scheme (`pyproject.toml`'s `project.version` + `__init__.py`'s `__version__`, kept in
+sync by a dedicated `Bump to vX.Y.Z` commit) specifically to avoid that scheme's failure mode:
+parallel branches (see worktrees below) both claiming the same next version, one bump commit landing
+after another release already took that number (see `d929510`, "Revert version bump — will release
+together with other pending CRs", from back when that was still how it worked).
 
-- `pyproject.toml` (`project.version`)
-- `src/privacyfence/__init__.py` (`__version__`)
+**Cutting a release is a tag, not a commit.** Once `main` is at the commit you want to release, tag
+it and push the tag:
 
-Commit message format: `Bump to vX.Y.Z` or `Bump to vX.Y.Z: <short summary of what shipped>`.
+```
+git tag v4.0.0            # stable
+git tag v4.0.0a13          # pre-release: a=alpha, b=beta, rc=release-candidate (PEP 440 short form)
+git push origin <tag>
+```
 
-**Only bump when a branch is actually about to be released to `main`.** Because branches are
-developed in parallel (see worktrees below), bumping the version early on a feature branch risks
-colliding with another branch's bump landing first — two branches both claiming the same next
-version. If a bump commit's branch ends up merging after another release already took that version
-number, revert the bump (see `d929510`, "Revert version bump — will release together with other
-pending CRs") and let the version get bumped once, at actual release time, not per-branch.
+That tag push is what `.github/workflows/build.yml` triggers on (`on: push: tags: ['v*']`) — it
+builds and signs the DMG and attaches it to a GitHub Release, marked prerelease iff the tag contains
+`a`, `b`, or `rc` (`update_checker.py`'s beta channel reads exactly that flag). Nothing else
+anywhere needs editing or committing first. Between tags, `__version__` is a `setuptools_scm`-
+synthesized dev version (`<next-version>.dev<n>+g<sha>`, e.g. `4.0.1.dev3+gabc1234`) — see
+`update_checker.py`'s module docstring for exactly how that's compared against real release tags.
 
-`mcpb/shim/package.json`'s `version` field is **not** a third place to bump — leave it as
+A checkout needs its full tag history for this to resolve correctly — a shallow clone (or a tarball
+with no `.git/` at all) falls back to `[tool.setuptools_scm]`'s `fallback_version`, a placeholder
+that's never a real shipped version. `.github/workflows/tests.yml` and `build.yml` both pass
+`fetch-depth: 0` to `actions/checkout` for exactly this reason; do the same in any new workflow that
+installs this package. `scripts/build_dmg.sh` and `scripts/build_mcpb.sh` both read the resolved
+version back via `importlib.metadata.version("privacyfence")`, so they require the package to
+already be `pip install -e .`d (both scripts' own prerequisites say so) — same as
+`PrivacyFenceApp.spec`'s `VERSION` and `src/privacyfence/__init__.py`'s `__version__` itself.
+
+`mcpb/shim/package.json`'s `version` field is **not** tied to any of this — leave it as
 `0.0.0-dev`. The shim carries no protocol version of its own to keep in sync with the daemon's (it
 has no tool-schema knowledge at all — see `mcpb/shim/src/index.ts`'s module docstring), so unlike
 the original bridge it replaced (retired at P5, see `docs/https-connector-refactor-plan.md`),
-there's nothing here for `pyproject.toml`'s version to be injected into at build time. `scripts/
-build_mcpb.sh` reads the real version out of `pyproject.toml` only to stamp the `.mcpb` manifest
-itself (`mcpb/manifest.json.tmpl`'s `__VERSION__`), not anything inside the bundled `shim.js`.
+there's nothing here for the real version to be injected into at build time. `scripts/
+build_mcpb.sh` reads the real version only to stamp the `.mcpb` manifest itself
+(`mcpb/manifest.json.tmpl`'s `__VERSION__`), not anything inside the bundled `shim.js`.
 
 ## Branching & PRs
 

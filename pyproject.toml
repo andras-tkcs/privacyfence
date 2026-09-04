@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=61.0", "wheel", "setuptools_scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "privacyfence"
-version = "4.0.0-alpha12"
+dynamic = ["version"]
 description = "macOS menu bar privacy proxy between Claude (MCP) and your personal data"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -104,6 +104,22 @@ test = [
     # web/ routes (tests/unit/web/) without a real socket.
     "httpx>=0.27",
 ]
+
+[tool.setuptools_scm]
+# The version is derived entirely from git tags now -- see this repo's
+# CLAUDE.md "Releasing" section. A release tag looks like `vX.Y.Z` (stable)
+# or `vX.Y.Z<a|b|rc><N>` (pre-release, PEP 440 short form, e.g. `v4.0.0a13`);
+# setuptools_scm reads it via `importlib.metadata.version("privacyfence")`
+# at runtime (see src/privacyfence/__init__.py). Between tags it synthesizes
+# a `<next-version>.devN+g<sha>` version (e.g. `4.0.1.dev3+gabc1234`) -- that
+# shape is what update_checker.py's parse_version() is built to accept, not
+# just exact release tags.
+#
+# fallback_version only matters before this repo's very first tag exists
+# (or if git/tag history is unavailable, e.g. a tarball with no .git/) --
+# it's never a real shipped version, so it's deliberately not "4.0.0..."
+# alpha-series-looking, to avoid being mistaken for one.
+fallback_version = "0.0.0.dev0"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

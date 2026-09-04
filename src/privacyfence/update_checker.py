@@ -1,10 +1,19 @@
 """Checks GitHub Releases for a newer PrivacyFence version, once a day.
 
 PrivacyFence ships as a single DMG (app + bridge, one version number) via GitHub Releases tagged
-``v<major>.<minor>.<patch>[-<stage>[.<n>]]`` — no PyPI package exists to check against instead.
-``stage`` is one of ``dev``/``alpha``/``beta``/``rc``; a bare ``v<major>.<minor>.<patch>`` tag is a
-stable release. No pre-release tag has ever actually been cut yet — this module defines the scheme
-so a future beta-testing program can start without any further changes here.
+``v<major>.<minor>.<patch>[<stage><n>]`` — no PyPI package exists to check against instead.
+``stage`` is one of ``a``/``b``/``rc`` (PEP 440's short pre-release spellings; this is also the
+exact scheme `__version__` itself now uses, derived from these same tags by setuptools_scm — see
+this repo's CLAUDE.md "Releasing" section and src/privacyfence/__init__.py); a bare
+``v<major>.<minor>.<patch>`` tag is a stable release. No pre-release tag has ever actually been cut
+yet — this module defines the scheme so a future beta-testing program can start without any further
+changes here.
+
+Between release tags, `__version__` is one setuptools_scm synthesizes itself rather than one anyone
+typed as a tag: ``<next-version>.dev<n>+g<sha>`` (e.g. ``4.0.1.dev3+gabc1234``), where
+``<next-version>`` is its best guess at the version the *next* tag will carry. parse_version() below
+accepts that shape too, purely for comparing a running dev build's own __version__ against the
+latest published release -- a GitHub Release's tag_name is never itself a dev version.
 
 This is a "nice to have", not something any tool call depends on: a network failure, a GitHub API
 hiccup, or a malformed response must never surface as more than a logged warning. Every public
@@ -20,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -40,13 +50,20 @@ REQUEST_TIMEOUT_SECONDS = 10
 CHECK_INTERVAL_SECONDS = 24 * 60 * 60
 REMIND_LATER_SECONDS = 4 * 60 * 60
 
-# Pre-release stage -> sort rank. A missing suffix (stable) or an unrecognized one both fall
-# through to STABLE_RANK, the highest rank -- a stable tag always outranks every pre-release of the
-# same major.minor.patch, and an unrecognized suffix degrades safely instead of erroring.
-_STAGE_RANK: dict[str, int] = {"dev": 0, "alpha": 1, "beta": 2, "rc": 3}
+# Pre-release stage -> sort rank. A missing suffix (stable) is STABLE_RANK, the highest rank -- a
+# stable tag always outranks every pre-release of the same major.minor.patch. Unlike the old
+# dashed/spelled-out scheme, an unrecognized suffix here isn't silently treated as stable: it means
+# the whole string fails to match _VERSION_RE (see below), so parse_version() returns None and the
+# caller ignores it -- these tags are only ever produced by setuptools_scm or a human directly
+# writing one, both of which stick to this exact scheme, so "recognized" and "well-formed" coincide.
+_STAGE_RANK: dict[str, int] = {"a": 1, "b": 2, "rc": 3}
 STABLE_RANK = 4
 
-_VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:-([a-zA-Z]+)\.?(\d+)?)?")
+# Matches an exact release tag ("4.0.0", "4.0.0a12", "4.1.0rc1") and a between-tags dev build
+# ("4.0.1.dev3+gabc1234", optionally with a ".dYYYYMMDD" dirty-worktree suffix setuptools_scm adds
+# after the +local part) -- see the module docstring. The trailing "(?:\+.*)?" swallows that whole
+# +local segment; it plays no part in ranking.
+_VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:(a|b|rc)(\d+))?(?:\.dev(\d+))?(?:\+.*)?$")
 
 
 class UpdateCheckerError(Exception):
@@ -60,27 +77,32 @@ class UpdateCheckResult(NamedTuple):
     is_update_available: bool
 
 
-def parse_version(raw: str) -> tuple[int, int, int, int, int] | None:
-    """Parse a `major.minor.patch[-stage[.n]]` prefix out of a version/tag string, tolerating a
-    leading 'v'. Returns (major, minor, patch, stage_rank, stage_num) -- directly tuple-comparable
-    for correct precedence, e.g. 2.2.0-beta.1 < 2.2.0-rc.1 < 2.2.0. Returns None (never raises) if
-    the string doesn't even match major.minor.patch."""
+def parse_version(raw: str) -> tuple[int, int, int, int, int, float] | None:
+    """Parse a `major.minor.patch[<stage><n>][.dev<n>][+local]` version/tag string, tolerating a
+    leading 'v'. Returns (major, minor, patch, stage_rank, stage_num, dev_num) -- directly
+    tuple-comparable for correct precedence, e.g. 2.2.0b1 < 2.2.0rc1 < 2.2.0, and
+    2.2.0rc2.dev1 (a dev build guessing at the *next* rc) sorts between 2.2.0rc1 and 2.2.0rc2.
+    dev_num is +inf for anything that isn't itself a dev build, so a finished release always outranks
+    its own dev builds. Returns None (never raises) if the string doesn't match at all."""
     m = _VERSION_RE.match(raw.strip())
     if not m:
         return None
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    stage_name = (m.group(4) or "").lower()
+    stage_name = m.group(4)
     stage_num = int(m.group(5)) if m.group(5) else 0
-    stage_rank = _STAGE_RANK.get(stage_name, STABLE_RANK)
-    return (major, minor, patch, stage_rank, stage_num)
+    stage_rank = _STAGE_RANK[stage_name] if stage_name else STABLE_RANK
+    dev_num = int(m.group(6)) if m.group(6) else math.inf
+    return (major, minor, patch, stage_rank, stage_num, dev_num)
 
 
 def is_newer(remote_version: str, local_version: str | None = None) -> bool:
     """True iff remote_version's parsed tuple is strictly greater than local_version's (module's
     own __version__ by default -- looked up at call time, not baked into the signature at import
-    time, so it stays correct across version bumps and is monkeypatch-friendly in tests). A local
-    '-dev' suffix ranks lowest, so a not-yet-tagged dev build never false-positives against its own
-    upcoming release but does correctly report "newer" once any tagged release ships."""
+    time, so it stays correct as new tags get pushed and is monkeypatch-friendly in tests). A local
+    dev build (`__version__` between release tags, e.g. `4.0.1.dev3+gabc1234` -- see the module
+    docstring) ranks below the release it's guessing at, so a not-yet-tagged dev build never
+    false-positives against its own upcoming release but does correctly report "newer" once any
+    tagged release ships."""
     if local_version is None:
         local_version = __version__
     remote = parse_version(remote_version)
