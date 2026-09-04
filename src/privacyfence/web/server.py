@@ -525,11 +525,13 @@ def _build_org_app(
 
 
 class WebServer:
-    """Runs the embedded HTTP server on its own daemon thread -- started
-    only when ``web.approval_ui: web`` is configured (daemon_main.py); see
-    approval_ui.py's ``init_approval_ui`` seam, which is the actual switch
-    between this and the native popup (rollback lever, per
-    docs/https-connector-refactor-plan.md §12)."""
+    """Runs the embedded HTTP server on its own daemon thread -- always
+    started in local mode since P10 (daemon_main.py's own
+    ``_maybe_start_web_server``), since the web approval UI is the only one
+    there is. Through P9 this started only when ``web.approval_ui: web`` was
+    configured; see approval_ui.py's ``init_approval_ui`` seam, which was
+    the switch between this and the native popup (docs/https-connector-
+    refactor-plan.md §12, decision D6)."""
 
     def __init__(
         self,

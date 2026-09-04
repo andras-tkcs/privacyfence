@@ -2,7 +2,7 @@
 
 PrivacyFence uses a **Slack user token** (`xoxp-…`) obtained via Slack's OAuth v2 browser flow. This means Claude sees exactly what you see — every channel, DM, and private group you are a member of — with no bot to invite and no footprint visible to others.
 
-The Slack app itself is organization-level config: **one IT admin creates it once**, packages the client id/secret into PrivacyFence's organization config bundle, and distributes it. Individual users never see a token to copy/paste — they click **Authenticate…** in the menu bar and approve in their browser.
+The Slack app itself is organization-level config: **one IT admin creates it once**, packages the client id/secret into PrivacyFence's organization config bundle, and distributes it. Individual users never see a token to copy/paste — they click **Authenticate…** in PrivacyFence Settings and approve in their browser.
 
 ---
 
@@ -82,7 +82,7 @@ python3 scripts/build_org_bundle.py \
 
 ## For users
 
-1. Get `org_config.json` from your IT team and install it via **Organization Config…** in the PrivacyFence menu bar (if you haven't already for another service — if a config is already installed, click **Update…** in the status prompt).
+1. Get `org_config.json` from your IT team and install it via **Organization Config…** in PrivacyFence Settings (if you haven't already for another service — if a config is already installed, click **Update…** in the status prompt).
 2. **Connectors → Slack → Authenticate…**. Your browser opens to Slack's consent screen — review the permissions and click **Allow**.
 3. Quit and reopen PrivacyFence to activate the connector.
 
@@ -91,13 +91,13 @@ python3 scripts/build_org_bundle.py \
 ## Troubleshooting
 
 **`missing_scope` errors** (IT admin)
-A scope wasn't added before users signed in. Add the missing scope under **OAuth & Permissions → User Token Scopes**, then have each user click **Reconnect…** in the PrivacyFence menu bar to re-consent.
+A scope wasn't added before users signed in. Add the missing scope under **OAuth & Permissions → User Token Scopes**, then have each user click **Reconnect…** in PrivacyFence Settings to re-consent.
 
 **`not_in_channel` on history reads**
 The token only sees channels you are a member of. Join the channel in Slack first.
 
 **`invalid_auth` errors**
-The token has been revoked (e.g. you removed the app from your Slack account, or an admin uninstalled it). Click **Reconnect…** in the PrivacyFence menu bar.
+The token has been revoked (e.g. you removed the app from your Slack account, or an admin uninstalled it). Click **Reconnect…** in PrivacyFence Settings.
 
 **Browser doesn't return to PrivacyFence after clicking Allow**
 Make sure the redirect URL in the Slack app's **OAuth & Permissions** page is exactly `http://127.0.0.1:53682/callback` (IT admin) — Slack requires an exact match.

@@ -30,15 +30,16 @@ When to run this: whenever web_shell.py, approval_list_html.py,
 web/routes_approvals.py's or web/routes_settings.py's own JS-emitting
 functions, resources/sw.js, or web/server.py's CSP change. Not on every
 settings_controller.py/settings_window_html.py change -- those are covered
-by tests/unit/test_settings_window_html.py's construction-only assertions
-the same way qa_popup_smoke.py's own docstring describes for the native
-window.
+by tests/unit/test_settings_window_html.py's construction-only assertions.
+(Through P9 the equivalent script for the native approval popup was
+qa_popup_smoke.py, retired at P10 along with the popup itself -- see
+docs/https-connector-refactor-plan.md §12, decision D6.)
 
     .venv/bin/pip install playwright   # once, locally -- not committed
     .venv/bin/python scripts/qa_web_smoke.py
 
 Paste the printed report into the PR description under a
-`## Web smoke check` heading, same convention as testing-policy.md §2.1/§2.2.
+`## Web smoke check` heading, same convention as testing-policy.md §2.1.
 """
 from __future__ import annotations
 

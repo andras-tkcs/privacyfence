@@ -6,26 +6,23 @@ principal a desktop install uses) — on a fresh Ubuntu server, running as its o
 user, behind [Caddy](https://caddyserver.com/) for TLS, with **Google** as both the sign-in identity
 provider and (optionally) the Gmail/Drive/Calendar/Contacts/Tasks connector.
 
-This documents `org` mode as implemented through P8 ("per-user service authorization") of
-[`https-connector-refactor-plan.md`](https-connector-refactor-plan.md), now on `main`. See §4
-(operating modes), §9 (identity, authentication, multi-user state) and §10 (security analysis) of
-that document for the design this guide is a concrete instance of.
+This documents `org` mode as implemented through P10 ("retire the native UI") of the
+`https-connector-refactor-plan.md` design document that shipped this feature (removed from `docs/`
+once its plan was fully implemented) — see [`TECHNICAL_REFERENCE.md`](TECHNICAL_REFERENCE.md) and
+[`security-and-compliance.md`](security-and-compliance.md) for the design this guide is a concrete
+instance of.
 
-> **This cannot be run end to end yet.** As of P8, `daemon_main.py`'s `run_app()` still
-> unconditionally ends with `from .menu_bar import run_menu_bar`, and `menu_bar.py` does a bare
-> `import rumps` (macOS AppKit) at module scope with no platform guard — so `privacyfence-app`
-> crashes right after startup on Linux, in *any* mode, `org` included. This is documented today in
-> [`TECHNICAL_REFERENCE.md`](TECHNICAL_REFERENCE.md)'s "Linux" installation section and in the
-> repo-root `privacyfence.service` unit's own header comment; the plan document's D4 ("same
-> codebase, separate build target") tracks the real headless entrypoint that fixes it, scheduled for
-> P7-P9, with the umbrella tracking issue linked from that unit file (#121).
->
-> Everything below except **Step 7 (run PrivacyFence as a service)** works today and is safe to do
-> ahead of time — DNS, the dedicated user, the Google OAuth clients, the org config bundle, and
-> Caddy are all independent of that blocker. Step 7 is written for the moment the headless
-> entrypoint ships; until then, starting the service will crash with `ModuleNotFoundError: No
-> module named 'rumps'` (see Troubleshooting). Treat this guide as the checklist to already have
-> done once that lands.
+> **Step 7 (run PrivacyFence as a service) is newly runnable, not yet battle-tested.** Through P9,
+> `daemon_main.py`'s `run_app()` unconditionally ended with `from .menu_bar import run_menu_bar`,
+> and `menu_bar.py` did a bare `import rumps` (macOS AppKit) at module scope with no platform guard
+> — so `privacyfence-app` crashed right after startup on Linux, in *any* mode, `org` included. P10
+> deleted `menu_bar.py` and the rest of the native AppKit UI layer outright, so that specific crash
+> is fixed and `run_app()` now ends by blocking headlessly on a plain `threading.Event` on any
+> platform. What this guide has **not** yet had is a real end-to-end run against a live Ubuntu
+> server — treat Step 7 as ready to try, and report back (or fix forward) anything that doesn't
+> match. See [`TECHNICAL_REFERENCE.md`](TECHNICAL_REFERENCE.md)'s "Linux" installation section and
+> the repo-root `privacyfence.service` unit's own header comment for the same caveat, and #121 in
+> the issue tracker for the remaining packaging/autostart/CI work.
 
 ---
 
@@ -154,19 +151,18 @@ Then install PrivacyFence itself as the `privacyfence` user, into its own isolat
 in [Step 7](#7-run-privacyfence-as-a-service) points at):
 
 ```bash
-# Once org mode has shipped in a tagged release (see CLAUDE.md's "Releasing" section) --
-# check `git tag` upstream against docs/https-connector-refactor-plan.md's own status line
-# ("P8 ... have landed") to see whether the latest tag is past that point yet:
+# Once a release tag exists on PyPI (see CLAUDE.md's "Releasing" section --
+# https://pypi.org/project/privacyfence/#history lists what's actually published):
 sudo -u privacyfence -H bash -c 'pipx install privacyfence --python python3.11'
 
-# Until then -- org mode is on main but no tag past it has been cut yet, so install
+# Until then -- org mode is on main but no tag has been cut yet, so install
 # straight from main instead of PyPI:
 sudo -u privacyfence -H bash -c \
   'pipx install "git+https://github.com/andras-tkcs/privacyfence.git@main" --python python3.11'
 ```
 
 Switch to the plain `pipx install privacyfence` form (and re-run it to upgrade) once a version has
-been tagged past org mode landing — nothing else in this guide changes.
+been tagged and published — nothing else in this guide changes.
 
 Verify:
 
@@ -365,10 +361,9 @@ reachable from outside the host in the first place; Caddy is the only path in.
 
 ## 7. Run PrivacyFence as a service
 
-> **Blocked today** — see the callout at the top of this guide. The unit below is what you'll enable
-> once the headless-entrypoint fix lands; until then, starting it will crash-loop on the `rumps`
-> import (`Restart=on-failure` will keep retrying it every 5 seconds, uselessly — leave the unit
-> disabled until then rather than enabling it to crash-loop in the background).
+> **Newly runnable, not yet battle-tested** — see the callout at the top of this guide. The unit
+> below no longer hits the old `rumps` import crash; it just hasn't had a real confirmed run on a
+> live server yet as of this writing.
 
 The repo ships `privacyfence.service`, a systemd **`--user`** unit mirroring the macOS LaunchAgent.
 For a dedicated, non-interactive service account like this one, a plain **system** unit running as
@@ -442,7 +437,7 @@ Once the daemon is actually running (Step 7):
 1. Visit `https://pf.example.com/login` in a browser. You're redirected to Google; sign in and
    consent.
 2. You land on `/connect` — the per-principal connections page (`web/routes_connect.py`). This is
-   the org-mode equivalent of a local install's menu-bar **Connectors** page.
+   the org-mode equivalent of a local install's PrivacyFence Settings **Connectors** page.
 3. Click **Connect** next to Gmail/Drive/whichever connectors you registered in
    [§4.2](#42-the-google-connector-client-optional). Each one redirects to Google, asks for consent
    to that connector's specific scopes, and lands you back on `/connect` showing it connected.
@@ -502,11 +497,11 @@ other).
 
 ## Troubleshooting
 
-**`privacyfence-app` crashes right after "Startup complete, starting menu bar" with
+**`privacyfence-app` crashed right after "Startup complete, starting menu bar" with
 `ModuleNotFoundError: No module named 'rumps'`**
-This is the documented, current Linux blocker (see the callout at the top of this guide) — not
-something a config change fixes. Track `docs/https-connector-refactor-plan.md`'s D4 and issue #121
-for the headless entrypoint that resolves it.
+That was the Linux blocker through P9 (see the callout at the top of this guide) — P10 deleted
+`menu_bar.py` and its `rumps` import outright, so a current install no longer hits this. If you see
+it anyway, you're running a pre-P10 build; update `privacyfence-app` first.
 
 **`sudo -iu privacyfence` says "This account is currently not available."**
 Expected — the account's shell is `/usr/sbin/nologin` on purpose (Step 2). Use
@@ -515,7 +510,7 @@ never consults the shell field.
 
 **Caddy shows "502 Bad Gateway"**
 PrivacyFence isn't listening on `127.0.0.1:8765` — check `systemctl status privacyfence` and
-`journalctl -u privacyfence` for why it isn't up (once Step 7 is actually runnable), and confirm
+`journalctl -u privacyfence` for why it isn't up, and confirm
 `org_config.json`'s `server.bind_host`/`server.port` match what the Caddyfile proxies to.
 
 **Google shows "Error 400: redirect_uri_mismatch"**

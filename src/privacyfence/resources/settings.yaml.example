@@ -7,17 +7,18 @@
 #   - Organization-level app credentials (the Google OAuth client, Slack app,
 #     Telegram app, Salesforce Connected App, Atlassian OAuth app) are
 #     installed as one bundle via "Install/Update Organization Config…" in
-#     the PrivacyFence menu bar. IT admins build that bundle once with
-#     scripts/build_org_bundle.py and distribute it.
+#     PrivacyFence Settings (the embedded web page, web.settings below). IT
+#     admins build that bundle once with scripts/build_org_bundle.py and
+#     distribute it.
 #   - Per-user sign-in (browser OAuth, or Telegram's phone + code login) is
-#     done via "Authenticate…" per connector, also in the menu bar.
+#     done via "Authenticate…" per connector, also in PrivacyFence Settings.
 #
 # Never commit config/settings.yaml or any file under credentials/.
 
 # All six category-schema groups below (privacy / drive_privacy /
 # slack_privacy / contacts_privacy / tasks_privacy / confluence_privacy) are
-# also editable live from the menu bar's "Privacy Filter…" window (no
-# restart needed) -- editing them here or from the menu are equivalent.
+# also editable live from PrivacyFence Settings' "Privacy Filter" page (no
+# restart needed) -- editing them here or from that page are equivalent.
 privacy:
   # Policy applied when a category is not explicitly configured below.
   # One of: allow, redact, block
@@ -101,9 +102,9 @@ calendar:
 
 # Enable/disable individual connectors (all enabled by default — this section
 # is only needed to turn one off). Toggled automatically when you use
-# Disable/Enable in the menu bar. Enabling here isn't enough on its own: a
-# connector also needs its organization config installed AND to be
-# authenticated (both from the menu bar) before it actually runs.
+# Disable/Enable in PrivacyFence Settings. Enabling here isn't enough on its
+# own: a connector also needs its organization config installed AND to be
+# authenticated (both from PrivacyFence Settings) before it actually runs.
 # connectors:
 #   telegram: { enabled: false }
 
@@ -116,14 +117,14 @@ pii_detection:
   # detected, see docs/TECHNICAL_REFERENCE.md). When something is flagged,
   # the popup is tinted red and a second "Are you sure?" dialog is required
   # before Allow once (or Always allow) takes effect. Toggled automatically
-  # when you use "PII Detection Gate" in the menu bar.
+  # when you use "PII Detection Gate" in PrivacyFence Settings.
   enabled: true
 
   # IP addresses and currency figures show up constantly in ordinary
   # business correspondence (server logs, invoices, budgets) without being
   # personal data about anyone, so these two categories can be turned off
   # independently of the gate as a whole. Toggled automatically from the
-  # "PII Detection Gate" submenu in the menu bar.
+  # "PII Detection Gate" section of PrivacyFence Settings.
   detect_ip_addresses: true
   detect_financial_figures: true
 
@@ -133,7 +134,7 @@ pii_detection:
   # like IBAN/credit card/national IDs -- see docs/TECHNICAL_REFERENCE.md's
   # "PII detection gate" section) for a request that was actually approved,
   # or a fixed "details hidden" placeholder for one that was denied. There's
-  # no menu-bar toggle for this one deliberately -- set it for a bounded
+  # no Settings-page toggle for this one deliberately -- set it for a bounded
   # trial window (restart required to pick it up), review the weekly Excel
   # export's "By PII category" breakdown to see which patterns are noisy,
   # then turn it back off.
@@ -142,22 +143,22 @@ pii_detection:
 update_check:
   # Once-a-day background check against GitHub Releases
   # (https://github.com/andras-tkcs/privacyfence/releases) for a newer version. Never downloads
-  # or installs anything automatically -- only shows a menu item / one-time dialog with a link to
-  # the release page. A network failure here is silent (logged, not shown) and never blocks
-  # startup. Toggled automatically when you use "Check for Updates" > "Enabled" in the menu bar.
+  # or installs anything automatically -- only shows an in-page banner with a link to the release
+  # page. A network failure here is silent (logged, not shown) and never blocks startup. Toggled
+  # automatically when you use "Check for Updates" > "Enabled" in PrivacyFence Settings.
   enabled: true
 
   # Off by default. When on, the daily check also considers pre-release (beta/rc) tags, not just
   # the latest stable release -- opt in here if you're a beta tester. Toggled automatically when
-  # you use "Check for Updates" > "Receive Beta Releases" in the menu bar.
+  # you use "Check for Updates" > "Receive Beta Releases" in PrivacyFence Settings.
   include_beta: false
 
 # Note: unattended_sessions.enabled (privacyfence_begin_unattended_session's
 # opt-in gate) is NOT set here. It's a deliberate per-organization choice,
 # not a per-user setting, so it lives in the organization config bundle
 # (org_config.json, installed via "Install/Update Organization Config…" in
-# the menu bar) — see docs/TECHNICAL_REFERENCE.md's "Scheduled / unattended
-# Cowork tasks" section.
+# PrivacyFence Settings) — see docs/TECHNICAL_REFERENCE.md's "Scheduled /
+# unattended Cowork tasks" section.
 
 # Trust a specific resource once — a folder, a task list, a channel, ... —
 # instead of adding the same ID to several operation keys under
@@ -165,12 +166,12 @@ update_check:
 # type, with a small set of capability booleans (read / write / create /
 # ...) that decide which operations it actually auto-accepts; every new
 # grant starts with every capability off, so adding one does nothing until
-# you explicitly flip a capability on. This is also the section the menu
-# bar's "Auto-accept Rules → <Connector> → Trusted <Resource>" submenus
-# read and write — editing it here or from the menu are equivalent, and
-# ``name`` is a cosmetic label (last resolved from the connector, shown in
-# the menu) that the evaluator itself never reads. See "Auto-accept grants"
-# in docs/TECHNICAL_REFERENCE.md for the full per-connector reference.
+# you explicitly flip a capability on. This is also the section
+# PrivacyFence Settings' "Auto-accept Rules → <Connector>" page reads and
+# writes — editing it here or from that page are equivalent, and ``name``
+# is a cosmetic label (last resolved from the connector, shown in the page)
+# that the evaluator itself never reads. See "Auto-accept grants" in
+# docs/TECHNICAL_REFERENCE.md for the full per-connector reference.
 # auto_accept_grants:
 #   drive:
 #     sandbox_folders:
@@ -224,53 +225,48 @@ logging:
   file: logs/privacyfence.log
 
 web:
-  # Which ApprovalUI shows the approval popup -- "native" (today's macOS
-  # AppKit/WKWebView dialog, unchanged) or "web" (the same card, served
-  # over local HTTP and opened in a browser instead -- see
-  # docs/https-connector-refactor-plan.md's P1). This is the rollback lever
-  # for the whole web approval surface: flipping it back to "native" turns
-  # the embedded HTTP server off entirely and returns to today's behavior,
-  # no downgrade needed. Default "native" -- the web surface ships opt-in.
-  approval_ui: native
   # Port the embedded HTTP server listens on -- shared by the approval
-  # surface above and the /mcp endpoint below, one server either way. Always
+  # surface, /mcp below, and /settings, one server either way. Always
   # bound to localhost only in this (local) mode -- see web/server.py's
-  # module docstring.
+  # module docstring. The embedded server itself always runs in local mode
+  # since P10 (docs/https-connector-refactor-plan.md §12, decision D6): the
+  # web approval UI is the only one there is, so there's no "off" switch
+  # for it the way there used to be a native/web choice (`web.approval_ui`,
+  # removed at P10 -- this key is simply gone now, not just defaulted).
   port: 8765
   mcp:
     # Turns on the /mcp Streamable HTTP endpoint (see
     # docs/https-connector-refactor-plan.md's P2) -- Claude talks to
-    # PrivacyFence directly over HTTP. Independent of approval_ui above: a
-    # gated call reaching a connector over /mcp still shows whichever
-    # popup (native or web) approval_ui selects. Loopback-only and
-    # bearer-token-gated regardless (§10 of the refactor plan). On by
-    # default as of D11/P4b: PrivacyFence.mcpb installs a thin stdio shim
-    # for Claude Desktop that only speaks /mcp, so a fresh install needs
-    # this on for that extension's zero-config promise ("no config file
-    # edited") to actually hold -- see §12's P4b exit criterion. Since P5
-    # retired the original bridge/IPC-socket transport, this is no longer
-    # "additive alongside the bridge" -- it's the only way Claude reaches
-    # this daemon at all. Flip to false only if you want this daemon
-    # completely unreachable from Claude for a while (a full stop, not a
-    # fallback to something else that still works). Once enabled, point a
-    # Streamable HTTP MCP client at http://localhost:<port>/mcp with
+    # PrivacyFence directly over HTTP. On by default as of D11/P4b:
+    # PrivacyFence.mcpb installs a thin stdio shim for Claude Desktop that
+    # only speaks /mcp, so a fresh install needs this on for that
+    # extension's zero-config promise ("no config file edited") to
+    # actually hold -- see §12's P4b exit criterion. Since P5 retired the
+    # original bridge/IPC-socket transport, this is no longer "additive
+    # alongside the bridge" -- it's the only way Claude reaches this
+    # daemon at all. Flip to false only if you want this daemon completely
+    # unreachable from Claude for a while (a full stop, not a fallback to
+    # something else that still works). Once enabled, point a Streamable
+    # HTTP MCP client at http://localhost:<port>/mcp with
     # `Authorization: Bearer <the token in ~/.privacyfence/mcp_token>`.
     enabled: true
   settings:
     # Serve /settings and its POST /api/settings/{action} dispatcher (see
-    # docs/https-connector-refactor-plan.md §16) -- independent of
-    # approval_ui above: a user can run the web settings page with the
-    # native approval dialog, or the reverse. Rollback lever for this
-    # surface specifically: flipping back to false returns to the native
-    # settings window only, which this phase leaves fully working
-    # (P10 is what eventually retires it). Default false -- opt-in, same
-    # posture as approval_ui.
-    enabled: false
-    # rumps.quit_application() from a browser stops the server rendering
-    # the page it was clicked on -- confirmed in-page either way (§16.2.8),
-    # but this is the local-mode-only kill switch for the action entirely.
-    # Will be refused outright once `mode: org` exists (a future phase);
-    # local mode leans "the token is enough" (§16.8's open question #2).
+    # docs/https-connector-refactor-plan.md §16). Through P9 this defaulted
+    # to false, since a native settings window covered the same ground;
+    # P10 deleted that window (§12, D6), so this now defaults to true --
+    # without it there is no interactive way at all to install an
+    # organization config bundle, authenticate a connector, or edit a rule
+    # (hand-editing this file and org_config.json directly still works
+    # regardless of this setting). Flip to false only if you're deliberately
+    # editing config by hand and want /settings unreachable too.
+    enabled: true
+    # The web settings page's "Quit PrivacyFence" action stops the server
+    # rendering the page it was clicked on -- confirmed in-page either way
+    # (§16.2.8), but this is the local-mode-only kill switch for the
+    # action entirely. Will be refused outright once `mode: org` exists (a
+    # future phase); local mode leans "the token is enough" (§16.8's open
+    # question #2).
     allow_quit: true
   notifications:
     # Desktop notifications for a new pending approval while the

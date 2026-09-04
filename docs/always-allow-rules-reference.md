@@ -33,8 +33,8 @@ below.
 **Always allow always writes a plain `auto_accept_rules` entry scoped to one operation key** — even
 for rules TECHNICAL_REFERENCE.md marks "grant-managed" (`approved_folder`, `approved_channel`,
 `approved_project_keys`, etc.). The equivalent `auto_accept_grants` entry, which covers every
-operation key a resource touches from one place, is a separate mechanism set up by hand or from the
-menu bar's Trusted-\* submenus — the popup button itself never writes there. See
+operation key a resource touches from one place, is a separate mechanism set up by hand or from
+PrivacyFence Settings' Trusted-\* pages — the popup button itself never writes there. See
 [Auto-accept grants](TECHNICAL_REFERENCE.md#auto-accept-grants) for that alternative.
 
 **The button itself names the specific rule it would create, before you click it** — e.g. "Always
@@ -369,8 +369,8 @@ Every call still blocks on the same confirmation dialog Always allow uses
 (`show_rule_confirmation_popup`) — there's no way for a rule to land without a human confirming it.
 See [Reading and proposing auto-accept changes over MCP](TECHNICAL_REFERENCE.md#reading-and-proposing-auto-accept-changes-over-mcp).
 
-**Auto-accept grants** (`auto_accept_grants` in `settings.yaml`, and the menu bar's **Manage
-Auto-accept Rules… → Trusted \*** submenus) — the resource-scoped alternative to a narrow
+**Auto-accept grants** (`auto_accept_grants` in `settings.yaml`, and PrivacyFence Settings' **Auto-
+accept Rules → \<Connector\> → Trusted \*** sections) — the resource-scoped alternative to a narrow
 `auto_accept_rules` entry: grant one folder/channel/project/etc. once and it covers every operation
 key that resource touches. Always allow never writes here directly; these are set up separately.
 See [Auto-accept grants](TECHNICAL_REFERENCE.md#auto-accept-grants).

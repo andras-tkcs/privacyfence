@@ -1,34 +1,48 @@
-"""PrivacyFence daemon: persistent macOS app that owns the UI, credentials, and connectors.
+"""PrivacyFence daemon: persistent background process that owns credentials,
+connectors, and the embedded web approval/config UI.
 
-Started at login via LaunchAgent (com.privacyfence.app.plist), or automatically
-by Claude Desktop's ``.mcpb`` shim on first use. Only one instance is allowed
-(enforced via a lock file). Claude reaches this process over the embedded
-``/mcp`` Streamable HTTP endpoint (see web/mcp_dispatch.py's module
-docstring) -- the original bridge/IPC-socket transport was retired at P5
-(docs/https-connector-refactor-plan.md §12); ``connector_host.py``'s
-``ConnectorHost`` is what's left of ``ipc_server.py``'s own role once the
-socket and its dispatch logic are gone.
+Started at login (LaunchAgent on macOS: com.privacyfence.app.plist), or
+automatically by Claude Desktop's ``.mcpb`` shim on first use. Only one
+instance is allowed (enforced via a lock file). Claude reaches this process
+over the embedded ``/mcp`` Streamable HTTP endpoint (see
+web/mcp_dispatch.py's module docstring) -- the original bridge/IPC-socket
+transport was retired at P5 (docs/https-connector-refactor-plan.md §12);
+``connector_host.py``'s ``ConnectorHost`` is what's left of
+``ipc_server.py``'s own role once the socket and its dispatch logic are
+gone. A human reaches it the same way: over the embedded web approval/
+settings surfaces (``/approvals``, and ``/settings`` when
+``web.settings.enabled``) -- through P9 there was also a native macOS
+AppKit UI (a menu bar tray icon, native approval dialogs, a native webview
+settings window); P10 deleted all of it (§12, decision D6 in §15: "two
+approval surfaces means two places for a security fix to land"), so the
+web surface is now the only one, on every platform this process runs on.
 
 Threading model:
-  - Main thread:   rumps menu bar app (macOS requirement for AppKit).
+  - Main thread:   waits on ``_wait_for_shutdown()`` (below) until
+    ``request_shutdown()`` is called (the web settings page's "Quit
+    PrivacyFence" action) or the process receives SIGINT/Ctrl-C -- there is
+    no run loop of its own to host anymore, since every Claude-facing and
+    human-facing surface already runs on the web thread below.
   - Web thread:    uvicorn serving the embedded HTTP server (web/server.py)
-    that hosts ``/mcp``, and (opt-in) the web approval/settings surfaces --
-    this is also the event loop every connector call now actually runs on.
+    that hosts ``/mcp`` and the web approval/settings surfaces -- this is
+    also the event loop every connector call now actually runs on.
+  - Update timer:  a background thread pulsing ``SettingsController.
+    on_update_check_timer()`` every few hours (see
+    UPDATE_CHECK_TIMER_INTERVAL_SECONDS below) -- the direct successor of
+    the old menu bar's own ``rumps.Timer``.
   - Cache warm:    short-lived background thread(s) started right after the
     web server's event loop is known, refreshing Slack/Telegram directory
     caches if they've gone stale -- see _warm_connector_caches(). Kept off
-    the main thread so a large workspace/account doesn't delay the menu bar
-    icon appearing.
-  - Popups:        approval_popup.py shows native AppKit/WKWebView windows (any thread).
+    the main thread so a large workspace/account doesn't delay startup.
 
 Configuration is split into two files (see paths.py):
   - ``org/org_config.json``    — organization-level app registrations (Google
     OAuth client, Slack app, Salesforce Connected App, Atlassian OAuth app),
-    installed via "Install/Update Organization Config…" in the menu bar.
-    Optional per service; a connector is offered only if its section is
-    present. Telegram's api_id/api_hash are the one exception: they identify
-    the PrivacyFence app itself (not an organization) and are baked into the
-    release build — see app_credentials.py. Also carries
+    installed via PrivacyFence Settings (``/settings``, or by hand-editing
+    this file). Optional per service; a connector is offered only if its
+    section is present. Telegram's api_id/api_hash are the one exception:
+    they identify the PrivacyFence app itself (not an organization) and are
+    baked into the release build — see app_credentials.py. Also carries
     ``unattended_sessions.enabled`` — a deliberate per-organization opt-in,
     not a per-user setting, so it lives here rather than settings.yaml.
     ``rooms`` (optional) is a static room/resource directory snapshot IT
@@ -167,6 +181,58 @@ def _release_instance_lock() -> None:
 
 
 # ---------------------------------------------------------------------------- #
+# Shutdown wait (P10, docs/https-connector-refactor-plan.md §12): through P9
+# the main thread blocked inside menu_bar.run_menu_bar()'s own AppKit run
+# loop until the tray icon's "Quit PrivacyFence" (or the web settings page's
+# own quit action, wired to the same rumps.quit_application()) ended it. P10
+# deleted that host, so run_app() below now blocks on this plain
+# threading.Event instead -- request_shutdown() (called by SettingsController
+# .quit_app(), the direct successor of that same "Quit PrivacyFence" action)
+# sets it, same as SIGINT/Ctrl-C raising KeyboardInterrupt out of the wait.
+# ---------------------------------------------------------------------------- #
+
+_shutdown_event = threading.Event()
+
+
+def request_shutdown() -> None:
+    """Signal run_app()'s own wait loop to return. Called by
+    SettingsController.quit_app() -- see that method's own docstring."""
+    _shutdown_event.set()
+
+
+def _wait_for_shutdown() -> None:
+    """Blocks the calling (main) thread until request_shutdown() is called
+    or the process receives SIGINT/Ctrl-C (KeyboardInterrupt). Everything
+    Claude-facing and human-facing already runs on the web server's own
+    thread (McpDispatcher.call() via /mcp, and every web/routes_*.py
+    handler) -- this thread has nothing left to do but wait."""
+    _shutdown_event.wait()
+
+
+# Periodic "is it time to check yet?" pulse for the update checker --
+# deliberately shorter than update_checker.CHECK_INTERVAL_SECONDS (24h).
+# SettingsController.on_update_check_timer() re-derives whether 24h have
+# actually passed from its own on-disk timestamp, so this is robust to
+# sleep/wake and doesn't need to match the real interval exactly. Through
+# P9 this pulse came from menu_bar.py's own rumps.Timer; P10 deleted that
+# host, so _run_update_check_timer (started as its own daemon thread by
+# run_app(), below) is now what fires it.
+UPDATE_CHECK_TIMER_INTERVAL_SECONDS = 6 * 60 * 60
+
+
+def _run_update_check_timer(controller: Any) -> None:
+    """Fires ``controller.on_update_check_timer()`` once immediately, then
+    every UPDATE_CHECK_TIMER_INTERVAL_SECONDS until shutdown is requested --
+    reuses ``_shutdown_event`` as its own sleep/cancel mechanism so this
+    thread wakes and exits promptly rather than sleeping out its last
+    interval on the way down."""
+    while True:
+        controller.on_update_check_timer()
+        if _shutdown_event.wait(UPDATE_CHECK_TIMER_INTERVAL_SECONDS):
+            return
+
+
+# ---------------------------------------------------------------------------- #
 # Configuration & logging
 # ---------------------------------------------------------------------------- #
 
@@ -191,7 +257,7 @@ def _bootstrap_config(resolved: str) -> None:
     """Seed a default settings.yaml from the packaged example on first run.
 
     The example carries no secrets (org credentials and per-user auth are
-    handled separately via the menu bar), so it's safe to install
+    handled separately, via PrivacyFence Settings), so it's safe to install
     automatically now that there's no setup wizard to do it.
     """
     example = Path(__file__).parent / "resources" / "settings.yaml.example"
@@ -214,8 +280,8 @@ def load_org_config() -> dict[str, Any]:
     """Load the installed organization config bundle, or {} if none is installed.
 
     Never fatal — same "missing config → connector skipped" philosophy used
-    for every connector below. Installed via "Install/Update Organization
-    Config…" in the menu bar (see menu_bar.py).
+    for every connector below. Installed via PrivacyFence Settings'
+    "Install/Update Organization Config…" (or by hand-editing this file).
     """
     path = org_dir() / "org_config.json"
     if not path.exists():
@@ -258,14 +324,15 @@ def setup_logging(config: dict[str, Any]) -> None:
 
 # ---------------------------------------------------------------------------- #
 # Web approval UI + MCP-over-HTTP (see docs/https-connector-refactor-plan.md's
-# P1/P2) -- opt-in, selected by config/settings.yaml's web.approval_ui and
-# web.mcp.enabled respectively. web.approval_ui's "web" is the seam
-# approval_ui.init_approval_ui() switches; native (NativeApprovalUI, AppKit)
-# stays the default so nothing changes for an install that doesn't set this.
-# web.mcp.enabled is independent of it (§8 of that document is a transport
-# change, orthogonal to which ApprovalUI shows the resulting popup) -- either
-# setting alone is enough to start the embedded HTTP server; both share the
-# one server/one port, per §3's target architecture.
+# P1/P2). Through P9, config/settings.yaml's web.approval_ui selected native
+# (AppKit, the default) or web; P10 deleted the native implementation (§12,
+# D6), so the web approval UI is now unconditionally installed in local mode
+# -- there is nothing left to select. web.mcp.enabled independently turns
+# the /mcp endpoint on (§8 of that document is a transport change, separate
+# from the approval surface), and web.settings.enabled independently turns
+# /settings on -- either can be on or off without affecting the other two;
+# all three share the one embedded server/one port, per §3's target
+# architecture, which local mode now always starts.
 # ---------------------------------------------------------------------------- #
 
 def _maybe_start_web_server(
@@ -276,21 +343,27 @@ def _maybe_start_web_server(
     controller: Any = None,
     org_config: dict[str, Any] | None = None,
 ) -> Any:
-    """Returns the started WebServer, or None when neither web.approval_ui
-    nor web.mcp.enabled nor web.settings.enabled opts in -- the rollback
-    lever for each surface from docs/https-connector-refactor-plan.md §12
-    ("P1: init_approval_ui() -- the seam itself. A config key selects
-    native or web." / "P2: the HTTP listener is off unless configured" /
-    §16.6's ``web.settings.enabled``). Since P5 retired the bridge, turning
-    ``mcp.enabled`` off leaves this install with no way for Claude to reach
-    it at all -- ``web.mcp.enabled: true`` (settings.yaml.example's default
-    since D11/P4b) is no longer "additive alongside the bridge", it is the
-    only transport there is; the key survives as a deliberate full-stop
-    kill switch, not as a rollback to some other still-working path.
-    Imports the web/starlette/uvicorn/mcp stack lazily so a daemon that
-    never opts into any of the three doesn't pay for it at startup, the
-    same "menu_bar imported inside run_app(), not at module scope" posture
-    this module already takes for its own AppKit-only pieces.
+    """Returns the started WebServer -- always, in local mode, since P10
+    made the web approval UI the only one there is (see this section's own
+    comment above); org mode still returns None if ``mcp.enabled`` is off,
+    unchanged from before this phase (there is no approval surface to fall
+    back to there either, but org mode has never had a way to reach one
+    without ``/mcp`` in the first place -- see ``_start_org_web_server``'s
+    own docstring). ``web.mcp.enabled``/``web.settings.enabled`` remain
+    independent rollback levers for those two surfaces specifically
+    (docs/https-connector-refactor-plan.md §12's "P2: the HTTP listener is
+    off unless configured" / §16.6's ``web.settings.enabled``) -- turning
+    both off still leaves the server running for ``/approvals`` alone,
+    since P10 left that with no off switch of its own (§12: "P10 is the one
+    phase with no rollback -- it deletes the fallback"). Since P5 retired
+    the bridge, turning ``mcp.enabled`` off also leaves this install with
+    no way for Claude to reach it at all -- ``web.mcp.enabled: true``
+    (settings.yaml.example's default since D11/P4b) is no longer "additive
+    alongside the bridge", it is the only transport there is; the key
+    survives as a deliberate full-stop kill switch, not as a rollback to
+    some other still-working path. Imports the web/starlette/uvicorn/mcp
+    stack lazily so constructing it is deferred to the one place that
+    actually needs it, same posture this module has taken since P1.
 
     ``connector_host`` is already built and holds the real connector set by
     the time this is called (see run_app's ordering) -- the MCP dispatcher
@@ -306,13 +379,12 @@ def _maybe_start_web_server(
     mode's OAuth 2.1 AS dispatches against this same shared connector set
     until then.
 
-    ``controller``, when given, is the *same* SettingsController instance
-    run_app() also hands to the native menu bar/settings window -- one
-    controller, two ``on_change`` consumers (§16.8's risk #2), so a rule
-    changed from one surface reaches the other with no separate plumbing.
-    Independent of ``use_web_approval_ui``/``mcp_enabled``: a deployment can
-    run the web settings page with the *native* approval dialog, or the
-    reverse (§16.6).
+    ``controller``, when given, is the SettingsController instance
+    run_app() built for this daemon's whole lifetime -- passed through here
+    so the web settings page (when ``web.settings.enabled``) can drive it;
+    always the same instance regardless, so a rule changed via ``/settings``
+    and one changed via a gated call's own "Always allow" button stay in
+    sync with no separate plumbing.
 
     ``org_config`` (P7, §4) is where ``"mode"`` lives -- ``org`` switches
     this into web/server.py's own org-mode wiring (a real OAuth 2.1
@@ -337,10 +409,7 @@ def _maybe_start_web_server(
             web_config, org_config, connector_host, unattended_sessions_enabled=unattended_sessions_enabled,
         )
 
-    use_web_approval_ui = web_config.get("approval_ui", "native") == "web"
     use_web_settings = bool(settings_config.get("enabled", False)) and controller is not None
-    if not use_web_approval_ui and not mcp_enabled and not use_web_settings:
-        return None
 
     from .approvals import PendingApprovalRegistry
     from .web.mcp_dispatch import McpDispatcher
@@ -351,10 +420,10 @@ def _maybe_start_web_server(
     # plan.md §15: "hold 30s, pending TTL 15 min, ledger TTL 5 min" --
     # "these defaults are what P3's beta measures against"). One registry
     # backs both the web approval surface and privacyfence_await_approval
-    # (below), whichever of use_web_approval_ui/mcp_enabled is actually on --
-    # constructing it unconditionally here costs nothing (it's just an empty
-    # dict-backed object until something registers into it) and means
-    # turning mcp.enabled on later, without restarting, would find it ready.
+    # (below), whether or not mcp_enabled is actually on -- constructing it
+    # unconditionally here costs nothing (it's just an empty dict-backed
+    # object until something registers into it) and means turning mcp.
+    # enabled on later, without restarting, would find it ready.
     approvals_config = web_config.get("approvals", {}) or {}
     registry = PendingApprovalRegistry(
         hold_window=float(approvals_config.get("hold_window_seconds", 30.0)),
@@ -363,8 +432,7 @@ def _maybe_start_web_server(
         max_pending=int(approvals_config.get("max_pending", 50)),
     )
     web_ui = init_web_approval_ui(registry=registry)
-    if use_web_approval_ui:
-        init_approval_ui(web_ui)
+    init_approval_ui(web_ui)
 
     mcp_dispatcher = None
     if mcp_enabled:
@@ -393,15 +461,12 @@ def _maybe_start_web_server(
     server.start()
     # The pending-result URL gate.py hands back to Claude (§5.2 point 4) is
     # only meaningful once the server is actually listening -- set here,
-    # not at registry construction, and left unset (None) if this daemon
-    # never starts the web server at all, in which case gate.py's own
-    # _pending_result() just omits it.
+    # not at registry construction.
     registry.set_base_url(server.base_url)
-    if use_web_approval_ui:
-        logger.info(
-            "Web approval UI active -- approvals open at %s/approvals?token=%s",
-            server.base_url, server.token,
-        )
+    logger.info(
+        "Web approval UI active -- approvals open at %s/approvals?token=%s",
+        server.base_url, server.token,
+    )
     if use_web_settings:
         logger.info(
             "Web settings active -- open at %s/settings?token=%s",
@@ -465,9 +530,9 @@ def _start_org_web_server(
         max_pending=int(approvals_config.get("max_pending", 50)),
     )
     web_ui = init_web_approval_ui(registry=approval_registry)
-    # Org mode has no native popup to choose instead -- there is no GUI on
-    # a server -- so WebApprovalUI is unconditionally the ApprovalUI here,
-    # not gated on web.approval_ui the way local mode's own choice is.
+    # WebApprovalUI is unconditionally the ApprovalUI here, same as local
+    # mode's own _maybe_start_web_server above since P10 -- org mode never
+    # had a native option to begin with (there is no GUI on a server).
     init_approval_ui(web_ui)
 
     def _connectors_for_principal(_principal: Principal) -> list:
@@ -668,7 +733,7 @@ def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list
             # Directory-cache warming (if stale) happens after the whole
             # connector list is built, in the background -- see
             # _warm_connector_caches() in run_app(). Doing it here,
-            # synchronously, used to delay the menu bar icon appearing
+            # synchronously, used to delay startup completing
             # until a full users.list/conversations.list re-sync finished,
             # which read as "the app isn't running yet."
             logger.info("Slack connector ready for workspace %r", workspace)
@@ -711,7 +776,7 @@ def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list
             if not atlassian_org.get("client_id"):
                 raise JiraClientError("Atlassian organization config not installed")
             if not atlassian_token:
-                raise JiraClientError("Jira is not authenticated. Use Authenticate… in the menu bar.")
+                raise JiraClientError("Jira is not authenticated. Use Authenticate… in PrivacyFence Settings.")
             client = JiraClient(config=atlassian_config, token_file=_resolve_path(TOKEN_FILES["atlassian"]))
             info = client.check_connection()
             logger.info("Jira connector ready: %s", info)
@@ -726,7 +791,7 @@ def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list
             if not atlassian_org.get("client_id"):
                 raise ConfluenceClientError("Atlassian organization config not installed")
             if not atlassian_token:
-                raise ConfluenceClientError("Confluence is not authenticated. Use Authenticate… in the menu bar.")
+                raise ConfluenceClientError("Confluence is not authenticated. Use Authenticate… in PrivacyFence Settings.")
             client = ConfluenceClient(config=atlassian_config, token_file=_resolve_path(TOKEN_FILES["atlassian"]))
             url = client.check_connection()
             logger.info("Confluence connector ready: %s", url)
@@ -750,7 +815,7 @@ def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list
             session_file = _resolve_path(TOKEN_FILES["telegram"])
             if not os.path.exists(session_file) and not os.path.exists(session_file + ".session"):
                 raise TelegramClientError(
-                    "Telegram is not authenticated. Use Authenticate… in the PrivacyFence menu bar."
+                    "Telegram is not authenticated. Use Authenticate… in PrivacyFence Settings."
                 )
             tg_client = TelegramPrivacyFenceClient(
                 api_id=api_id,
@@ -786,8 +851,8 @@ def _warm_connector_caches(connectors: list, web_loop: asyncio.AbstractEventLoop
     Deliberately not run inline in build_connectors(), and not awaited
     here either: a full weekly re-sync (users.list/conversations.list/
     get_dialogs) can take a while on a large workspace/account, and running
-    it synchronously on the main thread used to delay the menu bar icon
-    appearing until it finished -- which read as "the app isn't running
+    it synchronously on the main thread used to delay startup completing
+    until it finished -- which read as "the app isn't running
     yet."
 
     Slack's client is synchronous (blocking HTTP via slack_sdk), so it gets
@@ -825,7 +890,7 @@ def _log_cache_warm_failure(future: "asyncio.Future[None]") -> None:
 
 # ---------------------------------------------------------------------------- #
 # OAuth / interactive-auth setup commands (headless/dev use — the primary UX
-# path is now "Authenticate…" in the menu bar, see menu_bar.py)
+# path is now "Authenticate…" in PrivacyFence Settings)
 # ---------------------------------------------------------------------------- #
 
 def run_gmail_oauth(org_config: dict[str, Any]) -> int:
@@ -1045,13 +1110,12 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
     connector_host = ConnectorHost(connectors)
 
     # Built once, here, and handed to *both* the web settings surface
-    # (_maybe_start_web_server, below) and the native menu bar/settings
-    # window (run_menu_bar, further down) -- one SettingsController
-    # instance either way (§16.8's risk #2: "two on_change consumers"),
-    # rather than each surface building its own and drifting out of sync
-    # with the other's in-memory state (_busy_connectors, _telegram_auth,
-    # the update-check cache). PrivacyFenceMenuBar.__init__ builds its own
-    # only when none is passed in (native-only installs, unchanged).
+    # (_maybe_start_web_server, below) -- through P9 also handed to the
+    # native menu bar/settings window, which P10 deleted. One
+    # SettingsController instance for this daemon's whole lifetime, rather
+    # than each surface building its own and drifting out of sync with the
+    # other's in-memory state (_busy_connectors, _telegram_auth, the
+    # update-check cache).
     from .settings_controller import SettingsController
 
     connector_names = [c.name for c in connectors]
@@ -1074,26 +1138,24 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
     # that needs a live loop, not just a thread -- see
     # _warm_connector_caches' own docstring) waits for that loop to be
     # captured instead. None when this daemon never starts the web server
-    # at all (every web.* surface opted out) -- in that configuration
-    # nothing can reach a connector regardless, so there is nothing to warm
-    # a cache for.
+    # at all -- since P10, that's only org mode with mcp.enabled off (see
+    # _maybe_start_web_server's own docstring); local mode always starts
+    # one now, so there's always a loop to wait for there.
     web_loop = server.wait_until_ready(timeout=5) if server is not None else None
-    logger.info("Startup complete, starting menu bar")
+    logger.info("Startup complete")
 
     if web_loop is not None:
         _warm_connector_caches(connectors, web_loop)
     elif server is not None:
         logger.warning("Web server event loop not ready in time; skipping background cache warm")
 
-    from .menu_bar import run_menu_bar
+    threading.Thread(
+        target=_run_update_check_timer, args=(settings_controller,),
+        name="update-check-timer", daemon=True,
+    ).start()
+
     try:
-        run_menu_bar(
-            config_path=config_path,
-            connectors=connector_names,
-            connector_host=connector_host,
-            connector_objs=connectors,
-            controller=settings_controller,
-        )
+        _wait_for_shutdown()
     except KeyboardInterrupt:
         logger.info("Interrupted; shutting down")
     finally:

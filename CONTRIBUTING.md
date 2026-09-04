@@ -31,8 +31,7 @@ Use GitHub Issues for bug reports and feature requests. Include:
 ## Code Style
 
 - `src/privacyfence/` (the daemon): Python 3.11+, standard library preferred over new dependencies
-- `mcpb/shim/` (the `.mcpb`'s stdio-to-Streamable-HTTP transport proxy, D11 in
-  [`docs/https-connector-refactor-plan.md`](docs/https-connector-refactor-plan.md) — the sole way Claude
+- `mcpb/shim/` (the `.mcpb`'s stdio-to-Streamable-HTTP transport proxy — the sole way Claude
   Desktop reaches the daemon since P5 retired the original MCP bridge): TypeScript/Node, kept as a
   separate language from the daemon so the `.mcpb` extension ships without a bundled Python runtime;
   carries no tool-schema knowledge, so it stays small on purpose — see its own `src/index.ts` module

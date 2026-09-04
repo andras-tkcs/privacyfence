@@ -19,6 +19,7 @@ from privacyfence import (
     approval_ui,
     auto_accept,
     audit_log,
+    daemon_main,
     pii_detector,
     privacy_filter,
     resource_names,
@@ -38,6 +39,11 @@ def _reset() -> None:
     web_approval_ui._INSTANCE = None
     settings_controller._main_dispatch = None
     state_stream._loop = None
+    # daemon_main._shutdown_event (P10): a test that calls request_shutdown()
+    # (directly, or via SettingsController.quit_app()) must not leave it set
+    # for the next test's own _wait_for_shutdown() call to find already
+    # signaled.
+    daemon_main._shutdown_event.clear()
 
 
 @pytest.fixture(autouse=True)

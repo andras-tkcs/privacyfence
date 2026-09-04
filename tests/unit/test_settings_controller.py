@@ -89,12 +89,12 @@ def controller(tmp_path, monkeypatch):
 class TestRunAsyncMarshaling:
     """_run_async is the mechanism every threaded flow in this module funnels
     through. If it ever regresses to invoking on_done directly on the worker
-    thread, the AppKit-not-thread-safe invariant every mutation depends on
-    breaks silently."""
+    thread, the "on_done touches self/the page, so it must run on the main
+    thread" invariant every mutation depends on breaks silently."""
 
     def test_success_result_never_delivered_directly_on_worker_thread(self, monkeypatch):
         recorded = []
-        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
+        sc.set_main_dispatcher(lambda f, *a, **k: recorded.append((f, a, k)))
 
         done_calls = []
         work_thread = {}
@@ -106,46 +106,52 @@ class TestRunAsyncMarshaling:
         def done(ok, result):
             done_calls.append((ok, result))
 
-        sc._run_async(work, done)
+        try:
+            sc._run_async(work, done)
 
-        assert wait_until(lambda: recorded)
-        assert work_thread["thread"] is not threading.current_thread()
-        assert done_calls == []
+            assert wait_until(lambda: recorded)
+            assert work_thread["thread"] is not threading.current_thread()
+            assert done_calls == []
 
-        func, args, kwargs = recorded[0]
-        assert args == (True, "alice@example.com")
-        func(*args, **kwargs)
-        assert done_calls == [(True, "alice@example.com")]
+            func, args, kwargs = recorded[0]
+            assert args == (True, "alice@example.com")
+            func(*args, **kwargs)
+            assert done_calls == [(True, "alice@example.com")]
+        finally:
+            sc.set_main_dispatcher(None)
 
     def test_exception_in_work_is_also_marshaled_not_raised_on_worker_thread(self, monkeypatch):
         recorded = []
-        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
+        sc.set_main_dispatcher(lambda f, *a, **k: recorded.append((f, a, k)))
         boom = ValueError("auth failed")
 
         def work():
             raise boom
 
         done_calls = []
-        sc._run_async(work, lambda ok, result: done_calls.append((ok, result)))
+        try:
+            sc._run_async(work, lambda ok, result: done_calls.append((ok, result)))
 
-        assert wait_until(lambda: recorded)
-        func, args, kwargs = recorded[0]
-        assert args == (False, boom)
-        func(*args, **kwargs)
-        assert done_calls == [(False, boom)]
+            assert wait_until(lambda: recorded)
+            func, args, kwargs = recorded[0]
+            assert args == (False, boom)
+            func(*args, **kwargs)
+            assert done_calls == [(False, boom)]
+        finally:
+            sc.set_main_dispatcher(None)
 
 
 class TestOnChangeMarshaling:
     """Rule changes from a background thread (e.g. the web server's own
     asyncio thread, for an "Always allow" confirmation reached over /mcp)
-    must marshal onto the main thread via AppHelper.callAfter before
-    touching on_change (which may drive AppKit/the webview)."""
+    must marshal onto the main thread via the registered dispatcher before
+    touching on_change (which may push into a live web page)."""
 
     def test_reload_from_background_thread_schedules_but_does_not_push_inline(self, controller, monkeypatch):
         recorded = []
-        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(
-            callAfter=lambda f, *a, **k: recorded.append((f, a, k, threading.current_thread()))
-        ))
+        sc.set_main_dispatcher(
+            lambda f, *a, **k: recorded.append((f, a, k, threading.current_thread()))
+        )
         pushed = []
         controller.on_change = lambda state: pushed.append(threading.current_thread())
 
@@ -155,45 +161,37 @@ class TestOnChangeMarshaling:
             auto_accept.reload_rules({"gmail.read_message": [{"rule": "i_am_sender"}]})
             bg_done.set()
 
-        t = threading.Thread(target=background_thread_body)
-        t.start()
-        t.join(timeout=2)
-        assert bg_done.is_set()
+        try:
+            t = threading.Thread(target=background_thread_body)
+            t.start()
+            t.join(timeout=2)
+            assert bg_done.is_set()
 
-        assert pushed == []
-        assert len(recorded) == 1
-        func, args, kwargs, calling_thread = recorded[0]
-        assert calling_thread is not threading.current_thread()
+            assert pushed == []
+            assert len(recorded) == 1
+            func, args, kwargs, calling_thread = recorded[0]
+            assert calling_thread is not threading.current_thread()
 
-        func(*args, **kwargs)
-        assert pushed == [threading.current_thread()]
+            func(*args, **kwargs)
+            assert pushed == [threading.current_thread()]
+        finally:
+            sc.set_main_dispatcher(None)
 
 
 class TestCallOnMain:
-    """§16.2.1's dispatcher seam: call_on_main resolves to AppHelper when
-    present, else a registered set_main_dispatcher(), else runs inline --
-    the last case is what makes _run_async's on_done actually observable on
-    a machine with no pyobjc, instead of dying with AttributeError inside
-    the worker thread where nothing surfaces it (the exact bug this seam
-    fixes -- see this module's git history / docs/https-connector-refactor-
-    plan.md §16.2.1)."""
+    """§16.2.1's dispatcher seam: call_on_main resolves to a registered
+    set_main_dispatcher(), else runs inline -- the inline case is what makes
+    _run_async's on_done actually observable when nothing has attached a
+    dispatcher yet (a standalone import, or a test with no web server
+    running), instead of dying with AttributeError inside the worker thread
+    where nothing surfaces it (the exact bug this seam fixes -- see this
+    module's git history / docs/https-connector-refactor-plan.md §16.2.1).
+    Through P9 a third path existed (AppKit's own run loop, via
+    PyObjCTools.AppHelper.callAfter, when the native settings window was
+    hosting); P10 deleted that host along with the rest of the AppKit UI
+    layer."""
 
-    def test_appkit_present_dispatches_through_apphelper(self, monkeypatch):
-        recorded = []
-        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a: recorded.append((f, a))))
-        monkeypatch.setattr(sc, "_main_dispatch", lambda f, *a: (_ for _ in ()).throw(AssertionError("unused")))
-
-        calls = []
-        sc.call_on_main(lambda x: calls.append(x), "hi")
-
-        assert calls == []  # not run inline -- AppHelper "scheduled" it
-        assert len(recorded) == 1
-        func, args = recorded[0]
-        func(*args)
-        assert calls == ["hi"]
-
-    def test_no_apphelper_uses_registered_dispatcher(self, monkeypatch):
-        monkeypatch.setattr(sc, "AppHelper", None)
+    def test_dispatcher_registered_is_used(self, monkeypatch):
         recorded = []
         sc.set_main_dispatcher(lambda f, *a: recorded.append((f, a)))
         try:
@@ -206,19 +204,17 @@ class TestCallOnMain:
         finally:
             sc.set_main_dispatcher(None)
 
-    def test_no_apphelper_no_dispatcher_runs_inline(self, monkeypatch):
-        # This is the case that used to raise AttributeError -- authenticate_
-        # connector's failure path (and every other _run_async caller) has
-        # to surface an error on a machine with no AppKit installed at all,
-        # not silently die on the worker thread.
-        monkeypatch.setattr(sc, "AppHelper", None)
+    def test_no_dispatcher_runs_inline(self, monkeypatch):
+        # This is the case that used to raise AttributeError against a None
+        # AppHelper -- authenticate_connector's failure path (and every
+        # other _run_async caller) has to surface an error when nothing has
+        # attached a dispatcher, not silently die on the worker thread.
         sc.set_main_dispatcher(None)
         calls = []
         sc.call_on_main(lambda x: calls.append(x), "hi")
         assert calls == ["hi"]
 
-    def test_run_async_on_done_runs_with_apphelper_absent(self, monkeypatch):
-        monkeypatch.setattr(sc, "AppHelper", None)
+    def test_run_async_on_done_runs_with_no_dispatcher_registered(self, monkeypatch):
         sc.set_main_dispatcher(None)
         done_calls = []
         boom = RuntimeError("auth failed")
@@ -490,10 +486,9 @@ class TestUpdateCheck:
         controller._on_update_check_done(False, RuntimeError("boom"))
         assert controller._latest_update is None
 
-    def test_update_check_done_success_pushes_state(self, controller, monkeypatch):
+    def test_update_check_done_success_pushes_state(self, controller):
         pushed = []
         controller.on_change = lambda state: pushed.append(state)
-        monkeypatch.setattr(sc, "should_notify_now", lambda: False)
 
         result = update_checker.UpdateCheckResult(
             latest_version="v2.2.0", release_url="https://x", is_beta=False, is_update_available=False,
@@ -503,107 +498,57 @@ class TestUpdateCheck:
         assert controller._latest_update is result
         assert len(pushed) == 1
 
-    def test_update_available_and_should_notify_shows_alert(self, controller, monkeypatch):
-        monkeypatch.setattr(sc, "should_notify_now", lambda: True)
-        alerts = []
-        monkeypatch.setattr(sc, "rumps", SimpleNamespace(alert=lambda **kw: alerts.append(kw) or 0))
-        controller.on_change = lambda state: None
+    def test_update_available_pushes_state_for_the_web_banner(self, controller):
+        # Through P9 an update found here also popped a native rumps.alert()
+        # -- deleted at P10 (see _on_update_check_done's own comment). The
+        # web General page's own banner is driven entirely by _general_state
+        # (below), which reads straight off _latest_update -- there's
+        # nothing else for _on_update_check_done itself to do beyond
+        # recording the result and pushing a fresh snapshot.
+        pushed = []
+        controller.on_change = lambda state: pushed.append(state)
 
         result = update_checker.UpdateCheckResult(
             latest_version="v2.2.0", release_url="https://x/tag/v2.2.0", is_beta=False, is_update_available=True,
         )
         controller._on_update_check_done(True, result)
 
-        assert len(alerts) == 1
-        assert "2.2.0" in alerts[0]["message"]
-
-    def test_show_update_available_alert_download_opens_url(self, controller, monkeypatch):
-        monkeypatch.setattr(sc, "rumps", SimpleNamespace(alert=lambda **kw: 1))
-        open_calls = []
-        monkeypatch.setattr(sc.subprocess, "run", lambda args, **kw: open_calls.append(args))
-
-        result = update_checker.UpdateCheckResult(
-            latest_version="v2.2.0", release_url="https://github.com/x/releases/tag/v2.2.0",
-            is_beta=False, is_update_available=True,
-        )
-        controller._show_update_available_alert(result)
-
-        assert open_calls == [["open", "https://github.com/x/releases/tag/v2.2.0"]]
-
-    def test_show_update_available_alert_skip_marks_skipped(self, controller, monkeypatch):
-        monkeypatch.setattr(sc, "rumps", SimpleNamespace(alert=lambda **kw: 0))
-        skipped = []
-        monkeypatch.setattr(sc, "mark_skipped", lambda version: skipped.append(version))
-
-        result = update_checker.UpdateCheckResult(
-            latest_version="v2.2.0", release_url="https://x", is_beta=False, is_update_available=True,
-        )
-        controller._show_update_available_alert(result)
-
-        assert skipped == ["v2.2.0"]
-
-    def test_show_update_available_alert_remind_later(self, controller, monkeypatch):
-        monkeypatch.setattr(sc, "rumps", SimpleNamespace(alert=lambda **kw: -1))
-        remind_calls = []
-        monkeypatch.setattr(sc, "mark_remind_later", lambda: remind_calls.append(1))
-
-        result = update_checker.UpdateCheckResult(
-            latest_version="v2.2.0", release_url="https://x", is_beta=False, is_update_available=True,
-        )
-        controller._show_update_available_alert(result)
-
-        assert remind_calls == [1]
+        assert controller._latest_update is result
+        assert len(pushed) == 1
+        assert pushed[0]["general"]["update_available"] is True
 
 
 class TestOrgConfigInstall:
-    def _fake_picker(self, monkeypatch, path):
-        monkeypatch.setattr(sc.subprocess, "run", lambda cmd, **kw: SimpleNamespace(stdout=(path or "")))
+    """install_org_config_bytes is the validate-then-write step behind
+    web/routes_settings.py's multipart upload -- through P9 also reachable
+    from a native "choose file" picker (install_org_config()), deleted at
+    P10 along with the rest of the AppKit UI layer."""
 
-    def test_cancelled_picker_makes_no_change(self, controller, monkeypatch):
-        self._fake_picker(monkeypatch, None)
-
-        controller.install_org_config()
-
-        assert not (sc.org_dir() / "org_config.json").exists()
-
-    def test_non_json_file_sets_error(self, controller, monkeypatch, tmp_path):
-        src = tmp_path / "bad.json"
-        src.write_text("not valid json", encoding="utf-8")
-        self._fake_picker(monkeypatch, str(src))
-
-        controller.install_org_config()
+    def test_non_json_file_sets_error(self, controller):
+        controller.install_org_config_bytes(b"not valid json")
 
         assert controller.error
         assert not (sc.org_dir() / "org_config.json").exists()
 
-    def test_json_without_version_field_is_rejected(self, controller, monkeypatch, tmp_path):
-        src = tmp_path / "bundle.json"
-        src.write_text(json.dumps({"google": {"client_id": "x"}}), encoding="utf-8")
-        self._fake_picker(monkeypatch, str(src))
-
-        controller.install_org_config()
+    def test_json_without_version_field_is_rejected(self, controller):
+        controller.install_org_config_bytes(json.dumps({"google": {"client_id": "x"}}).encode())
 
         assert controller.error
         assert not (sc.org_dir() / "org_config.json").exists()
 
-    def test_valid_bundle_is_installed(self, controller, monkeypatch, tmp_path):
-        src = tmp_path / "bundle.json"
+    def test_valid_bundle_is_installed(self, controller):
         bundle = {"version": 1, "org_name": "Acme", "google": {"client_id": "x", "client_secret": "y"}}
-        src.write_text(json.dumps(bundle), encoding="utf-8")
-        self._fake_picker(monkeypatch, str(src))
 
-        controller.install_org_config()
+        controller.install_org_config_bytes(json.dumps(bundle).encode())
 
         installed = json.loads((sc.org_dir() / "org_config.json").read_text(encoding="utf-8"))
         assert installed == bundle
         assert controller.error == ""
 
-    def test_snapshot_reflects_installed_state(self, controller, monkeypatch, tmp_path):
-        src = tmp_path / "bundle.json"
-        src.write_text(json.dumps({"version": 1}), encoding="utf-8")
-        self._fake_picker(monkeypatch, str(src))
+    def test_snapshot_reflects_installed_state(self, controller):
+        controller.install_org_config_bytes(json.dumps({"version": 1}).encode())
 
-        state = controller.install_org_config()
+        state = controller.snapshot()
 
         assert state["general"]["org_installed"] is True
         assert state["general"]["org_button_label"] == "Install/Update Organization Config…"
@@ -637,7 +582,7 @@ class TestToggleConnector:
 class TestRefreshConnectors:
     def test_updates_connectors_and_pushes_to_connector_host_after_drain(self, controller, monkeypatch):
         recorded = []
-        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
+        monkeypatch.setattr(sc, "_main_dispatch", lambda f, *a, **k: recorded.append((f, a, k)))
         monkeypatch.setattr(daemon_main, "build_connectors", lambda cfg, org: [SimpleNamespace(name="drive")])
 
         controller.refresh_connectors()
@@ -706,7 +651,7 @@ class TestAuthenticateGoogle:
 
     def test_runs_authorize_and_check_connection_marks_busy_then_refreshes(self, controller, monkeypatch):
         recorded = []
-        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
+        monkeypatch.setattr(sc, "_main_dispatch", lambda f, *a, **k: recorded.append((f, a, k)))
         calls = []
 
         class FakeGmailClient:
@@ -740,7 +685,7 @@ class TestAuthenticateGoogle:
 
     def test_failed_auth_sets_error_and_clears_busy_without_refreshing(self, controller, monkeypatch):
         recorded = []
-        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
+        monkeypatch.setattr(sc, "_main_dispatch", lambda f, *a, **k: recorded.append((f, a, k)))
         refresh_calls = []
         monkeypatch.setattr(controller, "refresh_connectors", lambda: refresh_calls.append(1))
 
@@ -775,7 +720,7 @@ class TestAuthenticateSlack:
 
     def test_success_refreshes(self, controller, monkeypatch):
         recorded = []
-        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
+        monkeypatch.setattr(sc, "_main_dispatch", lambda f, *a, **k: recorded.append((f, a, k)))
         monkeypatch.setattr(sc, "slack_authorize_interactive", lambda **kw: {"team_name": "Acme"})
         refresh_calls = []
         monkeypatch.setattr(controller, "refresh_connectors", lambda: refresh_calls.append(1))
@@ -801,7 +746,7 @@ class TestAuthenticateSalesforce:
 
     def test_success_refreshes(self, controller, monkeypatch):
         recorded = []
-        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
+        monkeypatch.setattr(sc, "_main_dispatch", lambda f, *a, **k: recorded.append((f, a, k)))
         monkeypatch.setattr(sc, "salesforce_authorize_interactive", lambda **kw: {"instance_url": "https://x.salesforce.com"})
         refresh_calls = []
         monkeypatch.setattr(controller, "refresh_connectors", lambda: refresh_calls.append(1))
@@ -826,7 +771,7 @@ class TestAuthenticateAtlassian:
 
     def test_success_marks_busy_for_both_jira_and_confluence(self, controller, monkeypatch):
         recorded = []
-        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
+        monkeypatch.setattr(sc, "_main_dispatch", lambda f, *a, **k: recorded.append((f, a, k)))
         monkeypatch.setattr(sc, "atlassian_authorize_interactive", lambda **kw: {"site_url": "https://acme.atlassian.net"})
         refresh_calls = []
         monkeypatch.setattr(controller, "refresh_connectors", lambda: refresh_calls.append(1))
@@ -841,42 +786,18 @@ class TestAuthenticateAtlassian:
         assert "jira" not in controller._busy_connectors
         assert "confluence" not in controller._busy_connectors
 
-    def test_multiple_sites_pick_resource_uses_dialog_window_choice_picker(self, controller, monkeypatch):
+    def test_no_approval_ui_registered_falls_back_to_the_first_resource(self, controller, monkeypatch):
+        # _pick_resource_index's own "no registry" case (approval_ui.py's
+        # deferred_registry docstring) -- the default, unconfigured
+        # ApprovalUI (no init_approval_ui() call in this test) returns None,
+        # which pick_resource's own caller (atlassian_oauth.py) already
+        # treats as "fall back to the first resource". Through P9 this same
+        # outcome was also reachable via a cancelled native picker; P10
+        # deleted that picker along with the rest of the AppKit UI layer,
+        # so TestPickResourceIndexWebMode below covers the web-registry
+        # equivalent (an explicit "cancel" answer) instead.
         recorded = []
-        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
-        picker_calls = []
-
-        def fake_show_choice_dialog(**kwargs):
-            picker_calls.append(kwargs)
-            return 1  # "https://b.atlassian.net", the second option
-
-        monkeypatch.setattr(sc, "dialog_window", SimpleNamespace(show_choice_dialog=fake_show_choice_dialog))
-        monkeypatch.setattr(controller, "refresh_connectors", lambda: None)
-
-        captured = {}
-
-        def fake_authorize(**kwargs):
-            resources = [
-                {"url": "https://a.atlassian.net", "id": "a"},
-                {"url": "https://b.atlassian.net", "id": "b"},
-            ]
-            chosen = kwargs["pick_resource"](resources)
-            captured["site_url"] = chosen["url"]
-            return {"site_url": chosen["url"]}
-
-        monkeypatch.setattr(sc, "atlassian_authorize_interactive", fake_authorize)
-
-        controller._authenticate_atlassian({"atlassian": {"client_id": "ci"}})
-
-        assert wait_until(lambda: recorded)
-        _drain_run_async(recorded)
-        assert captured["site_url"] == "https://b.atlassian.net"
-        assert picker_calls[0]["options"] == ["https://a.atlassian.net", "https://b.atlassian.net"]
-
-    def test_cancelled_picker_falls_back_to_the_first_resource(self, controller, monkeypatch):
-        recorded = []
-        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
-        monkeypatch.setattr(sc, "dialog_window", SimpleNamespace(show_choice_dialog=lambda **kw: None))
+        monkeypatch.setattr(sc, "_main_dispatch", lambda f, *a, **k: recorded.append((f, a, k)))
         monkeypatch.setattr(controller, "refresh_connectors", lambda: None)
 
         captured = {}
@@ -900,18 +821,18 @@ class TestAuthenticateAtlassian:
 
 
 class TestPickResourceIndexWebMode:
-    """§16.2.2: the Atlassian picker generalized onto web_prompt.py when a
-    WebApprovalUI (not NativeApprovalUI) is the live ApprovalUI -- same
-    picker, same cancelled-falls-back-to-first-resource/options-are-URLs
-    contract, routed through the registry every approval card already
-    uses instead of dialog_window."""
+    """§16.2.2: the Atlassian picker routed through web_prompt.py when a
+    WebApprovalUI (the only ApprovalUI implementation since P10) is the
+    live ApprovalUI -- same picker, same cancelled-falls-back-to-first-
+    resource/options-are-URLs contract, routed through the registry every
+    approval card already uses."""
 
     def test_routes_through_the_web_registry_when_one_is_live(self, controller, monkeypatch):
         from privacyfence import approval_ui, web_approval_ui
 
         web_ui = web_approval_ui.WebApprovalUI()
         approval_ui.init_approval_ui(web_ui)
-        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: f(*a, **k)))
+        monkeypatch.setattr(sc, "_main_dispatch", lambda f, *a, **k: f(*a, **k))
         monkeypatch.setattr(controller, "refresh_connectors", lambda: None)
 
         # Assert on the options actually handed to the picker, not by
@@ -959,7 +880,7 @@ class TestPickResourceIndexWebMode:
 
         web_ui = web_approval_ui.WebApprovalUI()
         approval_ui.init_approval_ui(web_ui)
-        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: f(*a, **k)))
+        monkeypatch.setattr(sc, "_main_dispatch", lambda f, *a, **k: f(*a, **k))
         monkeypatch.setattr(controller, "refresh_connectors", lambda: None)
 
         captured = {}
@@ -1011,7 +932,7 @@ class TestTelegramStartAuth:
     def test_happy_path_stores_phone_code_hash_and_advances_to_code_step(self, controller, monkeypatch):
         monkeypatch.setattr(sc, "telegram_app_credentials", lambda: (123, "hash"))
         recorded = []
-        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
+        monkeypatch.setattr(sc, "_main_dispatch", lambda f, *a, **k: recorded.append((f, a, k)))
 
         fake_client = MagicMock()
         fake_client.connect = AsyncMock()
@@ -1037,7 +958,7 @@ class TestTelegramStartAuth:
     def test_connect_failure_keeps_phone_step_with_error(self, controller, monkeypatch):
         monkeypatch.setattr(sc, "telegram_app_credentials", lambda: (123, "hash"))
         recorded = []
-        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
+        monkeypatch.setattr(sc, "_main_dispatch", lambda f, *a, **k: recorded.append((f, a, k)))
 
         fake_client = MagicMock()
         fake_client.connect = AsyncMock(side_effect=RuntimeError("network down"))
@@ -1084,7 +1005,7 @@ class TestTelegramSubmitCode:
             "step": "code", "phone": "+123456789", "phone_code_hash": "hash-123", "error": "",
         }
         recorded = []
-        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
+        monkeypatch.setattr(sc, "_main_dispatch", lambda f, *a, **k: recorded.append((f, a, k)))
         refresh_calls = []
         monkeypatch.setattr(controller, "refresh_connectors", lambda: refresh_calls.append(1))
 
@@ -1109,7 +1030,7 @@ class TestTelegramSubmitCode:
         monkeypatch.setattr(sc, "telegram_app_credentials", lambda: (123, "hash"))
         controller._telegram_auth = {"step": "code", "phone": "+1", "phone_code_hash": "h", "error": ""}
         recorded = []
-        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
+        monkeypatch.setattr(sc, "_main_dispatch", lambda f, *a, **k: recorded.append((f, a, k)))
 
         from telethon.errors import SessionPasswordNeededError
 
@@ -1131,7 +1052,7 @@ class TestTelegramSubmitCode:
         monkeypatch.setattr(sc, "telegram_app_credentials", lambda: (123, "hash"))
         controller._telegram_auth = {"step": "code", "phone": "+1", "phone_code_hash": "h", "error": ""}
         recorded = []
-        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
+        monkeypatch.setattr(sc, "_main_dispatch", lambda f, *a, **k: recorded.append((f, a, k)))
 
         fake_client = MagicMock()
         fake_client.connect = AsyncMock()
@@ -1169,7 +1090,7 @@ class TestTelegramSubmit2FA:
         monkeypatch.setattr(sc, "telegram_app_credentials", lambda: (123, "hash"))
         controller._telegram_auth = {"step": "password", "error": ""}
         recorded = []
-        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
+        monkeypatch.setattr(sc, "_main_dispatch", lambda f, *a, **k: recorded.append((f, a, k)))
         refresh_calls = []
         monkeypatch.setattr(controller, "refresh_connectors", lambda: refresh_calls.append(1))
 
@@ -1193,7 +1114,7 @@ class TestTelegramSubmit2FA:
         monkeypatch.setattr(sc, "telegram_app_credentials", lambda: (123, "hash"))
         controller._telegram_auth = {"step": "password", "error": ""}
         recorded = []
-        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
+        monkeypatch.setattr(sc, "_main_dispatch", lambda f, *a, **k: recorded.append((f, a, k)))
 
         fake_client = MagicMock()
         fake_client.connect = AsyncMock()
@@ -1406,7 +1327,7 @@ class TestGrantRows:
 
     def test_resolve_names_async_kicks_off_when_client_available(self, controller, monkeypatch):
         recorded = []
-        monkeypatch.setattr(sc, "AppHelper", SimpleNamespace(callAfter=lambda f, *a, **k: recorded.append((f, a, k))))
+        monkeypatch.setattr(sc, "_main_dispatch", lambda f, *a, **k: recorded.append((f, a, k)))
         client = SimpleNamespace(get_file_metadata=lambda file_id: SimpleNamespace(name="Scratch"))
         controller._connector_objs = {"drive": SimpleNamespace(client=client)}
         controller.add_grant_row("drive", "sandbox_folders")
@@ -1517,22 +1438,21 @@ class TestAuditLog:
 
         assert controller._load_config() == before
 
-    def test_export_audit_log_missing_dir_sets_error(self, controller):
-        controller.export_audit_log()
+    def test_export_audit_log_path_missing_dir_sets_error(self, controller):
+        path = controller.export_audit_log_path()
+
+        assert path is None
         assert controller.error
 
-    def test_export_audit_log_opens_existing_dir(self, controller, monkeypatch):
-        log_dir = sc.data_dir() / "logs" / "audit"
-        log_dir.mkdir(parents=True)
-        run_calls = []
-        monkeypatch.setattr(sc.subprocess, "run", lambda *a, **k: run_calls.append(a))
+    def test_export_audit_log_path_no_activity_this_week_sets_error(self, controller):
+        (sc.data_dir() / "logs" / "audit").mkdir(parents=True)
 
-        controller.export_audit_log()
+        path = controller.export_audit_log_path()
 
-        assert run_calls == [(["open", str(log_dir)],)]
-        assert controller.error == ""
+        assert path is None
+        assert controller.error
 
-    def test_export_audit_log_exports_and_opens_the_current_week(self, controller, monkeypatch):
+    def test_export_audit_log_path_exports_and_returns_the_current_weeks_path(self, controller):
         from privacyfence.audit_log import AuditEntry, AuditLogger, current_week
 
         log_dir = sc.data_dir() / "logs" / "audit"
@@ -1544,14 +1464,13 @@ class TestAuditLog:
             summary="s", sender="a@x.com", decision="approved", auto_accept_rule="", latency_seconds=1.0,
         )
         AuditLogger(str(log_dir)).record(entry)
-        run_calls = []
-        monkeypatch.setattr(sc.subprocess, "run", lambda *a, **k: run_calls.append(a))
 
-        controller.export_audit_log()
+        path = controller.export_audit_log_path()
 
         expected_xlsx = log_dir / f"{week}.xlsx"
         assert expected_xlsx.exists()
-        assert run_calls == [(["open", str(expected_xlsx)],)]
+        assert path == str(expected_xlsx)
+        assert controller.error == ""
 
     def test_snapshot_recent_entries_reflect_the_audit_log(self, controller):
         from privacyfence.audit_log import AuditEntry, AuditLogger, current_week
@@ -1574,9 +1493,9 @@ class TestAuditLog:
 
 
 class TestAbout:
-    def test_quit_app_calls_rumps_quit(self, controller, monkeypatch):
+    def test_quit_app_requests_daemon_shutdown(self, controller, monkeypatch):
         calls = []
-        monkeypatch.setattr(sc, "rumps", SimpleNamespace(quit_application=lambda: calls.append(1)))
+        monkeypatch.setattr(daemon_main, "request_shutdown", lambda: calls.append(1))
 
         controller.quit_app()
 

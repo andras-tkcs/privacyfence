@@ -36,7 +36,7 @@ for what this method has already caught that no unit test did.
 ## Prerequisites
 
 - `privacyfence-app` (the daemon) running, with every connector you want to
-  test already authenticated from the menu bar.
+  test already authenticated from PrivacyFence Settings.
 - The `privacyfence` MCP server attached to a Claude Cowork/Desktop
   conversation — `scripts/dev_start.sh` builds the stdio<->`/mcp` shim from
   this checkout's `mcpb/shim/` and registers it for you.
@@ -74,7 +74,7 @@ for what this method has already caught that no unit test did.
 - The PII detection gate check (Phase 2, steps 17–20) needs **no environment
   fixture** — it's self-contained, creating and tearing down its own
   throwaway Drive subfolder and Doc. Confirm **PII Detection Gate** is
-  enabled in the menu bar (it is by default; see
+  enabled in PrivacyFence Settings (it is by default; see
   [`qa-environment-setup.md`](qa-environment-setup.md#11-pii-detection-gate))
   so the check exercises the tinted-popup/confirmation path rather than the
   (equally valid, but different) disabled path.
@@ -145,7 +145,7 @@ Ground rules:
 - **Whenever a step expects something other than a plain Allow once — Deny, "Show
   Details," or "Always allow" — send that instruction as its own message and stop.
   Don't make the tool call in the same turn.** Wait for me to reply (e.g. "go" or
-  "ready") before calling the tool. The native approval popup can appear on top
+  "ready") before calling the tool. The approval popup can appear on top
   of this chat window the instant the tool call fires, so if the instruction and
   the call land in the same turn I may only see the popup, not what I was
   supposed to do with it, and default to clicking Allow once out of habit. A step
@@ -155,7 +155,7 @@ Ground rules:
   content a read popup is about to show (message body, file content, page
   body...) for likely personal data in Hungarian/English/German, and real
   accounts routinely contain real emails, phone numbers, etc. It never fires
-  on a native write popup (drafting an email, posting to Slack, writing a
+  on a write popup (drafting an email, posting to Slack, writing a
   file, etc.) — that content is something Claude itself just generated, not
   external data newly reaching Claude, so there's nothing for this gate to
   check on the write side. If a *read* popup renders tinted red with a
@@ -175,7 +175,7 @@ Ground rules:
   silent is still worth reporting) — and treat any *write* popup rendering
   tinted/PII-flagged as a bug in itself, since that gate should never fire
   there anymore.
-- Keep a running table as you go: `tool name | gate observed (silent / native
+- Keep a running table as you go: `tool name | gate observed (silent /
   popup) | my decision | audit-log decision | notes`. Leave
   the `audit-log decision` column blank for now — don't guess it, don't ask me
   for it mid-run, and don't try to read the log file yourself during the run.
@@ -865,7 +865,7 @@ other connector's writes, each independently configurable via the
    Confirm `{FIXTURES}.telegram_saved_messages_chat_id` is now present in the
    results.
 2. `telegram_get_messages` on `{FIXTURES}.telegram_approved_chat_id` — **watch
-   for a native approval popup and tell me explicitly whether you see one before I
+   for an approval popup and tell me explicitly whether you see one before I
    respond**, don't infer it from the tool result; I'll Allow once if it appears.
    Flag this row for Phase 14: the audit log's decision (`auto_accepted` vs
    `accepted`) is what settles it if my own observation of the popup was
@@ -1054,29 +1054,26 @@ organization config bundle edit, not a live daemon toggle or a per-user settings
    2 and after step 5: it should have grown by exactly 4 (one `policy_check` entry per call).
 7. `privacyfence_begin_unattended_session` — since `unattended_sessions.enabled` is still `false`/
    absent, expect a clear error mentioning `unattended_sessions.enabled` in the organization config
-   bundle (`org_config.json`), **not** a popup and **not** a partial success. Confirm the menu bar's
-   top item still reads plain "PrivacyFence is running" (no session count).
+   bundle (`org_config.json`), **not** a popup and **not** a partial success.
 8. Set `unattended_sessions.enabled: true` in `org_config.json` (e.g. `python3
    scripts/build_org_bundle.py --merge --enable-unattended-sessions -o org/org_config.json`) and
    **restart the daemon** (not just an "Always allow" hot-reload — see the note above). Reconnect
    the Cowork/Desktop session so its shim process talks to the freshly restarted daemon.
-9. `privacyfence_begin_unattended_session` again — expect `{"unattended": true}`, no popup. Check
-   the PrivacyFence menu bar now: the top item should read "PrivacyFence is running — 1 unattended
-   session active". **Pause here**: tell me you're about to call the next step's tool and that,
+9. `privacyfence_begin_unattended_session` again — expect `{"unattended": true}`, no popup.
+   **Pause here**: tell me you're about to call the next step's tool and that,
    even though it's normally review/popup-gated, **you expect no popup to appear at all this
    time** — instead the tool call itself should come back as an error. Wait for me to say go.
 10. Once I say go, call `slack_get_channel_history` for real on `{FIXTURES}.slack_control_channel`
-    (not on the allowlist — same fixture as step 4). Confirm: no native popup appeared, and the
+    (not on the allowlist — same fixture as step 4). Confirm: no popup appeared, and the
     call returned an error mentioning "unattended session" rather than data. This is the core
     behavior this phase exists to prove — flag it as a bug if a popup appeared instead, or if the
     call silently succeeded.
 11. Now call `slack_get_channel_history` on `{FIXTURES}.slack_approved_channel` (on the allowlist)
     — this should succeed silently with **no popup and no error**, exactly as it would outside an
     unattended session. Confirms the flag only changes the *deny* path, never what auto-accepts.
-12. `privacyfence_end_unattended_session` — expect `{"unattended": false}`, no popup. Confirm the
-    menu bar's top item goes back to plain "PrivacyFence is running" (no count).
+12. `privacyfence_end_unattended_session` — expect `{"unattended": false}`, no popup.
 13. Call `slack_get_channel_history` on `{FIXTURES}.slack_control_channel` once more (same as step
-    10). **Pause here**: tell me you now expect a normal native popup, same as any other
+    10). **Pause here**: tell me you now expect a normal popup, same as any other
     non-matching review call — the session is no longer unattended. Wait for me to say go, then
     make the call and confirm the popup actually appeared this time. I'll Deny it (it's not data
     this run needs to keep).
@@ -1192,7 +1189,7 @@ table split into "cleaned up in Phase 13" vs. "needs manual deletion." Then:
   answer: confirm the write in step 18 stayed plain (no tint, no banner, no
   second dialog, `pii_detected: false`) and the read in step 19 got flagged
   (tint, category banner, second "Are you sure?" dialog, `pii_detected: true`)
-  — per the audit-log entries from Phase 14. If PrivacyFence's menu bar has
+  — per the audit-log entries from Phase 14. If PrivacyFence Settings has
   **PII Detection Gate** turned off, that changes step 19's expected result
   to "no tint, no second dialog, `pii_detected: false`" too (step 18 is
   unaffected by the toggle either way, since writes are never scanned

@@ -227,9 +227,10 @@ Processes API exposes, nothing more.
 
 ## Category-based redaction: what can actually be blocked or redacted
 
-The "AI will receive" checklist's three icons (`✓` allow / `◐` redact / `✗` block) are
-`privacy_filter.py`'s `category_policy()` made visible (`approval_window.py`'s
-`_VISIBILITY_SYMBOL`), configured per category under one of `settings.yaml`'s six category-schema
+The "AI will receive" checklist's per-field disclosure sentence ("Full X" / "X, with some fields
+redacted" / "None — not disclosed to Claude") is `privacy_filter.py`'s `category_policy()` made
+visible (`approval_window_html.py`'s `disclosure_rows_from_visibility()`), configured per category
+under one of `settings.yaml`'s six category-schema
 blocks: `privacy`, `drive_privacy`, `slack_privacy`, `contacts_privacy`, `tasks_privacy`,
 `confluence_privacy`. **It does not cover every field in the tables above** — its scope is
 deliberately narrow, and it's worth being precise about exactly where it does and doesn't reach.

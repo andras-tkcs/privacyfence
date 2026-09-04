@@ -1,30 +1,29 @@
-"""Domain/business logic behind the webview settings window (settings_window.py).
+"""Domain/business logic behind the web settings page (web/routes_settings.py).
 
-No unguarded AppKit/WebKit imports at module level -- this stays importable
-and unit-testable without PyObjC (see docs/coding-and-testing-guidelines.md's
-"stay dependency-light" pattern already used by resource_grants.py/
-privacy_filter.py). A few things this module genuinely needs *are*
-AppKit-tainted -- ``rumps`` (``rumps.alert``'s update-available notification,
-``rumps.quit_application``) and ``dialog_window`` (the Atlassian
-multi-resource picker's confirmation/list-picker host, issue #145) -- both
-imported at module scope but guarded behind ``try/except ImportError``,
-resolving to ``None`` on a machine with no pyobjc installed (this repo's own
-CI-less sandbox, or a future non-interactive test run) rather than failing
-the whole module import. Tests running without pyobjc monkeypatch these
-module attributes directly rather than exercising the real thing.
+Through P9 this also backed a native macOS webview settings window
+(settings_window.py); P10 (docs/https-connector-refactor-plan.md §12, D6)
+deleted that host along with the rest of the AppKit UI layer, leaving the
+web settings page (when ``web.settings.enabled`` is set) as the only way to
+drive this controller interactively -- editing ``config/settings.yaml`` by
+hand remains the headless path either way. This module itself was already
+headless-first before that (see docs/coding-and-testing-guidelines.md's
+"stay dependency-light" pattern also used by resource_grants.py/
+privacy_filter.py) and needed no AppKit/PyObjC imports of its own to begin
+with -- ``rumps``/``dialog_window``/``PyObjCTools.AppHelper`` were the
+native host's own dependencies, imported here only to marshal callbacks onto
+its run loop and to host the Atlassian multi-resource picker (issue #145);
+none of that is needed anymore, see ``call_on_main``/``_pick_resource_index``
+below.
 
 ``SettingsController`` holds the same instance state ``PrivacyFenceMenuBar``
-used to hold directly, with one method per mutation the old NSMenu tree
-performed (see menu_bar.py's git history pre-#120 for the shape this was
-extracted from) -- every mutating method follows load config -> mutate ->
-save config -> hot-reload -> return a fresh ``snapshot()`` for the caller
-(settings_window.py) to push into the webview. Long-running work (OAuth
-flows, org-config file picker's subprocess, grant name resolution) runs on a
-background thread via ``_run_async``, with the result marshaled back onto
-the main thread via ``PyObjCTools.AppHelper.callAfter`` before this module
-touches ``self`` again -- AppKit/the webview are not thread-safe, and
-``self.on_change`` (set by settings_window.py) is expected to touch the
-webview directly.
+used to hold directly pre-#120, with one method per mutation the old NSMenu
+tree performed (see menu_bar.py's git history pre-#120 for the shape this
+was extracted from) -- every mutating method follows load config -> mutate
+-> save config -> hot-reload -> return a fresh ``snapshot()`` for the caller
+(web/routes_settings.py) to push into the page. Long-running work (OAuth
+flows, grant name resolution) runs on a background thread via
+``_run_async``, with the result marshaled back onto "the main thread" (see
+``call_on_main``) before this module touches ``self`` again.
 """
 from __future__ import annotations
 
@@ -32,7 +31,6 @@ import json
 import logging
 import os
 import re
-import subprocess
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -70,39 +68,14 @@ from .resource_names import get_resolver
 from . import telegram_auth
 from .tasks_client import TasksClient
 from .update_checker import (
-    REPO_RELEASES_URL_FALLBACK,
     UpdateCheckResult,
     check_for_update,
     mark_remind_later,
     mark_skipped,
-    should_notify_now,
 )
 from .atlassian_oauth import authorize_interactive as atlassian_authorize_interactive
 from .salesforce_client import authorize_interactive as salesforce_authorize_interactive
 from .slack_client import authorize_interactive as slack_authorize_interactive
-
-# AppHelper/rumps/dialog_window are pyobjc packages (dialog_window.py itself
-# imports AppKit/WebKit) -- all three ultimately backed by AppKit. Guarded so
-# a plain `import privacyfence.settings_controller` succeeds on a machine
-# with no pyobjc installed (this repo's own CI-less sandbox, or a future
-# non-interactive test run); the names resolve to None there, and every real
-# call site only runs them on an actual macOS/pyobjc process. Tests running
-# on macOS CI monkeypatch these attributes directly, the same way
-# test_menu_bar.py already patches ``menu_bar.AppHelper.callAfter``.
-try:
-    from PyObjCTools import AppHelper
-except ImportError:  # pragma: no cover - exercised only where pyobjc is present
-    AppHelper = None  # type: ignore[assignment]
-
-try:
-    import rumps
-except ImportError:  # pragma: no cover - exercised only where pyobjc is present
-    rumps = None  # type: ignore[assignment]
-
-try:
-    from . import dialog_window
-except ImportError:  # pragma: no cover - exercised only where pyobjc is present
-    dialog_window = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -481,28 +454,22 @@ def _google_client_config(org_config: dict[str, Any]) -> dict[str, Any]:
 
 # ---------------------------------------------------------------------------- #
 # §16.2.1's dispatcher seam (docs/https-connector-refactor-plan.md): every
-# background-thread callback in this module used to marshal back onto "the
-# main thread" via a single, hardcoded ``AppHelper.callAfter`` -- fine when
-# an AppKit run loop is hosting (the native settings window), but AppHelper
-# is None without pyobjc (this repo's own CI-less sandbox, a Linux daemon,
-# or any future non-interactive test run), and ``AppHelper.callAfter`` on
-# None raises AttributeError in the daemon thread doing the work, where
-# nothing surfaces it -- authenticate_connector, check_for_updates_now,
-# refresh_connectors, _resolve_names_async, the four Telegram steps, and
-# both change-notification call sites (_on_rules_changed/
-# _on_unattended_changed) were all silently broken headless before this.
+# background-thread callback in this module needs to marshal back onto "the
+# main thread" before touching ``self`` again -- ``self.on_change``/the
+# change listeners are expected to push into a live web page, and doing that
+# from an arbitrary background thread would race whatever's reading state on
+# the ASGI loop. Through P9 this could also mean AppKit's own run loop (the
+# native settings window, via ``PyObjCTools.AppHelper.callAfter``); P10
+# deleted that host, so ``call_on_main`` below now has exactly one real
+# dispatcher to consider.
 #
-# ``call_on_main`` below is the one place that decides where "the main
-# thread" actually is: AppKit's run loop when pyobjc is present (unchanged
-# behavior on macOS -- this is not a per-instance setting, so a stray
-# import of AppKit anywhere in the process is enough to pick the native
-# path, exactly as before this seam existed), else whatever dispatcher
-# daemon_main.py registered via set_main_dispatcher() for the web server's
-# own asyncio event loop (state_stream.call_soon_threadsafe -- see that
-# module), else -- nothing hosting either one yet, e.g. this module
-# imported standalone, or a unit test -- ``fn`` just runs immediately on
-# the calling (background) thread. That last fallback is correct, not a
-# compromise: there is nothing AppKit/asyncio-sensitive to protect when no
+# ``call_on_main`` is the one place that decides where "the main thread"
+# actually is: whatever dispatcher daemon_main.py registered via
+# set_main_dispatcher() for the web server's own asyncio event loop
+# (state_stream.call_soon_threadsafe -- see that module), else -- nothing
+# hosting one yet, e.g. this module imported standalone, or a unit test --
+# ``fn`` just runs immediately on the calling (background) thread. That
+# fallback is correct, not a compromise: there is nothing to protect when no
 # host has attached (self.on_change is None and no web listener has
 # subscribed), so running inline only changes *when* on_done observably
 # runs, not whether it's safe to.
@@ -519,14 +486,6 @@ def set_main_dispatcher(dispatch: Callable[..., None] | None) -> None:
     previously-registered dispatcher -- daemon_main.py never needs to
     (there's one process, one web server, for its whole lifetime), but
     tests do, via tests/conftest.py's singleton reset.
-
-    Deliberately never consulted when AppHelper is available (see
-    call_on_main below): the native window and the web surface can be
-    active in the same macOS process at once (settings.web.settings.
-    enabled alongside the native window -- see settings_window.py's own
-    module docstring), and AppKit's run loop is the one thread both can
-    safely touch self/the controller from, so it always wins when it
-    exists at all.
     """
     global _main_dispatch
     _main_dispatch = dispatch
@@ -535,9 +494,6 @@ def set_main_dispatcher(dispatch: Callable[..., None] | None) -> None:
 def call_on_main(fn: Callable[..., None], *args: Any) -> None:
     """Marshal ``fn(*args)`` onto "the main thread" -- see this section's
     own comment above for what that resolves to and why."""
-    if AppHelper is not None:
-        AppHelper.callAfter(fn, *args)
-        return
     if _main_dispatch is not None:
         _main_dispatch(fn, *args)
         return
@@ -545,30 +501,27 @@ def call_on_main(fn: Callable[..., None], *args: Any) -> None:
 
 
 def _pick_resource_index(*, title: str, prompt: str, options: list[str]) -> int | None:
-    """§16.2.2's generalized multi-resource picker: whichever ``ApprovalUI``
-    is currently live decides how the choice is actually shown --
+    """§16.2.2's generalized multi-resource picker, driven through whichever
+    ``ApprovalUI`` is currently live: register a choice dialog through the
+    same registry/blocking mechanism every approval card and confirmation
+    already uses (web_prompt.py, dialog_window_html.build_choice_html for
+    the markup), so the browser surfaces it as one more pending card with
+    the same "no longer pending" landing page an approval link already has.
 
-    - web mode (``get_approval_ui().deferred_registry`` is not None):
-      register a choice dialog through the same registry/blocking mechanism
-      every approval card and confirmation already uses (web_prompt.py,
-      dialog_window_html.build_choice_html for the markup), so the browser
-      surfaces it as one more pending card with the same "no longer
-      pending" landing page an approval link already has.
-    - native mode with pyobjc present: dialog_window.show_choice_dialog,
-      unchanged from before this generalization.
-    - neither (no web registry, no pyobjc -- e.g. this module imported
-      standalone, or a test with no UI wired at all): ``None``, which
-      pick_resource's own caller already treats as "fall back to the first
-      resource" -- there was never an abort path of its own to preserve
-      here either.
+    ``None`` (no registry -- see approval_ui.py's deferred_registry
+    docstring; WebApprovalUI, the only implementation since P10, always has
+    one) is what pick_resource's own caller already treats as "fall back to
+    the first resource" -- there was never an abort path of its own to
+    preserve here either. Through P9 a second branch here fell back to
+    dialog_window.show_choice_dialog when no web registry was active and
+    pyobjc was present; P10 deleted that native picker along with the rest
+    of the AppKit UI layer.
     """
     registry = get_approval_ui().deferred_registry
-    if registry is not None:
-        html = dialog_window_html.build_choice_html(title=title, prompt=prompt, options=options)
-        return web_prompt.block_on_choice(registry, html)
-    if dialog_window is not None:
-        return dialog_window.show_choice_dialog(title=title, prompt=prompt, options=options)
-    return None
+    if registry is None:
+        return None
+    html = dialog_window_html.build_choice_html(title=title, prompt=prompt, options=options)
+    return web_prompt.block_on_choice(registry, html)
 
 
 def _run_async(work: Callable[[], Any], on_done: Callable[[bool, Any], None]) -> None:
@@ -576,7 +529,7 @@ def _run_async(work: Callable[[], Any], on_done: Callable[[bool, Any], None]) ->
 
     ``on_done(ok, result)`` is called on the main thread via
     ``call_on_main`` -- ``result`` is the return value on success, or the
-    raised exception on failure. Never touch AppKit/the webview from
+    raised exception on failure. Never touch ``self``/the page from
     ``work``; do it in ``on_done``. Relocated from menu_bar.py's identical
     helper -- see its own pre-#120 history.
     """
@@ -645,27 +598,31 @@ def _relative_time(timestamp: str) -> str:
 # ---------------------------------------------------------------------------- #
 
 class SettingsController:
-    """Domain logic for the settings window. One instance, owned by
-    menu_bar.py's PrivacyFenceMenuBar for the app's whole lifetime (unlike
-    SettingsWindowController, which is created lazily on first "Open
-    PrivacyFence…" click) -- so ``set_rules_changed_listener`` is
-    registered from __init__ here exactly the way PrivacyFenceMenuBar.
-    __init__ used to, regardless of whether the window has ever been opened
-    yet. ``wire_unattended_listener`` (below) is the equivalent wiring for
-    unattended-session changes, but is *not* done from __init__: since P5
-    retired the bridge, the only thing that can ever produce an unattended
-    session is web/mcp_dispatch.py's McpDispatcher, and whether one even
-    exists depends on web.mcp.enabled -- something this constructor has no
+    """Domain logic for the settings page (web/routes_settings.py). One
+    instance, built once by daemon_main.py's run_app() for the daemon's
+    whole lifetime -- so ``set_rules_changed_listener`` is registered from
+    __init__ here unconditionally, regardless of whether ``web.settings.
+    enabled`` ever opts a browser into looking at it. ``wire_unattended_
+    listener`` (below) is the equivalent wiring for unattended-session
+    changes, but is *not* done from __init__: since P5 retired the bridge,
+    the only thing that can ever produce an unattended session is
+    web/mcp_dispatch.py's McpDispatcher, and whether one even exists
+    depends on web.mcp.enabled -- something this constructor has no
     visibility into. daemon_main.py's own _maybe_start_web_server calls it
     once a dispatcher is actually built.
 
-    ``on_change``, set by settings_window.py once its window exists, is
-    called with a fresh ``snapshot()`` whenever something changes the state
-    out from under a currently-open window (a rule added via the approval
-    popup's Always allow, a background auth flow finishing, an unattended
-    session starting/ending). It is a no-op (never set) until the window has
-    been opened at least once -- there is nothing to push a re-render into
-    before that.
+    ``on_change``, when set, is called with a fresh ``snapshot()`` whenever
+    something changes the state out from under a currently-open page (a
+    rule added via the approval popup's Always allow, a background auth
+    flow finishing, an unattended session starting/ending) -- a simple
+    single-callback slot, distinct from ``add_change_listener`` below
+    (which the web surface actually uses, since more than one consumer can
+    be attached at once); kept as its own attribute mainly because it's a
+    convenient single hook for a test to observe ``_push_snapshot()``
+    calls. Through P9 this was also how the native settings window wired
+    itself in (``controller.on_change = self._push_state``); P10 deleted
+    that host, so nothing sets this in a real deployment anymore, but the
+    slot itself costs nothing to keep.
     """
 
     def __init__(
@@ -695,22 +652,18 @@ class SettingsController:
         # window can disable/spin that row instead of double-firing.
         self._busy_connectors: set[str] = set()
         # Last-seen failure message, surfaced as a small dismissable banner
-        # by the window (see settings_window_html.py) -- the design has no
-        # toast/error UI of its own, and simply dropping every rumps.alert
-        # this module's methods used to show would silently regress error
-        # visibility (see the PR report's "error surfacing" scope note).
+        # by the page (see settings_window_html.py) -- the design has no
+        # toast/error UI of its own, and simply dropping this would silently
+        # regress error visibility (see the PR report's "error surfacing"
+        # scope note).
         self.error: str = ""
         # Telegram's in-progress phone/code/2FA sign-in, or None when no
         # sign-in is running -- see telegram_start_auth/telegram_submit_code/
         # telegram_submit_2fa/telegram_cancel_auth below and _telegram_auth_
         # state's own docstring for the shape.
         self._telegram_auth: dict[str, Any] | None = None
-        # Kept as a single settable slot -- settings_window.py's own
-        # ``controller.on_change = self._push_state`` assignment is
-        # unchanged by this phase (see that module's docstring) -- rather
-        # than migrated onto add_change_listener below, so the native
-        # window's existing tests stay the parity oracle §16.8's risk #1
-        # wants them to be, unaffected by anything web-only.
+        # Kept as a single settable slot -- see this class's own docstring
+        # for why it's distinct from add_change_listener below.
         self.on_change: Callable[[dict[str, Any]], None] | None = None
         # Additional listeners, notified alongside on_change (§16.8's risk
         # #2: "two on_change consumers... make it a list, test that both
@@ -879,8 +832,9 @@ class SettingsController:
 
     def on_update_check_timer(self) -> None:
         """Periodic "is it time to check yet?" pulse -- called by
-        menu_bar.py's rumps.Timer (rumps/AppKit stays there; this class has
-        none of it). check_for_update() re-derives whether 24h have actually
+        daemon_main.py's own background timer thread (through P9, menu_bar.
+        py's rumps.Timer; deleted at P10 along with the rest of the AppKit
+        UI layer). check_for_update() re-derives whether 24h have actually
         passed from its own on-disk timestamp."""
         cfg = self._load_config()
         update_check_cfg = cfg.get("update_check", {}) or {}
@@ -904,91 +858,40 @@ class SettingsController:
             return
         self._latest_update = result
         self._push_snapshot()
-        if result is not None and result.is_update_available and should_notify_now():
-            if rumps is not None:
-                self._show_update_available_alert(result)
-            # Without pyobjc there is no native run loop to pop a
-            # rumps.alert() onto -- calling it here used to raise
-            # AttributeError on rumps (None) in this background thread,
-            # exactly the §16.2.1 class of bug this phase's call_on_main
-            # seam exists to fix elsewhere. The web settings page's own
-            # in-page banner (renderGeneral's g.update_available, driven by
-            # _general_state below) is this surface's notification instead
-            # -- see docs/https-connector-refactor-plan.md §16.2.4.
+        # Through P9 an update found here also popped a native rumps.alert()
+        # (Download / Skip This Version / Remind Me Later), when pyobjc was
+        # present -- P10 deleted that host along with the rest of the
+        # AppKit UI layer. The web settings page's own in-page banner
+        # (renderGeneral's g.update_available, driven by _general_state
+        # below, with skip_update/remind_later_update as its two dismiss
+        # actions) is this surface's only notification now -- see
+        # docs/https-connector-refactor-plan.md §16.2.4.
 
     def skip_update(self) -> dict[str, Any]:
-        """The web General page's banner "Skip" button -- same outcome as
-        _show_update_available_alert's "Skip This Version" response."""
+        """The web General page's banner "Skip" button."""
         if self._latest_update is not None:
             mark_skipped(self._latest_update.latest_version)
         return self.snapshot()
 
     def remind_later_update(self) -> dict[str, Any]:
-        """The web General page's banner "Remind Me Later" button -- same
-        outcome as _show_update_available_alert's "Remind Me Later"
-        response."""
+        """The web General page's banner "Remind Me Later" button."""
         mark_remind_later()
         return self.snapshot()
-
-    def _show_update_available_alert(self, result: UpdateCheckResult) -> None:
-        beta_note = " (beta)" if result.is_beta else ""
-        resp = rumps.alert(
-            title="Update Available",
-            message=f"PrivacyFence {result.latest_version}{beta_note} is available "
-                     f"(you have {__version__}).",
-            ok="Download",
-            cancel="Skip This Version",
-            other="Remind Me Later",
-        )
-        if resp == 1:
-            url = result.release_url
-            if not url.startswith(("http://", "https://")):
-                url = REPO_RELEASES_URL_FALLBACK
-            subprocess.run(["open", url], check=False)
-        elif resp == 0:
-            mark_skipped(result.latest_version)
-        else:
-            mark_remind_later()
 
     # ------------------------------------------------------------------ #
     # Organization config bundle
     # ------------------------------------------------------------------ #
 
-    def install_org_config(self) -> dict[str, Any]:
-        """Native "choose file" picker + install, run synchronously on the
-        calling (main) thread -- matches the pre-#120 behavior exactly. This
-        is an incidental native file-open dialog, not part of what issue
-        #120 targets for removal (unlike the NSMenu tree/rules_manager_
-        window.py's own windows)."""
-        script = (
-            'set chosenFile to choose file with prompt '
-            '"Select the organization config bundle your IT team sent you" '
-            'of type {"json", "public.json"}\n'
-            'return POSIX path of chosenFile'
-        )
-        result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
-        src = result.stdout.strip()
-        if not src:
-            return self.snapshot()
-
-        try:
-            with open(src, "rb") as fh:
-                raw = fh.read()
-        except OSError as exc:
-            self.error = f"Could not read that file: {exc}"
-            return self.snapshot()
-        self.install_org_config_bytes(raw)
-        return self.snapshot()
-
     def install_org_config_bytes(self, raw: bytes) -> None:
-        """The actual validate-then-write step behind install_org_config()
-        above, factored out so web/routes_settings.py's multipart upload
-        (§16.2.4 -- a browser-side file picker replacing osascript's native
-        "choose file" dialog, which has no meaning triggered by an HTTP
-        request) can drive the exact same validation without going through
-        a native file-open dialog at all. Sets self.error on failure,
-        clears it on success -- callers push a fresh snapshot() themselves,
-        the same convention every other mutating method here follows.
+        """The validate-then-write step behind web/routes_settings.py's
+        multipart upload (§16.2.4). Through P9 there was also a native
+        "choose file" picker (``osascript``'s ``choose file``) calling
+        into this same method, run synchronously on the calling (main)
+        thread -- P10 deleted that host along with the rest of the AppKit
+        UI layer, leaving this the only way an organization config bundle
+        gets installed. Sets self.error on failure, clears it on success --
+        callers push a fresh snapshot() themselves, the same convention
+        every other mutating method here follows.
         """
         try:
             data = json.loads(raw)
@@ -1530,34 +1433,19 @@ class SettingsController:
         setup_logging(cfg)
         return self.snapshot()
 
-    def export_audit_log(self) -> dict[str, Any]:
-        log_dir = Path(data_dir()) / "logs" / "audit"
-        if not log_dir.exists():
-            self.error = "No audit log found yet."
-            return self.snapshot()
-
-        week = current_week()
-        xlsx_path = None
-        if (log_dir / f"{week}.jsonl").exists():
-            xlsx_path = AuditLogger(str(log_dir)).export_week_to_excel(week)
-
-        subprocess.run(["open", xlsx_path or str(log_dir)], check=False)
-        self.error = ""
-        return self.snapshot()
-
     def export_audit_log_path(self) -> str | None:
-        """Web/routes_settings.py's download endpoint's own equivalent of
-        export_audit_log() above (§16.2.4) -- builds this week's .xlsx and
-        returns its path for the route to serve directly, instead of
-        running ``open`` on the daemon's own machine (which shows the file
-        to whoever is sitting at *that* machine, not to the browser that
-        made the request -- possibly a different device entirely). Unlike
-        export_audit_log(), there is nothing sensible to "download" when
-        there's no audit activity for the current week yet (opening the
-        containing folder doesn't translate to an HTTP download), so that
-        case is also an error here, not the silent open-the-folder fallback
-        the native path takes. Sets self.error (and returns None) on
-        either miss; clears it on success.
+        """Web/routes_settings.py's download endpoint uses this (§16.2.4):
+        builds this week's .xlsx and returns its path for the route to
+        serve directly, instead of running ``open`` on the daemon's own
+        machine (which would show the file to whoever is sitting at *that*
+        machine, not to the browser that made the request -- possibly a
+        different device entirely; through P9, that ``open``-based version
+        was the native settings window's own equivalent, deleted at P10).
+        There is nothing sensible to "download" when there's no audit
+        activity for the current week yet (opening the containing folder
+        doesn't translate to an HTTP download), so that case is an error
+        here rather than a silent open-the-folder fallback. Sets self.error
+        (and returns None) on either miss; clears it on success.
         """
         log_dir = Path(data_dir()) / "logs" / "audit"
         week = current_week()
@@ -1574,7 +1462,15 @@ class SettingsController:
     # ------------------------------------------------------------------ #
 
     def quit_app(self) -> None:
-        rumps.quit_application()
+        """The web settings page's "Quit PrivacyFence" action
+        (web/routes_settings.py's quit_action, behind ``allow_quit``/an
+        in-page confirmation). Through P9 this called ``rumps.
+        quit_application()`` -- the native menu bar's own equivalent,
+        deleted at P10 along with the rest of the AppKit UI layer -- so
+        this now signals daemon_main.py's own shutdown wait instead; see
+        that module's ``request_shutdown``."""
+        from . import daemon_main
+        daemon_main.request_shutdown()
 
     # ------------------------------------------------------------------ #
     # Snapshot

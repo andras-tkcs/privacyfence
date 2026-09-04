@@ -1,4 +1,5 @@
-"""PrivacyFence: macOS menu bar privacy proxy between Claude (MCP) and your personal data."""
+"""PrivacyFence: privacy proxy between Claude (MCP) and your personal data, with an embedded web
+approval/settings UI."""
 from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError, version

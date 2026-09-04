@@ -2,7 +2,7 @@
 
 Uses the `simple-salesforce` library if available; otherwise raises a clear
 error. Authentication is OAuth 2.0 (Web Server Flow with PKCE), driven from the
-PrivacyFence menu bar via ``authorize_interactive`` below — no username/
+PrivacyFence Settings via ``authorize_interactive`` below — no username/
 password/security-token entry. The Connected App (consumer key/secret) is
 organization-level config installed via "Install/Update Organization Config…";
 the resulting access/refresh token is per-user, stored in a token file.
@@ -196,7 +196,7 @@ def load_token_file(token_file: str) -> dict[str, Any]:
     if not os.path.exists(token_file):
         raise SalesforceClientError(
             f"No Salesforce token found at '{token_file}'. Use Authenticate… in "
-            "the PrivacyFence menu bar to sign in."
+            "PrivacyFence Settings to sign in."
         )
     with open(token_file, encoding="utf-8") as fh:
         return json.load(fh)
@@ -247,7 +247,7 @@ class SalesforceClient:
         if not access_token or not instance_url:
             raise SalesforceClientError(
                 "Salesforce is not authenticated. Use Authenticate… in the "
-                "PrivacyFence menu bar to sign in."
+                "PrivacyFence Settings to sign in."
             )
         instance = instance_url.replace("https://", "").replace("http://", "").rstrip("/")
         try:

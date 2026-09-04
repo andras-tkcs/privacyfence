@@ -238,13 +238,13 @@ class GmailClient:
 
         Opens a local browser window, lets the user grant access, then writes
         the token to ``token_file``. ``client_config`` comes from the
-        organization config bundle (installed via the menu bar), not a file
+        organization config bundle (installed via PrivacyFence Settings), not a file
         on disk.
         """
         if not self._client_config:
             raise GmailClientError(
                 "No Google organization config installed. Install/Update "
-                "Organization Config from the PrivacyFence menu bar first."
+                "Organization Config from PrivacyFence Settings first."
             )
 
         logger.info("Starting interactive OAuth flow")

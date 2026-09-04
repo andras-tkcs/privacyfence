@@ -8,7 +8,9 @@ was retired at P5, once this transport had shipped a stable release.
 P2 scope only: this is a hosting change for the *transport*, not the
 approval protocol. A gated call reaching a connector here still blocks on
 whichever ``ApprovalUI`` ``approval_ui.init_approval_ui()`` currently
-resolves to (native or web, per ``web.approval_ui`` -- unchanged from P1),
+resolves to (the web approval UI, unconditionally since P10 -- through P9
+this could also be the native one, selected by ``web.approval_ui``, a
+config key P10 removed along with the native implementation itself),
 exactly like a call arriving over the bridge's IPC socket used to before P5
 retired it. Deferred approvals, concurrent pending approvals, and
 ``privacyfence_await_approval`` are P3's ``_popup_lock`` retirement, not

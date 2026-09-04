@@ -1,9 +1,9 @@
 # The pending-approval list: UI/UX design
 
-**Status: design proposal, no code written.** A side quest to
-[`https-connector-refactor-plan.md`](https-connector-refactor-plan.md) — it designs the *human*
-half of that document's §7.1 in the detail the plan deliberately doesn't go into, and it assumes
-that plan's P3 (`PendingApprovalRegistry`, `_popup_lock` retired, several approvals live at once).
+**Status: design proposal, no code written.** A side quest to the (now-removed, P10-complete)
+`https-connector-refactor-plan.md` — it designs the *human* half of that document's §7.1 in the
+detail the plan deliberately doesn't go into, and it assumes that plan's P3
+(`PendingApprovalRegistry`, `_popup_lock` retired, several approvals live at once).
 Sections 2–3 have a subset that works on P1's single-slot `WebApprovalUI` today; §6 says which.
 
 Nothing here changes the gate, the rule model, the PII detector, or what any tool does. It changes
@@ -286,7 +286,7 @@ window, and something needs a human. Four tiers, in ascending order of how much 
 | **0. In-page** | tab open, no permission needed | title badge `(3) PrivacyFence`, favicon dot, a `role="status"` live region, optional sound | none |
 | **1. Desktop notification** | tab open, permission granted | SSE event → `registration.showNotification()` from the page's service worker | **none** — no push service involved |
 | **2. Web Push** | tab closed, device asleep, phone | VAPID push → service worker `push` handler | the browser's push service (Apple/Google/Mozilla) |
-| **3. Native** | `local` mode, macOS, tab closed | the daemon posts a local notification / badges the menu bar | none |
+| ~~3. Native~~ | *(retired at P10 — see below)* | ~~the daemon posts a local notification / badges the menu bar~~ | none |
 
 **Tier 1 is the answer to the question actually asked, and it is nearly free.** The page is open,
 the SSE stream from §7.1 is already delivering the new approval, and `showNotification()` puts it in
@@ -318,14 +318,20 @@ schedules it:
   against `cryptography`, **which is already a dependency** — no `pywebpush`, consistent with
   `CONTRIBUTING.md`'s "prefer the standard library over new dependencies".
 
-**Tier 3 is the local-mode answer for a closed tab**, and it is the one the current architecture is
-already positioned for: the daemon is a bundled macOS app with a menu bar. Two options, in order of
-preference: badge the menu-bar title (`🛡 3`) — zero permissions, zero API risk, always visible; and
-post a real notification, for which `rumps`'s own path is `NSUserNotification`-based and deprecated
-on current macOS, so verify it or go to `UNUserNotificationCenter` through PyObjC before committing.
-Note the tension with P10 ("retire the native UI"): tier 3 is a *notifier*, not a UI, and either it
-survives P10 as the one small AppKit-touching module or `local`-mode users lose closed-tab
-notifications entirely. That is a decision P10 should make deliberately rather than discover.
+**Tier 3 does not exist.** This section originally described it as "the local-mode answer for a
+closed tab," positioned on the daemon's own bundled macOS menu bar (badge the title with `🛡 3`, or
+post a real `NSUserNotification`/`UNUserNotificationCenter` notification), and flagged the tension
+explicitly: tier 3 is a *notifier*, not a UI, and either it survives P10 as the one small
+AppKit-touching module, or `local`-mode users lose closed-tab notifications entirely — "a decision
+P10 should make deliberately rather than discover."
+
+P10 made it: no carve-out. D6 (`docs/https-connector-refactor-plan.md` §15) is unconditional —
+"two approval surfaces means two places for a security fix to land" applies exactly as much to a
+tiny notifier as to a full dialog host, and keeping one small AppKit-touching module alive to badge
+a menu bar that no longer exists (the menu bar itself is gone too, not just the approval/settings
+windows) would have been keeping the dependency for its own sake. `local`-mode users on a closed tab
+are on tier 2 (Web Push) if reachable, or nothing — same as `org` mode already was. Revisit only if
+a real user reports this as a regression that matters in practice, not speculatively.
 
 ### 4.2 What actually fires
 
@@ -552,7 +558,8 @@ web:
     detail: standard       # minimal | standard | detailed
     sound: false
     push: false            # tier 2, org mode only
-    native: true           # tier 3, local mode + macOS only
+    # No tier-3 key -- the native notifier this table once had was retired
+    # at P10 along with the rest of the AppKit UI layer (§4.1).
 ```
 
 No version bump on this work — `CLAUDE.md`'s rule, only at actual release.
@@ -581,8 +588,10 @@ Everything above is platform-independent, which is the Linux CI leg the plan alr
 
 ## 8. Open questions
 
-1. **Does the tier-3 native notifier survive P10?** §4.1. It is the only closed-tab notification
-   `local` mode can have without a push service, and P10 deletes the AppKit modules around it.
+1. ~~Does the tier-3 native notifier survive P10?~~ Resolved: no. §4.1 has the full reasoning —
+   D6's "two approval surfaces means two places for a security fix to land" applies to a notifier
+   the same as a dialog host, so `local` mode has no closed-tab notification without a push service
+   now, same as `org` mode always did.
 2. **Which Claude surface actually opens the approval link, and does a service worker registered
    there stick?** The plan already has this question open for WebAuthn (§10.6). Tier 1 needs the
    same answer for a different reason: a link opened in an in-app webview may register a service
