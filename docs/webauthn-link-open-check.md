@@ -211,6 +211,18 @@ Paste that — plus a one-line note on which platforms passed/failed — into wh
 entry conditions (the PR or issue that schedules it, or directly into
 `https-connector-refactor-plan.md` §12's "What P0 found" section if you're updating the plan itself).
 
+### B.6a If "2 — Verify with that passkey" is grayed out after a successful registration
+
+Seen in practice inside Claude's iOS in-chat browser: registration completes (green banner, prompt
+seen), but the **Verify** button stays disabled. This is not WebAuthn refusing anything — it means
+that specific in-app browser reloaded or rebuilt the tab around the native Face ID hand-off, which
+wipes the page's in-memory JS state even though the credential was already saved server-side. The
+tool re-derives the button's enabled state from the server on every load, so this should self-heal
+within a second; if it doesn't, pull down to refresh (or re-tap the same link) and it will pick the
+credential back up without making you register again. Worth noting as its own observation about that
+surface either way — an app whose embedded browser tears down page state around a native modal is a
+rougher experience than one that doesn't, independent of whether WebAuthn itself worked.
+
 ### B.7 Clean up
 
 `Ctrl+C` both terminals. The tunnel URL stops resolving immediately; the server's in-memory state

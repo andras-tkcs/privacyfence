@@ -670,6 +670,17 @@ async function refresh() {
     s.log.map(e => '<tr><td>' + e.time + '</td><td>' + escapeHtml(e.label) + '</td><td>' + e.action + '</td><td>' +
       e.user_verified + '</td><td>' + escapeHtml(e.attachment) + '</td><td>' + e.backed_up + '</td><td>' +
       (e.saw_prompt || '&mdash;') + '</td></tr>').join('');
+  // The credential the server already has is what matters, not whether *this* page load is the
+  // one that registered it -- some in-app browsers reload/rebuild the tab around the native
+  // biometric sheet, wiping the "just registered" in-memory flag the click handler below sets.
+  // Re-derive the button's enabled state from server truth on every load/refresh so that reload
+  // doesn't strand the tester on a permanently grayed-out "Verify" button.
+  const loginBtn = document.getElementById('btn-login');
+  if (s.credentials.length > 0) {
+    loginBtn.disabled = false;
+    const labelField = document.getElementById('label');
+    if (!labelField.value) labelField.value = s.credentials[s.credentials.length - 1].label;
+  }
 }
 refresh();
 </script>
