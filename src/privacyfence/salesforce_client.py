@@ -148,6 +148,7 @@ def exchange_code(
     if not access_token or not instance_url:
         raise SalesforceClientError(f"Salesforce OAuth did not return a usable token: {response}")
 
+    logger.info("Salesforce OAuth complete for instance %s", instance_url)
     return {
         "access_token": access_token,
         "refresh_token": response.get("refresh_token", ""),
@@ -187,7 +188,6 @@ def authorize_interactive(
         raise SalesforceClientError(f"Salesforce sign-in failed: {exc}") from exc
 
     _save_token_file(token_file, token_record)
-    logger.info("Salesforce OAuth complete for instance %s", token_record["instance_url"])
     return token_record
 
 
