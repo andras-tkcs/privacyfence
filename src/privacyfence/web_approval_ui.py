@@ -51,14 +51,18 @@ class WebApprovalUI(ApprovalUI):
     # Write side (web/routes_approvals.py's decide endpoint)
     # ------------------------------------------------------------------ #
 
-    def resolve(self, card_id: str, result: str, choice: int | None = None) -> bool:
+    def resolve(
+        self, card_id: str, result: str, choice: int | None = None, *, principal_id: str | None = None,
+    ) -> bool:
         """Resolve one UI-step card/confirmation, if ``card_id`` matches a
         currently-unanswered one. Returns whether the resolution was
         accepted -- False for an unknown, stale, or already-decided id,
         which is also what makes a decision POST idempotent (see
         docs/https-connector-refactor-plan.md §7.1: "the first accepted
-        decision for an id wins; any later one is rejected")."""
-        return self._registry.answer(card_id, result, choice)
+        decision for an id wins; any later one is rejected"). ``principal_id``
+        (P9) is web/routes_org_approvals.py's own authorization check --
+        see approvals.PendingApprovalRegistry.answer's own docstring."""
+        return self._registry.answer(card_id, result, choice, principal_id=principal_id)
 
     # ------------------------------------------------------------------ #
     # ApprovalUI -- blocking calls from gate.py, same signatures as

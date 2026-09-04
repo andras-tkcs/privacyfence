@@ -65,6 +65,13 @@ dependencies = [
     # new package to what's actually installed -- it just stops relying on
     # that being true by accident.
     "PyJWT>=2.8,<3.0",
+    # WebAuthn step-up authentication for org-mode write approvals (P9,
+    # docs/https-connector-refactor-plan.md §10.6, §15 D7): parsing CBOR
+    # attestation objects and verifying COSE signatures is exactly the same
+    # "security-critical, spec-governed, don't hand-roll it" case D2
+    # already made for the MCP SDK -- see webauthn_stepup.py's own module
+    # docstring.
+    "webauthn>=3.0,<4.0",
 ]
 
 [project.scripts]

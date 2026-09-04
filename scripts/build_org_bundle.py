@@ -161,6 +161,39 @@ def build_parser() -> argparse.ArgumentParser:
              "--idp-admin-group-value it-admins).",
     )
 
+    step_up = parser.add_argument_group(
+        "WebAuthn step-up (P9, docs/https-connector-refactor-plan.md §10.6/§15 D7)",
+    )
+    step_up_toggle = step_up.add_mutually_exclusive_group()
+    step_up_toggle.add_argument(
+        "--step-up-enabled", action="store_true",
+        help="Require a fresh passkey (or IdP re-authentication) before releasing a write "
+             "approval -- off by default. Only meaningful with --mode org (§10.6: local mode's "
+             "own trust model is physical possession of the machine, which this doesn't add to).",
+    )
+    step_up_toggle.add_argument(
+        "--step-up-disabled", action="store_true", help="Explicitly turn step-up back off (useful with --merge).",
+    )
+    step_up.add_argument(
+        "--step-up-scope", choices=["writes", "writes_and_pii_reads"], default=None,
+        help="Default: writes. \"writes_and_pii_reads\" additionally requires step-up before a "
+             "read that detected personal data, not just a write.",
+    )
+    step_up.add_argument(
+        "--step-up-rp-id", metavar="DOMAIN",
+        help="WebAuthn Relying Party ID -- must be --server-issuer-url's own registrable domain "
+             "(a secure-context requirement, see §10.6). Defaults to that hostname, derived "
+             "automatically -- only set this to override it.",
+    )
+    step_up.add_argument("--step-up-rp-name", metavar="NAME", help='Shown in the OS passkey prompt. Default: "PrivacyFence".')
+    step_up.add_argument(
+        "--idp-step-up-acr-value", action="append", default=[], metavar="ACR", dest="idp_step_up_acr_values",
+        help="An acr_values your IdP accepts to request stronger authentication on step-up's "
+             "IdP re-auth path (§10.6's \"IdP acr_values step-up ... where the IdP already does "
+             "this well\") -- repeat for more than one. Omit to fall back to plain re-"
+             "authentication (prompt=login) with no acr_values hint.",
+    )
+
     unattended = parser.add_argument_group("Unattended / scheduled Cowork tasks")
     unattended_toggle = unattended.add_mutually_exclusive_group()
     unattended_toggle.add_argument(
@@ -247,16 +280,39 @@ def main(argv: list[str] | None = None) -> int:
         if args.idp_admin_group_claim:
             idp["admin_group_claim"] = args.idp_admin_group_claim
             idp["admin_group_values"] = args.idp_admin_group_values
+        if args.idp_step_up_acr_values:
+            idp["step_up_acr_values"] = args.idp_step_up_acr_values
         bundle["idp"] = idp
     elif args.mode == "local":
         bundle["mode"] = "local"
         bundle.pop("server", None)
         bundle.pop("idp", None)
+        bundle.pop("step_up", None)
     elif any([
         args.server_issuer_url, args.idp_issuer, args.idp_client_id, args.idp_client_secret,
-        args.server_tls_cert, args.server_tls_key, args.server_trusted_proxies,
+        args.server_tls_cert, args.server_tls_key, args.server_trusted_proxies, args.idp_step_up_acr_values,
     ]):
-        raise SystemExit("--server-*/--idp-* flags require --mode org.")
+        raise SystemExit("--server-*/--idp-*/--idp-step-up-acr-value flags require --mode org.")
+
+    if args.step_up_enabled or args.step_up_disabled or args.step_up_scope or args.step_up_rp_id or args.step_up_rp_name:
+        # bundle["mode"] already reflects either this invocation's --mode
+        # or (with --merge and no --mode given) whatever mode the existing
+        # bundle on disk already had -- either way, "org" is what actually
+        # matters here, not args.mode by itself.
+        if bundle.get("mode") != "org":
+            raise SystemExit("--step-up-* flags require --mode org (or --merge against an existing org-mode bundle).")
+        step_up_section: dict[str, Any] = dict(bundle.get("step_up") or {})
+        if args.step_up_enabled:
+            step_up_section["enabled"] = True
+        elif args.step_up_disabled:
+            step_up_section["enabled"] = False
+        if args.step_up_scope:
+            step_up_section["scope"] = args.step_up_scope
+        if args.step_up_rp_id:
+            step_up_section["rp_id"] = args.step_up_rp_id
+        if args.step_up_rp_name:
+            step_up_section["rp_name"] = args.step_up_rp_name
+        bundle["step_up"] = step_up_section
 
     services = [k for k in ("google", "slack", "salesforce", "atlassian") if k in bundle]
     if not services and "unattended_sessions" not in bundle and "mode" not in bundle:
@@ -274,6 +330,8 @@ def main(argv: list[str] | None = None) -> int:
         summary += f", unattended_sessions.enabled={bundle['unattended_sessions']['enabled']}"
     if "mode" in bundle:
         summary += f", mode={bundle['mode']}"
+    if "step_up" in bundle:
+        summary += f", step_up.enabled={bundle['step_up'].get('enabled', False)}"
     print(f"Wrote {out_path} with: {summary}")
     if bundle.get("mode") == "org":
         print(

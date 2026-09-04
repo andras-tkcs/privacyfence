@@ -16,6 +16,7 @@ from privacyfence.approvals import (
     TooManyPendingApprovalsError,
     canonical_key,
 )
+from privacyfence.principal import Principal, principal_scope
 
 
 def make_registry(**overrides) -> PendingApprovalRegistry:
@@ -464,3 +465,116 @@ class TestListPendingAndGet:
     def test_get_returns_none_for_an_unknown_id(self):
         registry = make_registry()
         assert registry.get("nope") is None
+
+
+class TestPrincipalDimension:
+    """P9: approvals.py finally gains the principal dimension approval_ui.py's
+    own module docstring already promised (see approvals.py's own module
+    docstring). Every approval defaults to LOCAL_PRINCIPAL_ID when nothing
+    entered principal_scope() -- so every test above this class, none of
+    which passes a principal_id anywhere, stays correct unchanged."""
+
+    def test_default_principal_is_local(self):
+        registry = make_registry()
+        approval, _ = registry.register_or_coalesce(
+            dedupe_key="k1", connector="c", tool="t", gate_kind="review", request_id="r1",
+        )
+        assert approval.principal_id == "local"
+
+    def test_registration_stamps_the_current_principal(self):
+        registry = make_registry()
+        with principal_scope(Principal(id="alice")):
+            approval, _ = registry.register_or_coalesce(
+                dedupe_key="k1", connector="c", tool="t", gate_kind="review", request_id="r1",
+            )
+        assert approval.principal_id == "alice"
+
+    def test_two_principals_with_the_identical_dedupe_key_get_two_approvals(self):
+        # The P7-precedented cross-principal dedupe-key collision (see
+        # approvals.py's own module docstring) -- without the principal
+        # dimension in _by_key, the second registration below would
+        # coalesce onto the first instead of creating its own.
+        registry = make_registry()
+        with principal_scope(Principal(id="alice")):
+            alice_approval, alice_created = registry.register_or_coalesce(
+                dedupe_key="same-key", connector="c", tool="t", gate_kind="popup", request_id="r1",
+            )
+        with principal_scope(Principal(id="bob")):
+            bob_approval, bob_created = registry.register_or_coalesce(
+                dedupe_key="same-key", connector="c", tool="t", gate_kind="popup", request_id="r2",
+            )
+        assert alice_created and bob_created
+        assert alice_approval.id != bob_approval.id
+
+    def test_ledger_entry_is_not_shared_across_principals(self):
+        registry = make_registry()
+        with principal_scope(Principal(id="alice")):
+            approval, _ = registry.register_or_coalesce(
+                dedupe_key="same-key", connector="c", tool="t", gate_kind="popup", request_id="r1",
+            )
+            registry.finalize(approval.id, "accept")
+            assert registry.consume_ledger("same-key") == ("accept", "", approval.decided_at)
+        with principal_scope(Principal(id="bob")):
+            # Bob issuing the identical call must not see Alice's decision.
+            assert registry.consume_ledger("same-key") is None
+
+    def test_list_pending_filters_by_principal(self):
+        registry = make_registry()
+        with principal_scope(Principal(id="alice")):
+            registry.register_or_coalesce(
+                dedupe_key="k1", connector="c", tool="t", gate_kind="review", request_id="r1",
+            )
+        with principal_scope(Principal(id="bob")):
+            registry.register_or_coalesce(
+                dedupe_key="k2", connector="c", tool="t", gate_kind="review", request_id="r2",
+            )
+        assert len(registry.list_pending("alice")) == 1
+        assert len(registry.list_pending("bob")) == 1
+        assert len(registry.list_pending()) == 2  # no filter -- every pre-P9 caller
+
+    def test_get_with_principal_id_rejects_a_foreign_approval(self):
+        registry = make_registry()
+        with principal_scope(Principal(id="alice")):
+            approval, _ = registry.register_or_coalesce(
+                dedupe_key="k1", connector="c", tool="t", gate_kind="review", request_id="r1",
+            )
+        assert registry.get(approval.id, principal_id="bob") is None
+        assert registry.get(approval.id, principal_id="alice") is approval
+        assert registry.get(approval.id) is approval  # unfiltered
+
+    def test_answer_with_principal_id_rejects_a_foreign_decision(self):
+        registry = make_registry()
+        with principal_scope(Principal(id="alice")):
+            approval, _ = registry.register_or_coalesce(
+                dedupe_key="k1", connector="c", tool="t", gate_kind="review", request_id="r1",
+            )
+        assert registry.answer(approval.id, "accept", principal_id="bob") is False
+        assert registry.answer(approval.id, "accept", principal_id="alice") is True
+
+    def test_await_status_with_principal_id_hides_a_foreign_approval(self):
+        registry = make_registry()
+        with principal_scope(Principal(id="alice")):
+            approval, _ = registry.register_or_coalesce(
+                dedupe_key="k1", connector="c", tool="t", gate_kind="review", request_id="r1",
+            )
+        assert registry.await_status(approval.id, principal_id="bob") == "unknown"
+        assert registry.await_status(approval.id, principal_id="alice") == "pending"
+
+    def test_reevaluate_all_only_touches_the_current_principals_own_cards(self):
+        registry = make_registry()
+        with principal_scope(Principal(id="alice")):
+            alice_approval, _ = registry.register_or_coalesce(
+                dedupe_key="k1", connector="c", tool="t", gate_kind="review", request_id="r1",
+                operation_key="op1",
+            )
+        with principal_scope(Principal(id="bob")):
+            bob_approval, _ = registry.register_or_coalesce(
+                dedupe_key="k2", connector="c", tool="t", gate_kind="review", request_id="r2",
+                operation_key="op1",
+            )
+            # Bob's rules now cover op1 -- must not touch Alice's own
+            # pending card for the same operation_key under her rules.
+            resolved = registry.reevaluate_all(lambda op, ctx: (True, "bobs-rule"))
+        assert resolved == [bob_approval]
+        assert not alice_approval.is_finalized()
+        assert bob_approval.is_finalized()

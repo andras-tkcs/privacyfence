@@ -3,8 +3,8 @@
 **Status: design agreed (§15); the P0 spike is complete and its findings are recorded in §12. P1
 (web approval surface), P2 (MCP over HTTP alongside the bridge), P4b (the Desktop stdio shim, D11),
 P3 (deferred approvals + concurrency), P4 (settings on the web, §16), P5 (retiring the bridge), P6
-(principals + per-user storage, §9), P7 (org identity — OIDC, sessions, OAuth 2.1 AS) and P8 (per-user
-service authorization, §9.3) have landed. P2's implementation found one gap this document did
+(principals + per-user storage, §9), P7 (org identity — OIDC, sessions, OAuth 2.1 AS), P8 (per-user
+service authorization, §9.3) and P9 (step-up auth — WebAuthn, §10.6) have landed. P2's implementation found one gap this document did
 not have an answer for — how Claude Desktop connects to `local` mode once the bridge is gone —
 decided as D11 and shipped as P4b ahead of P3, since neither depended on the other. P3 retires
 `_popup_lock` per §6 and implements the deferred-approval protocol from §5; its own beta (§12: "P3 |
@@ -135,6 +135,87 @@ and proves the `state` value is single-use; `test_daemon_main.py`'s
 principals authenticated this way get two independently-built connector sets over the real
 `ConnectorRegistry` wiring, not the old shared set. `local` mode is unaffected — no existing
 `authorize_interactive`/`build_connectors`/telegram-auth call site or test changed behavior.
+
+**P9 (step-up auth — WebAuthn) has landed.** The one thing P9's own exit criterion needs that no
+phase through P8 had built was somewhere in org mode a *write* decision actually gets released over
+HTTP at all — `/approvals` (P3's own local-mode surface) was deliberately never mounted in org mode
+(the "Deliberately out of scope for P7" paragraph above, and P8's own note that neither `/approvals`
+nor `/settings` got a principal-aware port). `web/routes_org_approvals.py` is that surface, built the
+same way P8 built `/connect`: a small, purpose-built route set (`GET /approvals`, `GET
+/approvals/{id}`, `POST /api/approvals/{id}/decide`, `GET /api/approvals/stream`), authorized against
+`current_principal()` via `org_session` throughout, reusing `web/routes_approvals.py`'s own
+`_inject_shim`/service-worker code rather than duplicating it — not a port of `routes_approvals.py`'s
+shared-secret model into org mode. Building it required finally giving `approvals.
+PendingApprovalRegistry` the principal dimension `approval_ui.py`'s own module docstring had promised
+since P1 ("in org mode one `WebApprovalUI` instance still serves every principal — its
+`PendingApprovalRegistry` gains the principal dimension internally instead"): every `PendingApproval`
+now stamps `principal_id` from `current_principal()` at registration time (the same contextvar
+pattern as everywhere else, so gate.py's own call sites need no change), `list_pending`/`get`/
+`answer`/`await_status` all take an optional `principal_id` filter, and the coalescing/decision-ledger
+key gained a principal dimension too — the identical cross-principal collision P7 found and fixed in
+`web/mcp_dispatch.py`'s retry-dedupe cache (two principals calling the same tool with the same
+arguments would otherwise share one dedupe/ledger entry) turned out to be latent here as well, closed
+the same way, and caught before any real second principal could ever reach it. `reevaluate_all` (§6's
+rules-changed broadcast) gained the same scoping — without it, one principal's newly-created rule
+would have re-evaluated (and potentially auto-accepted) a *different* principal's pending card against
+rules that were never theirs.
+
+`webauthn_stepup.py` is the step-up mechanism itself, built on the `webauthn` package (D2's own
+reasoning: parsing CBOR attestation objects and verifying COSE signatures is security-critical,
+spec-governed work, the same case already made for the MCP SDK and PyJWT). §10.6's five caveats are
+each a concrete line of code, not just prose: `require_user_verification=True` on both the
+registration and assertion verify calls (not just a valid signature); `authenticatorSelection.
+authenticator_attachment=platform` requested at registration (client-side-enforced only — WebAuthn's
+signed payload carries no attachment claim to re-verify server-side after the fact, which
+`webauthn_stepup.py`'s own module docstring says plainly rather than overclaiming the control); org
+mode's own `StepUpConfig.rp_id` (`org_mode.py`) defaults to the configured `issuer_url`'s hostname,
+the real registrable domain D1 already requires for local mode's `localhost` bind; the decision
+itself is bound into the WebAuthn ceremony via `decision_fingerprint()` + `StepUpChallengeStore` — a
+server-side nonce keyed to `(principal, approval_id)` and a hash of the exact `(result, choice)` being
+authorized, single-use and short-TTL, so a challenge minted for one decision (or replayed from a
+different one) can never authorize another; and a sign-count regression is logged as a possible
+cloned credential rather than silently ignored, without hard-failing the (common, spec-compliant)
+authenticators that always report zero.
+
+Deny needs no step-up at all — denying leaks nothing, the same reasoning
+`approval-list-ui-ux.md`/`approval_list_html.py` already give for putting Deny on the list row with no
+card open — so the decide endpoint only demands it ahead of an *approving* decision (`accept`/
+`accept_all`) on a write, or (with `org_config.json`'s `step_up.scope: writes_and_pii_reads`) a
+PII-flagged read too; `step_up.enabled` defaults to `false`, so an existing org install with no
+`step_up` section is byte-identical to before this phase. The protocol is one endpoint, not two: a
+`decide` POST with no `webauthn_assertion` on a decision that needs step-up gets back `428` carrying
+fresh WebAuthn assertion options (when a passkey is enrolled — `web/routes_security.py`'s `/security`
+page is where one gets enrolled, `navigator.credentials.create()` driven by hand-written base64url
+JS since this app's own CSP allows no external script, see that module's own module docstring) and an
+IdP re-authentication link (always present, D7's own documented fallback for a user with no passkey);
+a second POST carrying the completed assertion is verified and, on success, treated as the original
+decision. The IdP path (`GET /api/approvals/{id}/stepup/idp` → `GET /oauth/stepup/callback`) mirrors
+`web/routes_org_identity.py`'s own `/login` flow almost exactly (same `org_identity.py` functions,
+same single-use `state`-keyed attempt store, same "the callback can't read the session cookie"
+reasoning P8 already established for `/oauth/callback/{service}`) with one addition the callback
+checks explicitly: the human who re-authenticates must resolve to the *same* principal the step-up
+was started for, and — when `org_config.json`'s `idp.step_up_acr_values` is configured — the returned
+`acr` claim must be one of them; either failure is rejected, never silently treated as "good enough."
+
+Exit criterion met exactly as specified — a write approval decided over `/api/approvals/{id}/decide`
+without a completed step-up gets `428`, not released; `tests/unit/web/test_routes_org_approvals.py`
+drives the WebAuthn round trip (options → assertion → verified decide), the fingerprint-mismatch
+rejection, and the full IdP re-auth round trip (including the same-principal and `acr_values` checks)
+end to end; `tests/unit/test_approvals.py`'s own `TestPrincipalDimension` and
+`tests/unit/web/test_mcp_dispatch.py`'s cross-principal `await_approval` test prove the registry's new
+principal dimension holds under two principals, not just one. `local` mode is unaffected — D7's own
+scoping ("Yes in org mode") means step-up never applies there, and no existing local-mode approval
+route, test, or the native popup changed behavior. `scripts/build_org_bundle.py` grew matching
+`--step-up-*`/`--idp-step-up-acr-value` flags so `step_up`/`idp.step_up_acr_values` need never be
+hand-edited into `org_config.json`.
+
+**Still open going into P10**: §12's own entry condition on P9 — the WebAuthn link-open check (§10.6)
+confirmed for iOS, still unconfirmed for Desktop and Android — was a condition for *scheduling* this
+phase's engineering work, not a blocker on it (the mechanism is identical regardless of which
+surface's embedded browser the link opens in; what differs per-surface is only whether that browser
+offers the platform authenticator at all). It remains open, and worth re-running on Desktop and
+Android before treating step-up as a dependable control on those two surfaces specifically, per §10.6's
+own note that this is Claude-app behavior that can change out from under a stale result.
 
 This document designs, and validates against the current code, the refactoring that turns
 PrivacyFence from a macOS-only, single-user, stdio-MCP-bridge desktop app into a service with an

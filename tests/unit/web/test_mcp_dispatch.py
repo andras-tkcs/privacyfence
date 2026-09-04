@@ -532,3 +532,19 @@ class TestAwaitApproval:
         result = await dispatcher.await_approval([approval.id, "not-a-real-id"], timeout_seconds=1)
 
         assert result == {approval.id: "denied", "not-a-real-id": "unknown"}
+
+    async def test_a_foreign_principals_approval_id_reads_as_unknown(self):
+        # P9, §10.5: the same cross-principal check every other approval
+        # read gets -- an id belonging to a different principal must not
+        # even confirm it exists.
+        registry = PendingApprovalRegistry(hold_window=5.0, pending_ttl=5.0, ledger_ttl=5.0)
+        dispatcher = _dispatcher({}, registry=registry)
+        with principal_scope(Principal(id="alice")):
+            approval, _ = registry.register_or_coalesce(
+                dedupe_key="k1", connector="gmail", tool="gmail_get_message", gate_kind="review", request_id="r1",
+            )
+
+        with principal_scope(Principal(id="bob")):
+            result = await dispatcher.await_approval([approval.id], timeout_seconds=1)
+
+        assert result == {approval.id: "unknown"}
