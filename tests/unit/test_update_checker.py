@@ -7,6 +7,7 @@ returning a stale or None result.
 """
 from __future__ import annotations
 
+import math
 from unittest.mock import MagicMock
 
 import pytest
@@ -28,36 +29,50 @@ def _fixed_local_version(monkeypatch):
 
 class TestParseVersion:
     def test_plain_stable_tag(self):
-        assert uc.parse_version("2.1.0") == (2, 1, 0, uc.STABLE_RANK, 0)
+        assert uc.parse_version("2.1.0") == (2, 1, 0, uc.STABLE_RANK, 0, math.inf)
 
     def test_v_prefixed_stable_tag(self):
-        assert uc.parse_version("v2.1.0") == (2, 1, 0, uc.STABLE_RANK, 0)
+        assert uc.parse_version("v2.1.0") == (2, 1, 0, uc.STABLE_RANK, 0, math.inf)
 
-    def test_dev_suffix(self):
-        assert uc.parse_version("2.1.0-dev") == (2, 1, 0, 0, 0)
+    def test_alpha_suffix(self):
+        assert uc.parse_version("2.1.0a3") == (2, 1, 0, 1, 3, math.inf)
 
     def test_beta_suffix_with_number(self):
-        assert uc.parse_version("v2.1.0-beta.2") == (2, 1, 0, 2, 2)
+        assert uc.parse_version("v2.1.0b2") == (2, 1, 0, 2, 2, math.inf)
 
-    def test_rc_suffix_without_number_defaults_to_zero(self):
-        assert uc.parse_version("v2.1.0-rc") == (2, 1, 0, 3, 0)
+    def test_rc_suffix_with_number(self):
+        assert uc.parse_version("v2.1.0rc1") == (2, 1, 0, 3, 1, math.inf)
 
-    def test_rc_suffix_no_dot_before_number(self):
-        assert uc.parse_version("v2.1.0-rc1") == (2, 1, 0, 3, 1)
+    def test_between_tags_dev_build_guessing_next_patch(self):
+        # setuptools_scm's own shape for "N commits past the last tag" -- see this module's
+        # docstring. No <stage><n> component: it's guessing at a plain next stable patch release.
+        assert uc.parse_version("2.1.1.dev3+gabc1234") == (2, 1, 1, uc.STABLE_RANK, 0, 3)
 
-    def test_unrecognized_suffix_treated_as_stable(self):
-        assert uc.parse_version("v2.1.0-nightly") == (2, 1, 0, uc.STABLE_RANK, 0)
+    def test_between_tags_dev_build_guessing_next_prerelease(self):
+        assert uc.parse_version("2.1.0rc2.dev1+gabc1234") == (2, 1, 0, 3, 2, 1)
+
+    def test_dirty_worktree_suffix_ignored(self):
+        assert uc.parse_version("2.1.1.dev3+gabc1234.d20260904") == (2, 1, 1, uc.STABLE_RANK, 0, 3)
+
+    def test_unrecognized_suffix_returns_none(self):
+        # The old dashed/spelled-out scheme ("-nightly", "-beta.1", ...) no longer matches at all --
+        # every real tag or __version__ this module ever sees now comes from setuptools_scm or a
+        # human tagging in this exact scheme, so "unparseable" is no longer conflated with "stable".
+        assert uc.parse_version("v2.1.0-nightly") is None
 
     def test_garbage_returns_none(self):
         assert uc.parse_version("not-a-version") is None
 
     def test_stage_rank_ordering(self):
         assert (
-            uc.parse_version("2.1.0-dev")
-            < uc.parse_version("2.1.0-beta.1")
-            < uc.parse_version("2.1.0-rc.1")
+            uc.parse_version("2.1.0a1")
+            < uc.parse_version("2.1.0b1")
+            < uc.parse_version("2.1.0rc1")
             < uc.parse_version("2.1.0")
         )
+
+    def test_dev_build_ranks_below_the_release_it_is_guessing_at(self):
+        assert uc.parse_version("2.1.0rc2.dev1+gabc1234") < uc.parse_version("2.1.0rc2")
 
 
 class TestIsNewer:
@@ -70,8 +85,11 @@ class TestIsNewer:
     def test_remote_older(self):
         assert uc.is_newer("v2.0.0", local_version="2.1.0") is False
 
-    def test_local_dev_suffix_vs_same_stable_number_is_older(self):
-        assert uc.is_newer("2.1.0", local_version="2.1.0-dev") is True
+    def test_local_dev_build_vs_the_release_it_is_guessing_at_is_older(self):
+        assert uc.is_newer("2.1.1", local_version="2.1.1.dev3+gabc1234") is True
+
+    def test_local_dev_build_still_newer_than_older_stable_release(self):
+        assert uc.is_newer("v2.1.0", local_version="2.1.1.dev3+gabc1234") is False
 
     def test_unparseable_remote_returns_false(self):
         assert uc.is_newer("garbage", local_version="2.1.0") is False
@@ -80,22 +98,22 @@ class TestIsNewer:
         assert uc.is_newer("2.1.0", local_version="garbage") is False
 
     def test_beta_newer_than_earlier_beta(self):
-        assert uc.is_newer("v2.2.0-beta.2", local_version="2.2.0-beta.1") is True
+        assert uc.is_newer("v2.2.0b2", local_version="2.2.0b1") is True
 
     def test_stable_newer_than_rc_of_same_number(self):
-        assert uc.is_newer("v2.2.0", local_version="2.2.0-rc.1") is True
+        assert uc.is_newer("v2.2.0", local_version="2.2.0rc1") is True
 
     def test_rc_newer_than_beta_of_same_number(self):
-        assert uc.is_newer("v2.2.0-rc.1", local_version="2.2.0-beta.1") is True
+        assert uc.is_newer("v2.2.0rc1", local_version="2.2.0b1") is True
 
     def test_local_beta_not_newer_than_same_remote_beta(self):
-        assert uc.is_newer("v2.2.0-beta.1", local_version="2.2.0-beta.1") is False
+        assert uc.is_newer("v2.2.0b1", local_version="2.2.0b1") is False
 
     def test_local_beta_older_than_remote_stable_of_same_number(self):
-        assert uc.is_newer("v2.2.0", local_version="2.2.0-beta.1") is True
+        assert uc.is_newer("v2.2.0", local_version="2.2.0b1") is True
 
     def test_local_beta_older_than_remote_rc_of_same_number(self):
-        assert uc.is_newer("v2.2.0-rc.1", local_version="2.2.0-beta.1") is True
+        assert uc.is_newer("v2.2.0rc1", local_version="2.2.0b1") is True
 
 
 class TestFetchLatestRelease:
@@ -132,7 +150,7 @@ class TestFetchLatestRelease:
             response = MagicMock()
             response.raise_for_status.return_value = None
             response.json.return_value = [
-                {"tag_name": "v2.2.0-beta.1", "html_url": "https://x/tag/v2.2.0-beta.1", "prerelease": True}
+                {"tag_name": "v2.2.0b1", "html_url": "https://x/tag/v2.2.0b1", "prerelease": True}
             ]
             return response
 
@@ -141,7 +159,7 @@ class TestFetchLatestRelease:
         release = uc.fetch_latest_release(include_beta=True)
 
         assert captured["url"] == uc.GITHUB_RELEASES_LIST_URL
-        assert release["tag_name"] == "v2.2.0-beta.1"
+        assert release["tag_name"] == "v2.2.0b1"
         assert release["prerelease"] is True
 
     def test_beta_empty_list_raises(self, monkeypatch):
@@ -257,13 +275,13 @@ class TestCheckForUpdate:
 
         def fake_fetch_beta(include_beta=False):
             calls.append(include_beta)
-            return _fake_release("v2.3.0-beta.1", prerelease=True)
+            return _fake_release("v2.3.0b1", prerelease=True)
 
         monkeypatch.setattr(uc, "fetch_latest_release", fake_fetch_beta)
         result = uc.check_for_update(include_beta=True)
 
         assert calls == [True]
-        assert result.latest_version == "v2.3.0-beta.1"
+        assert result.latest_version == "v2.3.0b1"
 
     def test_fetch_failure_with_no_cache_returns_none(self, tmp_path, monkeypatch):
         monkeypatch.setattr(uc, "_cache_file", lambda: tmp_path / "cache.json")

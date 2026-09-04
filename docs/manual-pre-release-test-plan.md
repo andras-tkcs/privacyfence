@@ -159,15 +159,18 @@ it, not just from source.
 - [ ] Quit the bundled daemon (or at minimum don't leave it running alongside the source-mode
       daemon on the same account — the `/mcp` port collides) once this check is done.
 
-## 5. Version bump and release
+## 5. Tag and release
 
 Only after sections 1-4 all pass:
 
-- [ ] Bump `pyproject.toml`'s `project.version` and `src/privacyfence/__init__.py`'s `__version__`
-      together, in their own commit (`Bump to vX.Y.Z` or `Bump to vX.Y.Z: <short summary>`) — see
-      this repo's `CLAUDE.md`. Do not touch `mcpb/shim/package.json`'s version field.
-- [ ] Attach the saved fixture-recorder report (section 1) and popup-smoke report (section 2) to
-      the release PR description, the same convention as a normal PR's "## Local QA check" /
-      "## Popup smoke check" headings (`docs/testing-policy.md` §2.1/§2.2).
-- [ ] Note in the release PR which of section 3's live-prompt runs you did (shortened two-connector
-      version vs. the full `connector-qa-testing.md` prompt) and why.
+- [ ] Tag `main` at the commit you want to release and push the tag — see this repo's `CLAUDE.md`
+      "Releasing" section for the exact commands and tag format (`vX.Y.Z` stable /
+      `vX.Y.Z<a|b|rc><n>` pre-release). There's no version-bump commit or release PR to open first:
+      pushing the tag is what triggers `.github/workflows/build.yml` to build, sign, and publish the
+      DMG. Do not touch `mcpb/shim/package.json`'s version field.
+- [ ] Once `build.yml` has created the GitHub Release, attach the saved fixture-recorder report
+      (section 1) and popup-smoke report (section 2) to its description, the same convention as a
+      normal PR's "## Local QA check" / "## Popup smoke check" headings (`docs/testing-policy.md`
+      §2.1/§2.2).
+- [ ] Note in that same Release description which of section 3's live-prompt runs you did (shortened
+      two-connector version vs. the full `connector-qa-testing.md` prompt) and why.
