@@ -1,7 +1,10 @@
 """Centralized path resolution for PrivacyFence.
 
-In development (no PyInstaller bundle): data lives in the project root.
-In a bundled .app: data lives in ~/.privacyfence/ so it survives app updates.
+In a source checkout (editable dev install, or no install at all): data
+lives in the project root. In a bundled .app, or a real (non-editable)
+``pip``/``pipx install privacyfence``: data lives in ~/.privacyfence/ so it
+survives app updates/reinstalls -- see is_bundled() and
+_is_installed_package().
 """
 from __future__ import annotations
 
@@ -48,13 +51,29 @@ def is_bundled() -> bool:
     return getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")
 
 
+def _is_installed_package() -> bool:
+    """True for a normal (non-editable) ``pip``/``pipx install privacyfence``
+    -- i.e. this file living under some ``site-packages``/``dist-packages``
+    -- as opposed to a source checkout, editable dev install included: an
+    editable install (``pip install -e .``, what every documented dev/source
+    setup in this repo uses) keeps the real ``.py`` files at their original
+    checkout location, so ``__file__`` still resolves under the repo root
+    exactly as it does with no install step run at all. Checking the path
+    rather than "is this package installed" is what makes that distinction
+    -- ``importlib.metadata`` reports a distribution as installed either
+    way. Without this, ``data_dir()`` would fall to its ``else`` branch for
+    a real PyPI install too, landing config/credentials/logs somewhere
+    inside site-packages instead of a real per-user data directory."""
+    return "site-packages" in Path(__file__).resolve().parts or "dist-packages" in Path(__file__).resolve().parts
+
+
 def data_dir() -> Path:
     """Root directory for org-wide/install-wide data (org config, the local
     web/MCP tokens, the instance lock) -- see user_dir() for a specific
     principal's own storage root, which is what most callers actually want
     for anything that's per-user data.
     """
-    if is_bundled():
+    if is_bundled() or _is_installed_package():
         d = Path.home() / ".privacyfence"
     else:
         d = Path(__file__).parent.parent.parent

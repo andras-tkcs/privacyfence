@@ -38,6 +38,23 @@ class TestIsBundled:
         assert paths.is_bundled() is True
 
 
+class TestIsInstalledPackage:
+    def test_false_for_a_source_checkout_path(self, monkeypatch, tmp_path):
+        fake_module_file = tmp_path / "src" / "privacyfence" / "paths.py"
+        fake_module_file.parent.mkdir(parents=True)
+        monkeypatch.setattr(paths, "__file__", str(fake_module_file))
+
+        assert paths._is_installed_package() is False
+
+    @pytest.mark.parametrize("packages_dir", ["site-packages", "dist-packages"])
+    def test_true_when_file_lives_under_a_packages_directory(self, monkeypatch, tmp_path, packages_dir):
+        fake_module_file = tmp_path / "lib" / "python3.13" / packages_dir / "privacyfence" / "paths.py"
+        fake_module_file.parent.mkdir(parents=True)
+        monkeypatch.setattr(paths, "__file__", str(fake_module_file))
+
+        assert paths._is_installed_package() is True
+
+
 class TestDataDir:
     def test_dev_mode_resolves_to_project_root_relative_to_this_file(self, monkeypatch, tmp_path):
         monkeypatch.setattr(paths, "is_bundled", lambda: False)
@@ -57,6 +74,23 @@ class TestDataDir:
         result = paths.data_dir()
 
         assert result == tmp_path / ".privacyfence"
+        assert result.is_dir()
+
+    def test_installed_package_resolves_under_home_and_creates_it(self, monkeypatch, tmp_path):
+        # A real (non-editable) `pip install privacyfence` -- unbundled
+        # (is_bundled() False, no PyInstaller involved) but still not a
+        # source checkout, so this must not fall through to the dev-mode
+        # branch above and land inside site-packages itself.
+        monkeypatch.setattr(paths, "is_bundled", lambda: False)
+        fake_module_file = tmp_path / "lib" / "python3.13" / "site-packages" / "privacyfence" / "paths.py"
+        fake_module_file.parent.mkdir(parents=True)
+        monkeypatch.setattr(paths, "__file__", str(fake_module_file))
+        home = tmp_path / "home"
+        monkeypatch.setattr(Path, "home", lambda: home)
+
+        result = paths.data_dir()
+
+        assert result == home / ".privacyfence"
         assert result.is_dir()
 
 

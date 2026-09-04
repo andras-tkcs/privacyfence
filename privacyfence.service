@@ -1,0 +1,62 @@
+# PrivacyFence daemon systemd --user unit — Linux equivalent of
+# com.privacyfence.app.plist, for a real (non-editable) `pip`/`pipx install
+# privacyfence` (see CLAUDE.md's "Publishing to PyPI" section for how the
+# package gets onto PyPI in the first place).
+#
+# ================================================================
+# NOT YET FUNCTIONAL. Do not enable this unit — the daemon will crash
+# immediately after startup:
+#
+#   `daemon_main.run_app()` unconditionally ends with
+#   `from .menu_bar import run_menu_bar; run_menu_bar(...)`, and
+#   `menu_bar.py` does a bare `import rumps` (macOS AppKit) at module
+#   scope, with no platform guard anywhere. There is currently no way to
+#   run the daemon headlessly on any platform — not on Linux, and not even
+#   in `org` (server) mode on macOS.
+#
+#   docs/https-connector-refactor-plan.md's D4 already calls for this: org
+#   mode is meant to be "same codebase, separate build target" — a real
+#   headless entrypoint, scheduled for P7-P9 ("beta, on a separate build
+#   target"). That work hasn't landed yet; only the `privacyfence-app`
+#   console script exists, and it always ends at run_menu_bar().
+#
+#   This unit is committed ahead of that so the rest of the Linux packaging
+#   story (PyPI publish, ~/.privacyfence path resolution for a real pip
+#   install — see paths.py's _is_installed_package()) doesn't block on it,
+#   and so the install steps below are ready the moment a headless
+#   entrypoint exists. Revisit once P7-P9's separate build target ships;
+#   see #121 in the issue tracker for the umbrella Linux/Windows tracking
+#   issue this belongs to.
+# ================================================================
+#
+# Install (once the blocker above is resolved):
+#   mkdir -p ~/.config/systemd/user
+#   cp privacyfence.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now privacyfence
+#
+# Uninstall:
+#   systemctl --user disable --now privacyfence
+#   rm ~/.config/systemd/user/privacyfence.service
+#   systemctl --user daemon-reload
+#
+# Logs: journalctl --user -u privacyfence -f
+#
+# ExecStart assumes `pipx install privacyfence` (pipx's default bin
+# location). Adjust if installed elsewhere (a plain `pip install --user`,
+# or a dedicated venv).
+
+[Unit]
+Description=PrivacyFence daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/privacyfence-app
+# Mirrors the plist's KeepAlive/SuccessfulExit=false: restart on a crash,
+# not on a clean exit (e.g. `systemctl --user stop`).
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
