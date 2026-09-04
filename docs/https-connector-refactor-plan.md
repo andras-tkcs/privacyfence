@@ -923,18 +923,33 @@ Five things to know before choosing:
   `localhost` qualifies, and is a secure context even over plain HTTP; a bare IP address does not.
   This is why D1 pins local mode to `http://localhost:PORT` rather than `http://127.0.0.1:PORT` —
   reached by IP, biometric step-up is simply unavailable there.
-- **Where the link opens decides whether this is dependable — and this is still open after P0.** The
-  approval URL arrives inside a Claude conversation. The platform facts are settled: Chrome Custom
-  Tabs (Android) and `SFSafariViewController` / `ASWebAuthenticationSession` (iOS) support platform
-  WebAuthn fully with no app integration, while a bare embedded Android `WebView` does **not** offer
-  the platform-authenticator UI at all. What is *not* publicly documented, and was not reachable from
-  the P0 environment (no real Desktop/iOS/Android Claude apps), is which of those Claude's own apps
-  use for an in-chat link — app-specific behavior that can change between versions
-  (§12, question 3). **The check is cheap and needs a human with
-  the real apps: host a minimal WebAuthn test page (e.g. `webauthn.io`), post the link into a real
-  Claude conversation on Desktop, iOS and Android, tap it, and see whether the biometric prompt
-  appears.** Roughly ten minutes, and it is an entry condition for P9 — do it before P9 is scheduled,
-  not during it. Until then D7 is a decided mechanism with an unverified delivery path.
+- **Where the link opens decides whether this is dependable — checked manually post-P0, iOS
+  confirmed, Desktop and Android still open.** The approval URL arrives inside a Claude conversation.
+  The platform facts are settled: Chrome Custom Tabs (Android) and `SFSafariViewController` /
+  `ASWebAuthenticationSession` (iOS) support platform WebAuthn fully with no app integration, while a
+  bare embedded Android `WebView` does **not** offer the platform-authenticator UI at all. Which of
+  those Claude's own apps actually use for an in-chat link was app-specific and undocumented — not
+  reachable from the P0 environment (no real Desktop/iOS/Android Claude apps) — so this needed a
+  human with the real apps: host a minimal WebAuthn test page, post the link into a real Claude
+  conversation, tap it, and see whether the biometric prompt appears (§12, question 3).
+
+  **iOS: confirmed working.** Registration and assertion both completed inside Claude's iOS in-chat
+  browser with `authenticatorAttachment: platform` and the UV flag set (a real Face ID check, not
+  just presence), and the tester visually confirmed the Face ID sheet appeared both times — so
+  Claude's iOS app does not route in-chat links through a bare WebView. One wrinkle worth carrying
+  forward, not a WebAuthn failure: with a third-party password manager (1Password) set as the
+  device's default AutoFill/passkey provider, control didn't cleanly return from that app back into
+  Claude's in-chat browser after registering — the page appeared stuck until manually reloaded, after
+  which the stored credential and the subsequent assertion both worked normally. That's a resume/
+  hand-off gap in that embedded browser specifically, separate from whether platform WebAuthn itself
+  works there, and worth a look whenever that browser component changes.
+
+  **Desktop: not yet checked against the real Claude Desktop app** — only sanity-checked in an
+  ordinary desktop browser (which isn't the surface in question; any browser was already expected to
+  work). **Android: not yet checked — no test device available.** Both remain entry conditions for
+  P9 on their respective surfaces until they're run the same way iOS was. Re-run all three whenever
+  Claude's apps take a major update, since this is Claude-app behavior, not anything in this repo,
+  and can change out from under a stale result.
 - **Synced passkeys weaken "this device".** iCloud Keychain and Google Password Manager sync passkeys
   across a user's devices. Require `platform` attachment, and check the BE/BS flags in
   `authenticatorData` if "the credential lives only on this phone" is a property the deployment
@@ -1164,19 +1179,37 @@ risk is confirmed to exist today, via a mechanism worth designing around rather 
 
 #### 3. Does WebAuthn work where the approval link actually opens?
 
-**Not independently testable from the spike environment — flagged, not answered.**
+**Not independently testable from the spike environment — flagged, not answered there. Checked
+manually afterward: yes on iOS, still open on Desktop and Android.**
 
-That environment had no access to real Claude Desktop, iOS, or Android apps, so it could not observe
-what component actually opens an `https://` link tapped inside a Claude conversation on those
-surfaces. Desk research confirms the platform-level facts D7 depends on: Chrome Custom Tabs (Android)
-and `SFSafariViewController` / `ASWebAuthenticationSession` (iOS) both support platform WebAuthn
-(passkeys) fully, with no special app integration needed, while a bare embedded `WebView` (Android)
-does **not** support the platform-authenticator passkey UI.
+The P0 spike environment had no access to real Claude Desktop, iOS, or Android apps, so it could not
+observe what component actually opens an `https://` link tapped inside a Claude conversation on
+those surfaces. Desk research confirmed the platform-level facts D7 depends on: Chrome Custom Tabs
+(Android) and `SFSafariViewController` / `ASWebAuthenticationSession` (iOS) both support platform
+WebAuthn (passkeys) fully, with no special app integration needed, while a bare embedded `WebView`
+(Android) does **not** support the platform-authenticator passkey UI. What wasn't publicly
+documented, and wasn't visible from the spike environment, is which of these Claude's own mobile apps
+actually use for a link inside a chat message — Claude-app-specific behavior, not a general platform
+fact, and one that can change between app versions.
 
-What isn't publicly documented, and wasn't visible from there, is which of these Claude's own mobile
-apps actually use for a link inside a chat message — that is Claude-app-specific behavior, not a
-general platform fact, and it can change between app versions. §10.6 carries the concrete manual check
-this needs, and P9 carries it as an entry condition.
+That gap has since been closed for one surface by hand: a minimal self-hosted WebAuthn test page,
+reached through a temporary public HTTPS tunnel, pasted as a link into a real Claude conversation and
+tapped from inside the app.
+
+- **Claude iOS, in-chat link: confirmed working.** Both registration and a follow-up assertion
+  completed with `authenticatorAttachment: platform` and the UV flag set — a real Face ID check, not
+  a bare `WebView` silently missing the platform-authenticator UI — and the tester visually confirmed
+  the Face ID sheet appeared both times. One separate finding, not a WebAuthn failure: with a
+  third-party password manager (1Password) set as the device's default passkey provider, control
+  didn't cleanly return from that app back into Claude's in-chat browser after registering — the page
+  hung until manually reloaded, after which the stored credential resolved normally. Worth tracking as
+  a resume/hand-off gap in that embedded browser, separately from whether platform WebAuthn itself
+  works there.
+- **Claude Desktop and Claude Android: still open.** Desktop was only sanity-checked in an ordinary
+  desktop browser, which isn't the surface in question (any browser was already expected to work);
+  Android hasn't been checked at all, for lack of a test device. §10.6 carries the full result and the
+  manual procedure that produced it; P9 keeps this as an entry condition on the surfaces not yet
+  confirmed.
 
 #### 4. What does the responsive pass on the card CSS actually cost?
 
@@ -1200,12 +1233,14 @@ device emulation, either is fine) that Chromium-only testing can't fully replace
 |---|---|---|
 | **1.** Do the documents work as live pages? | **Yes**, both unmodified, driven end to end in headless Chromium against a real `postMessage` → `fetch()` shim; the POST payloads matched exactly what `gate.py` and `settings_window.py` expect today. | Nothing to change — it confirms P1 and P4 are hosting changes. The one `post()` swap in §7.1 really is the whole JS delta. |
 | **2.** Will Claude re-call after a pending result? | **No, mostly** — 0 of 5 fresh Claude Code sessions completed the loop autonomously; 4 stopped and flagged the re-call contract as a probable prompt injection. | The largest change. §5.4 is rewritten around it. P3 is scoped assuming a human confirmation turn per pending approval; P3's beta additionally measures the other three surfaces and treats raising the hold window as a live option; P3's rollback key (below) becomes a supported configuration, not only an escape hatch. |
-| **3.** Does WebAuthn work where the link opens? | **Unanswered** — no real Desktop/iOS/Android Claude app was reachable from the spike environment. | Stays an open risk on D7. §10.6 now names a ten-minute manual check and makes it an entry condition for P9 rather than work inside it. |
+| **3.** Does WebAuthn work where the link opens? | **Unanswered from the spike** (no real Desktop/iOS/Android Claude app was reachable there); **checked manually afterward: yes on iOS, still open on Desktop/Android.** | Confirmed for D7's highest-risk surface — iOS does not route the in-chat link through a bare `WebView`. §10.6 carries the result and the manual procedure; P9's entry condition stays open for Desktop and Android until they're run the same way. |
 | **4.** What does the responsive pass cost? | **About a day**, with the shape known and two real layout traps already hit and solved. | §7.3 carries the working model. The work stays inside P1's M sizing; P1's exit criterion now names the phone viewport so it is actually verified there. |
 
 **Still open going into P1**, in the order they are needed:
 
-1. The WebAuthn link-open check (§10.6) — cheap, needs a human with real apps, blocks scheduling P9.
+1. The WebAuthn link-open check (§10.6) — cheap, needs a human with real apps, blocks scheduling P9
+   on any surface not yet confirmed. iOS is now done (confirmed working); Desktop and Android are
+   still open.
 2. The tool-call timeout Claude's client actually enforces (§8.3) — **partially measured** post-P0: on
    the stdio transport, Claude Code tolerated at least a 300 s wait with no timeout, which is a lower
    bound, not the ceiling. The Streamable HTTP figure — the transport `/mcp` actually uses — is still
