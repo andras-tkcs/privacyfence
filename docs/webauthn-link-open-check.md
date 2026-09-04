@@ -223,6 +223,26 @@ credential back up without making you register again. Worth noting as its own ob
 surface either way — an app whose embedded browser tears down page state around a native modal is a
 rougher experience than one that doesn't, independent of whether WebAuthn itself worked.
 
+### B.6b Third-party passkey providers (1Password, Bitwarden, …) add their own hand-off wrinkle
+
+If a third-party password manager is set as the device's default passkey/AutoFill provider (iOS:
+Settings → Passwords → AutoFill Passwords and Passkeys), it — not iCloud Keychain/Google Password
+Manager — fields the `navigator.credentials.create()`/`.get()` call. The ceremony still reports
+`platform` attachment and `user_verified: true` (the provider does its own Face ID/Touch ID/biometric
+check via the OS before releasing the passkey), so this doesn't change the pass/fail verdict by
+itself.
+
+What's been observed in practice: registering inside Claude's iOS in-chat browser with 1Password as
+the provider, control didn't cleanly return from the 1Password app back into the page afterward —
+the tab appeared stuck until reloaded (recoverable, thanks to §B.6a's fix). That's worth recording as
+its own note, separate from the platform/UV result: a third-party provider hand-off hanging inside
+Claude's embedded browser is a reliability finding about *that browser*, distinct from whether the
+underlying WebAuthn ceremony itself works.
+
+To isolate whether a hang like this is provider-specific or a broader "any external-app round trip
+confuses this embedded browser" issue, temporarily set AutoFill's default provider back to Apple
+Passwords (same Settings path) and repeat register/verify once more for comparison.
+
 ### B.7 Clean up
 
 `Ctrl+C` both terminals. The tunnel URL stops resolving immediately; the server's in-memory state
