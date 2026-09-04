@@ -67,6 +67,13 @@ class IdpConfig:
     # mechanism" -- not "everybody is", the fail-closed direction.
     admin_group_claim: str = ""
     admin_group_values: tuple[str, ...] = ()
+    # P9, §10.6/§15 D7: "IdP acr_values step-up ... where the IdP already
+    # does this well." Empty means the IdP has no configured step-up ACR to
+    # ask for -- web/routes_org_approvals.py's IdP step-up flow still works
+    # (it always sends prompt=login/max_age=0, OIDC re-auth alone is D7's
+    # documented fallback for a user with no passkey enrolled), it just
+    # never adds an acr_values hint the IdP might not support.
+    step_up_acr_values: tuple[str, ...] = ()
 
     @staticmethod
     def from_org_config(org_config: dict[str, Any]) -> "IdpConfig | None":
@@ -92,6 +99,7 @@ class IdpConfig:
             jwks_uri=discovered["jwks_uri"],
             admin_group_claim=idp.get("admin_group_claim", "") or "",
             admin_group_values=tuple(idp.get("admin_group_values") or ()),
+            step_up_acr_values=tuple(idp.get("step_up_acr_values") or ()),
         )
 
 
@@ -121,13 +129,20 @@ def generate_pkce_pair() -> tuple[str, str]:
 
 def build_authorization_url(
     idp: IdpConfig, *, redirect_uri: str, state: str, code_challenge: str, nonce: str,
-    scope: str = DEFAULT_SCOPE,
+    scope: str = DEFAULT_SCOPE, extra_params: dict[str, str] | None = None,
 ) -> str:
     """``nonce`` is OIDC Core's own replay defense for the ID token (distinct
     from ``state``, which is OAuth's CSRF defense for the *redirect*) --
     required here, not optional, since every call site already has a fresh
     one to hand (see PendingAuthorization/LoginAttempt in oauth_provider.py/
-    org_session.py, both of which generate one alongside state/PKCE)."""
+    org_session.py, both of which generate one alongside state/PKCE).
+
+    ``extra_params`` (P9, docs/https-connector-refactor-plan.md §10.6) is
+    how web/routes_org_approvals.py's IdP step-up flow layers ``prompt``/
+    ``max_age``/``acr_values`` onto the same authorization request this
+    function already builds for an ordinary sign-in, rather than a second
+    URL-building implementation: a step-up re-auth is not a different
+    protocol, only a stricter request against the identical endpoint."""
     params = {
         "response_type": "code",
         "client_id": idp.client_id,
@@ -138,6 +153,8 @@ def build_authorization_url(
         "code_challenge_method": "S256",
         "nonce": nonce,
     }
+    if extra_params:
+        params.update(extra_params)
     sep = "&" if "?" in idp.authorization_endpoint else "?"
     return f"{idp.authorization_endpoint}{sep}{urlencode(params)}"
 

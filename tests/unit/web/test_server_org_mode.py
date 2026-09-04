@@ -80,17 +80,27 @@ class TestBuildAppOrgMode:
             r = client.get("/.well-known/oauth-authorization-server")
             assert r.status_code == 200
 
-    def test_local_mode_approval_surface_is_not_mounted(self, tmp_path, monkeypatch):
-        # The whole point of this phase's own scoping decision (see server.py's
-        # module docstring): /approvals must not exist under org mode, since
-        # it has no principal filtering and would leak every principal's
-        # pending approvals to whoever holds any token.
+    def test_settings_surface_is_not_mounted(self, tmp_path, monkeypatch):
+        # /settings' ~30-action surface stays out of org mode (see server.py's
+        # module docstring) -- unlike /approvals, which P9 (below) mounts as
+        # its own principal-aware route set.
         org = _org_auth(tmp_path, monkeypatch)
         app = build_app(WebApprovalUI(), org=org, allowed_hosts=frozenset({"pf.example.com"}))
         client = TestClient(app, base_url=ISSUER)
-        assert client.get("/approvals").status_code == 404
         assert client.get("/settings").status_code == 404
         assert client.get("/api/state/stream").status_code == 404
+
+    def test_local_mode_approval_surface_is_not_what_gets_mounted(self, tmp_path, monkeypatch):
+        # /approvals exists (P9), but it's web/routes_org_approvals.py's
+        # principal-aware route set, not routes_approvals.create_app's
+        # shared-secret one -- an unauthenticated request is redirected to
+        # /login, never served the (local-mode-only) card content directly.
+        org = _org_auth(tmp_path, monkeypatch)
+        app = build_app(WebApprovalUI(), org=org, allowed_hosts=frozenset({"pf.example.com"}))
+        client = TestClient(app, base_url=ISSUER, follow_redirects=False)
+        r = client.get("/approvals")
+        assert r.status_code == 302
+        assert r.headers["location"] == "/login?next=/approvals"
 
 
 class TestConnectSurfaceOrgMode:
@@ -139,6 +149,51 @@ class TestConnectSurfaceOrgMode:
         # as that default once P8's registry is present (see test_routes_
         # org_identity.py::TestLogin for the equivalent no-registry case,
         # which keeps the original "/approvals" default).
+
+
+class TestApprovalsAndSecuritySurfaceOrgMode:
+    """P9: /approvals and /security are mounted unconditionally (unlike
+    /connect, they need nothing from OrgAuth.connector_registry) -- see
+    web/server.py's own module docstring."""
+
+    def test_approvals_is_mounted_with_no_connector_registry(self, tmp_path, monkeypatch):
+        org = _org_auth(tmp_path, monkeypatch)
+        app = build_app(WebApprovalUI(), org=org, allowed_hosts=frozenset({"pf.example.com"}))
+        client = TestClient(app, base_url=ISSUER, follow_redirects=False)
+        r = client.get("/approvals")
+        assert r.status_code == 302
+        assert r.headers["location"] == "/login?next=/approvals"
+
+    def test_security_is_mounted_since_the_issuer_hostname_becomes_the_rp_id(self, tmp_path, monkeypatch):
+        org = _org_auth(tmp_path, monkeypatch)
+        app = build_app(WebApprovalUI(), org=org, allowed_hosts=frozenset({"pf.example.com"}))
+        client = TestClient(app, base_url=ISSUER, follow_redirects=False)
+        r = client.get("/security")
+        assert r.status_code == 302
+        assert r.headers["location"] == "/login?next=/security"
+
+    def test_step_up_config_section_reaches_the_decide_endpoint(self, tmp_path, monkeypatch):
+        # A thin end-to-end wiring check -- web/routes_org_approvals.py's
+        # own test file covers the step-up protocol itself in depth; this
+        # only proves server.py actually threads org_config.json's
+        # "step_up" section through StepUpConfig.from_org_config into the
+        # mounted routes, rather than a hardcoded default.
+        from privacyfence.principal import Principal as _P
+
+        org = _org_auth(tmp_path, monkeypatch)
+        org = org.__class__(
+            provider=org.provider, sessions=org.sessions, idp=org.idp, issuer_url=org.issuer_url,
+            org_config={"step_up": {"enabled": True, "scope": "writes"}},
+        )
+        app = build_app(WebApprovalUI(), org=org, allowed_hosts=frozenset({"pf.example.com"}))
+        client = TestClient(app, base_url=ISSUER, follow_redirects=False)
+        session_id = org.sessions.create(_P(id="alice"))
+        client.cookies.set("pf_org_session", session_id)
+        r = client.post("/api/approvals/does-not-exist/decide", json={"result": "deny", "csrf": session_id})
+        # Unknown approval -> answer() rejects it (409), never a 404/500 --
+        # proves the route (and therefore the StepUpConfig it was built
+        # with) is really live, not just present.
+        assert r.status_code == 409
 
 
 class TestWebServerOrgMode:

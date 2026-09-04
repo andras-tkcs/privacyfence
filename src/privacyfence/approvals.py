@@ -1,12 +1,36 @@
 """Deferred-approval registry: the domain object P3 adds on top of gate.py's
 existing decision loop (docs/https-connector-refactor-plan.md §5-§6).
 
-Scope reminder (P3, not P6): there is no ``Principal`` yet -- every approval
-below belongs to the single implicit "local" principal, same posture every
-other still-single-tenant module in this codebase has before P6 adds
-``principal.py``. The registry is written so a principal dimension can be
-folded in later (one registry per principal) without changing its internal
-shape, but nothing here reads or stores one today.
+Principal dimension (P9, not P6/P7/P8): ``approval_ui.py``'s own module
+docstring already promised this -- "``WebApprovalUI`` stays a true
+singleton deliberately ... in org mode one instance still serves every
+principal (its ``PendingApprovalRegistry`` gains the principal dimension
+internally instead)" -- but nothing actually needed it until now, since
+``/approvals`` was never mounted in org mode through P8 (web/server.py's
+own module docstring). web/routes_org_approvals.py (P9) is what finally
+reaches this registry from more than one principal at once, so every
+``PendingApproval`` now stamps ``principal_id`` at registration time (from
+``current_principal()`` -- the same contextvar pattern every other
+per-principal registry in this codebase already uses, so gate.py's own
+call sites into ``register_or_coalesce``/``register_confirm`` need no
+signature change), and every read/write method below takes an optional
+``principal_id`` to filter or authorize against. ``None`` (the default
+everywhere) means "no filter" -- gate.py's own internal calls, and every
+pre-P9 caller/test, keep seeing every approval regardless of principal,
+which is also exactly correct for local mode's single implicit principal.
+web/routes_org_approvals.py is the one real caller that ever passes a real
+``principal_id``, and it does so on every method it calls (§10.5: "every
+approval, card, preview, decision ... read is authorized against
+current_principal()").
+
+The coalescing/ledger key also gained a principal dimension for the same
+reason web/mcp_dispatch.py's retry-dedupe cache did at P7: ``(connector,
+tool, canonical(args))`` alone collides across two principals who happen to
+call the same tool with the same arguments, which P7's own fix note (see
+docs/https-connector-refactor-plan.md's P7 section) already named as
+exactly this codebase's recurring failure mode once a second principal
+becomes real. ``_by_key`` is keyed on ``(principal_id, dedupe_key)`` here
+for the same reason.
 
 Two kinds of caller reach this module:
 
@@ -64,6 +88,8 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
+
+from .principal import current_principal
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +156,10 @@ def _iso(ts: float | None) -> str:
 class PendingApproval:
     id: str
     kind: str                      # "card" | "confirm"
+    # P9: whichever principal's request context was active at registration
+    # time (see module docstring) -- "local" for every approval in local
+    # mode, unchanged from before this field existed.
+    principal_id: str = field(default_factory=lambda: current_principal().id)
     connector: str = ""
     tool: str = ""
     gate_kind: str = ""            # "review" | "popup" -- "" for a bare confirm dialog
@@ -230,7 +260,10 @@ class PendingApprovalRegistry:
         self.base_url = base_url
         self._lock = threading.Lock()
         self._pending: dict[str, PendingApproval] = {}
-        self._by_key: dict[str, str] = {}  # dedupe_key -> approval id, see module docstring
+        # (principal_id, dedupe_key) -> approval id -- see module docstring's
+        # own note on why principal_id is folded into this key, not just
+        # dedupe_key alone.
+        self._by_key: dict[tuple[str, str], str] = {}
 
     def set_base_url(self, base_url: str | None) -> None:
         self.base_url = base_url
@@ -271,9 +304,11 @@ class PendingApprovalRegistry:
         is a genuinely new key (never raised for a coalescing hit -- that
         doesn't grow the pending set).
         """
+        principal_id = current_principal().id
+        key = (principal_id, dedupe_key)
         with self._lock:
             self._expire_stale_locked()
-            existing_id = self._by_key.get(dedupe_key)
+            existing_id = self._by_key.get(key)
             if existing_id is not None:
                 existing = self._pending.get(existing_id)
                 if existing is not None and not existing.is_finalized():
@@ -286,7 +321,8 @@ class PendingApprovalRegistry:
                 )
             now = time.time()
             approval = PendingApproval(
-                id=uuid.uuid4().hex, kind="card", connector=connector, tool=tool, gate_kind=gate_kind,
+                id=uuid.uuid4().hex, kind="card", principal_id=principal_id,
+                connector=connector, tool=tool, gate_kind=gate_kind,
                 request_id=request_id, summary=summary, tool_name=tool_name, dedupe_key=dedupe_key,
                 created_at=now, expires_at=now + self.pending_ttl,
                 operation_key=operation_key, review_ctx=review_ctx,
@@ -294,7 +330,7 @@ class PendingApprovalRegistry:
                 pii_categories=list(pii_categories or []), claude_reason=claude_reason,
             )
             self._pending[approval.id] = approval
-            self._by_key[dedupe_key] = approval.id
+            self._by_key[key] = approval.id
             return approval, True
 
     def register_confirm(self) -> PendingApproval:
@@ -319,12 +355,24 @@ class PendingApprovalRegistry:
     # Decisions
     # ------------------------------------------------------------------ #
 
-    def answer(self, approval_id: str, result: str, chosen_index: int | None = None) -> bool:
-        """Resolve one UI step -- called by web/routes_approvals.py's decide
-        endpoint when a human clicks a button. See PendingApproval.answer."""
+    def answer(
+        self, approval_id: str, result: str, chosen_index: int | None = None, *, principal_id: str | None = None,
+    ) -> bool:
+        """Resolve one UI step -- called by web/routes_approvals.py's/
+        web/routes_org_approvals.py's decide endpoint when a human clicks a
+        button. See PendingApproval.answer.
+
+        ``principal_id``, when given (web/routes_org_approvals.py always
+        passes one -- see module docstring), rejects a decision on an
+        approval belonging to a *different* principal exactly as if it
+        didn't exist -- §10.5's "every ... decision ... is authorized
+        against current_principal()", defense in depth on top of the
+        approval id's own 128 bits of entropy."""
         with self._lock:
             approval = self._pending.get(approval_id)
         if approval is None:
+            return False
+        if principal_id is not None and approval.principal_id != principal_id:
             return False
         return approval.answer(result, chosen_index)
 
@@ -351,14 +399,24 @@ class PendingApprovalRegistry:
     def consume_ledger(self, dedupe_key: str) -> tuple[str, str, float] | None:
         """A re-issued (or coalesced-and-since-finalized) identical call's
         first stop: is there already a decision on file for this exact
-        ``(connector, tool, args)``? Returns ``(decision, rule_name,
-        decided_at)`` or None. Single-use entries (writes) are removed on
-        the read that consumes them; read-gate entries stay reusable until
-        ``ledger_ttl`` (§5.4: "Read decisions... stay TTL-bounded and
-        reusable... unchanged")."""
+        ``(connector, tool, args)``, *for the calling principal*? Returns
+        ``(decision, rule_name, decided_at)`` or None. Single-use entries
+        (writes) are removed on the read that consumes them; read-gate
+        entries stay reusable until ``ledger_ttl`` (§5.4: "Read decisions...
+        stay TTL-bounded and reusable... unchanged").
+
+        Scoped to ``current_principal()`` implicitly (module docstring) --
+        gate.py's own call site needs no change, and this is the one method
+        where that scoping isn't optional: without it, two principals
+        issuing the identical tool call with identical arguments would
+        share one ledger entry, releasing one principal's approved decision
+        to the other's re-issued call (P9's own fix for the P7-precedented
+        cross-principal dedupe-key collision -- see module docstring)."""
+        principal_id = current_principal().id
+        key = (principal_id, dedupe_key)
         with self._lock:
             self._expire_stale_locked()
-            approval_id = self._by_key.get(dedupe_key)
+            approval_id = self._by_key.get(key)
             if approval_id is None:
                 return None
             approval = self._pending.get(approval_id)
@@ -368,7 +426,7 @@ class PendingApprovalRegistry:
                 return None
             if approval.gate_kind == "popup":
                 approval.ledger_consumed = True
-                del self._by_key[dedupe_key]
+                del self._by_key[key]
                 self._pending.pop(approval_id, None)
             return approval.final_decision, approval.final_rule_name, approval.decided_at
 
@@ -387,23 +445,45 @@ class PendingApprovalRegistry:
     # Read side -- web/routes_approvals.py, privacyfence_await_approval
     # ------------------------------------------------------------------ #
 
-    def get(self, approval_id: str) -> PendingApproval | None:
+    def get(self, approval_id: str, *, principal_id: str | None = None) -> PendingApproval | None:
+        """``principal_id``, when given, makes a mismatched approval
+        indistinguishable from a nonexistent one -- the authorization check
+        web/routes_org_approvals.py's card/preview routes and
+        web/mcp_dispatch.py's ``privacyfence_await_approval`` (P9) rely on.
+        ``None`` (every pre-P9 caller, and gate.py's own internal use) means
+        "no filter", unchanged from before this parameter existed."""
         with self._lock:
-            return self._pending.get(approval_id)
+            approval = self._pending.get(approval_id)
+        if approval is None:
+            return None
+        if principal_id is not None and approval.principal_id != principal_id:
+            return None
+        return approval
 
-    def list_pending(self) -> list[PendingApproval]:
+    def list_pending(self, principal_id: str | None = None) -> list[PendingApproval]:
         """Every card/confirmation not yet answered at the UI-step level --
-        newest first. Used by web/routes_approvals.py's list view (§7.1)."""
+        newest first. Used by web/routes_approvals.py's/web/routes_org_
+        approvals.py's list view (§7.1). ``principal_id`` restricts the
+        result to that principal's own approvals only (P9) -- ``None``
+        (local mode's own call, and every pre-P9 caller) returns every
+        approval regardless of principal, correct for local mode's single
+        implicit principal and unchanged from before this parameter
+        existed."""
         with self._lock:
-            items = [a for a in self._pending.values() if not a.event.is_set()]
+            items = [
+                a for a in self._pending.values()
+                if not a.event.is_set() and (principal_id is None or a.principal_id == principal_id)
+            ]
         items.sort(key=lambda a: a.created_at, reverse=True)
         return items
 
-    def await_status(self, approval_id: str) -> str:
+    def await_status(self, approval_id: str, *, principal_id: str | None = None) -> str:
         """One of "approved"/"denied"/"pending"/"expired"/"unknown" -- the
         vocabulary privacyfence_await_approval reports back to Claude (§5.2
-        point 7): status only, never content."""
-        approval = self.get(approval_id)
+        point 7): status only, never content. ``principal_id`` is P9's own
+        cross-principal check (§10.5) -- an id belonging to another
+        principal reads as "unknown", never leaking that it exists at all."""
+        approval = self.get(approval_id, principal_id=principal_id)
         if approval is None:
             return "unknown"
         if not approval.is_finalized():
@@ -427,13 +507,24 @@ class PendingApprovalRegistry:
         here, without waiting for a human to open it. Returns the list of
         approvals this call resolved, so the caller (gate.py) can audit each
         one and wake anything still awaiting it.
+
+        Scoped to ``current_principal()`` (P9): ``should_auto_accept`` is
+        itself one principal's own evaluator (auto_accept.py's own
+        ``_REGISTRY``, resolved via ``current_principal()`` inside gate.py's
+        ``_on_rules_changed`` at the moment *that* principal's rules
+        changed), so re-evaluating another principal's pending cards
+        against it would apply the wrong rule set entirely -- not merely a
+        privacy leak but a correctness bug, the same class this module's
+        own dedupe-key fix (see module docstring) exists to close.
         """
+        principal_id = current_principal().id
         resolved: list[PendingApproval] = []
         with self._lock:
             candidates = [
                 a for a in self._pending.values()
                 if a.kind == "card" and not a.is_finalized() and not a.event.is_set()
                 and a.operation_key is not None and not a.pii_forces_confirmation
+                and a.principal_id == principal_id
             ]
         for approval in candidates:
             try:
@@ -491,7 +582,7 @@ class PendingApprovalRegistry:
                 approval.decided_at = now
                 approval.finalize_event.set()
                 if approval.dedupe_key is not None:
-                    self._by_key.pop(approval.dedupe_key, None)
+                    self._by_key.pop((approval.principal_id, approval.dedupe_key), None)
                 expired.append(approval)
         return expired
 
@@ -515,7 +606,7 @@ class PendingApprovalRegistry:
                 ):
                     approval.ledger_consumed = True
                     if approval.dedupe_key is not None:
-                        self._by_key.pop(approval.dedupe_key, None)
+                        self._by_key.pop((approval.principal_id, approval.dedupe_key), None)
                     self._pending.pop(approval.id, None)
                     events.append(approval)
         return events

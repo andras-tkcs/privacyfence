@@ -287,19 +287,25 @@ class McpDispatcher:
         changes, or once the (clamped) timeout elapses -- whichever comes
         first. Status only, never content (§5.2 point 7 -- see
         approvals.PendingApprovalRegistry.await_status's own docstring for
-        the exact vocabulary)."""
+        the exact vocabulary). Scoped to current_principal() (P9): an id
+        belonging to another principal reads as "unknown", the same
+        cross-principal check §10.5 requires of every other approval read."""
         ids = [str(i) for i in (approval_ids or [])]
         if not ids:
             return {}
         if self._registry is None:
             return {approval_id: "unknown" for approval_id in ids}
+        principal_id = current_principal().id
         timeout = max(
             self._AWAIT_APPROVAL_MIN_TIMEOUT,
             min(int(timeout_seconds or 0), self._AWAIT_APPROVAL_MAX_TIMEOUT),
         )
         deadline = time.time() + timeout
         while True:
-            statuses = {approval_id: self._registry.await_status(approval_id) for approval_id in ids}
+            statuses = {
+                approval_id: self._registry.await_status(approval_id, principal_id=principal_id)
+                for approval_id in ids
+            }
             if time.time() >= deadline or any(s != "pending" for s in statuses.values()):
                 return statuses
             await asyncio.sleep(self._AWAIT_APPROVAL_POLL_SECONDS)

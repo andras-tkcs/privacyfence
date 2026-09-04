@@ -26,20 +26,27 @@ one shared secret. Passed to ``build_app``/``WebServer`` as one ``OrgAuth``
 bundle (see that class) rather than four separate parameters, so a caller
 either opts into the whole org-mode picture or none of it.
 
-**Deliberately not mounted in org mode, in this phase**: the local-mode
-approval/settings surface (``routes_approvals.create_app``'s ``/approvals``,
-``/settings`` and friends). That surface authenticates with one shared
-secret and lists *every* pending approval with no principal filtering --
-exposing it under org mode, where many principals share one daemon, would
-leak every principal's pending approvals (subject lines, message bodies,
-attachments) to whoever holds any valid token. A principal-aware org web
-surface is real, scoped follow-up work (see docs/https-connector-refactor-
-plan.md's own P7 section) building on this phase's ``OrgSessionStore``/
-``_PrincipalScopeMiddleware`` wiring -- not something this phase's own exit
-criterion ("Claude adds the connector by DCR; audience separation test
-passes") needs. Until it lands, a gated call in org mode still registers a
-pending approval in the registry (so ``privacyfence_await_approval`` sees
-it), but nothing yet renders or decides it over HTTP.
+**`/approvals` in org mode** (P9, web/routes_org_approvals.py) is *not*
+``routes_approvals.create_app``'s local-mode surface -- that one still
+authenticates with one shared secret and lists *every* pending approval
+with no principal filtering, which is exactly why it was never mounted
+here through P8 (exposing it as-is under org mode, where many principals
+share one daemon, would leak every principal's pending approvals to
+whoever holds any valid token). ``/approvals``/``/security`` here are a
+separate, principal-aware route set: every read and write is authorized
+against ``current_principal()`` via ``org_session``, and a *write*
+decision additionally demands a fresh WebAuthn step-up when
+``org_config.json``'s ``step_up.enabled`` is set (§10.6, D7) --
+web/routes_org_approvals.py's own module docstring covers both.
+
+**Still deliberately not mounted in org mode**: ``/settings``
+(``routes_settings.py``'s ~30-action surface) -- generalizing its CSRF
+model (today "the one shared token doubles as the session cookie value and
+the per-page CSRF token") to org mode's per-session cookie is real, scoped
+follow-up work no phase through P9 has needed yet (``/connect``, P8, and
+now ``/approvals``/``/security``, P9, are each a small, purpose-built page
+rather than a port of that surface -- see routes_connect.py's own module
+docstring for why that shape was chosen over porting it).
 """
 from __future__ import annotations
 
@@ -404,7 +411,8 @@ def build_app(
     """
     if org is not None:
         return _build_org_app(
-            org, mcp_dispatcher=mcp_dispatcher, allowed_hosts=allowed_hosts, principal_resolver=principal_resolver,
+            org, web_ui=web_ui, mcp_dispatcher=mcp_dispatcher, allowed_hosts=allowed_hosts,
+            principal_resolver=principal_resolver,
         )
 
     if not token:
@@ -447,12 +455,22 @@ def build_app(
 
 
 def _build_org_app(
-    org: OrgAuth, *, mcp_dispatcher: McpDispatcher | None, allowed_hosts: frozenset[str],
+    org: OrgAuth, *, web_ui: WebApprovalUI, mcp_dispatcher: McpDispatcher | None, allowed_hosts: frozenset[str],
     principal_resolver: Callable[[Request], Principal] | None,
 ) -> ASGIApp:
     """org mode's own route set -- see build_app()'s and this module's own
-    docstrings for what's deliberately absent (the local-token approval/
-    settings surface)."""
+    docstrings for what's deliberately absent (the local-token settings
+    surface, still). ``/approvals`` and ``/security`` (P9,
+    web/routes_org_approvals.py/web/routes_security.py) are mounted
+    unconditionally here -- unlike ``/connect`` (below), they need nothing
+    from ``org.connector_registry``, only ``web_ui`` (already a required
+    parameter of build_app() in both modes) and ``org.org_config`` for
+    ``StepUpConfig``."""
+    from urllib.parse import urlparse
+
+    from ..org_mode import StepUpConfig
+    from . import routes_org_approvals, routes_security
+
     extra_routes: list[Route] = []
     lifespans = []
     if mcp_dispatcher is not None:
@@ -481,6 +499,16 @@ def _build_org_app(
     extra_routes.extend(routes_org_identity.build_routes(
         idp=org.idp, sessions=org.sessions, base_url=org.issuer_url, default_next_path=default_next_path,
     ))
+
+    issuer_host = urlparse(org.issuer_url).hostname or ""
+    step_up = StepUpConfig.from_org_config(org.org_config, default_rp_id=issuer_host)
+    extra_routes.extend(routes_org_approvals.build_routes(
+        web_ui=web_ui, sessions=org.sessions, step_up=step_up, idp=org.idp, issuer_url=org.issuer_url,
+    ))
+    if step_up.rp_id:
+        extra_routes.extend(routes_security.build_routes(
+            sessions=org.sessions, step_up=step_up, issuer_url=org.issuer_url,
+        ))
 
     lifespan = None
     if lifespans:

@@ -509,9 +509,12 @@ def _start_org_web_server(
     )
     server.start()
     approval_registry.set_base_url(server.base_url)
+    step_up = org_mode.StepUpConfig.from_org_config(org_config)
     logger.info(
-        "Org mode active -- MCP-over-HTTP at %s (OAuth 2.1, DCR at %s/register), IdP %s",
+        "Org mode active -- MCP-over-HTTP at %s (OAuth 2.1, DCR at %s/register), IdP %s, "
+        "WebAuthn step-up %s",
         server.mcp_url, server.base_url, idp.issuer,
+        f"enabled (scope={step_up.scope})" if step_up.enabled else "disabled",
     )
     return server
 
