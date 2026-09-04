@@ -27,6 +27,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          # Cache ~/.npm keyed on mcpb/shim/package-lock.json -- without
+          # this, `npm ci` below is a fully cold install from the registry
+          # on every run (no lockfile changes needed to trigger it), and
+          # that leg alone has been observed taking several minutes on the
+          # macOS runner fleet vs. single-digit seconds on a warm cache.
+          cache: npm
+          cache-dependency-path: mcpb/shim/package-lock.json
 
       - name: Install dependencies
         run: pip install -e ".[test]"
