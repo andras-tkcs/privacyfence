@@ -6,6 +6,7 @@ import time
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from email.utils import parseaddr
 from typing import Any, Callable
 
 import yaml
@@ -489,12 +490,16 @@ class AutoAcceptEvaluator:
     # ── Gmail ──────────────────────────────────────────────────────────────
 
     def _rule_i_am_sender(self, _v, ctx):
+        if not ctx.my_email:
+            return False
         sender = getattr(ctx.raw_data, "sender", "") or ""
-        return bool(ctx.my_email and ctx.my_email.lower() in sender.lower())
+        return _address_of(sender) == ctx.my_email.lower()
 
     def _rule_i_am_sole_recipient(self, _v, ctx):
+        if not ctx.my_email:
+            return False
         recips = getattr(ctx.raw_data, "recipients", []) or []
-        return len(recips) == 1 and bool(ctx.my_email) and ctx.my_email.lower() in recips[0].lower()
+        return len(recips) == 1 and _address_of(recips[0]) == ctx.my_email.lower()
 
     def _rule_trusted_sender_domain(self, value, ctx):
         if not value:
@@ -541,9 +546,11 @@ class AutoAcceptEvaluator:
         return _file_from(raw)
 
     def _rule_i_am_owner(self, _v, ctx):
+        if not ctx.my_email:
+            return False
         f = self._file_from(ctx.raw_data)
         owners = getattr(f, "owners", []) or []
-        return bool(ctx.my_email and any(ctx.my_email.lower() in o.lower() for o in owners))
+        return any(_address_of(o) == ctx.my_email.lower() for o in owners)
 
     def _rule_created_by_me(self, v, ctx):
         return self._rule_i_am_owner(v, ctx)
@@ -924,6 +931,26 @@ def _domain_of(sender: str) -> str:
     if "<" in sender and ">" in sender:
         email_part = sender[sender.index("<") + 1 : sender.index(">")]
     return email_part.split("@", 1)[-1].lower().strip()
+
+
+def _address_of(raw: str) -> str:
+    """Extract just the address out of a raw RFC 5322 header-shaped string
+    ("Display Name <addr@example.com>" or a bare "addr@example.com"),
+    lower-cased, discarding the display name entirely.
+
+    Used everywhere an identity rule needs an exact-address comparison
+    against ctx.my_email rather than a substring check -- a naive
+    `my_email in raw.lower()` matches a spoofed display name that simply
+    contains the victim's address as text (e.g. a "From" header whose real
+    address is attacker-controlled but whose display name reads
+    "victim@example.com") or a lookalike address the real one happens to be
+    a substring of (e.g. "victim@example.com.attacker.net"). parseaddr()
+    understands the header syntax, so it isolates the actual address either
+    way; comparing that with `==` closes both holes. parseaddr() on a
+    malformed string degrades to ("", "") rather than raising, so this
+    never throws.
+    """
+    return parseaddr(raw or "")[1].strip().lower()
 
 
 def temp_accept_key(operation_key: str, ctx: "ReviewContext") -> str | None:
