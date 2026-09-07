@@ -36,6 +36,7 @@ telling a user it's supported."
 - [2. ChatGPT](#2-chatgpt)
   - [2.1 Local mode](#21-local-mode)
   - [2.2 Org mode (URL)](#22-org-mode-url)
+  - [2.3 Getting listed, to avoid Developer Mode](#23-getting-listed-to-avoid-developer-mode)
 - [3. Gemini](#3-gemini)
   - [3.1 Gemini CLI (developer tool — the real analog to Claude Code)](#31-gemini-cli-developer-tool--the-real-analog-to-claude-code)
   - [3.2 Gemini Enterprise (the real analog to org mode's audience)](#32-gemini-enterprise-the-real-analog-to-org-modes-audience)
@@ -50,12 +51,12 @@ telling a user it's supported."
 | | Claude | ChatGPT | Gemini |
 |---|---|---|---|
 | **Local (stdio)** | ✅ shipped — `PrivacyFence.mcpb` (Claude Desktop); direct `/mcp` (Claude Code) | ⚠️ plausible, unpackaged — ChatGPT desktop's own `mcp_config.json` supports a stdio `command`, but there is no PrivacyFence-built installer for it | ⚠️ unnecessary — Gemini CLI has native Streamable HTTP, so it should skip the shim and hit `/mcp` directly, same as Claude Code |
-| **Org mode (URL + OAuth 2.1)** | ✅ shipped — `claude mcp add --transport http`, native DCR | ⚠️ should work unmodified — Developer Mode custom connectors document the same OAuth 2.1 + PKCE(S256) + DCR shape PrivacyFence already serves for Claude | Split by surface: **Gemini CLI** ⚠️ should work unmodified (same DCR+PKCE discovery flow as Claude Code) · **Gemini Enterprise** ❌ blocked — no DCR/OAuth-discovery support, needs a pre-registered OAuth client PrivacyFence has no tooling to create · **Gemini app/Spark** ⚠️ unresearched beyond "OAuth-only, CA-signed TLS required" |
+| **Org mode (URL + OAuth 2.1)** | ✅ shipped — `claude mcp add --transport http`, native DCR | ⚠️ per-user Developer Mode should work unmodified (§2.2) · ⚠️ **admin-published workspace connector can drop the per-user Developer Mode step with no server change** (§2.3, the realistic "listed" path) · public App Directory listing (§2.3) is a poor fit — skip it | Split by surface: **Gemini CLI** ⚠️ should work unmodified (same DCR+PKCE discovery flow as Claude Code) · **Gemini Enterprise** ❌ blocked — no DCR/OAuth-discovery support, needs a pre-registered OAuth client PrivacyFence has no tooling to create · **Gemini app/Spark** ⚠️ unresearched beyond "OAuth-only, CA-signed TLS required" |
 
 No server-side PrivacyFence code changes are implicated by any ⚠️ row above — every one of them is
-"point a spec-compliant remote-MCP client at the same URL Claude already uses." The ❌ row is the one
-real gap, and it's client tooling (an admin flow to pre-register an OAuth client), not a protocol
-mismatch.
+"point a spec-compliant remote-MCP client at the same URL Claude already uses," including ChatGPT's
+admin-published workspace connectors (§2.3). The ❌ row is the one real protocol gap, and it's client
+tooling (an admin flow to pre-register an OAuth client), not a mismatch in what PrivacyFence serves.
 
 ---
 
@@ -141,6 +142,64 @@ Caveats worth setting expectations on, from current vendor documentation and com
   blocker, but a UX point worth calling out in any user-facing setup doc for this path.
 - Business/Enterprise ChatGPT workspaces may gate "connect any external MCP server" behind a
   workspace-admin setting, independent of anything PrivacyFence controls.
+
+### 2.3 Getting listed, to avoid Developer Mode
+
+Two separate things can remove "each user manually flips on Developer Mode and pastes a URL," and
+they are not the same track — worth telling apart before picking one to pursue
+[[9]](#sources)[[10]](#sources):
+
+**A. Workspace-admin-published connector (Business/Enterprise/Edu) — the realistic, near-term
+path.** On these plans a *workspace admin* (not OpenAI) turns on "Developer Mode / Create custom MCP
+connectors" once, in Workspace Settings → Permissions & Roles; adds PrivacyFence's `/mcp` URL there
+(endpoint, OAuth, an automated "Scan Tools" pass over the server's tool list); tests it as a draft;
+and **publishes it workspace-wide** — after that, ordinary members see and use it with no Developer
+Mode toggle of their own. This is exactly org mode's actual deployment shape: the same IT admin who
+already runs `org-mode-setup-guide.md` end to end for Claude would run this once, for the whole org,
+for ChatGPT too. Nothing about the auth/transport requirements differs from §2.2's OAuth table — it's
+the identical OAuth 2.1 + PKCE + DCR handshake, just performed once by an admin instead of once per
+user. (Gemini Enterprise's own connector setup, §3.2, is already admin-only in this same shape —
+though it's separately blocked there by the missing DCR support.) Two things worth planning around
+before recommending this to a user:
+
+- **The "Scan Tools" pass** almost certainly checks the same things §2.2's OAuth table and PrivacyFence's
+  own tool annotations already cover — `web/mcp_tools.py` sets `readOnlyHint`/`destructiveHint`/
+  `idempotentHint` on every tool, exactly the kind of metadata a safety scan over a tool list would
+  look for — but this hasn't been run against a real workspace, so "should pass" stays a ⚠️ like
+  everything else in this document until it's actually tried.
+- **Published connectors are a frozen snapshot.** ChatGPT freezes the tool list an admin approved at
+  publish time; PrivacyFence's tool set changes dynamically as connectors are enabled or disabled
+  (`web/routes_mcp.py`'s module docstring: "the tool set depends on which connectors are currently
+  built"). Turning on a new connector for the org (say, Confluence) would silently do nothing for its
+  ChatGPT users until the workspace admin re-opens and re-publishes the connector. Any setup doc for
+  this path needs to say so explicitly — carried into §4 as a follow-up item.
+
+**B. OpenAI's public App Directory (Apps SDK submission) — heavier, and likely the wrong fit.** This
+is OpenAI's own reviewed, publicly searchable catalog (Booking.com, Canva, Coursera, Expedia, Figma,
+Spotify, and Zillow were its December-2025 launch cohort). Getting listed there needs, on top of the
+same OAuth 2.1 + PKCE + DCR + Protected-Resource-Metadata stack §2.2 already covers: verified
+developer/business identity, a submitted privacy policy, a support contact, a documented data
+retention policy and scope map, written evidence (screenshots or traces) that every write action gets
+explicit user confirmation, passing OpenAI's own test suite on both ChatGPT web and mobile, and a
+manual OpenAI review before anything goes live [[10]](#sources)[[11]](#sources). Two things make this
+track a poor match for PrivacyFence specifically, not just "more process":
+
+- **PrivacyFence would clear the substantive bar easily** — "evidence every write action requires
+  explicit user confirmation" is close to a description of its entire approval-dialog model — but the
+  App Directory is built for a single vendor's own public-facing product (Canva *is* Canva's app), not
+  a self-hosted governance layer standing in front of one company's *own* Gmail/Drive/Slack/
+  Salesforce/Jira tenant. There's no single org to "own" a public PrivacyFence listing the way Canva
+  owns its own.
+- **The App Directory currently excludes the EEA, Switzerland, and the UK** at launch (EU
+  availability is "planned," not live) [[12]](#sources) — precisely the regulatory audience
+  `README.md`'s "Who is PrivacyFence for?" and `security-and-compliance.md` are written around. A
+  public listing would be unusable for exactly the GDPR/EU-AI-Act-motivated deployments PrivacyFence
+  is positioned for, at least until that changes.
+
+**Recommendation:** pursue (A), not (B). Track A needs no server-side change and directly matches org
+mode's actual admin-led deployment model; track B's cost (business verification, a public listing no
+individual customer org has reason to want to own) and current EU exclusion make it a poor use of
+effort here, independent of how much smoke-testing it would still need.
 
 ---
 
@@ -238,10 +297,22 @@ In priority order:
    item 1 — most likely as a new subsection here or in `TECHNICAL_REFERENCE.md`'s installation
    section, alongside the existing Claude Desktop/Claude Code options, rather than a new doc per
    client.
-4. **Re-verify this whole document's ⚠️/❌ calls before relying on them** — every vendor-behavior claim
-   here is dated 2026-09 and several of the products involved (ChatGPT Developer Mode, Gemini
-   Enterprise's custom connectors, Gemini Spark) are recent and still changing; don't copy a row out
-   of this table into user-facing docs without re-checking it's still current.
+4. **Verify the ChatGPT workspace-admin-published-connector path (§2.3, track A)** against a real
+   Business/Enterprise/Edu workspace: confirm the "Scan Tools" pass accepts PrivacyFence's tool list
+   and annotations as-is, and confirm the frozen-snapshot behavior actually works the way vendor docs
+   describe. If it does, write it up as a companion to `org-mode-setup-guide.md` §9's Claude
+   instructions — including an explicit callout that enabling a new connector org-wide means asking
+   the ChatGPT workspace admin to re-publish, since PrivacyFence's tool list changes dynamically and
+   ChatGPT's copy of it does not.
+5. **Do not pursue OpenAI's public App Directory (§2.3, track B)** absent a concrete reason to
+   revisit — it's a worse fit for this product than the workspace-admin path, and is currently unusable
+   for PrivacyFence's own EEA/UK/Switzerland-heavy target audience regardless. Revisit only if OpenAI
+   lifts the EU exclusion *and* someone identifies a customer need the workspace-admin path doesn't
+   already cover.
+6. **Re-verify this whole document's ⚠️/❌ calls before relying on them** — every vendor-behavior claim
+   here is dated 2026-09 and several of the products involved (ChatGPT Developer Mode and its App
+   Directory, Gemini Enterprise's custom connectors, Gemini Spark) are recent and still changing;
+   don't copy a row out of this table into user-facing docs without re-checking it's still current.
 
 ---
 
@@ -288,3 +359,25 @@ macOS host available):
 8. Gemini app "Spark" custom-app MCP requirements (OAuth-only, publicly-trusted CA-signed TLS
    required, Streamable HTTP only) — from third-party coverage of the Spark custom-connector feature
    current as of 2026-09; not fetched from a Google-owned source in this session.
+9. Workspace-admin-published custom MCP connectors (Business/Enterprise/Edu) — "Developer Mode /
+   Create custom MCP connectors" as a Workspace Settings → Permissions & Roles admin toggle, the
+   endpoint/OAuth/"Scan Tools"/draft/publish flow, the "frozen snapshot until an admin re-publishes"
+   behavior, and per-app RBAC — aggregated from OpenAI Help Center article summaries ("Admin
+   controls, security, and compliance in apps (Enterprise, Edu, and Business)",
+   `help.openai.com/en/articles/11509118-...`) and third-party guides; the source pages themselves
+   were not directly reachable from this session (network egress policy), so reconfirm directly
+   before depending on the exact settings path or terminology.
+10. App-submission requirements for OpenAI's public App Directory (business/developer verification,
+    privacy policy, support contact, data-retention policy, scope map, written evidence of
+    confirmation for write actions, cross-platform test cases, manual review) — from OpenAI's own
+    "App submission guidelines" page (`developers.openai.com/apps-sdk/app-submission-guidelines`) and
+    "Submitting apps to the ChatGPT app directory" help article, both blocked by this session's
+    network egress policy and read only via third-party summaries and search-result snippets; treat
+    the specific checklist items as directionally right, not a verbatim quote of OpenAI's own text.
+11. [OpenAI — Developers can now submit apps to ChatGPT](https://openai.com/index/developers-can-now-submit-apps-to-chatgpt/)
+    (announcement; also blocked from direct fetch in this session, read via search-result summary).
+12. App Directory's launch-time exclusion of the EEA, Switzerland, and the UK, and its December-2025
+    launch cohort (Booking.com, Canva, Coursera, Expedia, Figma, Spotify, Zillow) — from third-party
+    reporting on the Apps SDK/App Directory launch current as of 2026-09; reconfirm against OpenAI's
+    own availability documentation before treating the EU exclusion as still current, since this is
+    exactly the kind of staged rollout detail that changes without much notice.
