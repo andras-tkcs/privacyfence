@@ -232,6 +232,64 @@ class TestDriveRules:
 
 
 # --------------------------------------------------------------------------- #
+# SEC-02: identity rules must compare the parsed address, not a substring.
+#
+# _rule_i_am_sender/_rule_i_am_sole_recipient/_rule_i_am_owner (and its
+# _rule_created_by_me alias) used to check `ctx.my_email.lower() in
+# raw.lower()`, which a raw RFC 5322 string can defeat two ways: a forged
+# display name that merely *contains* the victim's address as text while
+# the real address is attacker-controlled ("me@example.com <attacker@evil
+# .com>"), or a lookalike address the real one is only a substring of
+# ("me@example.com.attacker.net", "notme@example.com"). Every payload below
+# would have matched the old substring check and must not match now.
+# --------------------------------------------------------------------------- #
+
+_SEC02_MY_EMAIL = "me@example.com"
+
+_SEC02_SPOOF_PAYLOADS = [
+    pytest.param(f"{_SEC02_MY_EMAIL} <attacker@evil.com>", id="spoofed-display-name"),
+    pytest.param(f"Notify <{_SEC02_MY_EMAIL}.attacker.net>", id="lookalike-domain-suffix"),
+    pytest.param(f"not{_SEC02_MY_EMAIL}", id="lookalike-localpart-prefix"),
+    pytest.param(f"{_SEC02_MY_EMAIL.upper()} <attacker@evil.com>", id="spoofed-display-name-mixed-case"),
+]
+
+# Every identity rule SEC-02 fixed, and how to build a ReviewContext whose
+# single identity-bearing field carries an attacker-supplied payload.
+_SEC02_IDENTITY_RULES = [
+    pytest.param(
+        "_rule_i_am_sender",
+        lambda payload: make_ctx(my_email=_SEC02_MY_EMAIL, raw_data=SimpleNamespace(sender=payload)),
+        id="i_am_sender",
+    ),
+    pytest.param(
+        "_rule_i_am_sole_recipient",
+        lambda payload: make_ctx(my_email=_SEC02_MY_EMAIL, raw_data=SimpleNamespace(recipients=[payload])),
+        id="i_am_sole_recipient",
+    ),
+    pytest.param(
+        "_rule_i_am_owner",
+        lambda payload: make_ctx(my_email=_SEC02_MY_EMAIL, raw_data=SimpleNamespace(owners=[payload])),
+        id="i_am_owner",
+    ),
+    pytest.param(
+        "_rule_created_by_me",
+        lambda payload: make_ctx(my_email=_SEC02_MY_EMAIL, raw_data=SimpleNamespace(owners=[payload])),
+        id="created_by_me",
+    ),
+]
+
+
+class TestIdentitySpoofResistance:
+    @pytest.mark.parametrize("rule_name,build_ctx", _SEC02_IDENTITY_RULES)
+    @pytest.mark.parametrize("payload", _SEC02_SPOOF_PAYLOADS)
+    def test_rejects_spoofed_identity(self, rule_name, build_ctx, payload):
+        ev = AutoAcceptEvaluator({})
+        ctx = build_ctx(payload)
+        rule_fn = getattr(ev, rule_name)
+        assert rule_fn(None, ctx) is False, f"{rule_name} matched spoofed identity {payload!r}"
+
+
+# --------------------------------------------------------------------------- #
 # Slack rules
 # --------------------------------------------------------------------------- #
 
