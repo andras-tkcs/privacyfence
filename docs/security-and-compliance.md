@@ -14,38 +14,61 @@ noted explicitly — this document favors being checkable over being reassuring.
 
 ## 1. What PrivacyFence is, in one paragraph
 
-PrivacyFence is a macOS application that sits between an AI assistant (Claude, via MCP) and an
-employee's connected accounts (Gmail, Drive, Slack, Calendar, Salesforce, Jira/Confluence,
-Telegram, Tasks, Contacts). It is not a cloud service: there is no PrivacyFence-operated backend,
-and no PrivacyFence-owned server ever receives, stores, or processes any of the data it mediates.
-Every read or write the AI attempts is intercepted locally, checked against IT-defined scope and
-per-user review rules, and — where the rules require it — held for explicit human approval before
-it reaches the AI or the external service.
+PrivacyFence is software that sits between an AI assistant (Claude, via MCP) and an employee's
+connected accounts (Gmail, Drive, Slack, Calendar, Salesforce, Jira/Confluence, Telegram, Tasks,
+Contacts). It ships in two deployment shapes, described fully in [§2](#2-deployment-model-local-or-org-run-by-you-either-way):
+a packaged macOS application an individual employee installs on their own Mac (**local mode**), and
+a headless service IT runs once on a server for the whole organization (**org mode**), which people
+reach over HTTPS and sign into as themselves. Either way it is not a cloud service: there is no
+PrivacyFence-operated backend, and no PrivacyFence-owned server ever receives, stores, or processes
+any of the data it mediates — org mode's server is infrastructure *your organization* stands up and
+operates, not one PrivacyFence's author runs. Every read or write the AI attempts is intercepted by
+whichever of the two you're running, checked against IT-defined scope and per-user review rules, and
+— where the rules require it — held for explicit human approval before it reaches the AI or the
+external service.
 
 ---
 
-## 2. Deployment model: local, not SaaS
+## 2. Deployment model: local or org, run by you either way
 
-| Property | PrivacyFence |
-|---|---|
-| Where it runs | On the employee's own Mac, as a local daemon (`privacyfence-app`) reachable over its own embedded, local `/mcp` HTTP endpoint — directly (Claude Code) or via a thin stdio-to-HTTP shim Claude Desktop's `.mcpb` installs (no service credentials, no tool-schema knowledge of its own) |
-| Where data is processed | Locally, in-process, on that machine |
-| Where data is stored | Locally: OS credential storage / local token files, and a local audit log (`logs/audit/*.jsonl`, `*.xlsx`) |
-| Vendor-operated infrastructure | None. There is no multi-tenant service, no hosted database, and no PrivacyFence API that traffic passes through |
-| Network path for a tool call | `Claude → local, token-authenticated 127.0.0.1 /mcp HTTP endpoint (directly, or via the stdio shim for Desktop) → local daemon → the connector's own cloud API (Google, Slack, Salesforce, Atlassian, Telegram) directly` |
-| Telemetry / analytics / phone-home | No usage analytics or crash reporting. One narrow exception: a once-a-day unauthenticated `GET` to `api.github.com` checking for a newer release (`update_checker.py`) — no user, organization, or connector data is included or ever sent, only PrivacyFence's own version string is compared against the response locally. On by default; disable from PrivacyFence Settings's "Check for Updates" > "Enabled" or `update_check.enabled: false` in `settings.yaml` |
+PrivacyFence runs in one of two modes, chosen by IT when the daemon (`privacyfence-app`) is
+configured — never something an individual employee or the AI can switch — and both are software
+your organization runs and controls, not a PrivacyFence-operated service:
+
+| Property | **local mode** (default) | **org mode** (opt-in) |
+|---|---|---|
+| Who it's for | One employee, one machine | An organization's whole user base, from one shared install |
+| Where it runs | On the employee's own Mac, as a local daemon reachable over its own embedded, loopback-only (`localhost`) `/mcp` HTTP endpoint — directly (Claude Code) or via a thin stdio-to-HTTP shim Claude Desktop's `.mcpb` installs (no service credentials, no tool-schema knowledge of its own) | On a server IT provisions and operates (documented for Ubuntu in [`org-mode-setup-guide.md`](org-mode-setup-guide.md)), reachable over HTTPS — directly or, as that guide sets up, behind a reverse proxy (e.g. Caddy) that terminates TLS and forwards plaintext to PrivacyFence's own loopback bind |
+| Who authenticates, and how | Nobody signs in as anybody — there is exactly one implicit local principal, and every request to the daemon is authorized by possession of a random secret written to a file on that same machine (see §8) | Each person signs in as themselves via **OIDC against the organization's own identity provider** (Google Workspace, Okta, Entra ID, or any OIDC-compliant IdP, discovered from its `/.well-known/openid-configuration`) — the same login, for a browser or for an MCP client's OAuth 2.1 handshake, resolves to the same `Principal`, so a browser session and an MCP token issued for the same sign-in are provably the same identity |
+| Where data is processed | Locally, in-process, on that machine | In-process, on the org-mode server IT operates — still not a PrivacyFence-operated destination |
+| Where data is stored | Locally: OS credential storage / local token files, and a local audit log (`logs/audit/*.jsonl`, `*.xlsx`) | On the org-mode server, under a per-principal directory; still a local audit log, on that server, not a PrivacyFence-hosted one |
+| Vendor-operated infrastructure | None, either mode. There is no multi-tenant service, no hosted database, and no PrivacyFence API that traffic passes through — org mode's server is infrastructure your organization stands up and operates from PrivacyFence's own source, same as local mode's `.app` |
+| Network path for a tool call | `Claude → local, token-authenticated 127.0.0.1 /mcp HTTP endpoint (directly, or via the stdio shim for Desktop) → local daemon → the connector's own cloud API (Google, Slack, Salesforce, Atlassian, Telegram) directly` | `Claude (anywhere) → HTTPS → org-mode server's /mcp endpoint (OAuth 2.1, bearer token issued after the OIDC sign-in above) → connector's own cloud API directly` |
+| Telemetry / analytics / phone-home | No usage analytics or crash reporting. One narrow exception: a once-a-day unauthenticated `GET` to `api.github.com` checking for a newer release (`update_checker.py`) — no user, organization, or connector data is included or ever sent, only PrivacyFence's own version string is compared against the response locally. On by default; disable from PrivacyFence Settings's "Check for Updates" > "Enabled" or `update_check.enabled: false` in `settings.yaml` | Same update check, same opt-out |
 
 This is the architectural reason PrivacyFence can make a stronger data-residency claim than a
-typical SaaS AI add-on: there is no vendor server in the request path to compromise, subpoena, or
-have a data breach at. The trust boundary an auditor needs to evaluate is the employee's own
-endpoint and the OAuth grants to the underlying SaaS providers (Google, Slack, Salesforce,
-Atlassian) — not a new third party.
+typical SaaS AI add-on, in either mode: there is no PrivacyFence-vendor server in the request path
+to compromise, subpoena, or have a data breach at — org mode's server is your organization's own
+infrastructure, under your own operational and physical control, not a third party's. The trust
+boundary an auditor needs to evaluate is the employee's endpoint (local mode) or your organization's
+own server (org mode), plus the OAuth grants to the underlying SaaS providers (Google, Slack,
+Salesforce, Atlassian) and, in org mode, the trust already placed in your own identity provider —
+not a new third party in either case.
 
 **What this means for your own review:** you already trust Google/Slack/Salesforce/Atlassian
-with this data (your organization is already a customer of theirs). PrivacyFence does not add a
-new data processor to that chain — it adds a local control point that can only *restrict* what an
-AI assistant is allowed to do with data that already flows through those existing, approved
-services.
+with this data (your organization is already a customer of theirs), and in org mode you already
+trust your own IdP to authenticate your people. PrivacyFence does not add a new data processor to
+that chain — it adds a control point, running on infrastructure you already control, that can only
+*restrict* what an AI assistant is allowed to do with data that already flows through those
+existing, approved services.
+
+**A note on maturity:** org mode is real, implemented, and exercised by its own test suite, but it
+is newer and has run in fewer production environments than local mode. Treat the two modes'
+relative maturity as part of your own risk assessment — see
+[`org-mode-setup-guide.md`](org-mode-setup-guide.md) for its current caveats (e.g. the Linux service
+packaging noted there as not yet battle-tested end to end) and
+[`docs/security-remediation-plan.md`](security-remediation-plan.md)'s Phase 1 for the org-mode
+hardening work still in flight as of this writing.
 
 ---
 
@@ -102,8 +125,14 @@ defined in the [Review model](TECHNICAL_REFERENCE.md#review-model) section of th
 - **`review`** — the AI-bound read is held; the human sees a minimal preview and must explicitly
   **Allow once** or **Deny** before any content reaches the AI.
 - **`popup`** — the AI-initiated write/action (send an email, post to Slack, edit a Jira issue,
-  etc.) is held in a native macOS popup showing the full action before it goes out, with the same
-  **Allow once**/**Deny** choice.
+  etc.) is held in a popup showing the full action before it goes out, with the same **Allow
+  once**/**Deny** choice.
+
+Both `review` and `popup` are popups PrivacyFence shows itself, on its own embedded local web
+approval page — there is no native OS dialog and no separate Claude-side approval step for either
+one. This has been true since the "P10" refactor retired PrivacyFence's earlier native macOS menu
+bar/dialog UI in favor of the web surface described in §4's later notes and §8; the web page is now
+the only approval surface, on every platform the daemon runs on, in both local and org mode.
 
 No tool call bypasses this gate silently. Even the `auto` gate is a logged, IT-and-user-configured
 exception — never a default absence of control. Sensitive actions (writes, and any read of full
@@ -139,32 +168,32 @@ are made by the daemon against the tool's real `read_only`/gate metadata before 
 request is made; the annotation Claude sees is cosmetic UI hinting, not a security control, and
 should not be read as PrivacyFence treating writes as safe.
 
-**Note for reviewers evaluating the web settings surface (`/settings`, opt-in, `web.settings.enabled`
-— see [Web surfaces](TECHNICAL_REFERENCE.md#web-surfaces-approvals-settings) in the Technical
-Reference):** it is reachable only with the same local, per-launch `web_token` every other web route
-already requires (§8), and every mutating request additionally carries a CSRF double-submit token
-and an `Origin` check. Within that authenticated session, the set of actions a request can invoke is
-an **explicit allowlist**, not the native settings window's own `getattr(controller, action)` —
-an unrecognized action name is rejected before any lookup happens at all, and each allowed action's
-arguments are validated against its real parameter types (a malformed argument is a 400, not passed
-through). Nothing reachable from this surface — or from `/approvals` — ever shells out to a native
-picker, `open`, or any other subprocess on the host; the four actions that used to (an
-organization-config file picker, opening an exported audit log, an update-available alert, a repo
-link) are a multipart upload, a file download, an in-page banner, and a plain link instead. Quitting
-the daemon from a browser is behind its own explicit in-page confirmation and a config-level kill
-switch (`web.settings.allow_quit`). This posture — allowlist, CSRF/Origin, no host subprocess — is
-deliberately built now, in `local` mode, rather than deferred to the multi-user `org` mode a review
-of that later phase would otherwise have to retrofit onto a surface not designed for it.
+**Note for reviewers evaluating the web settings surface (`/settings`, on by default in local mode,
+`web.settings.enabled` — see [Web surfaces](TECHNICAL_REFERENCE.md#web-surfaces-approvals-settings)
+in the Technical Reference):** it is reachable only with the same `web_token` every other local-mode
+web route already requires (§8 — persisted on disk and reused across daemon restarts, a known
+limitation flagged there), and every mutating request additionally carries a CSRF double-submit
+token and an `Origin` check. Within that authenticated session, the set of actions a request can
+invoke is an **explicit allowlist** — an unrecognized action name is rejected before any lookup
+happens at all, and each allowed action's arguments are validated against its real parameter types
+(a malformed argument is a 400, not passed through). Nothing reachable from this surface — or from
+`/approvals` — ever shells out to a native OS picker, `open`, or any other subprocess on the host.
+Quitting the daemon from a browser is behind its own explicit in-page confirmation and a
+config-level kill switch (`web.settings.allow_quit`). This posture — allowlist, CSRF/Origin, no host
+subprocess — was deliberately built for local mode's `/settings`. **`/settings` itself is not
+currently mounted in org mode at all** (org mode's `/approvals` and `/security`, described in §2, are
+a separate, principal-aware route set built for that mode instead); porting settings management to
+org mode's per-principal session model is documented follow-up work, not something reachable today.
 
 **Auto-accept configuration itself is human-gated, not just the tool calls it governs.** Claude can
 read the current `auto_accept_rules`/`auto_accept_grants` config (`privacyfence_list_auto_accept_rules`)
 and propose adding, updating, or removing an entry
 (`privacyfence_propose_auto_accept_rule_change`) — see
 [Reading and proposing auto-accept changes over MCP](TECHNICAL_REFERENCE.md#reading-and-proposing-auto-accept-changes-over-mcp).
-Every proposed change still blocks on the same native confirmation dialog the "Always allow" button
-already uses; there is no code path from `/mcp` to `settings.yaml` that skips a human decision,
-including when an identical entry already exists. This keeps the gate itself — not just what passes
-through it — under the same human-in-the-loop control described above.
+Every proposed change still blocks on the same confirmation step, on the same web approval page, the
+"Always allow" button already uses; there is no code path from `/mcp` to `settings.yaml` that skips a
+human decision, including when an identical entry already exists. This keeps the gate itself — not
+just what passes through it — under the same human-in-the-loop control described above.
 
 **Scheduled/unattended tasks — an explicit, opt-in exception to "always ask a human."** A scheduled
 Claude Cowork Routine can run with nobody at the keyboard, so a `review`/`popup` call with no
@@ -209,11 +238,15 @@ narrower calls still deny rather than silently proceed.
   (`credentials/`, local token files) and never transmitted to any PrivacyFence-operated
   destination — there isn't one.
 - **Audit trail:** every decision (approved, denied, or auto-accepted) is appended to a local
-  JSON-lines file per week, auto-exported to a formatted Excel workbook. This log is local to the
-  employee's machine by default — PrivacyFence does not currently ship a mechanism to centrally
-  collect these logs for IT. Organizations that require centralized audit collection for their own
-  compliance program should plan for that separately (e.g., MDM-based log collection) rather than
-  assume it happens automatically.
+  JSON-lines file per week, auto-exported to a formatted Excel workbook. In **local mode** this log
+  is local to the employee's own machine — PrivacyFence does not ship a mechanism to centrally
+  collect these logs for IT, so an organization that requires that for its own compliance program
+  should plan for it separately (e.g., MDM-based log collection) rather than assume it happens
+  automatically. In **org mode** the log is already on one server IT controls, covering every
+  principal's actions from that install — but it is still a local file on that server, not forwarded
+  anywhere (e.g. to a SIEM) and not append-integrity-protected against tampering by whoever has write
+  access to that server; centralized forwarding and tamper-evidence are tracked as SEC-23 in
+  [`security-remediation-plan.md`](security-remediation-plan.md), not implemented yet.
 
 ---
 
@@ -280,15 +313,44 @@ oversight measure**, sitting in front of the AI system rather than being one:
 | Control | Implementation |
 |---|---|
 | Authentication to connected services | OAuth2 (or Telethon/MTProto for Telegram), per user, per connector — no shared service accounts |
+| Authentication to PrivacyFence itself | **Local mode:** possession of a random bearer token written to a local file is the whole authorization model — see the "Local-mode token semantics" note below for exactly what that does and doesn't provide. **Org mode:** each person signs in via OIDC against the organization's own IdP (§2); the resulting server-side session is an unguessable, HttpOnly/Secure/SameSite=Strict cookie with a 30-minute sliding idle timeout, held in memory only (a session does not survive a daemon restart — signing in again is the accepted cost, see `web/org_session.py`) |
 | Least privilege | Per-connector, per-operation gating (`auto`/`review`/`popup`); auto-accept rules can be scoped down to a single folder, spreadsheet tab, channel, or task list |
 | PII detection gate | Local regex heuristic (Hungarian/English/German) over `review` (read) dialog content only; a match requires an extra explicit confirmation before Allow once takes effect. Toggleable per user (PrivacyFence Settings / `pii_detection.enabled`) |
-| Transport to Claude | Local 127.0.0.1-bound (`localhost`) `/mcp` Streamable HTTP endpoint, authenticated by a per-launch random bearer token (`~/.privacyfence/mcp_token`) required on every request; Claude Desktop's stdio shim carries no credentials of its own and only relays it |
-| Web approval/settings surface (opt-in) | Loopback-bound (`localhost`) embedded HTTP server; a per-launch random session token (`~/.privacyfence/web_token`) required on every request, CSRF double-submit + `Origin` check on every mutation, an explicit action allowlist (not `getattr`) behind `/settings`, and no code path reachable from an HTTP request ever runs a subprocess on the host |
+| Transport to Claude | **Local mode:** loopback-bound (`localhost`) `/mcp` Streamable HTTP endpoint, authenticated by a shared bearer token (`~/.privacyfence/mcp_token`) required on every request; Claude Desktop's stdio shim carries no credentials of its own and only relays it. **Org mode:** `/mcp` over HTTPS, authenticated by a real OAuth 2.1 authorization server (dynamic client registration, PKCE, tokens bound to the OIDC-verified principal) instead of one shared secret |
+| Web approval/settings surface | **Local mode** (opt-in for `/settings`, always-on for `/approvals`): loopback-bound (`localhost`) embedded HTTP server; a shared session token (`~/.privacyfence/web_token`) required on every request, CSRF double-submit + `Origin` check on every mutation, an explicit action allowlist (not `getattr`) behind `/settings`, and no code path reachable from an HTTP request ever runs a subprocess on the host. **Org mode:** a separate, principal-scoped `/approvals`/`/security` surface (§2) authenticated by the OIDC-backed session above, not the shared token; a write decision additionally requires a fresh WebAuthn step-up when the organization has turned that on. `/settings` is not mounted in org mode at all yet (see §4) |
 | Process isolation | The Desktop-only shim (untrusted-facing, no credentials, no tool-schema knowledge) and the daemon (holds credentials) are separate processes; only the daemon can reach external APIs |
-| Secrets at rest | Local OS-level storage / local files under `credentials/`; never committed to source control (`.gitignore`'d), never transmitted off-device |
+| Secrets at rest | Local OS-level storage / local files under `credentials/`, org-mode credentials under a per-principal directory on the org-mode server; never committed to source control (`.gitignore`'d), never transmitted off-device. See "Storage format and permissions" below for exactly what protects these files today, and what doesn't yet |
 | Auditability | Every decision logged with outcome (accepted/denied/auto_accepted), locally, in a human-readable format (JSONL + Excel) |
-| Code signing / notarization | Releases are code-signed with a Developer ID Application certificate and notarized by Apple; Gatekeeper accepts them with no manual steps (see [Technical Reference](TECHNICAL_REFERENCE.md#installation)). |
+| Code signing / notarization | The macOS `.app` release is code-signed with a Developer ID Application certificate and notarized by Apple; Gatekeeper accepts it with no manual steps (see [Technical Reference](TECHNICAL_REFERENCE.md#installation)). Org mode is deployed from source/PyPI onto a server IT controls, so Gatekeeper/notarization doesn't apply there — the equivalent control is your organization's own provenance for the server it stands up (e.g. installing a pinned, reviewed release rather than an unreviewed checkout, per §9) |
 | Third-party dependencies | Standard OAuth/SDK libraries per connector (google-auth, slack_sdk, telethon, atlassian-python-api); no PrivacyFence-operated backend dependency |
+
+**Local-mode token semantics — a known limitation, not yet fixed.** `mcp_token` and `web_token` are
+each generated once, written to a file under `~/.privacyfence/`, and then **reused unchanged across
+every subsequent daemon restart** — they are not rotated per launch, and (for `web_token`) the
+bootstrap URL the daemon logs on startup carries the token itself in the query string
+(`http://localhost:8765/settings?token=...`), which is also written to the local log file. This is
+weaker than a document describing PrivacyFence should claim it isn't: a token that leaks once (e.g.
+from a log file, shell history, or a shared screen) stays valid until someone manually deletes the
+token file and restarts the daemon — there is no expiry, and no way to revoke just that one exposure
+without rotating the file by hand. It is still bounded by the fact that reaching the token at all
+requires access to that specific machine's filesystem or its logs, and it does not by itself grant
+access to any connected service (each connector still requires its own separate OAuth grant). Fixing
+this — a short-lived bootstrap flow, tokens no longer carried in a URL or logged, and rotation on
+upgrade — is tracked as SEC-06 in [`security-remediation-plan.md`](security-remediation-plan.md) and
+is not yet implemented; treat the paragraph above, not the "per-launch" framing an earlier version of
+this document used, as the current state.
+
+**Storage format and permissions — also not fully hardened yet.** Each credential/token file is
+written in plain text and then `chmod`'d to `0600` *after* the write completes (not written
+atomically via a temp-file-and-rename, and not created with restrictive permissions from the start);
+a failure to apply that `chmod` — e.g. an unusual filesystem — is caught and merely logged at debug
+level, not treated as fatal. The directories these files live in (`~/.privacyfence` and its
+subdirectories) are created with the process's default umask, not deliberately restricted to `0700`.
+In practice this means the directory tree's own permissions, not anything PrivacyFence actively
+enforces beyond the individual file `chmod`, are what stand between another local account on the
+same machine and these files. Moving to atomic, already-`0600` writes and enforcing/warning on
+directory permissions is tracked as SEC-09 in
+[`security-remediation-plan.md`](security-remediation-plan.md).
 
 ---
 
@@ -310,7 +372,8 @@ in §§2–8.
 *absence of vendor governance overhead*, not a technical vulnerability. The technical risk profile
 that actually determines exposure — no vendor infrastructure in the data path, no new data
 processor, no vendor-held credentials, a local-only audit trail, human-in-the-loop enforcement on
-every sensitive call, code-signed and notarized releases — is unaffected by any of the three (§§2–8).
+every sensitive call, code-signed and notarized macOS releases — is unaffected by any of the three
+(§§2–8).
 A vendor with a full ISMS and an SLA but a hosted backend in the request path is a *different*, and
 in some respects larger, attack surface than a tool with none of that governance but nothing to
 attack because there's no vendor infrastructure to reach.
@@ -344,12 +407,13 @@ involved.
 
 | Question | Answer |
 |---|---|
-| Is this a SaaS product? | No. It's local software; there is no vendor-operated backend at all. |
-| Does our data leave our own approved cloud providers? | Organization/connector data does not — it flows only between the employee's device and the same Google/Slack/Salesforce/Atlassian/Telegram accounts your organization already uses. The one exception is the update checker's own daily version check against `api.github.com` (see §2's Telemetry row) — no organization or connector data is included in it, and it can be disabled. |
-| Can an employee connect a service IT didn't approve? | No — a connector only exists as an option if IT included it in the organization config bundle. |
-| Can the AI read or write data without a human seeing it first? | Only for narrowly-scoped, IT/user-configured `auto` rules, which are still logged; sensitive reads and all writes require explicit approval (`review`/`popup`). |
-| Is there a central admin console with visibility into every employee's approvals? | Not currently — audit logs are local per device. Plan for separate centralized log collection if your compliance program requires it. |
-| Who is the data controller/processor under GDPR? | Your organization remains the controller; PrivacyFence does not add a new processor since it operates entirely within your own infrastructure boundary. |
+| Is this a SaaS product? | No, in either deployment mode (§2). It's software your organization runs — either an individual employee's local install, or an org-mode server your own IT operates — there is no PrivacyFence-vendor-operated backend at all. |
+| Does our data leave our own approved cloud providers? | Organization/connector data does not — it flows only between the device running PrivacyFence (the employee's own machine, or your org-mode server) and the same Google/Slack/Salesforce/Atlassian/Telegram accounts your organization already uses. The one exception is the update checker's own daily version check against `api.github.com` (see §2's Telemetry row) — no organization or connector data is included in it, and it can be disabled. |
+| Can an employee connect a service IT didn't approve? | No — a connector only exists as an option if IT included it in the organization config bundle, in either deployment mode. |
+| Can the AI read or write data without a human seeing it first? | Only for narrowly-scoped, IT/user-configured `auto` rules, which are still logged; sensitive reads and all writes require explicit approval (`review`/`popup`). The one further exception is opt-in unattended-session mode for scheduled tasks (§4), which denies rather than silently approves an unmatched call. |
+| What's the difference between local and org mode, and which should we use? | Local mode (default) is one employee, one machine, no sign-in beyond a local secret file (§8) — simplest to reason about, but with no per-person audit trail across a team and no central control once installed. Org mode (§2) is IT-run, multi-user, and ties every action to a real identity via your own IdP — the right choice once more than a handful of people need this and you want centralized deployment, but it's the newer of the two modes (see §2's maturity note) and doesn't yet cover every surface local mode does (e.g. `/settings`, per §4). |
+| Is there a central admin console with visibility into every employee's approvals? | In local mode, no — audit logs are local per device; plan for separate centralized log collection if your compliance program requires it. Org mode consolidates the daemon and its audit log onto one server IT controls, but still has no dedicated admin-console UI over that log today — the log itself (§5) is the current mechanism. |
+| Who is the data controller/processor under GDPR? | Your organization remains the controller in either mode; PrivacyFence does not add a new processor since it operates entirely within your own infrastructure boundary, whether that boundary is an employee's laptop or a server your IT operates. |
 | Does PrivacyFence make AI Act risk-tier determinations for us? | No. It's a deployer-side control (human oversight, access restriction, audit trail) — the risk classification of your AI use case is your organization's own determination. |
-| Is the app notarized by Apple? | Yes — see §8. |
-| Does PrivacyFence have a certified ISMS, a Business Continuity Plan, or a contractual SLA? | No — see §9. Because there's no vendor-operated infrastructure to certify or keep continuous, these don't map onto local software the way they would a hosted vendor. Approve through your organization's risk-acceptance process, using §§2–8's architecture as the supporting rationale, not a standard vendor-security sign-off. |
+| Is the app notarized by Apple? | The packaged macOS `.app` used for local-mode installs is — see §8. Org mode is deployed from source/PyPI onto your own server, where Gatekeeper/notarization doesn't apply; use your own software-provenance controls there instead (§8, §9). |
+| Does PrivacyFence have a certified ISMS, a Business Continuity Plan, or a contractual SLA? | No — see §9. Because there's no vendor-operated infrastructure to certify or keep continuous in either deployment mode, these don't map onto self-hosted software the way they would a hosted vendor. Approve through your organization's risk-acceptance process, using §§2–8's architecture as the supporting rationale, not a standard vendor-security sign-off. |
