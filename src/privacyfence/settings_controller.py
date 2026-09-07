@@ -38,7 +38,7 @@ from typing import Any, Callable
 
 import yaml
 
-from . import __version__, dialog_window_html, org_mode, web_prompt
+from . import __version__, dialog_window_html, org_bundle_signing, org_mode, web_prompt
 from .app_credentials import telegram_app_credentials
 from .approval_ui import get_approval_ui
 from .audit_log import AuditLogger, current_week
@@ -893,6 +893,16 @@ class SettingsController:
         gets installed. Sets self.error on failure, clears it on success --
         callers push a fresh snapshot() themselves, the same convention
         every other mutating method here follows.
+
+        SEC-05 (full signing): also runs the bundle through
+        org_bundle_signing.verify_and_maybe_pin() before writing anything
+        to disk -- a bundle that doesn't verify against a previously
+        pinned signing key (or, for a "mode": "org" bundle, isn't signed
+        at all) is rejected here rather than being written and only
+        caught the next time daemon_main.load_org_config() runs at
+        startup. See that module's own docstring for the trust-on-first-
+        use model this shares with daemon_main.py's own enforcement of
+        it.
         """
         try:
             data = json.loads(raw)
@@ -905,6 +915,27 @@ class SettingsController:
                 '(expected a JSON object with a "version" field).'
             )
             return
+
+        trust = org_bundle_signing.verify_and_maybe_pin(data, org_dir())
+        if not trust.ok:
+            self.error = (
+                f"Refusing to install: organization config bundle failed signing-key "
+                f"verification ({trust.detail}). If a legitimate signing-key rotation is "
+                f"expected, an administrator must delete "
+                f"{org_bundle_signing.pinned_public_key_path(org_dir())} first."
+            )
+            return
+        if data.get("mode") == "org" and not trust.signed:
+            self.error = (
+                'That bundle has "mode": "org" but is not signed -- org mode requires a signed '
+                "bundle (build one with scripts/build_org_bundle.py --sign-key ...)."
+            )
+            return
+        if trust.newly_pinned:
+            logger.info(
+                "Organization config bundle signing key trusted for the first time (TOFU) and "
+                "pinned to %s", org_bundle_signing.pinned_public_key_path(org_dir()),
+            )
 
         dest = org_dir() / "org_config.json"
         try:
