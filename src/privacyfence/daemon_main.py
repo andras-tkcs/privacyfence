@@ -77,17 +77,19 @@ import os
 import shutil
 import sys
 import threading
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from . import org_mode
+from . import org_bundle_signing, org_mode
 from .paths import data_dir, org_dir, user_dir
 from .principal import LOCAL_PRINCIPAL_ID, current_principal
 from .app_credentials import telegram_app_credentials
 from .approval_ui import init_approval_ui
-from .audit_log import init_audit_logger
+from .audit_log import AuditEntry, current_week, get_audit_logger, init_audit_logger
 from .auto_accept import (
     init_config_path,
     migrate_telegram_search_operation_key,
@@ -294,6 +296,19 @@ def load_org_config() -> dict[str, Any]:
     corrupt the file — not a state this daemon should ever paper over.
     Installed via PrivacyFence Settings' "Install/Update Organization
     Config…" (or by hand-editing this file).
+
+    SEC-05 (full signing): a well-formed-but-hostile *replacement* of
+    this file (as opposed to the malformed-file cases above) is a
+    separate, more dangerous failure mode SEC-04 alone can't catch —
+    parses fine, just carries someone else's IdP/app credentials. Every
+    load here also runs the bundle through org_bundle_signing.verify_
+    and_maybe_pin(): a bundle that fails to verify against a previously
+    pinned signing key raises ConfigurationError the same as a malformed
+    one, and ``mode: org`` additionally requires the bundle to actually
+    be signed at all (see that module's own docstring for the trust-on-
+    first-use model). A local-mode install that has never adopted
+    signing is unaffected — this call is then a no-op past the "no
+    signing key pinned yet and no signature present" pass-through case.
     """
     path = org_dir() / "org_config.json"
     if not path.exists():
@@ -307,7 +322,74 @@ def load_org_config() -> dict[str, Any]:
         raise org_mode.ConfigurationError(f"Organization config at {path} is not valid JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise org_mode.ConfigurationError(f"Organization config at {path} is not a JSON object")
+
+    trust = org_bundle_signing.verify_and_maybe_pin(data, org_dir())
+    if not trust.ok:
+        raise org_mode.ConfigurationError(
+            f"Organization config at {path} failed signing-key verification ({trust.detail}) -- "
+            f"refusing to start. If a legitimate signing-key rotation is expected, an "
+            f"administrator must delete {org_bundle_signing.pinned_public_key_path(org_dir())} "
+            f"to re-trust a new key."
+        )
+    if trust.newly_pinned:
+        logger.warning(
+            "Organization config bundle signing key trusted for the first time (TOFU) and "
+            "pinned to %s -- every future bundle must verify against this key",
+            org_bundle_signing.pinned_public_key_path(org_dir()),
+        )
+    if org_mode.resolve_mode(data) == "org" and not trust.signed:
+        raise org_mode.ConfigurationError(
+            f"Organization config at {path} has \"mode\": \"org\" but is not signed -- org mode "
+            "requires a signed bundle (build one with scripts/build_org_bundle.py --sign-key ...; "
+            "generate a signing key first with --generate-signing-key if you haven't yet)."
+        )
     return data
+
+
+def log_org_config_bundle_hash(org_config: dict[str, Any]) -> None:
+    """SEC-05 (interim): record a hash of the installed org_config.json at
+    every daemon startup, both to the regular log and to the audit trail,
+    so tampering between one startup and the next is detectable by
+    comparing hashes -- even for an install that hasn't adopted full
+    signing (org_bundle_signing.py, SEC-05 full) at all, and as a
+    belt-and-suspenders record alongside it for one that has. Called once
+    by run_app(), right after load_org_config() -- not from inside
+    load_org_config() itself, which is also called from places that
+    aren't "daemon startup" (e.g. settings_controller.py refreshing
+    connector state) and shouldn't each add their own audit-log entry.
+    """
+    path = org_dir() / "org_config.json"
+    if not path.exists():
+        logger.info("No organization config bundle installed (org_config.json absent)")
+        return
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        logger.warning("Could not read organization config bundle for startup hash logging: %s", exc)
+        return
+    digest = org_bundle_signing.sha256_hex(raw)
+    signed = bool(org_config.get(org_bundle_signing.SIGNATURE_FIELD))
+    logger.info(
+        "Organization config bundle at startup: sha256=%s size=%d bytes signed=%s",
+        digest, len(raw), signed,
+    )
+    try:
+        get_audit_logger().record(AuditEntry(
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            week=current_week(),
+            request_id=uuid.uuid4().hex[:12],
+            connector="",
+            tool="",
+            tool_name="",
+            summary=f"Daemon startup: organization config bundle sha256={digest} ({len(raw)} bytes, signed={signed})",
+            sender="",
+            decision="org_config_startup",
+            auto_accept_rule="",
+            latency_seconds=0.0,
+            pii_detected=False,
+        ))
+    except Exception as exc:
+        logger.warning("Audit log write failed for organization config startup hash: %s", exc)
 
 
 def setup_logging(config: dict[str, Any]) -> None:
@@ -1119,6 +1201,7 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
     audit_logger.export_all_pending()
 
     org_config = load_org_config()
+    log_org_config_bundle_hash(org_config)
     connectors = build_connectors(config, org_config)
     if not connectors:
         logger.warning("No connectors could be initialized; daemon still starting.")
