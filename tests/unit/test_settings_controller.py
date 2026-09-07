@@ -42,7 +42,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from privacyfence import auto_accept, daemon_main, resource_names, settings_controller as sc, update_checker
+from privacyfence import auto_accept, daemon_main, org_mode, resource_names, settings_controller as sc, update_checker
 from privacyfence import resource_grants as rg
 
 
@@ -593,6 +593,76 @@ class TestRefreshConnectors:
 
         assert controller._connectors == ["drive"]
         assert controller._host_calls == [[SimpleNamespace(name="drive")]]
+
+    def test_survives_a_broken_org_config_and_builds_with_an_empty_one(self, controller, monkeypatch):
+        recorded = []
+        monkeypatch.setattr(sc, "_main_dispatch", lambda f, *a, **k: recorded.append((f, a, k)))
+        seen_org_configs = []
+
+        def _build_connectors(cfg, org):
+            seen_org_configs.append(org)
+            return [SimpleNamespace(name="drive")]
+
+        monkeypatch.setattr(daemon_main, "build_connectors", _build_connectors)
+        monkeypatch.setattr(
+            daemon_main, "load_org_config",
+            lambda: (_ for _ in ()).throw(org_mode.ConfigurationError("bad org config")),
+        )
+
+        controller.refresh_connectors()
+
+        assert wait_until(lambda: len(recorded) == 1)
+        func, args, kwargs = recorded[0]
+        func(*args, **kwargs)
+
+        assert controller._connectors == ["drive"]
+        assert seen_org_configs == [{}]
+        # The trailing self.snapshot() call inside refresh_connectors is
+        # what surfaces this to the user -- see TestOrgConfigOrEmpty.
+        assert controller.error == "bad org config"
+
+
+class TestOrgConfigOrEmpty:
+    """SEC-04 made load_org_config() raise org_mode.ConfigurationError for
+    a present-but-broken org_config.json instead of silently treating it
+    as absent. This settings surface is local-mode-only (org mode mounts
+    no local settings page at all), so a broken org bundle here isn't the
+    security-relevant "silently downgrade to no auth" case that startup
+    must refuse to run with -- it should degrade to an error banner
+    instead of taking the whole settings page down."""
+
+    def test_returns_empty_dict_and_sets_error_when_config_is_broken(self, controller, monkeypatch):
+        def _raise():
+            raise org_mode.ConfigurationError("Organization config at /x is not valid JSON")
+        monkeypatch.setattr(daemon_main, "load_org_config", _raise)
+
+        assert controller._org_config_or_empty() == {}
+        assert "not valid JSON" in controller.error
+
+    def test_passes_through_the_parsed_config_when_valid(self, controller, monkeypatch):
+        monkeypatch.setattr(daemon_main, "load_org_config", lambda: {"slack": {"client_id": "abc"}})
+
+        assert controller._org_config_or_empty() == {"slack": {"client_id": "abc"}}
+
+    def test_snapshot_surfaces_the_error_instead_of_raising(self, controller, monkeypatch):
+        monkeypatch.setattr(
+            daemon_main, "load_org_config",
+            lambda: (_ for _ in ()).throw(org_mode.ConfigurationError("bad org config")),
+        )
+
+        state = controller.snapshot()
+
+        assert state["error"] == "bad org config"
+
+    def test_authenticate_connector_does_not_raise_on_broken_config(self, controller, monkeypatch):
+        monkeypatch.setattr(
+            daemon_main, "load_org_config",
+            lambda: (_ for _ in ()).throw(org_mode.ConfigurationError("bad org config")),
+        )
+
+        result = controller.authenticate_connector("slack")
+
+        assert result["error"] == "bad org config"
 
 
 class TestWireUnattendedListener:

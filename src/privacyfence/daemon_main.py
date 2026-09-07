@@ -277,11 +277,23 @@ def load_config(config_path: str) -> dict[str, Any]:
 
 
 def load_org_config() -> dict[str, Any]:
-    """Load the installed organization config bundle, or {} if none is installed.
+    """Load the installed organization config bundle.
 
-    Never fatal — same "missing config → connector skipped" philosophy used
-    for every connector below. Installed via PrivacyFence Settings'
-    "Install/Update Organization Config…" (or by hand-editing this file).
+    Three states (SEC-04), not two: absent entirely → {} (local mode, same
+    "missing config → connector skipped" philosophy used for every
+    connector below); a valid JSON object → parsed and returned as
+    configured; present but broken (unreadable, malformed JSON, or a
+    non-object top level) → raise ``org_mode.ConfigurationError`` and
+    refuse to start.
+
+    Before this, "broken" collapsed into the same {} result as "absent" —
+    so a corrupted or tampered org_config.json silently behaved exactly
+    like no org config at all. For an org-mode install that's a silent
+    downgrade to no IdP-backed auth at all (org_mode.resolve_mode({})
+    resolves to "local"), triggerable by anything that can truncate or
+    corrupt the file — not a state this daemon should ever paper over.
+    Installed via PrivacyFence Settings' "Install/Update Organization
+    Config…" (or by hand-editing this file).
     """
     path = org_dir() / "org_config.json"
     if not path.exists():
@@ -289,12 +301,12 @@ def load_org_config() -> dict[str, Any]:
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
-    except (OSError, json.JSONDecodeError) as exc:
-        logger.warning("Could not read organization config at %s: %s", path, exc)
-        return {}
+    except OSError as exc:
+        raise org_mode.ConfigurationError(f"Could not read organization config at {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise org_mode.ConfigurationError(f"Organization config at {path} is not valid JSON: {exc}") from exc
     if not isinstance(data, dict):
-        logger.warning("Organization config at %s is not a JSON object; ignoring", path)
-        return {}
+        raise org_mode.ConfigurationError(f"Organization config at {path} is not a JSON object")
     return data
 
 
@@ -490,11 +502,11 @@ def _start_org_web_server(
     §9.4, §10.2) -- a real OAuth 2.1 authorization server on ``/mcp``
     instead of the local shared-secret ``StaticTokenVerifier``, no local-
     token approval/settings surface mounted at all (see web/server.py's
-    own module docstring for why). Raises ``ValueError`` (surfaced as a
-    startup failure, the same posture a missing/invalid settings.yaml
-    already has) if org_config.json is missing the ``idp``/``server``
-    sections org mode requires -- there is no silent partial-org-mode
-    fallback.
+    own module docstring for why). Raises ``org_mode.ConfigurationError``
+    (SEC-04; surfaced as a startup failure, the same posture a missing/
+    invalid settings.yaml already has) if org_config.json is missing the
+    ``idp``/``server`` sections org mode requires -- there is no silent
+    partial-org-mode fallback.
 
     ``connector_host`` (the local principal's own connector set, built once
     at startup by run_app()) is accepted for signature parity with local
@@ -517,7 +529,7 @@ def _start_org_web_server(
     server_config = org_mode.ServerConfig.from_org_config(org_config)
     idp = IdpConfig.from_org_config(org_config)
     if idp is None:
-        raise ValueError(
+        raise org_mode.ConfigurationError(
             "org mode (org_config.json \"mode\": \"org\") requires an \"idp\" section "
             "(issuer, client_id, client_secret)"
         )

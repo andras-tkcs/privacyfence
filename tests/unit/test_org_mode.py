@@ -17,17 +17,20 @@ class TestResolveMode:
         assert org_mode.resolve_mode({"mode": "org"}) == "org"
 
     def test_invalid_value_raises(self):
-        with pytest.raises(ValueError):
+        # SEC-04: ConfigurationError, not a bare ValueError -- so callers
+        # (daemon_main.py's main()) can't mistake this for some other
+        # ValueError-raising failure further down the same startup path.
+        with pytest.raises(org_mode.ConfigurationError):
             org_mode.resolve_mode({"mode": "something-else"})
 
 
 class TestServerConfigFromOrgConfig:
     def test_requires_issuer_url(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(org_mode.ConfigurationError):
             org_mode.ServerConfig.from_org_config({"server": {}})
 
     def test_requires_a_server_section_at_all(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(org_mode.ConfigurationError):
             org_mode.ServerConfig.from_org_config({})
 
     def test_builds_config_with_defaults(self):
@@ -105,5 +108,14 @@ class TestStepUpConfigFromOrgConfig:
         assert config.rp_name == "Acme PrivacyFence"
 
     def test_invalid_scope_raises(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(org_mode.ConfigurationError):
             org_mode.StepUpConfig.from_org_config({"step_up": {"scope": "everything"}})
+
+
+class TestConfigurationError:
+    def test_is_a_value_error_subclass(self):
+        # So every existing `except ValueError`/`pytest.raises(ValueError)`
+        # around org-config parsing keeps working unchanged -- this is a
+        # narrowing of the exception type raised, not a new one call sites
+        # must learn to catch.
+        assert issubclass(org_mode.ConfigurationError, ValueError)
