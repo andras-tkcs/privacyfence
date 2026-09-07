@@ -38,7 +38,7 @@ from typing import Any, Callable
 
 import yaml
 
-from . import __version__, dialog_window_html, web_prompt
+from . import __version__, dialog_window_html, org_mode, web_prompt
 from .app_credentials import telegram_app_credentials
 from .approval_ui import get_approval_ui
 from .audit_log import AuditLogger, current_week
@@ -920,6 +920,26 @@ class SettingsController:
     # Connector actions
     # ------------------------------------------------------------------ #
 
+    def _org_config_or_empty(self) -> dict[str, Any]:
+        """load_org_config() now raises ``org_mode.ConfigurationError`` for
+        a present-but-broken org_config.json (SEC-04) instead of silently
+        treating it as absent -- exactly the fail-closed behavior daemon_
+        main.py's startup path needs, since that's where "mode" gets
+        resolved and org-mode auth gets wired from it. This settings
+        surface only ever runs in local mode (org mode mounts no local
+        settings page at all -- see daemon_main.py's _maybe_start_web_
+        server), so a broken org bundle here isn't a security downgrade,
+        just missing Google/Slack/Salesforce/Atlassian app registrations --
+        surface it as this controller's usual error banner instead of
+        taking the whole settings page down.
+        """
+        from .daemon_main import load_org_config
+        try:
+            return load_org_config()
+        except org_mode.ConfigurationError as exc:
+            self.error = str(exc)
+            return {}
+
     def toggle_connector(self, connector: str) -> dict[str, Any]:
         cfg = self._load_config()
         conn = cfg.setdefault("connectors", {}).setdefault(connector, {})
@@ -937,7 +957,13 @@ class SettingsController:
         def work() -> list:
             from .daemon_main import build_connectors, load_org_config
             cfg = self._load_config()
-            org_config = load_org_config()
+            try:
+                org_config = load_org_config()
+            except org_mode.ConfigurationError:
+                # Reported to the user by snapshot()'s own call to
+                # _org_config_or_empty() right after -- work() itself must
+                # not touch self (see _run_async's own docstring).
+                org_config = {}
             return build_connectors(cfg, org_config)
 
         def done(ok: bool, result: Any) -> None:
@@ -959,8 +985,7 @@ class SettingsController:
         telegram_submit_2fa/telegram_cancel_auth below), so this is never
         called with connector == "telegram" from production JS. A stray
         call is a harmless no-op rather than an error."""
-        from .daemon_main import load_org_config
-        org_config = load_org_config()
+        org_config = self._org_config_or_empty()
         if connector in GOOGLE_CONNECTORS:
             self._authenticate_google(connector, org_config)
         elif connector == "slack":
@@ -1478,8 +1503,7 @@ class SettingsController:
 
     def snapshot(self) -> dict[str, Any]:
         cfg = self._load_config()
-        from .daemon_main import load_org_config
-        org_config = load_org_config()
+        org_config = self._org_config_or_empty()
         return {
             "error": self.error,
             "general": self._general_state(cfg),
