@@ -196,10 +196,14 @@ class TestLoadOrgConfig:
         (tmp_path / "org_config.json").write_text(json.dumps({"slack": {"client_id": "abc"}}))
         assert daemon_main.load_org_config() == {"slack": {"client_id": "abc"}}
 
-    def test_returns_parsed_dict_when_explicit_org_mode(self, tmp_path, monkeypatch):
+    def test_explicit_org_mode_unsigned_raises_configuration_error(self, tmp_path, monkeypatch):
+        """SEC-05 (full signing): org mode requires a signed bundle -- see
+        TestLoadOrgConfigSigning below for the signed-bundle path this
+        now gates behind."""
         monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
         (tmp_path / "org_config.json").write_text(json.dumps({"mode": "org"}))
-        assert daemon_main.load_org_config() == {"mode": "org"}
+        with pytest.raises(org_mode.ConfigurationError, match="requires a signed bundle"):
+            daemon_main.load_org_config()
 
     def test_raises_configuration_error_on_malformed_json(self, tmp_path, monkeypatch):
         monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
@@ -240,6 +244,155 @@ class TestLoadOrgConfig:
         with pytest.raises(org_mode.ConfigurationError):
             org_config = daemon_main.load_org_config()
             org_mode.resolve_mode(org_config)
+
+
+def _write_signed_bundle(tmp_path, bundle, private_key=None):
+    """Signs ``bundle`` (with a fresh keypair, unless one is given) the
+    same way scripts/build_org_bundle.py --sign-key does, and writes it
+    to tmp_path/org_config.json. Returns the private key used, so a test
+    can sign a second, deliberately different bundle with the same key."""
+    from privacyfence import org_bundle_signing
+
+    if private_key is None:
+        private_key, _ = org_bundle_signing.generate_keypair()
+    signed = org_bundle_signing.sign_bundle(bundle, private_key)
+    (tmp_path / "org_config.json").write_text(json.dumps(signed))
+    return private_key
+
+
+class TestLoadOrgConfigSigning:
+    """SEC-05 (full signing): org_bundle_signing.verify_and_maybe_pin() is
+    wired into every load_org_config() call -- trust-on-first-use of the
+    first signed bundle an install ever sees, then mandatory verification
+    against that pinned key for everything after."""
+
+    def test_unsigned_bundle_in_local_mode_is_unaffected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        (tmp_path / "org_config.json").write_text(json.dumps({"slack": {"client_id": "abc"}}))
+        assert daemon_main.load_org_config() == {"slack": {"client_id": "abc"}}
+
+    def test_first_signed_bundle_is_accepted_and_pins_its_key(self, tmp_path, monkeypatch):
+        from privacyfence import org_bundle_signing
+
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        _write_signed_bundle(tmp_path, {"mode": "org", "server": {}, "idp": {}})
+
+        loaded = daemon_main.load_org_config()
+
+        assert loaded["mode"] == "org"
+        assert org_bundle_signing.pinned_public_key_path(tmp_path).exists()
+
+    def test_second_load_verifies_against_the_pinned_key(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        _write_signed_bundle(tmp_path, {"mode": "org", "server": {}, "idp": {}})
+        daemon_main.load_org_config()  # pins
+
+        loaded_again = daemon_main.load_org_config()
+
+        assert loaded_again["mode"] == "org"
+
+    def test_tampering_after_pin_raises_configuration_error(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        _write_signed_bundle(tmp_path, {"mode": "org", "server": {}, "idp": {}, "org_name": "Acme"})
+        daemon_main.load_org_config()  # pins
+
+        data = json.loads((tmp_path / "org_config.json").read_text())
+        data["org_name"] = "Evil Corp"
+        (tmp_path / "org_config.json").write_text(json.dumps(data))
+
+        with pytest.raises(org_mode.ConfigurationError, match="signing-key verification"):
+            daemon_main.load_org_config()
+
+    def test_replacing_with_a_different_key_after_pin_raises_configuration_error(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        _write_signed_bundle(tmp_path, {"mode": "org", "server": {}, "idp": {}})
+        daemon_main.load_org_config()  # pins the first key
+
+        _write_signed_bundle(tmp_path, {"mode": "org", "server": {}, "idp": {}})  # signed with a NEW key
+
+        with pytest.raises(org_mode.ConfigurationError, match="signing-key verification"):
+            daemon_main.load_org_config()
+
+    def test_downgrade_to_unsigned_after_pin_raises_configuration_error(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        _write_signed_bundle(tmp_path, {"mode": "org", "server": {}, "idp": {}})
+        daemon_main.load_org_config()  # pins
+
+        (tmp_path / "org_config.json").write_text(json.dumps({"mode": "org", "server": {}, "idp": {}}))
+
+        with pytest.raises(org_mode.ConfigurationError, match="signing-key verification"):
+            daemon_main.load_org_config()
+
+    def test_org_mode_still_rejected_when_unsigned(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        (tmp_path / "org_config.json").write_text(json.dumps({"mode": "org"}))
+        with pytest.raises(org_mode.ConfigurationError, match="requires a signed bundle"):
+            daemon_main.load_org_config()
+
+    def test_local_mode_signed_bundle_is_accepted(self, tmp_path, monkeypatch):
+        """Signing is opt-in, not org-mode-exclusive -- an install can
+        sign its bundle without turning org mode on at all."""
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        _write_signed_bundle(tmp_path, {"slack": {"client_id": "abc"}})
+
+        loaded = daemon_main.load_org_config()
+
+        assert loaded["slack"] == {"client_id": "abc"}
+
+
+class TestLogOrgConfigBundleHash:
+    """SEC-05 (interim): a sha256 of the installed bundle logged (and
+    audited) once per daemon startup, independent of whether it's signed
+    -- see log_org_config_bundle_hash's own docstring for why this isn't
+    folded into load_org_config() itself."""
+
+    def test_no_file_logs_absence_and_writes_no_audit_entry(self, tmp_path, monkeypatch, caplog):
+        from privacyfence.audit_log import init_audit_logger
+
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        init_audit_logger(str(tmp_path / "audit"))
+        with caplog.at_level(logging.INFO):
+            daemon_main.log_org_config_bundle_hash({})
+        assert "absent" in caplog.text
+        assert not list((tmp_path / "audit").glob("*.jsonl"))
+
+    def test_installed_bundle_logs_hash_and_writes_audit_entry(self, tmp_path, monkeypatch, caplog):
+        from privacyfence.audit_log import init_audit_logger
+        from privacyfence.org_bundle_signing import sha256_hex
+
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        raw = json.dumps({"slack": {"client_id": "abc"}}).encode("utf-8")
+        (tmp_path / "org_config.json").write_bytes(raw)
+        init_audit_logger(str(tmp_path / "audit"))
+
+        with caplog.at_level(logging.INFO):
+            daemon_main.log_org_config_bundle_hash({"slack": {"client_id": "abc"}})
+
+        expected_hash = sha256_hex(raw)
+        assert expected_hash in caplog.text
+
+        jsonl_files = list((tmp_path / "audit").glob("*.jsonl"))
+        assert len(jsonl_files) == 1
+        entries = [json.loads(line) for line in jsonl_files[0].read_text().splitlines()]
+        assert len(entries) == 1
+        assert entries[0]["decision"] == "org_config_startup"
+        assert expected_hash in entries[0]["summary"]
+
+    def test_signed_bundle_is_recorded_as_signed(self, tmp_path, monkeypatch):
+        from privacyfence import org_bundle_signing
+        from privacyfence.audit_log import init_audit_logger
+
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        private_key, _ = org_bundle_signing.generate_keypair()
+        signed = org_bundle_signing.sign_bundle({"slack": {"client_id": "abc"}}, private_key)
+        (tmp_path / "org_config.json").write_text(json.dumps(signed))
+        init_audit_logger(str(tmp_path / "audit"))
+
+        daemon_main.log_org_config_bundle_hash(signed)
+
+        jsonl_files = list((tmp_path / "audit").glob("*.jsonl"))
+        entries = [json.loads(line) for line in jsonl_files[0].read_text().splitlines()]
+        assert "signed=True" in entries[0]["summary"]
 
 
 # ---------------------------------------------------------------------------- #
