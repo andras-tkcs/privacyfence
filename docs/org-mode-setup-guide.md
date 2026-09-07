@@ -264,12 +264,30 @@ more redirect URI on the app registration you'd otherwise create per
 Run this from a clone of the repository **on your own workstation** — `build_org_bundle.py` is
 stdlib-only and needs no PrivacyFence install, per its own docstring, and doing it off-server keeps
 the client secrets you're about to paste in off the machine until the finished, encrypted-in-transit
-bundle is copied over.
+bundle is copied over. Signing (`--sign-key`, next) is the one exception to stdlib-only — it needs
+the `cryptography` package (`pip install cryptography`).
 
 ```bash
 git clone https://github.com/andras-tkcs/privacyfence
 cd privacyfence   # main already carries org mode's --mode/--server-*/--idp-* flags
+```
 
+**Generate a signing key, once, and keep it.** Org mode requires a signed bundle (SEC-05,
+[`security-and-compliance.md` §3](security-and-compliance.md)) — PrivacyFence refuses to start in
+org mode with an unsigned `org_config.json`. This only needs doing once per organization; reuse the
+same key file for every future rebuild (including `--merge`) so bundles keep verifying against the
+key your servers already trust:
+
+```bash
+python3 scripts/build_org_bundle.py --generate-signing-key ~/org_signing_key.pem
+```
+
+Keep `~/org_signing_key.pem` secret and durable (a password manager or secrets store, not just this
+workstation's disk) — losing it means every server that has already trusted its key (trust-on-first-
+use, on that server's *first* signed bundle install) can't accept an update until an administrator
+deletes that server's pinned `~/.privacyfence/org/org_config_signing_pubkey.txt` by hand.
+
+```bash
 python3 scripts/build_org_bundle.py \
   --mode org \
   --server-issuer-url https://pf.example.com \
@@ -280,6 +298,7 @@ python3 scripts/build_org_bundle.py \
   --idp-client-id <YOUR_IDP_CLIENT_ID>.apps.googleusercontent.com \
   --idp-client-secret <YOUR_IDP_CLIENT_SECRET> \
   --google-client-secret ~/Downloads/client_secret_<...>.json \
+  --sign-key ~/org_signing_key.pem \
   -o org_config.json
 ```
 
@@ -293,8 +312,11 @@ Notes on the flags used:
   `trusted_proxies` list is configured, never by default") — this must be the reverse proxy's own
   address, which is `127.0.0.1` here since Caddy and PrivacyFence share a host. Omit `--google-*` if
   you skipped §4.2.
+- `--sign-key ~/org_signing_key.pem` — required for `--mode org`, see above.
 - If you also built connector bundles for Slack/Salesforce/Atlassian, pass their flags too (see
   each's own setup doc) — `--merge` lets you add them incrementally without re-typing everything.
+  Pass `--sign-key` again on every such rebuild — a `--merge` run without it strips any existing
+  signature rather than shipping one that's gone stale over the changed content.
 
 Copy the result to the server and lock it down (the script already `chmod 600`s it, but ownership
 still needs fixing after the copy):
@@ -527,6 +549,18 @@ section (issuer, client_id, client_secret)`**
 `~/.privacyfence/org/org_config.json` (not `~/.privacyfence/org_config.json`) and that
 `build_org_bundle.py` was actually given `--mode org` plus all three `--idp-*` flags — omitting any
 one of them makes the script skip the `idp` section entirely (see [Step 5](#5-build-the-organization-config-bundle)).
+
+**Startup fails with `ConfigurationError: ... has "mode": "org" but is not signed`**
+`org_config.json` was built without `--sign-key` — org mode requires a signed bundle (SEC-05, see
+[Step 5](#5-build-the-organization-config-bundle)). Rebuild it with `--sign-key <path to your signing
+key>` (generate one first with `--generate-signing-key` if you haven't).
+
+**Startup fails with `ConfigurationError: ... failed signing-key verification`**
+This server already trusts a different signing key (pinned the first time it ever saw a signed
+bundle) than the one `org_config.json` was just signed with — either you signed with the wrong key
+file, or this really is a key rotation. If the rotation is intentional, an administrator must delete
+`~/.privacyfence/org/org_config_signing_pubkey.txt` on this server first, then reinstall the
+newly-signed bundle to re-pin it.
 
 **"Invalid Host header" (plain-text 400) instead of the sign-in page**
 The Host header Caddy forwards doesn't match `server.issuer_url`'s hostname in `org_config.json` —

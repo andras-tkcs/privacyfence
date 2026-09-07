@@ -559,6 +559,59 @@ class TestOrgConfigInstall:
         assert state["general"]["org_button_label"] == "Install Organization Config…"
 
 
+class TestOrgConfigInstallSigning:
+    """SEC-05 (full signing): install_org_config_bytes runs every bundle
+    through org_bundle_signing.verify_and_maybe_pin() before writing it to
+    disk -- see that module's own docstring for the trust-on-first-use
+    model this mirrors daemon_main.load_org_config's own enforcement of."""
+
+    def test_unsigned_bundle_is_still_installed_when_nothing_is_pinned(self, controller):
+        bundle = {"version": 1, "google": {"client_id": "x", "client_secret": "y"}}
+
+        controller.install_org_config_bytes(json.dumps(bundle).encode())
+
+        assert controller.error == ""
+        installed = json.loads((sc.org_dir() / "org_config.json").read_text(encoding="utf-8"))
+        assert installed == bundle
+
+    def test_org_mode_bundle_without_signature_is_rejected(self, controller):
+        bundle = {"version": 1, "mode": "org", "server": {}, "idp": {}}
+
+        controller.install_org_config_bytes(json.dumps(bundle).encode())
+
+        assert "requires a signed" in controller.error
+        assert not (sc.org_dir() / "org_config.json").exists()
+
+    def test_first_signed_bundle_is_installed_and_pins_its_key(self, controller):
+        from privacyfence import org_bundle_signing
+
+        private_key, _ = org_bundle_signing.generate_keypair()
+        bundle = org_bundle_signing.sign_bundle(
+            {"version": 1, "mode": "org", "server": {}, "idp": {}}, private_key,
+        )
+
+        controller.install_org_config_bytes(json.dumps(bundle).encode())
+
+        assert controller.error == ""
+        assert org_bundle_signing.pinned_public_key_path(sc.org_dir()).exists()
+
+    def test_bundle_signed_by_a_different_key_after_pin_is_rejected(self, controller):
+        from privacyfence import org_bundle_signing
+
+        first_key, _ = org_bundle_signing.generate_keypair()
+        first_bundle = org_bundle_signing.sign_bundle({"version": 1, "org_name": "Acme"}, first_key)
+        controller.install_org_config_bytes(json.dumps(first_bundle).encode())
+        assert controller.error == ""
+
+        other_key, _ = org_bundle_signing.generate_keypair()
+        second_bundle = org_bundle_signing.sign_bundle({"version": 1, "org_name": "Evil Corp"}, other_key)
+        controller.install_org_config_bytes(json.dumps(second_bundle).encode())
+
+        assert "verification" in controller.error
+        installed = json.loads((sc.org_dir() / "org_config.json").read_text(encoding="utf-8"))
+        assert installed == first_bundle  # unchanged -- the bad update was never written
+
+
 class TestToggleConnector:
     def test_flips_enabled_flag_and_refreshes(self, controller, monkeypatch):
         refresh_calls = []

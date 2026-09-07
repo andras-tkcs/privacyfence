@@ -44,7 +44,7 @@ class AuditEntry:
     sender: str
     decision: str           # "approved" | "rejected" | "auto_accepted" | "accepted_via_accept_all" |
                             # "accepted_via_temp_session" | "denied_unattended" | "policy_check" |
-                            # "rules_listed" | "cancelled" |
+                            # "rules_listed" | "cancelled" | "org_config_startup" |
                             # "unattended_session_started" | "unattended_session_ended" |
                             # "rule_changed_via_bridge_proposal" | "rule_removed_via_bridge_proposal" |
                             # "grant_changed_via_bridge_proposal" | "grant_removed_via_bridge_proposal" |
@@ -80,6 +80,12 @@ class AuditEntry:
                             # ("rules_listed": ipc_server.py's list_rules handler -- not a decision
                             #  either, but the full current rule/grant set was disclosed, worth its
                             #  own record for the same pattern-spotting reason as "policy_check")
+                            # ("org_config_startup": SEC-05 interim -- daemon_main.py's
+                            #  log_org_config_bundle_hash(), recorded once per daemon startup that
+                            #  finds an org_config.json installed at all, carrying its sha256 in
+                            #  `summary` so a tampered bundle between one startup and the next is
+                            #  detectable by diffing hashes even on an install that hasn't adopted
+                            #  full bundle signing -- see org_bundle_signing.py)
                             # ("unattended_session_started"/"_ended": ipc_server.py's begin/end_
                             #  unattended_session handlers, and the same on disconnect cleanup --
                             #  this connection's gate posture changed, which is worth a record of
@@ -251,6 +257,7 @@ class AuditLogger:
             "denied_unattended":     PatternFill("solid", fgColor="FFD8A8"),
             "policy_check":          PatternFill("solid", fgColor="F1F3F5"),
             "rules_listed":          PatternFill("solid", fgColor="F1F3F5"),
+            "org_config_startup":    PatternFill("solid", fgColor="F1F3F5"),
             "rule_changed_via_bridge_proposal":   PatternFill("solid", fgColor="FFF3CD"),
             "rule_removed_via_bridge_proposal":   PatternFill("solid", fgColor="FFF3CD"),
             "grant_changed_via_bridge_proposal":  PatternFill("solid", fgColor="FFF3CD"),

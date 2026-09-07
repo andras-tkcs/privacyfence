@@ -102,6 +102,19 @@ and confirm which OAuth scopes are requested per connector (documented per-servi
 `docs/atlassian-setup.md`); those scopes are the actual ceiling on what any connector can ever
 read or write, independent of PrivacyFence's own gating logic.
 
+**Bundle integrity.** Because `org_config.json` carries real credentials (and, in org mode, this
+daemon's own IdP/authorization-server trust configuration), a silent replacement of it is as
+dangerous as a compromise of IT's own build process. Every daemon startup logs the bundle's
+sha256 to both the application log and the audit trail, so a tampered file is detectable by
+comparing hashes even on an install that hasn't adopted the rest of this. Signing is additionally
+available: `scripts/build_org_bundle.py --generate-signing-key`/`--sign-key` sign the bundle with
+an Ed25519 key IT keeps; the first signed bundle any install ever sees has its key trusted and
+pinned on that basis (trust-on-first-use, the same model SSH host keys use — see
+`src/privacyfence/org_bundle_signing.py`), and every bundle after that — installed via PrivacyFence
+Settings or dropped onto disk by hand — must verify against that pinned key or is rejected outright,
+including a downgrade to an unsigned bundle. Org mode requires a signed bundle; local mode's
+adoption of signing is optional.
+
 The Calendar connector's optional room-lookup feature is a concrete example of that ceiling being
 kept as narrow as possible: `calendar_list_rooms` needs Google Workspace's admin-level directory
 scope to discover rooms at all, but that scope never touches the OAuth client every employee
