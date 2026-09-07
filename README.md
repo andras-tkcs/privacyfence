@@ -277,6 +277,7 @@ Continue with the organization configuration and connector authentication steps 
 - [Atlassian setup](docs/atlassian-setup.md)
 - [Telegram setup](docs/telegram-setup.md)
 - [Org mode setup guide](docs/org-mode-setup-guide.md) — Ubuntu server, Caddy, Google identity (ahead of the Linux headless entrypoint landing — see the guide's own status note)
+- [AI client compatibility](docs/ai-client-compatibility.md) — using PrivacyFence with Claude, ChatGPT, and Gemini, local mode and org mode covered separately
 - [Connector QA testing](docs/connector-qa-testing.md)
 - [Manual pre-release test plan](docs/manual-pre-release-test-plan.md)
 - [Approval window content reference](docs/approval-window-content-reference.md) — what each approval dialog shows, grouped by dialog shape
