@@ -353,10 +353,14 @@ def log_org_config_bundle_hash(org_config: dict[str, Any]) -> None:
     comparing hashes -- even for an install that hasn't adopted full
     signing (org_bundle_signing.py, SEC-05 full) at all, and as a
     belt-and-suspenders record alongside it for one that has. Called once
-    by run_app(), right after load_org_config() -- not from inside
-    load_org_config() itself, which is also called from places that
-    aren't "daemon startup" (e.g. settings_controller.py refreshing
-    connector state) and shouldn't each add their own audit-log entry.
+    by run_app() on the same org_config load_org_config() already returned
+    earlier in that function (SEC-07 needs it sooner, to pick
+    init_privacy_filter()'s fail-safe default) -- deferred until after
+    init_audit_logger() so there's an audit logger to record to, and still
+    not called from inside load_org_config() itself, which is also called
+    from places that aren't "daemon startup" (e.g. settings_controller.py
+    refreshing connector state) and shouldn't each add their own audit-log
+    entry.
     """
     path = org_dir() / "org_config.json"
     if not path.exists():
@@ -1193,14 +1197,24 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
         detect_financial_figures=pii_config.get("detect_financial_figures", True),
         audit_match_details=pii_config.get("audit_match_details", False),
     )
-    init_privacy_filter(config)
+    # Loaded here, ahead of its previous spot just before build_connectors(),
+    # so init_privacy_filter (SEC-07) knows whether this install is org-
+    # managed before it picks a fail-safe default for a genuinely absent
+    # privacy group -- still the one load_org_config() call for this whole
+    # function, its ConfigurationError (SEC-04) still surfacing through the
+    # same top-level "print and refuse to start" path in main().
+    org_config = load_org_config()
+    init_privacy_filter(config, org_managed=org_mode.resolve_mode(org_config) == "org")
     for warning in check_consistency_warnings():
         logger.warning(warning)
 
     audit_logger = init_audit_logger(str(Path(data_dir()) / "logs" / "audit"))
     audit_logger.export_all_pending()
 
-    org_config = load_org_config()
+    # log_org_config_bundle_hash() needs the audit logger initialized above
+    # (it records to it, see its own docstring) -- org_config itself was
+    # already loaded earlier, ahead of init_privacy_filter(), so SEC-07's
+    # org_managed fail-safe default is known before that call.
     log_org_config_bundle_hash(org_config)
     connectors = build_connectors(config, org_config)
     if not connectors:

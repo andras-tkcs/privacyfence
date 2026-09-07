@@ -55,6 +55,7 @@ from .pii_detector import set_pii_category_enabled, set_pii_detection_enabled
 from .privacy_filter import _parse_group as _parse_privacy_group
 from .privacy_filter import _VALID_POLICIES as PRIVACY_POLICIES
 from .privacy_filter import init_privacy_filter
+from .privacy_filter import PrivacyFilterConfigError
 from .resource_grants import (
     GRANT_RESOURCE_TYPES,
     GrantResourceType,
@@ -1748,7 +1749,20 @@ class SettingsController:
         default_policy: dict[str, str] = {}
         categories: dict[str, list[dict[str, Any]]] = {}
         for group in PRIVACY_GROUP_LABELS:
-            parsed = _parse_privacy_group(cfg.get(group))
+            try:
+                parsed = _parse_privacy_group(cfg.get(group), group=group)
+            except PrivacyFilterConfigError as exc:
+                # init_privacy_filter (SEC-07) already refused to start the
+                # daemon on a malformed group at startup, so reaching this
+                # is only possible if settings.yaml was hand-edited on disk
+                # to something malformed *after* that -- the live enforced
+                # policy (_REGISTRY, still whatever last validated config
+                # loaded) is unaffected either way. Render the settings page
+                # as "allow" for this group rather than 500ing on it, same
+                # defensive posture _load_config() itself already takes for
+                # a config file that fails to parse at all.
+                logger.warning("Could not render current %s settings: %s", group, exc)
+                parsed = {"default_policy": "allow", "categories": {}}
             default_policy[group] = parsed["default_policy"]
             cat_list = []
             for cat_key, cat_label in PRIVACY_CATEGORY_LABELS.get(group, {}).items():

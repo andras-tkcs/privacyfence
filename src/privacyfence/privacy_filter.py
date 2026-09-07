@@ -44,6 +44,11 @@ logger = logging.getLogger(__name__)
 _VALID_POLICIES = ("allow", "redact", "block")
 _BLOCK_MARKER = "[BLOCKED BY PRIVACY FILTER]"
 
+_GROUP_NAMES = (
+    "privacy", "drive_privacy", "slack_privacy",
+    "contacts_privacy", "tasks_privacy", "confluence_privacy",
+)
+
 # Keyed by group name ("privacy", "drive_privacy", "slack_privacy",
 # "contacts_privacy", "tasks_privacy", "confluence_privacy"), each value
 # {"default_policy": str, "categories": {category: policy}}. Populated once
@@ -59,39 +64,90 @@ _BLOCK_MARKER = "[BLOCKED BY PRIVACY FILTER]"
 _REGISTRY: PrincipalRegistry[dict[str, dict[str, Any]]] = PrincipalRegistry(dict)
 
 
-def init_privacy_filter(config: dict[str, Any]) -> None:
+class PrivacyFilterConfigError(ValueError):
+    """Raised by init_privacy_filter() for a privacy-filter settings.yaml
+    section that is *present* but malformed -- not a dict, an unrecognised
+    ``default_policy``, a non-dict ``categories``, or a category mapped to
+    an unrecognised policy (SEC-07). Before this, all four cases silently
+    fell back to "allow" -- meaning a typo'd policy value (or a config file
+    an attacker could write to) turned "block" into "everything passes
+    through" with nothing but a log line most installs never look at.
+
+    A ``ValueError`` subclass for the same reason ``org_mode.
+    ConfigurationError`` (SEC-04) is one: daemon_main.py's ``main()`` has no
+    special handling for this class specifically, it falls into the same
+    "print and refuse to start" path every other startup configuration
+    error already takes. There is still exactly one tolerated case, kept
+    for backward compatibility with installs that predate this module: a
+    group key genuinely absent from settings.yaml altogether (see
+    ``_parse_group``'s own docstring).
+    """
+
+
+def init_privacy_filter(config: dict[str, Any], *, org_managed: bool = False) -> None:
     """Parse ``privacy``/``drive_privacy``/``slack_privacy``/``contacts_privacy``/
     ``tasks_privacy``/``confluence_privacy`` out of the loaded settings.yaml dict.
-    Call once at daemon startup, same pattern as pii_detector.init_pii_detection()."""
-    groups = {
-        "privacy": _parse_group(config.get("privacy")),
-        "drive_privacy": _parse_group(config.get("drive_privacy")),
-        "slack_privacy": _parse_group(config.get("slack_privacy")),
-        "contacts_privacy": _parse_group(config.get("contacts_privacy")),
-        "tasks_privacy": _parse_group(config.get("tasks_privacy")),
-        "confluence_privacy": _parse_group(config.get("confluence_privacy")),
-    }
+    Call once at daemon startup, same pattern as pii_detector.init_pii_detection().
+
+    Raises ``PrivacyFilterConfigError`` (SEC-07) for a group that's present
+    but malformed -- see ``_parse_group``. ``org_managed`` (the caller's
+    ``org_mode.resolve_mode(...) == "org"``) picks the fail-safe default
+    used for a group that's genuinely absent from settings.yaml: "allow",
+    unchanged, for a local-mode install (this module must never turn into a
+    new default-block surface a pre-existing install didn't opt into), but
+    "block" for an org-managed one -- an organization's centrally deployed
+    settings.yaml is expected to state its own privacy policy explicitly,
+    not silently inherit the permissive default nobody there configured.
+    """
+    fail_safe_default = "block" if org_managed else "allow"
+    groups = {name: _parse_group(config.get(name), group=name, fail_safe_default=fail_safe_default)
+              for name in _GROUP_NAMES}
     _REGISTRY.set(groups)
 
 
-def _parse_group(raw: Any) -> dict[str, Any]:
-    raw = raw if isinstance(raw, dict) else {}
-    default_policy = raw.get("default_policy", "allow")
+def _parse_group(raw: Any, *, group: str, fail_safe_default: str = "allow") -> dict[str, Any]:
+    """Parse one group's raw settings.yaml value, failing closed (SEC-07) on
+    anything present but malformed instead of falling back to "allow":
+
+      - ``raw is None`` (the group key isn't in settings.yaml at all) is the
+        one tolerated case, for backward compatibility with installs that
+        predate this module -- resolves to ``fail_safe_default`` with no
+        categories.
+      - Anything else that isn't a dict, a ``default_policy`` present but
+        not one of allow/redact/block, a ``categories`` present but not a
+        dict, or a category mapped to a value that isn't one of
+        allow/redact/block, all raise ``PrivacyFilterConfigError`` rather
+        than silently downgrading to "allow".
+
+    ``default_policy``/``categories`` genuinely absent *within* a present
+    group dict are fine -- that's just a group that only sets one of the
+    two -- and fall back to ``fail_safe_default``.
+    """
+    if raw is None:
+        return {"default_policy": fail_safe_default, "categories": {}}
+    if not isinstance(raw, dict):
+        raise PrivacyFilterConfigError(
+            f"settings.yaml's {group!r} section must be a mapping, got {type(raw).__name__}"
+        )
+    default_policy = raw.get("default_policy", fail_safe_default)
     if default_policy not in _VALID_POLICIES:
-        logger.warning("Invalid default_policy %r; falling back to 'allow'", default_policy)
-        default_policy = "allow"
-    categories_raw = raw.get("categories")
+        raise PrivacyFilterConfigError(
+            f"settings.yaml's {group}.default_policy must be one of {_VALID_POLICIES}, "
+            f"got {default_policy!r}"
+        )
+    categories_raw = raw.get("categories", {})
+    if not isinstance(categories_raw, dict):
+        raise PrivacyFilterConfigError(
+            f"settings.yaml's {group}.categories must be a mapping, got {type(categories_raw).__name__}"
+        )
     categories: dict[str, str] = {}
-    if isinstance(categories_raw, dict):
-        for category, policy in categories_raw.items():
-            if policy in _VALID_POLICIES:
-                categories[category] = policy
-            else:
-                logger.warning(
-                    "Invalid policy %r for category %r; falling back to default_policy %r",
-                    policy, category, default_policy,
-                )
-                categories[category] = default_policy
+    for category, policy in categories_raw.items():
+        if policy not in _VALID_POLICIES:
+            raise PrivacyFilterConfigError(
+                f"settings.yaml's {group}.categories.{category} must be one of "
+                f"{_VALID_POLICIES}, got {policy!r}"
+            )
+        categories[category] = policy
     return {"default_policy": default_policy, "categories": categories}
 
 
