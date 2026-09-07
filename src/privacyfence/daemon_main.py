@@ -475,14 +475,19 @@ def _maybe_start_web_server(
     # only meaningful once the server is actually listening -- set here,
     # not at registry construction.
     registry.set_base_url(server.base_url)
+    # SEC-06 (docs/security-remediation-plan.md, Phase 1 item 1.2): each of
+    # these is a fresh, single-use bootstrap link, not the persistent
+    # secret itself -- see WebServer.mint_bootstrap_url()'s own docstring.
+    # Once it's expired or already used, a fresh one needs either a daemon
+    # restart or POST /api/bootstrap with the raw token as a Bearer header.
     logger.info(
-        "Web approval UI active -- approvals open at %s/approvals?token=%s",
-        server.base_url, server.token,
+        "Web approval UI active -- approvals open at %s",
+        server.mint_bootstrap_url("/approvals"),
     )
     if use_web_settings:
         logger.info(
-            "Web settings active -- open at %s/settings?token=%s",
-            server.base_url, server.token,
+            "Web settings active -- open at %s",
+            server.mint_bootstrap_url("/settings"),
         )
     if server.mcp_url:
         from .web.mcp_auth import MCP_TOKEN_FILE_NAME

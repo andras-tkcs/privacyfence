@@ -42,10 +42,11 @@ from starlette.routing import BaseRoute, Route
 
 from .. import approval_icons, settings_window_html, web_shell
 from ..settings_controller import REPO_URL, SettingsController
-from .session_auth import authenticated as _token_authenticated
+from .session_auth import SESSION_COOKIE as _SESSION_COOKIE
+from .session_auth import LocalSessionStore
+from .session_auth import authenticated as _session_authenticated
 from .session_auth import check_csrf as _csrf_matches
 from .session_auth import check_origin as _origin_ok
-from .session_auth import set_session_cookie as _set_session_cookie_on
 from .session_auth import unauthorized_html as _unauthorized_response
 
 logger = logging.getLogger(__name__)
@@ -209,7 +210,7 @@ def _settings_bridge_shim(*, csrf: str, repo_url: str) -> str:
 def build_routes(
     controller: SettingsController,
     *,
-    token: str,
+    sessions: LocalSessionStore,
     allow_quit: bool = True,
     notifications_enabled: bool = True,
     notifications_detail: str = "minimal",
@@ -218,7 +219,10 @@ def build_routes(
     combined app (extra_routes, same pattern web/routes_mcp.py's
     mount_mcp() already established) -- see create_app() below for a
     standalone Starlette app wrapping the same routes, which is what this
-    module's own tests construct against.
+    module's own tests construct against. ``sessions`` (SEC-06, see
+    session_auth.py's own module docstring) is the same session store
+    web/routes_approvals.py authenticates against -- one session for the
+    whole combined app, per this module's own docstring.
 
     A successful mutation's own snapshot is returned directly in this
     request's response, *and* reaches every other open tab via
@@ -230,14 +234,15 @@ def build_routes(
     """
 
     def _authenticated(request: Request) -> bool:
-        return _token_authenticated(request, token)
+        return _session_authenticated(request, sessions)
 
     async def settings_page(request: Request) -> Response:
         if not _authenticated(request):
             return _unauthorized_response()
         state = _snapshot(controller)
         body = settings_window_html.build_html(state)
-        body += _settings_bridge_shim(csrf=token, repo_url=REPO_URL)
+        csrf = request.cookies.get(_SESSION_COOKIE, "")
+        body += _settings_bridge_shim(csrf=csrf, repo_url=REPO_URL)
         # Read off this request's own fresh snapshot, not the notifications_
         # enabled/detail closure args above -- those are only the daemon-
         # startup defaults (server.py's own initial config read), and the
@@ -250,9 +255,7 @@ def build_routes(
             notifications_enabled=general.get("notifications_enabled", notifications_enabled),
             notifications_detail=general.get("notifications_detail", notifications_detail),
         )
-        response = HTMLResponse(html, headers={"Cache-Control": "no-store"})
-        _set_session_cookie_on(response, token)
-        return response
+        return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
     def _check_mutation(request: Request, payload: Any) -> Response | None:
         if not isinstance(payload, dict) or not _csrf_matches(request, payload.get("csrf")):
@@ -347,14 +350,14 @@ def build_routes(
 
 
 def create_app(
-    controller: SettingsController, *, token: str, allow_quit: bool = True, notifications_enabled: bool = True,
-    notifications_detail: str = "minimal",
+    controller: SettingsController, *, sessions: LocalSessionStore, allow_quit: bool = True,
+    notifications_enabled: bool = True, notifications_detail: str = "minimal",
 ) -> Starlette:
     """Standalone Starlette app wrapping build_routes() -- what this
     module's own tests construct against, the same "no filesystem/global-
     singleton dependency" convention web/routes_approvals.py's create_app()
     already established."""
     return Starlette(routes=build_routes(
-        controller, token=token, allow_quit=allow_quit, notifications_enabled=notifications_enabled,
+        controller, sessions=sessions, allow_quit=allow_quit, notifications_enabled=notifications_enabled,
         notifications_detail=notifications_detail,
     ))
