@@ -143,6 +143,43 @@ class AuditEntry:
                               # docs/https-connector-refactor-plan.md §5.4.
 
 
+# SEC-03: characters that, as the first character of a cell's string value,
+# a spreadsheet application (or openpyxl itself, for a leading "=" -- see
+# _excel_literal's docstring) will interpret as the start of a formula
+# rather than literal text. `pii_match_details`, `claude_reason`, `summary`
+# and `sender` all carry externally-influenced content (email subjects,
+# sender display names, matched PII text, Claude's self-reported reason),
+# so any of them can smuggle a formula into the audit export.
+_FORMULA_TRIGGER_CHARS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _excel_literal(value: str) -> str:
+    """Neutralise spreadsheet formula injection in a cell value bound for
+    ws.append().
+
+    openpyxl's own Cell.value setter treats any string starting with "="
+    as a formula and sets the cell's data type accordingly -- so writing
+    an attacker-controlled string like "=WEBSERVICE(...)" straight into a
+    cell doesn't just *display* as a formula in Excel, openpyxl itself
+    already classifies it as one. Excel additionally treats a cell whose
+    *displayed* content starts with "+", "-", "@", or a leading tab/CR
+    (often used to smuggle a real trigger character past a naive
+    startswith("=") check) as formula-like on some import/paste paths, so
+    those are covered too, even though openpyxl doesn't special-case them
+    itself.
+
+    Prefixing with a single quote forces the value off that path -- for
+    "=" it stops openpyxl from ever treating it as a formula in the first
+    place, and for the rest it's the standard convention (matching what
+    typing an apostrophe before such a value in Excel does) for "this is
+    text, not a formula." Values that don't start with a trigger character
+    pass through unchanged.
+    """
+    if value and value[0] in _FORMULA_TRIGGER_CHARS:
+        return "'" + value
+    return value
+
+
 class AuditLogger:
     def __init__(self, log_dir: str) -> None:
         self._log_dir = Path(log_dir)
@@ -235,11 +272,12 @@ class AuditLogger:
         for entry in entries:
             ws.append([
                 entry.timestamp, entry.week, entry.connector, entry.tool,
-                entry.tool_name, entry.summary, entry.sender, entry.decision,
+                entry.tool_name, _excel_literal(entry.summary), _excel_literal(entry.sender),
+                entry.decision,
                 entry.auto_accept_rule or "", round(entry.latency_seconds, 2),
                 "Yes" if entry.pii_detected else "",
-                "; ".join(entry.pii_categories), entry.pii_match_details or "",
-                entry.claude_reason or "",
+                "; ".join(entry.pii_categories), _excel_literal(entry.pii_match_details or ""),
+                _excel_literal(entry.claude_reason or ""),
             ])
             fill = decision_fills.get(entry.decision, PatternFill())
             for col in range(1, len(HEADERS) + 1):
