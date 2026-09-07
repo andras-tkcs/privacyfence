@@ -23,10 +23,23 @@ DEFAULT_BIND_HOST = "localhost"
 DEFAULT_PORT = 8765
 
 
+class ConfigurationError(ValueError):
+    """Raised for organization configuration that is present but broken --
+    unreadable, malformed JSON, a non-object top level, an invalid
+    ``mode``, or (in org mode) missing/incomplete required sections --
+    rather than genuinely absent (SEC-04). daemon_main.py's ``main()``
+    never catches this specifically: it's a ``ValueError`` subclass, so it
+    falls into the same "print and refuse to start" path every other
+    startup configuration error already takes, deliberately -- there is no
+    silent fallback to local mode for a *broken* config, only for a
+    missing one (see load_org_config's own docstring for why that
+    distinction matters)."""
+
+
 def resolve_mode(org_config: dict[str, Any]) -> Mode:
     mode = org_config.get("mode", DEFAULT_MODE)
     if mode not in ("local", "org"):
-        raise ValueError(f"org_config.json's \"mode\" must be \"local\" or \"org\", got {mode!r}")
+        raise ConfigurationError(f"org_config.json's \"mode\" must be \"local\" or \"org\", got {mode!r}")
     return mode
 
 
@@ -66,7 +79,7 @@ class ServerConfig:
         tls = tls if isinstance(tls, dict) else {}
         issuer_url = raw.get("issuer_url", "")
         if not issuer_url:
-            raise ValueError("org mode requires org_config.json's \"server\".\"issuer_url\"")
+            raise ConfigurationError("org mode requires org_config.json's \"server\".\"issuer_url\"")
         return ServerConfig(
             bind_host=raw.get("bind_host", DEFAULT_BIND_HOST),
             port=int(raw.get("port", DEFAULT_PORT)),
@@ -122,7 +135,7 @@ class StepUpConfig:
         raw = raw if isinstance(raw, dict) else {}
         scope = raw.get("scope", DEFAULT_STEP_UP_SCOPE)
         if scope not in ("writes", "writes_and_pii_reads"):
-            raise ValueError(
+            raise ConfigurationError(
                 f"org_config.json's \"step_up\".\"scope\" must be \"writes\" or "
                 f"\"writes_and_pii_reads\", got {scope!r}"
             )
@@ -135,6 +148,7 @@ class StepUpConfig:
 
 
 __all__ = [
+    "ConfigurationError",
     "DEFAULT_MODE",
     "DEFAULT_RP_NAME",
     "DEFAULT_STEP_UP_SCOPE",

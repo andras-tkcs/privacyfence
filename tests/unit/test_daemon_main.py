@@ -24,7 +24,7 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
-from privacyfence import daemon_main
+from privacyfence import daemon_main, org_mode
 from privacyfence.connectors.slack import SlackConnector
 from privacyfence.connectors.telegram import TelegramConnector
 from privacyfence.paths import data_dir
@@ -182,24 +182,64 @@ class TestLoadConfig:
 
 
 class TestLoadOrgConfig:
+    """SEC-04: three states, not two -- absent is the only case that's
+    still allowed to silently resolve to {} (local mode); anything present
+    but broken must raise org_mode.ConfigurationError instead of quietly
+    collapsing into the same {} local-mode result absence gets."""
+
     def test_returns_empty_dict_when_no_file_installed(self, tmp_path, monkeypatch):
         monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
         assert daemon_main.load_org_config() == {}
 
-    def test_returns_parsed_dict_when_valid(self, tmp_path, monkeypatch):
+    def test_returns_parsed_dict_when_valid_with_no_mode_key(self, tmp_path, monkeypatch):
         monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
         (tmp_path / "org_config.json").write_text(json.dumps({"slack": {"client_id": "abc"}}))
         assert daemon_main.load_org_config() == {"slack": {"client_id": "abc"}}
 
-    def test_returns_empty_dict_on_malformed_json(self, tmp_path, monkeypatch, caplog):
+    def test_returns_parsed_dict_when_explicit_org_mode(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        (tmp_path / "org_config.json").write_text(json.dumps({"mode": "org"}))
+        assert daemon_main.load_org_config() == {"mode": "org"}
+
+    def test_raises_configuration_error_on_malformed_json(self, tmp_path, monkeypatch):
         monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
         (tmp_path / "org_config.json").write_text("{not valid json")
-        assert daemon_main.load_org_config() == {}
+        with pytest.raises(org_mode.ConfigurationError):
+            daemon_main.load_org_config()
 
-    def test_returns_empty_dict_when_top_level_not_an_object(self, tmp_path, monkeypatch):
+    def test_raises_configuration_error_when_top_level_not_an_object(self, tmp_path, monkeypatch):
         monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
         (tmp_path / "org_config.json").write_text(json.dumps(["not", "an", "object"]))
-        assert daemon_main.load_org_config() == {}
+        with pytest.raises(org_mode.ConfigurationError):
+            daemon_main.load_org_config()
+
+    def test_raises_configuration_error_when_unreadable(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        path = tmp_path / "org_config.json"
+        path.write_text(json.dumps({"mode": "org"}))
+
+        real_open = open
+
+        def _denying_open(file, *args, **kwargs):
+            if str(file) == str(path):
+                raise PermissionError(13, "Permission denied")
+            return real_open(file, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", _denying_open)
+        with pytest.raises(org_mode.ConfigurationError):
+            daemon_main.load_org_config()
+
+    def test_a_broken_org_config_does_not_silently_fall_back_to_local_mode(self, tmp_path, monkeypatch):
+        """The bug this whole finding is about: before SEC-04, a corrupted
+        org_config.json (e.g. tampering, a botched deploy, disk
+        corruption) was indistinguishable from no org config at all, so an
+        org-mode install would silently start with no IdP-backed auth
+        wired up rather than refusing to start."""
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        (tmp_path / "org_config.json").write_text('{"mode": "org", corrupted')
+        with pytest.raises(org_mode.ConfigurationError):
+            org_config = daemon_main.load_org_config()
+            org_mode.resolve_mode(org_config)
 
 
 # ---------------------------------------------------------------------------- #
@@ -1035,8 +1075,9 @@ class TestMaybeStartWebServerOrgMode:
         assert registry.approval_url("abc") == f"{result.base_url}/approvals/abc"
 
     def test_org_mode_without_idp_section_raises(self, monkeypatch, tmp_path):
+        # SEC-04's "org-mode-incomplete-IdP-or-server" case.
         self._no_bind(monkeypatch, tmp_path)
-        with pytest.raises(ValueError):
+        with pytest.raises(org_mode.ConfigurationError):
             daemon_main._maybe_start_web_server(
                 {"web": {"mcp": {"enabled": True}}}, self._connector_host(),
                 unattended_sessions_enabled=False,
@@ -1044,8 +1085,9 @@ class TestMaybeStartWebServerOrgMode:
             )
 
     def test_org_mode_without_server_section_raises(self, monkeypatch, tmp_path):
+        # SEC-04's "org-mode-incomplete-IdP-or-server" case.
         self._no_bind(monkeypatch, tmp_path)
-        with pytest.raises(ValueError):
+        with pytest.raises(org_mode.ConfigurationError):
             daemon_main._maybe_start_web_server(
                 {"web": {"mcp": {"enabled": True}}}, self._connector_host(),
                 unattended_sessions_enabled=False,

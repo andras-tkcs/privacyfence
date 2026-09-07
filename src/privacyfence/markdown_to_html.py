@@ -21,6 +21,8 @@ from __future__ import annotations
 import html
 import re
 
+from privacyfence.url_safety import is_safe_url
+
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
 _TABLE_SEP_CELL_RE = re.compile(r"^:?-{1,}:?$")
@@ -109,10 +111,24 @@ def _render_table(lines: list[str]) -> str:
     return f'<table class="pf-table"><thead><tr>{header_html}</tr></thead><tbody>{rows_html}</tbody></table>'
 
 
+def _link_html(m: re.Match[str]) -> str:
+    label, href = m.group(1), m.group(2)
+    # href is already HTML-escaped at this point (see markdown_to_html()) --
+    # html.escape only touches &<>"', none of which are valid URI scheme
+    # characters, so checking the scheme on this escaped form gives the
+    # same answer as checking it unescaped. An unrecognized/unsafe scheme
+    # (js:, data:, vbscript:, a percent- or entity-obfuscated spelling of
+    # one of those, ...) drops the href and keeps just the link text,
+    # matching email_markdown.py's is_safe_url() contract.
+    if not is_safe_url(href):
+        return label
+    return f'<a href="{href}">{label}</a>'
+
+
 def _inline(text: str) -> str:
     escaped = html.escape(text)
     escaped = _CODE_RE.sub(r"<code>\1</code>", escaped)
-    escaped = _LINK_RE.sub(lambda m: f'<a href="{m.group(2)}">{m.group(1)}</a>', escaped)
+    escaped = _LINK_RE.sub(_link_html, escaped)
     escaped = _BOLD_RE.sub(r"<strong>\1</strong>", escaped)
     escaped = _ITALIC_RE.sub(r"<em>\1</em>", escaped)
     return escaped
