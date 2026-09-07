@@ -1106,14 +1106,20 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
         detect_financial_figures=pii_config.get("detect_financial_figures", True),
         audit_match_details=pii_config.get("audit_match_details", False),
     )
-    init_privacy_filter(config)
+    # Loaded here, ahead of its previous spot just before build_connectors(),
+    # so init_privacy_filter (SEC-07) knows whether this install is org-
+    # managed before it picks a fail-safe default for a genuinely absent
+    # privacy group -- still the one load_org_config() call for this whole
+    # function, its ConfigurationError (SEC-04) still surfacing through the
+    # same top-level "print and refuse to start" path in main().
+    org_config = load_org_config()
+    init_privacy_filter(config, org_managed=org_mode.resolve_mode(org_config) == "org")
     for warning in check_consistency_warnings():
         logger.warning(warning)
 
     audit_logger = init_audit_logger(str(Path(data_dir()) / "logs" / "audit"))
     audit_logger.export_all_pending()
 
-    org_config = load_org_config()
     connectors = build_connectors(config, org_config)
     if not connectors:
         logger.warning("No connectors could be initialized; daemon still starting.")

@@ -1701,6 +1701,51 @@ class TestRunApp:
 
         assert "file_metadata" not in caplog.text
 
+    def test_malformed_privacy_filter_config_refuses_to_start(self, monkeypatch):
+        # SEC-07: a typo'd default_policy must fail closed, not silently
+        # downgrade to "allow" -- run_app() propagates
+        # PrivacyFilterConfigError (a ValueError) all the way out, same
+        # "print and refuse to start" path SEC-04's org_mode.
+        # ConfigurationError already takes via main()'s top-level catch.
+        from privacyfence.privacy_filter import PrivacyFilterConfigError
+
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        self._patch_common(monkeypatch)
+        config = {"privacy": {"default_policy": "delete_everything"}}
+
+        with pytest.raises(PrivacyFilterConfigError):
+            daemon_main.run_app(config, "config.yaml")
+
+    def test_org_mode_passes_org_managed_through_to_privacy_filter(self, monkeypatch):
+        # SEC-07: an org-managed install's genuinely-absent privacy groups
+        # should fail closed to "block", not inherit local mode's "allow".
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        self._patch_common(monkeypatch)
+        monkeypatch.setattr(
+            daemon_main, "load_org_config",
+            lambda: {"mode": "org", "server": {"issuer_url": "https://pf.example.com"},
+                      "idp": {"issuer": "https://idp.example.com", "client_id": "c"}},
+        )
+
+        result = daemon_main.run_app({}, "config.yaml")
+
+        assert result == 0
+        from privacyfence.privacy_filter import category_policy
+        assert category_policy("privacy", "body") == "block"
+
+    def test_local_mode_privacy_filter_still_defaults_to_allow(self, monkeypatch):
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        self._patch_common(monkeypatch)
+
+        result = daemon_main.run_app({}, "config.yaml")
+
+        assert result == 0
+        from privacyfence.privacy_filter import category_policy
+        assert category_policy("privacy", "body") == "allow"
+
     def test_keyboard_interrupt_is_caught_lock_released_returns_0(self, monkeypatch, caplog):
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         release_calls = []

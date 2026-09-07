@@ -29,8 +29,13 @@ drifts, don't trust it blindly.
   truncated to that limit).
 - All figures below assume every category left at `allow` — this is `privacy_filter.py`'s own
   bare fallback (`default_policy` defaults to `allow`) when a section is absent from
-  `settings.yaml` entirely, and `calendar.free_busy_full_event_details` left at its default
-  `true`. It is **not** what the shipped `settings.yaml.example` a from-source install copies in
+  `settings.yaml` entirely in local-mode installs, and `calendar.free_busy_full_event_details`
+  left at its default `true`. An org-managed install's bare fallback for a section genuinely
+  absent from settings.yaml is `block`, not `allow` (SEC-07) — an organization's centrally
+  deployed config is expected to state its own privacy policy explicitly rather than inherit a
+  permissive default nobody there configured; a `default_policy` or category policy that's
+  *present* but not one of `allow`/`redact`/`block` now fails startup outright in every mode
+  rather than silently falling back to `allow`. It is **not** what the shipped `settings.yaml.example` a from-source install copies in
   actually ships with — that file sets `default_policy: block` per section and already blocks a
   few specific categories out of the box (e.g. `privacy.categories.attachments`,
   `contacts_privacy.categories.notes`, `tasks_privacy.categories.notes`,

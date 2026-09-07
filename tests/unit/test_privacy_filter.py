@@ -7,10 +7,20 @@ length that could be used to reconstruct structure beyond what "redact"
 already reveals) -- block means none of it, matching what
 settings.yaml.example has always documented even though nothing enforced it
 before this module existed.
+
+SEC-07: a group section that's genuinely absent from settings.yaml is the
+one case this module still tolerates (backward compat with installs that
+predate it); anything present but malformed -- an unrecognised
+default_policy, a non-dict group or categories mapping, an unrecognised
+category policy -- now fails closed via PrivacyFilterConfigError instead of
+silently downgrading to "allow".
 """
 from __future__ import annotations
 
+import pytest
+
 from privacyfence.privacy_filter import (
+    PrivacyFilterConfigError,
     apply_list,
     apply_text,
     category_policy,
@@ -39,16 +49,29 @@ class TestInitAndResolution:
         assert category_policy("privacy", "metadata") == "allow"
 
     def test_missing_default_policy_falls_back_to_allow(self):
+        # The group section is present but simply doesn't set
+        # default_policy -- not malformed, just partial.
         init_privacy_filter({"privacy": {"categories": {"body": "block"}}})
         assert category_policy("privacy", "unknown_category") == "allow"
 
-    def test_invalid_default_policy_falls_back_to_allow(self):
-        init_privacy_filter({"privacy": {"default_policy": "delete_everything"}})
-        assert category_policy("privacy", "anything") == "allow"
-
-    def test_invalid_category_policy_falls_back_to_group_default(self):
-        init_privacy_filter({"privacy": {"default_policy": "block", "categories": {"body": "nonsense"}}})
+    def test_absent_group_defaults_to_block_when_org_managed(self):
+        # SEC-07: an org-managed install is expected to state its own
+        # privacy policy explicitly rather than silently inherit the
+        # permissive local-mode default.
+        init_privacy_filter({}, org_managed=True)
         assert category_policy("privacy", "body") == "block"
+
+    def test_absent_group_still_defaults_to_allow_when_not_org_managed(self):
+        init_privacy_filter({}, org_managed=False)
+        assert category_policy("privacy", "body") == "allow"
+
+    def test_invalid_default_policy_fails_closed(self):
+        with pytest.raises(PrivacyFilterConfigError, match="default_policy"):
+            init_privacy_filter({"privacy": {"default_policy": "delete_everything"}})
+
+    def test_invalid_category_policy_fails_closed(self):
+        with pytest.raises(PrivacyFilterConfigError, match="body"):
+            init_privacy_filter({"privacy": {"default_policy": "block", "categories": {"body": "nonsense"}}})
 
     def test_groups_are_independent(self):
         init_privacy_filter({
@@ -69,13 +92,25 @@ class TestInitAndResolution:
         assert category_policy("tasks_privacy", "notes") == "redact"
         assert category_policy("confluence_privacy", "search_excerpt") == "block"
 
-    def test_non_dict_config_value_does_not_crash(self):
-        init_privacy_filter({"privacy": "not a dict"})
-        assert category_policy("privacy", "body") == "allow"
+    def test_non_dict_group_fails_closed(self):
+        with pytest.raises(PrivacyFilterConfigError, match="privacy"):
+            init_privacy_filter({"privacy": "not a dict"})
 
-    def test_non_dict_categories_value_does_not_crash(self):
-        init_privacy_filter({"privacy": {"categories": "not a dict"}})
-        assert category_policy("privacy", "body") == "allow"
+    def test_non_dict_categories_fails_closed(self):
+        with pytest.raises(PrivacyFilterConfigError, match="categories"):
+            init_privacy_filter({"privacy": {"categories": "not a dict"}})
+
+    def test_one_malformed_group_leaves_the_previous_valid_state_untouched(self):
+        # init_privacy_filter builds the whole new registry entry before
+        # calling _REGISTRY.set() -- a malformed group must not partially
+        # apply, and must not clobber whatever was in effect before.
+        init_privacy_filter({"privacy": {"default_policy": "block"}})
+        with pytest.raises(PrivacyFilterConfigError):
+            init_privacy_filter({
+                "privacy": {"default_policy": "allow"},
+                "drive_privacy": {"default_policy": "nonsense"},
+            })
+        assert category_policy("privacy", "body") == "block"
 
 
 class TestApplyText:
