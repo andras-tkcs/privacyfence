@@ -11,7 +11,8 @@ from __future__ import annotations
 import html as _html
 import re as _re
 from typing import NamedTuple
-from urllib.parse import urlsplit
+
+from privacyfence.url_safety import is_safe_url
 
 # Matches drive_client.py's `==text==` highlight syntax for consistency
 # across the two tools, though the two parsers are otherwise independent.
@@ -25,12 +26,6 @@ _INLINE_RE = _re.compile(
     r"|\[([^\]]+)\]\(([^)]+)\)"   # link [text](url)
 )
 
-# Schemes a mail client will actually open as a link, vs. e.g. "javascript:"
-# smuggled in through a [text](url) run -- anything else has its href
-# dropped (the link text still renders, just not as a clickable link)
-# rather than emitting a link a recipient's mail client might act on.
-_ALLOWED_URL_SCHEMES = {"http", "https", "mailto"}
-
 
 class _InlineRun(NamedTuple):
     text: str
@@ -38,16 +33,6 @@ class _InlineRun(NamedTuple):
     italic: bool = False
     highlight: bool = False
     url: str = ""
-
-
-def _is_safe_url(url: str) -> bool:
-    try:
-        scheme = urlsplit(url).scheme.lower()
-    except ValueError:
-        return False
-    # A bare "example.com" (no scheme) is treated as unsafe rather than
-    # guessed at -- callers should write "https://example.com".
-    return scheme in _ALLOWED_URL_SCHEMES
 
 
 def _parse_inline_runs(text: str) -> list[_InlineRun]:
@@ -66,7 +51,7 @@ def _parse_inline_runs(text: str) -> list[_InlineRun]:
             runs.append(_InlineRun(m.group(4), highlight=True))
         elif m.group(5):  # link
             url = m.group(6)
-            runs.append(_InlineRun(m.group(5), url=url if _is_safe_url(url) else ""))
+            runs.append(_InlineRun(m.group(5), url=url if is_safe_url(url) else ""))
         last = m.end()
     if last < len(text):
         runs.append(_InlineRun(text[last:]))
