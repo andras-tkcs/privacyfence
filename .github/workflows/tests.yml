@@ -73,7 +73,36 @@ jobs:
       # Plain `pytest` already fails the step (non-zero exit) on the first
       # failing test — no extra flags needed to enforce a 100% pass rate.
       # pytest-timeout (configured in pyproject.toml) also fails any test
-      # that hangs, so a stuck test can't stall the job indefinitely. The
-      # coverage report here is informational only — nothing gates on it.
+      # that hangs, so a stuck test can't stall the job indefinitely.
+      # --cov-branch (TST-03, docs/security-remediation-plan.md Phase 2.1)
+      # catches the class of gap line coverage alone misses -- a branch
+      # that's reached but whose other arm never runs. The json/html reports
+      # feed the coverage-floor check and the uploaded artifact below; this
+      # step itself still only gates on the pass rate, not coverage.
       - name: Run test suite (100% pass rate required)
-        run: pytest -v --cov=src/privacyfence --cov-report=term-missing
+        run: |
+          pytest -v --cov=src/privacyfence --cov-branch \
+            --cov-report=term-missing \
+            --cov-report=json:coverage.json \
+            --cov-report=html:htmlcov
+
+      # Unlike the informational report above, this gates the merge: it
+      # fails if overall coverage, or any security-critical module's own
+      # coverage, has dropped below its recorded floor. See
+      # scripts/check_coverage_floor.py's module docstring for the floors
+      # and how to raise one.
+      - name: Enforce coverage floor (TST-03 ratchet)
+        run: python scripts/check_coverage_floor.py coverage.json
+
+      # Always publish, even on failure above -- a coverage regression is
+      # easiest to diagnose with the actual line/branch report in hand
+      # rather than re-running locally.
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage.json
+            htmlcov/
+          retention-days: 30

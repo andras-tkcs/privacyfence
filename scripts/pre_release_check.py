@@ -43,8 +43,19 @@ def main() -> int:
 
     results["pytest"] = run(
         "pytest",
-        ["python3", "-m", "pytest", "-v", "--cov=src/privacyfence", "--cov-report=term-missing"],
+        [
+            "python3", "-m", "pytest", "-v", "--cov=src/privacyfence", "--cov-branch",
+            "--cov-report=term-missing", "--cov-report=json:coverage.json",
+        ],
         cwd=REPO_ROOT,
+    )
+    # TST-03 (docs/security-remediation-plan.md Phase 2.1): same coverage
+    # ratchet CI enforces (.github/workflows/tests.yml) -- see
+    # scripts/check_coverage_floor.py's module docstring for the floors.
+    # Runs even if pytest itself failed above, same as the shim checks
+    # below; the summary loop still reports every result either way.
+    results["coverage floor"] = run(
+        "coverage floor", ["python3", "scripts/check_coverage_floor.py", "coverage.json"], cwd=REPO_ROOT
     )
     results["shim npm test"] = run("shim npm test", ["npm", "test"], cwd=REPO_ROOT / "mcpb" / "shim")
     results["shim typecheck"] = run(
