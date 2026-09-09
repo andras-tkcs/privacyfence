@@ -142,7 +142,7 @@ pii_detection:
 
 update_check:
   # Once-a-day background check against GitHub Releases
-  # (https://github.com/andras-tkcs/privacyfence/releases) for a newer version. Never downloads
+  # (https://github.com/privacyfence/privacyfence/releases) for a newer version. Never downloads
   # or installs anything automatically -- only shows an in-page banner with a link to the release
   # page. A network failure here is silent (logged, not shown) and never blocks startup. Toggled
   # automatically when you use "Check for Updates" > "Enabled" in PrivacyFence Settings.
