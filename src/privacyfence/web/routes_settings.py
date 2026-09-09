@@ -238,7 +238,7 @@ def build_routes(
 
     async def settings_page(request: Request) -> Response:
         if not _authenticated(request):
-            return _unauthorized_response()
+            return _unauthorized_response(request)
         state = _snapshot(controller)
         body = settings_window_html.build_html(state)
         csrf = request.cookies.get(_SESSION_COOKIE, "")
@@ -266,7 +266,7 @@ def build_routes(
 
     async def settings_action(request: Request) -> Response:
         if not _authenticated(request):
-            return _unauthorized_response()
+            return _unauthorized_response(request)
         action = request.path_params["action"]
         # The allowlist check happens *before* anything resembling
         # getattr(controller, action) runs -- an unlisted name (including
@@ -291,7 +291,7 @@ def build_routes(
 
     async def quit_action(request: Request) -> Response:
         if not _authenticated(request):
-            return _unauthorized_response()
+            return _unauthorized_response(request)
         try:
             payload = await request.json()
         except Exception:
@@ -312,7 +312,7 @@ def build_routes(
 
     async def org_config_upload(request: Request) -> Response:
         if not _authenticated(request):
-            return _unauthorized_response()
+            return _unauthorized_response(request)
         form = await request.form()
         if not _csrf_matches(request, form.get("csrf")):
             return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -329,7 +329,7 @@ def build_routes(
 
     async def audit_log_download(request: Request) -> Response:
         if not _authenticated(request):
-            return _unauthorized_response()
+            return _unauthorized_response(request)
         xlsx_path = controller.export_audit_log_path()
         if xlsx_path is None:
             return JSONResponse({"error": controller.error or "No audit log to export yet."}, status_code=404)

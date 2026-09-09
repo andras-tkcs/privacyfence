@@ -185,12 +185,38 @@ def clear_session_cookie(response: Response) -> None:
     response.delete_cookie(SESSION_COOKIE, path="/")
 
 
-def unauthorized_html() -> Response:
+def unauthorized_html(request: Request) -> Response:
+    """The page a human actually lands on with no valid ``pf_session``
+    cookie -- most commonly a bootstrap link that's already been used (it's
+    single-use by design, see ``BootstrapStore.consume``) or a session that
+    idle-/absolute-timed out, reopened by something like a browser
+    restoring a previously-open tab verbatim rather than a fresh click on a
+    freshly-logged link. Restarting PrivacyFence is offered as the
+    fallback of last resort, not the first-and-only answer: ``POST
+    /api/bootstrap`` (this module's own docstring) exists precisely so a
+    stale link/expired session doesn't require one, and this page spells
+    out the actual command rather than just naming the endpoint -- a
+    reader who's landed here from a dead link is exactly the audience that
+    finding this self-explanatory matters most for. ``request`` supplies
+    only this page's own origin (scheme+host+port), the same one the
+    reader is already looking at, so the command below can be pasted
+    as-is."""
+    origin = f"{request.url.scheme}://{request.url.netloc}"
     return HTMLResponse(
-        "<!DOCTYPE html><html><body style=\"font:15px sans-serif;padding:40px\">"
-        "Not authorized. Open the sign-in link PrivacyFence logged at startup "
-        "(<code>~/.privacyfence/logs/privacyfence.log</code>), or restart "
-        "PrivacyFence for a fresh one if that link has expired.</body></html>",
+        "<!DOCTYPE html><html><body style=\"font:15px sans-serif;padding:40px;max-width:640px\">"
+        "<p>Not authorized — this link has expired, was already used, or your "
+        "session timed out.</p>"
+        "<p>Easiest fix: open the newest sign-in link PrivacyFence logged "
+        "(<code>~/.privacyfence/logs/privacyfence.log</code>) — every daemon "
+        "startup logs a fresh one.</p>"
+        "<p>Don't want to restart PrivacyFence just for that? From a terminal "
+        "on this machine, mint a new one on demand and open the link it "
+        "returns:</p>"
+        "<pre style=\"white-space:pre-wrap;background:#f0f0f0;padding:10px;"
+        "border-radius:4px\">curl -s -X POST "
+        "-H \"Authorization: Bearer $(cat ~/.privacyfence/web_token)\" "
+        f"{origin}/api/bootstrap</pre>"
+        "</body></html>",
         status_code=401,
     )
 
