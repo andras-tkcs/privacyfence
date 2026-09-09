@@ -256,7 +256,7 @@ manual quarantine step. Full installation details are in [Technical Reference](d
 ### Run from source
 
 ```bash
-git clone https://github.com/andras-tkcs/privacyfence
+git clone https://github.com/privacyfence/privacyfence
 cd privacyfence
 python -m venv .venv
 source .venv/bin/activate
