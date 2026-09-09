@@ -126,6 +126,19 @@ class TestBootstrapStore:
 
 
 class TestAuthenticated:
+    # authenticated() reads the session cookie only -- there is no ``?token=``
+    # (or ``?bootstrap=``) query-string path here to unit-test any more.
+    # Pre-SEC-06, this module's authenticated() *was* the ``?token=`` check;
+    # SEC-06 (module docstring above) replaced that with the cookie-based
+    # LocalSessionStore this class exercises, and moved the query string to
+    # a one-time, pre-authentication *exchange* (BOOTSTRAP_QUERY_PARAM,
+    # consumed by web/server.py before authenticated() is ever called, not
+    # by authenticated() itself). The regression coverage that an old-style
+    # ``?token=<secret>`` URL is no longer honored by any route lives at the
+    # route level in test_server.py's TestBootstrapFlow (it needs a live app
+    # and dispatcher to demonstrate a *route*, not this function, rejects
+    # it) -- see that class's own comment for the assertion.
+
     def test_no_cookie_is_not_authenticated(self):
         store = sa.LocalSessionStore()
         assert sa.authenticated(_request_with_cookie(None), store) is False
@@ -139,6 +152,19 @@ class TestAuthenticated:
         store = sa.LocalSessionStore()
         store.create()
         assert sa.authenticated(_request_with_cookie("forged-session-id"), store) is False
+
+    def test_query_string_alone_does_not_authenticate(self):
+        # No cookie at all, only a query param shaped like the retired
+        # token link -- must not authenticate. authenticated() never even
+        # looks at query_params, but this pins that contract so a future
+        # change can't silently reintroduce a URL-carried credential here.
+        store = sa.LocalSessionStore()
+        session_id = store.create()
+        scope = {
+            "type": "http", "headers": [], "method": "GET", "path": "/",
+            "query_string": f"token={session_id}".encode(),
+        }
+        assert sa.authenticated(Request(scope), store) is False
 
 
 class TestCsrfAndOrigin:
@@ -179,6 +205,25 @@ class TestCsrfAndOrigin:
         }
         assert sa.check_origin(Request(scope)) is False
 
+    def test_check_csrf_compares_via_hmac_compare_digest(self, monkeypatch):
+        # Not just "produces the right answer" -- check_csrf's own docstring
+        # promises a constant-time compare specifically to avoid a timing
+        # side-channel on the session id. Spy on hmac.compare_digest itself
+        # so a future rewrite to a plain ``==`` (equally correct, but
+        # timing-unsafe) fails this test even though every other assertion
+        # in this class would still pass.
+        calls = []
+        real_compare_digest = sa.hmac.compare_digest
+        monkeypatch.setattr(
+            sa.hmac, "compare_digest",
+            lambda a, b: calls.append((a, b)) or real_compare_digest(a, b),
+        )
+        request = _request_with_cookie("sess-abc")
+
+        assert sa.check_csrf(request, "sess-abc") is True
+
+        assert calls == [("sess-abc", "sess-abc")]
+
 
 class TestSessionCookieHelpers:
     def test_set_session_cookie_is_httponly_samesite_strict(self):
@@ -188,6 +233,20 @@ class TestSessionCookieHelpers:
         assert "sess-123" in set_cookie
         assert "HttpOnly" in set_cookie
         assert "samesite=strict" in set_cookie.lower()
+
+    def test_set_session_cookie_omits_secure_in_local_mode(self):
+        # The flag that actually differs between the two modes (module
+        # docstring; contrast web/org_session.py's set_session_cookie,
+        # which passes secure=True). Local mode's own transport is
+        # deliberate plain-HTTP loopback (D1, security-and-compliance.md),
+        # and a Secure cookie is silently *dropped* by the browser over
+        # plain HTTP -- so asserting its absence here isn't pedantry, it's
+        # the difference between the session cookie working at all and a
+        # user stuck unable to sign in.
+        response = Response()
+        sa.set_session_cookie(response, "sess-123")
+        set_cookie = response.headers.get("set-cookie", "")
+        assert "secure" not in set_cookie.lower()
 
     def test_clear_session_cookie_expires_it(self):
         response = Response()
@@ -212,3 +271,21 @@ class TestVerifyBearerSecret:
     def test_non_bearer_scheme_fails(self):
         scope = {"type": "http", "headers": [(b"authorization", b"Basic s3cr3t")], "method": "POST", "path": "/"}
         assert sa.verify_bearer_secret(Request(scope), "s3cr3t") is False
+
+    def test_compares_via_hmac_compare_digest(self, monkeypatch):
+        # Same reasoning as TestCsrfAndOrigin's equivalent spy: this is the
+        # one remaining check against the persistent local install secret
+        # (module docstring), so it's exactly where a timing side-channel
+        # would matter most if a future edit swapped the constant-time
+        # compare for a plain ``==``.
+        calls = []
+        real_compare_digest = sa.hmac.compare_digest
+        monkeypatch.setattr(
+            sa.hmac, "compare_digest",
+            lambda a, b: calls.append((a, b)) or real_compare_digest(a, b),
+        )
+        scope = {"type": "http", "headers": [(b"authorization", b"Bearer s3cr3t")], "method": "POST", "path": "/"}
+
+        assert sa.verify_bearer_secret(Request(scope), "s3cr3t") is True
+
+        assert calls == [("s3cr3t", "s3cr3t")]

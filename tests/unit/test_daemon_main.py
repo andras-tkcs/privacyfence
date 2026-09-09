@@ -1144,8 +1144,6 @@ class TestMaybeStartWebServer:
     # ------------------------------------------------------------------ #
 
     def _controller(self, tmp_path, monkeypatch):
-        from types import SimpleNamespace
-
         from privacyfence import resource_names, settings_controller as sc, update_checker
 
         monkeypatch.setattr(resource_names, "_cache_file", lambda: tmp_path / "rn.json")

@@ -9,7 +9,7 @@ description = "Privacy proxy between Claude (MCP) and your personal data, with a
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
-authors = [{ name = "Andras Takacs", email = "privacyfence@tkcs.name" }]
+authors = [{ name = "Andras Takacs", email = "info@privacyfence.eu" }]
 dependencies = [
     "google-auth>=2.23.0",
     "google-auth-oauthlib>=1.1.0",
@@ -131,6 +131,15 @@ test = [
     # browser download on every `pip install -e ".[test]"`.
     "playwright>=1.48,<2.0",
 ]
+# Static analysis gate (docs/security-remediation-plan.md, Phase 2 item 2.3,
+# TST-07). ruff is the CI-blocking step ([tool.ruff.lint] below); mypy and
+# bandit run in CI too but non-blocking for now -- see the comments on those
+# tool sections for why.
+lint = [
+    "ruff>=0.6",
+    "mypy>=1.10",
+    "bandit>=1.7",
+]
 
 [tool.setuptools_scm]
 # The version is derived entirely from git tags now -- see this repo's
@@ -154,3 +163,65 @@ testpaths = ["tests"]
 # A hung asyncio socket test (e.g. a fixture never closing a connection)
 # would otherwise block the whole suite indefinitely instead of failing.
 timeout = 30
+
+[tool.coverage.run]
+# TST-03 (docs/security-remediation-plan.md Phase 2.1): branch coverage, not
+# just line coverage, is what scripts/check_coverage_floor.py's floors are
+# computed against -- a line that's always reached but whose "else" arm
+# never runs (e.g. a fail-open branch nothing exercises) reads as fully
+# covered under line-only coverage. `--cov-branch` on the CI/pre-release
+# pytest invocations is redundant with this but kept explicit there so it's
+# visible without opening this file.
+branch = true
+source = ["src/privacyfence"]
+
+# --- Static analysis (docs/security-remediation-plan.md, Phase 2 item 2.3,
+# TST-07) --- #
+
+[tool.ruff]
+target-version = "py311"
+# Not tied to any rule in `select` below today (none of them care about
+# width), but set for when line-length-sensitive rules get added.
+line-length = 120
+
+[tool.ruff.lint]
+# Pinned explicitly rather than left at ruff's shifting default so a ruff
+# upgrade can't silently turn on/off rules underneath CI. This is the
+# "ruff blocking immediately" half of TST-07 -- E4/E7/E9 (syntax errors,
+# obvious logic errors) and F (pyflakes: unused imports/names, undefined
+# names) are the baseline the existing codebase already passes cleanly.
+# Broadening this (import sorting, pyupgrade, bugbear, ...) is the
+# "ongoing" half of TST-07's effort estimate -- each addition should land
+# as its own change once the resulting diff has been reviewed, not folded
+# in silently here.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+python_version = "3.11"
+# TST-07: "mypy/pyright incrementally (non-blocking -> blocking per
+# module)". The existing code predates type-checking in CI and mypy's
+# default strictness currently finds ~87 pre-existing errors across ~20
+# files (mostly connector wiring in daemon_main.py and a few Starlette/ASGI
+# signature mismatches) -- none of them are new to this change, and fixing
+# them all is out of this PR's scope (see CLAUDE.md /
+# docs/security-remediation-plan.md's own "don't silently expand scope"
+# note). CI runs mypy non-blocking for now (informational only) so those
+# pre-existing errors are visible without failing every build; per-module
+# `[[tool.mypy.overrides]]` blocks with `strict = true` (or just
+# `warn_unused_ignores`/`disallow_untyped_defs` per-module) should be added
+# here as modules get cleaned up and promoted to blocking.
+ignore_missing_imports = true
+
+[tool.bandit]
+# TST-07: "bandit or semgrep for security-focused rules". Scans src/ only
+# for now (tests/ trips B101 `assert_used` constantly, which is how pytest
+# assertions work, not a finding) and runs non-blocking in CI alongside
+# mypy: bandit currently flags two real, already-tracked issues (SEC-14,
+# Phase 3 item 3.2 -- xml.etree.ElementTree on attachment content) plus a
+# handful of low-severity false positives (constant names like
+# `web_token`/`mcp_token` read as B105 "hardcoded password strings", an
+# `assert` used for internal invariant-narrowing rather than input
+# validation). Fixing SEC-14 here would be scope creep on this change;
+# once it lands (Phase 3.2) and the false positives are triaged, this
+# should move to blocking.
+exclude_dirs = ["tests"]

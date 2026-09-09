@@ -386,7 +386,7 @@ def _state_stream_route(stream: StateStream, *, sessions: LocalSessionStore) -> 
 
     async def handler(request: Request) -> Response:
         if not _session_authenticated(request, sessions):
-            return _unauthorized_response()
+            return _unauthorized_response(request)
         return StreamingResponse(
             stream.subscribe(request.is_disconnected),
             media_type="text/event-stream",
