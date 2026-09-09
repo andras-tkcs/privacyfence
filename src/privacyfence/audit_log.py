@@ -147,6 +147,17 @@ class AuditEntry:
                               # would be the same instant and a second field would say nothing new.
                               # See gate.py's own module docstring and
                               # docs/https-connector-refactor-plan.md §5.4.
+    delivery: str = ""       # "local_disk" | "inline_base64" | "staged_link" | "" -- docs/org-mode-
+                              # download-delivery-plan.md's Phase 3: for drive_download_file/
+                              # gmail_download_attachment/confluence_download_attachment only, which
+                              # transport actually moved (or -- for a denied/expired/pending entry --
+                              # would have moved) this call's file bytes. "" for every other tool
+                              # (and for every entry recorded before this field existed): "did file
+                              # content actually reach the model, or stay server-side" is a
+                              # materially different privacy event from the ordinary accept/deny
+                              # decision, and was previously only recoverable by cross-referencing
+                              # tool-call args, which isn't what the audit log is for. Set by gate.py's
+                              # gated_call() (its own ``delivery`` kwarg) -- never inferred here.
 
 
 # SEC-03: characters that, as the first character of a cell's string value,
@@ -241,8 +252,9 @@ class AuditLogger:
             "Timestamp", "Week", "Connector", "Tool", "Human-Readable Name",
             "Summary", "Sender / Context", "Decision", "Auto-Accept Rule", "Latency (s)",
             "PII Detected", "PII Categories", "PII Match Details", "Claude's Reason (unverified)",
+            "Delivery",
         ]
-        COL_WIDTHS = [22, 10, 12, 30, 22, 55, 30, 14, 22, 12, 12, 30, 55, 55]
+        COL_WIDTHS = [22, 10, 12, 30, 22, 55, 30, 14, 22, 12, 12, 30, 55, 55, 16]
 
         hdr_font  = Font(bold=True, color="FFFFFF")
         hdr_fill  = PatternFill("solid", fgColor="2D4A6B")
@@ -284,7 +296,7 @@ class AuditLogger:
                 entry.auto_accept_rule or "", round(entry.latency_seconds, 2),
                 "Yes" if entry.pii_detected else "",
                 "; ".join(entry.pii_categories), _excel_literal(entry.pii_match_details or ""),
-                _excel_literal(entry.claude_reason or ""),
+                _excel_literal(entry.claude_reason or ""), entry.delivery or "",
             ])
             fill = decision_fills.get(entry.decision, PatternFill())
             for col in range(1, len(HEADERS) + 1):

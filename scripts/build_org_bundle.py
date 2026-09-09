@@ -287,6 +287,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicitly turn unattended sessions back off (useful with --merge).",
     )
 
+    downloads = parser.add_argument_group(
+        "Download delivery (org mode, docs/org-mode-download-delivery-plan.md)",
+    )
+    downloads.add_argument(
+        "--downloads-inline-max-bytes", type=int, metavar="BYTES", default=None,
+        help="drive_download_file/gmail_download_attachment/confluence_download_attachment: "
+             "files at or under this size are returned directly in the tool result instead of "
+             "written to destination_dir (meaningless in local mode). Default: 8000000 (8MB). "
+             "0 forces every download through a one-time staged link instead.",
+    )
+    downloads.add_argument(
+        "--downloads-link-ttl-seconds", type=float, metavar="SECONDS", default=None,
+        help="How long a staged-download link stays claimable before it expires. Default: 300 "
+             "(5 minutes).",
+    )
+    downloads.add_argument(
+        "--downloads-disable-staging", action="store_true",
+        help="Refuse (rather than stage to disk, encrypted) a download too large for "
+             "--downloads-inline-max-bytes. Off by default -- see the plan doc's \"Org-level "
+             "opt-out\" section for when to turn this on.",
+    )
+
     signing = parser.add_argument_group(
         "Bundle signing (SEC-05 full signing, src/privacyfence/org_bundle_signing.py)",
     )
@@ -396,6 +418,7 @@ def main(argv: list[str] | None = None) -> int:
         bundle.pop("server", None)
         bundle.pop("idp", None)
         bundle.pop("step_up", None)
+        bundle.pop("download_delivery", None)
     elif any([
         args.server_issuer_url, args.idp_issuer, args.idp_client_id, args.idp_client_secret,
         args.server_tls_cert, args.server_tls_key, args.server_trusted_proxies, args.idp_step_up_acr_values,
@@ -421,6 +444,24 @@ def main(argv: list[str] | None = None) -> int:
         if args.step_up_rp_name:
             step_up_section["rp_name"] = args.step_up_rp_name
         bundle["step_up"] = step_up_section
+
+    if (
+        args.downloads_inline_max_bytes is not None
+        or args.downloads_link_ttl_seconds is not None
+        or args.downloads_disable_staging
+    ):
+        if bundle.get("mode") != "org":
+            raise SystemExit(
+                "--downloads-* flags require --mode org (or --merge against an existing org-mode bundle)."
+            )
+        downloads_section: dict[str, Any] = dict(bundle.get("download_delivery") or {})
+        if args.downloads_inline_max_bytes is not None:
+            downloads_section["inline_max_bytes"] = args.downloads_inline_max_bytes
+        if args.downloads_link_ttl_seconds is not None:
+            downloads_section["link_ttl_seconds"] = args.downloads_link_ttl_seconds
+        if args.downloads_disable_staging:
+            downloads_section["allow_disk_staging"] = False
+        bundle["download_delivery"] = downloads_section
 
     services = [k for k in ("google", "slack", "salesforce", "atlassian") if k in bundle]
     if not services and "unattended_sessions" not in bundle and "mode" not in bundle:
@@ -449,6 +490,8 @@ def main(argv: list[str] | None = None) -> int:
         summary += f", mode={bundle['mode']}"
     if "step_up" in bundle:
         summary += f", step_up.enabled={bundle['step_up'].get('enabled', False)}"
+    if "download_delivery" in bundle:
+        summary += f", download_delivery.allow_disk_staging={bundle['download_delivery'].get('allow_disk_staging', True)}"
     summary += f", signed={'signature' in bundle}"
     print(f"Wrote {out_path} with: {summary}")
     if bundle.get("mode") == "org":

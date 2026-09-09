@@ -2312,6 +2312,86 @@ class TestDownloadFile:
         assert os.path.exists(tmp_path / "evil.bin")
 
 
+class TestDownloadFileBytes:
+    """docs/org-mode-download-delivery-plan.md, Phase 2: org-mode inline/
+    staged delivery's own entry point -- same fetch as download_file, but
+    returns bytes instead of writing to disk."""
+
+    def test_empty_file_id_raises(self):
+        client = make_client(MagicMock())
+        with pytest.raises(DriveClientError, match="non-empty file_id"):
+            client.download_file_bytes("")
+
+    def test_downloads_binary_file_via_raw_media_url(self, monkeypatch):
+        service = MagicMock()
+        service.files.return_value.get.return_value.execute.return_value = {
+            "id": "f1", "name": "image.png", "mimeType": "image/png",
+        }
+        client = make_client(service)
+        monkeypatch.setattr(client, "_load_credentials", lambda: MagicMock())
+
+        captured_urls = []
+        fake_session = MagicMock()
+        fake_session.get.side_effect = lambda url, stream: (captured_urls.append(url), _FakeStreamResponse([b"data"]))[1]
+        monkeypatch.setattr(drive_client_module, "AuthorizedSession", lambda creds: fake_session)
+
+        result = client.download_file_bytes("f1")
+
+        assert result == {"data": b"data", "name": "image.png", "mime_type": "image/png", "size_bytes": 4}
+        assert "alt=media" in captured_urls[0]
+
+    def test_google_doc_uses_export_url_and_txt_extension_and_mime_type(self, monkeypatch):
+        service = MagicMock()
+        service.files.return_value.get.return_value.execute.return_value = {
+            "id": "f1", "name": "MyDoc", "mimeType": "application/vnd.google-apps.document",
+        }
+        client = make_client(service)
+        monkeypatch.setattr(client, "_load_credentials", lambda: MagicMock())
+
+        captured_urls = []
+        fake_session = MagicMock()
+        fake_session.get.side_effect = lambda url, stream: (captured_urls.append(url), _FakeStreamResponse([b"exported"]))[1]
+        monkeypatch.setattr(drive_client_module, "AuthorizedSession", lambda creds: fake_session)
+
+        result = client.download_file_bytes("f1")
+
+        assert result["data"] == b"exported"
+        assert result["name"] == "MyDoc.txt"
+        assert result["mime_type"] == "text/plain"
+        assert "export" in captured_urls[0]
+
+    def test_streaming_failure_becomes_drive_client_error(self, monkeypatch):
+        service = MagicMock()
+        service.files.return_value.get.return_value.execute.return_value = {
+            "id": "f1", "name": "f.bin", "mimeType": "application/octet-stream",
+        }
+        client = make_client(service)
+        monkeypatch.setattr(client, "_load_credentials", lambda: MagicMock())
+
+        fake_session = MagicMock()
+        fake_session.get.side_effect = RuntimeError("connection reset")
+        monkeypatch.setattr(drive_client_module, "AuthorizedSession", lambda creds: fake_session)
+
+        with pytest.raises(DriveClientError, match="download_file"):
+            client.download_file_bytes("f1")
+
+    def test_does_not_write_anything_to_disk(self, tmp_path, monkeypatch):
+        service = MagicMock()
+        service.files.return_value.get.return_value.execute.return_value = {
+            "id": "f1", "name": "f.bin", "mimeType": "application/octet-stream",
+        }
+        client = make_client(service)
+        monkeypatch.setattr(client, "_load_credentials", lambda: MagicMock())
+        fake_session = MagicMock()
+        fake_session.get.return_value = _FakeStreamResponse([b"data"])
+        monkeypatch.setattr(drive_client_module, "AuthorizedSession", lambda creds: fake_session)
+        monkeypatch.chdir(tmp_path)
+
+        client.download_file_bytes("f1")
+
+        assert list(tmp_path.iterdir()) == []
+
+
 # ---------------------------------------------------------------------------- #
 # fetch_thumbnail
 # ---------------------------------------------------------------------------- #

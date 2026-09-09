@@ -37,10 +37,22 @@ different mechanism, included here only for completeness.
 
 For any of the five tools above, once bytes are in hand and the content isn't an image, the
 non-image fallback is the file's own extracted content — rendered richly, not dumped as flat text.
-Since none of these tools ever return file content to Claude at all, showing the human the real
-content here is strictly more useful than a visual-only thumbnail: a formerly page-shaped preview
-image told the reviewer "this is a two-page document," while the extracted content tells them
-what it actually says.
+In local mode, none of the three download tools ever return file content to Claude in the tool
+result itself (org mode is different — see the note below), so showing the human the real content
+here is strictly more useful than a visual-only thumbnail: a formerly page-shaped preview image
+told the reviewer "this is a two-page document," while the extracted content tells them what it
+actually says.
+
+**Org mode note** (`docs/org-mode-download-delivery-plan.md`): each tool's own pre-approval
+preview/scan size cap below (100KB for `drive_download_file`, 5MB for the two attachment tools --
+§2 covers exactly which) is a completely separate knob from org mode's `download_delivery.
+inline_max_bytes` (default 8MB), which decides the *actual delivery* once approved — a small file's
+real bytes returned directly in the tool result, a larger one staged behind a one-time link instead
+(local mode always writes to `destination_dir`, unaffected either way). A file can easily fall on
+different sides of the two caps at once (e.g. a 6MB Gmail attachment: over the 5MB preview-prefetch
+cap, so no rich preview or PII scan runs, but under the default 8MB inline-delivery cap, so its
+bytes still come back to Claude directly once approved) — the two are deliberately independent
+settings answering different questions, not the same cap reused.
 
 Two cooperating modules make this work:
 

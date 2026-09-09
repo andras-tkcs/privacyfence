@@ -514,6 +514,27 @@ other).
   `journalctl -u caddy -f` unless you've configured a separate log file in the Caddyfile.
 - **Updating PrivacyFence**: re-run the `pipx install ... --force` form of whichever install command
   you used in [Step 3](#3-install-privacyfence), then `sudo systemctl restart privacyfence`.
+- **Download/attachment delivery** (`drive_download_file`/`gmail_download_attachment`/
+  `confluence_download_attachment`, `docs/org-mode-download-delivery-plan.md`): there's no local
+  directory Claude and the user share on this server, so these tools deliver a file's bytes one of
+  two ways instead of writing to disk. A file at or under `download_delivery.inline_max_bytes`
+  (default 8MB) in `org_config.json` comes back directly in the tool's result. A larger one is
+  staged for a short time, encrypted at rest, behind a one-time link the user opens in their own
+  signed-in browser tab — `--downloads-link-ttl-seconds` on `build_org_bundle.py` controls how long
+  that link stays claimable (default 300s/5 minutes) before it expires unclaimed. Three flags on
+  `build_org_bundle.py` (rebuild with `--merge` and redeploy exactly as in
+  [Step 5](#5-build-the-organization-config-bundle)) tune this: `--downloads-inline-max-bytes BYTES`
+  (`0` forces every download through a staged link, unconditionally — the setting for "no file
+  content should ever reach Claude's context, full stop"), `--downloads-link-ttl-seconds SECONDS`,
+  and `--downloads-disable-staging` (refuse an oversized download outright rather than ever writing
+  even an encrypted copy of it to this server's disk — the setting for an organization whose
+  confidentiality requirements rule out a shared machine transiently holding a copy of a large file
+  at all, encrypted or not). **Exclude `~/.privacyfence/users/*/downloads/` from any backup/snapshot
+  job you run on this server independently of PrivacyFence.** Its contents are AES-256-GCM
+  ciphertext with the decryption key never written to this server's disk at all (see that plan
+  doc's "Encryption at rest" section), so this is belt-and-suspenders on top of that guarantee, not
+  a substitute for it — but it's a cheap thing to ask your backup tooling for, and it keeps a stale
+  backup snapshot from being a second place a "deleted" staged file's ciphertext lingers.
 
 ---
 

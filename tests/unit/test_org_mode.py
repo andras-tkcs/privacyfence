@@ -112,6 +112,45 @@ class TestStepUpConfigFromOrgConfig:
             org_mode.StepUpConfig.from_org_config({"step_up": {"scope": "everything"}})
 
 
+class TestDownloadDeliveryConfigFromOrgConfig:
+    """docs/org-mode-download-delivery-plan.md, Phase 1: an existing org
+    install with no "download_delivery" section keeps working exactly as
+    before this phase (inline-first, 8MB cap, staging allowed)."""
+
+    def test_absent_section_uses_defaults(self):
+        config = org_mode.DownloadDeliveryConfig.from_org_config({})
+        assert config.inline_max_bytes == org_mode.DEFAULT_INLINE_MAX_BYTES
+        assert config.link_ttl_seconds == org_mode.DEFAULT_LINK_TTL_SECONDS
+        assert config.allow_disk_staging is True
+
+    def test_every_field_set(self):
+        config = org_mode.DownloadDeliveryConfig.from_org_config({
+            "download_delivery": {
+                "inline_max_bytes": 1_000_000, "link_ttl_seconds": 60.0, "allow_disk_staging": False,
+            },
+        })
+        assert config.inline_max_bytes == 1_000_000
+        assert config.link_ttl_seconds == 60.0
+        assert config.allow_disk_staging is False
+
+    def test_zero_inline_max_bytes_is_allowed(self):
+        # The knob an org picks for "no file content ever reaches Claude's
+        # context, unconditionally" -- forces every download through a
+        # staged link.
+        config = org_mode.DownloadDeliveryConfig.from_org_config({
+            "download_delivery": {"inline_max_bytes": 0},
+        })
+        assert config.inline_max_bytes == 0
+
+    def test_negative_inline_max_bytes_raises(self):
+        with pytest.raises(org_mode.ConfigurationError):
+            org_mode.DownloadDeliveryConfig.from_org_config({"download_delivery": {"inline_max_bytes": -1}})
+
+    def test_non_positive_link_ttl_raises(self):
+        with pytest.raises(org_mode.ConfigurationError):
+            org_mode.DownloadDeliveryConfig.from_org_config({"download_delivery": {"link_ttl_seconds": 0}})
+
+
 class TestConfigurationError:
     def test_is_a_value_error_subclass(self):
         # So every existing `except ValueError`/`pytest.raises(ValueError)`

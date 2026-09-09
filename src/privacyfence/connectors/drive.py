@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import time
@@ -11,6 +12,7 @@ from typing import Any
 
 from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
+from ..download_staging import get_download_staging_store
 from ..drive_client import (
     DriveClient,
     DriveClientError,
@@ -18,6 +20,8 @@ from ..drive_client import (
     resolve_download_destination,
 )
 from ..gate import current_reason, gated_call
+from ..org_mode import DownloadDeliveryConfig
+from ..principal import current_principal
 from ..privacy_filter import apply_list, apply_text, category_policy
 from ..text_extraction import extract_text, is_prefetch_worthy, preview_blocks_for
 
@@ -83,6 +87,15 @@ class DriveConnector(Connector):
     def __init__(self, client: DriveClient) -> None:
         self._drive = client
         self.my_email: str = ""
+        # docs/org-mode-download-delivery-plan.md, Phase 2 -- set post-
+        # construction by daemon_main.py's build_connectors, exactly like
+        # my_email above. "local" (download_config/download_base_url left
+        # unset) is the pre-Phase-2 default: drive_download_file keeps
+        # writing straight to destination_dir unless a caller explicitly
+        # switches this to "org".
+        self.download_mode: str = "local"
+        self.download_config: DownloadDeliveryConfig | None = None
+        self.download_base_url: str = ""
         self.session_created_ids: set[str] = set()
         # file_id -> Drive modifiedTime as of PrivacyFence's own last write to
         # that file. Lets a subsequent read of the *exact same, still-
@@ -315,15 +328,20 @@ class DriveConnector(Connector):
             ToolSpec(
                 name="drive_download_file",
                 description=(
-                    "Download a Drive file to a local directory and return the saved "
-                    "file path. Use this for large files (e.g. >100 KB) that cannot "
-                    "be returned inline. Google Workspace documents are exported as "
-                    "text/CSV. destination_dir is required -- there is no default, so "
-                    "choose deliberately: pass ~/Downloads (or another path the user "
-                    "asked for) when this file is a deliverable the user should find "
-                    "afterward, or your own working/scratch directory when you're "
-                    "only downloading it to read or process it yourself. "
-                    "Requires user approval."
+                    "Download a Drive file. Google Workspace documents are exported "
+                    "as text/CSV. On a local install: saved to destination_dir, and "
+                    "the saved file path is returned -- destination_dir is required, "
+                    "there is no default, so choose deliberately: pass ~/Downloads "
+                    "(or another path the user asked for) when this file is a "
+                    "deliverable the user should find afterward, or your own "
+                    "working/scratch directory when you're only downloading it to "
+                    "read or process it yourself. On an organization-managed "
+                    "install: destination_dir is ignored (there is no local "
+                    "filesystem you and the human share) -- a small file's bytes "
+                    "come back directly in this tool's result so you can read or "
+                    "hand it to the human yourself; a larger file comes back as a "
+                    "one-time link the human opens in their own signed-in browser "
+                    "tab instead. Requires user approval."
                 ),
                 params=[
                     ToolParam("file_id", "str"),
@@ -835,24 +853,73 @@ class DriveConnector(Connector):
         drive_file = await self._fetch(self._drive.get_file_metadata, file_id)
         owners = getattr(drive_file, "owners", [])
         modified = getattr(drive_file, "modified_time", "")
+        # destination_dir stays a mandatory tool parameter in every mode
+        # (no MCP client/test needs to change), but only local mode ever
+        # actually writes there -- see this method's own org-mode branch
+        # below and the tool description's own note. resolve_download_
+        # destination is still called unconditionally here purely to
+        # compute `name` the same way local mode always has.
         dest_path = resolve_download_destination(drive_file, destination_dir)
         name = os.path.basename(dest_path)
 
+        cfg = self.download_config or DownloadDeliveryConfig()
+        # Phase 3 audit trail (docs/org-mode-download-delivery-plan.md):
+        # the delivery path this call is about to take, estimated from
+        # metadata size the same way the preview below is -- may not match
+        # the eventual actual delivery in the rare case a Google Workspace
+        # export ends up a different size than drive_file.size, but that's
+        # exactly the same approximation the human-facing preview already
+        # makes, and this is an audit record of the *decision*, not a
+        # guarantee about what happens after it.
+        delivery = (
+            "local_disk" if self.download_mode != "org"
+            else "inline_base64" if cfg.fits_inline(drive_file.size)
+            else "staged_link"
+        )
+
         # File/Owner/Size/Modified are known via drive_get_file_metadata (or
-        # this call's own fetch of it above); the only genuinely new facts
-        # from approving this call are that no file content reaches Claude,
-        # and where it'll be saved -- same pattern as gmail_download_attachment.
+        # this call's own fetch of it above) -- the only genuinely new fact
+        # from approving this call is *how* the file reaches Claude, which
+        # is mode/delivery-conditional (docs/org-mode-download-delivery-
+        # plan.md's "Gate preview honesty"): local mode's bytes never leave
+        # this machine; org mode's own preview must say plainly whether
+        # bytes are about to flow into Claude's context or stay
+        # server-side behind a one-time link, using drive_file.size (the
+        # same field the "Size" row above already shows) as the size
+        # estimate -- the real decision below is made against the actually
+        # fetched byte count, which can differ slightly for a Google
+        # Workspace export.
         preview = {
             "File": name,
             "Owner": ", ".join(owners) if owners else "(unknown)",
             "Size": f"{drive_file.size:,} bytes",
             "Modified": str(modified) if modified else "(unknown)",
         }
-        new_info = {
-            "Content returned to Claude": "None — file bytes are never sent",
-            "Saved to": dest_path,
-        }
-        details = "The file above will be downloaded to the destination shown."
+        if self.download_mode == "org":
+            if cfg.fits_inline(drive_file.size):
+                new_info = {
+                    "Content returned to Claude": (
+                        f"Yes — file bytes are included in the tool result (file is "
+                        f"{drive_file.size:,} bytes, under this org's {cfg.inline_max_bytes:,}-byte "
+                        "inline-delivery limit)"
+                    ),
+                }
+            else:
+                new_info = {
+                    "Content returned to Claude": (
+                        "None — a one-time link is generated for you to open in your own browser"
+                    ),
+                }
+        else:
+            new_info = {
+                "Content returned to Claude": "None — file bytes are never sent",
+                "Saved to": dest_path,
+            }
+        details = (
+            "The file above will be delivered as described above."
+            if self.download_mode == "org"
+            else "The file above will be downloaded to the destination shown."
+        )
 
         # Drive already generates a small preview image for many file types
         # (Docs/Sheets/Slides, images, PDFs) -- cheaper to fetch that than the
@@ -917,8 +984,68 @@ class DriveConnector(Connector):
             my_email=self.my_email,
             session_created_ids=self.session_created_ids,
             args={"file_id": file_id, "destination_dir": destination_dir},
+            delivery=delivery,
         )
-        return await self._fetch(self._drive.download_file, file_id, destination_dir)
+        if self.download_mode != "org":
+            return await self._fetch(self._drive.download_file, file_id, destination_dir)
+        return await self._deliver_org_download(file_id, drive_file.size, cfg)
+
+    async def _deliver_org_download(self, file_id: str, metadata_size: int, cfg: DownloadDeliveryConfig) -> Any:
+        """org mode's own delivery, once approval is granted -- inline
+        (base64, in the tool result) for anything under ``cfg.
+        inline_max_bytes``, else a one-time staged link, else (staging
+        disabled for this org) a clear refusal. Never writes to this
+        daemon's own disk except via download_staging.py's own encrypted-
+        at-rest store. See docs/org-mode-download-delivery-plan.md's Phase
+        2."""
+        if not cfg.allow_disk_staging and not cfg.fits_inline(metadata_size):
+            # Bail before ever fetching bytes -- metadata_size (already
+            # known, no extra round trip) already rules out inline, and
+            # staging is off for this org, so there's nothing productive a
+            # full fetch would accomplish.
+            raise RuntimeError(
+                f"This file is {metadata_size:,} bytes, over this organization's "
+                f"{cfg.inline_max_bytes:,}-byte inline-delivery limit, and disk staging is disabled "
+                "for this organization -- there is no way to deliver it through this tool. Ask the "
+                "user for a narrower export or a different way to share it."
+            )
+
+        result = await self._fetch(self._drive.download_file_bytes, file_id)
+        data: bytes = result["data"]
+        name: str = result["name"]
+        mime_type: str = result["mime_type"]
+        size_bytes: int = result["size_bytes"]
+
+        if cfg.fits_inline(size_bytes):
+            return {
+                "delivery": "inline",
+                "name": name,
+                "mime_type": mime_type,
+                "size_bytes": size_bytes,
+                "content_base64": base64.b64encode(data).decode("ascii"),
+            }
+
+        if not cfg.allow_disk_staging:
+            raise RuntimeError(
+                f"\"{name}\" is {size_bytes:,} bytes, over this organization's "
+                f"{cfg.inline_max_bytes:,}-byte inline-delivery limit, and disk staging is disabled "
+                "for this organization -- there is no way to deliver it through this tool. Ask the "
+                "user for a narrower export or a different way to share it."
+            )
+
+        token = await asyncio.to_thread(
+            get_download_staging_store().stage, current_principal(), data, name, mime_type,
+            ttl_seconds=cfg.link_ttl_seconds,
+        )
+        return {
+            "delivery": "link",
+            "name": name,
+            "size_bytes": size_bytes,
+            "download_url": f"{self.download_base_url}/downloads/{base64.urlsafe_b64encode(token).decode('ascii')}",
+            "expires_at": datetime.fromtimestamp(
+                time.time() + cfg.link_ttl_seconds, tz=timezone.utc,
+            ).isoformat(),
+        }
 
     # ------------------------------------------------------------------ #
     # Popup gate (writes)

@@ -240,6 +240,55 @@ class TestReviewGateDecisions:
         ]
 
 
+class TestDeliveryAuditField:
+    """docs/org-mode-download-delivery-plan.md, Phase 3: gated_call's own
+    ``delivery`` kwarg (default "") reaches the audit entry unchanged --
+    the fact that drive_download_file/gmail_download_attachment/
+    confluence_download_attachment carry a delivery path is itself worth
+    auditing, distinct from the ordinary accept/deny decision."""
+
+    async def test_defaults_to_empty_string_for_an_ordinary_call(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept", None))
+
+        await gate.gated_call(**base_kwargs(gate="review"))
+
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["delivery"] == ""
+
+    async def test_carries_through_on_approval(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("accept", None))
+
+        await gate.gated_call(**base_kwargs(gate="review", delivery="inline_base64"))
+
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["delivery"] == "inline_base64"
+
+    async def test_carries_through_on_auto_accept(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator(result=(True, "some_rule")))
+
+        await gate.gated_call(**base_kwargs(gate="review", delivery="staged_link"))
+
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "auto_accepted"
+        assert entries[0]["delivery"] == "staged_link"
+
+    async def test_carries_through_on_denial(self, monkeypatch, audit_dir):
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        monkeypatch.setattr(gate, "show_read_popup", lambda *a, **k: ("deny", None))
+
+        with pytest.raises(RuntimeError, match="denied"):
+            await gate.gated_call(**base_kwargs(gate="review", delivery="staged_link"))
+
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "rejected"
+        assert entries[0]["delivery"] == "staged_link"
+
+
 class TestAcceptAll:
     async def test_accept_all_confirmed_creates_rule_and_audits(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator())
