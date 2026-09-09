@@ -519,7 +519,7 @@ class AutoAcceptEvaluator:
     def _rule_label_match(self, value, ctx):
         if not value:
             return False
-        labels = {l.lower() for l in (getattr(ctx.raw_data, "labels", []) or [])}
+        labels = {label.lower() for label in (getattr(ctx.raw_data, "labels", []) or [])}
         allowed = {v.lower() for v in (value if isinstance(value, list) else [value])}
         return bool(labels & allowed)
 
