@@ -8,7 +8,6 @@ tested in test_routes_approvals.py instead).
 """
 from __future__ import annotations
 
-from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.testclient import TestClient
 
@@ -66,7 +65,6 @@ class TestPrincipalScopeMiddleware:
     job)."""
 
     async def _whoami_app(self, scope, receive, send) -> None:
-        request = Request(scope, receive)
         response = JSONResponse({"principal_id": current_principal().id})
         await response(scope, receive, send)
 

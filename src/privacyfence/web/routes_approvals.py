@@ -181,8 +181,8 @@ def create_app(
     def _authenticated(request: Request) -> bool:
         return _session_authenticated(request, sessions)
 
-    def _unauthorized() -> Response:
-        return _unauthorized_response()
+    def _unauthorized(request: Request) -> Response:
+        return _unauthorized_response(request)
 
     async def index(request: Request) -> Response:
         # No ``?bootstrap=``/``?token=`` handling here any more -- SEC-06
@@ -200,7 +200,7 @@ def create_app(
 
     async def list_approvals(request: Request) -> Response:
         if not _authenticated(request):
-            return _unauthorized()
+            return _unauthorized(request)
         csrf = request.cookies.get(_SESSION_COOKIE, "")
         rows = [approval_list_html.row_from_approval(card) for card in _list_rows()]
         body = approval_list_html.build_list_html(rows, csrf=csrf)
@@ -212,7 +212,7 @@ def create_app(
 
     async def show_approval(request: Request) -> Response:
         if not _authenticated(request):
-            return _unauthorized()
+            return _unauthorized(request)
         approval_id = request.path_params["id"]
         card = web_ui.deferred_registry.get(approval_id)
         if card is None or card.event.is_set():
@@ -236,7 +236,7 @@ def create_app(
 
     async def approvals_stream(request: Request) -> Response:
         if not _authenticated(request):
-            return _unauthorized()
+            return _unauthorized(request)
 
         async def event_source():
             last_ids: tuple[str, ...] | None = None

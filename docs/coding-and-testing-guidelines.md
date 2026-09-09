@@ -222,6 +222,9 @@ A new connector's test module should include, at minimum:
 ### 2.7 Definition of done for a PR touching this repo
 
 - [ ] `pytest -v --cov=src/privacyfence --cov-report=term-missing` passes at 100%.
+- [ ] `ruff check .` passes (CI's `static-analysis` job blocks on this; `mypy`/`bandit` run in the
+      same job but are informational only for now — see `[tool.mypy]`/`[tool.bandit]` in
+      `pyproject.toml` and `docs/security-remediation-plan.md` TST-07).
 - [ ] Every new/changed tool call still resolves through `gated_call` or an explicit
       always-auto-approve connector, and leaves an audit trail either way.
 - [ ] No preview dict carries full content; no log line carries a credential or a message/document

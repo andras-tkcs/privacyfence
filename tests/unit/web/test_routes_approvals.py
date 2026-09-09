@@ -132,6 +132,18 @@ class TestAuthentication:
         r = client.get("/approvals")
         assert r.status_code == 200
 
+    def test_unauthorized_page_offers_an_on_demand_recovery_command(self, client):
+        # A dead/expired link shouldn't just tell a human to restart
+        # PrivacyFence -- POST /api/bootstrap (web/server.py) exists
+        # precisely so they don't have to, and this page is where that
+        # needs to actually be spelled out (see session_auth.unauthorized_
+        # html's own docstring). The origin in the pasted command has to
+        # match the page the human is actually looking at.
+        r = client.get("/approvals")
+        assert r.status_code == 401
+        assert "api/bootstrap" in r.text
+        assert "http://localhost/api/bootstrap" in r.text
+
 
 class TestListApprovals:
     def test_nothing_pending(self, client, sessions):

@@ -163,6 +163,23 @@ class TestCsrfAndOrigin:
         }
         assert os_.check_origin(Request(scope)) is False
 
+    def test_check_csrf_compares_via_hmac_compare_digest(self, monkeypatch):
+        # Mirrors web/session_auth.py's own equivalent spy (docs/security-
+        # remediation-plan.md TST-04): pins that this module's check_csrf
+        # keeps using a genuine constant-time compare, not just that it
+        # happens to return the right bool for a matching/mismatched pair.
+        calls = []
+        real_compare_digest = os_.hmac.compare_digest
+        monkeypatch.setattr(
+            os_.hmac, "compare_digest",
+            lambda a, b: calls.append((a, b)) or real_compare_digest(a, b),
+        )
+        request = _request_with_cookie("sess-abc")
+
+        assert os_.check_csrf(request, "sess-abc") is True
+
+        assert calls == [("sess-abc", "sess-abc")]
+
 
 class TestSessionCookieHelpers:
     def test_set_session_cookie_is_secure_httponly_samesite_strict(self):
@@ -173,6 +190,11 @@ class TestSessionCookieHelpers:
         assert "HttpOnly" in set_cookie
         assert "Secure" in set_cookie
         assert "samesite=strict" in set_cookie.lower()
+        # Org mode is HTTPS-mandatory (module docstring), so -- unlike local
+        # mode's deliberate plain-HTTP loopback transport -- Secure here
+        # never risks the browser silently dropping the cookie. Contrast
+        # web/session_auth.py's test_set_session_cookie_omits_secure_in_
+        # local_mode: same flag, opposite mode-appropriate value.
 
     def test_clear_session_cookie_expires_it(self):
         response = Response()
