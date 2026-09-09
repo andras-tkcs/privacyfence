@@ -54,6 +54,30 @@ class TestOrgSessionStore:
         fake_now[0] += 50  # would be expired from creation, but not from the touch above
         assert store.get(session_id) is not None
 
+    def test_absolute_expired_session_returns_none_and_is_dropped(self, monkeypatch):
+        # SEC-13: hits the absolute cap even though every access was inside
+        # the idle window -- an attacker (or a script) that keeps a session
+        # "active" by polling must not get an unbounded lifetime out of it.
+        store = os_.OrgSessionStore(idle_timeout_seconds=60, absolute_timeout_seconds=100)
+        fake_now = [1000.0]
+        monkeypatch.setattr(os_.time, "time", lambda: fake_now[0])
+        session_id = store.create(Principal(id="alice"))
+
+        fake_now[0] += 50
+        assert store.get(session_id) is not None  # well inside idle window, touches last_seen_at
+        fake_now[0] += 51  # still inside idle window (from the touch above), but past absolute cap
+        assert store.get(session_id) is None
+        assert store.session_count == 0
+
+    def test_session_within_the_absolute_cap_survives(self, monkeypatch):
+        store = os_.OrgSessionStore(idle_timeout_seconds=60, absolute_timeout_seconds=100)
+        fake_now = [1000.0]
+        monkeypatch.setattr(os_.time, "time", lambda: fake_now[0])
+        session_id = store.create(Principal(id="alice"))
+
+        fake_now[0] += 50  # inside both the idle window and the absolute cap
+        assert store.get(session_id) is not None
+
     def test_destroy_removes_the_session(self):
         store = os_.OrgSessionStore()
         session_id = store.create(Principal(id="alice"))
