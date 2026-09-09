@@ -22,6 +22,17 @@ jobs:
     # platform split to test across two jobs. Building/signing the actual
     # macOS .app/.dmg is still macOS-only, and still covered separately by
     # build.yml on a real macos-latest runner.
+    #
+    # This is the full suite (Python tests + the Node shim's own tests,
+    # typecheck and build) and runs on 3.13 only -- the version
+    # pyproject.toml's [project.optional-dependencies].macos-native/build
+    # tooling and the packaging workflows (build.yml) target. TST-05
+    # (docs/security-remediation-plan.md, phase 2.2) covers the other
+    # supported versions (3.11, the `requires-python` floor, and 3.12) via
+    # the `test-python-compat` job below with a reduced, Node-free suite --
+    # running the Node/shim steps again per Python version would be pure
+    # cost with no signal, since the shim is a separate Node runtime not
+    # affected by which CPython version the daemon runs under.
     runs-on: ubuntu-latest
 
     steps:
@@ -106,3 +117,47 @@ jobs:
             coverage.json
             htmlcov/
           retention-days: 30
+
+  # TST-05 (docs/security-remediation-plan.md, phase 2.2): prove the
+  # package actually works on every Python version pyproject.toml's
+  # `requires-python = ">=3.11"` claims to support, not just the 3.13 the
+  # `test` job above happens to pin. Deliberately independent of `test`
+  # (no `needs:`) so this runs in parallel and a failure here doesn't hide
+  # behind/wait on the full job.
+  #
+  # This is the "reduced core suite" the plan allows for when CI cost
+  # matters: the Python test suite only, no Node/npm setup and no shim
+  # build. tests/integration/test_shim_mcp_contract.py is explicitly
+  # excluded below rather than left to run -- its built_shim_entry fixture
+  # would otherwise build the shim from scratch on every matrix leg (GitHub's
+  # ubuntu-latest runners ship npm preinstalled, so it wouldn't skip itself
+  # the way it does in an environment with no npm at all), which is exactly
+  # the redundant Node-toolchain cost this job exists to avoid -- that
+  # coverage already comes from the `test` job's 3.13 run.
+  test-python-compat:
+    name: Test (Python ${{ matrix.python-version }}, core suite)
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history + tags -- setuptools_scm needs them (see CLAUDE.md)
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: pip install -e ".[test]"
+
+      # Same 100%-pass-rate/pytest-timeout guarantees as the `test` job's
+      # run above, minus coverage reporting (that's `test`'s job, and
+      # TST-03's coverage ratchet, to own -- duplicating it per Python
+      # version here would just be redundant CI time).
+      - name: Run test suite (100% pass rate required)
+        run: pytest -v --ignore=tests/integration/test_shim_mcp_contract.py
