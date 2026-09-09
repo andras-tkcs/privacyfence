@@ -147,11 +147,85 @@ class StepUpConfig:
         )
 
 
+# docs/org-mode-download-delivery-plan.md's Phase 1 default -- deliberately
+# *larger* than connectors/drive.py's/connectors/gmail.py's/connectors/
+# confluence.py's own pre-approval prefetch caps (5MB), reflecting that in
+# org mode, inline delivery is the primary transport for
+# drive_download_file/gmail_download_attachment/confluence_download_
+# attachment, not a small-file convenience -- see that plan's "What these
+# tools are actually for" section. The real ceiling here is practical MCP
+# Streamable HTTP response size and base64's ~33% inflation, not a privacy
+# argument for staying small.
+DEFAULT_INLINE_MAX_BYTES = 8_000_000
+
+# 5 minutes -- see download_staging.DEFAULT_TTL_SECONDS's own docstring for
+# why this is short: staging means an encrypted-but-real copy of the file
+# sits on the server's disk for this long.
+DEFAULT_LINK_TTL_SECONDS = 300.0
+
+
+@dataclass(frozen=True)
+class DownloadDeliveryConfig:
+    """org mode's own answer to the local-disk-write bug docs/org-mode-
+    download-delivery-plan.md exists to fix: how ``drive_download_file``/
+    ``gmail_download_attachment``/``confluence_download_attachment``
+    deliver file bytes to a principal who has no shell on the daemon's own
+    machine. Lives in ``org_config.json``'s ``download_delivery`` section,
+    org-mode-only for the same reason ``ServerConfig``/``StepUpConfig``
+    are -- local mode keeps writing straight to ``destination_dir``,
+    unchanged, and never looks at this class at all.
+    """
+
+    inline_max_bytes: int = DEFAULT_INLINE_MAX_BYTES
+    link_ttl_seconds: float = DEFAULT_LINK_TTL_SECONDS
+    # The org-level opt-out (see the plan's "Org-level opt-out" section):
+    # when False, a file too large for inline delivery is refused outright
+    # rather than ever being written -- encrypted or not -- to this
+    # server's disk. Default True: encryption-at-rest (download_staging.py)
+    # is the primary mitigation, and staging still happens for oversized
+    # files by default.
+    allow_disk_staging: bool = True
+
+    def fits_inline(self, size_bytes: int) -> bool:
+        """Whether a file this size should be delivered inline (base64, in
+        the tool result) rather than staged behind a one-time link.
+        ``inline_max_bytes == 0`` (the "force every download through a
+        staged link, unconditionally" knob) always returns False here --
+        even for an empty (0-byte) file -- rather than the arithmetically
+        tempting but wrong ``0 <= 0``."""
+        return self.inline_max_bytes > 0 and size_bytes <= self.inline_max_bytes
+
+    @staticmethod
+    def from_org_config(org_config: dict[str, Any]) -> "DownloadDeliveryConfig":
+        raw = org_config.get("download_delivery")
+        raw = raw if isinstance(raw, dict) else {}
+        inline_max_bytes = int(raw.get("inline_max_bytes", DEFAULT_INLINE_MAX_BYTES))
+        if inline_max_bytes < 0:
+            raise ConfigurationError(
+                "org_config.json's \"download_delivery\".\"inline_max_bytes\" must be >= 0 "
+                f"(0 forces every download through a staged link), got {inline_max_bytes}"
+            )
+        link_ttl_seconds = float(raw.get("link_ttl_seconds", DEFAULT_LINK_TTL_SECONDS))
+        if link_ttl_seconds <= 0:
+            raise ConfigurationError(
+                "org_config.json's \"download_delivery\".\"link_ttl_seconds\" must be > 0, "
+                f"got {link_ttl_seconds}"
+            )
+        return DownloadDeliveryConfig(
+            inline_max_bytes=inline_max_bytes,
+            link_ttl_seconds=link_ttl_seconds,
+            allow_disk_staging=bool(raw.get("allow_disk_staging", True)),
+        )
+
+
 __all__ = [
     "ConfigurationError",
+    "DEFAULT_INLINE_MAX_BYTES",
+    "DEFAULT_LINK_TTL_SECONDS",
     "DEFAULT_MODE",
     "DEFAULT_RP_NAME",
     "DEFAULT_STEP_UP_SCOPE",
+    "DownloadDeliveryConfig",
     "Mode",
     "ServerConfig",
     "StepUpConfig",

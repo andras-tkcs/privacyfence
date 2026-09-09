@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -11,9 +12,12 @@ from typing import Any
 
 from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..connector import Connector, ToolParam, ToolSpec
+from ..download_staging import get_download_staging_store
 from ..gate import current_reason, gated_call
 from ..gmail_client import GmailClient, GmailClientError, resolve_attachment_destination
 from ..html_to_text import html_to_text
+from ..org_mode import DownloadDeliveryConfig
+from ..principal import current_principal
 from ..privacy_filter import apply_list, apply_text, category_policy
 from ..text_extraction import extract_text, is_prefetch_worthy, preview_blocks_for
 
@@ -97,6 +101,11 @@ class GmailConnector(Connector):
     def __init__(self, client: GmailClient) -> None:
         self._gmail = client
         self.my_email: str = ""
+        # docs/org-mode-download-delivery-plan.md, Phase 2 -- see
+        # connectors/drive.py's own DriveConnector.__init__ comment.
+        self.download_mode: str = "local"
+        self.download_config: DownloadDeliveryConfig | None = None
+        self.download_base_url: str = ""
 
     @property
     def name(self) -> str:
@@ -165,15 +174,22 @@ class GmailConnector(Connector):
             ToolSpec(
                 name="gmail_download_attachment",
                 description=(
-                    "Download a Gmail attachment's content to a local directory "
-                    "and return the saved file path. Identify the attachment by "
-                    "the name returned from gmail_list_message_attachments. "
-                    "destination_dir is required -- there is no default, so choose "
-                    "deliberately: pass ~/Downloads (or another path the user asked "
-                    "for) when this attachment is a deliverable the user should "
-                    "find afterward, or your own working/scratch directory when "
-                    "you're only downloading it to read or process it yourself. "
-                    "Requires user approval."
+                    "Download a Gmail attachment's content. Identify the "
+                    "attachment by the name returned from "
+                    "gmail_list_message_attachments. On a local install: saved "
+                    "to destination_dir, and the saved file path is returned -- "
+                    "destination_dir is required, there is no default, so choose "
+                    "deliberately: pass ~/Downloads (or another path the user "
+                    "asked for) when this attachment is a deliverable the user "
+                    "should find afterward, or your own working/scratch "
+                    "directory when you're only downloading it to read or "
+                    "process it yourself. On an organization-managed install: "
+                    "destination_dir is ignored (there is no local filesystem "
+                    "you and the human share) -- a small attachment's bytes "
+                    "come back directly in this tool's result so you can read "
+                    "or hand it to the human yourself; a larger one comes back "
+                    "as a one-time link the human opens in their own signed-in "
+                    "browser tab instead. Requires user approval."
                 ),
                 params=[
                     ToolParam("message_id", "str"),
@@ -717,13 +733,24 @@ class GmailConnector(Connector):
                 f"No attachment named {attachment_name!r} on message {message_id}"
             )
         dest_path = resolve_attachment_destination(attachment.name, destination_dir)
+        cfg = self.download_config or DownloadDeliveryConfig()
+        # Phase 3 audit trail -- see connectors/drive.py's own `delivery`
+        # comment for the reasoning; attachment.size here is exact (not an
+        # export-size approximation), so this estimate and the eventual
+        # actual delivery can only disagree if the prefetch itself failed.
+        delivery = (
+            "local_disk" if self.download_mode != "org"
+            else "inline_base64" if cfg.fits_inline(attachment.size)
+            else "staged_link"
+        )
         # Every one of these is already known for free by the time this
         # gates: From/Subject via gmail_list_messages, Attachment/Type/Size
         # via gmail_list_message_attachments -- see
         # claude-knowledge-boundary.md's Gmail worked example ("by the time
         # gmail_download_attachment gates, none of that metadata is new").
-        # The only genuinely new facts from approving this call are that no
-        # file content reaches Claude, and where it'll be saved.
+        # The only genuinely new fact from approving this call is *how* the
+        # attachment reaches Claude -- see connectors/drive.py's
+        # _download_file for the same mode/delivery-conditional reasoning.
         preview = {
             "From": message.sender or "(unknown)",
             "Subject": message.subject or "(no subject)",
@@ -731,11 +758,31 @@ class GmailConnector(Connector):
             "Type": attachment.mime_type,
             "Size": f"{attachment.size:,} bytes",
         }
-        new_info = {
-            "Content returned to Claude": "None — file bytes are never sent",
-            "Will save to": dest_path,
-        }
-        details = "The attachment above will be downloaded to the destination shown."
+        if self.download_mode == "org":
+            if cfg.fits_inline(attachment.size):
+                new_info = {
+                    "Content returned to Claude": (
+                        f"Yes — file bytes are included in the tool result (attachment is "
+                        f"{attachment.size:,} bytes, under this org's {cfg.inline_max_bytes:,}-byte "
+                        "inline-delivery limit)"
+                    ),
+                }
+            else:
+                new_info = {
+                    "Content returned to Claude": (
+                        "None — a one-time link is generated for you to open in your own browser"
+                    ),
+                }
+        else:
+            new_info = {
+                "Content returned to Claude": "None — file bytes are never sent",
+                "Will save to": dest_path,
+            }
+        details = (
+            "The attachment above will be delivered as described above."
+            if self.download_mode == "org"
+            else "The attachment above will be downloaded to the destination shown."
+        )
 
         # Gmail's attachments().get() has no partial/range fetch -- previewing
         # or PII-scanning means fully fetching the attachment before the
@@ -790,7 +837,12 @@ class GmailConnector(Connector):
             preview_blocks=preview_blocks_for(details, pii_scan_text),
             my_email=self.my_email,
             args={"message_id": message_id, "attachment_name": attachment_name},
+            delivery=delivery,
         )
+        if self.download_mode == "org":
+            return await self._deliver_org_attachment(
+                message_id, attachment, fetched_bytes, cfg,
+            )
         if fetched_bytes is not None:
             # Already fetched above for the preview/scan -- reuse it instead
             # of fetching the same attachment from Gmail a second time.
@@ -801,6 +853,61 @@ class GmailConnector(Connector):
             self._gmail.download_attachment,
             message_id, attachment.attachment_id, attachment.name, destination_dir,
         )
+
+    async def _deliver_org_attachment(
+        self, message_id: str, attachment: Any, fetched_bytes: bytes | None, cfg: DownloadDeliveryConfig,
+    ) -> Any:
+        """org mode's own delivery, once approval is granted -- see
+        connectors/drive.py's _deliver_org_download for the shared
+        inline/staged/refuse shape. ``fetched_bytes`` reuses the pre-
+        approval prefetch (attachment.mime_type prefetch-worthy and under
+        _ATTACHMENT_PREFETCH_MAX_BYTES) when it already happened, instead
+        of fetching the same attachment from Gmail a second time -- but
+        that prefetch cap (5MB) is smaller than a typical inline_max_bytes
+        (default 8MB), so a fresh fetch is still sometimes needed here."""
+        if not cfg.allow_disk_staging and not cfg.fits_inline(attachment.size):
+            raise RuntimeError(
+                f"This attachment is {attachment.size:,} bytes, over this organization's "
+                f"{cfg.inline_max_bytes:,}-byte inline-delivery limit, and disk staging is disabled "
+                "for this organization -- there is no way to deliver it through this tool. Ask the "
+                "user for a narrower export or a different way to share it."
+            )
+
+        data = fetched_bytes if fetched_bytes is not None else await self._fetch(
+            self._gmail.fetch_attachment_bytes, message_id, attachment.attachment_id,
+        )
+        size_bytes = len(data)
+
+        if cfg.fits_inline(size_bytes):
+            return {
+                "delivery": "inline",
+                "name": attachment.name,
+                "mime_type": attachment.mime_type,
+                "size_bytes": size_bytes,
+                "content_base64": base64.b64encode(data).decode("ascii"),
+            }
+
+        if not cfg.allow_disk_staging:
+            raise RuntimeError(
+                f"\"{attachment.name}\" is {size_bytes:,} bytes, over this organization's "
+                f"{cfg.inline_max_bytes:,}-byte inline-delivery limit, and disk staging is disabled "
+                "for this organization -- there is no way to deliver it through this tool. Ask the "
+                "user for a narrower export or a different way to share it."
+            )
+
+        token = await asyncio.to_thread(
+            get_download_staging_store().stage, current_principal(), data, attachment.name, attachment.mime_type,
+            ttl_seconds=cfg.link_ttl_seconds,
+        )
+        return {
+            "delivery": "link",
+            "name": attachment.name,
+            "size_bytes": size_bytes,
+            "download_url": f"{self.download_base_url}/downloads/{base64.urlsafe_b64encode(token).decode('ascii')}",
+            "expires_at": datetime.fromtimestamp(
+                time.time() + cfg.link_ttl_seconds, tz=timezone.utc,
+            ).isoformat(),
+        }
 
     # ------------------------------------------------------------------ #
     # Popup gate (writes)

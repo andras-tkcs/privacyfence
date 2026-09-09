@@ -204,6 +204,30 @@ class TestUserDir:
             paths.user_dir(Principal(id=bad_id))
 
 
+class TestDownloadsDir:
+    """docs/org-mode-download-delivery-plan.md, Phase 1."""
+
+    def test_is_a_downloads_subdirectory_of_user_dir_and_is_created(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+        result = paths.downloads_dir(Principal(id="alice"))
+
+        assert result == tmp_path / "users" / "alice" / "downloads"
+        assert result.is_dir()
+        assert stat.S_IMODE(result.stat().st_mode) == 0o700
+
+    def test_local_principal_gets_downloads_under_data_dir_itself(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+        assert paths.downloads_dir(Principal(id="local")) == tmp_path / "downloads"
+
+    def test_defaults_to_current_principal(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+        with principal_scope(Principal(id="bob")):
+            assert paths.downloads_dir() == tmp_path / "users" / "bob" / "downloads"
+
+
 class TestBundleMacosDir:
     def test_none_when_not_bundled(self, monkeypatch):
         monkeypatch.setattr(paths, "is_bundled", lambda: False)

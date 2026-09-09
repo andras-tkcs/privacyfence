@@ -121,6 +121,20 @@ def user_dir(principal: "Principal | None" = None) -> Path:
     return secure_mkdir(data_dir() / "users" / principal.id)
 
 
+def downloads_dir(principal: "Principal | None" = None) -> Path:
+    """Per-principal staging area for org-mode download delivery (docs/
+    org-mode-download-delivery-plan.md, Phase 1): ``user_dir(principal) /
+    "downloads"``, created on demand exactly like ``org_dir()``. Holds only
+    AES-256-GCM-encrypted ciphertext (download_staging.py's own
+    ``DownloadStagingStore`` never derives or stores the decryption key
+    anywhere on disk -- see that module's docstring), so this directory's
+    contents are worthless without the one-time token that produced them.
+    Reuses ``user_dir()``'s own directory-safety logic (``_is_safe_
+    principal_id``) rather than adding any new path-construction code
+    here."""
+    return secure_mkdir(user_dir(principal) / "downloads")
+
+
 def bundle_macos_dir() -> Path | None:
     """Path to Contents/MacOS inside the .app bundle, or None in dev."""
     if is_bundled():

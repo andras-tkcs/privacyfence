@@ -777,6 +777,28 @@ def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list
 
     google_client_config = _google_client_config(org_config)
 
+    # docs/org-mode-download-delivery-plan.md, Phase 2: computed once, not
+    # per connector -- Drive/Gmail/Confluence's own _download_file/
+    # _download_attachment methods branch on connector.download_mode, and
+    # (in org mode only) build a fully-qualified download_url from
+    # connector.download_base_url. Local mode's own connector.download_mode
+    # stays "local" and connector.download_config/download_base_url stay
+    # unset, exactly the pre-Phase-2 shape.
+    download_mode = org_mode.resolve_mode(org_config)
+    download_config = None
+    download_base_url = ""
+    if download_mode == "org":
+        download_config = org_mode.DownloadDeliveryConfig.from_org_config(org_config)
+        # ServerConfig.from_org_config already ran (and would have raised
+        # org_mode.ConfigurationError) before build_connectors was ever
+        # reached in a real org-mode boot -- see _start_org_web_server,
+        # which computes its own server_config first. Re-deriving it here
+        # keeps build_connectors self-contained (safe to call from a test
+        # or from ConnectorRegistry's own per-principal factory with no
+        # other org-mode wiring already in scope) at the cost of one cheap
+        # re-parse of org_config.json's own "server" section.
+        download_base_url = org_mode.ServerConfig.from_org_config(org_config).issuer_url.rstrip("/")
+
     # Gmail
     if enabled("gmail"):
         try:
@@ -790,6 +812,9 @@ def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list
             logger.info("Gmail connector ready for %s", email)
             connector = GmailConnector(client)
             connector.my_email = email
+            connector.download_mode = download_mode
+            connector.download_config = download_config
+            connector.download_base_url = download_base_url
             connectors.append(connector)
         except (GmailClientError, FileNotFoundError) as exc:
             logger.warning("Gmail connector disabled: %s", exc)
@@ -807,6 +832,9 @@ def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list
             logger.info("Drive connector ready for %s", email)
             connector = DriveConnector(client)
             connector.my_email = email
+            connector.download_mode = download_mode
+            connector.download_config = download_config
+            connector.download_base_url = download_base_url
             connectors.append(connector)
         except (DriveClientError, FileNotFoundError) as exc:
             logger.warning("Drive connector disabled: %s", exc)
@@ -958,6 +986,9 @@ def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list
             logger.info("Confluence connector ready: %s", url)
             connector = ConfluenceConnector(client)
             connector.my_email = atlassian_token.get("account_email", "")
+            connector.download_mode = download_mode
+            connector.download_config = download_config
+            connector.download_base_url = download_base_url
             connectors.append(connector)
         except (ConfluenceClientError, FileNotFoundError) as exc:
             logger.warning("Confluence connector disabled: %s", exc)

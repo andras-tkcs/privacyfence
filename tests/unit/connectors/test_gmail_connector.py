@@ -708,6 +708,130 @@ class TestDownloadAttachment:
         assert result == {"path": "/tmp/photo.png", "name": "photo.png", "size_bytes": 1024}
 
 
+class TestOrgModeDownloadDelivery:
+    """docs/org-mode-download-delivery-plan.md, Phase 2: in org mode,
+    gmail_download_attachment never writes to this daemon's own disk -- a
+    small attachment's bytes come back inline, a larger one is staged
+    behind a one-time link."""
+
+    def _message_with_attachment(self, **overrides):
+        defaults = dict(name="report.pdf", mime_type="application/octet-stream", size=1024, attachment_id="att-1")
+        defaults.update(overrides)
+        return GmailMessage(
+            id="m1", thread_id="t1", subject="Q3 numbers", sender="alice@example.com",
+            attachments=[Attachment(**defaults)],
+        )
+
+    @pytest.fixture(autouse=True)
+    def _isolated_data_dir(self, tmp_path, monkeypatch):
+        from privacyfence import paths
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+    def _org_connector(self, *, inline_max_bytes=1_000, allow_disk_staging=True, link_ttl_seconds=300.0):
+        from privacyfence.org_mode import DownloadDeliveryConfig
+
+        connector, client = make_connector()
+        connector.download_mode = "org"
+        connector.download_config = DownloadDeliveryConfig(
+            inline_max_bytes=inline_max_bytes, allow_disk_staging=allow_disk_staging,
+            link_ttl_seconds=link_ttl_seconds,
+        )
+        connector.download_base_url = "https://pf.example.com"
+        return connector, client
+
+    async def test_local_mode_return_shape_is_unchanged(self, gated_call_spy):
+        """Regression pin: local mode keeps calling GmailClient.
+        download_attachment and returning its dict shape unchanged --
+        connector.download_mode defaults to "local"."""
+        connector, client = make_connector()
+        client.get_message.return_value = self._message_with_attachment()
+        client.download_attachment.return_value = {"path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024}
+
+        result = await connector.call(
+            "gmail_download_attachment",
+            {"message_id": "m1", "attachment_name": "report.pdf", "destination_dir": "/tmp"},
+        )
+
+        assert result == {"path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024}
+        client.download_attachment.assert_called_once_with("m1", "att-1", "report.pdf", "/tmp")
+        assert gated_call_spy[0]["delivery"] == "local_disk"
+
+    async def test_small_attachment_is_delivered_inline_without_a_prior_prefetch(self, gated_call_spy):
+        # application/octet-stream isn't prefetch-worthy, so no prefetch
+        # happens before the gate -- org-mode delivery must fetch it fresh.
+        connector, client = self._org_connector(inline_max_bytes=1_000)
+        client.get_message.return_value = self._message_with_attachment(size=20)
+        client.fetch_attachment_bytes.return_value = b"attachment bytes!!!"
+
+        result = await connector.call(
+            "gmail_download_attachment",
+            {"message_id": "m1", "attachment_name": "report.pdf", "destination_dir": "/tmp"},
+        )
+
+        assert result["delivery"] == "inline"
+        assert result["name"] == "report.pdf"
+        import base64
+        assert base64.b64decode(result["content_base64"]) == b"attachment bytes!!!"
+        client.download_attachment.assert_not_called()
+        client.fetch_attachment_bytes.assert_called_once_with("m1", "att-1")
+
+        kwargs = gated_call_spy[0]
+        assert "Yes" in kwargs["new_info"]["Content returned to Claude"]
+        assert "Will save to" not in kwargs["new_info"]
+        assert kwargs["delivery"] == "inline_base64"
+
+    async def test_small_prefetch_worthy_attachment_reuses_the_prefetched_bytes(self, gated_call_spy):
+        # image/png IS prefetch-worthy -- fetch_attachment_bytes should be
+        # called exactly once (for the preview), and org-mode delivery must
+        # reuse that result rather than fetching a second time.
+        connector, client = self._org_connector(inline_max_bytes=1_000)
+        client.get_message.return_value = self._message_with_attachment(
+            name="photo.png", mime_type="image/png", size=13,
+        )
+        client.fetch_attachment_bytes.return_value = b"\x89PNGfakebytes"
+
+        result = await connector.call(
+            "gmail_download_attachment",
+            {"message_id": "m1", "attachment_name": "photo.png", "destination_dir": "/tmp"},
+        )
+
+        assert result["delivery"] == "inline"
+        client.fetch_attachment_bytes.assert_called_once_with("m1", "att-1")
+
+    async def test_large_attachment_is_staged_behind_a_one_time_link(self, gated_call_spy):
+        from privacyfence.download_staging import get_download_staging_store
+
+        connector, client = self._org_connector(inline_max_bytes=10)
+        client.get_message.return_value = self._message_with_attachment(size=5000)
+        client.fetch_attachment_bytes.return_value = b"x" * 5000
+
+        result = await connector.call(
+            "gmail_download_attachment",
+            {"message_id": "m1", "attachment_name": "report.pdf", "destination_dir": "/tmp"},
+        )
+
+        assert result["delivery"] == "link"
+        assert result["size_bytes"] == 5000
+        assert result["download_url"].startswith("https://pf.example.com/downloads/")
+        assert get_download_staging_store().pending_count == 1
+
+        kwargs = gated_call_spy[0]
+        assert "one-time link" in kwargs["new_info"]["Content returned to Claude"]
+        assert kwargs["delivery"] == "staged_link"
+
+    async def test_oversized_attachment_with_staging_disabled_is_refused_before_any_fetch(self, gated_call_spy):
+        connector, client = self._org_connector(inline_max_bytes=10, allow_disk_staging=False)
+        client.get_message.return_value = self._message_with_attachment(size=5000)
+
+        with pytest.raises(RuntimeError, match="disk staging is disabled"):
+            await connector.call(
+                "gmail_download_attachment",
+                {"message_id": "m1", "attachment_name": "report.pdf", "destination_dir": "/tmp"},
+            )
+
+        client.fetch_attachment_bytes.assert_not_called()
+
+
 class TestPiiScanWiring:
     """gmail_download_attachment used to pass pii_scan_text="" unconditionally
     -- nothing about attachment content was ever scanned. Now fetches
