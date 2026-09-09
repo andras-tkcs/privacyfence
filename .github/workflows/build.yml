@@ -31,6 +31,27 @@ jobs:
       - name: Install Python dependencies
         run: pip install -e ".[dev]"
 
+      # Drives both the release-channel gating below (only a "stable" tag gets a public GitHub
+      # Release asset -- see CLAUDE.md's "Releasing" section and scripts/r2_release.py's module
+      # docstring for why alpha/beta/rc stop at the private R2 archive) and the R2 upload's key
+      # prefix (releases/<channel>/<version>/...).
+      # A workflow_dispatch run off an untagged commit never reaches any of the tag-gated steps
+      # below, so the version/channel lookup is skipped for those runs rather than failing them --
+      # r2_release.py's channel command deliberately rejects a between-tags dev version (see its
+      # own docstring), which every untagged commit's __version__ is.
+      - name: Determine version and release channel
+        id: release
+        run: |
+          VERSION="$(python -c 'from privacyfence import __version__; print(__version__)')"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            CHANNEL="$(python3 scripts/r2_release.py channel "$VERSION")"
+          else
+            CHANNEL="n/a (not a tag push)"
+          fi
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "Resolved version=$VERSION channel=$CHANNEL"
+
       # ── Import Developer ID certificate for signing ────────────────────────
       # Requires these GitHub secrets (Settings → Secrets and variables →
       # Actions):
@@ -104,30 +125,57 @@ jobs:
           path: dist/PrivacyFence-*.dmg
           retention-days: 30
 
-      # Attach to the GitHub Release when triggered by a version tag. A tag
-      # ending in -beta/-rc (e.g. v3.2.0-beta) publishes as a GitHub
-      # prerelease -- update_checker.py's beta update channel reads exactly
-      # this flag off the releases list, so an unmarked tag would be
-      # invisible to it.
+      # Every channel's DMG + the two org config build scripts land in the private R2 release
+      # archive (releases/<channel>/<version>/...) -- see scripts/r2_release.py's module
+      # docstring. This runs for stable *and* pre-release tags alike: R2 is the one archive that
+      # has everything, regardless of what's also public elsewhere.
       #
-      # Alongside the DMG, also attach the two org config build scripts
-      # (scripts/build_org_bundle.py and scripts/sync_room_directory.py) as
-      # their own downloadable assets. They're stdlib-only / a checked-out
-      # copy is not what IT admins are expected to go find -- unlike the
-      # rest of scripts/, these two are themselves a release output, run by
-      # org admins (not contributors) to produce/update the org_config.json
-      # bundle distributed to end users -- see their own docstrings and
-      # docs/google-cloud-setup.md, docs/slack-setup.md,
-      # docs/salesforce-setup.md, docs/atlassian-setup.md.
-      - name: Attach release assets
+      # Alongside the DMG, also upload the two org config build scripts (scripts/
+      # build_org_bundle.py and scripts/sync_room_directory.py). They're stdlib-only / a checked-
+      # out copy is not what IT admins are expected to go find -- unlike the rest of scripts/,
+      # these two are themselves a release output, run by org admins (not contributors) to
+      # produce/update the org_config.json bundle distributed to end users -- see their own
+      # docstrings and docs/google-cloud-setup.md, docs/slack-setup.md, docs/salesforce-setup.md,
+      # docs/atlassian-setup.md.
+      #
+      # Requires these GitHub secrets/vars (Settings → Secrets and variables → Actions), same
+      # names r2-smoke-test.yml used before it was deleted:
+      #   CF_R2_ACCESS_KEY_ID / CF_R2_SECRET_ACCESS_KEY  — R2 API token (secrets)
+      #   CF_R2_ENDPOINT                                 — R2 S3-compatible endpoint URL (var)
+      - name: Publish release artifacts to Cloudflare R2
         if: startsWith(github.ref, 'refs/tags/')
+        env:
+          CF_R2_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
+          CF_R2_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
+          CF_R2_ENDPOINT: ${{ vars.CF_R2_ENDPOINT }}
+          R2_BUCKET: privacyfence-releases
+        run: |
+          python3 -m pip install --quiet --user boto3
+          python3 scripts/r2_release.py upload --version "${{ steps.release.outputs.version }}" \
+            dist/PrivacyFence-*.dmg \
+            scripts/build_org_bundle.py \
+            scripts/sync_room_directory.py
+
+      # Only a stable tag also gets a public GitHub Release with attached binaries -- alpha/beta/rc
+      # stop at the private R2 upload above (see scripts/r2_release.py's module docstring for why).
+      # The release entry itself (tag + notes, no files) still gets created for every channel,
+      # marked prerelease, so update_checker.py's beta update channel -- which reads exactly that
+      # flag off the releases list -- keeps working without the underlying DMG being public.
+      - name: Attach release assets (stable only)
+        if: startsWith(github.ref, 'refs/tags/') && steps.release.outputs.channel == 'stable'
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: |
             dist/PrivacyFence-*.dmg
             scripts/build_org_bundle.py
             scripts/sync_room_directory.py
-          prerelease: ${{ contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
+          prerelease: false
+
+      - name: Create GitHub Release notes (pre-release, no public assets)
+        if: startsWith(github.ref, 'refs/tags/') && steps.release.outputs.channel != 'stable'
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          prerelease: true
 
   # SEC-19 (docs/security-remediation-plan.md, Phase 2.4): one CycloneDX SBOM
   # per ecosystem this repo ships code from. Independent of the `build` job
@@ -140,6 +188,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # full history + tags -- setuptools_scm needs them (see CLAUDE.md)
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -150,6 +200,26 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: mcpb/shim/package-lock.json
+
+      # Same version/channel resolution as the `build` job above, independently -- this job
+      # doesn't `pip install -e .` the package itself (see the "Generate Python SBOM" step's own
+      # comment for why it deliberately doesn't), so it reads the tag-derived version straight
+      # from setuptools_scm instead of from an installed __version__.
+      # See the `build` job's identically-named step for why the channel lookup is skipped
+      # (rather than failing the run) off a tag.
+      - name: Determine version and release channel
+        id: release
+        run: |
+          pip install --quiet setuptools_scm
+          VERSION="$(python3 -m setuptools_scm)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            CHANNEL="$(python3 scripts/r2_release.py channel "$VERSION")"
+          else
+            CHANNEL="n/a (not a tag push)"
+          fi
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "Resolved version=$VERSION channel=$CHANNEL"
 
       # From requirements/runtime.lock.txt, not a fresh resolve -- the SBOM
       # should describe exactly what a `pip install privacyfence` gets
@@ -183,11 +253,29 @@ jobs:
             sbom-shim-npm.cdx.json
           retention-days: 30
 
-      - name: Attach SBOMs to release
+      # Same private-by-default R2 archive as the DMG (see the `build` job's "Publish release
+      # artifacts to Cloudflare R2" step) -- every channel's SBOMs land in
+      # releases/<channel>/<version>/, alongside whatever else that release shipped.
+      - name: Publish SBOMs to Cloudflare R2
         if: startsWith(github.ref, 'refs/tags/')
+        env:
+          CF_R2_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
+          CF_R2_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
+          CF_R2_ENDPOINT: ${{ vars.CF_R2_ENDPOINT }}
+          R2_BUCKET: privacyfence-releases
+        run: |
+          python3 -m pip install --quiet boto3
+          python3 scripts/r2_release.py upload --version "${{ steps.release.outputs.version }}" \
+            sbom-python.cdx.json \
+            sbom-shim-npm.cdx.json
+
+      # Stable only, same as the `build` job's DMG attachment -- alpha/beta/rc SBOMs stop at the
+      # R2 upload above, no public GitHub Release asset.
+      - name: Attach SBOMs to release (stable only)
+        if: startsWith(github.ref, 'refs/tags/') && steps.release.outputs.channel == 'stable'
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: |
             sbom-python.cdx.json
             sbom-shim-npm.cdx.json
-          prerelease: ${{ contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
+          prerelease: false

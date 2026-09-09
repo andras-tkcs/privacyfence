@@ -30,6 +30,9 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest   # pure Python sdist/wheel -- no macOS-only step needed
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      channel: ${{ steps.release.outputs.channel }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -49,10 +52,33 @@ jobs:
           name: pypi-dist
           path: dist/
 
+      # Drives both the public-index gating below (see CLAUDE.md's "Releasing" section and
+      # scripts/r2_release.py's module docstring: only a "stable" tag reaches PyPI/TestPyPI --
+      # alpha/beta/rc stop at the private R2 mirror published by the publish-r2 job) and that
+      # job's R2 key prefix (releases/<channel>/<version>/...). Same "skip off a tag" tolerance as
+      # build.yml's identically-named step, for this workflow's own workflow_dispatch reruns.
+      - name: Determine version and release channel
+        id: release
+        run: |
+          VERSION="$(python3 -m setuptools_scm)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            CHANNEL="$(python3 scripts/r2_release.py channel "$VERSION")"
+          else
+            CHANNEL="n/a (not a tag push)"
+          fi
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "Resolved version=$VERSION channel=$CHANNEL"
+
   # Always published first -- rehearses the real upload (same files, same
   # metadata) against TestPyPI before anything reaches the real index.
+  #
+  # Stable only -- alpha/beta/rc sdists/wheels never reach a public index at all (unlike the DMG/
+  # SBOMs in build.yml, which still get a public, asset-less GitHub Release entry for every
+  # channel); the publish-r2 job below is where every channel's sdist/wheel actually lands.
   publish-testpypi:
     needs: build
+    if: needs.build.outputs.channel == 'stable'
     runs-on: ubuntu-latest
     environment: testpypi   # must match the Environment name on TestPyPI's
                              # Trusted Publisher entry, if one was set there
@@ -78,6 +104,10 @@ jobs:
   # Gated behind the TestPyPI job above, and behind the "pypi" GitHub
   # Environment's own protection rules if any are configured (e.g. a
   # required reviewer) -- see CLAUDE.md for setting that up.
+  # No explicit channel gate needed here: `needs: publish-testpypi` already means this job is
+  # skipped automatically whenever that job is (GitHub Actions skips a dependent job when its
+  # `needs` job was itself skipped, not just when it failed) -- and publish-testpypi is the one
+  # gated on `channel == 'stable'` above.
   publish-pypi:
     needs: publish-testpypi
     runs-on: ubuntu-latest
@@ -97,3 +127,32 @@ jobs:
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2 (release/v1)
         with:
           skip-existing: true
+
+  # Independent of the two PyPI jobs above (doesn't `needs:` either one, and isn't gated on
+  # channel) -- this is where *every* channel's sdist/wheel actually lands, stable included: R2 is
+  # the one archive that has everything, same as build.yml's DMG/SBOM uploads. It only needs the
+  # `build` job's artifact and version/channel output, not a successful PyPI publish.
+  publish-r2:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: pypi-dist
+          path: dist/
+
+      # Requires these GitHub secrets/vars (Settings → Secrets and variables → Actions), same
+      # names r2-smoke-test.yml used before it was deleted -- see scripts/r2_release.py's module
+      # docstring for the bucket layout and why alpha/beta/rc stop here rather than reaching PyPI.
+      - name: Publish sdist and wheel to Cloudflare R2
+        env:
+          CF_R2_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
+          CF_R2_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
+          CF_R2_ENDPOINT: ${{ vars.CF_R2_ENDPOINT }}
+          R2_BUCKET: privacyfence-releases
+        run: |
+          python3 -m pip install --quiet boto3
+          python3 scripts/r2_release.py upload --version "${{ needs.build.outputs.version }}" dist/*

@@ -28,10 +28,16 @@ git push origin <tag>
 ```
 
 That tag push is what `.github/workflows/build.yml` **and** `.github/workflows/publish-pypi.yml`
-both trigger on (`on: push: tags: ['v*']`) — the former builds and signs the DMG and attaches it to
-a GitHub Release, marked prerelease iff the tag contains `a`, `b`, or `rc` (`update_checker.py`'s
-beta channel reads exactly that flag); the latter builds the sdist/wheel from the same tag and
-publishes them to PyPI. Nothing else anywhere needs editing or committing first. Between tags,
+both trigger on (`on: push: tags: ['v*']`) — the former builds and signs the DMG and generates the
+SBOMs, the latter builds the sdist/wheel from the same tag. Every one of those artifacts always
+uploads to the private Cloudflare R2 release archive (see "Cloudflare R2 release archive" below);
+whether it *also* reaches a public GitHub Release / PyPI/TestPyPI depends on the tag's channel
+(`a`/`b`/`rc` suffix, or none for stable — same PEP 440 short-form scheme `update_checker.py`'s
+beta channel already ranks by): only a stable tag's DMG/SBOMs get attached to a public GitHub
+Release and only a stable tag's sdist/wheel reach PyPI/TestPyPI; a pre-release tag still gets a
+GitHub Release entry (marked prerelease, so `update_checker.py`'s beta channel — which reads
+exactly that flag — keeps working), just with no files attached to it. Nothing else anywhere needs
+editing or committing first. Between tags,
 `__version__` is a `setuptools_scm`-synthesized dev version (`<next-version>.dev<n>+g<sha>`, e.g.
 `4.0.1.dev3+gabc1234`) — see `update_checker.py`'s module docstring for exactly how that's compared
 against real release tags.
@@ -88,6 +94,53 @@ safety net.
 `workflow_dispatch` exists for rerunning by hand (e.g. after a transient failure) — point it at a
 tagged commit. Run from an untagged commit and `setuptools_scm` produces a dev version with a local
 segment (`+g<sha>`), which both indexes reject as an upload.
+
+**Only a stable tag reaches PyPI/TestPyPI.** `publish-testpypi` (and, transitively, `publish-pypi`,
+which depends on it) is gated on `needs.build.outputs.channel == 'stable'` — a pre-release tag
+(`a`/`b`/`rc` suffix) still builds the sdist/wheel, but the `build` job's `publish-r2` sibling is
+the only place it's published; see below.
+
+### Cloudflare R2 release archive
+
+Every tag push — stable and pre-release alike — additionally uploads that release's artifacts to
+Cloudflare R2 (bucket `privacyfence-releases`), laid out as `releases/<channel>/<version>/...`:
+the DMG and the two org-config build scripts (`build.yml`'s `build` job), both SBOMs (`build.yml`'s
+`sbom` job), and the sdist/wheel (`publish-pypi.yml`'s `publish-r2` job). `<version>` is the
+resolved `major.minor.patch[a|b|rc<n>]` string (never the `v`-prefixed tag itself); `<channel>` is
+`stable`, `alpha`, `beta`, or `rc`, derived from that suffix — see `scripts/r2_release.py`, which
+every one of those upload steps calls (`channel` subcommand to resolve the directory, `upload` to
+actually push files). That script is also where the R2 credential wiring lives now; it replaced
+`.github/workflows/r2-smoke-test.yml`, a one-off workflow that proved the GitHub Actions → R2
+credentials/endpoint plumbing worked and was deleted once `r2_release.py` existed to reuse it.
+
+R2 is the one archive that has *everything*, regardless of what's also public elsewhere — stable
+artifacts land here too, even though they're also on PyPI/GitHub Releases. The bucket itself is
+left at Cloudflare R2's default (private — no public bucket policy or custom domain configured by
+anything in this repo), which is deliberate: alpha/beta (and, per the same gate, rc) need
+restricted access, and a private bucket is the only channel-agnostic way to guarantee that without
+duplicating the per-channel logic into a bucket-policy layer too. Concretely, this means:
+
+- **Stable**: reaches PyPI/TestPyPI (see above) and gets a public GitHub Release with the DMG,
+  org-config scripts, and SBOMs attached, exactly as before — R2 is an additional private mirror,
+  not stable's only distribution point.
+- **Alpha / beta / rc**: never reach PyPI/TestPyPI, and their GitHub Release entry (still created,
+  marked prerelease, so `update_checker.py`'s beta channel — which reads exactly that flag off the
+  releases list — keeps working) carries no file attachments. The actual DMG/SBOMs/sdist/wheel
+  exist only in the private R2 bucket.
+
+Required secrets/vars (Settings → Secrets and variables → Actions), same names
+`r2-smoke-test.yml` used:
+
+- `CF_R2_ACCESS_KEY_ID` / `CF_R2_SECRET_ACCESS_KEY` (secrets) — an R2 API token scoped to the
+  `privacyfence-releases` bucket.
+- `CF_R2_ENDPOINT` (repo/environment variable) — the bucket's S3-compatible endpoint URL.
+
+**Not yet decided: how an authorized alpha/beta tester actually gets a file out of the private
+bucket.** Nothing in this repo automates that today (no presigned-URL script, no Cloudflare Access
+policy) — `scripts/r2_release.py` only ever pushes files in. Whoever sets up the beta-testing
+program should pick one (a maintainer-run script that mints short-lived presigned URLs, or
+Cloudflare Access/Zero Trust gating allow-listed tester emails in front of the bucket) and document
+it here alongside this section.
 
 ## Branching & PRs
 
