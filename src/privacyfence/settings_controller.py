@@ -80,7 +80,7 @@ from .slack_client import authorize_interactive as slack_authorize_interactive
 
 logger = logging.getLogger(__name__)
 
-REPO_URL = "https://github.com/andras-tkcs/privacyfence"
+REPO_URL = "https://github.com/privacyfence/privacyfence"
 LICENSE_NAME = "Apache-2.0"
 
 # ---------------------------------------------------------------------------- #

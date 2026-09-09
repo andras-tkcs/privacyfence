@@ -79,7 +79,7 @@ def _make_state(**overrides):
             "export_hint": "logs/audit/2026-W31.jsonl → 2026-W31.xlsx",
             "recent": [{"connector": "Gmail", "tool": "gmail_get_thread", "decision": "auto_accepted", "time": "2m ago"}],
         },
-        "about": {"version": "3.1.1", "license": "Apache-2.0", "repo_url": "https://github.com/andras-tkcs/privacyfence"},
+        "about": {"version": "3.1.1", "license": "Apache-2.0", "repo_url": "https://github.com/privacyfence/privacyfence"},
     }
     state.update(overrides)
     return state

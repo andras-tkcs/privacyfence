@@ -42,9 +42,9 @@ from .paths import data_dir
 
 logger = logging.getLogger(__name__)
 
-GITHUB_RELEASES_LATEST_URL = "https://api.github.com/repos/andras-tkcs/privacyfence/releases/latest"
-GITHUB_RELEASES_LIST_URL = "https://api.github.com/repos/andras-tkcs/privacyfence/releases?per_page=1"
-REPO_RELEASES_URL_FALLBACK = "https://github.com/andras-tkcs/privacyfence/releases"
+GITHUB_RELEASES_LATEST_URL = "https://api.github.com/repos/privacyfence/privacyfence/releases/latest"
+GITHUB_RELEASES_LIST_URL = "https://api.github.com/repos/privacyfence/privacyfence/releases?per_page=1"
+REPO_RELEASES_URL_FALLBACK = "https://github.com/privacyfence/privacyfence/releases"
 REQUEST_TIMEOUT_SECONDS = 10
 
 CHECK_INTERVAL_SECONDS = 24 * 60 * 60
