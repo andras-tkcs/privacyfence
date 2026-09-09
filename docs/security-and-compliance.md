@@ -353,17 +353,20 @@ upgrade — is tracked as SEC-06 in [`security-remediation-plan.md`](security-re
 is not yet implemented; treat the paragraph above, not the "per-launch" framing an earlier version of
 this document used, as the current state.
 
-**Storage format and permissions — also not fully hardened yet.** Each credential/token file is
-written in plain text and then `chmod`'d to `0600` *after* the write completes (not written
-atomically via a temp-file-and-rename, and not created with restrictive permissions from the start);
-a failure to apply that `chmod` — e.g. an unusual filesystem — is caught and merely logged at debug
-level, not treated as fatal. The directories these files live in (`~/.privacyfence` and its
-subdirectories) are created with the process's default umask, not deliberately restricted to `0700`.
-In practice this means the directory tree's own permissions, not anything PrivacyFence actively
-enforces beyond the individual file `chmod`, are what stand between another local account on the
-same machine and these files. Moving to atomic, already-`0600` writes and enforcing/warning on
-directory permissions is tracked as SEC-09 in
-[`security-remediation-plan.md`](security-remediation-plan.md).
+**Storage format and permissions.** Every credential/token/config file is written through a shared
+helper (`secure_files.py`, SEC-09 in [`security-remediation-plan.md`](security-remediation-plan.md))
+that writes to a fresh
+`O_CREAT|O_EXCL`-created temp file in the same directory — already at `0600` from the instant it
+exists, never created with the process's default umask even briefly — then `fsync`s and
+atomically `os.replace`s it into place. A reader can only ever see the old complete file or the new
+complete file, never a partial write from a crash or a concurrent daemon instance. The directories
+these files live in (`~/.privacyfence` and its subdirectories — `data_dir()`/`org_dir()`/
+`user_dir()`) are created, and re-tightened on every resolution if they already existed at looser
+permissions (e.g. from a pre-SEC-09 install), to `0700` the same way. A failure to apply either the
+file or directory permissions — e.g. an unusual filesystem — is logged at `warning`, not silently
+swallowed at `debug` the way it was before this fix. Daemon startup additionally audits
+`data_dir()`/`org_dir()`/`user_dir()`'s actual on-disk permissions: local mode logs a warning and
+keeps starting if any of them grants group/other access, organization mode refuses to start.
 
 ---
 

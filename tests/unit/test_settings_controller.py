@@ -283,7 +283,9 @@ class TestConfigHelpers:
         assert controller._load_config() == {"connectors": {"slack": {"enabled": True}}}
 
     def test_save_config_write_failure_is_logged_not_raised(self, controller, monkeypatch):
-        monkeypatch.setattr(sc, "open", lambda *a, **kw: (_ for _ in ()).throw(OSError("disk full")), raising=False)
+        monkeypatch.setattr(
+            sc, "atomic_write_text", lambda *a, **kw: (_ for _ in ()).throw(OSError("disk full")),
+        )
 
         controller._save_config({"a": 1})  # must not raise
 

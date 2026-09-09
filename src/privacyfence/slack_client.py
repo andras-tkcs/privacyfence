@@ -49,6 +49,7 @@ from slack_sdk.errors import SlackApiError
 from slack_sdk.http_retry.builtin_handlers import RateLimitErrorRetryHandler
 
 from .oauth_loopback import OAuthLoopbackError, run_browser_oauth
+from .secure_files import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -217,13 +218,7 @@ def exchange_code(client_id: str, client_secret: str, code: str, redirect_uri: s
 
 
 def save_token_record(token_file: str, token_record: dict[str, Any]) -> None:
-    os.makedirs(os.path.dirname(os.path.abspath(token_file)), exist_ok=True)
-    with open(token_file, "w", encoding="utf-8") as fh:
-        json.dump(token_record, fh)
-    try:
-        os.chmod(token_file, 0o600)
-    except OSError:  # pragma: no cover - best effort on non-POSIX
-        logger.debug("Could not chmod Slack token file (non-fatal)")
+    atomic_write_json(token_file, token_record)
 
 
 def authorize_interactive(
@@ -1358,10 +1353,7 @@ class SlackClient:
             },
         }
         try:
-            os.makedirs(os.path.dirname(os.path.abspath(self._user_cache_file)), exist_ok=True)
-            with open(self._user_cache_file, "w", encoding="utf-8") as fh:
-                json.dump(payload, fh)
-            os.chmod(self._user_cache_file, 0o600)  # holds every workspace member's email
+            atomic_write_json(self._user_cache_file, payload)  # holds every workspace member's email
         except OSError as exc:
             logger.warning("Could not save Slack user directory cache (non-fatal): %s", exc)
 
@@ -1421,9 +1413,7 @@ class SlackClient:
         if self._channel_refresh_cursor:
             payload["partial_cursor"] = self._channel_refresh_cursor
         try:
-            os.makedirs(os.path.dirname(os.path.abspath(self._channel_cache_file)), exist_ok=True)
-            with open(self._channel_cache_file, "w", encoding="utf-8") as fh:
-                json.dump(payload, fh)
+            atomic_write_json(self._channel_cache_file, payload)
         except OSError as exc:
             logger.warning("Could not save Slack channel directory cache (non-fatal): %s", exc)
 

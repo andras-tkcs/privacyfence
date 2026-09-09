@@ -395,6 +395,64 @@ class TestLogOrgConfigBundleHash:
         assert "signed=True" in entries[0]["summary"]
 
 
+class TestCheckStoragePermissions:
+    """SEC-09's startup check: local mode warns and keeps starting, org
+    mode refuses to start -- same "detectable vs. preventable" split
+    SEC-05's interim hash-logging draws for a similarly upgrade-sensitive
+    finding."""
+
+    def _patch_dirs(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(daemon_main, "data_dir", lambda: tmp_path)
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        monkeypatch.setattr(daemon_main, "user_dir", lambda: tmp_path)
+
+    def test_no_warning_when_directory_is_already_0700(self, tmp_path, monkeypatch, caplog):
+        self._patch_dirs(monkeypatch, tmp_path)
+        tmp_path.chmod(0o700)
+
+        with caplog.at_level(logging.WARNING):
+            daemon_main.check_storage_permissions(org_mode_active=False)
+
+        assert "SEC-09" not in caplog.text
+
+    def test_local_mode_logs_warning_but_does_not_raise(self, tmp_path, monkeypatch, caplog):
+        self._patch_dirs(monkeypatch, tmp_path)
+        tmp_path.chmod(0o755)
+
+        with caplog.at_level(logging.WARNING):
+            daemon_main.check_storage_permissions(org_mode_active=False)  # must not raise
+
+        assert "SEC-09" in caplog.text
+        assert str(tmp_path) in caplog.text
+
+    def test_org_mode_raises_insecure_permissions_error(self, tmp_path, monkeypatch):
+        from privacyfence.secure_files import InsecurePermissionsError
+
+        self._patch_dirs(monkeypatch, tmp_path)
+        tmp_path.chmod(0o755)
+
+        with pytest.raises(InsecurePermissionsError):
+            daemon_main.check_storage_permissions(org_mode_active=True)
+
+    def test_org_mode_with_correct_permissions_does_not_raise(self, tmp_path, monkeypatch):
+        self._patch_dirs(monkeypatch, tmp_path)
+        tmp_path.chmod(0o700)
+
+        daemon_main.check_storage_permissions(org_mode_active=True)  # must not raise
+
+    def test_dedupes_the_same_directory_named_more_than_once(self, tmp_path, monkeypatch, caplog):
+        """user_dir() with no principal in scope resolves to data_dir()
+        itself -- the same real directory named twice must only be warned
+        about once."""
+        self._patch_dirs(monkeypatch, tmp_path)
+        tmp_path.chmod(0o755)
+
+        with caplog.at_level(logging.WARNING):
+            daemon_main.check_storage_permissions(org_mode_active=False)
+
+        assert caplog.text.count("SEC-09") == 1
+
+
 # ---------------------------------------------------------------------------- #
 # build_connectors: the Google-backed connectors (gmail, drive, calendar,
 # contacts, tasks, apps_script) all follow the same "needs installed google
@@ -1777,6 +1835,29 @@ class TestRunApp:
         assert len(warm_calls) == 1
         assert warm_calls[0][0] == [connector]
         assert warm_calls[0][1] is loop
+
+    def test_org_mode_refuses_to_start_over_insecure_storage_permissions(self, tmp_path, monkeypatch):
+        """SEC-09: wired into run_app() right after org_config is loaded --
+        raises before build_connectors()/the web server ever get a chance
+        to run, same "fail fast, before anything else stands up" posture
+        SEC-04's ConfigurationError already has for a broken org config."""
+        from privacyfence.secure_files import InsecurePermissionsError
+
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        self._patch_common(monkeypatch)
+        monkeypatch.setattr(daemon_main, "load_org_config", lambda: {"mode": "org"})
+        monkeypatch.setattr(daemon_main, "data_dir", lambda: tmp_path)
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        monkeypatch.setattr(daemon_main, "user_dir", lambda: tmp_path)
+        tmp_path.chmod(0o755)
+        build_calls = []
+        monkeypatch.setattr(daemon_main, "build_connectors", lambda cfg, org: build_calls.append(1))
+
+        with pytest.raises(InsecurePermissionsError):
+            daemon_main.run_app({}, "config.yaml")
+
+        assert build_calls == []
 
     def test_background_cache_warm_skipped_silently_when_no_web_server_at_all(self, monkeypatch, caplog):
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)

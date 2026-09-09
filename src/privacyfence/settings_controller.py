@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import threading
 from datetime import datetime, timezone
@@ -66,6 +65,7 @@ from .resource_grants import (
     set_grant_entries,
 )
 from .resource_names import get_resolver
+from .secure_files import atomic_write_json, atomic_write_text
 from . import telegram_auth
 from .tasks_client import TasksClient
 from .update_checker import (
@@ -733,8 +733,9 @@ class SettingsController:
 
     def _save_config(self, cfg: dict) -> None:
         try:
-            with open(self._config_path, "w", encoding="utf-8") as f:
-                yaml.safe_dump(cfg, f, default_flow_style=False, allow_unicode=True)
+            atomic_write_text(
+                self._config_path, yaml.safe_dump(cfg, default_flow_style=False, allow_unicode=True),
+            )
         except Exception as exc:
             logger.warning("Could not save config: %s", exc)
 
@@ -939,9 +940,7 @@ class SettingsController:
 
         dest = org_dir() / "org_config.json"
         try:
-            with open(dest, "w", encoding="utf-8") as fh:
-                json.dump(data, fh, indent=2)
-            os.chmod(dest, 0o600)
+            atomic_write_json(dest, data, indent=2)
         except OSError as exc:
             self.error = f"Could not install organization config: {exc}"
             return
