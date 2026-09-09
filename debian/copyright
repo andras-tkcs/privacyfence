@@ -1,0 +1,15 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: privacyfence
+Upstream-Contact: Andras Takacs <info@privacyfence.eu>
+Source: https://github.com/privacyfence/privacyfence
+
+Files: *
+Copyright: 2024-2026 Andras Takacs
+License: Apache-2.0
+ On Debian systems, the complete text of the Apache License, Version 2.0
+ can be found in "/usr/share/common-licenses/Apache-2.0". This package also
+ installs its own copy at /usr/share/doc/privacyfence/LICENSE (this
+ repository's top-level LICENSE file), plus
+ /usr/share/doc/privacyfence/NOTICE (this repository's top-level NOTICE
+ file) for the scope-of-license notice covering AI-generated content and
+ connector data, which this license does not extend to.

@@ -141,6 +141,12 @@ it, not just from source.
       section 3 above.
 - [ ] Quit the bundled daemon (or at minimum don't leave it running alongside the source-mode
       daemon on the same account — the `/mcp` port collides) once this check is done.
+- [ ] Linux equivalent, on a Debian/Ubuntu box or VM (see
+      `docs/linux-local-deb-packaging-plan.md` Phase 7 for the full checklist this abbreviates):
+      build the `.deb` (`bash scripts/build_deb.sh`), `sudo dpkg -i` it, confirm
+      `/usr/bin/privacyfence-app` runs and `/etc/xdg/autostart/privacyfence.desktop` validates
+      (`desktop-file-validate`), log out/in and confirm the daemon autostarted, then `dpkg -r`/
+      `dpkg -P` and confirm neither touched `~/.privacyfence`.
 
 ## 5. Tag and release
 
@@ -150,7 +156,7 @@ Only after sections 1-4 all pass:
       "Releasing" section for the exact commands and tag format (`vX.Y.Z` stable /
       `vX.Y.Z<a|b|rc><n>` pre-release). There's no version-bump commit or release PR to open first:
       pushing the tag is what triggers `.github/workflows/build.yml` to build, sign, and publish the
-      DMG. Do not touch `mcpb/shim/package.json`'s version field.
+      DMG (and, in parallel, the `.deb`). Do not touch `mcpb/shim/package.json`'s version field.
 - [ ] Once `build.yml` has created the GitHub Release, attach the saved fixture-recorder report
       (section 1) and popup-smoke report (section 2) to its description, the same convention as a
       normal PR's "## Local QA check" / "## Popup smoke check" headings (`docs/testing-policy.md`

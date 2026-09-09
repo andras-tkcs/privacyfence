@@ -46,22 +46,34 @@ PyInstaller pipeline already proven for macOS.
       thing being packaged, and the `.deb`'s own build carries none of the OAuth/systemd-behavior
       risk itself; that risk lives entirely in the app, which A2.1 already covers.
 
+      **Status:** A2.2 (README quickstart) is done — see "Install from the `.deb`" in `README.md`,
+      plus a `.deb`-specific `.` section in `TECHNICAL_REFERENCE.md`'s Installation section. A2.1's
+      *real desktop* autostart verification (a real or VM graphical login, `loginctl enable-linger`
+      both ways, the OAuth loopback browser flow from a systemd user session) has not happened --
+      no such environment was available while doing Phases 1-7 below. Phases 1-7 were implemented
+      and verified anyway (PyInstaller build, `debian/` packaging, and the full install/run/
+      remove/purge lifecycle all genuinely exercised — see P7.1's note), on the judgment that the
+      `.deb`'s own packaging correctness doesn't depend on A2.1's outcome (it wraps the same
+      onedir bundle either way) even though this plan's own ordering recommends against starting
+      early. A2.1's graphical-login verification remains open — do it before treating either the
+      `--user` systemd unit or the `.deb`'s autostart entry (P7.2, also still open) as proven.
+
 ## Phase 1 — PyInstaller Linux build
 
-- [ ] **P1.1** Add `PrivacyFenceApp.linux.spec`, adapted from `PrivacyFenceApp.spec`: same `Analysis`/
+- [x] **P1.1** Add `PrivacyFenceApp.linux.spec`, adapted from `PrivacyFenceApp.spec`: same `Analysis`/
       `PYZ`/`EXE`/`COLLECT` structure and `datas`/`hidden_imports` lists (kept in sync between the two
       specs — factor the shared list into a small importable Python module, e.g.
       `scripts/pyinstaller_common.py`, rather than hand-copying it twice and letting them drift), but
       **no `BUNDLE()` step** (that's macOS-only `.app` bundling) and no `.icns`/entitlements/codesign
       arguments. Output is `dist/PrivacyFenceApp/` (onedir) containing `PrivacyFenceApp` (the daemon
       binary) plus its bundled libs.
-- [ ] **P1.2** Add the `privacyfence-app` symlink inside the onedir output (same reasoning as
+- [x] **P1.2** Add the `privacyfence-app` symlink inside the onedir output (same reasoning as
       `build_dmg.sh`'s step 4 — the mcpb shim's `findDaemonCmd()` and any autostart entry look for
       this name specifically).
-- [ ] **P1.3** Reuse `build_dmg.sh`'s Telegram-credentials-baking step (step 2) unchanged — same
+- [x] **P1.3** Reuse `build_dmg.sh`'s Telegram-credentials-baking step (step 2) unchanged — same
       `TELEGRAM_API_ID`/`TELEGRAM_API_HASH` env vars, same `_telegram_credentials.py` mechanism,
       already platform-independent.
-- [ ] **P1.4** Icon: PyInstaller's Linux `EXE()` doesn't need an `.ico`/`.icns` (no embedded exe
+- [x] **P1.4** Icon: PyInstaller's Linux `EXE()` doesn't need an `.ico`/`.icns` (no embedded exe
       icon on Linux) — the existing `icon_512.png`/`icon_64.png`/`icon_32.png` in
       `src/privacyfence/resources/` are used as-is for the `.desktop` entry (P3) and app-menu icon,
       no conversion step needed here (contrast with Windows, which does need a generated `.ico` —
@@ -69,7 +81,7 @@ PyInstaller pipeline already proven for macOS.
 
 ## Phase 2 — Debian packaging metadata
 
-- [ ] **P2.1** Add a `debian/` directory (new top-level, mirrors how `scripts/` and `mcpb/` sit
+- [x] **P2.1** Add a `debian/` directory (new top-level, mirrors how `scripts/` and `mcpb/` sit
       alongside the rest of the build tooling):
       - `debian/control` — `Package: privacyfence`, `Architecture: amd64` (and `arm64` — see P4.2),
         `Depends:` left minimal/empty (the PyInstaller bundle is self-contained; no `python3-*` deps
@@ -101,7 +113,7 @@ PyInstaller pipeline already proven for macOS.
       - `debian/postinst` / `debian/prerm` / `debian/postrm` — see Phase 3 for what these actually do
         (autostart wiring); keep them minimal and idempotent (postinst safe to re-run on upgrade,
         prerm/postrm never touch anything under a user's `$HOME` — see P2.2).
-- [ ] **P2.2 — Explicitly scope what the package does *not* touch.** Per-user data
+- [x] **P2.2 — Explicitly scope what the package does *not* touch.** Per-user data
       (`~/.privacyfence/`, `config/settings.yaml`, `credentials/`) is created by the app itself on
       first run (`paths.py`), not by the package. `apt remove privacyfence` must leave that data
       alone (it's outside anything `dpkg` tracks, so this is automatic — no maintainer-script code
@@ -131,20 +143,20 @@ specifically *because* it's package-installed for potentially any user on the ma
 
 Checklist:
 
-- [ ] **P3.1** Write `resources/linux/privacyfence.desktop` (packaged into
+- [x] **P3.1** Write `resources/linux/privacyfence.desktop` (packaged into
       `/etc/xdg/autostart/privacyfence.desktop` by `debian/install`): `Type=Application`,
       `Exec=/usr/bin/privacyfence-app`, `Icon=privacyfence`, `X-GNOME-Autostart-enabled=true`,
       `NoDisplay=true` (it's a background daemon, not something that should also show as a launchable
       app in the applications menu — mirrors the macOS bundle's `LSUIElement: True`, "headless
       background daemon — no Dock icon").
-- [ ] **P3.2** Also ship a normal (non-autostart) `.desktop` entry for the Applications menu — mirrors
+- [x] **P3.2** Also ship a normal (non-autostart) `.desktop` entry for the Applications menu — mirrors
       the mac app being drag-installed into `/Applications` and discoverable there — actually, decide
       whether this is wanted at all: the daemon has no windows to open when launched directly (per
       `daemon_main.py`'s docstring, all human interaction is through the web `/approvals`/`/settings`
       surfaces reached via a browser, not by double-clicking the app). Recommend **skip this** — a
       visible-but-does-nothing-when-clicked menu entry is worse than no entry; document "open
       `http://127.0.0.1:8765/settings` in your browser" instead (README, per P6).
-- [ ] **P3.3** `debian/postinst`: on install (not upgrade — check `$1 = configure` and whether a
+- [x] **P3.3** `debian/postinst`: on install (not upgrade — check `$1 = configure` and whether a
       previous version existed, standard Debian maintainer-script pattern), nothing needs to actively
       *start* the daemon — the autostart entry only fires at the next graphical login, which is
       correct DMG-parity behavior (the DMG doesn't launch the app immediately after a drag-install
@@ -153,7 +165,7 @@ Checklist:
 
 ## Phase 4 — Build script and versioning
 
-- [ ] **P4.1** Add `scripts/build_deb.sh`, mirroring `build_dmg.sh`'s shape and prerequisites
+- [x] **P4.1** Add `scripts/build_deb.sh`, mirroring `build_dmg.sh`'s shape and prerequisites
       (`pip install -e ".[dev]"` already done, `pyinstaller` available, plus `dpkg-deb` and
       `lintian` — both standard on any Debian/Ubuntu build host, install via `apt-get install -y
       dpkg-dev lintian` on CI). Steps: run PyInstaller against `PrivacyFenceApp.linux.spec` (P1),
@@ -173,20 +185,25 @@ Checklist:
       the build *on* that architecture, not cross-compiling — so this means a second CI runner arch,
       not a build-script code change) — scope as a follow-up once `amd64` ships and there's a
       concrete request for it, not a Phase 4 blocker.
-- [ ] **P4.3** Run `lintian` against the built `.deb` in the build script itself (non-fatal warnings
+- [x] **P4.3** Run `lintian` against the built `.deb` in the build script itself (non-fatal warnings
       logged, but fail the build on any `error`-severity finding) — catches packaging-policy mistakes
       (missing changelog, bad permissions, FHS violations) before they ship, the same role
       `PrivacyFenceApp.spec`'s own structure already plays for catching macOS bundling mistakes early.
 
 ## Phase 5 — CI
 
-- [ ] **P5.1** Add a Linux leg to `.github/workflows/build.yml` (`runs-on: ubuntu-latest`, alongside
+- [x] **P5.1** Add a Linux leg to `.github/workflows/build.yml` (`runs-on: ubuntu-latest`, alongside
       the existing `macos-latest` job — not `tests.yml`, which stays test-only), triggered the same
       way (`push: tags: ['v*']` + `workflow_dispatch`), running `scripts/build_deb.sh` and uploading
       `dist/privacyfence_<version>_amd64.deb` as a release asset on the same GitHub Release
       `build.yml`'s macOS job already creates (so a tag push produces one Release carrying the DMG,
       the `.mcpb`, and now the `.deb` together).
-- [ ] **P5.2** No code-signing equivalent is required here (unlike the macOS Developer ID / Windows
+
+      The job itself has been exercised locally (`scripts/build_deb.sh` end to end, including the
+      lintian gate — see P4.3), but not yet through an actual GitHub Actions run (no tag has been
+      pushed against this change) — confirm the workflow syntax and runner behavior for real on the
+      next tag push before trusting it unattended.
+- [x] **P5.2** No code-signing equivalent is required here (unlike the macOS Developer ID / Windows
       Authenticode stories) — `apt`/`dpkg` don't gate untrusted-publisher installs the way Gatekeeper
       or SmartScreen do. If an APT repository is ever stood up (P6 explicitly recommends against this
       for v1), package signing (`dpkg-sig`/a repo-level `Release` file GPG signature) would become
@@ -194,24 +211,32 @@ Checklist:
 
 ## Phase 6 — Docs and distribution
 
-- [ ] **P6.1** `README.md`: add a `.deb` install path (`sudo dpkg -i privacyfence_<version>_amd64.deb`
+- [x] **P6.1** `README.md`: add a `.deb` install path (`sudo dpkg -i privacyfence_<version>_amd64.deb`
       — or `sudo apt install ./privacyfence_<version>_amd64.deb` to also resolve any future declared
       `Depends:` automatically) alongside the `pip`/`pipx` path A2.2 already added and the macOS DMG
       instructions. Direct-download-and-`dpkg -i` from the GitHub Release, same distribution model as
       the DMG — **no hosted APT repository for v1** (a PPA/custom APT repo is real ongoing
       infrastructure — GPG key rotation, repo hosting, `apt update` freshness — disproportionate to
       current demand; revisit only if adoption clearly warrants it).
-- [ ] **P6.2** `TECHNICAL_REFERENCE.md`'s "Linux" section: split it the way this plan splits Linux —
+- [x] **P6.2** `TECHNICAL_REFERENCE.md`'s "Linux" section: split it the way this plan splits Linux —
       note the `.deb` as the `local`-mode desktop path, distinct from the `org`-mode section that
       already documents the `pip`/systemd-system-unit story.
 
 ## Phase 7 — Verification
 
-- [ ] **P7.1** Clean-container install/uninstall lifecycle test (`docker run --rm -it
+- [x] **P7.1** Clean-container install/uninstall lifecycle test (`docker run --rm -it
       ubuntu:24.04`, or similar): `dpkg -i`, confirm `/usr/bin/privacyfence-app` runs, confirm
       `/etc/xdg/autostart/privacyfence.desktop` is present and well-formed (`desktop-file-validate`),
       `dpkg -r` (remove) leaves no dangling files outside `/opt/privacyfence` and
       `/etc/xdg/autostart/`, `dpkg -P` (purge) likewise, neither touches a simulated `$HOME`.
+
+      **Verified**, with one substitution: the build environment used to implement this plan could
+      reach neither Docker Hub nor any other image registry (outbound network policy), so this ran
+      directly on that environment's own Ubuntu 24.04 base instead of a fresh `docker run` container
+      -- same `dpkg`/lintian/`desktop-file-validate` tooling, same real `dpkg -i`/`-r`/`-P` lifecycle
+      against a simulated `$HOME`, just not a throwaway container. Re-run in a real container (or a
+      real machine) before relying on this as the final sign-off; nothing here suggests it would
+      behave differently, but it hasn't been proven inside one.
 - [ ] **P7.2** Real desktop-session test (not just a container — autostart needs an actual graphical
       login to verify): install on a real or VM Ubuntu/Debian desktop, log out/in, confirm the daemon
       is running post-login (`curl 127.0.0.1:8765/settings` or checking the `mcp_url` file), confirm
@@ -221,6 +246,14 @@ Checklist:
       N+1 over it (`dpkg -i` the new `.deb`), confirm that state survived untouched (expected — it
       lives outside anything the package manages, per P2.2 — but worth proving once rather than
       asserting).
+
+      **Partially checked:** re-running `dpkg -i` with the *same* built `.deb` over an already-
+      configured install left `~/.privacyfence/config/settings.yaml` untouched, which exercises the
+      same "package reinstall/upgrade must not touch $HOME" path P2.2 relies on. What's not yet
+      proven is a real N -> N+1 version bump (this session only had one resolvable
+      `setuptools_scm` version to build from, since no new tag was pushed) -- low-risk given how
+      that state is scoped (outside anything the package manages at all, per P2.2), but still worth
+      the real two-version run before calling this fully closed.
 
 ---
 

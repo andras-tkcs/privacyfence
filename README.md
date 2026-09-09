@@ -2,7 +2,7 @@
 
 **Human control and policy enforcement for AI access to enterprise data.**
 
-PrivacyFence is a local enterprise AI governance layer for macOS. It sits between an MCP-compatible AI assistant and the business systems it can access, so data reads and actions are reviewed, governed, and logged before they are executed.
+PrivacyFence is a local enterprise AI governance layer for macOS and Linux. It sits between an MCP-compatible AI assistant and the business systems it can access, so data reads and actions are reviewed, governed, and logged before they are executed.
 
 Instead of granting an AI assistant broad, persistent access and relying on the assistant to use it safely, PrivacyFence applies an independent control point:
 
@@ -13,7 +13,7 @@ Instead of granting an AI assistant broad, persistent access and relying on the 
 - **Connector-level control** across common enterprise systems
 - **Local credential ownership**: credentials remain in the PrivacyFence daemon, not in the AI-facing bridge
 
-> PrivacyFence currently runs on macOS and integrates with Claude through MCP. Its governance model is designed around a broader problem: controlling how AI assistants access and act on enterprise information.
+> PrivacyFence runs on macOS and Linux and integrates with Claude through MCP. Its governance model is designed around a broader problem: controlling how AI assistants access and act on enterprise information.
 
 ---
 
@@ -222,7 +222,7 @@ PrivacyFence is relevant to:
 - Developers building MCP-enabled workflows
 - Organizations assessing AI use under GDPR, the EU AI Act, and internal information-handling policies
 
-PrivacyFence is currently an open-source macOS implementation rather than a certified compliance product. It can support governance and evidence collection, but it does not by itself make an organization compliant with any regulation.
+PrivacyFence is currently an open-source macOS/Linux implementation rather than a certified compliance product. It can support governance and evidence collection, but it does not by itself make an organization compliant with any regulation.
 
 ---
 
@@ -252,6 +252,33 @@ PrivacyFence is currently an open-source macOS implementation rather than a cert
 
 Releases are code-signed and notarized by Apple, so this just works — no Gatekeeper warnings, no
 manual quarantine step. Full installation details are in [Technical Reference](docs/TECHNICAL_REFERENCE.md#installation).
+
+### Install from the `.deb` (Debian/Ubuntu desktop)
+
+1. Download the latest `privacyfence_<version>_amd64.deb` from [Releases](../../releases).
+2. `sudo apt install ./privacyfence_<version>_amd64.deb` (resolves any future declared
+   dependencies automatically; a plain `sudo dpkg -i privacyfence_<version>_amd64.deb` works too —
+   the package declares none today, see below).
+3. Install the organization configuration provided by your IT administrator, and authenticate the
+   connectors you want, from PrivacyFence Settings (`http://localhost:8765/settings` once the
+   daemon is running — see step 4).
+4. Log out and back in — PrivacyFence starts automatically at the next graphical login (an XDG
+   autostart entry, not a menu icon; there's no window to open, all interaction is through the web
+   UI above). To start it immediately instead of waiting for that, run `privacyfence-app &`.
+5. Install **PrivacyFence.mcpb** into Claude Desktop (download it separately from the same
+   release).
+
+The package ships a self-contained PyInstaller build of the daemon — no `python3-*` packages
+required beyond what a normal Debian/Ubuntu desktop already has. `apt remove`/`dpkg -r` leaves
+your `~/.privacyfence` config, credentials, and audit log untouched; only `apt purge` is meant to
+also clean up anything package-owned, and there's no system-wide config here to purge either. See
+[Technical Reference](docs/TECHNICAL_REFERENCE.md#installation) for the full details, and
+[`docs/linux-local-deb-packaging-plan.md`](docs/linux-local-deb-packaging-plan.md) for how the
+package is built.
+
+Prefer a bare `pip`/`pipx install privacyfence` plus the repo-root `privacyfence.service`
+(`--user` systemd unit) instead? That path works too — see the same
+[Technical Reference](docs/TECHNICAL_REFERENCE.md#installation) section.
 
 ### Run from source
 

@@ -1,0 +1,31 @@
+#!/bin/sh
+# postinst for the privacyfence .deb. Keep this minimal and idempotent (safe to re-run on
+# upgrade) -- see docs/linux-local-deb-packaging-plan.md Phase 2/P3.3.
+set -e
+
+case "$1" in
+    configure)
+        # Best-effort icon-cache refresh so /usr/share/icons/hicolor/*/apps/privacyfence.png
+        # (installed by debian/install) is picked up immediately rather than only after the next
+        # unrelated cache rebuild. Neither tool is guaranteed present on every system (e.g. a
+        # minimal server install), and a failure here must never block the package install --
+        # this is cosmetic (icon lookup by name from resources/linux/privacyfence.desktop),
+        # nothing functional depends on it.
+        if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+            gtk-update-icon-cache -f -t /usr/share/icons/hicolor >/dev/null 2>&1 || true
+        fi
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+    *)
+        ;;
+esac
+
+# Deliberately nothing here starts the daemon. The XDG autostart entry
+# (/etc/xdg/autostart/privacyfence.desktop, installed above) only fires at the *next* graphical
+# login -- correct DMG-parity behavior (the DMG doesn't launch the app immediately after a
+# drag-install either). postinst runs as root, which can neither correctly determine the
+# installing user's desktop session nor safely start a per-user daemon on their behalf --
+# see docs/linux-local-deb-packaging-plan.md P3.3.
+
+exit 0

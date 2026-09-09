@@ -1,0 +1,34 @@
+# File mappings for the privacyfence .deb -- read by dh_install if this package is ever built
+# through the full `dh $@` / dpkg-buildpackage pipeline (see debian/rules's own note on why
+# scripts/build_deb.sh normally takes a more direct route instead, staging the same mappings by
+# hand). Each line is "<source, relative to the source package root> <destination dir, relative
+# to the package root, no leading />".
+#
+# dist/PrivacyFenceApp/ is Phase 1's PyInstaller onedir output -- build it first with
+# `pyinstaller PrivacyFenceApp.linux.spec` (gitignored; not part of the source tree itself).
+dist/PrivacyFenceApp/* opt/privacyfence/
+
+# Debian policy §9.1.2: a self-contained third-party bundle that doesn't integrate with the
+# system package management for its internals belongs under /opt, not /usr/lib.
+resources/linux/privacyfence-app-wrapper usr/bin/privacyfence-app
+
+# XDG autostart entry -- see debian/postinst / resources/linux/privacyfence.desktop and
+# docs/linux-local-deb-packaging-plan.md Phase 3 for why this is the packaged default instead of
+# the --user systemd unit privacyfence.service (repo root) already documents for a bare pip/pipx
+# install.
+resources/linux/privacyfence.desktop etc/xdg/autostart/
+
+# Icon-theme locations, referenced by name (Icon=privacyfence) rather than absolute path from the
+# .desktop entry above.
+src/privacyfence/resources/icon_512.png usr/share/icons/hicolor/512x512/apps/privacyfence.png
+src/privacyfence/resources/icon_64.png usr/share/icons/hicolor/64x64/apps/privacyfence.png
+src/privacyfence/resources/icon_32.png usr/share/icons/hicolor/32x32/apps/privacyfence.png
+
+LICENSE usr/share/doc/privacyfence/
+NOTICE usr/share/doc/privacyfence/
+debian/copyright usr/share/doc/privacyfence/
+
+# Documents the "key decision" trade-offs (self-contained /opt bundle, no python3-* deps) that
+# lintian's default tags would otherwise flag as policy violations -- see the overrides file's own
+# comments for why each is expected, not a defect.
+debian/privacyfence.lintian-overrides usr/share/lintian/overrides/privacyfence

@@ -19,6 +19,7 @@ For the product overview, governance model, screenshots, supported systems, and 
 - [Installation](#installation)
 - [Connecting Claude](#connecting-claude)
 - [Building a DMG](#building-a-dmg)
+- [Building a `.deb`](#building-a-deb)
 - [Configuration reference](#configuration-reference)
 - [Architecture notes](#architecture-notes)
 - [License](#license)
@@ -1325,9 +1326,35 @@ the only download you need:
    MCP server for you (Settings → Extensions → Install Extension… happens automatically), with no
    config file edited and no token copied — see [Connecting Claude](#connecting-claude) below.
 
+### From the `.deb` (Linux, `local` mode)
+
+The Linux equivalent of the DMG above — a `dpkg -i`-able package wrapping a self-contained
+PyInstaller build of the daemon, for someone installing PrivacyFence on their own Linux desktop
+the same way a macOS user drags `PrivacyFenceApp.app` to `/Applications`. See
+[`linux-local-deb-packaging-plan.md`](linux-local-deb-packaging-plan.md) for the full design.
+
+1. Download the latest `privacyfence_<version>_amd64.deb` from the [Releases](../../../releases)
+   page.
+2. `sudo apt install ./privacyfence_<version>_amd64.deb` (or `sudo dpkg -i` — the package declares
+   no `python3-*` dependencies to resolve). Installs the daemon to `/opt/privacyfence`, a
+   `privacyfence-app` wrapper on `PATH` at `/usr/bin/privacyfence-app`, and an XDG autostart entry
+   at `/etc/xdg/autostart/privacyfence.desktop`.
+3. Log out and back in — the autostart entry fires at the next graphical login (works the same way
+   across GNOME/KDE/XFCE/etc., no per-user `systemctl --user enable` step needed). To start it
+   immediately instead, run `privacyfence-app &`.
+4. Open PrivacyFence Settings (`http://localhost:8765/settings` — the daemon logs the exact URL,
+   with its session token, to `~/.privacyfence/logs/privacyfence.log` on startup) and continue
+   with the organization config and connector authentication steps as in the DMG instructions
+   above.
+5. Install **PrivacyFence.mcpb** into Claude Desktop, downloaded separately from the same release.
+
+`apt remove`/`dpkg -r` leaves `~/.privacyfence` (config, credentials, audit log) untouched — that
+data belongs to the app, not the package. `apt purge` cleans up anything package-owned beyond
+that, which today is nothing (no system-wide config exists to purge).
+
 ### From source
 
-**Requirements:** Python 3.11+, macOS
+**Requirements:** Python 3.11+, macOS or Linux
 
 ```bash
 git clone https://github.com/privacyfence/privacyfence
@@ -1377,12 +1404,26 @@ opening the native macOS menu bar, so `privacyfence-app` crashed right after sta
 platform. P10 (`docs/https-connector-refactor-plan.md` §12, decision D6) deleted that native UI
 layer entirely, so the daemon now starts and runs headlessly on any platform Python and its
 dependencies support — nothing left in `src/privacyfence/` imports a macOS-specific module.
-`privacyfence.service` (repo root) is a systemd `--user` unit for this; see its own header comment
-for the current status (the core blocker is fixed, but a real Linux install is still unverified end
-to end — packaging, autostart, and CI for it are the remaining work, per #121 in the issue tracker).
-Two pieces of the Linux/PyPI packaging story are already in place: publishing to PyPI (CLAUDE.md's
+
+Linux splits into two genuinely different install paths — see
+[`windows-linux-support-plan.md`](windows-linux-support-plan.md)'s "Terminology" section for why
+these are different audiences with different packaging needs, not two flavors of the same install:
+
+- **`local` mode (desktop)** — the `.deb` documented above under "Installation", or a bare
+  `pip`/`pipx install privacyfence` plus the repo-root `privacyfence.service` (a systemd `--user`
+  unit — install per its own header comment). Both give you a single-user desktop daemon with the
+  implicit `local` principal.
+- **`org` mode (server)** — `pip`/`pipx install privacyfence` plus a **system** (not `--user`)
+  systemd unit running as a dedicated service account, fronted by a reverse proxy and an org OIDC
+  IdP for sign-in. Walked through end-to-end in
+  [`org-mode-setup-guide.md`](org-mode-setup-guide.md) (Ubuntu + Caddy + Google identity) — that
+  guide's own status note is the current source of truth on how battle-tested this path is; treat
+  it as ready to try, not yet a fully verified production install, per #121 in the issue tracker.
+
+Two pieces of the Linux/PyPI packaging story underpin both paths: publishing to PyPI (CLAUDE.md's
 "Publishing to PyPI") and `~/.privacyfence` path resolution for a real `pip install privacyfence`
-(`paths.py`'s `_is_installed_package()`).
+(or a PyInstaller-frozen `.deb` install) rather than a repo checkout (`paths.py`'s
+`_is_installed_package()`/`is_bundled()`).
 
 ---
 
@@ -1462,6 +1503,17 @@ bash scripts/build_dmg.sh
 ```
 
 The script produces `dist/PrivacyFence-<version>.dmg` (containing `PrivacyFenceApp.app`).
+
+## Building a `.deb`
+
+```bash
+pip install pyinstaller
+apt-get install -y dpkg-dev lintian
+bash scripts/build_deb.sh
+```
+
+The script produces `dist/privacyfence_<version>_<arch>.deb`. See
+[`linux-local-deb-packaging-plan.md`](linux-local-deb-packaging-plan.md) for the packaging design.
 
 ---
 

@@ -1,0 +1,14 @@
+#!/bin/sh
+# Thin wrapper installed at /usr/bin/privacyfence-app by the .deb package
+# (debian/install), so the PyInstaller onedir bundle at /opt/privacyfence/
+# is reachable on PATH the same way pipx's own ~/.local/bin/privacyfence-app
+# already is for a `pip`/`pipx install privacyfence` (see
+# docs/linux-local-deb-packaging-plan.md Phase 2 and
+# docs/windows-linux-support-plan.md Track A2) -- this is what the mcpb
+# shim's findDaemonCmd() PATH lookup (mcpb/shim/src/daemon.ts) finds, and
+# what resources/linux/privacyfence.desktop's Exec= line runs.
+#
+# Debian policy §9.1.2 puts self-contained third-party bundles like this
+# one under /opt rather than /usr/lib -- see debian/install for the rest of
+# the package layout.
+exec /opt/privacyfence/PrivacyFenceApp "$@"
