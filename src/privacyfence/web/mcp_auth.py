@@ -35,6 +35,7 @@ from mcp.server.auth.provider import AccessToken, TokenVerifier
 
 from .. import paths
 from ..principal import LOCAL_PRINCIPAL, Principal
+from ..secure_files import atomic_write_text
 
 MCP_TOKEN_FILE_NAME = "mcp_token"
 
@@ -48,8 +49,7 @@ def load_or_create_mcp_token() -> str:
         if token:
             return token
     token = secrets.token_hex(32)
-    path.write_text(token, encoding="utf-8")
-    path.chmod(0o600)
+    atomic_write_text(path, token)
     return token
 
 

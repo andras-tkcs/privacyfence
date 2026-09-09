@@ -78,6 +78,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
+from .secure_files import atomic_write_text
+
 # Bundle fields written by scripts/build_org_bundle.py --sign-key, read
 # here. Both are standard-alphabet base64 of the raw fixed-size Ed25519
 # bytes -- 32 for the public key, 64 for the signature.
@@ -144,19 +146,10 @@ def load_pinned_public_key(org_dir: Path) -> bytes | None:
 
 
 def _pin_public_key(org_dir: Path, raw_public_key: bytes) -> None:
-    """Writes the pinned-key file. Not yet routed through a shared
-    atomic-write helper (SEC-09, Phase 1 item 1.4, hasn't landed) --
-    write-to-temp-then-replace here is deliberately kept self-contained
-    rather than reaching ahead for that not-yet-existing module."""
+    """Writes the pinned-key file, atomically and at 0600 from the moment
+    it exists -- see secure_files.py's module docstring (SEC-09)."""
     path = pinned_public_key_path(org_dir)
-    org_dir.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(base64.b64encode(raw_public_key).decode("ascii") + "\n", encoding="utf-8")
-    try:
-        tmp.chmod(0o600)
-    except OSError:
-        pass
-    tmp.replace(path)
+    atomic_write_text(path, base64.b64encode(raw_public_key).decode("ascii") + "\n")
 
 
 @dataclass(frozen=True)

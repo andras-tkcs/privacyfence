@@ -35,6 +35,7 @@ from typing import Any
 from .paths import user_dir
 from .principal import PrincipalRegistry
 from .resource_grants import GrantResourceType
+from .secure_files import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -76,8 +77,7 @@ class ResourceNameResolver:
 
     def _save_disk_cache(self) -> None:
         try:
-            with open(_cache_file(), "w", encoding="utf-8") as f:
-                json.dump(self._disk, f, indent=2, sort_keys=True)
+            atomic_write_json(_cache_file(), self._disk, indent=2, sort_keys=True)
         except Exception as exc:
             logger.warning("Could not save resource name cache: %s", exc)
 

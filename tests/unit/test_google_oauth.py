@@ -134,5 +134,5 @@ class TestSaveCredentials:
         def raise_chmod(*a, **kw):
             raise OSError("no chmod here")
 
-        monkeypatch.setattr(google_oauth.os, "chmod", raise_chmod)
+        monkeypatch.setattr("os.chmod", raise_chmod)
         google_oauth.save_credentials(str(tmp_path / "token.json"), creds)  # must not raise

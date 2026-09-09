@@ -22,6 +22,8 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+from .secure_files import atomic_write_text
+
 logger = logging.getLogger(__name__)
 
 SCOPES = ["https://www.googleapis.com/auth/tasks"]
@@ -120,13 +122,7 @@ class TasksClient:
             )
 
     def _save_token(self, creds: Credentials) -> None:
-        os.makedirs(os.path.dirname(os.path.abspath(self._token_file)), exist_ok=True)
-        with open(self._token_file, "w", encoding="utf-8") as fh:
-            fh.write(creds.to_json())
-        try:
-            os.chmod(self._token_file, 0o600)
-        except OSError:
-            logger.debug("Could not chmod tasks token file (non-fatal)")
+        atomic_write_text(self._token_file, creds.to_json())
 
     def _get_service(self):
         service = getattr(self._local, "service", None)

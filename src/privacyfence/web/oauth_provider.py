@@ -58,6 +58,7 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from .. import org_identity
 from ..org_identity import IdpConfig
 from ..principal import Principal
+from ..secure_files import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -173,8 +174,7 @@ class OrgOAuthProvider:
 
     def _save_clients_locked(self) -> None:
         raw = {cid: json.loads(info.model_dump_json()) for cid, info in self._clients.items()}
-        self._clients_path.write_text(json.dumps(raw, indent=2, sort_keys=True), encoding="utf-8")
-        self._clients_path.chmod(0o600)
+        atomic_write_json(self._clients_path, raw, indent=2, sort_keys=True)
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
         with self._lock:

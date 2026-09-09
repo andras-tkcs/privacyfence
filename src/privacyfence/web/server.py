@@ -80,6 +80,7 @@ from .. import __version__, paths
 from ..connector_registry import ConnectorRegistry
 from ..org_identity import IdpConfig
 from ..principal import ANONYMOUS_PRINCIPAL, LOCAL_PRINCIPAL, Principal, principal_scope
+from ..secure_files import atomic_write_text
 from ..settings_controller import SettingsController, set_main_dispatcher
 from ..web_approval_ui import WebApprovalUI
 from . import org_session
@@ -153,10 +154,8 @@ def load_or_create_token() -> str:
             if token:
                 return token
     token = secrets.token_hex(32)
-    path.write_text(token, encoding="utf-8")
-    path.chmod(0o600)
-    version_path.write_text(current_version, encoding="utf-8")
-    version_path.chmod(0o600)
+    atomic_write_text(path, token)
+    atomic_write_text(version_path, current_version)
     return token
 
 
@@ -170,8 +169,7 @@ def _write_mcp_url_file(url: str) -> None:
     web_token/mcp_token are: not a secret itself, but written alongside them
     under the same directory."""
     path = paths.data_dir() / MCP_URL_FILE_NAME
-    path.write_text(url, encoding="utf-8")
-    path.chmod(0o600)
+    atomic_write_text(path, url)
 
 
 def _clear_mcp_url_file() -> None:

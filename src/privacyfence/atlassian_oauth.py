@@ -18,6 +18,7 @@ from urllib.parse import urlencode
 import requests
 
 from .oauth_loopback import OAuthLoopbackError, run_browser_oauth
+from .secure_files import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -254,10 +255,4 @@ def _fetch_accessible_resources(access_token: str) -> list[dict[str, Any]]:
 
 
 def save_token_file(token_file: str, token_record: dict[str, Any]) -> None:
-    os.makedirs(os.path.dirname(os.path.abspath(token_file)), exist_ok=True)
-    with open(token_file, "w", encoding="utf-8") as fh:
-        json.dump(token_record, fh)
-    try:
-        os.chmod(token_file, 0o600)
-    except OSError:  # pragma: no cover - best effort on non-POSIX
-        logger.debug("Could not chmod Atlassian token file (non-fatal)")
+    atomic_write_json(token_file, token_record)
