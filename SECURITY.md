@@ -34,7 +34,7 @@ privately instead, using one of:
    vulnerability"**. This is the preferred channel: it opens a private advisory thread scoped to
    just you and the maintainer, with structured fields for affected versions and severity — see
    status below.
-2. **Email: privacyfence@tkcs.name** (the channel [`docs/security-and-compliance.md` §10](docs/security-and-compliance.md#10-vulnerability-reporting)
+2. **Email: info@privacyfence.eu** (the channel [`docs/security-and-compliance.md` §10](docs/security-and-compliance.md#10-vulnerability-reporting)
    already documents for reviewers). Use this if you'd rather not use a GitHub account, or as a
    fallback if the button below is ever unavailable.
 

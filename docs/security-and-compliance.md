@@ -406,7 +406,7 @@ in §§2–8.
 |---|---|---|
 | Certified information security framework (ISO 27001, SOC 2, etc.) | Not established | These certifications attest to controls around *operated infrastructure* — the thing being certified is an organization's data centers, access management, incident processes, etc. PrivacyFence has none of that to certify: there is no PrivacyFence-operated infrastructure at all (§2). A certification program doesn't map onto software that runs entirely on the employee's own machine. |
 | Business Continuity Plan | None | A BCP protects continuity of a *service*. There is no PrivacyFence-operated service whose outage could disrupt your organization — if the maintainer became unreachable tomorrow, already-installed copies keep running locally exactly as before; nothing in PrivacyFence's core function depends on ongoing vendor availability beyond the pre-existing OAuth relationships you already have with Google/Slack/Salesforce/Atlassian, plus the optional, disable-able daily update check (§2). Continuity risk here is really *source availability* risk, and it is mitigated by the code being open source: your organization can audit, fork, or internally maintain a pinned version independent of the original maintainer. |
-| Risk response process / SLA | None | There is no support contract. Suspected security issues go to **privacyfence@tkcs.name** or a public GitHub issue (§10 below) and are handled best-effort, not against a committed response time. Organizations that need a guaranteed patch turnaround should treat that as a real gap to plan around (e.g., pin to an internally reviewed release rather than auto-updating, and assign an internal owner able to patch or roll back if a report doesn't land in time) — not assume it away. |
+| Risk response process / SLA | None | There is no support contract. Suspected security issues go to **info@privacyfence.eu** or a public GitHub issue (§10 below) and are handled best-effort, not against a committed response time. Organizations that need a guaranteed patch turnaround should treat that as a real gap to plan around (e.g., pin to an internally reviewed release rather than auto-updating, and assign an internal owner able to patch or roll back if a report doesn't land in time) — not assume it away. |
 
 **Why this doesn't add Information Security Risk in itself:** these three gaps describe the
 *absence of vendor governance overhead*, not a technical vulnerability. The technical risk profile
@@ -437,7 +437,7 @@ to that acceptance:
 
 ## 10. Vulnerability reporting
 
-Report suspected security issues to **privacyfence@tkcs.name** rather than filing a public GitHub
+Report suspected security issues to **info@privacyfence.eu** rather than filing a public GitHub
 issue. Include reproduction steps and, where relevant, which connector and gate configuration was
 involved.
 
