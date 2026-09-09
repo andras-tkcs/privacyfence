@@ -155,6 +155,17 @@ testpaths = ["tests"]
 # would otherwise block the whole suite indefinitely instead of failing.
 timeout = 30
 
+[tool.coverage.run]
+# TST-03 (docs/security-remediation-plan.md Phase 2.1): branch coverage, not
+# just line coverage, is what scripts/check_coverage_floor.py's floors are
+# computed against -- a line that's always reached but whose "else" arm
+# never runs (e.g. a fail-open branch nothing exercises) reads as fully
+# covered under line-only coverage. `--cov-branch` on the CI/pre-release
+# pytest invocations is redundant with this but kept explicit there so it's
+# visible without opening this file.
+branch = true
+source = ["src/privacyfence"]
+
 # --- Static analysis (docs/security-remediation-plan.md, Phase 2 item 2.3,
 # TST-07) --- #
 
