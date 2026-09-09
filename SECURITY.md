@@ -20,7 +20,7 @@ In practice:
   same §9 discussion — not assume PrivacyFence provides it.
 
 If you're unsure whether the version you're running is still current, check the
-[Releases page](https://github.com/andras-tkcs/privacyfence/releases) or compare against the tag
+[Releases page](https://github.com/privacyfence/privacyfence/releases) or compare against the tag
 list before reporting — but report regardless of version; an issue reproducible only on an older
 release is still useful to know about.
 
@@ -30,7 +30,7 @@ release is still useful to know about.
 privately instead, using one of:
 
 1. **GitHub private vulnerability reporting** — from this repository's
-   [Security tab](https://github.com/andras-tkcs/privacyfence/security), click **"Report a
+   [Security tab](https://github.com/privacyfence/privacyfence/security), click **"Report a
    vulnerability"**. This is the preferred channel: it opens a private advisory thread scoped to
    just you and the maintainer, with structured fields for affected versions and severity — see
    status below.
@@ -41,7 +41,7 @@ privately instead, using one of:
 ### GitHub private vulnerability reporting status
 
 This repository has GitHub's private vulnerability reporting feature **enabled**. The
-[Security tab](https://github.com/andras-tkcs/privacyfence/security) carries a "Report a
+[Security tab](https://github.com/privacyfence/privacyfence/security) carries a "Report a
 vulnerability" button that opens a private draft security advisory directly with the maintainer —
 use it as the primary channel per above. Email remains available as an alternative.
 
@@ -100,5 +100,5 @@ slow.
 
 ## Reporting non-security bugs
 
-For bugs that aren't security-sensitive, use [GitHub Issues](https://github.com/andras-tkcs/privacyfence/issues)
+For bugs that aren't security-sensitive, use [GitHub Issues](https://github.com/privacyfence/privacyfence/issues)
 as normal — see [`CONTRIBUTING.md`](CONTRIBUTING.md#issues).

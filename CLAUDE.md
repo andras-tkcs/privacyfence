@@ -77,7 +77,7 @@ that isn't claimed yet, and claim it on the first successful publish. Do this on
    use the same login for both).
 2. Add a pending publisher with:
    - **PyPI Project Name**: `privacyfence`
-   - **Owner**: `andras-tkcs`
+   - **Owner**: `privacyfence`
    - **Repository name**: `privacyfence`
    - **Workflow name**: `publish-pypi.yml`
    - **Environment name**: `testpypi` (on TestPyPI) / `pypi` (on PyPI) — matches the `environment:`

@@ -158,7 +158,7 @@ sudo -u privacyfence -H bash -c 'pipx install privacyfence --python python3.11'
 # Until then -- org mode is on main but no tag has been cut yet, so install
 # straight from main instead of PyPI:
 sudo -u privacyfence -H bash -c \
-  'pipx install "git+https://github.com/andras-tkcs/privacyfence.git@main" --python python3.11'
+  'pipx install "git+https://github.com/privacyfence/privacyfence.git@main" --python python3.11'
 ```
 
 Switch to the plain `pipx install privacyfence` form (and re-run it to upgrade) once a version has
@@ -268,7 +268,7 @@ bundle is copied over. Signing (`--sign-key`, next) is the one exception to stdl
 the `cryptography` package (`pip install cryptography`).
 
 ```bash
-git clone https://github.com/andras-tkcs/privacyfence
+git clone https://github.com/privacyfence/privacyfence
 cd privacyfence   # main already carries org mode's --mode/--server-*/--idp-* flags
 ```
 
