@@ -183,10 +183,11 @@ should not be read as PrivacyFence treating writes as safe.
 
 **Note for reviewers evaluating the web settings surface (`/settings`, on by default in local mode,
 `web.settings.enabled` — see [Web surfaces](TECHNICAL_REFERENCE.md#web-surfaces-approvals-settings)
-in the Technical Reference):** it is reachable only with the same `web_token` every other local-mode
-web route already requires (§8 — persisted on disk and reused across daemon restarts, a known
-limitation flagged there), and every mutating request additionally carries a CSRF double-submit
-token and an `Origin` check. Within that authenticated session, the set of actions a request can
+in the Technical Reference):** it is reachable only within an authenticated `pf_session` (§8's
+"Local-mode token semantics" note — a short-lived, single-use bootstrap link exchanged for an
+independent, expiring session, not a persistent secret carried in the URL), and every mutating
+request additionally carries a CSRF double-submit token (the session id itself) and an `Origin`
+check. Within that authenticated session, the set of actions a request can
 invoke is an **explicit allowlist** — an unrecognized action name is rejected before any lookup
 happens at all, and each allowed action's arguments are validated against its real parameter types
 (a malformed argument is a 400, not passed through). Nothing reachable from this surface — or from
@@ -330,28 +331,51 @@ oversight measure**, sitting in front of the AI system rather than being one:
 | Least privilege | Per-connector, per-operation gating (`auto`/`review`/`popup`); auto-accept rules can be scoped down to a single folder, spreadsheet tab, channel, or task list |
 | PII detection gate | Local regex heuristic (Hungarian/English/German) over `review` (read) dialog content only; a match requires an extra explicit confirmation before Allow once takes effect. Toggleable per user (PrivacyFence Settings / `pii_detection.enabled`) |
 | Transport to Claude | **Local mode:** loopback-bound (`localhost`) `/mcp` Streamable HTTP endpoint, authenticated by a shared bearer token (`~/.privacyfence/mcp_token`) required on every request; Claude Desktop's stdio shim carries no credentials of its own and only relays it. **Org mode:** `/mcp` over HTTPS, authenticated by a real OAuth 2.1 authorization server (dynamic client registration, PKCE, tokens bound to the OIDC-verified principal) instead of one shared secret |
-| Web approval/settings surface | **Local mode** (opt-in for `/settings`, always-on for `/approvals`): loopback-bound (`localhost`) embedded HTTP server; a shared session token (`~/.privacyfence/web_token`) required on every request, CSRF double-submit + `Origin` check on every mutation, an explicit action allowlist (not `getattr`) behind `/settings`, and no code path reachable from an HTTP request ever runs a subprocess on the host. **Org mode:** a separate, principal-scoped `/approvals`/`/security` surface (§2) authenticated by the OIDC-backed session above, not the shared token; a write decision additionally requires a fresh WebAuthn step-up when the organization has turned that on. `/settings` is not mounted in org mode at all yet (see §4) |
+| Web approval/settings surface | **Local mode** (opt-in for `/settings`, always-on for `/approvals`): loopback-bound (`localhost`) embedded HTTP server; every request requires an authenticated `pf_session` cookie — minted by exchanging a short-lived, single-use bootstrap code, never a persistent secret carried in the URL (see "Local-mode token semantics" below) — CSRF double-submit + `Origin` check on every mutation, an explicit action allowlist (not `getattr`) behind `/settings`, and no code path reachable from an HTTP request ever runs a subprocess on the host. **Org mode:** a separate, principal-scoped `/approvals`/`/security` surface (§2) authenticated by the OIDC-backed session above, not a local secret; a write decision additionally requires a fresh WebAuthn step-up when the organization has turned that on. `/settings` is not mounted in org mode at all yet (see §4) |
 | Process isolation | The Desktop-only shim (untrusted-facing, no credentials, no tool-schema knowledge) and the daemon (holds credentials) are separate processes; only the daemon can reach external APIs |
 | Secrets at rest | Local OS-level storage / local files under `credentials/`, org-mode credentials under a per-principal directory on the org-mode server; never committed to source control (`.gitignore`'d), never transmitted off-device. See "Storage format and permissions" below for exactly what protects these files today, and what doesn't yet |
 | Auditability | Every decision logged with outcome (accepted/denied/auto_accepted), locally, in a human-readable format (JSONL + Excel) |
 | Code signing / notarization | The macOS `.app` release is code-signed with a Developer ID Application certificate and notarized by Apple; Gatekeeper accepts it with no manual steps (see [Technical Reference](TECHNICAL_REFERENCE.md#installation)). Org mode is deployed from source/PyPI onto a server IT controls, so Gatekeeper/notarization doesn't apply there — the equivalent control is your organization's own provenance for the server it stands up (e.g. installing a pinned, reviewed release rather than an unreviewed checkout, per §9) |
 | Third-party dependencies | Standard OAuth/SDK libraries per connector (google-auth, slack_sdk, telethon, atlassian-python-api); no PrivacyFence-operated backend dependency |
 
-**Local-mode token semantics — a known limitation, not yet fixed.** `mcp_token` and `web_token` are
-each generated once, written to a file under `~/.privacyfence/`, and then **reused unchanged across
-every subsequent daemon restart** — they are not rotated per launch, and (for `web_token`) the
-bootstrap URL the daemon logs on startup carries the token itself in the query string
-(`http://localhost:8765/settings?token=...`), which is also written to the local log file. This is
-weaker than a document describing PrivacyFence should claim it isn't: a token that leaks once (e.g.
-from a log file, shell history, or a shared screen) stays valid until someone manually deletes the
-token file and restarts the daemon — there is no expiry, and no way to revoke just that one exposure
-without rotating the file by hand. It is still bounded by the fact that reaching the token at all
-requires access to that specific machine's filesystem or its logs, and it does not by itself grant
-access to any connected service (each connector still requires its own separate OAuth grant). Fixing
-this — a short-lived bootstrap flow, tokens no longer carried in a URL or logged, and rotation on
-upgrade — is tracked as SEC-06 in [`security-remediation-plan.md`](security-remediation-plan.md) and
-is not yet implemented; treat the paragraph above, not the "per-launch" framing an earlier version of
-this document used, as the current state.
+**Local-mode token semantics — the post-SEC-06 bootstrap flow.** Two persistent secrets, each
+generated once and written 0600 to a file under `~/.privacyfence/`, still anchor local mode's whole
+authorization model — but since SEC-06 (Phase 1 item 1.2 in
+[`security-remediation-plan.md`](security-remediation-plan.md)) they no longer play the role an
+earlier version of this document described, and neither is ever carried in a URL or written to the
+log file:
+
+- **`mcp_token`** is unaffected by SEC-06 and remains the whole authorization model for `/mcp`:
+  possession of it, presented as an `Authorization: Bearer` header on every request (Claude Desktop's
+  stdio-to-HTTP shim relays it but holds no credentials of its own), is what lets Claude reach the
+  daemon at all. It is generated once and reused unchanged across restarts, same as before.
+- **`web_token`** no longer authenticates a browser directly and is never sent to one. Its only
+  remaining job is authorizing `POST /api/bootstrap` — via an `Authorization: Bearer` header, never a
+  query string — to mint a fresh bootstrap code on demand, without restarting the daemon.
+
+What a browser actually sees is a **bootstrap code**: a random, single-use value, valid for 10
+minutes, that the daemon mints and logs at every startup as a full link
+(`http://localhost:8765/approvals?bootstrap=<code>`, and similarly for `/settings`) — the only thing
+this flow ever puts in a URL or a log line. Opening that link consumes the code immediately (a
+replay, a second click, or a link that has simply expired all fail the same way, with no
+distinguishing signal), and on success mints an independent, random session id
+(`web/session_auth.py`'s `LocalSessionStore`), set as an `HttpOnly`/`SameSite=Strict` `pf_session`
+cookie — the same value the CSRF double-submit check (§4) compares against. That session has a
+30-minute sliding idle timeout, renewed on every authenticated request, and a 24-hour absolute cap
+from creation regardless of activity; it lives in memory only and does not survive a daemon restart.
+Once a session lapses, getting back in means either restarting the daemon (which logs a fresh
+bootstrap link) or, without restarting, `POST /api/bootstrap` with the persistent `web_token` as a
+bearer header to mint a new code on demand.
+
+`web_token` is additionally rotated automatically whenever the installed version changes — including
+the very first startup after upgrading to this fix, which dead-ends any `?token=` link, shell-history
+entry, or log line an older, pre-SEC-06 build had already produced, since that value no longer means
+anything to the new code. Net effect versus the design this section used to describe: nothing
+long-lived is ever carried in a URL or written to the log file, a leaked bootstrap link is a single,
+time-boxed attempt rather than a standing credential, and a session established from it has a real
+ceiling instead of lasting forever. What hasn't changed: reaching either secret still requires
+filesystem or log access to that specific machine, and neither secret by itself grants access to any
+connected service (each connector still requires its own separate OAuth grant).
 
 **Storage format and permissions.** Every credential/token/config file is written through a shared
 helper (`secure_files.py`, SEC-09 in [`security-remediation-plan.md`](security-remediation-plan.md))
