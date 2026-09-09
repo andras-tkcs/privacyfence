@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Name=PrivacyFence
+Comment=Privacy proxy daemon between Claude (MCP) and your personal data
+Exec=/usr/bin/privacyfence-app
+Icon=privacyfence
+Terminal=false
+Categories=Utility;
+X-GNOME-Autostart-enabled=true
+# Headless background daemon -- there's no window to open when launched
+# directly (daemon_main.py's docstring: all human interaction happens
+# through the embedded web /approvals and /settings surfaces, reached via a
+# browser, not by double-clicking this entry). NoDisplay hides it from the
+# Applications menu grid while still letting XDG autostart pick it up at
+# graphical login -- mirrors the macOS bundle's LSUIElement=True ("headless
+# background daemon -- no Dock icon"). See
+# docs/linux-local-deb-packaging-plan.md P3.1/P3.2.
+NoDisplay=true

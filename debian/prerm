@@ -1,0 +1,24 @@
+#!/bin/sh
+# prerm for the privacyfence .deb. There is no system-wide daemon instance for this package to
+# stop -- the daemon only ever runs as a per-user background process, started either by the XDG
+# autostart entry this package installs (/etc/xdg/autostart/privacyfence.desktop) or manually via
+# `privacyfence-app` -- and prerm runs as root with no reliable way to reach into a user's desktop
+# session to stop it. See docs/linux-local-deb-packaging-plan.md Phase 2/P3.3 for the same
+# reasoning applied to postinst not starting it either.
+#
+# Per P2.2: this script must never reach into a user's $HOME (that's where
+# ~/.privacyfence/ -- config, credentials, audit log -- lives, and it is
+# not package-owned; removing this package must leave it untouched). If a
+# future edit adds real cleanup logic here, keep that invariant.
+set -e
+
+case "$1" in
+    remove|upgrade|deconfigure)
+        ;;
+    failed-upgrade)
+        ;;
+    *)
+        ;;
+esac
+
+exit 0
