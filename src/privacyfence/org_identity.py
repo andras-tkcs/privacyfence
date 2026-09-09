@@ -26,15 +26,17 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
+import os
 import secrets
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import jwt
 import requests
 from jwt import PyJWKClient
 
+from .org_mode import ConfigurationError
 from .paths import safe_principal_id
 from .principal import Principal
 
@@ -47,6 +49,29 @@ DEFAULT_SCOPE = "openid email profile"
 # of hanging the request indefinitely.
 _HTTP_TIMEOUT_SECONDS = 10
 ID_TOKEN_ALGORITHMS = ["RS256", "ES256"]
+
+# SEC-11: the escape hatch for local development against an IdP that only
+# speaks plain HTTP (a devcontainer Keycloak, a loopback OIDC test server,
+# ...). Never set this in a real deployment -- everything it bypasses
+# (discover_idp's own issuer fetch, and every endpoint the discovery
+# document names) is exactly the set of URLs org mode's trust model
+# depends on being unspoofable in transit.
+_DEV_ALLOW_INSECURE_IDP_ENV = "PRIVACYFENCE_DEV_ALLOW_INSECURE_IDP"
+_REQUIRED_DISCOVERY_FIELDS = ("issuer", "authorization_endpoint", "token_endpoint", "jwks_uri")
+
+
+def _dev_allows_insecure_idp() -> bool:
+    return os.environ.get(_DEV_ALLOW_INSECURE_IDP_ENV, "") not in ("", "0", "false", "False")
+
+
+def _require_https(url: str, *, what: str) -> None:
+    if urlsplit(url).scheme == "https" or _dev_allows_insecure_idp():
+        return
+    raise ConfigurationError(
+        f"{what} {url!r} is not HTTPS -- org mode requires every IdP endpoint to be HTTPS "
+        f"(set {_DEV_ALLOW_INSECURE_IDP_ENV}=1 to bypass for local development against a "
+        "plain-HTTP test IdP; never set this for a real deployment)"
+    )
 
 
 @dataclass(frozen=True)
@@ -81,7 +106,16 @@ class IdpConfig:
         section -- the caller (daemon_main.py) treats that as "org mode
         configured without an IdP", which is a startup error for org mode,
         not silently falling back to local mode (mode is its own explicit
-        key -- see org_mode.py)."""
+        key -- see org_mode.py).
+
+        SEC-11: this is the only place ``discover_idp``'s result feeds an
+        ``IdpConfig`` that every subsequent OIDC call trusts, so
+        ``discover_idp`` itself is where the discovery document gets
+        validated (shape, issuer cross-check, HTTPS-only endpoints) --
+        raises ``org_mode.ConfigurationError`` rather than returning
+        ``None`` for those, since unlike a genuinely absent ``idp`` section
+        this is a *broken* config, the same distinction SEC-04 draws for
+        ``org_config.json`` itself."""
         idp = org_config.get("idp")
         if not isinstance(idp, dict):
             return None
@@ -109,11 +143,54 @@ def discover_idp(issuer: str) -> dict[str, Any]:
     Every IdP this is aimed at (Okta, Entra ID, Google, Auth0, Keycloak, ...)
     supports this -- no manual-endpoint-override config exists, on purpose,
     so there's exactly one way this ever goes wrong, not two to keep in
-    sync when the IdP rotates an endpoint URL."""
+    sync when the IdP rotates an endpoint URL.
+
+    SEC-11: ``issuer`` itself must be HTTPS (an org-mode IdP config that
+    somehow ends up plain-HTTP means everything downstream -- the
+    discovery fetch below, the authorization redirect, the token exchange,
+    JWKS fetch -- is interceptable/spoofable on the network path), and the
+    fetched document is validated (required fields present and
+    HTTPS-scheme, and its own ``issuer`` matching the one just requested)
+    before this returns -- see ``_validate_discovery_metadata``'s
+    docstring for why that cross-check specifically matters. Both checks
+    raise ``org_mode.ConfigurationError``, same as every other "broken
+    org-mode config" case (SEC-04)."""
+    _require_https(issuer, what="idp.issuer")
     url = issuer.rstrip("/") + DISCOVERY_PATH
     resp = requests.get(url, timeout=_HTTP_TIMEOUT_SECONDS)
     resp.raise_for_status()
-    return resp.json()
+    return _validate_discovery_metadata(resp.json(), expected_issuer=issuer)
+
+
+def _validate_discovery_metadata(metadata: Any, *, expected_issuer: str) -> dict[str, Any]:
+    """SEC-11: validate the discovery document's shape and provenance
+    before any of it is trusted to build an ``IdpConfig`` -- a document
+    that merely happens to be well-formed JSON is not the same as one
+    that's actually authoritative for this IdP.
+
+    The ``issuer`` cross-check (RFC 8414 §3.3: "the value of the 'issuer'
+    member MUST be identical to the ... URL used to retrieve the
+    configuration information") is what catches a discovery document
+    served from the wrong place -- a DNS hijack, a misconfigured reverse
+    proxy sitting in front of the real IdP, a copy-pasted issuer that
+    doesn't actually match what's hosted there -- rather than one that's
+    merely syntactically fine.
+    """
+    if not isinstance(metadata, dict):
+        raise ConfigurationError("OIDC discovery document is not a JSON object")
+    for field in _REQUIRED_DISCOVERY_FIELDS:
+        value = metadata.get(field)
+        if not isinstance(value, str) or not value:
+            raise ConfigurationError(f"OIDC discovery document is missing a valid {field!r}")
+    discovered_issuer = metadata["issuer"]
+    if discovered_issuer.rstrip("/") != expected_issuer.rstrip("/"):
+        raise ConfigurationError(
+            f"OIDC discovery document's issuer {discovered_issuer!r} does not match the "
+            f"configured issuer {expected_issuer!r} -- refusing to trust it"
+        )
+    for field in ("authorization_endpoint", "token_endpoint", "jwks_uri"):
+        _require_https(metadata[field], what=f"discovery document's {field!r}")
+    return metadata
 
 
 def generate_pkce_pair() -> tuple[str, str]:
