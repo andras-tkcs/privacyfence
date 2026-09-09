@@ -17,10 +17,12 @@ import logging
 import os
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
+import portalocker
 import pytest
 import yaml
 
@@ -1515,6 +1517,29 @@ class TestInstanceLock:
 
     def test_release_without_acquire_is_a_no_op(self):
         daemon_main._release_instance_lock()  # must not raise
+
+    def test_lock_file_records_holder_pid(self):
+        # portalocker.lock() is handed the raw fd _acquire_instance_lock()
+        # already opened, same as the fcntl.flock() call it replaced -- the
+        # os.ftruncate()/os.write() calls right after it must still see a
+        # live, writable fd rather than one portalocker has consumed or
+        # wrapped.
+        assert daemon_main._acquire_instance_lock() is True
+        assert Path(daemon_main.LOCK_FILE).read_text() == str(os.getpid())
+
+    def test_second_acquire_is_rejected_at_the_os_level_not_just_in_process(self):
+        # Confirms the portalocker swap still takes a real OS-level
+        # exclusive lock (LOCK_EX | LOCK_NB), not just something this
+        # process's own _lock_fd bookkeeping enforces -- an independent fd
+        # on the same file, opened the way a second daemon instance would,
+        # must be rejected by portalocker itself.
+        assert daemon_main._acquire_instance_lock() is True
+        other_fd = os.open(daemon_main.LOCK_FILE, os.O_CREAT | os.O_WRONLY, 0o600)
+        try:
+            with pytest.raises(portalocker.exceptions.LockException):
+                portalocker.lock(other_fd, portalocker.LOCK_EX | portalocker.LOCK_NB)
+        finally:
+            os.close(other_fd)
 
 
 # ---------------------------------------------------------------------------- #
